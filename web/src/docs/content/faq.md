@@ -1,6 +1,6 @@
 ## Do I need a ChatGPT account?
 
-Yes. You sign in with ChatGPT, and Windlass agents call the model through your ChatGPT account. The models you can choose are the ones your plan offers. Claude Code and OpenCode, on your machines, use the logins you give them there.
+Yes. You sign in with ChatGPT, and Windlass agents call the model through your ChatGPT account. The models you can choose are the ones your plan offers. Claude Code, OpenCode and Codex use the logins you give them on your machines.
 
 ## Can I use Claude Code?
 
@@ -10,7 +10,7 @@ Yes, on one of your own machines. Start its runner with `--harness claude`, and 
 docker exec -it windlass-runner windlass-runner login claude
 ```
 
-Then choose the machine under **on** and **Claude Code** under **agent**. Claude Code runs with your Claude subscription. See [Agents on your machine](/docs/machines#agents-on-your-machine).
+Then choose the machine under **where** and **Claude Code** under **agent**. Claude Code runs with your Claude subscription. See [Agents on your machine](/docs/machines#agents-on-your-machine).
 
 ## Can I use OpenCode, or another model provider?
 
@@ -30,11 +30,11 @@ Only in a terminal on the machine, with `windlass-runner login` and the agent's 
 
 ## Which keys stay on my machine?
 
-All of them. Your Claude token, your OpenCode API keys and your ChatGPT login for OpenCode stay in a login volume on the machine, and the runner never sends them to the platform. No agent's container has them either: a relay on the machine adds them to the agent's model requests. Commands in a session can still use that relay, and so your quota. See [Agent logins stay out of the container](/docs/machines#agent-logins-stay-out-of-the-container).
+The logins you give the runner stay there. The machine’s login volume holds your Claude, OpenCode and Codex credentials. The runner never sends them to the platform. No agent's container has them either: a relay on the machine adds them to the agent's model requests. Commands in a session can still use that relay, and so your quota. See [Agent logins stay out of the container](/docs/machines#agent-logins-stay-out-of-the-container).
 
 ## Does the agent get my ChatGPT password or sign-in?
 
-No. Your ChatGPT sign-in is never in a sandbox. A Windlass turn using your ChatGPT plan gets an access token after setup. Each token lasts about an hour from issue. Unsandboxed commands and approved local MCP servers can read it, including replacements during that turn. Windlass hides the file from sandboxed commands. See [Sandboxes and security](/docs/security).
+No. Your ChatGPT sign-in is never in a sandbox. With the model relay, a Windlass sandbox gets a placeholder that can make model requests only during that turn. Without the relay, the sandbox gets a short-lived access token after setup. Unsandboxed commands and approved local MCP servers can then read it. See [Sandboxes and security](/docs/security).
 
 ## Does the agent get my GitHub access?
 
@@ -42,7 +42,7 @@ No. The platform does the clone and the push itself, with a token for that one r
 
 ## Does Windlass merge pull requests?
 
-No. Merging always stays yours.
+You merge by default. If you enable **Auto-merge single items** for a repository, an eligible single item can squash-merge after its checks, CI and second review pass on the same commit. Features are handed to you. See [Automatic approvals and merges](/docs/factory#automatic-approvals-and-merges).
 
 ## Can I run agents on a private repository?
 
@@ -54,7 +54,7 @@ No. Put the material in the repository, or paste it into the prompt, up to 20,00
 
 ## What happens when I close the tab?
 
-Nothing stops. The agent keeps working in its sandbox. Open the agent's page again to see where it is. If it asks a question while nobody answers, the question is declined after 10 minutes.
+Nothing stops. The agent keeps working in its sandbox. Open the agent's page again to see where it is. By default an unanswered approval ends a hosted turn after five minutes. On a machine, it is declined after ten. A work item waits for your answer on its page.
 
 ## How do I continue an agent that finished?
 
@@ -66,7 +66,7 @@ A sandbox is paused 10 minutes after its last turn, so it uses no sandbox time. 
 
 ## Is my own machine counted against my sandbox time?
 
-No. Agents on your machines take no sandbox time, no place among your kept sandboxes and none of the sandboxes running at once on this platform, work items included. Only the limits you set with the runner apply.
+No. Agents on your machines take no sandbox time, no place among your kept sandboxes and none of the sandboxes running at once on this platform, work items included. Your runner sets sandbox capacity. Windlass turns on a machine still count toward any daily model-token limit on your account.
 
 ## What does the platform see on my machine?
 
@@ -78,7 +78,7 @@ No. A saved value is never shown again. Keep your own copy.
 
 ## Can I run my own platform?
 
-Yes. The platform runs on one Linux host with Docker Compose. The [self-host guide](https://github.com/WindlassAI/windlass-platform/blob/main/deploy/selfhost/README.md) is written for whoever runs it: how to bring the stack up, route it, back it up and update it. Agents never run on the platform host itself. Pair a machine of yours, or use hosted sandboxes, for them.
+Yes. The platform runs on one Linux host with Docker Compose. The [self-host guide](https://github.com/WindlassAI/windlass-platform/blob/main/deploy/selfhost/README.md) is written for whoever runs it: how to bring the stack up, route it, back it up and update it. In the self-host kit, pair a machine or configure hosted sandboxes for your agents.
 
 ## What license is the code under?
 

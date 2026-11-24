@@ -12,13 +12,13 @@ Choose a default **Sandbox** and **Model**, or **No default**. They save as soon
 
 ### Model providers
 
-Your account can hold one API key each for OpenAI, Anthropic, Google (Gemini), and OpenRouter. The platform checks a key with the provider when you save it and keeps a short list of model IDs. You can check it again, replace it, or remove it.
+In **Settings → Model providers**, choose **Add key…** for OpenAI, Anthropic, Google (Gemini) or OpenRouter. You can save one key per provider. Windlass stores it encrypted, checks it with the provider and shows its last four characters and the number of models found. Use **Check**, **Replace…** or **Remove…** to manage it later.
 
-These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and never sends them into a sandbox.
+Agents still use their existing sign-ins. Saving a provider key does not change the models or credentials used for a turn.
 
 ### MCP servers
 
-Add servers of your own with **Add…**. They give every agent of yours their tools, whatever the repository. Windlass starts them without asking first. Windlass asks before a call of an MCP tool. Tick **Run this server's tools without asking** to have the platform answer for you, in every agent of yours. Each call still shows in the timeline.
+Add servers of your own with **Add…**. They give your Windlass sessions their tools, whatever the repository. Windlass starts them without asking first. Windlass asks before a call of an MCP tool. Tick **Run this server's tools without asking** to have the platform answer for you, in every agent of yours. Each call still shows in the timeline.
 
 > **Careful** With this on, nothing stops to ask if something the agent read talks it into misusing a tool of this server. Such a tool runs outside the command sandbox, with network access.
 
@@ -31,6 +31,10 @@ Account secrets go to MCP servers by default: your own, and a repository's once 
 ### Machines
 
 Where the platform offers machines, this section links to **Your machines**. See [Use your own machine](/docs/machines).
+
+### Linear
+
+Where Linear is available, connect your workspace and map each team to a GitHub repository. **Disconnect…** removes its mappings and stops new filings. Existing items stay. See [From a Linear issue](/docs/factory#from-a-linear-issue).
 
 ### API tokens
 
@@ -52,7 +56,7 @@ A **hosted minute** is one minute of a standard sandbox on the platform (2 vCPU,
 | Hosted at once | 1 | 5 |
 | Sandbox sizes | Small, standard | Small, standard, large |
 | Features over two repositories | No | Yes |
-| Items filed from GitHub | 20 a day | 100 a day |
+| Items filed from GitHub and Linear together | 20 a day | 100 a day |
 | Past the included minutes | Hosted agents stop until the month resets | Monthly Pro bills $0.006 a minute up to your spend cap. Yearly Pro stops at 1,800 minutes a month. |
 
 - **Reset dates.** Free resets at 00:00 UTC on the first of the month. Pro starts when your subscription starts. Monthly Pro resets at the end of your billing period. Yearly Pro resets on each monthly anniversary, on the last day of a shorter month. Settings shows your next reset.
@@ -71,7 +75,7 @@ Without plans, the platform's operator sets your limits, and **Usage** shows the
 
 ## Repository settings
 
-Choose a repository in the rail of **Agents**, then **Saved settings**. Each section has its own address, for example `/repositories/<id>/settings#checks`.
+Choose a repository in the rail of **Agents**, then **Saved settings**. Sections such as **Checks** have a direct address, for example `/repositories/<id>/settings#checks`.
 
 ### Defaults for new agents
 
@@ -79,19 +83,25 @@ The sandbox and model a new agent on this repository starts from. You can still 
 
 Where the platform offers more than one, **Hosted size** sets the CPUs and memory of the repository's hosted sandboxes, for its agents and its work items. Each choice shows its estimated price an hour. Without a saved size, agents start on **Small** and work items on **Standard**. A size chosen when you launch an agent or file an item wins over the saved one. See [Hosted sizes](/docs/start-an-agent#hosted-sizes).
 
+### Work item approvals
+
+**Auto-approve small plans** and **Auto-merge single items** are separate opt-ins. See [Automatic approvals and merges](/docs/factory#automatic-approvals-and-merges).
+
+**Wait for CI on each part** is off by default. With it off, parts can join the feature after their local checks pass, and the Factory watches CI on the assembled branch. Turn it on before the branch opens to require push CI on each part as well. See [Subtasks](/docs/factory#subtasks).
+
 ### Screenshots
 
 **Take screenshots for work items** lets builders and reviewers attach pictures of the app to their work item reports. It is off by default. When it is on, new work item sandboxes include a browser where available.
 
 ### Setup command
 
-A command that runs once when a workspace is created for the repository, before the agent starts: for example, to install dependencies. It runs with network access, outside the agent's command sandbox, for at most 10 minutes. Every repository secret is passed to it.
+A command that runs once when a workspace is created for the repository, before the agent starts: for example, to install dependencies. It runs with network access, outside the agent's command sandbox, for at most 10 minutes. Builder setup can receive repository secrets of either scope. Reviewer setup receives only setup-scoped secrets. On a machine, **Send saved secrets** must also be enabled.
 
 It can be 2,000 characters long. Put a longer one in a script in the repository and run that. A change applies to workspaces created after it: an agent that already has one is not set up again.
 
 ### Checks
 
-Commands that Windlass runs before it calls a turn done, in the agent's own sandbox. It sends the agent back with what fails, three times at most. A pull request the platform opens says which checks ran and how each ended. Without checks, a pull request says that nothing was verified.
+Commands that verify the agent’s changes. Within a turn Windlass can send the agent back three times. For Claude Code, OpenCode and Codex the platform can send it back twice. Codex on the command-sandboxed profile records matching checks as unable to start. A pull request the platform opens says which checks ran and how each ended. Without checks, a pull request says that nothing was verified.
 
 | Limit | Value |
 | --- | --- |
@@ -107,7 +117,7 @@ Agents on the repository have new checks from their next turn.
 
 A prepared sandbox for the repository: the platform runs the setup command in a fresh sandbox, then every check above, all of them, on the default branch. It keeps the result when setup passes and the sandbox could run every check. New agents and work items on the repository then start from it, with setup already done, and say "Started from a validated environment". Until one passes, and while the one there is stale, they start cold, as without one.
 
-There is one environment for each place the repository's agents and work items ran in the last 14 days: this platform, or one of your machines (at most three). The section shows each place with its state:
+There are environments for up to three places where the repository’s sessions ran in the last 14 days, counting hosted and machine places together. The section shows each place with its state:
 
 | State | What it means |
 | --- | --- |
@@ -190,7 +200,7 @@ When less than a fifth of the day's time is left, the session and the composer w
 
 ### Hosted sandboxes you keep
 
-You can keep 5 of the platform's own sandboxes at once, running or paused. Sandboxes on your own machines are not counted: **On your machines** lists them, with the only limits a machine has, the ones its owner set on its runner (`--max-running`, `--max-sandboxes`, and the snapshot and mirror disk limits). With none set there is no cap; the machine's slots and free disk decide. Nothing is removed to make room by itself. To free one, choose **Free…** beside it, then **Free sandbox**. The dialog says what is lost and what is kept: the workspace's files that are not on GitHub go with the sandbox, while the agent, its conversation and, where the platform keeps one, the copy of the agent's memory stay. The agent's next prompt starts a new sandbox. This cannot be undone.
+**Usage** shows your limit for keeping hosted sandboxes, running or paused. The default without plans is five (two on Free, ten on Pro). Sandboxes on your own machines are not counted: **On your machines** lists them, with the only limits a machine has, the ones its owner set on its runner (`--max-running`, `--max-sandboxes`, and the snapshot and mirror disk limits). With none set there is no cap; the machine's slots and free disk decide. Nothing is removed to make room by itself. To free one, choose **Free…** beside it, then **Free sandbox**. The dialog says what is lost and what is kept: the workspace's files that are not on GitHub go with the sandbox, while the agent, its conversation and, where the platform keeps one, the copy of the agent's memory stay. The agent's next prompt starts a new sandbox. This cannot be undone.
 
 A hosted sandbox left behind by an agent that no longer exists takes no place, and the platform removes it within 30 minutes. A work item's second reviewer is listed as **Reviewer of “…”**, and shares its item's place.
 
@@ -207,7 +217,7 @@ Where the platform's sandboxes are billed by the second, as on E2B, the page sho
 
 ## Limits
 
-The platform limits only what costs its owner money or could be abused. Your own machines have no platform limit: their runners decide what they run. These are the defaults, and whoever runs the platform can change them for your account.
+These are the deployment defaults without plans or account overrides. Your runner sets its machine’s sandbox capacity. The account’s daily Windlass model-token limit also applies on machines.
 
 | Limit | Default |
 | --- | --- |
@@ -232,4 +242,4 @@ The platform limits only what costs its owner money or could be abused. Your own
 
 A question during a turn is one the agent asks while its turn runs, for example to approve a command. The turn holds its sandbox while it waits, so after 10 minutes the question is declined and the agent goes on. In a hosted sandbox an unanswered approval ends the turn after 5 minutes instead, and the sandbox pauses until you send a prompt. A work item never asks this way: its questions end the turn and wait for days if need be.
 
-Work items have their own budgets and one limit on items filed from GitHub. See [Factory limits](/docs/factory#limits). On your own machines, your runner sets sandbox limits. Windlass shares the daily model cap shown on Usage. See [Runner reference](/docs/runner#run-options).
+Work items have their own budgets and one shared limit on items filed from GitHub and Linear. See [Factory limits](/docs/factory#limits). On your own machines, your runner sets sandbox limits. Windlass shares the daily model cap shown on Usage. See [Runner reference](/docs/runner#run-options).

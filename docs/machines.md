@@ -215,9 +215,17 @@ backups are unavailable for Claude Code. The repository's saved checks and the s
 for these agents ([Work items](work-items.md#checks-and-steps-for-claude-code-opencode-and-codex)):
 `sandbox/platform-checks.ts` runs the checks in the sandbox between the agent's prompts of a turn, and
 `sandbox/platform-steps.ts` counts tool calls. A personal session's reported tokens are recorded, not
-counted against any limit; a work item counts them only for an agent billed by token (OpenCode). Reviewers and hosted sessions use Windlass. A Quick work item
-filed on the machine can run Claude Code or OpenCode where it is signed in there; see
+counted against any limit; a work item counts them only for an agent billed by token (OpenCode). Hosted sessions use Windlass. Machine reviewers use the builder's agent and profile. Claude Code and OpenCode can build Quick items or approved feature parts. Codex can build Quick items with a machine ChatGPT sign-in. See
 [Work items](work-items.md#the-items-agent).
+
+### Warm spares
+
+The runner at this revision is 0.3.8. With negotiated warm-spare and session-volume support,
+`--spares` defaults to one (0 disables it, 2 is the maximum). The runner keeps a matching sandbox
+ready for an eligible session with its own data volume. It verifies the base on claim. It can use
+the idle slot on a one-slot machine and claims a match before freeing capacity. An environment build
+waits when it would evict a spare. Spares expire after six hours. A runner that negotiates
+`spare-reseed` can request a fresh base recipe after restarting.
 
 ### What the platform keeps
 
@@ -233,7 +241,7 @@ with the machine's key too.
 
 What the server's Docker layer does, on the machine's Docker, and only what its
 protocol names: it makes a session's container, runs the platform's commands in it, starts and stops
-it, and removes it when asked. It runs the base sandbox image and can optionally run the screenshots image. The base, screenshots and optional Claude Code image pins come from the runner build. It touches only containers it labelled for its own machine
+it, and removes it when asked. It runs the base sandbox image and can optionally run the screenshots image. The base, screenshots and optional Claude Code, OpenCode and Codex image pins come from the runner build. It touches only containers it labelled for its own machine
 (`dev.windlass-platform.machine=<machine id>`) and keeps Windlass data in
 `wlp-machine-<machine id>`, which is Windlass's data directory for the machine's sessions, as the user's
 volume is on Docker. A Windlass session in a new `docker-hardened` sandbox gets a volume of its own
@@ -387,9 +395,9 @@ container with runners 0.3.0 and 0.3.1. The platform, for its part, cannot reach
 machine except through its runner, and does not control it: whoever runs the machine can change what
 runs there and what it reports. The launch form, the profiles and a pull request's section say so.
 
-### No limit unless its owner sets one
+### Sandbox and turn limits
 
-The platform counts nothing of a machine: its sandboxes take no
+A machine’s Windlass turns share any account daily model-token cap. Its sandboxes take no
 sandbox time and no place among the kept sandboxes, have no price, and its turns are not among the
 user's agents working at once: one rule, `hostedLimitsApply` (`server/src/usage.ts`), holds a session
 to the daily time, the kept sandboxes and the running agents, and it holds only a hosted one.
@@ -571,7 +579,7 @@ run: "It runs in this session's container on your machine "nas", with its networ
 
 ### The pairing limits
 
-A user can have three machines paired at once (`MAX_MACHINES`): each machine
+A user can pair three machines by default or on Free, and ten on Pro: each machine
 that is connected keeps an actor awake on the platform, and this is what bounds that cost for one
 account. A user can look up five codes in ten minutes. And the platform's routes see no client address
 they could trust, so the pairings that are started are limited by the machine key that starts them,

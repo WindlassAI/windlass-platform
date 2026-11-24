@@ -4,14 +4,14 @@ How the Factory carries a work item from the task to a pull request, and what a 
 users see and do is in the in-app docs ([The Factory](../web/src/docs/content/factory.md)); this file is the
 implementation and the operator's settings.
 
-A work item is a task on one repository of the user's GitHub connection that the platform carries from the
+A work item is a task on a repository of the user's GitHub connection (two for a cross-repo feature) that the platform carries from the
 start to a pull request by itself: a title, a description, and acceptance criteria, which are for the
 person to check and which the verdict lists. Each item has an agent session of its own, listed with the
 user's other agents, that only the item's steps send prompts to ("This agent works for a work item, whose
 steps send its prompts. Answer the item, or send its work back with a note.") and that cannot be deleted
 while the item has it; the item is cancelled instead, and the agent and what it did stay readable. An
 item is filed from the Factory page, on its repository's Work view ("New work item…"), from a GitHub issue
-(where the deployment has a webhook) or through the API below, and has a page
+(where the deployment has a webhook), from a mapped Linear issue or through the API below, and has a page
 of its own (`/items/<id>`) with its step, its log, its verdicts and its cost. The home screen lists, under
 "Needs you", every item that asks its person something.
 
@@ -49,10 +49,19 @@ when they are unfolded, each row with the day it was filed; Usage lists the item
 says how many older ended ones there are. An item's page reloads when the feed carries it with a newer
 revision, so an old ended item's page is read again only when it is opened or the feed reconnects.
 
+### Linear intake
+
+The Linear OAuth callback connects a workspace to the account. Its team mappings select one GitHub
+repository per team. The signed issue webhook and a fresh read of the issue establish whether it
+gained the `windlass` label or was assigned to the app user. Human-authored issues arrive as drafts.
+Issue intake deduplicates deliveries and shares the daily filing limit with GitHub. The platform posts
+the PR link and the handover or terminal outcome, and requests the team's completed state only on
+merge. A failed write is logged. Disconnect removes mappings and stops future intake; filed items stay.
+See [configuration.md](configuration.md#linear).
+
 ## Where an item runs
 
-An item runs on a hosted sandbox by default. With `WLP_MACHINES=1`, it can run on a machine paired
-to the same account. Send `"place": {"kind": "machine", "machineId": "…"}` with the item. Its session
+For issue intake and the Factory composer, **Where work items run** takes the repository's setting, then the account's, then Hosted. A machine choice can save its agent, model, effort, profile and whether to wait or fall back to hosted Windlass. Any machine takes the first compatible online machine with room. Plan first uses Windlass to plan and can pass the saved machine agent and its model and effort to parts. A caller can also choose the place explicitly. With `WLP_MACHINES=1`, send `"place": {"kind": "machine", "machineId": "…"}` with the item. Its session
 uses the requested `profile` if the machine offers it, otherwise the first available profile in its
 last report. The runner must have reported an available profile at least once. When a turn is due
 and the machine is offline or does not answer, the item waits without spending its budget and resumes
@@ -62,17 +71,17 @@ or hand over the commit the run already pushed.
 ## How an item runs
 
 - **The sequence is fixed** (`server/src/factory/blueprint.ts`). Which step comes next is decided from what
-  the platform observed, never from what the agent says. The agent implements the task in one turn. The
+  the platform observed, never from what the agent says. A single item starts with a builder turn. The
   turn's own verification, the user's checks for the repository ([A repository's checks](github-and-repositories.md#a-repositorys-checks)), decides what
-  follows: a check that failed sends the agent back to fix it, at most twice in a run. Then the platform
-  pushes the item's branch and opens the pull request; a push that does not get through for a network
-  error is tried three times, and one GitHub refuses is a question with GitHub's reason. It waits for CI with
-  the sandbox paused, reading it every minute, or every three minutes while the user has more than ten
-  items open; no check run and no status ten minutes after the push means the repository has no CI. It
-  gives the agent CI's failing checks and the end of their logs, at most twice in a run. A pull request
-  that GitHub says conflicts with its base gets one turn to merge the base. Then the item is handed to its
-  person with a verdict and is in review, and the platform reads the pull request every ten minutes until
-  it is merged (the item is done) or closed (cancelled).
+  follows. Failing checks or CI send the builder back with the evidence. A repeated failure after a fix
+  asks the owner. The platform pushes the item's branch and opens the PR, retrying a network failure
+  up to three attempts. A conflicting base can send the builder to merge it. CI waits with the sandbox
+  paused. Without webhooks the platform polls every minute (three with more than ten open items);
+  with webhooks the fallback intervals are five and ten minutes. A queued workflow can wait indefinitely.
+  GitHub reporting a workflow in progress for over six hours, or CI still unreadable 90 minutes after
+  the push, can raise a question. With no CI after ten minutes, the reader checks the last three
+  default-branch commits for CI before treating the push as having none. In review the PR is polled
+  every ten minutes (30 with webhooks). A merge ends the item as done, a close as cancelled.
 - **The handoff on GitHub.** When an item is handed over, the platform asks the person for a review of
   the pull request, as the GitHub login of their connection, unless they are asked already, and posts the
   verdict in one comment: the verdict at the pushed commit, its sentence, and the acceptance criteria
@@ -86,25 +95,25 @@ or hand over the commit the run already pushed.
   item is in review: nothing on GitHub holds the handoff back. Both go through the app's installation,
   with a token for pull requests: write and metadata: read on that one repository, which the app's
   "Pull requests: read and write" covers.
-- **The platform never merges.** Nothing in the sequence merges a pull request, and no verdict does: the
-  app never approves, merges or dismisses a review. The person merges at GitHub, or sends the work back
-  from the item's page with a note, which starts a new run.
+- **Merging.** The owner merges by default. With the repository's `autoMergeSingles` enabled, an eligible
+  single item can squash-merge after a passing verdict, passing CI and trusted approval with no blocking
+  findings on the same head. The platform rechecks the head and base before merging. Features, parts,
+  third-party input, foreign pushes and pending feedback require handover. If CI fails on a new push to a
+  single item already in review, the owner can hand that head back to the builder or dismiss the question.
 - **Turns are unattended.** An item's turn has nobody to ask: a tool call that would ask is refused at once,
-  and the model is told so. A builder (Windlass, Claude Code or OpenCode) can instead ask the item's person with `ask_person`, which
-  is answered at once, makes the item's question when the turn ends (`agent_ask`, at most 3 a run, 1 a
+  and the model is told so. A builder (Windlass, Claude Code, OpenCode or Codex) can instead ask the item's person with `ask_person`, which
+  is answered at once, makes the item's question when the turn ends (`agent_ask`, at most 1 a
   turn), and resumes the step with the person's answer ([The platform's tools for every agent](#the-platforms-tools-for-every-agent)). On a machine using `docker-hardened`, Windlass runs shell commands unasked
-  inside the runner's container. There is no per-command sandbox. Those commands can reach the machine's
-  local network and read the session's access token. A builder turn has a backstop of 400 steps and a reviewer turn has 40. The agent is not given `publish`, since the
+  inside the runner's container. There is no per-command sandbox. The runner's egress policy controls their network access. With the model relay they see a turn placeholder. A builder turn has a backstop of 400 steps and a reviewer turn has 40. The agent is not given `publish`, since the
   platform opens an item's pull request itself; it is given `report`, to file what it did, in a title and a
   description that the platform puts on the pull request, and what it is unsure of, and `push` and
   `fetch_base` as a person's agent is ([The agent's own tools](github-and-repositories.md#the-agents-own-tools)): it may push the item's branch during its
   turn, and the item's publish step pushes whatever it did not. A turn in which the agent pushed counts as
   one that changed something.
-- **Every stop is a question.** The rounds above used up, the same failure again after a fix, a turn that
-  changed nothing, a push GitHub refused, CI still running 90 minutes after the push, a step whose turn was
+- **When the item needs its owner, it asks.** The same failure again after a fix, a turn that
+  changed nothing, a push GitHub refused, unreachable CI, a step whose turn was
   cut off three times (by a deploy or a restart), or the item's budget used up: the item waits for its
-  person, for days if need be, with the reason and the choices that fit it ("Raise the limit and go on",
-  "Retry from scratch", "Hand it over as it is" once there is a pull request, "Give up").
+  person, for days if need be. A budget question offers more of the exhausted allowance. Where handover is available, “Hand it over as it is” keeps the work. A single item that has yet to push can push its workspace first.
 - **The verdict** is what the work at the pushed commit rests on, made from what the session's gate
   recorded, the observations on the changes ([What a pull request shows was verified](github-and-repositories.md#what-a-pull-request-shows-was-verified)) and CI at that
   commit, never from the agent's words (`server/src/factory/verdict.ts`). CI decides; the user's checks
@@ -163,9 +172,8 @@ the filing names it ([docs/codex.md](codex.md#work-items)). It starts every turn
 asks (Claude Code `bypassPermissions`, OpenCode `build`, Codex `workspace-write` or `agent-full-access`), and the ACP
 harness refuses the turn if that mode is not offered (`RunTurnInput.unattended`). A permission the
 agent still asks for is allowed once, except Codex's on `docker-windlass-sandbox`, which is refused and
-ends the step (`turn_ended.escaped`). The reviewer stays Windlass and runs only hosted, so these
-items have none. The turn gets the same item text and platform notes (setup, fresh workspace,
-snapshot), and of the platform's tools `report`, `ask_person`, `push` and `fetch_base`, over MCP
+ends the step (`turn_ended.escaped`). The second reviewer uses the same agent, model, profile and place in its own session. The turn gets the same item text and platform notes (setup, fresh workspace,
+snapshot), and of the platform's tools `report`, `ask_person`, `request_secret`, `push` and `fetch_base`, over MCP
 ([The platform's tools for every agent](#the-platforms-tools-for-every-agent)): it may push its branch
 mid-turn, and the item's publish step pushes what is left, under the platform's lease, as for a Windlass
 builder. The platform runs the repository's saved checks and
@@ -264,12 +272,14 @@ in `agent-publish.ts`), how a call runs (`runPlatformTool`), and where each may 
   turn lacks. Each image gives a call of the platform's tools up to an hour (Windlass's limit for a host
   call), since a publish waits for the person: Claude Code's wrapper sets `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`,
   OpenCode's config `experimental.mcp_timeout`, and `wlp-codex-app-server` the server's `tool_timeout_sec`.
-  Claude Code's managed policy allows the five tools by name, so Claude does not ask about them before the
+  Claude Code's managed policy allows the platform tools by name, so Claude does not ask about them before the
   platform does.
 
-Which turn is given which: a builder's item turn `report`, `ask_person`, `push` and `fetch_base`; a
-person's session with a repository `publish`, `push` and `fetch_base`; never the planner, the summary or
-the reviewer, whose `file_plan` and `file_review` stay host tools of Windlass's. A call is answered only
+A builder gets `report`, `ask_person`, `push` and `fetch_base`. A person's session on a connected
+repository gets `publish`, `push` and `fetch_base`. Both can get `request_secret`: supplying a value
+takes a separate owner action. A summary can file a report. A planner files a plan and the critic
+files its decision through host tools. A reviewer gets `file_review`, through a host tool on Windlass
+or once per turn over MCP on a machine agent. A call is answered only
 while the turn's prompt runs; one before it or after it reaches no handler. Over MCP one turn may push
 at most 5 times and fetch the base at most 3 times (`MCP_LIMITS`); a call past that reaches no handler,
 the agent is told plainly, and the timeline says so. Every push, fetch and publish that came over MCP
@@ -286,9 +296,10 @@ So each tool served this way has to be bounded when such a process calls it:
 
 - `report` files text for the person, which is a claim and never the verdict: whether the work is ready is
   decided from the checks and CI. The worst is a wrong report, which the agent's own later call replaces.
-- `ask_person` puts one question to the person, with Windlass's limits (one a turn, 3 a run, the same
-  redaction and hidden-character stripping). The worst is one wrong question a run's limit already counts.
-  The person's answer is the next turn's message and stays trusted (`factory/untrusted.ts`).
+- `ask_person` puts one question per turn to the person, with the same redaction and hidden-character
+  stripping. The person's answer goes to the next turn. The budget and turn backstop bound the run.
+- `request_secret` asks for a missing variable by name. The person can save the value for the next turn
+  or continue without it. The builder cannot request another secret once the run has had three questions.
 - `push` commits the workspace and pushes it to the session's own branch, which the platform names. A
   call that names another branch is refused, however it spells it, and nothing else in a call is read but
   the commit message: no ref, force, lease or remote. The token is the platform's, minted for the one
@@ -315,8 +326,8 @@ hardened", where its commands can write on the engine's connection and so call i
 is. `server/src/github/git.ts` is what makes a forged push harmless, and `scripts/github-check.ts`
 ("a process of the sandbox that steers the workspace and calls push") checks it with real Git.
 
-`file_plan` and `file_review` stay host tools (`TOOL_REACH`): a rogue plan or review would reach the
-owner's approval or a pull request's verdict as the agent's.
+Over MCP, any process in the sandbox might have filed the review. Its findings can send work back to
+the builder, but its approval cannot authorize a merge.
 
 ## Feature orchestration
 
@@ -326,34 +337,40 @@ and ordinary GitHub issue filings start with a plan for owner approval. Select *
 command with `quick`. An issue labelled `bug` always runs Quick.
 
 The planner reads the repository and proposes two to six subtasks with owned paths, dependencies,
-acceptance checks and individual caps. The feature starts with three times the single-item allowance
-in each dimension. Before each planner turn, the factory checks a cumulative planning allowance of
-25% of one Quick item. Switching to one implementer keeps the planning spend on the ledger and
-adds one Quick allowance for implementation, within the feature cap. Planning and children must leave four turns for the summary, review and a retry of each.
-One sixth of the single-item tokens, active seconds and hosted seconds is also reserved, rounded up.
-At the default limits that is 1M tokens, 40 active minutes and 20 hosted minutes. A feature budget
-raise specifies new limits and can add at most one single-item allowance in each dimension per raise. Each subtask needs two turns for implementation and verification, and at least 10% of the single-item
-tokens, active time and hosted time, with minimums of 1,000 tokens and 60 seconds of each time allowance.
-Each dimension is capped at the single-item limit. The approval question shows
+acceptance checks and token budgets. Planning, summary and review share one item's own allowance.
+Approval adds each part's budget to the feature's. A part gets between a tenth of one item's tokens
+(at least 1,000) and one full item allowance. Switching to one implementer keeps the planning spend.
+The approval question shows
 the proposed split. A client can answer plan questions or edit the split using `edit_plan` with the
 displayed version. `approve_plan` requires that same version and answered questions. On
 `item_conflict`, fetch the item again. A single-item suggestion needs an explicit choice.
 
-Approval requires saved checks and evidence of push CI on the planned Windlass branches. It opens
-a draft PR on `windlass/feature-<item-id>`. When GitHub refuses drafts, it opens an ordinary PR
-whose description marks the feature as in progress. Each child starts from that branch and
-has its own session. The Factory dispatches up to three children whose dependencies have integrated and whose
-owned paths are disjoint within their repository. A missing or empty path list runs alone. Each child reserves
-its planned tokens and a proportional share of hosted time and goes through the account's normal place queue.
-Completion releases the unused reservation. After local checks and push CI pass, the parent serializes updates
-to the feature branch by fast-forward or merge commit. A conflict sends the child to merge the latest feature
-branch and pass both gates again. Summary and whole-feature review wait for every child. Repositories using only pull-request workflows need a push or
-external check for child commits. The preflight reads enabled Actions workflows and their branch filters. It also recognizes successful
-external checks or statuses on a prior standalone Windlass push. A missing child check offers a wait
-for late CI. Stopping there ends orchestration and offers handover of the last integrated head. Child questions appear
-in Needs you with the feature name. A stopped child can prompt up to two revised plans, each requiring
-approval. Cancel on the parent stops its children and keeps their branches. The final summary and
-whole-feature review go on the one feature PR. The owner merges it.
+Approval requires saved checks and evidence of push CI on the feature branch. The platform opens
+a draft PR on `windlass/feature-<item-id>` (an ordinary PR marked in progress if this single
+repository refuses drafts). It snapshots the repository's `waitForCiOnEachPart` setting when the
+branch opens. With the default off, parts join after local checks pass. CI on each new feature head
+supersedes the previous result. A failure queues a fix part with the logs and diff; a repeated failure
+asks the owner. Handover waits for passing CI on the assembled head. With the setting on,
+approval also requires push CI on the planned part branches and each part waits for that evidence.
+
+Up to three parts with integrated dependencies and disjoint owned paths can run at once. A part
+without owned paths runs alone. Each has its own branch, placement and reserved budget. The
+builder receives its brief, the original feature body (including issue text) and predecessor reports.
+Integration is serialized by fast-forward or merge commit. A conflicting part updates from the feature
+and goes through its gates again. Updating a single-repository feature from its target between
+integrations can queue a separate part to resolve conflicts. After two failed attempts the owner
+chooses whether to check the branch again or give up.
+
+A note from the owner steers a running builder when possible, or goes with its next builder turn.
+The item records the note and the reviewer receives it as an owner decision. A stopped part can trigger
+a revised plan. Unchanged questions keep their approved answers; new questions and scope changes
+need answers. Completed parts stay done. Cancelling the feature cancels its children.
+
+A repository can enable `autoApprovePlans` for small plans. The independent critic must approve,
+the usual preflight must pass, and parts needing explicit confirmation still go to the owner.
+For a two-repository feature each repository must opt in. Each gets its own draft PR and CI policy.
+The combined Actions run checks both pinned heads and records the approved merge order. See
+[Cross-repo features](../web/src/docs/content/factory.md#cross-repo-features).
 
 The user action `setMachineDetails` accepts `machineId`, `whenToUse` and `tags`. The planner sees
 this inventory and the available machine capacity. A subtask needs a feasible, allowed placement at approval.
@@ -397,7 +414,7 @@ asking.") unless it names every subtask still to run whose agent works without a
 agent is never approved without that confirmation; `approvalText` names each subtask's agent and says so.
 The web card lists them under **Agents that work without asking** and keeps **Approve** disabled until
 each is ticked. A re-plan's `file_plan` copies each approved subtask's agent, by key, over the
-planner's; only `edit_plan` changes it.
+planner's. After approval, `set_subtask_agent` can change an unstarted part's agent, model and effort while the feature dispatches subtasks. Placement is checked again.
 
 ```sh
 cd server && npx tsx ../scripts/orchestrator-check.ts   # mixed agents through approval and child creation, refusals, routing, re-plans
@@ -418,6 +435,7 @@ prompt stays either way.
 | Source | Set by | Words |
 |---|---|---|
 | An issue whose author is not the sender | `makeItem` (`FactoryItem.untrusted`), carried by `firstPlan` and the refused-turn resume | `issue #42 by @someone` |
+| A Linear issue written by another person | `linearSources`, inherited by parts | `Linear issue ENG-123 by …` |
 | CI logs | the `ci_fix` plan | `CI logs of abc1234` |
 | G4 feedback with any writer other than the item's person (`batch.others`) | `takeFeedback` | `GitHub feedback from @a, @b` |
 | The second reviewer's findings | `reviewFixPlan`, and the points riding along with feedback (`personFirst`) | `the second reviewer's findings on abc1234` |
@@ -479,19 +497,20 @@ cd server && npx tsx ../scripts/mcp-check.ts                                    
 
 ## The second review
 
-With `WLP_FACTORY_REVIEWER=on`, each new item on a hosted profile that isolates
-individual commands gets a second session. After CI, the reviewer runs setup on
-the pinned base in its own sandbox and checks out the exact pushed commit detached.
-It reads the task, the platform's evidence and the builder's filed claims. The
-builder's conversation stays in the builder's session. Setup receives only
-setup-scoped repository secrets. Reviewer commands run without network, MCP
-servers or saved secrets. Its sole platform tool, `file_review`, files findings,
-command evidence, excerpts and screenshots. Both sessions count toward the item budget.
+With `WLP_FACTORY_REVIEWER=on`, top-level items get a separate reviewer session using the
+builder's place, profile, agent and model. Feature parts are reviewed together on the feature PR.
+The reviewer sets up on the pinned base and inspects the exact pushed head. Setup receives the
+permitted setup secrets. Review commands follow the reviewer's profile. It reads the task,
+evidence, builder's report and owner's decisions; both sessions count toward the item's budget.
 
-The review is advisory. Every recommendation hands the item to its owner, with a
-summary in the pull request comment and the full filing on the item's page. A
-repository’s `screenshots` setting defaults to false. Enable it to give new work item sandboxes a browser. Images require configured storage. The reviewer defaults
-to off for new items unless the deployment enables it.
+A single item's blocking findings go back to its builder, then through checks, CI and review again.
+A request for a person becomes a question. A feature's review is advisory. When there is no
+reviewer, the item hands over with the reason. Auto-merge requires a Windlass host-tool approval
+from a command-sandboxed reviewer. A review filed over MCP cannot authorize it.
+
+On an open item or feature PR, an owner or writer can comment `/windlass review` on its own to
+request a review of the current head, once per head and within budget. It posts a comment-only
+GitHub review, with inline findings where possible, and leaves the item's step unchanged.
 
 ## Limits
 
@@ -502,7 +521,7 @@ setting that is not a whole number in its range stops the server when it starts.
 |---|---|---|
 | A user's hosted sandboxes at work at once, their own agents and their items' together | `WLP_FACTORY_HOSTED_RUNNING` | 3 (at most 100) |
 | A new item's budget: cost-weighted tokens, hosted sandbox seconds | `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | 2,000,000 tokens, 7200 (2 hours) |
-| Items a user files from GitHub a UTC day, drafts among them | `WLP_FACTORY_GITHUB_ITEMS_PER_DAY` | 20 |
+| Items a user files from GitHub and Linear together in a UTC day, drafts among them | `WLP_FACTORY_GITHUB_ITEMS_PER_DAY` | 20 |
 
 An item's hosted sandbox counts against the user's daily allowance and kept sandboxes as any other ("Usage
 and limits"), whose defaults are sized for a few agents by hand, not for many items a day.
@@ -538,7 +557,7 @@ routes answer 404, `not_found` ("There is no such route."), whatever the token.
 ## Screenshots on work items
 
 Screenshots are off by default. Enable **Take screenshots for work items** in the repository’s
-Settings tab. New builder and reviewer sandboxes then use `windlass-platform-sandbox:shots`
+settings, when the deployment allows screenshots. New builder and reviewer sandboxes then use `windlass-platform-sandbox:shots`
 on Docker or `windlass-platform-sandbox-shots` on E2B. The shots image extends the base with
 Chrome headless shell, Playwright core, fonts and `wlp-shot`. Personal agents and items with
 screenshots off use `windlass-platform-sandbox:latest` or the `windlass-platform-sandbox` template.

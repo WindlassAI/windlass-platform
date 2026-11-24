@@ -27,6 +27,7 @@ browser ── WebSocket ──▶ Rivet endpoint (:6420)
                            │                                         (encrypted), the index of machines, the
                            │                                         index of work items, the turn queue and
                            │                                         the API tokens (digests only)
+                           ├─ linearWorkspace   [workspaceId]        Linear team ownership and issue delivery routing
                            ├─ machine           [uid, machineId]     one paired machine: its public key, its
                            │                                         runner's last report, its control socket
                            ├─ machinePairing    [pairingId]          one pairing attempt, for ten minutes
@@ -59,7 +60,7 @@ session.
 When a tool call needs approval (in the Windlass-sandbox profile: a
 command that asks for the network, or to write outside the workspace), Windlass asks, the session's status
 becomes `waiting`, and the browser shows the question with its choices: allow once, allow for the session, or
-decline with a note for the agent. A question nobody answers in ten minutes is declined by the platform. A
+decline with a note for the agent. By default an unanswered question is declined after ten minutes. An unanswered hosted approval ends the turn and pauses its sandbox after five minutes. A
 message sent while a turn runs steers it: the model reads it at its next step. One running tool call can be
 stopped without ending the turn.
 
@@ -117,7 +118,7 @@ actor and with a one-use ticket, and every operation on the sandbox goes over th
 
 ### When a server stops
 
-On SIGTERM (a deploy) RivetKit puts every actor to sleep and exits after 20
+With turn resumption enabled, eligible turns pause and resume after a restart or machine outage. Durable runner conversations can reconnect to a live machine turn. See [configuration.md](configuration.md#sessions-and-sandboxes). For a turn that cannot resume, on SIGTERM (a deploy) RivetKit puts every actor to sleep and exits after 20
 seconds, done or not, so a session's sleep fits in 16: a turn that runs is stopped and closed in the
 timeline (at most 10 seconds), the timeline and the session are saved, the sandbox is suspended (at most 4),
 then the idle check is set and the user's list told (at most 2), and it is saved again. The waits and the
@@ -179,24 +180,15 @@ were (medians 6.2 s against 5.9 s cold for Claude Code, 4.2 s against 4.8 s for 
 a pull is not the cold one; the cold one is after a reboot or memory pressure, which a warm-up at pull time
 does not reach.
 
-**No pool of spare sandboxes.** Measured with `docker stats`, an idle sandbox (the container's init and
-`sleep`) uses 0.7 MiB, whatever its agent; with the agent's process started and idle after `session/new`,
-Windlass uses 41 MiB, Codex 86 MiB, OpenCode 288 MiB and Claude Code 388 MiB, and the relay 17 MiB. So memory
-does not decide it: on 12 GB with about 7 GB available, spares at 0.7 MiB are free. What decides it is what
-a spare would save and what it cannot carry. It saves the create and `git init`, 0.5 to 0.8 s of a start of
-2 to 6 s before the model's first token. And most of what a sandbox is made with is fixed at `docker run`:
-its own data volume and Git mirror mount, the user, session and profile labels, the egress network and its
-variables, the size's limits, a machine agent's credential relay. A spare would have to be one per user,
-profile, agent and size, or the create would have to move those into later steps. Neither is worth half a
-second. The larger parts are paid on every turn: the agent's start (0.7 to 3.5 s) and, for Windlass, the
-relay's forwarder (1.1 to 1.5 s), which today opens after the leftover sweep and could open beside it.
-Keeping an agent's process alive between turns would save its start, at 41 to 388 MiB per idle session.
+**Ready sandboxes on machines.** A runner can keep an already cloned and set-up sandbox for the
+next matching session, including on a one-slot machine. It checks the base before claiming the spare.
+The agent process still starts for its turn. See [Warm spares](machines.md#warm-spares).
 
 ### Idle sandboxes
 
 A sandbox costs money while it runs, whether or not a browser is open. Ten minutes after a
 session's last turn ended (`WLP_IDLE_SUSPEND_MS`) the session suspends its sandbox, and after seven days
-without use (`WLP_IDLE_DESTROY_MS`) it removes it with its files. The timeline stays, and gets one line for
+without use (`WLP_IDLE_DESTROY_MS`) it removes a hosted sandbox with its files. Paired machines keep their stopped session sandboxes until removal or pruning. The timeline stays, and gets one line for
 each ("Suspended the sandbox after 10 minutes without use; the next prompt resumes it."). The actor's own
 durable schedule (`c.schedule`) does it, so it happens while the actor sleeps and after a restart: the
 engine wakes the actor when the time comes. A turn that runs, or waits on the user's answer, is never cut off;
@@ -218,7 +210,7 @@ actor, encrypted ([Sign-ins](#sign-ins) below). The platform's own token is an H
 It is in the user's actor and nowhere else, and that actor is the one place
 that asks Windlass for an access token: `windlass login token --json --valid-for 20m` prints a token of the
 user's that is good for at least twenty minutes more, and refreshes the sign-in first when the saved token
-has less left. A turn is handed that token in a file in its sandbox
+has less left. With the [model relay](model-relay.md), the token goes to the relay and the sandbox receives a turn-scoped placeholder. Without the relay, the turn receives the token in a sandbox file
 (`access-token-<sandbox id>.json`, mode 0600, in Docker's private `/dev/shm` tmpfs or the E2B guest's Windlass data directory), and
 Windlass is started with `WINDLASS_ACCESS_TOKEN_FILE` naming it. The file is removed when the turn ends. Demo
 turns are handed nothing. When the sign-in is gone, has expired or its token is rejected, the turn ends by
@@ -234,7 +226,7 @@ inside Windlass:
 | Duration | Value | What follows from it |
 |---|---|---|
 | Time a token has left when it is handed to a turn or written as a replacement | at least 20 minutes | it is what Windlass is asked for |
-| Time the token in a turn's file has left when the file is replaced | 10 minutes | a turn's file is not replaced in its first ten minutes, and a replacement that fails has ten minutes to be tried again |
+| Time left before a turn’s token is replaced (at the relay or in the sandbox file) | 10 minutes | a turn's file is not replaced in its first ten minutes, and a replacement that fails has ten minutes to be tried again |
 | Time a fetched token has left when it stops serving the user's other sessions | 20 minutes | a new token is shared for its first forty minutes |
 
 When a file is due, the token in it has less than what is asked for, so asking gives another token whenever

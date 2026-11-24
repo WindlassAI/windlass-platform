@@ -15,7 +15,7 @@ and no page shows anything about billing. A self-hosted deployment needs none of
 | Kept hosted sandboxes (`maxKept`) | 2 | 10 |
 | Sizes | small, standard | small, standard, large |
 | Features over two repositories | no | yes |
-| Items filed from GitHub a day | 20 | 100 |
+| Items filed from GitHub and Linear together per UTC day | 20 | 100 |
 | Past the included minutes | hard stop | Monthly Pro bills $0.006 a minute up to the spend cap (default and maximum $20 per period). Yearly Pro stops at 1,800 minutes a month. |
 
 The plans live in `server/src/billing/plans.ts`. Team and Enterprise are not built. They would be more `PlanId`s, with their

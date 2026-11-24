@@ -42,7 +42,9 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 
 | Variable | Effect |
 |---|---|
+| `WLP_SECRET_KEYS`, `WLP_SIGNIN_KEYS` | Ordered signing and sealing key rings for rotation. The first entry writes new values and the remaining entries verify or open existing values. Each ring overrides its single-key setting. |
 | `WLP_SIGNIN_KEY` | what the key that encrypts sign-ins and secrets is derived from; at least 32 characters, the same on every server. Unset: derived from `WLP_SECRET`. Setting it lets `WLP_SECRET` change without every user signing in again |
+| `WLP_OPENAI_BASE_URL`, `WLP_ANTHROPIC_BASE_URL`, `WLP_GOOGLE_BASE_URL`, `WLP_OPENROUTER_BASE_URL` | Override the provider endpoints used to check account model keys. Defaults are the providers’ own API origins. Agents use their existing sign-ins. |
 | `WLP_WINDLASS_BIN` | a Windlass executable on the server, for the sign-in and model-list commands (a path, or a name on `PATH`; default `windlass`). `server/Dockerfile` puts one at `/usr/local/bin/windlass` and sets this |
 | `WLP_SIGNIN_RUNNER` | `local` or `docker`; default: `local` when `WLP_WINDLASS_BIN` is set, else `docker` with Docker sandboxes, else `local` |
 | `WLP_SIGNIN_TMPDIR` | where the local runner makes its private directories (default `/dev/shm`, else the system's temporary directory) |
@@ -56,6 +58,8 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | `WLP_ALLOW_DOCKER_HOSTED` | `1`: allow `WLP_SANDBOX=docker` with a remote engine. Without it the server refuses, since hosted agents would run on the server host |
 | `WLP_SANDBOX_IMAGE` | base image for the Docker layer, or the private output tag for either variant of `sandbox/build.sh`. By default the build publishes `windlass-platform-sandbox:latest` for base or `windlass-platform-sandbox:shots` for shots |
 | `WLP_SANDBOX_SHOTS_IMAGE` | screenshots image for the Docker layer and local runner builds (default `windlass-platform-sandbox:shots`) |
+| `WLP_TURN_RESUME` | `1` enables pausing and resuming eligible turns across restarts and machine outages. Default off. |
+| `WLP_TURN_RESUME_FLOOR_MS`, `WLP_TURN_RESUME_DELAY_MS`, `WLP_TURN_HEARTBEAT_MS`, `WLP_MACHINE_AWAY_ASK_MS` | Minimum remaining time on resume (five minutes, bounded by the turn timeout), earliest resume after a graceful pause (three seconds), heartbeat interval (one minute), and wait before an item asks about an absent machine (six hours). |
 | `WLP_TURN_TIMEOUT_MS` | how long one turn may run (default 45 minutes). The durations that keep its access token fresh are constants and hold for a turn of any length |
 | `WLP_ACP_IDLE_MINUTES` | how long a Claude Code, OpenCode or Codex agent may send nothing, with no call of its own running and no question waiting for a person, before the platform ends its turn (default 10). The turn ends sooner, as a usage limit, when OpenCode logs that it gave up on the provider's rate limit |
 | `WLP_HOSTED_QUESTION_TIMEOUT_MS` | in a hosted sandbox, how long an approval waits before the platform ends the turn and pauses the sandbox at once (default 5 minutes; never more than `WLP_QUESTION_TIMEOUT_MS`). On a machine a question waits `WLP_QUESTION_TIMEOUT_MS`, is declined, and the turn goes on |
@@ -107,13 +111,14 @@ Hobby plan. [operating.md, "E2B"](operating.md#e2b) explains each.
 | `E2B_API_KEY` | the E2B account's API key. Required: without it the server does not start |
 | `WLP_E2B_TEMPLATE`, `WLP_E2B_SHOTS_TEMPLATE` | the small size's templates (defaults `windlass-platform-sandbox` and `windlass-platform-sandbox-shots`), for the build scripts and the server |
 | `WLP_E2B_TEMPLATE_STANDARD`, `WLP_E2B_TEMPLATE_LARGE`, `WLP_E2B_SHOTS_TEMPLATE_STANDARD`, `WLP_E2B_SHOTS_TEMPLATE_LARGE` | the other sizes' templates (defaults `windlass-platform-sandbox-standard`, `-large`, and the same with `-shots`) |
+| `WLP_E2B_NETWORK`, `WLP_E2B_NETWORK_ALLOW` | E2B egress mode (`open` by default, `restricted` or `none`). In restricted mode the allow list accepts comma-separated exact hosts and presets. See [E2B](operating.md#e2b). |
 | `WLP_E2B_SIZES` | the hosted sizes whose templates are built, comma-separated: `small`, `standard`, `large` (default `small`; small is always offered). Work items default to standard |
-| `WLP_E2B_SIZE` | `sandbox/e2b/build.sh` only: which size to build (default `small`): 1 vCPU and 1 GiB, 2 and 4 GiB, 4 and 8 GiB. None is beyond the Hobby plan's 8 vCPU and 8 GiB a sandbox |
+| `WLP_E2B_SIZE` | `sandbox/e2b/build.sh` only: which size to build (default `small`): 1 vCPU and 1 GiB, 2 and 4 GiB, 4 and 8 GiB. |
 | `WLP_E2B_DEPLOYMENT` | marks every sandbox of this deployment in its metadata (default `default`); different for another deployment that shares the E2B account |
-| `WLP_E2B_MAX_RUNNING` | how many of the deployment's sandboxes may run at the same time (default 3). On the Hobby plan the account runs at most 10 at once, for all its deployments together: keep the sum of every deployment's cap under 10 |
+| `WLP_E2B_MAX_RUNNING` | how many of the deployment's sandboxes may run at the same time (default 3); allow for other deployments sharing the account’s provider quota |
 | `WLP_E2B_IDLE_TIMEOUT_MS` | a sandbox's own timeout while no turn runs in it (default two minutes) |
 | `WLP_E2B_TURN_LEASE_MS` | a sandbox's own timeout while a turn runs, renewed every third of it (default three minutes) |
-| `WLP_E2B_MAX_RUNTIME_MS` | how long the plan lets a sandbox run without a pause (default one hour, the Hobby plan's; 86400000 on Pro) |
+| `WLP_E2B_MAX_RUNTIME_MS` | how long the plan lets a sandbox run without a pause (default one hour; set this to match the provider account’s runtime limit) |
 | `WLP_E2B_PAUSE` | `0` for an account that cannot pause: sandboxes are killed where they would be paused (default 1) |
 | `WLP_E2B_WINDLASS_SANDBOX` | `1`: promise Windlass's own sandbox in the E2B profile, once `scripts/e2b-check.ts` has shown it works (default 0) |
 | `WLP_E2B_OPEN_PROFILE` | `1`: also offer "E2B, microVM only" (`e2b-open`) (default 0: listed, not offered) |
@@ -149,12 +154,25 @@ missing when it starts.
 | `WLP_GITHUB_WEBHOOK_SECRET`, `WLP_GITHUB_WEBHOOK_SECRET_PREVIOUS` | the webhook's secret (at least 32 characters) and the previous one while it is rotated. Unset: no webhook route |
 | `WLP_GITHUB_POLL_FALLBACK` | `1`: keep polling GitHub, more slowly, beside the webhook; requires `WLP_GITHUB_WEBHOOK_SECRET` |
 
+## Linear
+
+Linear intake requires work items, a GitHub repository connection and a configured Linear OAuth app. A partial set of credentials leaves the integration unavailable.
+
+| Variable | Effect |
+|---|---|
+| `WLP_LINEAR_CLIENT_ID`, `WLP_LINEAR_CLIENT_SECRET`, `WLP_LINEAR_WEBHOOK_SECRET` | OAuth client ID and secret and the secret for signed issue deliveries. The webhook secret must be at least 32 characters. |
+| `WLP_LINEAR_REDIRECT_URL` | Registered OAuth callback. Defaults to `/linear/callback` on the platform’s public origin, or the local server when no public origin is set. |
+| `WLP_LINEAR_API_URL`, `WLP_LINEAR_URL` | Override Linear’s API and authorization origins, for example for a test stand-in. |
+
 ## Machines
 
 | Variable | Effect |
 |---|---|
 | `WLP_MACHINES` | `1`: users may pair machines of their own ([machines.md](machines.md#turning-machines-on)); default off |
 | `WLP_PUBLIC_URL` | the platform's address for runners: an `https://` origin, or `http://` on a loopback address, with no path. Required with `WLP_MACHINES=1` and a remote engine; with the local one, default `http://localhost:<WLP_HTTP_PORT>` |
+| `WLP_REQUIRE_SIGNED_RUNNER`, `WLP_PLATFORM_KEY` | Set the former to `1` to require signed runner connections. The latter supplies the certified online platform key. |
+| `WLP_RUNNER_CAPABILITIES` | Capabilities advertised for the pinned runner image, as reported by that image. |
+| `WLP_RUNNER_DURABLE_TURNS` | `1` keeps machine turn progress across a server restart on runners supporting resumable conversations. |
 | `WLP_RUNNER_IMAGE` | the runner image the Machines page names, `<name>@sha256:<64 hex>`; unset: none is published yet. Set to anything else, the server does not start |
 
 The runner's own variables (`WLP_RUNNER_CPUS`, `WLP_RUNNER_STATE_DIR`) are in the
@@ -169,9 +187,10 @@ Operators can set [per-user limits](#per-user-limits), including a daily token c
 | `WLP_ITEMS` | `1`: every user of the deployment may file work items ([work-items.md](work-items.md#turning-work-items-on)); default off. The `WLP_FACTORY_HOSTED_RUNNING` ceiling holds either way |
 | `WLP_FACTORY_HOSTED_RUNNING` | how many hosted sandboxes a user may have at work at once, their own agents and their work items' together (default 3, from 1 to 100). A work item's turn past it waits; a prompt of the user's own is refused with the reason. Sandboxes on the user's machines never count |
 | `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | a new work item's budget: cost-weighted tokens, cached input counted at a tenth (default 2,000,000), and seconds of hosted sandbox time (default 7200). A feature's budget is its approved subtasks' and one item's for its own turns |
-| `WLP_FACTORY_GITHUB_ITEMS_PER_DAY` | how many items a user may file from GitHub issues in a UTC day, drafts among them (default 20) |
+| `WLP_FACTORY_GITHUB_ITEMS_PER_DAY` | how many items a user may file from GitHub and Linear issues together in a UTC day, drafts among them (default 20) |
 | `WLP_FACTORY_ORCHESTRATE` | `0`: hide the Orchestrate control and refuse new orchestrated filings (default on) |
-| `WLP_FACTORY_REVIEWER` | `on`: give new items on a hosted profile that isolates commands a second review (default off) |
+| `WLP_FACTORY_REVIEWER` | `on`: give new top-level items a second review on their builder’s place, agent and profile. A feature is reviewed as a whole. Default off. |
+| `WLP_FACTORY_CROSS_REPO` | `1` enables Plan-first features spanning two connected repositories, subject to the account’s plan. Default off. |
 | `WLP_FACTORY_SCREENSHOTS` | `off`: no work item of the deployment takes screenshots, whatever its repository's setting says. Sessions get the base image or template, never the screenshots one (also a builder that reconnects to a sandbox made before), agents are not offered screenshots in their reports, plans see no machine with screenshots, and a repository's setting cannot be turned on (one saved on can still be turned off). `on` or unset: each repository's setting decides (default on) |
 | `WLP_FACTORY_ATTACHMENT_BYTES`, `WLP_FACTORY_ATTACHMENTS_PER_ITEM`, `WLP_FACTORY_ATTACHMENT_ACCOUNT_BYTES`, `WLP_FACTORY_ATTACHMENT_DAYS` | screenshots on work items: bytes per screenshot (default 2 MiB), screenshots per item (40), bytes per account (1 GiB), and days they are kept after the item ended (180) |
 
@@ -184,7 +203,7 @@ Read at build time (Vite) unless a row says otherwise.
 | `VITE_WLP_ENDPOINT` | the Rivet endpoint the web app connects to when the server names none, as a development server does (default `http://localhost:6420`). A server with `WLP_PUBLIC_ENDPOINT` names its own, and this is not needed |
 | `VITE_WLP_API` | where the web app asks for `/platform/info` and `/platform/connection` (default: the endpoint's host on port 6440 when the endpoint is on 6420, else `http://localhost:6440`; a web app served by the server asks the address it was loaded from) |
 | `VITE_WLP_MOCK` | `1`: the web app runs on its mock, with no server |
-| `VITE_WLP_SITE_URL` | the origin the public pages are canonical at (default `https://windlass.parthg.dev`) |
+| `VITE_WLP_SITE_URL` | the origin the public pages are canonical at (defaults to the origin in `web/src/site/config.ts`) |
 | `VITE_WLP_ACCESS_URL` | where "Request access" leads (a form or a `mailto:` link); unset, the public pages offer "Sign in" alone and say that access is by invitation |
 
 ## Build scripts
@@ -243,11 +262,9 @@ To measure startup on a development host, run `WLP_SANDBOX=docker pnpm --filter 
 
 ## Per-user limits
 
-`WLP_DAILY_TOKENS` sets the model token cap per user per UTC day. Its default is `unlimited`. A positive integer applies to hosted sessions and Windlass on paired machines, which receive the platform’s model credential. Machine-local Claude Code and OpenCode use the machine owner’s subscription. Input and output are counted as the model reports them, including compaction. Cached input and reasoning are already included. Recording starts when this version is installed.
+`WLP_DAILY_TOKENS` sets the model token cap per user per UTC day. Its default is `unlimited`. A positive integer applies to hosted sessions and Windlass on paired machines, which receive the platform’s model credential. Machine-local Claude Code, OpenCode and Codex use the machine’s own provider credentials. Input and output are counted as the model reports them, including compaction. Cached input and reasoning are already included.
 
 Per-item budgets take effect when an item is created. An existing item keeps its budget and any increases its person gave it. The daily model cap applies across items regardless of their individual budgets, and counts tokens as reported, not weighted.
-
-These are gone, and are ignored if still set: `WLP_FACTORY_RUNNING_TURNS`, `WLP_FACTORY_TURNS`, `WLP_FACTORY_REVIEW_CAP`, `WLP_FACTORY_FEATURE_MULTIPLIER`, `WLP_FACTORY_GITHUB_DRAFTS`, `WLP_FACTORY_ITEM_TURNS` and `WLP_FACTORY_ITEM_ACTIVE_SECONDS`. Stored overrides of `runningTurns`, `factoryTurns`, `reviewCap`, `featureMultiplier`, `githubDrafts`, `item.turns` and `item.activeSeconds` are read past.
 
 Run the command from `server/` in the operator environment with the normal service signing key.
 

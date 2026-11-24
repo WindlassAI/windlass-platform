@@ -1,6 +1,6 @@
 ## Get access
 
-The platform is by invitation for now. Whoever runs it keeps a list of the accounts that may sign in. Ask them to add the email address of your ChatGPT account.
+If your platform is by invitation, ask whoever runs it to add the email address of your ChatGPT account. Without an invitation list, anyone with a ChatGPT account can sign in.
 
 If your account is not on the list, the sign-in ends with this message:
 
@@ -64,11 +64,11 @@ The platform uses the App’s installation for repository operations. The App as
 | Pull requests | Read and write | Open and update the pull request. |
 | Checks | Read and write | Read CI and publish the Factory verdict as `windlass/verified` on the pull request's head commit. |
 | Commit statuses | Read-only | Read CI on a work item's pull request. |
-| Actions | Read-only | Read CI on a work item's pull request. |
+| Actions | Read for CI, write for reruns and cross-repo runs | Read CI on the pushed commit, rerun eligible jobs and dispatch the combined test for a cross-repo feature. |
 | Issues | Read and write | Read an issue filed as a work item, and comment on it. |
 | Metadata | Read-only | GitHub adds it to every App. |
 
-Issues, Checks, Commit statuses and Actions are used only by work items. Agents you start yourself need only Contents, Pull requests and Metadata.
+Agents you start yourself need Contents, Pull requests and Metadata to publish. With webhooks, Windlass can also receive and acknowledge feedback on their pull requests.
 
 Contents write is the widest of these. It covers every repository the installation can see, and GitHub has no way to limit an App to some branches. So keep the App's reach small:
 
@@ -82,7 +82,7 @@ The App does not ask for the Workflows permission. So GitHub refuses a push that
 ## Start your first agent
 
 1. Go to **Agents**, the home page.
-2. Type what the agent should do in **What should it do?**
+2. Type what the agent should do in **What should an agent do?**
 3. Under the field, open **where** (it shows **Hosted** and the repository) and choose the repository. Leave the other choices as they are for now.
 4. Press <kbd>Enter</kbd>, or choose **Launch**.
 

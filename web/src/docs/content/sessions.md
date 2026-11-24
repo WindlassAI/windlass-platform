@@ -145,7 +145,7 @@ On that pull request, anyone with write access can start a comment with `/windla
 
 If the pull request has no linked session or work item, Windlass replies once to explain.
 
-The platform does not push while the agent is working. Wait for the turn to end.
+To push from the panel, wait for the turn to end. The agent can push its own branch during a turn.
 
 ### When the agent opens it
 
@@ -222,7 +222,7 @@ Where the platform keeps a copy of the agent's memory of the conversation, it re
 
 On one of your machines, a sandbox is not removed after a time. It goes when you delete its agent, when you remove the machine with its sandboxes, or when you prune the runner.
 
-On this platform you can keep up to 5 hosted sandboxes at once; those on your own machines are not counted. To free one, go to **Usage**, find it under **Hosted sandboxes you keep** and choose **Free…**. See [Settings, usage and limits](/docs/settings#usage).
+**Usage** shows how many hosted sandboxes you can keep (five by default when plans are off); those on your own machines are not counted. To free one, go to **Usage**, find it under **Hosted sandboxes you keep** and choose **Free…**. See [Settings, usage and limits](/docs/settings#usage).
 
 ## Rename or delete an agent
 
@@ -230,6 +230,6 @@ On the list of agents, each row has **Rename** and **Delete**. Deleting asks fir
 
 An agent that works for a work item cannot be deleted while the item has it. Cancel the item instead.
 
-In the session of a work item's agent, every prompt is the platform's, never yours. The first stands as **The factory's brief** (for the second reviewer, **The platform's brief for this review**), with its first lines and **Show all**.
+The Factory sends the prompts in a work item’s session. To steer the builder, use **Send note** on the item or its running part. The first stands as **The factory's brief** (for the second reviewer, **The platform's brief for this review**), with its first lines and **Show all**.
 
 Deleting an agent on one of your machines records that its sandbox must be removed, and the runner removes it now or when it is next online. If that record cannot be written, the delete is refused: "The agent could not be deleted: its machine's record of the sandbox to remove could not be written. Try again in a moment."
