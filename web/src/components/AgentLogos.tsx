@@ -1,7 +1,7 @@
 /**
- * The marks of the coding agents a session can run, shown as small badges beside the agent's name in
- * a menu or a panel. Each is the vendor's own mark, copied path for path from the file the vendor
- * publishes, and used only to name that vendor's agent: never as our own branding, never larger than
+ * The marks of the coding agents a session can run and of the model providers they use, shown as
+ * small badges beside the name in a menu, a panel or a settings row. Each is the vendor's own mark, copied path for path from the file the vendor
+ * publishes, and used only to name that vendor's agent or service: never as our own branding, never larger than
  * our own name, and never changed in shape. Only metadata, ids and clip paths that bound the artwork
  * were taken out. Each mark stays its owner's trademark. They are hidden from assistive technology:
  * the agent's name beside each one says what it is.
@@ -64,6 +64,43 @@ export function OpenCodeLogo({ size = 16, className }: LogoProps) {
 		<svg width={size} height={size} viewBox="0 0 240 300" fill="none" aria-hidden="true" focusable="false" className={className}>
 			<path d="M180 240H60V120H180V240Z" fill="currentColor" fillOpacity={0.28} />
 			<path d="M180 60H60V240H180V60ZM240 300H0V0H240V300Z" fill="currentColor" />
+		</svg>
+	);
+}
+
+/** OpenAI's Blossom by the company's name, for the OpenAI API rather than the Codex agent. */
+export const OpenAILogo = CodexLogo;
+
+/*
+ * Anthropic's company symbol, from Anthropic's press kit (https://www.anthropic.com/press-kit, files
+ * "Anthropic symbol - Slate.svg" and "Anthropic symbol - Ivory.svg"), for the Anthropic API. Anthropic's
+ * trademark guidelines (https://www.anthropic.com/legal/trademark-guidelines) allow no change of
+ * colour, font or proportion, so it takes the kit's Slate, #141413, on the light theme and its Ivory,
+ * #FAF9F5, on the dark one (--logo-anthropic). The symbol is wider than tall, so it sits centred in the
+ * square box. Checked 2026-11-24.
+ */
+export function AnthropicLogo({ size = 16, className }: LogoProps) {
+	return (
+		<svg width={size} height={size} viewBox="0 0 92 64" fill="none" aria-hidden="true" focusable="false" className={className}>
+			<path d="M66.4915 0H52.5029L78.0115 64H92.0001L66.4915 0Z" fill="var(--logo-anthropic)" />
+			<path d="M26.08 0L0.571472 64H14.8343L20.0512 50.56H46.7374L51.9543 64H66.2172L40.7086 0H26.08ZM24.6647 38.6743L33.3943 16.1829L42.1239 38.6743H24.6647Z" fill="var(--logo-anthropic)" />
+		</svg>
+	);
+}
+
+/*
+ * OpenRouter's glyph, from OpenRouter's brand page (https://openrouter.ai/brand, files
+ * glyph-ink.svg and glyph-cloud.svg), which offers it for small sizes and asks that it not be
+ * stretched, recoloured or remixed. It takes the page's Ink, #03080A, on the light theme and its Cloud,
+ * #FCFCFE, on the dark one (--logo-openrouter), centred in the square box. Checked 2026-11-24.
+ */
+export function OpenRouterLogo({ size = 16, className }: LogoProps) {
+	return (
+		<svg width={size} height={size} viewBox="0 0 1024 730" fill="none" aria-hidden="true" focusable="false" className={className}>
+			<path
+				d="M795.893 0C915.776 0 1012.95 97.9963 1012.95 218.88C1012.95 339.764 915.776 437.76 795.893 437.76L1011.2 654.869C1038.55 682.447 1019.18 729.6 980.504 729.6H361.77C161.97 729.6 0 566.273 0 364.8C0 163.327 161.97 0 361.77 0L795.893 0ZM361.77 145.92C241.89 145.92 144.708 243.916 144.708 364.8C144.708 485.684 241.89 583.68 361.77 583.68C481.649 583.68 578.831 485.684 578.831 364.8C578.831 243.916 481.649 145.92 361.77 145.92Z"
+				fill="var(--logo-openrouter)"
+			/>
 		</svg>
 	);
 }

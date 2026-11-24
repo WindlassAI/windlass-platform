@@ -316,6 +316,21 @@
 }
 
 /* A model provider's row: three actions where other rows have one. */
+.provider-name {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+}
+.provider-name svg {
+	flex: none;
+}
+.provider-get {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	color: var(--accent-text);
+	white-space: nowrap;
+}
 .provider-last4 {
 	font-family: var(--font-mono);
 	font-size: var(--size-mono-small);

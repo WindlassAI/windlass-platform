@@ -4,19 +4,41 @@
  * is saved, and only its last four characters come back.
  */
 import { MODEL_PROVIDERS, type ModelProvider, type ModelProviderCheck, type ModelProviderStatus } from "@contract";
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { absoluteTime, day, relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { Dialog } from "./Dialog";
-import { WarnIcon } from "./Icons";
+import { AnthropicLogo, OpenAILogo, OpenRouterLogo } from "./AgentLogos";
+import { ExternalIcon, WarnIcon } from "./Icons";
 
-const PROVIDERS: Record<ModelProvider, { name: string; placeholder: string }> = {
-	openai: { name: "OpenAI", placeholder: "sk-proj-…" },
-	anthropic: { name: "Anthropic", placeholder: "sk-ant-api03-…" },
-	google: { name: "Google", placeholder: "AIza…" },
-	openrouter: { name: "OpenRouter", placeholder: "sk-or-v1-…" },
+// Google has no mark here: its guidance for naming a Google API in another product is plain text.
+const PROVIDERS: Record<ModelProvider, { name: string; placeholder: string; keysUrl: string; logo?: ReactNode }> = {
+	openai: { name: "OpenAI", placeholder: "sk-proj-…", keysUrl: "https://platform.openai.com/api-keys", logo: <OpenAILogo /> },
+	anthropic: { name: "Anthropic", placeholder: "sk-ant-api03-…", keysUrl: "https://console.anthropic.com/settings/keys", logo: <AnthropicLogo /> },
+	google: { name: "Google", placeholder: "AIza…", keysUrl: "https://aistudio.google.com/apikey" },
+	openrouter: { name: "OpenRouter", placeholder: "sk-or-v1-…", keysUrl: "https://openrouter.ai/settings/keys", logo: <OpenRouterLogo /> },
 };
+
+function ProviderName({ provider }: { provider: ModelProvider }) {
+	const { name, logo } = PROVIDERS[provider];
+	return (
+		<span className="provider-name">
+			{logo}
+			{name}
+		</span>
+	);
+}
+
+function GetKey({ provider }: { provider: ModelProvider }) {
+	const { name, keysUrl } = PROVIDERS[provider];
+	return (
+		<a className="provider-get" href={keysUrl} target="_blank" rel="noopener noreferrer">
+			Get a key<span className="visually-hidden"> from {name} (opens in a new tab)</span>
+			<ExternalIcon size={11} />
+		</a>
+	);
+}
 
 function Failure({ error }: { error: string | null }) {
 	if (!error) return null;
@@ -53,8 +75,17 @@ function KeyDialog({ provider, replacing, onClose, onSaved }: { provider: ModelP
 
 	return (
 		<Dialog
-			title={`${replacing ? "Replace" : "Add"} the ${name} key`}
-			lede="It is checked with the provider when it is saved, and never shown again: only its last four characters are."
+			title={
+				<span className="provider-name">
+					{PROVIDERS[provider].logo}
+					{`${replacing ? "Replace" : "Add"} the ${name} key`}
+				</span>
+			}
+			lede={
+				<>
+					It is checked with the provider when it is saved, and never shown again: only its last four characters are. <GetKey provider={provider} />
+				</>
+			}
 			onClose={onClose}
 			dismissable={!busy}
 			footer={
@@ -178,7 +209,7 @@ export function ModelProviders() {
 				Model providers
 			</h2>
 			<p className="usage-lede">
-				One API key per provider. Every agent that can use a provider uses its key: Windlass, Claude Code for Anthropic, Codex for OpenAI, and OpenCode for any of them. The key never enters a sandbox.
+				One API key per provider. Every agent that can use a provider uses its key: Windlass, Claude Code for Anthropic, Codex for OpenAI, and OpenCode for any of them. The key never enters a sandbox. Agents start using these keys once the platform's relay update ships; until then, saved keys are stored and checked but not used by agents.
 			</p>
 			{list === null ? (
 				state.error ? (
@@ -205,7 +236,9 @@ export function ModelProviders() {
 						return (
 							<li key={provider} className="usage-kept-row provider-row" data-provider={provider}>
 								<div className="usage-kept-main">
-									<span className="usage-kept-title">{name}</span>
+									<span className="usage-kept-title">
+										<ProviderName provider={provider} />
+									</span>
 									{saved ? (
 										<p className="agent-meta">
 											<span className="provider-last4">…{saved.last4}</span>
@@ -214,6 +247,11 @@ export function ModelProviders() {
 											{saved.checkedAt !== null ? <span title={absoluteTime(saved.checkedAt)}>checked {relativeTime(saved.checkedAt, now)}</span> : null}
 										</p>
 									) : null}
+									{saved ? null : (
+										<p className="agent-meta">
+											<GetKey provider={provider} />
+										</p>
+									)}
 									{failed ? <p className="field-note tone-bad" role="status">{failed}</p> : null}
 								</div>
 								<span className={`machine-used${saved ? (saved.ok ? " tone-good" : " tone-bad") : ""}`}>{saved ? (saved.ok ? "connected" : "check failed") : "not connected"}</span>
