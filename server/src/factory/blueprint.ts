@@ -130,12 +130,14 @@ function automatic(c: Change, policy: Policy, evidence: string, offered: readonl
 	if (backstopTurns(c.item) >= RULES.turnBackstop) return null;
 	const history = c.run.autoHistory?.[policy] ?? [];
 	const fingerprint = failureFingerprint([policy, evidence], []);
-	if (history.some(step => step.fingerprint === fingerprint)) return null;
 	const steps = AUTO_POLICY[policy];
+	// The same failure again is not retried with the same choice; a different next step (a fresh sandbox after a retry) still runs.
+	const triedHere = new Set(history.filter(step => step.fingerprint === fingerprint).flatMap(step => steps[step.position]!.choices));
 	for (let position = (history.at(-1)?.position ?? -1) + 1; position < steps.length; position++) {
 		const { choices, afterMs } = steps[position]!;
 		const choice = choices.find(id => offered.includes(id));
 		if (!choice) continue;
+		if (triedHere.has(choice)) return null;
 		if (resume && turnBudgetStop(c)) return null;
 		(c.run.autoHistory ??= {})[policy] = [...history, { position, fingerprint }];
 		c.run.autoSteps = (c.run.autoSteps ?? 0) + 1;
