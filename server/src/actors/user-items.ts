@@ -472,7 +472,7 @@ async function waitingRepository(c: ItemsCtx, job: DefaultBuilder): Promise<Sess
  * before anything is asked of the engine, and one that exists already is taken as made: a creation
  * that is tried again after a lost answer, or after the server stopped half way, finishes the first.
  */
-async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { placement: ChildPlacement; id: string; base: string; start?: string | null; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
+async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { featureBody: string; placement: ChildPlacement; id: string; base: string; start?: string | null; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
 	const asked = raw as CreateItemInput;
 	const policy = github?.defaultPlace ?? (source === "web" && !child && asked.useDefaultPlace === true && asked.place === undefined
@@ -519,7 +519,12 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const limits = accountLimits(c.vars.items.limits).factory;
 		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer: review?.reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session?.place ?? placed!.destination.place, budget: child?.budget ?? limits.item, agent: { harness: session ? session.harness ?? "windlass" : placed!.destination.harness, model: session?.model ?? "default", effort: input.effort, ...(session?.item?.signIn && { signIn: session.item.signIn }) } });
 		if (placed && !session) item.awaitingPlace = placed.destination.wait;
-		if (child) { item.parent = child.parent; item.childBase = child.base; item.placement = child.placement; }
+		if (child) {
+			item.task.featureBody = child.featureBody;
+			item.parent = child.parent;
+			item.childBase = child.base;
+			item.placement = child.placement;
+		}
 		// An issue someone else wrote is not the person's own text: every turn that hands the agent the task says where it came from.
 		const outside = sources(child?.untrusted, github && !github.origin.issue.trusted ? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)] : []);
 		if (outside.length) item.untrusted = outside;
@@ -1048,7 +1053,7 @@ export const itemActions = {
 				try {
 					existing = await makeItem(c, owner, { mode: "single", repository: { id: target.id, branch: featureBranch(input.parent) }, place: placement.place,
 						profile: placement.profile, ...agent, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
-						{ id: input.child, placement, base: target.base, start: job.start, owns: job.task.owns ?? [], budget: job.budget ?? { tokens: job.task.budget.tokens, hostedSeconds: accountLimits(c.vars.items.limits).factory.item.hostedSeconds }, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
+						{ id: input.child, featureBody: request.featureBody, placement, base: target.base, start: job.start, owns: job.task.owns ?? [], budget: job.budget ?? { tokens: job.task.budget.tokens, hostedSeconds: accountLimits(c.vars.items.limits).factory.item.hostedSeconds }, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
 				} catch (error) {
 					// Refused before its session was made (a model or effort the place no longer offers, an agent signed out
 					// since approval): the subtask can't be placed, and the feature asks the person. Nothing stays pinned.

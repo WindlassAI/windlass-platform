@@ -426,10 +426,15 @@ function apply(c: Change, fact: Fact): boolean {
 			const keys = [...(item.jobs ?? []).map(job => job.task.key), ...plan.subtasks.map(task => task.key)];
 			if (new Set(keys).size > 6) throw new PlanError("A feature may have at most six distinct subtasks across its plans.");
 			if (fact.kind === "file_plan") {
-				for (const q of plan.questions) delete q.answer;
+				const approvedPlan = item.replans ? item.approvedPlan : undefined;
+				for (const q of plan.questions) {
+					const answer = approvedPlan?.questions.find(old => old.text === q.text && old.id !== "scope-change")?.answer;
+					if (answer && q.id !== "scope-change") q.answer = answer;
+					else delete q.answer;
+				}
 				// A re-plan keeps each approved subtask's agent: only the person changes it, on the card.
-				if (item.replans && item.approvedPlan) for (const task of plan.subtasks) {
-					const approved = item.approvedPlan.subtasks.find(s => s.key === task.key);
+				if (approvedPlan) for (const task of plan.subtasks) {
+					const approved = approvedPlan.subtasks.find(s => s.key === task.key);
 					if (!approved) continue;
 					if (approved.agent) task.agent = structuredClone(approved.agent);
 					else delete task.agent;
@@ -437,7 +442,7 @@ function apply(c: Change, fact: Fact): boolean {
 					const problem = agentProfileProblem(task);
 					if (problem) throw new PlanError(task.title + ": " + problem);
 				}
-				if (item.replans && item.approvedPlan && planScope(plan) !== planScope(item.approvedPlan)) {
+				if (approvedPlan && planScope(plan) !== planScope(approvedPlan)) {
 					plan.questions = plan.questions.filter(q => q.id !== "scope-change");
 					plan.questions.push({ id: "scope-change", text: "The revised plan changes the approved scope or subtasks. Do you accept these changes?" });
 				}
@@ -863,7 +868,8 @@ const marked = (...lists: Array<readonly string[] | undefined | null>): Pick<Tur
 
 function taskText(task: Task): string {
 	const criteria = task.acceptance.length === 0 ? "" : `\n\nAcceptance criteria (a person will check these):\n${task.acceptance.map((line, index) => `${index + 1}. ${line}`).join("\n")}`;
-	return `${task.title}\n\n${task.body}${criteria}`.trim();
+	const feature = task.featureBody ? `\n\nOriginal feature task:\n${task.featureBody}` : "";
+	return `${task.title}\n\n${task.body}${criteria}${feature}`.trim();
 }
 
 /** A run's first turn: the plan (step 0) for an orchestrated feature, the task otherwise. */
@@ -1795,7 +1801,6 @@ function afterCi(c: Change, ci: CiProgress): void {
 	if (!item.reviewer) return handoff(c, skippedReview("this item was created before second reviews were available"));
 	if (item.place.kind === "machine" || "off" in item.reviewer) {
 		const why = "off" in item.reviewer ? REVIEW_OFF_REASON[item.reviewer.off] : REVIEW_OFF_REASON.machine;
-		if (item.mode === "orchestrate") return ask(c, "turn_refused", "The whole-feature reviewer is unavailable: " + why + ".", [...handOver(item), choice("give_up")], null, null);
 		return handoff(c, skippedReview(why));
 	}
 	// Older publishers could report a branch instead of a SHA. It cannot pin an independent review.

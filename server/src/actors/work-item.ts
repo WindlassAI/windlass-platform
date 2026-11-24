@@ -2078,7 +2078,7 @@ export const workItem = actor({
 			const repo = crossRepo(s.item) ? repoOf(s.item, job.task.repo) : null;
 			return { paused: !!s.item.featureUpdate || s.item.question?.kind === "feature_update", job: { ...job, start: repo?.head ?? s.item.head, dispatchKey: job.dispatchKey ?? currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
 				repository: repo && { id: repo.repositoryId, base: repo.baseRef, alias: repo.alias },
-				context: JSON.stringify({ spec: s.item.featurePlan.spec, reports }),
+				featureBody: s.item.task.body, context: JSON.stringify({ spec: s.item.featurePlan.spec, reports }),
 				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place },
 				// The subtask's task was planned from the feature's (its sources go with it), and quotes the reports of subtasks before it.
 				untrusted: sources(s.item.untrusted, reports.length ? [untrustedWords.earlier] : []),
