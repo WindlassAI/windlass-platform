@@ -4,13 +4,13 @@
  *
  *   Linear itself   `/oauth/authorize`, where the owner consents (played by `authorize()`)
  *   Linear's API    `/oauth/token` (authorization code and refresh token), `/graphql` (the reads filing
- *                   needs: viewer and organization, teams, an issue)
+ *                   needs and the item updates)
  *   Linear's hooks  `deliver()`, which signs and POSTs a webhook delivery to the platform as Linear does
  *
  * It checks what Linear checks, as far as the platform depends on it: the client id and secret, a code
  * that works once with the registered redirect address and the PKCE verifier, `actor=app` (without it
  * the token is a person's and `viewer.app` is false), the scopes asked for, expiry and refresh, a bearer
- * token on every API call. A mutation is refused and recorded in `writes`: the platform writes nothing.
+ * token on every API call. Mutations require the write scope.
  *
  * Webhook payloads follow Linear's shape (`action`, `type`, `actor`, `data`, `updatedFrom` with the
  * previous value of each changed field, `organizationId`, `webhookTimestamp`), signed with
@@ -107,7 +107,11 @@ export class LinearStandin {
 	readonly teams: StandinTeam[] = [];
 	readonly labels = new Map<string, StandinLabel>();
 	readonly issues = new Map<string, StandinIssue>();
-	/** Every mutation anyone tried. The platform must never send one. */
+	readonly comments = new Map<string, { issueId: string; body: string }>();
+	readonly attachments = new Map<string, string>();
+	readonly completedStates = new Map<string, string>();
+	denyStateChange = false;
+	/** Every mutation attempted, including retries. */
 	readonly writes: string[] = [];
 	/** The paths of API calls, without credentials. */
 	readonly calls: string[] = [];
@@ -152,6 +156,7 @@ export class LinearStandin {
 	addTeam(key: string, name = key): StandinTeam {
 		const team = { id: UUID_HEX(), key, name };
 		this.teams.push(team);
+		this.completedStates.set(team.id, UUID_HEX());
 		return team;
 	}
 
@@ -403,13 +408,31 @@ export class LinearStandin {
 			return send(400, { errors: [{ message: "invalid JSON" }] });
 		}
 		const query = String(parsed.query ?? "");
-		this.calls.push(`POST /graphql ${/^\s*mutation\b/.test(query) ? "mutation" : /\bviewer\b/.test(query) ? "viewer" : /\bteams\s*\(/.test(query) ? "teams" : /\bissue\s*\(/.test(query) ? "issue" : "other"}`);
+		this.calls.push(`POST /graphql ${/^\s*mutation\b/.test(query) ? "mutation" : /\bviewer\b/.test(query) ? "viewer" : /\bteams\s*\(/.test(query) ? "teams" : /\bissue\s*\(/.test(query) ? "issue" : /\bcomment\(/.test(query) ? "comment" : "other"}`);
 		if (!session || session.expiresAt <= Date.now()) return send(401, { errors: [{ message: "Authentication required, not authenticated", extensions: { type: "AuthenticationError" } }] });
-		if (/^\s*mutation\b/.test(query)) {
-			this.writes.push(query.slice(0, 80));
-			return send(200, { errors: [{ message: "mutations are not allowed here", extensions: { type: "forbidden" } }] });
-		}
 		const variables = parsed.variables ?? {};
+		if (/^\s*mutation\b/.test(query)) {
+			const operation = /\b(commentCreate|attachmentCreate|issueUpdate)\(/.exec(query)?.[1] ?? "unknown";
+			this.writes.push(operation);
+			const refuse = (message: string) => send(200, { errors: [{ message }] });
+			if (!session.scopes.includes("write")) return refuse("Missing write scope");
+			const input = variables.input as { id: string; issueId: string; body: string; url: string } | undefined;
+			const issue = this.issues.get(input?.issueId ?? String(variables.id));
+			if (!issue) return refuse("Issue not found");
+			if (operation === "commentCreate" && input?.body && input.id) {
+				if (this.comments.has(input.id)) return refuse("Comment ID already exists");
+				this.comments.set(input.id, { issueId: issue.id, body: input.body });
+			} else if (operation === "attachmentCreate" && input?.url) {
+				this.attachments.set(issue.id, input.url);
+			} else if (operation === "issueUpdate" && !this.denyStateChange && variables.stateId === this.completedStates.get(issue.teamId)) {
+				issue.stateType = "completed";
+			} else return refuse("Mutation declined");
+			return send(200, { data: { [operation]: { success: true } } });
+		}
+		if (/\bcomment\(/.test(query)) {
+			const comment = this.comments.get(String(variables.id));
+			return send(200, { data: { comment: comment ? { issue: { id: comment.issueId } } : null } });
+		}
 		if (/\bviewer\b/.test(query)) {
 			const viewer = session.actor === "app" ? this.appUser : this.human;
 			return send(200, { data: { viewer: { id: viewer.id, name: viewer.name, app: viewer.app }, organization: this.workspace } });
@@ -436,7 +459,7 @@ export class LinearStandin {
 						url: this.issueUrl(issue),
 						archivedAt: issue.archived ? new Date().toISOString() : null,
 						trashed: false,
-						team: { id: team.id },
+						team: { id: team.id, ...(/states\(.*type: \{ eq: "completed"/.test(query) && { states: { nodes: [{ id: this.completedStates.get(team.id) }] } }) },
 						creator: creator ? { id: creator.id, name: creator.name } : null,
 						assignee: assignee ? { id: assignee.id } : null,
 						labels: { nodes: issue.labelIds.map((id) => ({ id, name: this.labels.get(id)!.name })) },

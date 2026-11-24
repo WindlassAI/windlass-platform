@@ -148,7 +148,7 @@ describe("Linear in Settings", () => {
 	it("offers Connect, then shows unmapped teams, a saved mapping, and keeps it on reload", async () => {
 		const client = createMockClient({ pace: 0 });
 		const first = await open(client);
-		expect(section(first.host).textContent).toContain("writes nothing back to Linear");
+		expect(section(first.host).textContent).toContain("posts the pull request and item outcome");
 		expect(section(first.host).textContent).toContain("Connect Linear…");
 		// Begin leaves the account disconnected until Settings redeems the ticket.
 		const assign = vi.fn();

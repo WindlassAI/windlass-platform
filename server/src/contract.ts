@@ -552,8 +552,8 @@ export interface GithubStatus {
 }
 
 /**
- * The Linear integration, one-way: an issue in a mapped team that gains the `windlass` label, or is assigned to the
- * Windlass app user, is filed as a work item on the team's repository. Windlass writes nothing back to Linear.
+ * The Linear integration: an issue in a mapped team that gains the `windlass` label, or is assigned to the
+ * Windlass app user, is filed as a work item on the team's repository. Windlass posts item progress on the issue.
  * `UserActions.linear` and the actions after it are the Settings page's.
  */
 export type LinearStatus =

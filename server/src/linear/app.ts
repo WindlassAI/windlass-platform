@@ -1,7 +1,6 @@
 /**
  * The deployment's Linear OAuth app, as the server talks to Linear: the authorization address, the
- * exchange of an authorization code, and the few GraphQL reads that filing needs. Nothing is written
- * to Linear.
+ * exchange of an authorization code, issue intake, and work item updates.
  *
  * The app is authorized with `actor=app` and the `app:assignable` scope. Linear then creates an
  * application user in the workspace, which issues can be assigned to, and the access token acts as
@@ -35,8 +34,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 /** The most of an answer that is read. */
 const MAX_ANSWER_BYTES = 1024 * 1024;
 const MAX_PAGES = 10;
-/** The scopes asked for: read the workspace, and be assignable. Nothing that writes. */
-export const LINEAR_SCOPES = ["read", "app:assignable"] as const;
+export const LINEAR_SCOPES = ["read", "write", "app:assignable"] as const;
 
 /** Linear's ids are UUIDs. */
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
@@ -128,6 +126,11 @@ export interface LinearIssue {
 	/** Archived or in the trash: not an active issue. */
 	archived: boolean;
 }
+
+export type LinearWrite =
+	| { key: "opened" | "handed over" | "merged" | "failed" | "cancelled"; commentId: string; pr: string | null }
+	| { key: "attachment"; pr: string }
+	| { key: "complete" };
 
 const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -329,6 +332,43 @@ export class LinearApp {
 			stateType: text(record(row.state).type),
 			archived: text(row.archivedAt) !== "" || row.trashed === true,
 		};
+	}
+
+	async writeIssue(token: string, issueId: string, itemId: string, write: LinearWrite): Promise<void> {
+		if (write.key === "attachment") {
+			const data = await this.query(token, "attach the pull request", "mutation($input: AttachmentCreateInput!) { attachmentCreate(input: $input) { success } }",
+				{ input: { issueId, url: write.pr, title: "Windlass pull request" } });
+			if (record(data.attachmentCreate).success !== true) throw new LinearError(400, "attachment declined", "attach the pull request");
+		} else if (write.key === "complete") {
+			const data = await this.query(token, "read the team's completed state",
+				'query($id: String!) { issue(id: $id) { state { type } team { states(first: 1, filter: { type: { eq: "completed" } }) { nodes { id } } } } }', { id: issueId });
+			const issue = record(data.issue);
+			if (record(issue.state).type === "completed") return;
+			const nodes = record(record(issue.team).states).nodes;
+			const stateId = Array.isArray(nodes) && record(nodes[0]).id;
+			if (!isLinearId(stateId)) throw new LinearError(400, "the team has no completed state", "complete the issue");
+			const updated = await this.query(token, "complete the issue", "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id: issueId, stateId });
+			if (record(updated.issueUpdate).success !== true) throw new LinearError(400, "state change declined", "complete the issue");
+		} else {
+			const outcome = { opened: "opened its pull request", "handed over": "was handed over", merged: "merged", failed: "failed", cancelled: "was cancelled" }[write.key];
+			const body = `Windlass item ${itemId} ${outcome}.${write.pr ? " " + write.pr : ""}`;
+			try {
+				const data = await this.query(token, "comment on the issue", "mutation($input: CommentCreateInput!) { commentCreate(input: $input) { success } }",
+					{ input: { id: write.commentId, issueId, body } });
+				if (record(data.commentCreate).success !== true) throw new LinearError(400, "comment declined", "comment on the issue");
+			} catch (error) {
+				// Linear may have saved this UUID before the reply was lost.
+				if (error instanceof LinearError && ([400, 409, 422].includes(error.status) || error.unreachable)) {
+					const found = await this.query(token, "find the item's comment", "query($id: String!) { comment(id: $id) { issue { id } } }", { id: write.commentId })
+						.catch((cause: unknown) => {
+							if (cause instanceof LinearError && cause.status === 400) return null;
+							throw cause;
+						});
+					if (record(record(found?.comment).issue).id === issueId) return;
+				}
+				throw error;
+			}
+		}
 	}
 }
 
