@@ -738,8 +738,8 @@ interface SessionVars {
 	restored: ConversationRecord | null;
 	/** When the wake that takes a machine turn up after a crash was last scheduled (`armTakeUp`). */
 	takeUpArmedAt: number;
-	/** True while a paused turn is being resumed (`resumePaused`): nothing else takes the session meanwhile. */
-	resuming: boolean;
+	/** A concurrent grant waits for the current resume attempt before deciding who owns its slot. */
+	resuming: Promise<void> | null;
 	/** Re-arms the wake that resumes the running turn after a crash (`heartbeat`); null between turns. */
 	heartbeat: ReturnType<typeof setInterval> | null;
 	/** The stop of a setup cut off with the server (`stopCutOffSetup`): a turn waits for it before it uses the sandbox. */
@@ -4007,7 +4007,9 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	/** The turn's own record (WLP_TURN_RESUME): its segments, its limit across pauses, and what pausing it needs. */
 	const run = meta.run?.turn === turn ? meta.run : null;
 	/** The runner conversation's losses when the agent started (`ServerChannel.losses`): more at its end, and the machine went away mid-turn. */
-	let lossesAtStart: number | null = null;
+	// A restored process belongs to a newly reconstructed channel. Its grace may expire
+	// while the turn is still acquiring its machine slot or opening the sandbox.
+	let lossesAtStart: number | null = active.reattach ? 0 : null;
 	let agentStarted = false;
 	let thrown: unknown = null;
 	/** What a resumed turn's agent is given instead of its "carry on" should its saved session be gone after all. */
@@ -4325,7 +4327,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const repoTools = !planner && !reviewer && !!meta.repo && githubApp() !== null;
 		const onPush: RunTurnInput["onPush"] = repoTools && platformTool("push") ? (request) => tracked(agentPush(c, meta, active, sandbox, request)) : undefined;
 		const onFetchBase: RunTurnInput["onFetchBase"] = repoTools && platformTool("fetch_base") ? (request) => agentFetchBase(c, meta, active, sandbox, request) : undefined;
-		lossesAtStart = c.vars.runner?.channel.losses ?? null;
+		lossesAtStart ??= c.vars.runner?.channel.losses ?? null;
 		agentStarted = true;
 		if (!signal.aborted && caps.events === "acp") {
 			// These agents take no marker: the text is labelled in the prompt, and the timeline says so once.
@@ -4653,10 +4655,10 @@ fi`, { signal, timeoutMs: 5000 });
 		let outcome: TurnOutcome;
 		let stepLimit: number | undefined;
 		let message: string | null = null;
+		if (resumed && result?.resumed === false && result.windlassSessionId) note(c, turn, fresh ? "info" : "warn", fresh ? `${harnessName(meta.harness)} could not continue its saved conversation, so it was given the whole task again.` : `${harnessName(meta.harness)} could not continue the conversation; the files are as they were.`);
 		if (caps.events === "acp") {
 			const reason = result?.acp?.stopReason;
 			if (result?.acp && result.windlassSessionId) meta.harnessModels = result.acp.models;
-			if (resumed && result?.resumed === false && result.windlassSessionId) note(c, turn, fresh ? "info" : "warn", fresh ? `${harnessName(meta.harness)} could not continue its saved conversation, so it was given the whole task again.` : `${harnessName(meta.harness)} could not continue the conversation; the files are as they were.`);
 			if (result?.failure || problem) {
 				outcome = "error";
 				message = result?.failure?.message ?? problem;
@@ -4942,6 +4944,8 @@ async function keepTurn(c: Ctx): Promise<boolean> {
 
 /** How often a turn that waits for its machine looks whether it is back, besides the wake the machine itself sends. */
 const MACHINE_RECHECK_MS = 5 * 60_000;
+/** The item's check of a started delivery also repairs a long pause, independently of the session's wakes. */
+const STALE_PAUSE_MS = 15 * 60_000;
 /** How soon a resume that could not happen (the user's actor or the layer did not answer) is tried again. */
 const RESUME_RETRY_MS = 60_000;
 /** The most messages held for a paused turn. */
@@ -5025,36 +5029,42 @@ async function machinePaused(c: Ctx, meta: SessionMeta, run: TurnRun): Promise<v
 	if (!paused || meta.place.kind !== "machine") return;
 	const row = await rowOfTurn(c.db, run.turn);
 	if (row && !paused.told) {
-		const slot = paused.slotFreed ? null : row.slot;
-		await serial(c, () => c.db.transaction(async (tx) => {
-			if (slot) {
-				await tx.execute("UPDATE inbox SET slot = NULL WHERE key = ? AND state = 'started'", row.key);
-				await queueMessage(tx, { to: "user", done: { slot, key: row.key } });
-			}
-			await queueMessage(tx, { to: "item", itemId: row.itemId, fact: { kind: "turn_paused", at: Date.now(), key: row.key, since: paused.at, machine: meta.machineName } });
-		}, { name: "inbox.paused" }));
-		paused.slotFreed = true;
-		paused.told = true;
+		await serial(c, async () => {
+			if (meta.run !== run || run.paused !== paused || paused.told) return;
+			await c.db.transaction(async tx => {
+				if (row.slot) {
+					await tx.execute("UPDATE inbox SET slot = NULL WHERE key = ? AND state = 'started'", row.key);
+					await queueMessage(tx, { to: "user", done: { slot: row.slot, key: row.key } });
+				}
+				await queueMessage(tx, { to: "item", itemId: row.itemId, fact: { kind: "turn_paused", at: Date.now(), key: row.key, since: paused.at, machine: meta.machineName } });
+				// A second restart must recover the same ownership as the inbox and outbox.
+				await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify({ ...meta, run: { ...run, paused: { ...paused, slotFreed: true, told: true } } }));
+			}, { name: "inbox.paused" });
+			paused.slotFreed = true;
+			paused.told = true;
+		});
 		await flushOutbox(c, meta.uid);
 		await c.schedule.at(paused.at + config.turnResume.machineAskMs, "internalMachineAsk").catch(() => undefined);
 	}
-	await machineActor(() => c.client(), meta.uid, meta.place.machineId).pausedSession(meta.sessionId, true).catch((error: unknown) => c.log.warn({ msg: "could not ask the machine to wake this session when it is back", error: describeError(error) }));
-	// One look at a time: every wake of the session (an item's check of its turn, the machine's) would otherwise add one.
-	const now = Date.now();
-	if ((paused.lookAt ?? 0) <= now) {
-		paused.lookAt = now + MACHINE_RECHECK_MS;
-		await c.schedule.at(paused.lookAt, "internalResumeTurn").catch(() => undefined);
-	}
+	if (meta.run !== run || run.paused !== paused) return;
+	const alreadyOnline = await machineActor(() => c.client(), meta.uid, meta.place.machineId).pausedSession(meta.sessionId, true).catch((error: unknown) => c.log.warn({ msg: "could not ask the machine to wake this session when it is back", error: describeError(error) }));
+	await armResumeCheck(c, paused, alreadyOnline ? 1_000 : MACHINE_RECHECK_MS);
 }
 
-/** The words of the turn that is resumed: its own prompt when the agent never had it, with what was held for it. */
-async function resumeText(c: Ctx, meta: SessionMeta, run: TurnRun, row: InboxRow | null, reason: PauseReason, held: string[], stoppedCommand: boolean): Promise<string> {
-	if (run.prompted) return resumePrompt(reason, held, stoppedCommand);
-	if (row) return row.text;
-	const [first] = await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE turn = ? AND kind = 'user' ORDER BY seq LIMIT 1", run.turn);
+/** A queued slot or a lost reconnect notification must not be the session's last chance to resume. */
+async function armResumeCheck(c: Ctx, paused: NonNullable<TurnRun["paused"]>, delay: number): Promise<void> {
+	const now = Date.now();
+	const at = now + delay;
+	if (paused.lookAt && now < paused.lookAt && paused.lookAt <= at) return;
+	await c.schedule.at(at, "internalResumeTurn");
+	paused.lookAt = at;
+}
+
+/** The original prompt of a personal turn interrupted before its agent received the task. */
+async function originalPrompt(c: Ctx, turn: number): Promise<string> {
+	const [first] = await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE turn = ? AND kind = 'user' ORDER BY seq LIMIT 1", turn);
 	const item = first ? (JSON.parse(first.item) as TimelineItem) : null;
-	const prompt = item?.kind === "user" ? item.text : "";
-	return held.length ? `${prompt}\n\n${held.join("\n\n")}` : prompt;
+	return item?.kind === "user" ? item.text : "";
 }
 
 /**
@@ -5091,13 +5101,16 @@ async function resumePaused(c: Ctx, meta: SessionMeta, granted: string | null = 
 		await c.schedule.at(run.paused.at + config.turnResume.delayMs, "internalResumeTurn").catch(() => undefined);
 		return false;
 	}
-	c.vars.resuming = true;
+	let settled!: () => void;
+	c.vars.resuming = new Promise<void>(resolve => { settled = resolve; });
 	let release: (() => void) | null = takeSandbox(c);
+	let requested: { key: string; slot: string } | null = null;
 	try {
 		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 		const row = await rowOfTurn(c.db, run.turn);
 		if (meta.place.kind === "machine") {
-			const facts = await runnerLink(c, meta.place.machineId).facts().catch(() => null);
+			const link = runnerLink(c, meta.place.machineId);
+			const facts = await link.facts();
 			if (meta.run !== run || !run.paused) return false;
 			if (facts?.status === "removed") {
 				await endPausedTurn(c, meta, "stopped", "This agent's machine was removed while the turn was paused, so the turn ended. Its files were there.");
@@ -5114,14 +5127,46 @@ async function resumePaused(c: Ctx, meta: SessionMeta, granted: string | null = 
 				await persist(c);
 				return false;
 			}
+			// Control can be online while the session socket is still unreachable. Keep the original
+			// pause time until a socket answers, so failed attempts cannot reset the watchdog.
+			try {
+				await link.ready();
+			} catch (error) {
+				if (row && error instanceof MachineUnreachable && Date.now() - run.paused.at >= STALE_PAUSE_MS
+					&& (await link.facts()).status === "online" && meta.run === run && run.paused) {
+					await endPausedTurn(c, meta, "interrupted", "The machine is online but its runner could not reconnect this turn. The item was told to recover the interrupted step.");
+					return false;
+				}
+				throw error;
+			}
+			if (meta.run !== run || !run.paused || c.vars.stopping) return false;
 		}
 		let slot = row?.slot ?? null;
-		if (row && run.paused.slotFreed) {
+		if (row && (run.paused.slotFreed || !row.slot)) {
 			// Asked for again, ahead of the turns that came since: the grant comes back here (`takeDelivered`).
 			if (granted === null) {
+				// The queue answers a duplicate request with the held slot. Don't reclaim the
+				// old one while the outbox can still release it.
+				const releasing = await c.db.execute("SELECT 1 FROM outbox WHERE json_extract(message, '$.done.key') = ? LIMIT 1", row.key);
+				if (releasing.length) {
+					await armResumeCheck(c, run.paused, RESUME_RETRY_MS);
+					return false;
+				}
+				// Shutdown can lose the old segment's machine-slot release. Its own reservation
+				// would count against the factory's free-slot check, before it could reclaim it.
+				if (meta.place.kind === "machine") await machineActor(() => c.client(), meta.uid, meta.place.machineId).releaseSlot(meta.sessionId, run.turn);
 				const answer = await requestTurn(c, meta.uid, row, null, meta.turnStartedAt ?? run.paused.at);
-				if (!answer.granted) return false;
+				if (!answer.granted) {
+					if (meta.run !== run || !run.paused) return false;
+					if (Date.now() - run.paused.at >= STALE_PAUSE_MS && meta.place.kind === "machine"
+						&& (await runnerLink(c, meta.place.machineId).facts()).status === "online") {
+						await userActor(c, meta.uid).internalWithdrawTurn({ sessionId: meta.sessionId, key: row.key });
+						if (meta.run === run && run.paused) await endPausedTurn(c, meta, "interrupted", "The machine is online but the paused turn could not reclaim its slot. The item was told to retry the step.");
+					} else if (run.paused) await armResumeCheck(c, run.paused, MACHINE_RECHECK_MS);
+					return false;
+				}
 				granted = answer.slot;
+				requested = { key: row.key, slot: granted };
 			}
 			slot = granted;
 		}
@@ -5131,13 +5176,23 @@ async function resumePaused(c: Ctx, meta: SessionMeta, granted: string | null = 
 			const runningAt = await refreshSandbox(c, meta, true);
 			await holdSandbox(c, meta, true, runningAt);
 		}
-		// Nothing awaited from here: the turn is taken up again in this step.
 		const paused = run.paused;
 		if (meta.run !== run || !paused || meta.status !== "paused" || c.vars.turn || c.vars.destroying) return false;
 		const now = Date.now();
 		const pausedMs = Math.max(0, now - paused.at);
+		const original = row?.text ?? (run.prompted ? "" : await originalPrompt(c, run.turn));
+		// Store the new slot before publishing an active turn. A failed write leaves a
+		// paused turn to retry, and a restart can ask the queue for the same grant.
+		if (row && (slot !== row.slot || paused.told)) await serial(c, () => c.db.transaction(async tx => {
+			if (meta.run !== run || run.paused !== paused) return;
+			if (slot !== row.slot) await tx.execute("UPDATE inbox SET slot = ? WHERE key = ? AND state = 'started'", slot, row.key);
+			if (paused.told) await queueMessage(tx, { to: "item", itemId: row.itemId, fact: { kind: "turn_resumed", at: now, key: row.key, offlineMs: pausedMs } });
+		}, { name: "inbox.resumed" }));
+		if (meta.run !== run || run.paused !== paused || c.vars.stopping || c.vars.destroying) return false;
+		requested = null;
+		// Include messages held during the asynchronous slot handoff.
 		const held = run.held ?? [];
-		const stoppedCommand = run.stoppedCommand === true;
+		const text = run.prompted ? resumePrompt(paused.reason, held, run.stoppedCommand) : [original, ...held].join("\n\n");
 		delete run.stoppedCommand;
 		run.resumes += 1;
 		run.fromSeq = c.vars.nextSeq;
@@ -5155,16 +5210,13 @@ async function resumePaused(c: Ctx, meta: SessionMeta, granted: string | null = 
 		};
 		c.vars.turn = active;
 		publish(c);
-		if (row && slot !== row.slot) await serial(c, () => c.db.execute("UPDATE inbox SET slot = ? WHERE key = ? AND state = 'started'", slot, row.key));
-		if (row && paused.told) await serial(c, () => queueMessage(c.db, { to: "item", itemId: row.itemId, fact: { kind: "turn_resumed", at: now, key: row.key, offlineMs: pausedMs } }));
 		// The wake after a crash, before anything of the segment runs: one that crashes at once is found again too (the loop guard counts it).
 		await c.schedule.at(now + config.turnResume.heartbeatMs, "internalResumeTurn").catch(() => undefined);
 		await persist(c);
 		// Said once what was resumed is stored: a crash before this leaves the turn paused, as it was.
 		console.log(`[wlp] turn.resumed session=${meta.sessionId} turn=${run.turn} reason=${paused.reason} paused_ms=${pausedMs} resumes=${run.resumes} prompted=${run.prompted === true}`);
-		if (row && paused.told) await flushOutbox(c, meta.uid);
+		if (row && paused.told) await flushOutbox(c, meta.uid).catch(() => sendOutbox(c, meta.uid));
 		if (paused.reason === "machine" && meta.place.kind === "machine") void machineActor(() => c.client(), meta.uid, meta.place.machineId).pausedSession(meta.sessionId, false).catch(() => undefined);
-		const text = await resumeText(c, meta, run, row, paused.reason, held, stoppedCommand);
 		active.done = c.keepAwake(runTurn(c, meta, active, text, release));
 		release = null;
 		return true;
@@ -5172,13 +5224,14 @@ async function resumePaused(c: Ctx, meta: SessionMeta, granted: string | null = 
 		c.log.warn({ msg: "could not resume the paused turn", session: meta.sessionId, error: describeError(error) });
 		if (error instanceof UserError && ["allowance_used", "too_many_sandboxes"].includes(String(error.code))) {
 			await endPausedTurn(c, meta, "interrupted", `This turn could not resume: ${error.message}`);
-		} else if (!c.vars.stopping && !c.vars.destroying && meta.run?.paused && (meta.run.paused.lookAt ?? 0) <= Date.now()) {
-			meta.run.paused.lookAt = Date.now() + RESUME_RETRY_MS;
-			await c.schedule.at(meta.run.paused.lookAt, "internalResumeTurn").catch(() => undefined);
+		} else if (!c.vars.stopping && !c.vars.destroying && meta.run?.paused) {
+			await armResumeCheck(c, meta.run.paused, RESUME_RETRY_MS).catch(error => c.log.warn({ msg: "could not schedule a paused turn retry", error: describeError(error) }));
 		}
 		return false;
 	} finally {
-		c.vars.resuming = false;
+		if (requested) await giveBack(c, meta, requested.key, requested.slot).catch(error => c.log.warn({ msg: "could not return an unused resume grant", error: describeError(error) }));
+		c.vars.resuming = null;
+		settled();
 		release?.();
 	}
 }
@@ -5527,11 +5580,17 @@ async function giveBack(c: Ctx, meta: SessionMeta, key: string, slot: string): P
  * Never throws.
  */
 async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: string): Promise<void> {
+	// The queue can send a grant while a reconnect or the item's poll is requesting the same
+	// slot. Re-read ownership after that attempt before deciding to take it or give it back.
+	await c.vars.resuming;
 	const row = await inboxRow(c.db, key);
 	if (row?.state === "started" && row.slot === slot) return;
 	// A turn paused while its machine was away, whose slot was given back: this grant is its slot again.
-	if (row?.state === "started" && meta.run?.paused?.slotFreed && row.turn === meta.run.turn) {
-		if (!(await resumePaused(c, meta, slot))) await giveBack(c, meta, key, slot);
+	if (row?.state === "started" && meta.run?.paused && (meta.run.paused.slotFreed || !row.slot) && row.turn === meta.run.turn) {
+		if (!(await resumePaused(c, meta, slot))) {
+			await c.vars.resuming;
+			if ((await inboxRow(c.db, key))?.slot !== slot) await giveBack(c, meta, key, slot);
+		}
 		return;
 	}
 	// The same delivery sent again (a call that failed is sent again) while this session takes or runs it: the slot is that turn's, and stays.
@@ -5907,7 +5966,7 @@ export const agentSession = actor({
 			journal: null,
 			restored: null,
 			takeUpArmedAt: 0,
-			resuming: false,
+			resuming: null,
 			heartbeat: null,
 			setupReap: null,
 			startClock: null,
@@ -6695,8 +6754,15 @@ export const agentSession = actor({
 			if (row?.state === "ended") return await endedFact(c.db, row.key);
 			if (row?.state !== "started") return null;
 			if (c.vars.turn?.item?.row.key === row.key || c.vars.closingItem === row.key) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
-			// Paused, or being resumed: the turn is not over, and resumes by itself.
-			if ((meta.status === "paused" && meta.run?.paused && row.turn === meta.run.turn) || c.vars.resuming) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
+			if (meta.status === "paused" && meta.run?.paused && row.turn === meta.run.turn) {
+				const pausedMs = Date.now() - meta.run.paused.at;
+				if (pausedMs >= STALE_PAUSE_MS && !c.vars.resuming) {
+					console.log(`[wlp] turn.pause_check session=${meta.sessionId} turn=${row.turn} paused_ms=${pausedMs}`);
+					void c.keepAwake(resumePaused(c, meta));
+				}
+				return { kind: "turn_running", at: Date.now(), key: String(input.check) };
+			}
+			if (c.vars.resuming) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
 			// Taken, and no turn of it runs here: the server stopped under it before its end was written.
 			return await closeCutTurn(c, meta, row, row.turn === null ? null : cutTurnUsage(await windlassEventsOf(c, row.turn)));
 		},

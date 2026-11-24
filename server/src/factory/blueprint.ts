@@ -1149,7 +1149,12 @@ function capacityDeadline(c: Change, reason: string, since: number, sentence: st
 function checkTurn(c: Change): void {
 	const step = c.run.step;
 	step.checks += 1;
-	c.effects.push({ kind: "check_turn", key: `${c.key}/check${step.checks}`, turn: c.key, at: c.at + RULES.turnCheckMs, ...(step.kind === "plan_review" ? { to: "critic" as const } : step.kind === "review" && { to: "review" }) });
+	c.effects.push(turnCheckEffect(c.key, step, c.at + RULES.turnCheckMs));
+}
+
+/** Also used on adoption to restore a check consumed without a receipt on an older server. */
+export function turnCheckEffect(turn: string, step: Run["step"], at: number): Extract<Effect, { kind: "check_turn" }> {
+	return { kind: "check_turn", key: `${turn}/check${step.checks}`, turn, at, ...(step.kind === "plan_review" ? { to: "critic" } : step.kind === "review" && { to: "review" }) };
 }
 
 /**

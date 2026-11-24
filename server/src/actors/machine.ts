@@ -422,14 +422,19 @@ export const machine = actor({
 			return slot;
 		},
 		/** A session's turn paused while this machine was away (`on`), or no longer waits for it. */
-		internalPausedSession: async (c, session: string, on: boolean): Promise<void> => {
+		internalPausedSession: async (c, session: string, on: boolean): Promise<boolean> => {
 			requireServiceFor(c, "call");
 			if (on) await c.db.execute("INSERT OR REPLACE INTO paused_sessions (session, at) VALUES (?, ?)", String(session), Date.now());
 			else await c.db.execute("DELETE FROM paused_sessions WHERE session = ?", String(session));
+			// A hello may already have read the list before the session registered.
+			return c.vars.live !== null;
 		},
 		internalReleaseTurnSlot: async (c, session: string, turn: number): Promise<void> => {
 			requireServiceFor(c, "call");
-			await ordered(c, async () => { await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ?", session, turn); await tell(c, await record(c)); });
+			await ordered(c, async () => {
+				const released = await c.db.execute("DELETE FROM turn_slots WHERE session = ? AND turn = ? RETURNING turn", session, turn);
+				if (released.length) await tell(c, await record(c));
+			});
 		},
 		internalCatalog: async (c, id: CatalogId, digest: string): Promise<HarnessOptions | null> => {
 			requireServiceFor(c, "call");
