@@ -108,6 +108,21 @@ function missingActor(error: unknown): boolean {
 	return e?.group === "actor" && e.code === "not_found";
 }
 
+/**
+ * The repository's default branch moved (a push, or a pull request merged into it): each user whose prepared
+ * environments of it are watched builds again once the pushes settle (user-environments.ts `pushed`). Never throws:
+ * a build is no reason to retry the delivery.
+ */
+async function environmentPush(d: Delivery, c: Ctx): Promise<"no item" | void> {
+	if (!d.repositoryId || !(d.event === "push" || (d.event === "pull_request" && d.data.toDefault))) return "no item";
+	const params = { params: serviceParams() };
+	let users: string[] = [];
+	try { users = await c.client().githubRepository.get([String(d.repositoryId)], params).internalEnvironmentUsers(); }
+	catch { return "no item"; }
+	for (const uid of users) await c.client().user.get([uid], params).internalEnvironmentPushed(d.repositoryId).catch(() => undefined);
+	if (!users.length) return "no item";
+}
+
 async function nudgeItems(d: Delivery, c: Ctx): Promise<"no item" | void> {
 	if (!d.repositoryId || !(d.event === "check_run" || d.event === "check_suite" || d.event === "status" || d.event === "pull_request")) return "no item";
 	const subject = d.event === "pull_request" ? { kind: "pr" as const, pr: d.data.pr } : { kind: "ci" as const, head: d.data.head };
@@ -257,7 +272,8 @@ export const HANDLERS: Partial<Record<Delivery["event"], (delivery: Delivery, c:
 	check_run: nudgeItems,
 	check_suite: nudgeItems,
 	status: nudgeItems,
-	pull_request: nudgeItems,
+	pull_request: async (d, c) => { await environmentPush(d, c); return nudgeItems(d, c); },
+	push: environmentPush,
 	installation: refreshInstallation,
 	installation_repositories: refreshInstallation,
 };

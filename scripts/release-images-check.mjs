@@ -59,7 +59,7 @@ test("context-only and registry-pin builds do not resolve mutable local tags", t
 		const context = join(dir,variant);
 		execFileSync(join(root,"sandbox/build.sh"),["--context",context],{env:{...env,WLP_SANDBOX_VARIANT:variant}});
 		assert.deepEqual(readFileSync(join(context, "Dockerfile")), readFileSync(join(root, "sandbox/Dockerfile")));
-		assert.deepEqual(readdirSync(context).sort(), ["Dockerfile","windlass","wlp-run",...(variant === "shots" ? ["wlp-shot"] : [])]);
+		assert.deepEqual(readdirSync(context).sort(), ["Dockerfile","windlass","wlp-pnpm","wlp-run",...(variant === "shots" ? ["wlp-shot"] : [])]);
 	}
 	assert.throws(() => readFileSync(trace), {code:"ENOENT"});
 	const refuse = spawnSync(join(root,"scripts/runner-build.sh"),[pin],{encoding:"utf8",env:{...env,WLP_RUNNER_PUSH:"ghcr.io/windlassai/windlass-runner:fixture"}});

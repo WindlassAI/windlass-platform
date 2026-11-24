@@ -71,7 +71,8 @@
 
 import { DEFERRED_INPUTS, digest, HASH, SHA, type SnapshotRequest, type SnapshotSelection, type SnapshotSource } from "../snapshot-key.js";
 import type { E2bClient, E2bSnapshotInfo } from "./client.js";
-import type { E2bSettings, E2bSnapshotLimits } from "./config.js";
+import { type E2bSettings, type E2bSnapshotLimits, templateFor } from "./config.js";
+import type { HostedSize } from "../../contract.js";
 
 /** The metadata keys a sandbox of a snapshot lookup carries (beside sandboxes.ts `META`). */
 export const SNAP_META = {
@@ -179,7 +180,8 @@ export class E2bSnapshots {
 	private get namespace() { return digest(["e2b-snapshots", this.settings.deployment]).slice(0, 8); }
 	userTag(uid: string) { return digest([this.settings.deployment, uid]).slice(0, 10); }
 	repoTag(uid: string, repo: string) { return digest([this.settings.deployment, uid, repo]).slice(0, 10); }
-	templateOf(screenshots: boolean) { return screenshots ? this.settings.shotsTemplate : this.settings.template; }
+	/** A size's template: a snapshot is of one template's sandbox and starts only sandboxes of that size, so the template is in its key. */
+	templateOf(screenshots: boolean, size: HostedSize = "small") { return templateFor(this.settings, size, screenshots); }
 
 	/** The build the template's tag points at now, asked of E2B at most every five minutes. Null: unknown, and no snapshot is used or saved. */
 	async build(template: string): Promise<string | null> {
@@ -191,9 +193,9 @@ export class E2bSnapshots {
 		return safe;
 	}
 
-	key(request: Pick<SnapshotRequest, "repo" | "generation" | "inputs">, uid: string, profile: string, screenshots: boolean, build: string) {
+	key(request: Pick<SnapshotRequest, "repo" | "generation" | "inputs">, uid: string, profile: string, screenshots: boolean, build: string, size: HostedSize = "small") {
 		const network = this.settings.network ?? { mode: "open", hosts: [] };
-		return digest(["e2b", this.settings.deployment, uid, request.repo, request.generation, request.inputs, this.templateOf(screenshots), build, profile, screenshots, network.mode, [...network.hosts].sort()]);
+		return digest(["e2b", this.settings.deployment, uid, request.repo, request.generation, request.inputs, this.templateOf(screenshots, size), build, profile, screenshots, network.mode, [...network.hosts].sort()]);
 	}
 
 	coldKey(request: Pick<SnapshotRequest, "repo" | "generation" | "attempt">, uid: string, profile: string) {
@@ -236,8 +238,8 @@ export class E2bSnapshots {
 	 * What a new sandbox is made from. Never throws for E2B's sake: a listing or a build that cannot be had
 	 * is a cold start. Snapshots of the user and repository from an earlier settings generation are removed.
 	 */
-	async select(request: SnapshotSelection, uid: string, profile: string, screenshots: boolean): Promise<Selected> {
-		const template = this.templateOf(screenshots);
+	async select(request: SnapshotSelection, uid: string, profile: string, screenshots: boolean, size: HostedSize = "small"): Promise<Selected> {
+		const template = this.templateOf(screenshots, size);
 		const base = { [SNAP_META.attempt]: request.attempt, [SNAP_META.variant]: screenshots ? "shots" : "base" };
 		const cold = (candidate: string, build: string | null): Selected => ({ hit: false, template, metadata: { ...base, [SNAP_META.candidate]: request.writer ? candidate : "", [SNAP_META.build]: build ?? "" } });
 		if (!REPO.test(request.repo) || !HASH.test(request.generation) || !ATTEMPT.test(request.attempt)) return cold("", null);
@@ -245,7 +247,7 @@ export class E2bSnapshots {
 		if (build === null) return cold("", null);
 		if (request.inputs === DEFERRED_INPUTS) return cold(this.coldKey(request, uid, profile), build);
 		if (!HASH.test(request.inputs)) return cold("", null);
-		const key = this.key(request, uid, profile, screenshots, build);
+		const key = this.key(request, uid, profile, screenshots, build, size);
 		let rows: SnapshotRow[];
 		try { rows = await this.rows(); }
 		catch { return cold(key, build); }

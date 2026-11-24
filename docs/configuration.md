@@ -57,6 +57,8 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | `WLP_SANDBOX_IMAGE` | base image for the Docker layer, or the private output tag for either variant of `sandbox/build.sh`. By default the build publishes `windlass-platform-sandbox:latest` for base or `windlass-platform-sandbox:shots` for shots |
 | `WLP_SANDBOX_SHOTS_IMAGE` | screenshots image for the Docker layer and local runner builds (default `windlass-platform-sandbox:shots`) |
 | `WLP_TURN_TIMEOUT_MS` | how long one turn may run (default 45 minutes). The durations that keep its access token fresh are constants and hold for a turn of any length |
+| `WLP_ACP_IDLE_MINUTES` | how long a Claude Code, OpenCode or Codex agent may send nothing, with no call of its own running and no question waiting for a person, before the platform ends its turn (default 10). The turn ends sooner, as a usage limit, when OpenCode logs that it gave up on the provider's rate limit |
+| `WLP_HOSTED_QUESTION_TIMEOUT_MS` | in a hosted sandbox, how long an approval waits before the platform ends the turn and pauses the sandbox at once (default 5 minutes; never more than `WLP_QUESTION_TIMEOUT_MS`). On a machine a question waits `WLP_QUESTION_TIMEOUT_MS`, is declined, and the turn goes on |
 | `WLP_QUESTION_TIMEOUT_MS` | how long a question waits for an answer before the platform declines it (default 10 minutes) |
 | `WLP_SERVER_APPROVAL_TTL_MS` | how long an approval of a project's MCP server is remembered for its user (default and most: 30 days, which is how long Windlass keeps its own). A shorter time is for the checks |
 | `WLP_SNAPSHOTS` | `on` enables post-setup snapshots for Docker Windlass sessions. Defaults to `off`. |
@@ -78,8 +80,22 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | Variable | Effect |
 |---|---|
 | `WLP_DAILY_SANDBOX_SECONDS` | how many seconds a user's sandboxes may run in one UTC day, all of them together (default 7200, two hours; at least 60), or `unlimited` ([architecture.md, "Usage and limits"](architecture.md#usage-and-limits)) |
-| `WLP_MAX_KEPT_SANDBOXES` | how many sandboxes a user may keep at the same time, running or paused (default 5; at least 1), or `unlimited` |
+| `WLP_MAX_KEPT_SANDBOXES` | how many of the platform's own (hosted) sandboxes a user may keep at the same time, running or paused; sandboxes on the user's machines are not counted, and have only the limits their owners set on the runner (default 5; at least 1), or `unlimited` |
 | `WLP_USAGE_HOLD_SECONDS` | how much of the day's allowance a running sandbox reserves at a time, and so how often its session reports (default 300, from 5 to 3600). A shorter time is for the checks |
+
+## Plans and billing
+
+Off unless `WLP_BILLING_PROVIDER` is set. With billing off there are no plans, and every account has the limits above. [billing.md](billing.md) covers the plans, how to set up the provider and how the money code behaves.
+
+| Variable | Effect |
+|---|---|
+| `WLP_BILLING_PROVIDER` | `dodo` turns billing on with Dodo Payments; unset, empty or `off` leaves it off. Any other value stops the server at start |
+| `WLP_BILLING_GRACE_DAYS` | days Pro's limits last after a failed payment before the account falls back to Free (default 7, from 0 to 60) |
+| `WLP_DODO_API_KEY` | the Dodo API key (a secret); required with `dodo` |
+| `WLP_DODO_WEBHOOK_SECRET` | the webhook endpoint's signing secret, `whsec_…` (a secret); required with `dodo` |
+| `WLP_DODO_ENVIRONMENT` | `test_mode` (default) or `live_mode` |
+| `WLP_DODO_PRODUCT_PRO_MONTHLY`, `WLP_DODO_PRODUCT_PRO_YEARLY` | the product ids (`pdt_…`) of Pro billed monthly and yearly; required with `dodo` |
+| `WLP_DODO_METER_EVENT` | the event name of the overage meter (default `hosted_minutes`) |
 
 ## E2B
 
@@ -89,9 +105,12 @@ Hobby plan. [operating.md, "E2B"](operating.md#e2b) explains each.
 | Variable | Effect |
 |---|---|
 | `E2B_API_KEY` | the E2B account's API key. Required: without it the server does not start |
-| `WLP_E2B_TEMPLATE`, `WLP_E2B_SHOTS_TEMPLATE` | the templates sandboxes are made from (defaults `windlass-platform-sandbox` and `windlass-platform-sandbox-shots`), for the build scripts and the server |
+| `WLP_E2B_TEMPLATE`, `WLP_E2B_SHOTS_TEMPLATE` | the small size's templates (defaults `windlass-platform-sandbox` and `windlass-platform-sandbox-shots`), for the build scripts and the server |
+| `WLP_E2B_TEMPLATE_STANDARD`, `WLP_E2B_TEMPLATE_LARGE`, `WLP_E2B_SHOTS_TEMPLATE_STANDARD`, `WLP_E2B_SHOTS_TEMPLATE_LARGE` | the other sizes' templates (defaults `windlass-platform-sandbox-standard`, `-large`, and the same with `-shots`) |
+| `WLP_E2B_SIZES` | the hosted sizes whose templates are built, comma-separated: `small`, `standard`, `large` (default `small`; small is always offered). Work items default to standard |
+| `WLP_E2B_SIZE` | `sandbox/e2b/build.sh` only: which size to build (default `small`): 1 vCPU and 1 GiB, 2 and 4 GiB, 4 and 8 GiB. None is beyond the Hobby plan's 8 vCPU and 8 GiB a sandbox |
 | `WLP_E2B_DEPLOYMENT` | marks every sandbox of this deployment in its metadata (default `default`); different for another deployment that shares the E2B account |
-| `WLP_E2B_MAX_RUNNING` | how many of the deployment's sandboxes may run at the same time (default 3) |
+| `WLP_E2B_MAX_RUNNING` | how many of the deployment's sandboxes may run at the same time (default 3). On the Hobby plan the account runs at most 10 at once, for all its deployments together: keep the sum of every deployment's cap under 10 |
 | `WLP_E2B_IDLE_TIMEOUT_MS` | a sandbox's own timeout while no turn runs in it (default two minutes) |
 | `WLP_E2B_TURN_LEASE_MS` | a sandbox's own timeout while a turn runs, renewed every third of it (default three minutes) |
 | `WLP_E2B_MAX_RUNTIME_MS` | how long the plan lets a sandbox run without a pause (default one hour, the Hobby plan's; 86400000 on Pro) |
@@ -99,7 +118,7 @@ Hobby plan. [operating.md, "E2B"](operating.md#e2b) explains each.
 | `WLP_E2B_WINDLASS_SANDBOX` | `1`: promise Windlass's own sandbox in the E2B profile, once `scripts/e2b-check.ts` has shown it works (default 0) |
 | `WLP_E2B_OPEN_PROFILE` | `1`: also offer "E2B, microVM only" (`e2b-open`) (default 0: listed, not offered) |
 | `WLP_E2B_WINDLASS_VERSION` | the Windlass version in the template, to show before the first sandbox was made (default: learned from the first sandbox). The model relay is used on E2B only when this says 0.6.0 or later |
-| `WLP_E2B_CPU`, `WLP_E2B_MEMORY_MB` | `sandbox/e2b/build.sh` only: the size of every sandbox made from the template (default 1 vCPU, 1024 MiB) |
+| `WLP_E2B_CPU`, `WLP_E2B_MEMORY_MB` | `sandbox/e2b/build.sh` only: override the size's CPUs and memory, for a test build under another name (the server prices a size at its own figures) |
 
 ## The bucket for agent memory and screenshots
 
@@ -143,17 +162,14 @@ The runner's own variables (`WLP_RUNNER_CPUS`, `WLP_RUNNER_STATE_DIR`) are in th
 
 ## Work items
 
-Operators can set [per-user limits](#per-user-limits), including a daily token cap and the feature budget multiplier.
+Operators can set [per-user limits](#per-user-limits), including a daily token cap. Only what costs the operator or invites abuse is capped: a user's own machines have no platform limit, and an item's budget pauses and asks its person instead of stopping work.
 
 | Variable | Effect |
 |---|---|
-| `WLP_ITEMS` | `1`: every user of the deployment may file work items ([work-items.md](work-items.md#turning-work-items-on)); default off. The `WLP_FACTORY_RUNNING_TURNS` ceiling holds either way |
-| `WLP_FACTORY_RUNNING_TURNS` | how many turns a user may have running at once, their own and their work items' together (default 6, from 1 to 100): also the ceiling on the user's own running agents |
-| `WLP_FACTORY_TURNS` | how many of those a user's work items may take (default 5, from 1 to 100); held to one less than `WLP_FACTORY_RUNNING_TURNS`, and to 0 when only one running turn is allowed |
-| `WLP_FACTORY_HOSTED_RUNNING` | how many of a user's hosted sandboxes may run at once for a work item's turn to start beside them (default 3) |
-| `WLP_FACTORY_REVIEW_CAP` | how many of a user's work items may be in review before new ones wait (default 6) |
-| `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_TURNS`, `WLP_FACTORY_ITEM_ACTIVE_SECONDS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | a new work item's budget: tokens, turns, seconds of working time and seconds of hosted sandbox time (defaults 6,000,000, 14, 14400 and 7200) |
-| `WLP_FACTORY_GITHUB_ITEMS_PER_DAY`, `WLP_FACTORY_GITHUB_DRAFTS` | how many items a user may have filed from GitHub issues in a day, and how many such drafts may wait (defaults 20 and 20) |
+| `WLP_ITEMS` | `1`: every user of the deployment may file work items ([work-items.md](work-items.md#turning-work-items-on)); default off. The `WLP_FACTORY_HOSTED_RUNNING` ceiling holds either way |
+| `WLP_FACTORY_HOSTED_RUNNING` | how many hosted sandboxes a user may have at work at once, their own agents and their work items' together (default 3, from 1 to 100). A work item's turn past it waits; a prompt of the user's own is refused with the reason. Sandboxes on the user's machines never count |
+| `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | a new work item's budget: cost-weighted tokens, cached input counted at a tenth (default 2,000,000), and seconds of hosted sandbox time (default 7200). A feature's budget is its approved subtasks' and one item's for its own turns |
+| `WLP_FACTORY_GITHUB_ITEMS_PER_DAY` | how many items a user may file from GitHub issues in a UTC day, drafts among them (default 20) |
 | `WLP_FACTORY_ORCHESTRATE` | `0`: hide the Orchestrate control and refuse new orchestrated filings (default on) |
 | `WLP_FACTORY_REVIEWER` | `on`: give new items on a hosted profile that isolates commands a second review (default off) |
 | `WLP_FACTORY_SCREENSHOTS` | `off`: no work item of the deployment takes screenshots, whatever its repository's setting says. Sessions get the base image or template, never the screenshots one (also a builder that reconnects to a sandbox made before), agents are not offered screenshots in their reports, plans see no machine with screenshots, and a repository's setting cannot be turned on (one saved on can still be turned off). `on` or unset: each repository's setting decides (default on) |
@@ -199,6 +215,8 @@ users' actors go with the actor data.
 
 ## Docker setup snapshots
 
+Only a repository's prepared-environment builds save snapshots, and sessions start from one only while its environment is ready and current ([github-and-repositories.md](github-and-repositories.md#a-repositorys-prepared-environment)). The rules below are those of the store the builds save into.
+
 A snapshot lives on the Docker daemon that ran setup. Windlass keeps one image per user and repository there. The cache key includes the image ID, OS and architecture, sandbox profile, screenshots variant, network mode, setup text, lockfile contents and toolchain pins. Every `package.json` and recognized dependency file contributes its Git blob ID. A hosted deployment keeps its index identity in `snapshot-deployment` under `RIVETKIT_STORAGE_PATH`. Preserve that directory when replacing the server. If the tree has no recognized lockfile or GitHub cannot provide a complete tree, the session uses the ordinary setup path. Editing setup or reconnecting GitHub changes the settings generation. A new session verifies access and the fetched revision before it skips setup.
 
 Each Docker daemon allows 10 GB of incremental image storage by default, with a 2 GB share per user. Eviction removes the least recently used images first. Sweeps and new saves evict oldest-first when the Docker filesystem has less than the keep-free amount free (40 GB by default), and no snapshot or Git mirror is written below it. Images expire after 14 days unused. An evicted image still counts toward both caps until its last container releases it.
@@ -227,14 +245,16 @@ To measure startup on a development host, run `WLP_SANDBOX=docker pnpm --filter 
 
 `WLP_DAILY_TOKENS` sets the model token cap per user per UTC day. Its default is `unlimited`. A positive integer applies to hosted sessions and Windlass on paired machines, which receive the platform’s model credential. Machine-local Claude Code and OpenCode use the machine owner’s subscription. Input and output are counted as the model reports them, including compaction. Cached input and reasoning are already included. Recording starts when this version is installed.
 
-`WLP_FACTORY_FEATURE_MULTIPLIER` sets the starting feature budget as a multiple of a Quick item’s budget (1–100, default 3). Per-item budgets and this multiplier take effect when an item is created. An existing item keeps its budget and any increases approved for that item. The daily model cap applies across items regardless of their individual budgets.
+Per-item budgets take effect when an item is created. An existing item keeps its budget and any increases its person gave it. The daily model cap applies across items regardless of their individual budgets, and counts tokens as reported, not weighted.
+
+These are gone, and are ignored if still set: `WLP_FACTORY_RUNNING_TURNS`, `WLP_FACTORY_TURNS`, `WLP_FACTORY_REVIEW_CAP`, `WLP_FACTORY_FEATURE_MULTIPLIER`, `WLP_FACTORY_GITHUB_DRAFTS`, `WLP_FACTORY_ITEM_TURNS` and `WLP_FACTORY_ITEM_ACTIVE_SECONDS`. Stored overrides of `runningTurns`, `factoryTurns`, `reviewCap`, `featureMultiplier`, `githubDrafts`, `item.turns` and `item.activeSeconds` are read past.
 
 Run the command from `server/` in the operator environment with the normal service signing key.
 
 ```sh
 node --import tsx src/set-user-limit.ts u_example dailyTokens 18000000
-node --import tsx src/set-user-limit.ts u_example item.turns 20
-node --import tsx src/set-user-limit.ts u_example item.turns default
+node --import tsx src/set-user-limit.ts u_example item.tokens 4000000
+node --import tsx src/set-user-limit.ts u_example item.tokens default
 node --import tsx src/set-user-limit.ts u_example --history
 ```
 
@@ -242,13 +262,13 @@ Use `default` to remove an override and inherit the deployment setting. Each cha
 
 | Setting | Accepted values |
 | --- | --- |
-| `runningTurns`, `factoryTurns`, `hostedRunning`, `featureMultiplier` | 1–100. The effective Factory share leaves one turn for personal prompts. |
-| `reviewCap`, `item.turns` | 1–1,000 |
-| `item.tokens` | 1–1,000,000,000 |
-| `item.activeSeconds`, `item.hostedSeconds` | 1–604,800 |
-| `githubItemsPerDay`, `githubDrafts`, `attachments.perItem` | 1–1,000,000 |
+| `hostedRunning` | 1–100 |
+| `item.tokens` | 1–1,000,000,000, cost-weighted |
+| `item.hostedSeconds` | 1–604,800 |
+| `githubItemsPerDay`, `attachments.perItem` | 1–1,000,000 |
 | `attachments.bytes`, `attachments.days` | 1–2,097,152 bytes per screenshot and 1–36,500 days of retention |
 | `attachments.accountBytes`, `dailyTokens` | Positive safe integer. `dailyTokens` also accepts `unlimited`. |
 | `dailySeconds`, `maxKept` | 60–86,400 hosted sandbox seconds and 1–1,000 kept hosted sandboxes. Both accept `unlimited`. |
+| `hostedMinutes`, `machines` | 1–10,000,000 hosted minutes a month (accepts `unlimited`) and 1–100 paired machines. With billing these replace the plan's figures for that user; a Pro user's spend cap still adds overage past `hostedMinutes`. |
 
 Factory turns already admitted finish their step, so reported usage can exceed the cap. Further Factory turns wait until 00:00 UTC or an operator raises the cap. Interactive prompts show the reason immediately.

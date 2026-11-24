@@ -22,7 +22,7 @@ import { currentMode } from "../lib/modes";
 import { absoluteTime, compact, count, percent, plural, shortId } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { startHeadline, startLine, startRows } from "../lib/start-times";
-import { cachedShare, lastTurn, sessionUsage, turnUsage, type ModelCall, type SessionView } from "../lib/timeline";
+import { blockedRequests, cachedShare, lastTurn, sessionUsage, turnNetwork, turnUsage, type ModelCall, type SessionView } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
 import { DiffView } from "./DiffView";
@@ -84,7 +84,7 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 				) : null}
 				<dt>id</dt>
 				<dd className="kv-mono" title={id ?? undefined}>
-					{id ? <code className="plain-code">{shortId(id)}</code> : <span className="tone-faint">none until the first turn</span>}
+					{id ? <code className="plain-code">{shortId(id)}</code> : <span className="tone-faint">{summary.turns === 0 ? "none until the first turn" : "not reported"}</span>}
 				</dd>
 				<dt>created</dt>
 				<dd>{absoluteTime(summary.createdAt)}</dd>
@@ -105,7 +105,39 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 	);
 }
 
-function Sandbox({ summary, profile }: { summary: SessionSummary; profile: SandboxProfile }) {
+/**
+ * Under the sandbox's network fact: how many requests its egress policy refused in the current turn,
+ * one line that leads to the turn's row in the timeline. Nothing when none were.
+ */
+export function BlockedNetworkLine({ view }: { view: SessionView }) {
+	const turn = lastTurn(view);
+	const network = turn ? turnNetwork(turn) : null;
+	if (!turn || !network) return null;
+	const requests = blockedRequests(network);
+	if (requests === 0) return null;
+	const target = `network-${network.seq}`;
+	return (
+		<p className="panel-blocked">
+			<span>
+				{plural(requests, "blocked network request")} in turn {turn.turn}
+			</span>
+			<a
+				className="link"
+				href={`#${target}`}
+				onClick={(event) => {
+					const row = document.getElementById(target);
+					if (!row) return;
+					event.preventDefault();
+					row.scrollIntoView({ block: "center", behavior: "smooth" });
+				}}
+			>
+				Show
+			</a>
+		</p>
+	);
+}
+
+function Sandbox({ summary, profile, view }: { summary: SessionSummary; profile: SandboxProfile; view: SessionView }) {
 	return (
 		<section className="panel-section" aria-labelledby="panel-sandbox">
 			<h2 className="panel-title" id="panel-sandbox">
@@ -113,7 +145,13 @@ function Sandbox({ summary, profile }: { summary: SessionSummary; profile: Sandb
 				<SandboxState state={summary.sandbox} />
 			</h2>
 			<p className="panel-lede">{profile.name}</p>
+			{summary.environment ? (
+				<p className="panel-env" title={absoluteTime(summary.environment.validatedAt)}>
+					Started from a validated environment: setup and {summary.environment.checks === 1 ? "the saved check" : `${summary.environment.checks} saved checks`} passed at <code>{summary.environment.commit.slice(0, 10)}</code>.
+				</p>
+			) : null}
 			<ProfileFacts profile={profile} claude={summary.harness && summary.harness !== "windlass" ? { codex: summary.harness === "codex", opencode: summary.harness === "opencode", mode: currentMode(summary, profile) } : null} />
+			<BlockedNetworkLine view={view} />
 			<details className="panel-more">
 				<summary>
 					<ChevronIcon size={12} className="panel-more-chevron" />
@@ -283,7 +321,7 @@ function Context({ view, harness, turns }: { view: SessionView; harness: string;
 					<Stat label="Cost so far" value={context.cost ? costWords(context.cost).replace(/ so far$/, "") : "–"} sub={context.cost ? plural(turns, "turn") : "not reported"} />
 				</div>
 			) : (
-				<p className="panel-empty">{harness} says how full its context is once a turn has run.</p>
+				<p className="panel-empty">{turns === 0 ? `${harness} says how full its context is once a turn has run.` : `${harness} has not said how full its context is.`}</p>
 			)}
 		</section>
 	);
@@ -484,7 +522,7 @@ export function SidePanel({ sessionId, summary, profile, view, turnsEnded, quest
 	return (
 		<aside className="panel" id="details" aria-label="Session details">
 			<Facts summary={summary} profile={profile} view={view} />
-			<Sandbox summary={summary} profile={profile} />
+			<Sandbox summary={summary} profile={profile} view={view} />
 			{usage === "tokens" ? (
 				<>
 					<Tokens view={view} perCall />

@@ -68,7 +68,7 @@ async function controlChecks() {
 	let welcomes = 0, effects = 0;
 	const owner = {
 		identity: paired.current, serial: async (fn: () => Promise<void>) => fn(), checkAuthenticatedNetwork: async () => {}, platformGitHost: () => {}, platformStoreCaps: () => {}, storeLimits: () => ({ machine: 10e9, user: 2e9, free: 40e9 }),
-		welcome: async () => { welcomes++; }, create: () => { effects++; }, requestedRemoval: () => { effects++; },
+		welcome: async () => { welcomes++; }, maintainSpares: async () => {}, stopSpares: () => {}, create: () => { effects++; }, requestedRemoval: () => { effects++; },
 		prune: () => { effects++; }, report: () => ({ kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: null, sandboxes: [] }),
 	} as unknown as Executor;
 	async function attempt(run: (statuses: string[]) => Promise<void>) {

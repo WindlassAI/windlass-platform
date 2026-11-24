@@ -14,7 +14,9 @@
  * changed a file its `when` patterns cover (Bun.Glob: `*` within one directory, `**` at any depth, `{a,b}`), in
  * the saved order. No secret of the repository is handed to a check: these agents' own commands get none
  * either. A check that could not be started (the sandbox went) says nothing about the code; when it is the only
- * kind that did not pass, the turn ends at once (`not_started`), and the agent is not sent back.
+ * kind that did not pass, the turn ends at once (`not_started`), and the agent is not sent back. Nor is it for one
+ * that ran and failed because the sandbox could not run its command (factory/check-environment.ts): when only such
+ * checks failed, the turn ends at once (`environment`), and the factory asks the person.
  *
  * Where the agent's own commands run in a sandbox of its own (Codex on "Docker + Windlass sandbox",
  * harnesses.ts `sandboxedOn`), a check would run what the agent wrote outside that sandbox, with the network
@@ -35,6 +37,7 @@ import { CHECK_OUTPUT_CHARS, type CheckStatus, type RepositoryCheck, type Windla
 import { data, fence } from "../factory/reviewer-task.js";
 import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
 import { outputTail } from "../verified.js";
+import { environmentFailure } from "../factory/check-environment.js";
 import type { SandboxHandle } from "./api.js";
 
 /** How many times one turn's agent is sent back with failing checks (the factory's `RULES.gateRounds`). */
@@ -160,7 +163,7 @@ export class PlatformChecks {
 		private readonly checks: readonly RepositoryCheck[],
 		private readonly emit: (event: WindlassEvent, note?: ChecksNote) => void,
 		/** `unavailable`: why no check may run in this sandbox (above); each is then recorded as not started, with it. */
-		private readonly options: { agent: string; redactor?: Redactor; signal?: AbortSignal; unavailable?: string },
+		private readonly options: { agent: string; redactor?: Redactor; signal?: AbortSignal; force?: boolean; unavailable?: string },
 	) {}
 
 	private event(type: string, data: Record<string, unknown>): WindlassEvent {
@@ -226,6 +229,19 @@ export class PlatformChecks {
 	}
 
 	/**
+	 * Every check once, in the saved order, whatever its `when` patterns: what a prepared environment's build
+	 * validates with (environments.ts). Emits nothing; stops at an abort.
+	 */
+	async runAll(): Promise<PlatformCheckResult[]> {
+		const results: PlatformCheckResult[] = [];
+		for (const check of this.checks) {
+			if (this.options.signal?.aborted) break;
+			results.push(await this.runOne(check));
+		}
+		return results;
+	}
+
+	/**
 	 * The agent's prompt ended with `end_turn`: runs what applies, and answers with the prompt that sends the agent
 	 * back, or null when the turn ends now (passed, nothing to run, out of rounds, or stopped).
 	 */
@@ -235,7 +251,7 @@ export class PlatformChecks {
 		if (!this.checks.length) return this.end({ status: "not_configured" });
 		const now = await this.snapshot("checks_end");
 		if (this.options.signal?.aborted) return null;
-		const changed = await this.changed(this.start, now);
+		const changed = this.options.force ? null : await this.changed(this.start, now);
 		// The agent put every file back as it was at the turn's start after its checks had run: nothing needs checking.
 		if (changed?.length === 0) return this.end(this.ran ? { status: "not_needed", reason: "state_unchanged", since: { run: null } } : { status: "not_needed", reason: "turn_unchanged" });
 		const selected = checksFor(this.checks, changed);
@@ -248,7 +264,10 @@ export class PlatformChecks {
 		}
 		if (this.options.signal?.aborted || results.some(r => r.status === "interrupted")) return null;
 		this.ran = true;
-		const failing = results.filter(r => r.status !== "passed" && !r.startError);
+		const failed = results.filter(r => r.status !== "passed" && !r.startError);
+		// One the sandbox could not run (check-environment.ts) says nothing about the code either: the agent is not sent back for it.
+		const environment = failed.filter(r => environmentFailure({ status: r.status, exitCode: r.exitCode, output: r.output }) !== null);
+		const failing = failed.filter(r => !environment.includes(r));
 		const notStarted = results.filter(r => r.startError);
 		const level = failing.length || notStarted.length ? "warn" : "info";
 		const said = `The platform ran the repository's checks${this.sendBacks ? " again" : ""}: ${runWords(results)}.`;
@@ -262,7 +281,8 @@ export class PlatformChecks {
 				})),
 			},
 		}));
-		if (!failing.length && !notStarted.length) return this.end({ status: "passed" }, { level, text: said });
+		if (!failed.length && !notStarted.length) return this.end({ status: "passed" }, { level, text: said });
+		if (!failing.length && environment.length) return this.end({ status: "unresolved", reason: "environment" }, { level, text: `${said} The sandbox could not run ${environment.map(r => r.name).join(", ")}, which says nothing about the code, so ${agent} was not sent back.` });
 		if (!failing.length) return this.end({ status: "unresolved", reason: "not_started" }, { level, text: `${said} A check that could not start says nothing about the code, so ${agent} was not sent back.` });
 		if (this.sendBacks >= PLATFORM_CHECK_ROUNDS) return this.end({ status: "unresolved", reason: "max_rounds" }, { level, text: `${said} ${agent} was sent back ${PLATFORM_CHECK_ROUNDS} times already, so the turn ends with checks failing.` });
 		this.sendBacks++;

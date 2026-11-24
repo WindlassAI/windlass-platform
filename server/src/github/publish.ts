@@ -22,12 +22,14 @@
  * was removed.
  */
 
+import { networkBody } from "../blocked-network.js";
+import type { BlockedNetwork } from "../contract.js";
 import { mirrorOwner } from "../sandbox/git-mirrors.js";
 import type { GithubId, PublishMessage, PullRequestInfo, SessionRepository, Verified } from "../contract.js";
 import type { SandboxHandle } from "../sandbox/api.js";
 import { type WorkDiff, verifiedSection, verifiedWords, withVerifiedSection, workFlags } from "../verified.js";
 import { type GithubApp, GithubError, type Pull, type Repository } from "./app.js";
-import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, hasMirror, saveMirrorAfterClone, commitWork, outgoingPatch, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
+import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, hasMirror, saveMirrorAfterClone, commitWork, mergeBaseForCi, outgoingPatch, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
 import { refHead } from "./feature.js";
 import { outgoingCredentials, redact } from "./redact.js";
 import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveBoundRepository, resolveRepository } from "./repos.js";
@@ -46,11 +48,11 @@ export function sessionRepository(app: GithubApp, connection: StoredConnection, 
 	return repo.closesIssue ? resolveBoundRepository(app, connection, repo.id, repo.installationId, need) : resolveRepository(app, connection, repo.id, need);
 }
 
-function pullBody(repo: StoredRepository, body: string, section: string) {
-	if (!repo.closesIssue) return withVerifiedSection(body, section);
+function pullBody(repo: StoredRepository, body: string, section: string, blocked?: BlockedNetwork, showHosts = false) {
+	if (!repo.closesIssue) return withVerifiedSection(networkBody(body, blocked, showHosts), section);
 	const footer = `\n\nCloses #${repo.closesIssue}.`;
 	const text = body.trimEnd();
-	return withVerifiedSection(text.endsWith(footer) ? text.slice(0, -footer.length) : text, section) + footer;
+	return withVerifiedSection(networkBody(text.endsWith(footer) ? text.slice(0, -footer.length) : text, blocked, showHosts), section) + footer;
 }
 
 const fullName = (repository: { owner: string; name: string }) => `${repository.owner}/${repository.name}`;
@@ -170,8 +172,8 @@ export async function cloneRepository(app: GithubApp, connection: StoredConnecti
  * Puts the clone in `directory` on the session's branch `work`, once the setup command has run on the
  * base (git.ts `workCheckoutScript`); resolves with the commit it is on. Throws when git could not.
  */
-export async function putOnWork(sandbox: SandboxHandle, directory: string, work: string): Promise<string> {
-	const outcome = await checkoutWork(sandbox, directory, work);
+export async function putOnWork(sandbox: SandboxHandle, directory: string, work: string, start?: string): Promise<string> {
+	const outcome = await checkoutWork(sandbox, directory, work, start);
 	const unsafe = outcome.marks.get("unsafe");
 	if (unsafe !== undefined) throw new Error(unsafeWorkspace(unsafe));
 	const head = outcome.marks.get("work") || "";
@@ -250,6 +252,7 @@ export interface Pushed {
 }
 
 export interface PublishInput extends PushInput {
+	blockedNetwork?: BlockedNetwork;
 	/** The pull request the session has, if any. */
 	pull: PullRequestInfo | null;
 	message: PublishMessage;
@@ -323,7 +326,23 @@ export async function pushWork(input: PushInput, message: string): Promise<Pushe
 	return commitAndPush(input, await sessionRepository(input.app, input.connection, input.repository, "write"), message);
 }
 
-async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<typeof resolveRepository>>, message: string): Promise<Pushed> {
+export class BaseMergeConflict extends Error {}
+
+/** Fetch at answer time. Only the exact merge of the polled head may go through the normal scanned push. */
+export async function updateBranchFromBase(input: PushInput, update: { head: string; at: number }): Promise<Pushed> {
+	const { app, repository, branch, sandbox, connection } = input;
+	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
+	const resolved = await sessionRepository(app, connection, repository, "write");
+	const found = await fetchBase(app, connection, repository, sandbox, branch);
+	if (!found || !repository.baseSha) throw new GithubProblem("github_unreachable", "The item branch or its current base could not be confirmed.");
+	const merged = await mergeBaseForCi(sandbox, branch, repository.branch, repository.baseSha, update.head, update.at, authorOf(connection));
+	if (merged.ok && merged.marks.has("conflict")) throw new BaseMergeConflict();
+	const head = merged.marks.get("head");
+	if (!merged.ok || !head) throw new GithubProblem("github_failed", `The base could not be merged into ${branch}. ${merged.said}`.trim());
+	return commitAndPush({ ...input, pushed: update.head, lease: null }, resolved, `Merge ${repository.branch} into ${branch}`, head);
+}
+
+async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<typeof resolveRepository>>, message: string, expectedHead?: string): Promise<Pushed> {
 	const { app, repository, sandbox, branch } = input;
 	const connection = input.connection as StoredConnection;
 	const { installation } = resolved;
@@ -349,6 +368,10 @@ async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<type
 	}
 	if (committed.marks.has("norepo")) throw new GithubProblem("github_failed", "The workspace is not a git repository any more, so there is nothing to push.");
 	const head = committed.marks.get("head") || null;
+	if (expectedHead && head !== expectedHead) {
+		await discardHandover(sandbox, committed.attempt);
+		throw new GithubProblem("github_failed", "The workspace changed while updating the branch. Nothing was pushed.");
+	}
 	const count = Number(committed.marks.get("committed"));
 	const committedFiles = committed.marks.has("committed") && Number.isInteger(count) ? count : null;
 	if (committed.marks.has("nothing")) return { pushed: false, forced: false, head, committedFiles };
@@ -455,12 +478,14 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 	const now = Date.now();
 	const pushed = !nothingNew;
 	const title = input.message.title.trim();
-	const body = pullBody(repository, input.message.body, said.section);
 	try {
 		// Contents too, to read: GitHub opens no pull request for a token that cannot see the two branches
 		// ("not all refs are readable"), whatever it may do with pull requests.
 		return await app.withToken(installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read", pull_requests: "write" } }, async (token): Promise<Published> => {
 			const { owner, name: repo } = resolved.repository;
+			// The installation listing used to find a repository can predate a visibility change.
+			const showHosts = !!input.blockedNetwork?.hosts.length && (await app.repositoryById(token, repository.id)).private;
+			const body = pullBody(repository, input.message.body, said.section, input.blockedNetwork, showHosts);
 			if (open) {
 				// It may have been merged or closed at GitHub since: then the push went to a branch with no pull request.
 				const current = await app.pull(token, owner, repo, open.number).catch(() => null);

@@ -71,7 +71,8 @@ describe("the landing page", () => {
 
 	it("keeps sign-in reachable and promises no dates, prices or numbers of users", () => {
 		expect(body).toContain('href="/signin"');
-		expect(body).not.toMatch(/\$\d|per month|\/mo\b|coming (soon|in)|20\d\d|customers|trusted by/i);
+		// The words people read: an agent's logo is drawn with numbers of its own, which are no promise.
+		expect(body.replace(/<svg\b[\s\S]*?<\/svg>/g, "")).not.toMatch(/\$\d|per month|\/mo\b|coming (soon|in)|20\d\d|customers|trusted by/i);
 	});
 
 	it("names the app's entry for a signed-in visitor, and only there", () => {

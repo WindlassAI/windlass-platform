@@ -167,6 +167,34 @@ The default template is `windlass-platform-sandbox`. Build `windlass-platform-sa
 `WLP_E2B_TEMPLATE` and `WLP_E2B_SHOTS_TEMPLATE` override their respective names for both build and server.
 Use `--print` with either variant to inspect it locally.
 
+**Sizes.** E2B fixes a sandbox's CPUs and memory when its template is built (`Sandbox.create` takes neither), so
+each hosted size is a template of its own, built from the same Dockerfile with `WLP_E2B_SIZE`:
+
+| Size | Template (shots variant adds `-shots`) | Size | Build |
+|---|---|---|---|
+| small | `windlass-platform-sandbox` | 1 vCPU, 1 GiB | `sandbox/e2b/build.sh` |
+| standard | `windlass-platform-sandbox-standard` | 2 vCPU, 4 GiB | `WLP_E2B_SIZE=standard sandbox/e2b/build.sh` |
+| large | `windlass-platform-sandbox-large` | 4 vCPU, 8 GiB | `WLP_E2B_SIZE=large sandbox/e2b/build.sh` |
+
+Build each with `WLP_SANDBOX_VARIANT=shots` too where screenshots are on. The server offers a size only once
+`WLP_E2B_SIZES` lists it (default `small`): set `WLP_E2B_SIZES=small,standard,large` after building them. A
+size asked for that is not listed gets the largest listed below it. Work items default to standard, a person's
+agents to the repository's saved size, else small. `WLP_E2B_TEMPLATE_STANDARD`, `WLP_E2B_TEMPLATE_LARGE` and
+`WLP_E2B_SHOTS_TEMPLATE_STANDARD`, `_LARGE` override the names. Post-setup snapshots are per template, so per
+size.
+
+**The account's plan.** The account is on E2B's Hobby plan: at most 8 vCPUs and 8 GiB of memory a sandbox, 10 GB of
+disk each, 10 sandboxes running at once and one hour without a pause. Large (4 vCPU, 8 GiB) is the most the platform
+offers, and no size goes beyond 8 GiB: the server refuses to start with one that would, and `sandbox/e2b/build.sh`
+refuses `WLP_E2B_CPU` or `WLP_E2B_MEMORY_MB` beyond the plan. Where E2B refuses a size for the plan anyway, the person
+reads "E2B refused a large sandbox (4 vCPU, 8 GiB) for the account's plan: the Hobby plan allows at most 8 vCPU and
+8 GiB a sandbox, …" with E2B's own words, and the log has `e2b.size_refused`.
+
+The 10 sandboxes running at once are the account's, not one deployment's: every deployment and script on the account
+(`WLP_E2B_DEPLOYMENT`, `scripts/e2b-check.ts`) counts toward it, whatever their sizes. `WLP_E2B_MAX_RUNNING` caps
+one deployment and must stay under 10 less what the others run; at E2B's own ceiling a person reads that the account
+is at its plan's limit. A larger size uses the credit faster, not more of that count.
+
 `sandbox/e2b/build.sh --print` shows what E2B would be asked to build and needs no key. The template is made
 from the Docker image's own `sandbox/Dockerfile`, so a microVM has what a container has: the user `agent`,
 `/workspace`, Windlass's data directory, `wlp-run`, git, bubblewrap and Windlass. A server on E2B needs no
@@ -209,7 +237,7 @@ at once and one hour of running without a pause; every default is well inside th
 
 | What | How | Default |
 |---|---|---|
-| Size of a sandbox | the template's, set when it is built: `WLP_E2B_CPU`, `WLP_E2B_MEMORY_MB` for `sandbox/e2b/build.sh` | 1 vCPU, 1024 MiB |
+| Size of a sandbox | the template's, one per size (`WLP_E2B_SIZE` for `sandbox/e2b/build.sh`), offered by `WLP_E2B_SIZES` | small: 1 vCPU, 1024 MiB |
 | Sandboxes running at once | `WLP_E2B_MAX_RUNNING`, counted from E2B's own list of the deployment's running sandboxes before one is created or resumed, and again after, so it holds across servers. At the cap the user reads: "This deployment runs at most 3 sandboxes at the same time, and all of them are in use. Try again in a few minutes; an agent's sandbox is freed shortly after its turn has ended." A work item's turn is not refused at the cap: it waits, and is tried again after 30 seconds, then twice as long each time up to five minutes ([Work items](work-items.md)) | 3 |
 | A sandbox nobody uses | its own timeout at E2B, `WLP_E2B_IDLE_TIMEOUT_MS`: E2B pauses it by itself that long after the last use | 2 minutes |
 | A sandbox whose server died | while a turn runs, the server pushes the timeout out to `WLP_E2B_TURN_LEASE_MS` every third of it; a dead server stops doing so, and E2B pauses the sandbox | 3 minutes |
@@ -424,7 +452,7 @@ platform is served at, `https://<name>.onrivet.dev` below:
 | Enable Device Flow | not selected |
 | Webhook | "Active" selected where work items should hear from GitHub at once (issue intake, CI, pull request state): URL `https://<name>.onrivet.dev/github/webhook`, and a secret of at least 32 characters, which is `WLP_GITHUB_WEBHOOK_SECRET`. Without a webhook, items poll GitHub and nothing is taken in from issues |
 | Subscribe to events | Issues, Issue comment, Check run, Check suite, Status, Pull request, Pull request review, Pull request review comment (installation events come by themselves) |
-| Repository permissions | Contents: read and write. Pull requests: read and write. Issues: read and write. Checks: read and write. Commit statuses: read-only. Actions: read-only. Metadata: read-only (GitHub adds it). Nothing else |
+| Repository permissions | Contents: read and write. Pull requests: read and write. Issues: read and write. Checks: read and write. Commit statuses: read-only. Actions: read and write. Metadata: read-only (GitHub adds it). Nothing else |
 | Organization and account permissions | none |
 | Where can this GitHub App be installed? | Choose "Only on this account" for a single-owner deployment. Choose "Any account" if other accounts need to install the App. |
 
@@ -445,7 +473,7 @@ that installation during redelivery sweeps. The endpoint still accepts `installa
 Then, on the app's page: note the App ID and the Client ID, generate a client secret, and generate a private
 key (a `.pem` file is downloaded).
 
-Issues access lets the Factory file work items from GitHub issues and comment on them. Reading CI uses a token with read access to Checks, Commit statuses and Actions. Publishing `windlass/verified` uses a separate token with Checks write access for the item's repository. Each installation owner must approve a new permission before GitHub grants it. With read-only Checks, work items can read CI and hand over as usual. [Enable the Factory check on GitHub](github-and-repositories.md#enable-the-factory-check-on-github).
+Issues access lets the Factory file work items from GitHub issues and comment on them. Reading CI uses a token with read access to Checks, Commit statuses and Actions. Actions write access is used to rerun checks that never got a runner or timed out. Publishing `windlass/verified` uses a separate token with Checks write access for the item's repository. Each installation owner must approve a new permission before GitHub grants it. With read-only Checks, work items can read CI and hand over as usual. [Enable the Factory check on GitHub](github-and-repositories.md#enable-the-factory-check-on-github).
 
 | Variable | Effect |
 |---|---|

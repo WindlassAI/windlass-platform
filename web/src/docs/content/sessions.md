@@ -1,3 +1,17 @@
+## The Agents home
+
+**Agents** is the home page. Your repositories are in a rail on the left, each with a small tile of its initials, grouped under their owner with the owner's GitHub picture. Choose an owner's row to fold its repositories away; your browser remembers it. A repository shows a lime ring while something on it runs and an amber count of what needs you. A quiet one, with neither, is dimmer and shows no count; one with only saved settings shows **saved**. **Active now**, above the owners, repeats the repositories with something running or asking. Hover a repository for **New agent here** and **Saved settings**. The foot of the rail shows today's sandbox time, what is working and the sandboxes you keep, and leads to **Usage**.
+
+**Everything** at the top of the rail is one feed of your agents and work items: **Needs you**, then **Working now**, then **Recent**, each newest first. Each row shows its agent and model, a line on where it stands, its repository and when. **Answer** opens an agent that asks you something, **Open** a work item that does, and a finished one shows its pull request. A repository with nothing going on does not appear here; choose it in the rail. **No repository** lists the agents that were launched without one.
+
+Choose a repository to open it on the right, at `/repositories/<id>`. Its head shows what is running, what needs you, its agents, its work items and its default branch, with **Pull requests** and **Saved settings**. The field under it launches an agent on that repository. **Overview** shows its agents and a table of its work items, what needs you first. **Agents** and **Work items** show all of them; **New work item…** is under **Work items**.
+
+Press <kbd>/</kbd> to search the rail, and the arrow keys to move through it. <kbd>Ctrl</kbd>+<kbd>B</kbd> (<kbd>⌘</kbd>+<kbd>B</kbd> on a Mac) hides the rail and shows it again. On a phone, the rail opens from the repository button at the top, with a strip of repositories under it.
+
+### Filters
+
+**Filter**, on the **Recent** heading of **Everything** and on a repository's lists, narrows the lists and the rail by status (**Running**, **Needs you**, **Done**, **Failed**), by agent, by where it runs (**Hosted** or one of your machines) and by kind (agent sessions or work items). The filters that are on show as chips; choose one to take it off. Your browser remembers the filters, and whether the rail is hidden, for your next visit.
+
 ## The session page
 
 Each agent has its own page, at `/agents/<id>`. The bar at the top shows its title and its status. When it runs on one of your machines, it also says which one.
@@ -15,8 +29,23 @@ If the agent asks you something while its tab is in the background, the tab's ti
 | **working** | A turn is running. |
 | **needs you** | A question waits for your answer. |
 | **stopping** | The turn is being stopped. |
+| **paused** | The turn is waiting to resume: the server restarted, or its machine went offline. |
 
 When a turn ends, its outcome is one of **done**, **done, checks unresolved**, **failed**, **stopped**, **interrupted** or **error**.
+
+### When the server restarts or the machine goes away
+
+On a deployment that turns it on, a turn that is running when the platform's server restarts is **paused**, not ended. It keeps its turn number, and it resumes by itself in a few seconds, once a server is back. The timeline says **Resumed after a server restart**, with how long the turn was paused.
+
+A turn on your machine is paused in the same way when the machine shuts down or goes to sleep. It waits for as long as the machine is away. When the machine is back, the turn resumes by itself, and the timeline says **Resumed after the machine came back**. While it waits, the chip beside the offline banner says **turn paused**.
+
+A resumed turn goes on from the agent's own saved session. The step that was running when it paused, such as a command or a model reply, may be done again. If the agent no longer has its conversation, for example because its sandbox is new, it is given the whole task again. That is this turn's message and what you sent since, the session's first prompt, and a short account of the earlier turns rebuilt from the timeline. The account is marked as a reconstruction.
+
+What you send while a turn is paused is **held**: it shows with a **held** chip and goes to the agent when the turn resumes. **Stop** ends a paused turn at once, and it does not resume.
+
+The time a turn is paused does not count toward its time limit. A resumed turn gets what is left of its limit, and at least five minutes. If the server stops three times in a row while a turn resumes, with nothing done in between, the turn is ended as **interrupted**.
+
+A turn is **interrupted** when the server stops while it runs and it cannot be resumed. For a Windlass turn, its tokens are the ones its finished model requests reported before the cut. They count toward the turn, a work item's budget and your daily cap, and the timeline says how many there were. A request still under way at the cut is not counted. Other agents report their tokens only when a turn ends, so an interrupted turn of theirs counts none, and the timeline says so.
 
 ## The timeline
 
@@ -30,9 +59,18 @@ At the end of each turn, a summary line gives the outcome, the number of steps, 
 
 You can copy a prompt, an answer (as Markdown) or a code block with the copy button beside it.
 
-### A host the sandbox cannot reach
+### Blocked network requests
 
-Where the platform limits its hosted sandboxes' network, a command that looks up a host the sandbox may not reach fails at once. After the setup command and at the end of each turn, the timeline names each such host once: "A command in this sandbox could not reach registry.example.com…". On an agent with a repository, choose **Allow for this repository** to add the host to the repository's network list. While a turn is running, this agent's sandbox reaches it at once; otherwise it applies from the next turn, as it does for the repository's other hosted agents. **Network list** opens the list in the repository's settings, where the host also waits under **Asked for by its agents** until you allow or dismiss it. The agent and the repository's scripts choose what a command looks up, so allow only a host you expect.
+When the sandbox's network policy refuses a request, the turn shows one **Blocked network requests** row. It counts the refused requests and lists each destination as `host:port` (a hosted E2B sandbox sees only the name, so it shows the host alone), with how many times it was refused and when last. The first three are shown; **Show N more** opens the rest. The row updates while the turn runs. A session keeps 50 destinations; requests to any beyond those are counted under the list, not named.
+
+Each destination says what can be done about it:
+
+- **Allow for this repository**, on a restricted E2B sandbox of a repository agent. It adds the host to the repository's network list. While a turn is running, this agent's sandbox reaches it at once; otherwise it applies from the next turn, as it does for the repository's other hosted agents. **Network list** under the row opens the list, where the host also waits under **Asked for by its agents**. The agent and the repository's scripts choose what a command looks up, so allow only a host you expect.
+- **Blocked by machine *name*'s settings**, on a paired machine. Its owner allows it by adding it to `--egress-domains` when starting the runner; **How to allow** shows the flag.
+- **Only the deployment's operator can allow it**, for a hosted agent with no repository.
+- A short reason for what is never allowed: a **private address**, **cloud metadata**, or the **provider policy**.
+
+The session panel's **Sandbox** section says how many requests were blocked in the current turn; **Show** scrolls to the row. A work item's page rolls up its builder's and reviewer's blocked requests in its **Network** block, and its pull request description includes a count of them. A private, single-repository pull request can also name the destinations; public and cross-repository ones show counts only.
 
 ## Send a prompt
 
@@ -41,6 +79,8 @@ When the agent is **idle**, type in **Tell the agent what to do** and press <kbd
 A finished session is not closed. Send another prompt to go on from where it stopped. There is no separate resume step.
 
 You can change the model, effort and mode before each prompt. While a turn runs, only the mode can be changed, and the change applies from the next prompt.
+
+A **Codex** session also has **Plan mode** in the composer, beside the effort and the model. Turned on, the next prompt asks Codex for a plan, and it changes nothing; turned off, it does the work. It is set before a prompt that starts a turn, not while one runs. It is not the work items' **Plan first**.
 
 ## Steer a running agent
 
@@ -55,9 +95,15 @@ In some modes the agent asks before it acts. The question appears at the tool ca
 
 Choose one of the answers it offers. With Windlass, you can also decline with a note: choose **add a note**, then say why, or what to do instead.
 
-A question waits 10 minutes. A countdown shows **declines in** and the time left. If nobody answers in time, the platform declines for you, and the timeline says "Nobody answered … within 10 minutes, so it was declined." The agent is told, and goes on.
+A question waits 10 minutes. A countdown shows **declines in** and the time left. If nobody answers in time, the platform declines for you, and the timeline says "Nobody answered … within 10 minutes, so it was declined." The agent is told, and goes on. In one of the platform's own (hosted) sandboxes, which runs and is counted while it waits, an approval waits 5 minutes: then the turn ends, the timeline says "Nobody answered … within 5 minutes, so the turn was ended and its sandbox paused.", and the sandbox pauses at once. Send a prompt to go on.
 
 The agent asks one question at a time.
+
+A `request_secret` entry gives the variable name, the supplied reason, the connection that made the request, and where the value would be saved. In a Claude Code, OpenCode or Codex session, any program inside the sandbox can make the request. The platform cannot tell whether third-party text prompted it. Review the reason before entering a value through the secret action.
+
+The value is saved with agent scope for the connected repository, or for your account when there is no connected repository. Account scope applies across your agents, subject to each sandbox’s secret delivery settings. An existing name in either applicable store must be managed under **Secrets**. In a plain session, starting another turn without supplying the value skips that name for the rest of the session. A plain session can request at most three secrets, one per turn. Keep values out of prompts and notes.
+
+A card above the field asks for the value. It quotes the agent’s reason as its own words and shows the platform’s notice apart from it. **Add it and continue** saves the value, and the next turn receives it in its environment. **Continue without it** tells the agent to go on without it.
 
 ## Stop
 
@@ -127,9 +173,11 @@ For a session on one of your machines, the section adds that the checks ran on t
 
 Where the repository has a [setup command](/docs/settings#setup-command), it normally runs once in each new sandbox, after the clone and before the agent's first turn there. The timeline shows the command, what it prints as it runs, how it ended and how long it took. **Stop** stops it, and the turn with it.
 
+**A repository that pins pnpm.** The sandbox has its own pnpm. Where `package.json` pins another version (`"packageManager": "pnpm@…"`), install with `corepack pnpm install` in the setup command: corepack then keeps that version, and the agent's `pnpm` runs it even where its commands have no network, as in Windlass's command sandbox. Without that, `pnpm` runs the sandbox's own version with a warning and never downloads the pinned one.
+
 Hosted Docker and supported machine runners can reuse Git objects from your earlier clones of the same connected repository on that machine. GitHub still supplies the branch head at launch. Each session keeps its own complete clone, including after the machine evicts the mirror.
 
-On deployments with prepared Docker sandboxes enabled, a successful setup on the repository’s default branch can be saved before the first agent turn. Setup must take at least 30 seconds and receive no repository secrets. A later session on the same machine can reuse your snapshot when its dependency files, setup command, sandbox image, and platform match. Subtasks and reviewers can reuse a prepared sandbox. Only the original builder or a personal session can save one.
+On deployments with prepared sandboxes enabled, a session starts from the repository's [validated environment](/docs/settings#environment) at its place when there is one that is ready: setup already ran there, and every saved check passed. The timeline then says "Started from a validated environment", with the commit and when it passed, and so does the Sandbox section of the side panel. It also needs matching dependency files, setup command, sandbox image and platform, and no repository secrets. Otherwise the session runs setup itself, as without one. Sessions no longer save prepared sandboxes; only environment builds do.
 
 Hosted E2B deployments can enable the same for E2B sandboxes. The snapshot is kept at E2B for your account on this platform only, never for another user, and expires after 14 days. Changing the setup command, reconnecting GitHub or adding a repository secret stops it being used.
 
@@ -158,6 +206,8 @@ A repository's hooks do not run, and its language servers do not start.
 
 ## Sandboxes after the work
 
+A hosted sandbox that has stopped answering commands, most often because something in it used all of its memory, is restarted from its disk when the next turn starts. The files in the workspace are kept, and the programs that were running in it are not. The timeline says when that happened.
+
 A sandbox is paused 10 minutes after its last turn. A paused sandbox uses no sandbox time. On this platform it is removed after 7 days without use. The timeline stays either way. If the sandbox is gone, the next prompt starts a new one.
 
 ### When a sandbox is replaced
@@ -168,12 +218,14 @@ Where the platform keeps a copy of the agent's memory of the conversation, it re
 
 On one of your machines, a sandbox is not removed after a time. It goes when you delete its agent, when you remove the machine with its sandboxes, or when you prune the runner.
 
-On this platform you can keep up to 5 sandboxes at once. To free one, go to **Usage**, find it under **Sandboxes you keep** and choose **Free…**. See [Settings, usage and limits](/docs/settings#usage).
+On this platform you can keep up to 5 hosted sandboxes at once; those on your own machines are not counted. To free one, go to **Usage**, find it under **Hosted sandboxes you keep** and choose **Free…**. See [Settings, usage and limits](/docs/settings#usage).
 
 ## Rename or delete an agent
 
 On the list of agents, each row has **Rename** and **Delete**. Deleting asks first: **Delete this agent?**
 
 An agent that works for a work item cannot be deleted while the item has it. Cancel the item instead.
+
+In the session of a work item's agent, every prompt is the platform's, never yours. The first stands as **The factory's brief** (for the second reviewer, **The platform's brief for this review**), with its first lines and **Show all**.
 
 Deleting an agent on one of your machines records that its sandbox must be removed, and the runner removes it now or when it is next online. If that record cannot be written, the delete is refused: "The agent could not be deleted: its machine's record of the sandbox to remove could not be written. Try again in a moment."

@@ -11,9 +11,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ITEM_SESSION_PROMPT, createMockClient, type MockClient } from "../api/mock";
 import { loadAuth, saveAuth } from "../lib/authStore";
 import { AppProvider } from "../state/app";
-import { Home } from "./Home";
 import { Item, useItem } from "./Item";
-import { Repository, useRepository } from "./Repository";
+import { RepositoryPane, useRepository } from "./Repository";
+import { useItems } from "./Items";
+import { NO_FILTERS } from "../lib/workspace";
+import type { RepositoryPaneView } from "../lib/router";
+import { Workspace } from "./Workspace";
 import { Session, useSessionMachine } from "./Session";
 import { useSession } from "../state/hooks";
 import { Usage } from "./Usage";
@@ -33,8 +36,8 @@ async function wait(steps = 8): Promise<void> {
 }
 
 /** Signs in to the mock and renders `screen` in the app's context, once the lists are known. */
-async function render(screen: () => ReturnType<typeof createElement>): Promise<void> {
-	client = createMockClient({ origin: "http://localhost:5173" });
+async function render(screen: () => ReturnType<typeof createElement>, options: Parameters<typeof createMockClient>[0] = {}): Promise<void> {
+	client = createMockClient({ origin: "http://localhost:5173", ...options });
 	const begun = client.login.start();
 	await vi.advanceTimersByTimeAsync(1000);
 	const { redirectPrefix, url } = await begun;
@@ -71,25 +74,24 @@ afterEach(() => {
 });
 
 describe("a work item's agent session", () => {
-	it("is not among the home page's agents, nor in its count of agents, and a repository's heading counts its work items", async () => {
-		await render(() => createElement(Home));
+	it("is not among the home page's agents, nor in its count of agents: its item stands in the feed instead", async () => {
+		await render(() => createElement(Workspace, { selection: { kind: "everything" }, items: useItems(true) }));
 		expect(itemSessions().length).toBeGreaterThan(0);
-		const lists = [...host.querySelectorAll("ul.agents[aria-label^='Your agents']")];
-		expect(lists.length).toBeGreaterThan(0);
-		for (const list of lists) for (const session of itemSessions()) expect(linksTo(list, `/agents/${session.id}`)).toEqual([]);
+		const feed = host.querySelector(".home-feed") as HTMLElement;
+		expect(feed).not.toBeNull();
+		for (const session of itemSessions()) expect(linksTo(feed, `/agents/${session.id}`)).toEqual([]);
 		const own = sessions.filter((session) => session.item === undefined);
-		const rows = lists.reduce((sum, list) => sum + list.querySelectorAll("li.agent-row").length, 0);
-		expect(rows).toBeLessThanOrEqual(own.length);
+		expect(feed.querySelectorAll('.feed-row[data-kind="agent"]').length).toBeLessThanOrEqual(own.length);
+		expect(feed.querySelectorAll('.feed-row[data-kind="item"]').length).toBeGreaterThan(0);
 		expect(host.querySelector(".home-head .home-facts")?.textContent).toMatch(new RegExp(`^${own.length} agents, \\d+ of 6 working, \\d+ of them work items`));
-		// acme/lighthouse-docs has one agent of the user's own and some work items (a repository with only items keeps its heading: lib/repositories.test.ts).
-		const docs = [...host.querySelectorAll(".agent-group-head")].find((head) => head.textContent?.includes("lighthouse-docs"));
-		expect(docs?.querySelector("a")?.getAttribute("href")).toBe("/repositories/7103");
-		const onDocs = itemSessions().filter((session) => session.repository?.id === 7103).length;
-		expect(docs?.querySelector(".agent-group-count")?.textContent).toBe(`1 agent · ${onDocs} work items`);
+		// The repository is a label on each row, leading to its page: acme/lighthouse-docs is 7103.
+		const docs = [...feed.querySelectorAll<HTMLAnchorElement>(".feed-repo")].find((label) => label.textContent?.includes("lighthouse-docs"));
+		expect(docs?.getAttribute("href")).toBe("/repositories/7103");
 	});
 
 	it("is not among a repository's agents, and is reached from its item's row", async () => {
-		await render(() => createElement(Repository, { page: useRepository(7101), view: "work" }));
+		const pane = (view: RepositoryPaneView) => () => createElement(RepositoryPane, { page: useRepository(7101), view, items: useItems(true), filters: NO_FILTERS, onFilters: () => undefined, machines: [] });
+		await render(pane("agents"));
 		const onHarbor = itemSessions().filter((session) => session.repository?.id === 7101);
 		expect(onHarbor.length).toBeGreaterThan(0);
 		const agents = host.querySelector("ul.agents[aria-label^='Your agents on']") as HTMLElement;
@@ -97,8 +99,12 @@ describe("a work item's agent session", () => {
 		for (const session of onHarbor) expect(linksTo(agents, `/agents/${session.id}`)).toEqual([]);
 		const own = sessions.filter((session) => session.repository?.id === 7101 && session.item === undefined);
 		expect(agents.querySelectorAll("li.agent-row")).toHaveLength(own.length);
-		expect(host.querySelector("#repo-agents .usage-count")?.textContent).toBe(String(own.length));
-		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toMatch(new RegExp(`^repository · ${own.length} agents`));
+		expect(host.querySelector("#repo-agents .ws-section-count")?.textContent).toBe(String(own.length));
+		expect(host.querySelector(".ws-head .ws-status")?.textContent).toContain(`${own.length} agents`);
+		act(() => root.unmount());
+		client.dispose();
+		root = createRoot(host);
+		await render(pane("items"));
 		// Every started item's row leads to its session; a draft's has nothing to show yet, and its page leads there.
 		const section = host.querySelector("section[aria-labelledby='repo-items']") as HTMLElement;
 		for (const item of items.filter((one) => one.repository.id === 7101 && one.state !== "draft" && one.state !== "done" && one.state !== "cancelled")) {
@@ -108,12 +114,33 @@ describe("a work item's agent session", () => {
 		expect(linksTo(section, `/agents/${draft.sessionId}`)).toEqual([]);
 	});
 
+	it("explains where a feature subtask gets its second review", async () => {
+		await render(() => {
+			const child = items.find(one => one.parent)!;
+			return createElement(Item, { page: useItem(child.id, true) });
+		}, { items: "features" });
+		const review = host.querySelector('section[aria-labelledby="item-checks"]');
+		expect(review?.textContent).toContain("the feature’s combined change is reviewed once its parts are done");
+		expect(review?.textContent).not.toContain("turned off for this deployment");
+	});
+
+	it("explains when the first running turn will count toward spend", async () => {
+		await render(() => {
+			const item = items.find(one => one.title === "Cache the downloaded tide predictions")!;
+			return createElement(Item, { page: useItem(item.id, true) });
+		});
+		const cost = host.querySelector('section[aria-labelledby="item-cost"]');
+		expect(cost?.textContent).toContain("Spend is counted when the running turn ends. This step started 29 min ago.");
+		expect(cost?.textContent).toContain("0 turns");
+	});
+
 	it("is opened from its item's page", async () => {
 		await render(() => {
 			const draft = items.find((one) => one.state === "draft") as ItemSummary;
 			return createElement(Item, { page: useItem(draft.id, true) });
 		});
 		const draft = items.find((one) => one.state === "draft") as ItemSummary;
+		expect(host.textContent).not.toContain("Spend is counted when the running turn ends.");
 		expect(linksTo(host, `/agents/${draft.sessionId}`).map((link) => link.textContent)).toEqual(["Open the agent"]);
 	});
 

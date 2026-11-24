@@ -1,25 +1,33 @@
 /**
- * Routing by URL with the History API: sign-in, home, the new agent's page, the usage page, the account's settings and machines,
- * a session by its ID, a work item by its ID, the Factory page with its filters, and a repository's page by GitHub's id for
- * it, with a new agent's page of its own too, and the public docs. A reload stays on the same screen; `?mock=1` is carried from one address to the next.
+ * Routing by URL with the History API: sign-in, the Agents home (everything, the agents on no repository, or one
+ * repository chosen in it, with its views), the new agent's page, the usage page, the account's settings and machines,
+ * a session by its ID, a work item by its ID, the Factory page with its filters, and the public docs. A reload stays on
+ * the same screen; `?mock=1` is carried from one address to the next.
  */
 import { githubId } from "../../../server/src/github/ids.js";
 import type { GithubId, ItemSummary } from "@contract";
 import { useSyncExternalStore } from "react";
 
 export type Route =
-	| { name: "home" }
-	/** The new agent's page. With `repository`, GitHub's id for one, it has that repository chosen, and leads back to its page: to its settings with `over`. */
+	/** The Agents home, with everything in it; with `scope: "none"`, the agents on no repository (`/repositories/none`). */
+	| { name: "home"; scope?: "none" }
+	/**
+	 * The new agent's page. With `repository`, GitHub's id for one, it is that repository in the Agents home, with its
+	 * composer focused: the address the repository's own page once had for it (`over` is from then, and kept for old links).
+	 */
 	| { name: "new"; repository?: GithubId; over?: "settings" }
 	/**
-	 * One repository of the user's GitHub connection: its work (the agents on it, its work items, its open pull requests),
-	 * or with `view: "settings"` what is kept for it. `section` opens the settings at one of theirs, as the address's fragment.
+	 * One repository of the user's GitHub connection, chosen in the Agents home: its overview, or with `view` its agents,
+	 * its work items, its open pull requests, or what is kept for it ("settings"). `section` opens the settings at one
+	 * of theirs, as the address's fragment.
 	 */
-	| { name: "repository"; id: GithubId; view?: "settings"; section?: RepositorySection }
+	| { name: "repository"; id: GithubId; view?: RepositoryPaneView; section?: RepositorySection }
 	/** The user's sandbox time and kept sandboxes. */
 	| { name: "usage" }
 	/** What the user keeps for their account, whatever the repository: defaults, their own MCP servers, and those servers' secrets. */
 	| { name: "settings" }
+	/** Free and Pro side by side, with the way to upgrade: where the deployment has billing (`PlatformInfo.billing`). */
+	| { name: "plans" }
 	/** The user's own machines. With `add`, the dialog that pairs one is open: the address a runner prints with its code. */
 	| { name: "machines"; add?: boolean }
 	| { name: "signin" }
@@ -37,6 +45,10 @@ export type Route =
 /** How a work item was filed, as the Factory page filters by it. */
 export type ItemSource = ItemSummary["source"];
 export const ITEM_SOURCES: readonly ItemSource[] = ["web", "api", "github"];
+
+/** The views of a chosen repository beside its overview, each at its own address. */
+export const REPOSITORY_VIEWS = ["agents", "items", "pulls", "settings"] as const;
+export type RepositoryPaneView = (typeof REPOSITORY_VIEWS)[number];
 
 /** The sections of a repository's settings a link can open at, in the order the page has them. */
 export const REPOSITORY_SECTIONS = ["defaults", "screenshots", "setup", "checks", "network", "secrets", "servers", "forget"] as const;
@@ -60,6 +72,7 @@ export function parseRoute(pathname: string, search = ""): Route {
 	if (path === "/new") return { name: "new" };
 	if (path === "/usage") return { name: "usage" };
 	if (path === "/settings") return { name: "settings" };
+	if (path === "/plans") return { name: "plans" };
 	if (path === "/machines") return { name: "machines" };
 	if (path === "/machines/add") return { name: "machines", add: true };
 	if (path === "/signin") return { name: "signin" };
@@ -67,13 +80,15 @@ export function parseRoute(pathname: string, search = ""): Route {
 	if (path === "/docs") return { name: "docs", slug: "" };
 	const docs = /^\/docs\/([^/]+)$/.exec(path);
 	if (docs?.[1]) return { name: "docs", slug: docs[1] };
-	const repository = /^\/repositories\/([1-9][0-9]{0,18})(\/new|\/settings|\/settings\/new)?$/.exec(path);
+	if (path === "/repositories/none") return { name: "home", scope: "none" };
+	const repository = /^\/repositories\/([1-9][0-9]{0,18})(\/new|\/agents|\/items|\/pulls|\/settings|\/settings\/new)?$/.exec(path);
 	if (repository?.[1]) {
 		const id = githubId(repository[1]);
 		if (id === null) return { name: "notfound" };
 		if (repository[2] === "/new") return { name: "new", repository: id };
 		if (repository[2] === "/settings/new") return { name: "new", repository: id, over: "settings" };
-		return repository[2] === "/settings" ? { name: "repository", id, view: "settings" } : { name: "repository", id };
+		const view = REPOSITORY_VIEWS.find((one) => `/${one}` === repository[2]);
+		return view ? { name: "repository", id, view } : { name: "repository", id };
 	}
 	const session = /^\/agents\/([^/]+)$/.exec(path);
 	if (session?.[1]) return { name: "session", id: decodeURIComponent(session[1]) };
@@ -85,15 +100,17 @@ export function parseRoute(pathname: string, search = ""): Route {
 function pathOf(route: Route): string {
 	switch (route.name) {
 		case "home":
-			return "/";
+			return route.scope === "none" ? "/repositories/none" : "/";
 		case "new":
 			return route.repository === undefined ? "/new" : `/repositories/${route.repository}${route.over === "settings" ? "/settings" : ""}/new`;
 		case "repository":
-			return `/repositories/${route.id}${route.view === "settings" || route.section ? "/settings" : ""}`;
+			return `/repositories/${route.id}${route.section ? "/settings" : route.view ? `/${route.view}` : ""}`;
 		case "usage":
 			return "/usage";
 		case "settings":
 			return "/settings";
+		case "plans":
+			return "/plans";
 		case "machines":
 			return route.add ? "/machines/add" : "/machines";
 		case "signin":

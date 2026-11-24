@@ -14,21 +14,39 @@ const GiB = 2 ** 30;
 const capacity = (max: number, cpus: number, memory: number, pids: number) => ({
 	max, unit: { cpus, memoryBytes: memory * GiB, pids }, reserve: { cpus: 0, memoryBytes: 0 },
 });
-for (const [cores, memory, max, cpu, ram, pids] of [
-	[2, 12, 2, 1, 1.5, 512], [4, 8, 2, 2, 3.25, 1024], [8, 32, 3, 2, 8, 1024], [32, 128, 14, 2, 8, 1024],
+for (const [cores, memory, max, cpu, ram, pids, reserveCpus, reserveGiB] of [
+	[2, 12, 1, 2, 4, 1024, 0, 3],
+	[2, 4, 1, 2, 3, 1024, 0, 1],
+	[10, 12, 2, 2, 5, 1024, 2, 1.7],
+	[16, 64, 7, 2, 8, 1024, 2, 6.9],
+	[4, 8, 1, 2, 6.5, 1024, 1, 1.5],
+	[8, 32, 3, 2, 8, 1024, 1, 3.7],
+	[32, 128, 14, 2, 8, 1024, 4, 13.3],
+	[64, 256, 16, 2, 8, 1024, 8, 26.1],
+	[8, 5.5, 1, 2, 4, 1024, 1, 1.5],
+	[8, 5, 1, 8, 3.75, 4096, 0, 1.25],
+	[1, 2.5, 1, 1, 1.5, 512, 0, 1],
+	[1, 2.25, 1, 1, 1.25, 512, 0, 1],
+	[1, 2, 1, 1, 1, 512, 0, 1],
 ]) test(`${cores} cores, ${memory} GiB`, async () => {
 	const { sizeMachine } = await import("../runner/src/sizing.js");
 	const actual = sizeMachine({ cores, memoryBytes: memory * GiB }, {});
 	assert.deepEqual(actual.unit, capacity(max, cpu, ram, pids).unit);
 	assert.equal(actual.max, max);
-	assert.deepEqual(actual.reserve, { cpus: cores <= 2 ? 0 : Math.ceil(cores / 8),
-		memoryBytes: cores <= 2 ? 0 : Math.ceil(Math.max(GiB, memory * GiB / 10) + GiB / 2) });
+	assert.deepEqual(actual.reserve, { cpus: reserveCpus, memoryBytes: Math.ceil(reserveGiB * GiB) });
 	assert(actual.unit.memoryBytes * max <= memory * GiB - actual.reserve.memoryBytes);
 });
 
 test("overrides and refusals", async () => {
 	const { sizeMachine, sizingFlags } = await import("../runner/src/sizing.js");
 	const size = (flags: Parameters<typeof sizingFlags>[0], env?: string) => sizeMachine({ cores: 32, memoryBytes: 128 * GiB }, sizingFlags(flags, env));
+	assert.throws(() => sizeMachine({ cores: 2, memoryBytes: 1.75 * GiB }), /exceeds the available --sandbox-memory budget \(0.75 GiB\)/);
+	const twoCore = (flags: Parameters<typeof sizingFlags>[0], env?: string) => sizeMachine({ cores: 2, memoryBytes: 4 * GiB }, sizingFlags(flags, env));
+	assert.deepEqual(twoCore({ slots: "2" }), capacity(2, 1, 1.5, 512));
+	assert.deepEqual(twoCore({ "slot-cpus": "0.5" }, "2"), capacity(2, 0.5, 1.5, 512));
+	assert.deepEqual(twoCore({ "slot-memory": "1g" }, "1.5"), capacity(2, 1.5, 1, 512));
+	assert.deepEqual(twoCore({ "sandbox-memory": "3g" }), capacity(2, 1, 1.5, 512));
+	assert.throws(() => twoCore({ slots: "1", "max-turns": "2" }), /Give --slots and its alias --max-turns the same count/);
 	const custom = size({ "slot-cpus": "4", "slot-memory": "12g" });
 	assert.equal(custom.max, 7);
 	assert.equal(custom.unit.memoryBytes * custom.max, 84 * GiB);
@@ -64,10 +82,11 @@ if (process.argv.includes("docker")) test("create, inspect and reconnect on this
 	};
 	try {
 		await t.test("case 1: two-core regression and slot label", async () => {
-			const id = await provider(capacity(2, 1, 1.5, 512)).create(input);
+			const { sizeMachine } = await import("../runner/src/sizing.js");
+			const id = await provider(sizeMachine({ cores: 2, memoryBytes: 12 * GiB })).create(input);
 			const { limits, size } = inspect(id);
 			console.log("case 1 docker inspect", JSON.stringify(limits));
-			assert.deepEqual(limits, [1e9, 1.5 * GiB, 1.5 * GiB, 512, 256]);
+			assert.deepEqual(limits, [2e9, 4 * GiB, 4 * GiB, 1024, 256]);
 			assert.equal(size, "1");
 		});
 		await t.test("case 7: old sandbox adopts new memory, swap and pids", async () => {

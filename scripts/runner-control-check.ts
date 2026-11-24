@@ -9,14 +9,15 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { mock } from "node:test";
 import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { machineProfiles } from "../server/src/machines/profiles.js";
-import { validArgs, validValue } from "../server/src/runner/protocol.js";
+import type { Answer } from "../server/src/sandbox/provider.js";
+import { validArgs, validValue, type Frame, type Body } from "../server/src/runner/protocol.js";
 import { privateSessionData } from "../server/src/sandbox/session-data.js";
 import type { Executor } from "../runner/src/docker-executor.js";
 import {
@@ -141,12 +142,12 @@ expect("another process after the first went quiet replaces it", secondHello({ e
 const sockets: CheckSocket[] = [];
 class CheckSocket extends EventTarget {
 	readyState = 1;
-	sent: { kind: string; name?: string; sandbox?: string; egress?: string; claudeRelay?: boolean }[] = [];
+	sent: { kind: string; name?: string; sandbox?: string; egress?: string; claudeRelay?: boolean; body?: Body }[] = [];
 	constructor() { super(); sockets.push(this); }
 	send(text: string) {
 		this.sent.push(JSON.parse(text));
 	}
-	frame(frame: ServerFrame) {
+	frame(frame: ServerFrame | Frame) {
 		assert.equal(this.readyState, 1);
 		this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
 	}
@@ -162,6 +163,37 @@ async function until(test: () => boolean) {
 		assert.ok(performance.now() < end, "The runner did not handle the test event.");
 		await wait(5);
 	}
+}
+
+// Read the same files and run the same probe as a session container, using a private fixture tree.
+{
+	const { readMemoryEvents } = await import("../runner/src/memory-events.js");
+	const root = mkdtempSync(join(tmpdir(), "runner-memory-"));
+	const membership = join(root, "cgroup");
+	const read = () => readMemoryEvents({ ask: async ([sh, flag, script, arg0]) => {
+		const result = spawnSync(sh, [flag, script, arg0, root, membership], { encoding: "utf8" });
+		return { code: result.status, stdout: result.stdout, stderr: result.stderr };
+	} });
+	try {
+		writeFileSync(membership, "0::/\n");
+		writeFileSync(join(root, "memory.max"), "1610612736\n");
+		writeFileSync(join(root, "memory.events"), "low 0\nhigh 0\nmax 19\noom 5\noom_kill 2\noom_group_kill 0\n");
+		assert.deepEqual(await read(), { oomKills: 2, totalMiB: 1536 });
+		writeFileSync(join(root, "memory.max"), "max\n");
+		assert.equal(await read(), null);
+
+		const slot = join(root, "memory", "docker", "session");
+		mkdirSync(slot, { recursive: true });
+		writeFileSync(membership, "2:memory:/docker/session\n");
+		writeFileSync(join(slot, "memory.limit_in_bytes"), "3221225472\n");
+		writeFileSync(join(slot, "memory.oom_control"), "oom_kill_disable 0\nunder_oom 0\noom_kill 1\n");
+		writeFileSync(join(slot, "memory.failcnt"), "22\n");
+		assert.deepEqual(await read(), { oomKills: 1, totalMiB: 3072 });
+		unlinkSync(join(slot, "memory.oom_control"));
+		assert.equal(await read(), null);
+		writeFileSync(join(slot, "memory.failcnt"), "0\n");
+		assert.deepEqual(await read(), { oomKills: 0, totalMiB: 3072 });
+	} finally { rmSync(root, { recursive: true, force: true }); }
 }
 
 const dir = mkdtempSync(join(tmpdir(), "runner-control-check-"));
@@ -229,7 +261,7 @@ async function withControl(answers: Response[], exercise: (runner: {
 		identity: { uid: "u_check", machineId: "m_0123456789abcdef" },
 		serial: async <T>(work: () => Promise<T>) => work(),
 		checkAuthenticatedNetwork: async () => {}, welcome: async () => {}, platformGitHost: () => {}, platformStoreCaps: (caps: unknown) => { storeCaps.push(caps); },
-		report: () => ({ ...plainReport, slots, egress: "restricted", claudeRelay: true, gitMirrors: true, sessionVolumes: true, modelRelay: true }),
+		report: () => ({ ...plainReport, slots, blockedNetwork: true, egress: "restricted", claudeRelay: true, gitMirrors: true, sessionVolumes: true, modelRelay: true }),
 		requestedRemoval: async (id: string) => { if (id === failedSandbox) throw new RunnerError("Docker could not remove the sandbox."); },
 		suspendAll: async () => {},
 	} as unknown as Executor;
@@ -282,6 +314,201 @@ try {
 	};
 	for (const [name, attempt] of Object.entries(attempts))
 		await checkControl(name, () => assert.rejects(attempt, error => error instanceof Refusal && error.message.includes("--allow-profile " + profile)));
+	const success = { code: 0, stderr: "", stdout: "" };
+	const timeout = { code: null, stderr: "", stdout: "" };
+	const execFailure = { code: 1, stderr: "Error response from daemon: container is restarting", stdout: "" };
+	const denied = { code: 1, stderr: "bwrap: Creating new namespace failed: Operation not permitted", stdout: "" };
+	async function probeCreate(answers: (Answer | null)[], failure?: "bubblewrap" | "exec") {
+		const machine = new LocalExecutor({ uid: "u_fixture", machineId }, {}, false, false, [profile]);
+		Object.assign(machine, { dockerHealth: { ok: true }, commandSandbox: { ok: true }, disk: async () => 100e9 });
+		machine.network.prepare = machine.network.attach = async () => {};
+		machine.provider.create = async () => raw;
+		const removed: string[] = [];
+		machine.provider.destroy = async raw => { removed.push(raw); };
+		const timeouts: number[] = [];
+		const probe = mock.method(DockerSandboxHandle.prototype, "ask", async (_argv: string[], options: { timeoutMs: number }) => {
+			assert.deepEqual(machine.report().commandSandbox, { ok: true });
+			timeouts.push(options.timeoutMs);
+			return answers[timeouts.length - 1];
+		});
+		try {
+			const created = machine.create(session, profile);
+			if (failure) {
+				const message = failure === "bubblewrap" ? "Bubblewrap could not start in the new sandbox. " + denied.stderr
+					: "Docker could not complete the Bubblewrap probe after 3 attempts. " + execFailure.stderr;
+				await assert.rejects(created, error => error instanceof RunnerError && (error instanceof Refusal) === (failure === "bubblewrap") && error.message === message);
+				assert.deepEqual(machine.report().commandSandbox, failure === "bubblewrap" ? { ok: false, reason: message } : { ok: true });
+				assert.deepEqual(removed, [raw]);
+				assert.equal(machine.boxes.size, 0);
+			} else {
+				assert.equal(await created, id);
+				assert.equal(machine.running(id, session).state, "running");
+				assert.deepEqual(machine.report().commandSandbox, { ok: true });
+				assert.deepEqual(removed, []);
+			}
+			assert.deepEqual(timeouts, [20_000, 30_000, 45_000].slice(0, answers.length));
+		} finally { probe.mock.restore(); }
+	}
+	await checkControl("a timed-out Bubblewrap probe retries in the same sandbox and the session starts", () => probeCreate([timeout, success]));
+	await checkControl("Docker exec failures retry without changing machine capability", () => probeCreate([null, execFailure, execFailure], "exec"));
+	await checkControl("Bubblewrap's own error refuses the sandbox immediately and reports its stderr", () => probeCreate([denied], "bubblewrap"));
+
+	await checkControl("three simultaneous creates on a two-slot runner queue behind the in-progress container create", async () => {
+		const { Session } = await import("../runner/src/session.js");
+		const machine = new LocalExecutor({ uid: "u_fixture", machineId }, { slots: { ...slots, max: 2 } });
+		machine.existing = async () => undefined;
+		machine.ensureImage = async () => false;
+		const creating: string[] = [], release: (() => void)[] = [];
+		machine.create = async id => {
+			creating.push(id);
+			await new Promise<void>(resolve => release.push(resolve));
+			return raw;
+		};
+		const clients = ["first", "second", "third"].map(id => {
+			const session = new Session(id, machine, () => {});
+			const socket = new CheckSocket();
+			session.attach(socket as unknown as WebSocket, { runnerVersion: "0.3.4", machineId, ticket: "ticket", signature: "fixture" });
+			socket.frame({ kind: "welcome", protocol: 1, conversation: id, received: 0, resumed: false });
+			socket.frame({ kind: "msg", seq: 1, ack: 0, body: { kind: "op", name: "create", id, args: { profile: "docker-hardened" } } });
+			return { session, socket };
+		});
+		try {
+			for (const [index, id] of ["first", "second", "third"].entries()) {
+				await until(() => release.length > index);
+				assert.equal(creating.length, index + 1);
+				assert.equal(creating[index], id);
+				release[index]!();
+			}
+			await until(() => clients.every(({ socket }) => socket.sent.some(f => f.body?.kind === "res" && f.body.ok)));
+		} finally {
+			for (const { session } of clients) session.channel.close();
+			for (const resume of release) resume();
+		}
+	});
+	await checkControl("spares match the complete create, expire, yield to turns and are consumed exactly once", async () => {
+		const { WarmSpares, validSpec, SPARE_TTL } = await import("../runner/src/warm-spares.js");
+		const base = { context: "pairing, image and egress", args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
+		assert.ok(validSpec(base));
+		for (const args of [{ harness: "claude", screenshots: true }, { profile: "docker-windlass-sandbox" }, { spare: { url: "https://secret@example.org/r" } },
+			{ spare: { ...base.args.spare, prompt: "anything" } }]) assert.equal(validSpec({ ...base, args: { ...base.args, ...args } }), false);
+		let now = 0;
+		const removed = new Set<string>();
+		const pool = new WarmSpares(async () => {}, async raw => { removed.add(raw); }, () => now);
+		pool.used(base);
+		const fill = async () => { await until(() => !pool.raws.length); pool.fill(1); await until(() => pool.ready === 1); return pool.raws[0]!; };
+		for (const other of [{ ...base, args: { ...base.args, harness: "codex" as const } }, { ...base, context: "another owner, image or egress" }, { ...base, args: { ...base.args, size: 2 } },
+			{ ...base, args: { ...base.args, screenshots: true } }, { ...base, args: { ...base.args, spare: { url: "https://example.org/another.git" } } }]) {
+			const raw = await fill();
+			assert.equal(await pool.take(other, async () => true), undefined);
+			assert.ok(removed.has(raw));
+		}
+		const old = await fill();
+		now += SPARE_TTL;
+		assert.equal(await pool.take(base, async () => true), undefined);
+		assert.ok(removed.has(old));
+		const dirty = await fill();
+		assert.equal(await pool.take(base, async () => false), undefined);
+		assert.ok(removed.has(dirty));
+		const hit = await fill();
+		assert.equal((await pool.take(base, async () => true))?.raw, hit);
+		assert.equal(await pool.take(base, async () => true), undefined);
+		assert.ok(!removed.has(hit));
+		const waiting = await fill();
+		await pool.trim(0);
+		assert.ok(removed.has(waiting));
+		let cancelled = false;
+		const building = new WarmSpares(async (_raw, _spec, signal) => new Promise(resolve =>
+			signal.addEventListener("abort", () => { cancelled = true; resolve(); }, { once: true })), async () => {});
+		building.used(base);
+		building.fill(1);
+		await building.trim(0);
+		assert.ok(cancelled);
+		assert.equal(building.ready, 0);
+		let builds = 0, finish!: () => void;
+		const retiring = new WarmSpares(async () => { builds++; }, () => new Promise(resolve => { finish = resolve; }));
+		retiring.used(base);
+		retiring.fill(1);
+		await until(() => retiring.ready === 1);
+		const removal = retiring.trim(0);
+		await until(() => !!finish);
+		retiring.fill(1);
+		assert.equal(builds, 1, "a retiring container still occupies its background reservation");
+		finish();
+		await removal;
+		retiring.fill(1);
+		assert.equal(builds, 2);
+	});
+
+	await checkControl("two consecutive failed builds wait for another real create and a successful build resets the count", async () => {
+		const { WarmSpares } = await import("../runner/src/warm-spares.js");
+		const spec = { context: "owner", args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
+		let now = 0, builds = 0, fail = true;
+		const pool = new WarmSpares(async () => { builds++; if (fail) throw new Error("setup"); }, async () => {}, () => now);
+		const attempt = async () => { pool.fill(1); await until(() => pool.ready === 1 || pool.raws.length === 0); };
+		pool.used(spec);
+		await attempt();
+		await attempt();
+		assert.equal(builds, 1, "the first retry backs off");
+		now += 60_000;
+		await attempt();
+		now += 3_600_000;
+		await attempt();
+		assert.equal(builds, 2);
+		pool.used(spec);
+		await attempt();
+		now += 60_000;
+		fail = false;
+		await attempt();
+		assert.equal(pool.ready, 1);
+		await pool.trim();
+		fail = true;
+		await attempt();
+		now += 60_000;
+		await attempt();
+		assert.equal(builds, 6);
+	});
+
+	await checkControl("six-hour replacements expire after 24 hours without a real session", async () => {
+		const { WarmSpares, SPARE_TTL } = await import("../runner/src/warm-spares.js");
+		const spec = { context: "owner", args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
+		const day = 24 * 60 * 60_000;
+		let now = 0, builds = 0;
+		const pool = new WarmSpares(async () => { builds++; }, async () => {}, () => now);
+		pool.used(spec);
+		pool.fill(1);
+		await until(() => pool.ready === 1);
+		now = SPARE_TTL;
+		pool.fill(1);
+		await until(() => pool.raws.length === 0);
+		pool.fill(1);
+		await until(() => pool.ready === 1);
+		now = day;
+		pool.fill(1);
+		await until(() => pool.raws.length === 0);
+		pool.fill(1);
+		assert.equal(pool.recipe, undefined);
+		assert.equal(builds, 2, "the replacement did not renew demand");
+		pool.used(spec);
+		pool.fill(1);
+		await until(() => pool.ready === 1);
+		assert.equal(builds, 3);
+	});
+
+	await checkControl("a cold seed can share a short-lived branch head but a claim always rereads it", async () => {
+		const { spareHead } = await import("../server/src/actors/agent-session.js");
+		let now = 0, reads = 0;
+		const clock = mock.method(Date, "now", () => now);
+		const read = async () => String(++reads);
+		try {
+			assert.equal(await spareHead("main", true, read), "1");
+			assert.equal(await spareHead("main", true, read), "1");
+			assert.equal(await spareHead("main", false, read), "2");
+			now += 30_000;
+			assert.equal(await spareHead("main", true, read), "3");
+			assert.equal(await spareHead("other", true, read), "4");
+		} finally { clock.mock.restore(); }
+	});
+
 	await checkControl("an idle stop reports the paused sandbox immediately", async () => {
 		const machineId = "m_0123456789abcdef";
 		Object.assign(globalThis, { SANDBOX_IMAGE: "sha256:" + "0".repeat(64) });
@@ -351,6 +578,33 @@ try {
 				// And makes hardened sandboxes with data of their own only then: an older server would take the data for shared.
 				assert.equal(r.owner.sessionVolumes, sent, `owner.sessionVolumes after welcome capabilities ${JSON.stringify(capabilities)}`);
 			});
+		}
+	});
+	await checkControl("blocked-network and memory-events are negotiated on connect", async () => {
+		for (const capabilities of [undefined, ["memory-events"], ["blocked-network"]]) {
+			const memory = capabilities?.includes("memory-events") === true;
+			const named = capabilities?.includes("blocked-network") === true;
+			await withControl([lease()], async r => {
+				const ws = await r.online(0, capabilities);
+				assert.equal(Object.hasOwn(ws.sent.find(f => f.kind === "report")!, "blockedNetwork"), named);
+				assert.equal(r.owner.blockedNetwork, named);
+				assert.equal(r.owner.memoryEvents, memory);
+			});
+			const { Executor } = await import("../runner/src/docker-executor.js");
+			const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {}, false, false, ["docker-hardened"], { mode: "restricted", allow: [] });
+			owner.blockedNetwork = named;
+			owner.memoryEvents = memory;
+			owner.discover = async () => { Object.assign(owner, { dockerHealth: { ok: true } }); };
+			Object.assign(owner, { disk: async () => 10_000_000_000 });
+			owner.network.prepare = async () => {};
+			owner.network.attach = async () => {};
+			owner.provider.create = async () => "0123456789ab";
+			owner.provider.connect = async () => ({ cwd: "/workspace" }) as DockerSandboxHandle;
+			const id = await owner.create("s_network", "docker-hardened");
+			const found = await owner.lifecycle("connect", id, "s_network");
+			assert.ok(validValue("connect", found) && found);
+			assert.equal("blockedNetwork" in found, named);
+			assert.equal("memoryEvents" in found, memory);
 		}
 	});
 	await checkControl("a runner sends modelRelay, and lets turns use its relay, only for a server whose welcome names model-relay", async () => {
@@ -548,6 +802,107 @@ try {
 			});
 		}
 	});
+	await checkControl("an unremovable spare is retried without blocking egress, capacity, create or connect", async () => {
+		const owner = new LocalExecutor({ uid: "u_fixture", machineId }, { maxSandboxes: 1, maxRunning: 1 });
+		const stuck = "aaaaaaaaaaaa", other = "bbbbbbbbbbbb";
+		const pending = new Set([stuck, other]), attempts: string[] = [];
+		let fail = true;
+		const warn = mock.method(console, "warn", () => {});
+		try {
+			Object.assign(owner, { unbound: pending, enforceEgress: true, secureCredentialPath: async () => {}, refreshLogin: async () => {},
+				dockerHealth: { ok: true }, disk: async () => 100e9, discover: async () => {},
+				dropSpare: async (raw: string) => { attempts.push(raw); if (fail && raw === stuck) throw Error("private diagnostic"); } });
+			owner.network.reconcile = async running => { if (fail) assert.ok(running.has(stuck)); };
+			owner.network.prepare = owner.network.attach = async () => {};
+			owner.provider.create = async () => "cccccccccccc";
+			owner.provider.connect = async () => ({ cwd: "/workspace" }) as DockerSandboxHandle;
+			await owner.refresh();
+			assert.deepEqual([...pending], [stuck]);
+			assert.deepEqual(owner.report().docker, { ok: true });
+			assert.equal(owner.report().sandboxes.length, 0);
+			assert.deepEqual(warn.mock.calls.map(call => call.arguments), [[`Could not remove spare ${stuck}.`]]);
+			const id = await owner.create("s_real", "docker-hardened");
+			assert.ok(await owner.lifecycle("connect", id, "s_real"));
+			fail = false;
+			await owner.refresh();
+			assert.deepEqual(attempts, [stuck, other, stuck]);
+			assert.equal(pending.size, 0);
+			owner.network.reconcile = async () => { throw Error(); };
+			await owner.refresh();
+			assert.equal(owner.report().docker.ok, false, "a genuine network policy failure still blocks admission");
+		} finally { warn.mock.restore(); }
+	});
+
+	await checkControl("the executor admits on free disk, claims once, binds the new session and falls back cold under pressure", async () => {
+		const owner = new LocalExecutor({ uid: "u_fixture", machineId: "m_0123456789abcdef" }, { maxTurns: 1 });
+		const built: string[] = [], removed: string[] = [];
+		const recipe = { url: "https://example.org/fixture.git", connected: { repo: "42", branch: "main", commit: "c".repeat(40),
+			generation: "a".repeat(64), command: "make deps", timeoutMs: 3000 } };
+		let setupRuns = 0;
+		const oldRecipe = join(dir, `recent-${machineId}.json`);
+		let cold = 0, disk = 100e9;
+		Object.assign(owner, { warmSpares: true, spareSetupTimes: true, sessionVolumes: true, inventoryStarted: true, dockerHealth: { ok: true }, disk: async () => disk,
+			dropSpare: async (raw: string) => { removed.push(raw); } });
+		owner.network.prepare = owner.network.attach = async () => {};
+		owner.provider.create = async input => {
+			if (input.reservedId) { built.push(input.reservedId); return input.reservedId; }
+			return (++cold).toString(16).padStart(12, "0");
+		};
+		owner.provider.connect = async () => ({ uid: "u_fixture", profile: "docker-hardened", ownData: true, cwd: "/workspace",
+			run: async (command: string) => {
+				if (command === "exec 2>&1; make deps") setupRuns++;
+				return { exitCode: 0, stdout: command.includes("wlp:dir") ? "wlp:dir ." : recipe.connected.commit, stderr: "" };
+			} }) as unknown as DockerSandboxHandle;
+		owner.modelRelay.endSandbox = owner.provider.destroy = async () => {};
+		writeFileSync(oldRecipe, JSON.stringify({ uid: owner.identity.uid, spec: { context: "previous process", args: { profile: "docker-hardened", spare: recipe, mirrorRepo: "42" } } }));
+		await owner.maintainSpares();
+		assert.deepEqual(built, [], "restart ignores even a valid recipe from disk until a real create");
+		unlinkSync(oldRecipe);
+		const first = await owner.create("s_first", "docker-hardened", false, undefined, 1, undefined, "42", recipe);
+		assert.ok(!readdirSync(dir).includes(`recent-${machineId}.json`), "create does not persist a recipe");
+		owner.boxes.get(first)!.state = "paused";
+		await owner.lifecycle("destroy", first, "s_first");
+		const beforeBuild = Date.now();
+		await owner.maintainSpares();
+		await until(() => owner.report().warmSpares?.ready === 1);
+		assert.equal(owner.report().sandboxes.length, 0);
+		const beforeClaim = Date.now();
+		const second = await owner.create("s_second", "docker-hardened", false, undefined, 1, undefined, "42", recipe);
+		assert.ok(second.endsWith(built[0]!));
+		assert.equal(cold, 1);
+		assert.throws(() => owner.running(second, "s_first"));
+		const connected = await owner.lifecycle("connect", second, "s_second");
+		assert.ok(validValue("connect", connected) && connected?.readySetup);
+		const setup = connected.readySetup;
+		assert.equal(setupRuns, 1);
+		assert.ok(setup.startedAt >= beforeBuild && setup.startedAt + setup.durationMs <= beforeClaim);
+		const { readySetupItems } = await import("../server/src/actors/agent-session.js");
+		const [started, ended] = readySetupItems(1, recipe.connected, connected.readySetup);
+		assert.equal(started!.id, ended!.id);
+		assert.deepEqual([started, ended].map(i => [i!.kind, i!.command, i!.state, i!.exitCode, i!.at, i!.durationMs]), [
+			["setup", "make deps", "started", null, setup.startedAt, null],
+			["setup", "make deps", "succeeded", 0, setup.startedAt + setup.durationMs, setup.durationMs],
+		]);
+		owner.spareSetupTimes = false;
+		const legacy = await owner.lifecycle("connect", second, "s_second");
+		assert.ok(validValue("connect", legacy) && legacy?.readyKey && !legacy.readySetup);
+		owner.boxes.get(second)!.state = "paused";
+		await owner.lifecycle("destroy", second, "s_second");
+		await owner.maintainSpares();
+		await until(() => owner.report().warmSpares?.ready === 1);
+		disk = 6e9;
+		let finish!: () => void;
+		Object.assign(owner, { dropSpare: async (raw: string) => { removed.push(raw); await new Promise<void>(resolve => { finish = resolve; }); } });
+		const starting = owner.create("s_third", "docker-hardened", false, undefined, 1, undefined, "42", recipe);
+		await until(() => !!finish);
+		assert.equal(cold, 1, "the cold container waits for removal to finish");
+		finish();
+		const third = await starting;
+		assert.equal(cold, 2);
+		assert.equal(owner.boxes.get(third)?.claim, undefined);
+		assert.deepEqual(removed, [built[1]]);
+	});
+
 } finally {
 	for (const file of readdirSync(dir)) unlinkSync(join(dir, file));
 	rmdirSync(dir);

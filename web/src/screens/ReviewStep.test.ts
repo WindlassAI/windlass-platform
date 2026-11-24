@@ -111,9 +111,9 @@ describe("pages rendered with the mock", () => {
 			const view = viewNamed(title);
 			const page = { view, error: null, missing: false, reload: () => undefined, replace: () => undefined };
 			await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Item, { page }) })));
-			const strip = host.querySelector('section[aria-labelledby="item-verdict"]') as HTMLElement;
+			const strip = host.querySelector('section[aria-labelledby="item-checks"]') as HTMLElement;
 			expect(strip.querySelector(".item-verdict") === null, title).toBe(reviewing);
-			expect(strip.querySelector(".item-verdict-head")?.textContent?.startsWith(reviewing ? "being reviewed" : "Ready for review"), title).toBe(true);
+			expect(strip.querySelector(reviewing ? ".checks-summary .item-row-review" : ".checks-summary .item-verdict")?.textContent, title).toBe(reviewing ? "being reviewed" : "Ready for review");
 			expect(strip.textContent?.includes("Its word is given when the second review is filed and the work is handed over."), title).toBe(reviewing);
 			if (!reviewing) expect(strip.textContent).toContain("On GitHub as windlass/verified: Success");
 			// The facts the verdict rests on are there either way.
@@ -179,18 +179,23 @@ describe("a prompt of the platform's in the reviewer's timeline", () => {
 		host.remove();
 	});
 
-	it("stands folded under a plain label when it has text, and opens on a press", () => {
+	it("stands under a plain label, its text clamped to two lines with Show all only when cut", () => {
 		const text = "You were interrupted. Continue from where you were.";
-		act(() => root.render(createElement(PlatformPrompts.Provider, { value: true, children: createElement(Turn, { turn: turn(2, text) }) })));
-		const toggle = host.querySelector("button.user-platform-line") as HTMLButtonElement;
-		expect(toggle.textContent).toBe(platformPromptLabel(false));
-		expect(toggle.getAttribute("aria-expanded")).toBe("false");
+		act(() => root.render(createElement(PlatformPrompts.Provider, { value: "reviewer", children: createElement(Turn, { turn: turn(2, text) }) })));
+		expect(host.querySelector(".user-platform-line")?.textContent).toBe(platformPromptLabel(false));
 		const shown = host.querySelector(".user-platform-text") as HTMLElement;
-		expect(shown.hidden).toBe(true);
 		expect(shown.textContent).toBe(text);
-		act(() => toggle.click());
-		expect(toggle.getAttribute("aria-expanded")).toBe("true");
-		expect(shown.hidden).toBe(false);
+		expect(shown.getAttribute("data-clamped")).toBe("true");
+		expect(shown.style.getPropertyValue("--lines")).toBe("2");
+		// jsdom lays nothing out, so nothing is cut: no control.
+		expect(host.querySelector("button")).toBeNull();
+	});
+
+	it("is the factory's brief in a builder's timeline", () => {
+		act(() => root.render(createElement(PlatformPrompts.Provider, { value: "builder", children: createElement(Turn, { turn: turn(1, "Goal: stream the rows.") }) })));
+		expect(host.querySelector(".user-platform-line")?.textContent).toBe("The factory's brief");
+		expect(host.querySelector(".user-platform-text")?.textContent).toBe("Goal: stream the rows.");
+		expect(host.textContent).not.toContain("You:");
 	});
 
 	it("is a person's message everywhere else", () => {

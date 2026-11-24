@@ -5,7 +5,7 @@ const { rmSync } = require('node:fs');
 const { Transform } = require('node:stream');
 const { StringDecoder } = require('node:string_decoder');
 const { providerFor } = require('./opencode.cjs');
-const { createRelay, stopOnSignal, SIGNED_OUT } = require('./server.cjs');
+const { createRelay, stopOnSignal, SIGNED_OUT, NOTES_FILE } = require('./server.cjs');
 
 const filename = '/run/wlp-harness/codex/login.json';
 const models = /^\/codex\/v1\/models(?:\?client_version=\d{1,4}\.\d{1,4}\.\d{1,4})?$/;
@@ -64,6 +64,9 @@ function codexProvider(provider, generation, options = {}) {
 		accepts: (url) => models.test(url) || url === responses,
 		bearer: (headers) => headers.authorization,
 		closeEachReply: true,
+		// chatgpt.com/backend-api answers a ChatGPT-token stream with a 200 and no content type (or text/plain),
+		// as api.openai.com does for Windlass (windlass.cjs): the Responses route is read as an event stream.
+		untyped: (method, url) => (method === 'POST' && url === responses ? 'text/event-stream' : null),
 		responseFilter: auth.responseFilter,
 		secrets: auth.secrets,
 		drain: auth.drain,
@@ -121,6 +124,7 @@ if (process.env.WLP_CODEX_RELAY_PUBLIC_KEY) {
 			machine: process.env.WLP_CODEX_RELAY_MACHINE,
 			domain: process.env.WLP_CODEX_SESSION_DOMAIN,
 			provider,
+			notesFile: NOTES_FILE,
 		}).listen(socket),
 		provider,
 	);

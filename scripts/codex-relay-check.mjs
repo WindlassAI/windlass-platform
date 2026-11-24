@@ -219,13 +219,13 @@ test('a stopping relay starts no new refresh', async () => {
 });
 
 /** A Codex relay on a Unix socket, as in the relay container, with the session's forwarder in front of it. */
-async function relayAndForwarder(t, { stopping = false } = {}) {
+async function relayAndForwarder(t, { stopping = false, modelsType = 'application/json' } = {}) {
 	const dir = await mkdtemp(join(tmpdir(), 'codex-forward-'));
-	const socket = join(dir, 'relay.sock'), marker = join(dir, 'signed-out');
+	const socket = join(dir, 'relay.sock'), marker = join(dir, 'signed-out'), notes = join(dir, 'relay-notes.json');
 	const held = [];
 	const origin = createServer((req, res) => {
 		if (req.url.endsWith('/responses')) return held.push(res);
-		res.writeHead(200, { 'content-type': 'application/json' });
+		res.writeHead(200, modelsType ? { 'content-type': modelsType } : {});
 		res.end(JSON.stringify({ data: [{ id: 'fixture' }] }));
 	});
 	await new Promise((done) => origin.listen(0, '127.0.0.1', done));
@@ -237,7 +237,7 @@ async function relayAndForwarder(t, { stopping = false } = {}) {
 		? codexProvider('chatgpt', 'g', { load: async () => ({ generation: 'g', provider: 'chatgpt', access: 'expired', refresh: 'r', expires: 1 }) })
 		: codexProvider('openai', 'g', { load: async () => ({ generation: 'g', provider: 'openai', key: 'sk-fixture' }) });
 	if (stopping) await provider.drain();
-	const relay = createRelay({ publicKey, machine: 'machine', domain: 'test', provider, signedOut: () => existsSync(marker),
+	const relay = createRelay({ publicKey, machine: 'machine', domain: 'test', provider, signedOut: () => existsSync(marker), notesFile: notes,
 		forward: (options, cb) => request({ ...options, hostname: '127.0.0.1', port: origin.address().port }, cb) });
 	const sockets = new Set();
 	relay.on('connection', (s) => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
@@ -254,13 +254,27 @@ async function relayAndForwarder(t, { stopping = false } = {}) {
 		req.on('error', fail);
 		req.end(method === 'POST' ? '{}' : undefined);
 	});
+	/** A Responses request whose upstream answer the check writes. */
+	const answer = async (status, headers, body, requestBody = '{}') => {
+		const turn = new Promise((ok, fail) => {
+			const req = request({ host: '127.0.0.1', port: forwarder.address().port, method: 'POST', path: '/codex/v1/responses', agent,
+				headers: { host: '127.0.0.1:17892', authorization: bearer, 'content-type': 'application/json' } }, (res) => {
+				text(res).then((body) => ok({ status: res.statusCode, type: res.headers['content-type'], body }), fail);
+			});
+			req.on('error', fail);
+			req.end(requestBody);
+		});
+		while (!held.length) await new Promise((r) => setTimeout(r, 10));
+		held.shift().writeHead(status, headers).end(body);
+		return turn;
+	};
 	/** The relay process exits: its listener and every connection close, as at SIGTERM after drain. */
 	const exit = () => { relay.close(); for (const s of sockets) s.destroy(); };
 	t.after(async () => {
 		agent.destroy(); forwarder.close(); exit(); origin.closeAllConnections(); origin.close();
 		await rm(dir, { recursive: true, force: true });
 	});
-	return { call, exit, held, marker };
+	return { call, answer, exit, held, marker, notes };
 }
 test('logout during a request on a warm connection still answers the signed-out status', { timeout: 10_000 }, async (t) => {
 	const relay = await relayAndForwarder(t);
@@ -309,4 +323,50 @@ test('Codex rate-limit headers reach the client through the forwarder, on succes
 		for (const name of Object.keys(hidden)) assert.equal(headers[name], undefined, name);
 		if (status === 429) assert.equal(headers['retry-after'], '30');
 	}
+});
+test('an untyped 200 on the Responses route is passed as an event stream, and any other untyped or foreign answer is refused and noted', { timeout: 10_000 }, async (t) => {
+	const relay = await relayAndForwarder(t, { modelsType: null });
+	const stream = 'data: {"type":"response.completed"}\n\n';
+	// chatgpt.com/backend-api answers a ChatGPT-token stream with no content type, or as text/plain.
+	for (const headers of [{}, { 'content-type': 'text/plain; charset=utf-8' }]) {
+		const reply = await relay.answer(200, headers, stream);
+		assert.deepEqual(reply, { status: 200, type: 'text/event-stream', body: stream }, JSON.stringify(headers));
+	}
+	// A page on the streaming route is no model answer.
+	const page = await relay.answer(200, { 'content-type': 'text/html' }, '<html>sk-fixture</html>');
+	assert.equal(page.status, 502);
+	assert.doesNotMatch(page.body, /html|sk-fixture/);
+	// Only the streaming route: an untyped model list is still refused.
+	assert.equal((await relay.call('GET', '/codex/v1/models')).status, 502);
+	// Each refusal is noted with the upstream status and type, and nothing of the request's credential or body.
+	let noted = [];
+	for (let i = 0; i < 100 && noted.filter((n) => n.event === 'refused_200').length < 2; i++) {
+		await new Promise((r) => setTimeout(r, 20));
+		noted = JSON.parse(await readFile(relay.notes, 'utf8').catch(() => '[]'));
+	}
+	const refused = noted.filter((n) => n.event === 'refused_200');
+	assert.deepEqual(refused.map((n) => [n.route, n.upstream, n.contentType, n.answered]),
+		[['POST /codex/v1/responses', 200, 'text/html', 502], ['GET /codex/v1/models', 200, 'none', 502]]);
+	assert.deepEqual(noted.filter((n) => n.event === 'untyped_200').map((n) => n.contentType), ['none', 'text/plain']);
+	assert.doesNotMatch(JSON.stringify(noted), /sk-fixture|Bearer|html>/);
+});
+test('relay diagnostics omit credentials, bodies and arbitrary upstream header values', async (t) => {
+	const relay = await relayAndForwarder(t);
+	const lines = [];
+	t.mock.method(console, 'error', line => lines.push(line));
+	await relay.answer(403, { 'content-type': 'text/html; secret=sk-fixture', 'content-encoding': 'request-marker' },
+		'upstream-marker', 'request-marker');
+	assert.equal(lines.length, 1);
+	assert.match(lines[0], /event=upstream_error .*upstream=403/);
+	assert.doesNotMatch(lines[0], /sk-fixture|request-marker|upstream-marker|Bearer/);
+});
+
+test('the OpenCode relay reads only a ChatGPT sign-in\'s Responses answer as an event stream', async () => {
+	const { providerFor } = await import('../sandbox/relay/opencode.cjs');
+	const chatgpt = providerFor(['chatgpt'], 'g', { load: async () => ({}) });
+	assert.equal(chatgpt.untyped('POST', '/openai/responses'), 'text/event-stream');
+	assert.equal(chatgpt.untyped('GET', '/openai/responses'), null);
+	assert.equal(chatgpt.untyped('POST', '/openai/chat/completions'), null);
+	const keyed = providerFor(['openai'], 'g', { load: async () => ({}) });
+	assert.equal(keyed.untyped('POST', '/openai/responses'), null);
 });

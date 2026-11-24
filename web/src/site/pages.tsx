@@ -69,7 +69,7 @@ function landingMarkdown(): string {
 		"You choose the sandbox when you start an agent, and see its layers before it starts. Your sign-in never goes into the sandbox: each turn is lent a short-lived token.",
 		"",
 		"- **Hosted.** Each hosted session gets a Firecracker microVM of its own from E2B; commands run as a non-root user.",
-		"- **Your own machine.** Pair a Linux machine with Docker. A small runner on it connects out to the platform and runs each session in a container there (non-root, no capabilities, seccomp, resource limits). Nothing on the machine needs to be reachable from outside.",
+		"- **Your own machine.** Pair a Mac, Linux or Windows (WSL) machine with Docker. A small runner on it connects out to the platform and runs each session in a container there (non-root, no capabilities, seccomp, resource limits). Nothing on the machine needs to be reachable from outside.",
 		"- **The Windlass sandbox profile** sandboxes every command again: no network, writes only in the workspace, credentials hidden. A command that wants more asks first. The hardened profile runs commands directly in the container, with network.",
 		"",
 		"## Factory",

@@ -87,7 +87,7 @@ headers:{authorization:'Bearer '+process.env.WLP_SESSION_BEARER,'content-type':'
 async function terminalLogin(hostileUrl) {
 	const child = spawn('script', ['-qef', '-c', 'exec node runner.cjs login codex', '/dev/null'], {
 		cwd: dir,
-		env: { ...process.env, ...(hostileUrl && { F3_DEVICE_URL: hostileUrl, WLP_CODEX_DEVICE_LOGIN: '1' }) },
+		env: { ...process.env, ...(hostileUrl && { F3_DEVICE_URL: hostileUrl }) },
 		stdio: ['pipe', 'pipe', 'pipe'],
 		timeout: 60000,
 	});
@@ -236,7 +236,8 @@ try {
 		await cmd(['exec', 'wlp-codex-relay-' + machineId, 'stat', '-c', '%a:%u', '/run/wlp-harness/codex/login.json']),
 		'400:1000',
 	);
-	assert.equal(await cmd(['inspect', '--format', '{{.HostConfig.LogConfig.Type}}', 'wlp-codex-relay-' + machineId]), 'none');
+	assert.deepEqual(JSON.parse(await cmd(['inspect', '--format', '{{json .HostConfig.LogConfig}}', 'wlp-codex-relay-' + machineId])),
+		{ Type: 'json-file', Config: { 'max-size': '4m', 'max-file': '2' } });
 	await runner.loginChanged(true);
 	const report = runner.report(),
 		entry = report.harnesses[0],

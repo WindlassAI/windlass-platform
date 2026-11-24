@@ -6,7 +6,15 @@ and cannot do. Users' instructions are in the in-app docs ([Use your own machine
 
 ## How it works
 
-With `WLP_MACHINES=1` a user can pair a Linux machine of their own that has Docker, and launch agents on it.
+With `WLP_MACHINES=1` a user can pair a machine of their own that has Docker, and launch agents on it: Linux with
+Docker, or macOS or Windows (in a WSL terminal) with Docker Desktop or OrbStack, where the runner and the sessions run
+in Docker's Linux VM with the images of its architecture (a Mac with Apple silicon takes the arm64 images; Windlass and
+Claude Code turns have passed on Docker Desktop, runner 0.3.3). The runner's default name is the host name it sees,
+which under Docker Desktop is the VM's, `docker-desktop`: setup asks for a name and says so, and the Docker commands
+tell users to pass `--name`. A pairing made with `pair` or a bare `run` allows only `docker-hardened`;
+`--allow-profile docker-windlass-sandbox` adds the two-wall profile, recommended for Windlass and Codex
+([runner reference](../web/src/docs/content/runner.md#allowed-profiles)). Setup and the dialog's commands allow it by
+default.
 A small program on that machine, the runner, connects out to the platform, and makes and runs the
 sessions' containers on the machine's own Docker. Everything else stays with the platform: the session's
 actor, the turn's conversation with Windlass, questions, secrets, the GitHub App, the checks' record and the
@@ -28,6 +36,39 @@ in-app docs ([Use your own machine](../web/src/docs/content/machines.md#add-a-ma
 - A name given with `--name` is kept in the state volume. A paired runner restarted with a new name updates
   the listing on its next report.
 - The Machines page names the image in `WLP_RUNNER_IMAGE` and the address in `WLP_PUBLIC_URL`.
+
+### The one-line install and the setup wizard
+
+The Machines page shows `curl -fsSL <WLP_PUBLIC_URL>/install.sh | sh` first, and the Docker commands under
+**Other ways**. `GET /install.sh` ([install-script.ts](../server/src/install-script.ts)) answers with a short POSIX
+sh script, as `text/plain` with `cache-control: no-store`, with the platform's address and the pinned
+`WLP_RUNNER_IMAGE` written in. While no image is published the script says so and exits 1; with
+`WLP_MACHINES` off the path is a 404. The script:
+
+1. checks that `docker` exists and answers `docker info`, with a message for each case: Docker Desktop or
+   OrbStack on a Mac, Docker Engine on Linux, the WSL integration of Docker Desktop on Windows, a stopped
+   daemon, and a user outside the `docker` group;
+2. pulls the image;
+3. runs `docker run -it --rm --log-driver none -v /var/run/docker.sock:/var/run/docker.sock -v
+   windlass-runner:/var/lib/windlass-runner <image> setup --platform <address> </dev/tty`. Under `curl | sh`
+   standard input is the script, so setup reads the terminal. Without one (`/dev/tty` cannot be opened) it
+   prints that command instead.
+
+It runs nothing with sudo and writes no file on the host: everything it leaves is in Docker, the image and
+the `windlass-runner` volume.
+
+`windlass-runner setup` without `--harness` is a wizard ([setup-wizard.ts](../runner/src/setup-wizard.ts)): full-screen
+prompts ([@clack/prompts](https://github.com/bombshell-dev/clack)) on a terminal, numbered lines with `--no-tui` or
+without one. It pairs (or keeps the pairing), asks the machine's name, the agents to offer and signs each in
+through the same code as `login`, then the profiles, the network mode and the limits. A failed or skipped
+sign-in is shown and setup carries on. At the end it starts the service itself through the Docker socket
+it was given, using the setup container's image and mounts, rotated logs and the `unless-stopped` restart
+policy. It replaces an existing `windlass-runner` container when the user
+agrees (the volume stays). It lets go of the state lock first, then waits until the service writes
+`Online` to `status.json`. Its answers are kept in `setup.json` in the state volume and are the defaults
+the next time; `setup --quick` asks only what is missing and `setup <section>` one part (`name`, `agents`,
+`claude`, `codex`, `opencode`, `profile`, `network`, `limits`). With `--harness`, setup is the earlier flow:
+it signs the given agents in and prints the start command.
 
 ### Signed runner connections
 
@@ -196,8 +237,8 @@ it, and removes it when asked. It runs the base sandbox image and can optionally
 `wlp-machine-<machine id>`, which is Windlass's data directory for the machine's sessions, as the user's
 volume is on Docker. A Windlass session in a new `docker-hardened` sandbox gets a volume of its own
 instead, `wlp-machine-<machine id>-<raw id>` (see [Per-session data volumes](#per-session-data-volumes)). Each agent container gets 256 CPU shares. The runner scales CPU, memory and process limits
-by its slot count. On a machine with one or two CPUs, one slot defaults to half the CPUs, 1536 MiB
-and 512 processes. Larger machines reserve resources for the host before sizing their slots.
+by its slot count. By default, the runner fits up to 16 slots of 2 CPUs and 4–8 GiB each after reserving resources for the host.
+If none fits, it uses one slot with all cores and up to 4 GiB, leaving at least 1 GiB or 25% of memory for the host, whichever is greater.
 The runner applies these limits on creation and reconnect. A limit below current memory usage waits until the sandbox restarts. Creation requires 5 GB of free disk. It stops a
 sandbox that has not been used for the idle time the platform names (`WLP_IDLE_SUSPEND_MS`), never while
 a command runs in it or the session's socket is connected, and it removes one by itself in one case
@@ -252,6 +293,20 @@ Both relays answer a refusal or a provider error with a fixed message per status
 provider's own body on: 401 "Provider sign-in is missing or the session placeholder is no longer valid.",
 403 "This request is not allowed by the relay.", 429 "The provider's usage or rate limit was reached.",
 5xx "The provider failed or couldn't be reached." and any other status "The provider rejected the request."
+A successful answer passes only as an event stream or JSON. chatgpt.com answers a ChatGPT sign-in's stream
+with no content type or as text/plain, so on that route alone (Codex's `/codex/v1/responses`, OpenCode's
+ChatGPT `/openai/responses`) such an answer passes as an event stream; anywhere else it is refused with 502.
+
+On a machine, `docker logs <relay-container>` shows diagnostics. Docker retains up to two 4 MiB files per relay. Each relay notes, without bodies, credentials or query strings, every
+answer it did not pass on as the provider gave it: an upstream error status, a refused or retyped 200, a
+provider it could not reach. It prints the note to its stderr and keeps the latest 20 in
+`/workspace/relay-notes.json` of its socket volume. `windlass-runner status` prints the latest three of each
+relay, for example `POST /codex/v1/responses  upstream 200, content-type text/html  answered 502`.
+
+An agent's turn ends as failed with the provider's words when the provider refused it: Codex's when every model
+request failed and it did nothing, OpenCode's on a relay refusal or when it logs that it gave up on a rate limit
+(a usage limit). A turn whose agent sends nothing for 10 minutes, with no call of its own running and nobody
+asked, is ended by the platform so it frees its slot (`WLP_ACP_IDLE_MINUTES`, [configuration.md](configuration.md)).
 
 The credential relay checks decoded JSON strings in successful responses. For Anthropic Messages
 streams it joins text deltas by content-block index and holds a possible credential prefix across
@@ -425,6 +480,35 @@ The session goes to sleep as any does ([When a server stops](architecture.md#whe
 conversation with the runner ends with it; the next turn, on whichever server, opens a new one. The
 session does not suspend a machine's sandbox on its way to sleep (`[wlp] sandbox.suspend_skipped`): the
 runner stops it after the idle time.
+
+With `WLP_RUNNER_DURABLE_TURNS=1` (default off), a Windlass turn can outlive the server instead
+(`server/src/runner/journal.ts`). The session keeps its half of the runner conversation in its own
+SQLite: the conversation's id, both sides' counts, and the frames the runner has not acknowledged.
+
+- **Written ahead.** A frame goes to the runner only once it is stored, so the runner never holds a
+  message the restarted server does not know.
+- **Acknowledged after it is stored.** What the server received is counted as received in the same
+  transaction as the timeline rows it produced and the turn's checkpoint, and only that count is
+  acknowledged. The runner holds everything past it and sends it again: each message is taken once.
+- **No secrets.** A frame that carries a token (`writeSecretFile`, `modelRelayToken`, a start or run with
+  secret variables) is stored as a cancel of its id, which a runner that never had it ignores. The
+  restarted turn writes the token file again at once, through the same relay lease.
+- **The turn checkpoint** (`turn_checkpoint`, `TurnCheckpoint` in `sandbox/api.ts`) holds the runner's id
+  of the agent process, the ACP ids, the requests of the agent's not answered yet, the part of a line
+  not ended, and the turn's own counts. It is plain JSON, written with the timeline.
+
+On wake, a session whose turn was running reads both back (`takeUpTurn`). It takes the process before it
+asks for the runner's socket, so none of its output arrives with nobody to take it, and runs the turn
+again with the checkpoint: no `stopLeftovers`, no new engine, no new prompt. The runner's hello resumes
+the conversation, it sends again what it held, and the turn goes on. While a turn can be taken up, a
+wake is kept scheduled a minute ahead (`internalTakeUp`), so a server that crashed is replaced within
+the grace without anyone opening the page.
+
+A graceful stop keeps the turn running only with a runner that reports `resumable-conversation`
+(`turn.kept` in the log); with any other it stops the turn as before. Anything that does not match
+falls back to the turn being cut short: a runner whose grace ran out or that restarted answers the
+resume with a new conversation, the process held for the turn ends, and the next turn stops what is
+left. Claude Code, Codex and OpenCode turns write no checkpoint, so they end as before.
 
 ### When the machine is offline
 

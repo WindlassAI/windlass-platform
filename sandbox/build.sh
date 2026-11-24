@@ -70,7 +70,7 @@ if [ "$context_only" = false ]; then
   context=$(mktemp -d "${TMPDIR:-/tmp}/wlp-build.XXXXXX")
   trap 'rm -rf "$context"' EXIT INT TERM
 fi
-cp "$here/Dockerfile" "$here/wlp-run" "$context/"
+cp "$here/Dockerfile" "$here/wlp-run" "$here/wlp-pnpm" "$context/"
 if [ "$variant" = shots ]; then cp "$here/wlp-shot" "$context/"; fi
 ln "$binary" "$context/windlass" 2>/dev/null || cp "$binary" "$context/windlass"
 

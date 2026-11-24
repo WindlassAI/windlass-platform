@@ -27,21 +27,23 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { WindlassEvent } from "../server/src/contract.js";
-import { type AccessTokens, type ChatgptLogins, DeploymentFull, type RunTurnResult, SandboxUserError, type ScriptedModel, type TurnQuestion } from "../server/src/sandbox/api.js";
+import type { TimelineItem, WindlassEvent } from "../server/src/contract.js";
+import { type AccessTokens, type ChatgptLogins, type OutOfMemory, DeploymentFull, type RunTurnResult, SandboxUserError, type ScriptedModel, type TurnQuestion } from "../server/src/sandbox/api.js";
 import { IMAGE, LABEL_ARG, docker } from "../server/src/sandbox/docker.js";
 import { cleanupDeployment } from "../server/src/sandbox/e2b/cleanup.js";
 import type { E2bClient, E2bCommand, E2bCommandOptions } from "../server/src/sandbox/e2b/client.js";
-import { DEFAULT_MAX_RUNNING, type E2bSettings, HOBBY_MAX_RUNNING, readE2bConfig, readE2bSettings } from "../server/src/sandbox/e2b/config.js";
+import { DEFAULT_MAX_RUNNING, DEFAULT_SNAPSHOT_LIMITS, type E2bSettings, HOBBY_MAX_CPUS, HOBBY_MAX_MEMORY_MB, HOBBY_MAX_RUNNING, offeredSize, refusesSize, readE2bConfig, readE2bSettings, templateFor } from "../server/src/sandbox/e2b/config.js";
+import { E2bSnapshots } from "../server/src/sandbox/e2b/snapshots.js";
+import { HOSTED_SIZE_SPECS, outOfMemoryWords } from "../server/src/contract.js";
 import { FakeE2b, type FakeMachine, ScriptedMachine } from "../server/src/sandbox/e2b/fake.js";
 import { createE2bSandboxLayer } from "../server/src/sandbox/e2b/index.js";
 import { describeUsage, estimatedCostUsd } from "../server/src/sandbox/e2b/pricing.js";
-import { ACCOUNT_LIMIT, E2bSandboxHandle, E2bSandboxes, META, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
+import { ACCOUNT_LIMIT, E2bSandboxHandle, E2bSandboxes, META, RESTARTED_NOTICE, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
 import { sessionSandboxInput } from "../server/src/actors/internal.js";
 import { describeTemplate } from "../server/src/sandbox/e2b/template.js";
 import { PROFILE_RUN_FLAGS } from "../server/src/sandbox/docker-flags.js";
 import { OPEN_PROFILE_NOT_OFFERED, PROFILES, e2bProfile, profilesFor } from "../server/src/sandbox/profiles.js";
-import { HOSTED_OFFLINE_REPOSITORY, type E2bNetworkConfig, guestDnsArgv, hostedNetworkText, networkConfig, readE2bNetwork, withHosts } from "../server/src/sandbox/e2b/network.js";
+import { HOSTED_OFFLINE_REPOSITORY, type E2bNetworkConfig, guestDnsArgv, guestNetworkStep, hostedNetworkText, networkConfig, readE2bNetwork, withHosts } from "../server/src/sandbox/e2b/network.js";
 import { personalServerReach } from "../server/src/server-question.js";
 import { choosePlacement } from "../server/src/factory/placement.js";
 import { cloneWithToken, commitWork, discardHandover, fetchWithToken, outgoingPatch, pushWithToken } from "../server/src/github/git.js";
@@ -145,6 +147,10 @@ await section("profiles", async () => {
 	expect("without WLP_E2B_OPEN_PROFILE=1 the microVM-only profile is listed, with why it cannot be chosen", notOffered?.available === false && notOffered.unavailableReason === OPEN_PROFILE_NOT_OFFERED);
 	const both = profilesFor("e2b", { windlassSandbox: true, openProfile: true });
 	const open = both.find((profile) => profile.id === "e2b-open");
+	// With the model relay a command reads the turn's token file, which holds only a placeholder: the access token is not readable.
+	const relayedOpen = profilesFor("e2b", { windlassSandbox: false, openProfile: true }, true).find((profile) => profile.id === "e2b-open");
+	expect("with the model relay, e2b-open's commands read the token file but not the access token",
+		relayedOpen?.modelRelay === true && relayedOpen.commandsCanReadAccessToken && relayedOpen.accessTokenReadable === false && open?.accessTokenReadable === undefined);
 	expect("with it, both E2B profiles are offered, the one with Windlass's sandbox first (the picker's default)", both.filter((profile) => profile.available).map((profile) => profile.id).join() === "e2b,e2b-open");
 	expect(
 		"the microVM-only profile says what it gives up: network, the access token, no questions",
@@ -464,8 +470,8 @@ await section("suspend, resume, destroy", async () => {
 	const handle = await w.sandboxes.connect(id);
 	expect("connect resumes it", handle !== undefined && w.fake.sandboxes.get(id)?.state === "running" && w.lines.some((line) => line.includes(`e2b.sandbox.resumed id=${id}`)));
 	expect(
-		"a resumed sandbox is tidied first: a Windlass a cut-off turn left is looked for, and its token file removed",
-		machine.commands[0]?.command === "wlp-run tags-of windlass" && machine.commands.some((entry) => entry.command === `rm -f -- ${path} ${path}.tmp`),
+		"a resumed sandbox is tidied first, once one command shows it answers: a Windlass a cut-off turn left is looked for, and its token file removed",
+		machine.commands[0]?.command === "true" && machine.commands[0].options.root === true && machine.commands[1]?.command === "wlp-run tags-of windlass" && machine.commands.some((entry) => entry.command === `rm -f -- ${path} ${path}.tmp`),
 		machine.commands.map((entry) => entry.command).join(" | "),
 	);
 	expect("the ten minutes it was paused are not running time", w.fake.ranMs(id) === 90_000);
@@ -505,6 +511,215 @@ await section("suspend, resume, destroy", async () => {
 		noPause.fake.sandboxes.size === 0 && noPause.lines.some((line) => line.includes(`e2b.sandbox.killed id=${brief}`) && line.includes("the files in its workspace and its Windlass session are lost")),
 		noPause.lines.join(" | "),
 	);
+});
+
+await section("a sandbox that does not answer", async () => {
+	// What happened on the live server: an agent's command used all of a 1 GiB sandbox's memory. Commands still started
+	// and none ended, and the pause kept that memory, so every resume brought the same wedged guest back and every
+	// turn failed at its network. The connect now finds that out first and starts the sandbox again from its disk.
+	class Wedged extends ScriptedMachine {
+		wedged = false;
+		/** Whether a start from the disk cures it (a memory image that wedges the guest) or not. */
+		curedByReboot = true;
+		reboots = 0;
+		constructor() {
+			super((command) => (/ wlp-network [a-z]+ /.test(command) ? { stdout: `network ${/ wlp-network ([a-z]+) /.exec(command)?.[1]}\n` } : command.includes("windlass --version") ? { stdout: "Windlass 0.4.0+test (linux-x64)\n" } : undefined));
+		}
+		override async start(command: string, options: E2bCommandOptions): Promise<E2bCommand> {
+			if (!this.wedged) return super.start(command, options);
+			this.commands.push({ command, options, stdin: "" });
+			return { pid: 9, sendStdin: async () => {}, closeStdin: async () => {}, wait: () => new Promise(() => {}), disconnect: async () => {}, kill: async () => {} };
+		}
+		async rebooted(): Promise<void> {
+			this.reboots += 1;
+			if (this.curedByReboot) this.wedged = false;
+		}
+	}
+	const restrictedNetwork = readE2bNetwork({ WLP_E2B_NETWORK: "restricted" });
+	const setup = (settings: Partial<E2bSettings> = {}) => {
+		const lines: string[] = [];
+		const machines = new Map<string, Wedged>();
+		const fake = new FakeE2b({ machine: (id) => { const machine = new Wedged(); machines.set(id, machine); return machine; } });
+		const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, network: restrictedNetwork, ...settings }, { log: (line) => lines.push(line), sleep: async () => {}, probeMs: 50, networkMs: 100 });
+		return { lines, fake, machines, sandboxes };
+	};
+
+	for (const paused of [true, false]) {
+		const w = setup();
+		const id = await w.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+		const machine = w.machines.get(id)!;
+		if (paused) await w.sandboxes.suspend(id);
+		machine.wedged = true;
+		machine.commands.length = 0;
+		w.fake.calls.length = 0;
+		const handle = await w.sandboxes.connect(id).catch((error: unknown) => error as Error);
+		const ok = handle !== undefined && !(handle instanceof Error);
+		const names = machine.commands.findIndex((entry) => entry.command.includes(" wlp-network restricted "));
+		expect(
+			`${paused ? "a resumed" : "a running"} sandbox that starts commands and ends none is paused and started again from its disk, then set up`,
+			ok && machine.reboots === 1 && callsOf(w.fake, "pause").length === 1 && callsOf(w.fake, "connect").at(-1) === `connect ${id} ${SETTINGS.idleTimeoutMs} reboot` && names > 0 && w.fake.sandboxes.get(id)?.state === "running",
+			handle instanceof Error ? handle.message : `${machine.reboots} reboots; ${w.fake.calls.join(" | ")}`,
+		);
+		expect(`${paused ? "resumed" : "running"}: the turn's timeline is told, and the log says what did not answer`, ok && (handle as E2bSandboxHandle).notice === RESTARTED_NOTICE && w.lines.some((line) => line.includes(`e2b.sandbox.unresponsive id=${id}`) && line.includes("did not end within 0.05 s")) && w.lines.some((line) => line.includes(`e2b.sandbox.rebooted id=${id}`)), w.lines.join("\n"));
+	}
+
+	{
+		const w = setup();
+		const id = await w.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+		const machine = w.machines.get(id)!;
+		const fine = (await w.sandboxes.connect(id)) as E2bSandboxHandle;
+		expect("a sandbox that answers is not restarted, and its timeline is told nothing", fine.notice === undefined && machine.reboots === 0 && !w.lines.some((line) => line.includes("unresponsive")));
+		machine.wedged = true;
+		machine.curedByReboot = false;
+		const error = await w.sandboxes.connect(id).then(() => null, (failure: unknown) => failure as Error);
+		expect("one that still does not answer after a start from its disk fails the connect, saying both", error !== null && /does not answer \(a command started in it and did not end within 0\.05 s\), and still did not after it was started again from its disk/.test(error.message), error?.message);
+	}
+
+	{
+		const w = setup({ pause: false });
+		const id = await w.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+		w.machines.get(id)!.wedged = true;
+		const error = await w.sandboxes.connect(id).then(() => null, (failure: unknown) => failure as Error);
+		expect("without pauses (WLP_E2B_PAUSE=0) it is not killed in passing: the connect fails and says why", error !== null && /WLP_E2B_PAUSE=0/.test(error.message) && w.fake.sandboxes.has(id), error?.message);
+	}
+
+	{
+		// The names script itself hangs, after its first step: the error says how far it got.
+		const w = setup();
+		const id = await w.sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+		const machine = w.machines.get(id)!;
+		const start = machine.start.bind(machine);
+		machine.start = async (command, options) => {
+			if (!command.includes(" wlp-network ")) return start(command, options);
+			options.onStdout?.("step lock\n");
+			return { pid: 9, sendStdin: async () => {}, closeStdin: async () => {}, wait: () => new Promise(() => {}), disconnect: async () => {}, kill: async () => {} };
+		};
+		const error = await w.sandboxes.connect(id).then(() => null, (failure: unknown) => failure as Error);
+		expect("a names script that hangs says which part hung", error !== null && /the script started \(in [\d.]+ s\) and did not end within 0\.1 s; it was waiting for its lock/.test(error.message), error?.message);
+	}
+	expect("a names script that printed nothing never ran its first line", guestNetworkStep("") === "it printed nothing, so the sandbox never ran its first line" && guestNetworkStep("step lock\nstep hosts\n") === "it was writing /etc/hosts");
+});
+
+await section("sizes", async () => {
+	const plain = (value: unknown) => JSON.stringify(value);
+	// E2B fixes a sandbox's CPUs and memory when its template is built: each size is a template of its own.
+	expect("WLP_E2B_SIZES: small alone by default, small always among them, in size order", plain(readE2bSettings({}).sizes) === plain(["small"]) && plain(readE2bSettings({ WLP_E2B_SIZES: "large, standard" }).sizes) === plain(["small", "standard", "large"]));
+	expect("a size that is not one is refused at startup", (() => { try { readE2bSettings({ WLP_E2B_SIZES: "small,huge" }); return false; } catch (error) { return /WLP_E2B_SIZES/.test(String(error)); } })());
+	const named = readE2bSettings({ WLP_E2B_TEMPLATE_LARGE: "big-one" });
+	expect("each size's templates by default, and by their own variables", templateFor(named, "standard", false) === "windlass-platform-sandbox-standard" && templateFor(named, "standard", true) === "windlass-platform-sandbox-standard-shots" && templateFor(named, "large", false) === "big-one" && templateFor(named, "small", false) === "windlass-platform-sandbox");
+	expect("a size not offered gets the largest offered below it", offeredSize({ sizes: ["small", "standard"] }, "large") === "standard" && offeredSize({ sizes: ["small", "large"] }, "standard") === "small" && offeredSize({}, "large") === "small");
+
+	const lines: string[] = [];
+	const clock = { now: Date.parse("2026-11-15T12:00:00Z") };
+	const fake = new FakeE2b({ now: () => clock.now, machine: () => imageLike(), templateSizes: { "windlass-platform-sandbox-standard": { cpuCount: 2, memoryMB: 4096 }, "windlass-platform-sandbox-large-shots": { cpuCount: 4, memoryMB: 8192 } } });
+	const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, maxRunning: 5, sizes: ["small", "standard", "large"] }, { log: (line) => lines.push(line), now: () => clock.now, sleep: async () => {} });
+	const standard = await sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b", hostedSize: "standard" });
+	const made = fake.sandboxes.get(standard)!;
+	expect("a standard sandbox is made from the standard template, and says its size in its metadata and the log", made.template === "windlass-platform-sandbox-standard" && made.metadata[META.size] === "standard" && lines.some((line) => line.includes(`e2b.sandbox.created id=${standard}`) && line.includes("size=standard")), lines.join("\n"));
+	const shots = await sandboxes.create({ uid: "u1", sessionId: "s2", profile: "e2b", hostedSize: "large", screenshots: true });
+	expect("screenshots in a large one: the large size's shots template", fake.sandboxes.get(shots)?.template === "windlass-platform-sandbox-large-shots");
+	const small = await sandboxes.create({ uid: "u1", sessionId: "s3", profile: "e2b" });
+	expect("no size asked: small, from the template it always was", fake.sandboxes.get(small)?.template === "windlass-platform-sandbox" && fake.sandboxes.get(small)?.metadata[META.size] === "small");
+	const handle = (await sandboxes.connect(standard)) as E2bSandboxHandle;
+	expect("its handle knows its size", handle.size === "standard");
+	clock.now += 100_000;
+	await sandboxes.suspend(standard);
+	expect("the cost line of a pause is at the size's own figures", lines.some((line) => line.includes(`e2b.sandbox.paused id=${standard}`) && line.includes(describeUsage(100, 2, 4096))), lines.filter((line) => line.includes("paused")).join("\n"));
+	const sizes = sandboxes.sizes();
+	expect("the sizes offered, each with its price an hour", plain(sizes.map((size) => size.id)) === plain(["small", "standard", "large"]) && Math.abs((sizes[1]?.usdPerHour ?? 0) - estimatedCostUsd(3600, 2, 4096)) < 1e-9 && (sizes[2]?.usdPerHour ?? 0) > (sizes[1]?.usdPerHour ?? 0));
+	expect("the usage page's base price stays the small size's", Math.abs(sandboxes.price().usdPerSecond - estimatedCostUsd(1, 1, 1024)) < 1e-12);
+
+	const fallback = new FakeE2b({ machine: () => imageLike() });
+	const smallOnly = new E2bSandboxes(fallback, SETTINGS, { log: () => {}, sleep: async () => {} });
+	const asked = await smallOnly.create({ uid: "u1", sessionId: "s1", profile: "e2b", hostedSize: "large" });
+	expect("a deployment that built only small offers one size, and makes small for any size asked", smallOnly.sizes().length === 1 && fallback.sandboxes.get(asked)?.template === "windlass-platform-sandbox");
+
+	// The account's plan refuses a size: the person reads the plan's limits, not E2B's words alone.
+	const refusing = Object.assign(Object.create(fake) as FakeE2b, { create: async () => { throw new Error("400: memory 8192 MB exceeds the maximum allowed for your team's plan"); } });
+	const planLines: string[] = [];
+	const onPlan = new E2bSandboxes(refusing, { ...SETTINGS, maxRunning: 5, sizes: ["small", "standard", "large"] }, { log: (line) => planLines.push(line), now: () => clock.now, sleep: async () => {} });
+	const refusal = await userError(() => onPlan.create({ uid: "u1", sessionId: "s9", profile: "e2b", hostedSize: "large" }));
+	expect("a size the plan refuses names the plan's limits, the size and E2B's words, and is logged", refusal?.startsWith("E2B refused a large sandbox (4 vCPU, 8 GiB) for the account's plan: the Hobby plan allows at most 8 vCPU and 8 GiB a sandbox, 10 sandboxes at once") === true && refusal.includes("exceeds the maximum") && planLines.some((line) => line.includes("e2b.size_refused size=large")), refusal ?? "");
+	expect("no size is beyond the Hobby plan's 8 vCPU and 8 GiB", Object.values(HOSTED_SIZE_SPECS).every((spec) => spec.cpus <= HOBBY_MAX_CPUS && spec.memoryMiB <= HOBBY_MAX_MEMORY_MB) && HOSTED_SIZE_SPECS.large.cpus === 4 && HOSTED_SIZE_SPECS.large.memoryMiB === 8192);
+	expect("a template that is not there, or the account's count of sandboxes, is no size refusal", !refusesSize("404: template 'windlass-platform-sandbox-large' not found") && !refusesSize("429: rate limit exceeded"));
+
+	// A snapshot is of one template's sandbox: its key differs by size, so one size's never starts another's.
+	const store = new E2bSnapshots(fake, { ...SETTINGS, sizes: ["small", "standard"], snapshots: DEFAULT_SNAPSHOT_LIMITS }, () => {}, () => clock.now);
+	const request = { repo: "123", generation: "a".repeat(64), inputs: "b".repeat(64) };
+	expect("snapshot keys differ by size, and each size's look-up is of its own template", store.key(request, "u1", "e2b", false, "build-1", "small") !== store.key(request, "u1", "e2b", false, "build-1", "standard") && store.templateOf(false, "standard") === "windlass-platform-sandbox-standard");
+});
+
+await section("a sandbox that ran out of memory", async () => {
+	const plain = (value: unknown) => JSON.stringify(value);
+	const lines: string[] = [];
+	class Wedged extends ScriptedMachine {
+		wedged = false;
+		constructor() {
+			super((command) => (command.includes("windlass --version") ? { stdout: "Windlass 0.6.0 (linux-x64)\n" } : command.includes("/proc/vmstat") ? { stdout: "oom_kill 3\ntotal_kib 1000448\n" } : undefined));
+		}
+		override async start(command: string, options: E2bCommandOptions): Promise<E2bCommand> {
+			if (!this.wedged) return super.start(command, options);
+			this.commands.push({ command, options, stdin: "" });
+			return { pid: 9, sendStdin: async () => {}, closeStdin: async () => {}, wait: () => new Promise(() => {}), disconnect: async () => {}, kill: async () => {} };
+		}
+		async rebooted(): Promise<void> {
+			this.wedged = false;
+		}
+	}
+	const machines = new Map<string, Wedged>();
+	const fake = new FakeE2b({ machine: (id) => { const machine = new Wedged(); machines.set(id, machine); return machine; } });
+	const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, sizes: ["small", "standard"] }, { log: (line) => lines.push(line), sleep: async () => {}, probeMs: 50 });
+	const id = await sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
+	// The incident's figures: 942 of 977 MiB, as E2B sampled them while the guest answered nothing.
+	const MiB = 2 ** 20;
+	fake.samples.set(id, [{ at: Date.now() - 60_000, memUsed: 400 * MiB, memTotal: 977 * MiB }, { at: Date.now() - 30_000, memUsed: 942 * MiB, memTotal: 977 * MiB }]);
+	machines.get(id)!.wedged = true;
+	const handle = (await sandboxes.connect(id)) as E2bSandboxHandle;
+	expect(
+		"a sandbox that stopped answering with its memory used up says so, with the figures and the next size, and is restarted",
+		handle.notice?.startsWith("The sandbox ran out of memory (942 of 977 MiB). A larger size has more room: Standard · 2 vCPU, 4 GiB.") === true && plain(handle.outOfMemory) === plain({ usedMiB: 942, totalMiB: 977, size: "small" }) && lines.some((line) => line.includes("e2b.sandbox.unresponsive") && line.includes("memory=942/977MiB")),
+		handle.notice ?? lines.join("\n"),
+	);
+	const events = await handle.memoryEvents();
+	expect("the guest's own count of programs killed for memory, and its memory", plain(events) === plain({ oomKills: 3, totalMiB: 977 }), JSON.stringify(events));
+	fake.samples.set(id, [{ at: Date.now(), memUsed: 300 * MiB, memTotal: 977 * MiB }]);
+	expect("samples far from the total are no running out", (await handle.memoryPeak(0)) === null);
+	expect("the largest size says to use less memory instead", /largest size this deployment has: have the agent's commands use less memory/.test(outOfMemoryWords({ usedMiB: 8000, totalMiB: 8100, size: "large" })) && /Large · 4 vCPU, 8 GiB/.test(outOfMemoryWords({ usedMiB: 4000, totalMiB: 4000, size: "standard" })));
+});
+
+await section("a machine slot that ran out of memory", async () => {
+	const { machineLayer } = await import("../server/src/sandbox/runner-layer.js");
+	const { noteTurnMemory } = await import("../server/src/actors/agent-session.js");
+	const { getLayer } = await import("../server/src/layer.js");
+	for (const [name, capable, kills, workItem] of [
+		["an unfinished work item", true, 2, true],
+		["a personal session", true, 1, false],
+		["no kills this turn", true, 0, true],
+		["an older runner", false, 0, true],
+	] as const) {
+		let reads = 0;
+		const link = { who: { machineId: "local" },
+			again: async () => ({ cwd: "/workspace", profile: "docker-hardened", ...(capable && { memoryEvents: true }) }),
+			request: async (op: string, args: { id: string }) => {
+				if (op !== "memoryEvents" || args.id !== "box") throw new Error("unexpected runner operation");
+				return { totalMiB: 1536, oomKills: 4 + (reads++ ? kills : 0) };
+			},
+		};
+		const sandbox = (await machineLayer(link as never, await getLayer()).sandboxes.connect("box"))!;
+		const start = await sandbox.memoryEvents?.() ?? null;
+		const rows: TimelineItem[] = [];
+		const c = { vars: { nextSeq: 1, unwritten: [], flushQueued: true }, log: console, broadcast: (_name: string, row: TimelineItem) => rows.push(row) };
+		const meta = { sessionId: "s1", place: { kind: "machine", machineId: "local" } };
+		const active: { item?: { outOfMemory?: OutOfMemory } } = workItem ? { item: {} } : {};
+		await noteTurnMemory(c as never, meta as never, active as never, sandbox, start, 0, 1);
+		const row = rows[0];
+		expect(name + ": only new kills warn on the timeline", kills ? rows.length === 1 && row?.kind === "platform" && row.level === "warn"
+			&& row.text.startsWith("The machine slot ran out of memory (limit 1,536 MiB).") && row.text.includes(kills === 1 ? "stopped a program" : "stopped 2 programs")
+			&& row.text.includes("137") && !row.text.includes("larger") : rows.length === 0);
+		expect(name + ": only a work item with kills carries the memory to its question", kills && workItem
+			? active.item?.outOfMemory?.totalMiB === 1536 && active.item.outOfMemory.larger === undefined : !active.item?.outOfMemory);
+		expect(name + ": only a capable runner receives memory reads", reads === (capable ? 2 : 0));
+	}
 });
 
 await section("the handle", async () => {
@@ -571,7 +786,7 @@ await section("cleanup", async () => {
 	expect("a dry run lists the deployment's sandboxes, running and paused, and changes nothing", dry.found.length === 2 && dry.killed.length === 0 && w.fake.sandboxes.size === 4 && !w.fake.calls.some((call) => call.startsWith("kill ")), dry.lines.join(" | "));
 	expect(
 		"each line names the sandbox, its user and session, and what it has cost at most",
-		dry.lines.some((line) => line.startsWith(`${a}  uid=u1 session=s1  running, at most 300 s at 1 vCPU and 1024 MiB, $0.0055 (estimated) so far: would be killed`)) && dry.lines.some((line) => line.startsWith(`${b}  uid=u2 session=s2  paused`)) && /A dry run: nothing was changed/.test(dry.lines.at(-1) ?? ""),
+		dry.lines.some((line) => line.startsWith(`${a}  uid=u1 session=s1 size=small  running, at most 300 s at 1 vCPU and 1024 MiB, $0.0055 (estimated) so far: would be killed`)) && dry.lines.some((line) => line.startsWith(`${b}  uid=u2 session=s2 size=small  paused`)) && /A dry run: nothing was changed/.test(dry.lines.at(-1) ?? ""),
 		dry.lines.join(" | "),
 	);
 	const real = await cleanupDeployment(w.fake, "test", { kill: true, now: () => w.clock.now });
@@ -670,7 +885,7 @@ await section("network modes", async () => {
 	w.fake.calls.length = 0;
 	await w.sandboxes.connect(id);
 	const updates = callsOf(w.fake, "updateNetwork");
-	expect("restricted: each connect sets E2B's configuration again and pins the names again", updates.length === 1 && updates[0] === `updateNetwork ${id} ${JSON.stringify(config)}` && (w.machines.get(id)?.commands ?? []).filter((entry) => entry.options.root).length === 2, updates.join(" | "));
+	expect("restricted: each connect sets E2B's configuration again and pins the names again", updates.length === 1 && updates[0] === `updateNetwork ${id} ${JSON.stringify(config)}` && (w.machines.get(id)?.commands ?? []).filter((entry) => entry.options.root).map((entry) => (entry.command === "true" ? "probe" : entry.command.includes("wlp-network") ? "names" : entry.command)).join() === "names,probe,names", updates.join(" | "));
 	await w.sandboxes.suspend(id);
 	await w.sandboxes.connect(id);
 	expect("restricted: a resumed sandbox is set again too", callsOf(w.fake, "updateNetwork").length === 2 && w.fake.sandboxes.get(id)?.state === "running");
@@ -694,13 +909,21 @@ await section("network modes", async () => {
 	expect("a sandbox whose names cannot be pinned is removed, not handed out", /could not set the sandbox's names/.test(failed) && /read-only file system/.test(failed) && [...failing.fake.sandboxes.values()].length === 0, failed);
 
 	// A repository's network list (server/src/repository-network.ts): its hosts on top of the deployment's.
-	const stubLog = "1795358136 1 cdn.example.org\n1795358136 28 registry.npmjs.org\n1795358136 1 registry.example.com\n";
+	let stubLog = "1795358136 1 cdn.example.org\n1795358136 28 registry.npmjs.org\n1795358136 1 registry.example.com\n";
+	const readBytes: number[] = [];
+	let failRead = false;
 	let listed: ScriptedMachine | undefined;
 	const order: string[] = [];
 	const r = world({ network: restricted }, {
 		machine: () =>
 			(listed = imageLike((command) => {
-				if (command.startsWith("tail ") || command.includes("'tail'")) return { stdout: stubLog };
+				if (command.includes("if=/var/log/wlp-dns.log")) {
+					const offset = /skip=(\d+)/.exec(command)?.[1];
+					if (!offset || failRead) return { exitCode: 1 };
+					const stdout = stubLog.slice(Number(offset));
+					readBytes.push(stdout.length);
+					return { stdout };
+				}
 				if (command.includes(" wlp-network ")) order.push(`names ${/ (first|second)\.example\.org/.exec(command)?.[1] ?? "-"}`);
 				return undefined;
 			})),
@@ -715,6 +938,16 @@ await section("network modes", async () => {
 	expect("a connect that names none leaves the deployment's alone", !(callsOf(r.fake, "updateNetwork").at(-1) ?? "").includes("registry.example.com"));
 	expect("blocked hosts: the names the lookup stub wrote that the sandbox may not reach", JSON.stringify(await rHandle?.blockedHosts?.()) === JSON.stringify(["cdn.example.org"]));
 	expect("blocked hosts: names the caller has seen already are left out", JSON.stringify(await rHandle?.blockedHosts?.(["cdn.example.org"])) === "[]");
+	const initialBytes = stubLog.length;
+	const partial = "1795358136 1 second.";
+	stubLog += partial;
+	expect("a partial DNS line is held until complete", JSON.stringify(await rHandle?.blockedHosts?.(["cdn.example.org"])) === "[]");
+	stubLog += "example.org\n";
+	failRead = true;
+	await rHandle?.blockedHosts?.();
+	failRead = false;
+	expect("a failed read retries from the last complete line and still supports replay", JSON.stringify(await rHandle?.blockedHosts?.()) === JSON.stringify(["cdn.example.org", "second.example.org"]));
+	expect("idle and appended DNS reads transfer only new bytes", JSON.stringify(readBytes) === JSON.stringify([initialBytes, 0, partial.length, partial.length + "example.org\n".length]));
 	r.fake.calls.length = 0;
 	const unheld = await r.sandboxes.setNetwork(rid, ["registry.example.com", "cdn.example.org"]);
 	expect("outside a turn's hold a host allowed from a session changes nothing now: no connect, which would resume or extend the sandbox with no meter", !unheld && r.fake.calls.length === 0, r.fake.calls.join(" | "));
@@ -759,10 +992,19 @@ await section("network modes", async () => {
 	expect("Settings says a server by address must be on an allowed host, and what a started one can reach", /must be one of them/.test(reachOf.address) && /only the network this deployment allows/.test(reachOf.command), reachOf.address);
 	expect("and on open says what it said before", JSON.stringify(personalServerReach(facts("open"))) === JSON.stringify(personalServerReach(facts("open"), "open")));
 
-	const hostedTask = { key: "a", title: "Do a", brief: "b", acceptance: ["x"], dependsOn: [], owns: ["src/**"], budget: { tokens: 1000, turns: 1, activeSeconds: 60, hostedSeconds: 60 }, place: { prefer: "hosted", reason: "r" } };
+	const hostedTask = { key: "a", title: "Do a", brief: "b", acceptance: ["x"], dependsOn: [], owns: ["src/**"], budget: { tokens: 1000 }, place: { prefer: "hosted", reason: "r" } };
 	const placed = (hostedEgress?: "open" | "restricted" | "none") => choosePlacement(hostedTask, { preferred: { kind: "hosted" }, alternatives: [] }, { machines: [], hostedProfiles: ["e2b"], hostedEgress });
 	const [offline, limited] = [placed("none"), placed("restricted")];
 	expect("the factory places no repository work on hosted none, and places it on restricted", "refused" in offline && /no network for repositories/.test(offline.refused ?? "") && "decision" in limited, JSON.stringify(offline));
+	// A plan's cpus and memoryGiB pick the least hosted size that has them.
+	const sized = (needs: { cpus?: number; memoryGiB?: number }, hostedSizes?: ("small" | "standard" | "large")[]) => choosePlacement({ ...hostedTask, needs }, { preferred: { kind: "hosted" }, alternatives: [] }, { machines: [], hostedProfiles: ["e2b"], hostedSizes });
+	const all = ["small", "standard", "large"] as ("small" | "standard" | "large")[];
+	const [two, eight, plainTask, unsized, tooBig, notBuilt] = [sized({ cpus: 2 }, all), sized({ memoryGiB: 6 }, all), sized({}, all), sized({ cpus: 1 }), sized({ cpus: 16 }, all), sized({ memoryGiB: 8 }, ["small", "standard"])];
+	expect(
+		"hosted takes cpus and memoryGiB as a size: the least that has them, none without them, and refuses what no offered size has",
+		two.decision?.hostedSize === "standard" && eight.decision?.hostedSize === "large" && plainTask.decision !== undefined && plainTask.decision.hostedSize === undefined && unsized.decision !== undefined && unsized.decision.hostedSize === undefined && /at most 4 vCPU and 8 GiB/.test(tooBig.refused ?? "") && /no large sandbox/.test(notBuilt.refused ?? ""),
+		JSON.stringify([two, eight, plainTask, unsized, tooBig, notBuilt]),
+	);
 });
 
 await section("the template", async () => {
@@ -771,6 +1013,7 @@ await section("the template", async () => {
 	try {
 		writeFileSync(join(context, "Dockerfile"), readFileSync(join(root, "sandbox/Dockerfile"), "utf8"));
 		writeFileSync(join(context, "wlp-run"), readFileSync(join(root, "sandbox/wlp-run"), "utf8"));
+		writeFileSync(join(context, "wlp-pnpm"), readFileSync(join(root, "sandbox/wlp-pnpm"), "utf8"));
 		writeFileSync(join(context, "wlp-shot"), readFileSync(join(root, "sandbox/wlp-shot"), "utf8"));
 		writeFileSync(join(context, "windlass"), "not a real binary\n");
 		const text = describeTemplate(context);

@@ -8,27 +8,51 @@
  * 10 GiB of disk, paused sandboxes kept without limit and without charge.
  */
 
+import { HOSTED_SIZES, HOSTED_SIZE_SPECS, type HostedSize, isHostedSize } from "../../contract.js";
 import { type E2bNetwork, e2bModelRelay, readE2bNetwork } from "./network.js";
 
-/** The template sandbox/e2b/build.ts builds. */
+/** The template sandbox/e2b/build.sh builds: the small size's. */
 export const DEFAULT_TEMPLATE = "windlass-platform-sandbox";
 /**
- * The smallest size this layer asks for, and it is the template's: E2B takes neither CPUs nor memory
- * when a sandbox is created. One vCPU is E2B's least. Windlass is one process of a few hundred MiB
- * with its engine at work, and the commands an agent runs (git, python, node) need room beside it, so
- * 1024 MiB and not the 512 MiB of E2B's own default: scripts/e2b-check.ts prints the memory a turn
- * really used, which is what a lower number has to be measured against.
+ * The smallest size this layer asks for, and it is the small template's: E2B takes neither CPUs nor
+ * memory when a sandbox is created (https://docs.e2b.dev/billing.md: "customize allocated CPU and RAM
+ * when building custom templates"; the SDK's `Sandbox.create` has no such option), so every size is a
+ * template of its own, built from the same Dockerfile (`templateNames`). One vCPU is E2B's least.
+ * Windlass is one process of a few hundred MiB with its engine at work, and the commands an agent runs
+ * (git, python, node) need room beside it, so 1024 MiB and not the 512 MiB of E2B's own default.
+ * A typecheck of a real TypeScript monorepo needs more: it ran a 1 GiB guest out of memory, which is
+ * why work items start on standard (contract.ts `ITEM_HOSTED_SIZE`).
  */
-export const DEFAULT_CPU_COUNT = 1;
-export const DEFAULT_MEMORY_MB = 1024;
+export const DEFAULT_CPU_COUNT = HOSTED_SIZE_SPECS.small.cpus;
+export const DEFAULT_MEMORY_MB = HOSTED_SIZE_SPECS.small.memoryMiB;
+
+/** The default template names of a size: small keeps the names it always had. */
+export function defaultTemplateNames(size: HostedSize): { template: string; shotsTemplate: string } {
+	const base = size === "small" ? DEFAULT_TEMPLATE : `${DEFAULT_TEMPLATE}-${size}`;
+	return { template: base, shotsTemplate: `${base}-shots` };
+}
+
+/** The environment variables that name a size's templates: WLP_E2B_TEMPLATE for small, WLP_E2B_TEMPLATE_STANDARD for standard. */
+export function templateVariables(size: HostedSize): { template: string; shotsTemplate: string } {
+	const suffix = size === "small" ? "" : `_${size.toUpperCase()}`;
+	return { template: `WLP_E2B_TEMPLATE${suffix}`, shotsTemplate: `WLP_E2B_SHOTS_TEMPLATE${suffix}` };
+}
 
 export interface E2bConfig {
 	/** E2B_API_KEY. Never logged. */
 	apiKey: string;
-	/** WLP_E2B_TEMPLATE: the template's name or id. */
+	/** WLP_E2B_TEMPLATE: the small size's template, by name or id. */
 	template: string;
-	/** WLP_E2B_SHOTS_TEMPLATE: template for items that take screenshots. */
+	/** WLP_E2B_SHOTS_TEMPLATE: the small size's template for items that take screenshots. */
 	shotsTemplate: string;
+	/**
+	 * WLP_E2B_SIZES: the sizes whose templates are built at E2B, smallest first; always small. Default
+	 * small only, so that a deployment offers no size it has no template of. A request for a size not
+	 * offered gets the largest offered below it.
+	 */
+	sizes?: HostedSize[];
+	/** Each size's templates (`templateVariables`). Absent: `defaultTemplateNames`, with small's from `template` and `shotsTemplate`. */
+	templates?: Partial<Record<HostedSize, { template: string; shotsTemplate: string }>>;
 	/** WLP_E2B_DEPLOYMENT: marks every sandbox of this deployment (`wlp_deployment`), so they are listed, counted and removed together. Servers of one deployment share it. */
 	deployment: string;
 	/** WLP_E2B_MAX_RUNNING: how many of the deployment's sandboxes may run at once. */
@@ -77,6 +101,23 @@ export type E2bSettings = Omit<E2bConfig, "apiKey">;
 
 /** E2B's own limit on Hobby: ten sandboxes running at once. The default cap stays well under it. */
 export const HOBBY_MAX_RUNNING = 10;
+/** E2B's Hobby plan's most for one sandbox (the owner's dashboard, 2026-11-23): 8 vCPUs and 8 GiB of memory, 10 GB of disk. No size goes beyond it. */
+export const HOBBY_MAX_CPUS = 8;
+export const HOBBY_MAX_MEMORY_MB = 8192;
+for (const [size, spec] of Object.entries(HOSTED_SIZE_SPECS)) {
+	if (spec.cpus > HOBBY_MAX_CPUS || spec.memoryMiB > HOBBY_MAX_MEMORY_MB) throw new Error(`the ${size} size (${spec.cpus} vCPU, ${spec.memoryMiB} MiB) is beyond E2B's Hobby plan (${HOBBY_MAX_CPUS} vCPU, ${HOBBY_MAX_MEMORY_MB} MiB a sandbox)`);
+}
+
+/** What a user and the log read when E2B refused a size for the account's plan. */
+export function planRefusal(size: HostedSize, said: string): string {
+	const spec = HOSTED_SIZE_SPECS[size];
+	return `E2B refused a ${size} sandbox (${spec.cpus} vCPU, ${spec.memoryMiB / 1024} GiB) for the account's plan: the Hobby plan allows at most ${HOBBY_MAX_CPUS} vCPU and ${HOBBY_MAX_MEMORY_MB / 1024} GiB a sandbox, ${HOBBY_MAX_RUNNING} sandboxes at once and one hour without a pause. E2B said: ${said}`;
+}
+
+/** Whether E2B's words refuse a size for the plan, rather than the account's count of running sandboxes. */
+export function refusesSize(said: string): boolean {
+	return /\b(cpu|vcpu|memory|ram|mib|mb|gib|gb)\b/i.test(said) && /\b(limit|exceed|maximum|max|plan|tier|quota|allowed|upgrade)\b/i.test(said);
+}
 export const DEFAULT_MAX_RUNNING = 3;
 export const DEFAULT_IDLE_TIMEOUT_MS = 2 * 60_000;
 export const DEFAULT_TURN_LEASE_MS = 3 * 60_000;
@@ -114,9 +155,18 @@ export function readE2bSettings(env: NodeJS.ProcessEnv = process.env): E2bSettin
 	// too and not 1. A value config.ts refuses stops the server before this matters.
 	const turnLimit = Math.floor(Number((env.WLP_TURN_TIMEOUT_MS ?? "").trim() || Number.NaN));
 	const version = (env.WLP_E2B_WINDLASS_VERSION ?? "").trim();
+	const templates: Partial<Record<HostedSize, { template: string; shotsTemplate: string }>> = { small: { template, shotsTemplate } };
+	for (const size of HOSTED_SIZES.filter((one) => one !== "small")) {
+		const names = templateVariables(size), fallback = defaultTemplateNames(size);
+		const one = { template: (env[names.template] ?? fallback.template).trim(), shotsTemplate: (env[names.shotsTemplate] ?? fallback.shotsTemplate).trim() };
+		if (one.template === "" || one.shotsTemplate === "") throw new Error(`${names.template} and ${names.shotsTemplate} must not be empty`);
+		templates[size] = one;
+	}
 	return {
 		template,
 		shotsTemplate,
+		sizes: readSizes(env),
+		templates,
 		deployment,
 		maxRunning: integer(env, "WLP_E2B_MAX_RUNNING", DEFAULT_MAX_RUNNING, 1, 1100),
 		idleTimeoutMs: integer(env, "WLP_E2B_IDLE_TIMEOUT_MS", DEFAULT_IDLE_TIMEOUT_MS, 30_000, 30 * 60_000),
@@ -139,6 +189,34 @@ export function readE2bSettings(env: NodeJS.ProcessEnv = process.env): E2bSettin
 			return "origin" in relay ? { modelRelayOrigin: relay.origin } : { modelRelayOrigin: null, modelRelayOff: relay.off };
 		})(),
 	};
+}
+
+/** WLP_E2B_SIZES: "small,standard,large" or fewer; small is always among them. */
+function readSizes(env: NodeJS.ProcessEnv): HostedSize[] {
+	const raw = (env.WLP_E2B_SIZES ?? "").trim();
+	if (raw === "") return ["small"];
+	const named = raw.split(",").map((part) => part.trim()).filter((part) => part !== "");
+	const wrong = named.find((part) => !isHostedSize(part));
+	if (wrong !== undefined) throw new Error(`WLP_E2B_SIZES must list sizes among ${HOSTED_SIZES.join(", ")}, separated by commas; got "${wrong}"`);
+	return HOSTED_SIZES.filter((size) => size === "small" || named.includes(size));
+}
+
+/** The sizes the settings offer, smallest first. */
+export function offeredSizes(settings: Pick<E2bSettings, "sizes">): HostedSize[] {
+	return settings.sizes && settings.sizes.length > 0 ? settings.sizes : ["small"];
+}
+
+/** The size a sandbox asked for `wanted` is made in: it, or the largest offered below it. */
+export function offeredSize(settings: Pick<E2bSettings, "sizes">, wanted: HostedSize | undefined): HostedSize {
+	const offered = offeredSizes(settings);
+	const want = HOSTED_SIZES.indexOf(wanted ?? "small");
+	return [...offered].reverse().find((size) => HOSTED_SIZES.indexOf(size) <= want) ?? "small";
+}
+
+/** A size's template: for screenshots, its shots variant. */
+export function templateFor(settings: Pick<E2bSettings, "template" | "shotsTemplate" | "templates">, size: HostedSize, screenshots: boolean): string {
+	const names = size === "small" ? { template: settings.template, shotsTemplate: settings.shotsTemplate } : (settings.templates?.[size] ?? defaultTemplateNames(size));
+	return screenshots ? names.shotsTemplate : names.template;
 }
 
 /** WLP_E2B_SNAPSHOTS: "on" or "off" (the default), as server/src/config.ts reads it for the session's side. */

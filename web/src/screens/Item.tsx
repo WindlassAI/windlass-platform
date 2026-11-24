@@ -1,9 +1,9 @@
 /**
  * A work item's page: where a person decides whether to trust a pull request they did not watch being
  * made. It says, each at a glance: where the item is and what it waits for, what it asks, what ran
- * (the run and its step, and the log), what the verdict rests on (CI first, which decides; the user's
- * checks where they set any; the flags; the criteria left to the person), and what it cost against its
- * budget.
+ * (the run and its step, and the log), whether the pull request is ready and what is open (the Checks
+ * panel: CI, the user's checks, the second review, feedback from GitHub, the flags), and what it cost
+ * against its budget.
  *
  * Everything is the user's actor's (`ItemView`): read when the page opens, and again when the item's
  * revision in the user's live feed (`onItems`) is higher than the one shown, and when that feed comes
@@ -21,31 +21,38 @@
  * one line that says whose words they are, and Start stands under it rather than in the header.
  *
  * An item on one of the user's machines (`place`) says which, from the user's live list of machines.
- * Hosted sandbox time is no limit of such an item: its cost and the new budget for "Raise the limit"
+ * Hosted sandbox time is no limit of such an item: its cost and the new budget for "Give it more"
  * leave it out. Once its machine was removed, the item can only be handed over or given up: the page
  * offers neither Retry nor Send back, and no note to an agent that cannot work any more.
  */
-import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemView, type StepKind, type Verdict } from "@contract";
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemSummary, type ItemView, type SessionSummary, type StepKind, type Verdict } from "@contract";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 import { Inline, PlacementQuestion, PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
 import { ItemSpend } from "../components/ItemSpend";
 import { agentFacts, agentLine } from "../lib/item-agent";
 import { Dialog } from "../components/Dialog";
-import { InlineMarkdown } from "../components/Blocks";
-import { ArrowLeftIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
-import { CHECK_TONE, CHECK_WORD, conclusionTone, conclusionWord, ReviewBlocks } from "../components/ReviewBlocks";
+import { InlineMarkdown, Output } from "../components/Blocks";
+import { LongText } from "../components/Fold";
+import { ArrowLeftIcon, CheckIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
+import { ReviewBlocks } from "../components/ReviewBlocks";
 import { useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
-import { GithubFeedback } from "../components/GithubFeedback";
-import { reviewShots, SecondReview } from "../components/SecondReview";
+import { ItemNetwork } from "../components/ItemNetwork";
+import type { AllowHostContext } from "../components/BlockedNetwork";
+import { reviewShots } from "../components/SecondReview";
+import { SecretAsk, withoutValue } from "../components/SecretAsk";
+import { ItemChecks } from "./ItemChecks";
 import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { useNow } from "../state/hooks";
-import { inSecondReview, ItemGlyph, ItemRow, ItemStages, ReviewWord, STATE_WORD, VerdictWord } from "./Items";
+import { useNow, useSessions } from "../state/hooks";
+import { ItemGlyph, ItemRow, ItemStages, STATE_WORD } from "./Items";
 import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
+import { AgentGlyph } from "../components/ui/Pill";
+import { childrenBehind } from "../lib/subtasks";
+import { partOf, showsSubtasks, SubtasksBlock, SubtaskStrip } from "./Subtasks";
 
 /** The steps in words. Planning is not offered yet; the rest are every step a run goes through. */
 const STEP_WORD: Record<StepKind, string> = {
@@ -56,6 +63,7 @@ const STEP_WORD: Record<StepKind, string> = {
 	publish: "Pushing",
 	ci: "Waiting for CI",
 	ci_fix: "Fixing CI",
+	run_checks: "Running local checks",
 	conflict: "Merging the base",
 	review: "Second review",
 	review_fix: "Fixing the review",
@@ -104,7 +112,8 @@ interface ItemPage {
 	/** Why it could not be read; `missing` when it is not the user's. */
 	error: string | null;
 	missing: boolean;
-	reload(): void;
+	/** Reads it again; settled once it was read (or could not be). */
+	reload(): Promise<void> | void;
 	replace(view: ItemView): void;
 }
 
@@ -115,25 +124,33 @@ export function useItem(id: string, enabled = true): ItemPage {
 	const [state, setState] = useState<{ view: ItemView | null; error: string | null; missing: boolean }>({ view: null, error: null, missing: false });
 	const asked = useRef(0);
 	const shown = useRef(-1);
+	// What the page holds of the feature's subtasks, or of itself as one: the feed's open subtasks are read against it.
+	const held = useRef<{ parentId: string | null; children: Pick<ItemSummary, "id" | "revision" | "state">[] }>({ parentId: null, children: [] });
+	const hold = (view: ItemView) => {
+		shown.current = view.revision;
+		held.current = view.parent ? { parentId: view.parent.itemId, children: [view] } : { parentId: view.id, children: view.children ?? [] };
+	};
 
-	const reload = useCallback(() => {
+	const reload = useCallback((): Promise<void> => {
 		const mine = ++asked.current;
-		client
+		return client
 			.user(auth)
 			.item(id)
 			.then(
 				(view) => {
 					if (mine !== asked.current) return;
-					shown.current = view.revision;
+					hold(view);
 					setState({ view, error: null, missing: false });
 				},
-				(failure: unknown) => mine === asked.current && setState((now) => ({ view: now.view, error: explain(failure), missing: hasReason(failure, "item_not_found") })),
+				(failure: unknown) => {
+					if (mine === asked.current) setState((now) => ({ view: now.view, error: explain(failure), missing: hasReason(failure, "item_not_found") }));
+				},
 			);
 	}, [client, auth, explain, id]);
 
 	const replace = useCallback((view: ItemView) => {
 		asked.current += 1;
-		shown.current = view.revision;
+		hold(view);
 		setState({ view, error: null, missing: false });
 	}, []);
 
@@ -144,8 +161,11 @@ export function useItem(id: string, enabled = true): ItemPage {
 		const close = client.user(auth).watch({
 			onSessions: () => undefined,
 			onItems: (feed) => {
-				const summary = feed.open.find((item) => item.id === id) ?? feed.ended.find((item) => item.id === id);
-				if (summary && summary.revision > shown.current) reload();
+				const summary = feed.open.find((item) => item.id === id) ?? feed.ended.find((item) => item.id === id) ?? feed.children?.find((item) => item.id === id);
+				// A feature's subtasks, or the subtask itself, changed: a subtask is in the feed while it is open, and its page reads it again once it ended.
+				const { parentId, children } = held.current;
+				const behind = parentId !== null && childrenBehind(parentId, parentId === id ? children : children.filter((child) => child.id === id), parentId === id ? feed.children : feed.children?.filter((child) => child.id === id));
+				if ((summary && summary.revision > shown.current) || behind) reload();
 			},
 			onConnection: (connection) => {
 				if (connection !== "connected") return;
@@ -174,6 +194,16 @@ export function ItemCrumb({ view }: { view: ItemView | null }) {
 			<span className="crumb-sep" aria-hidden="true">
 				/
 			</span>
+			{view?.parent ? (
+				<>
+					<a className="crumb-repo crumb-feature" {...linkProps({ name: "item", id: view.parent.itemId })} title={view.parent.title}>
+						{view.parent.title}
+					</a>
+					<span className="crumb-sep" aria-hidden="true">
+						/
+					</span>
+				</>
+			) : null}
 			<span className="crumb-title" aria-current="page">
 				{view?.title ?? "Work item"}
 			</span>
@@ -351,10 +381,22 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 	);
 }
 
-/** The run it is in, or ended last: its step, and the rounds of fixing used of what a run allows. */
-/** The run's facts. The second review's fixes are counted only where the server gives their cap: where the item's reviewer can send its builder back. */
+/** The builder's sandbox started from a validated environment (SessionSummary.environment): said in one short fact. */
+export function ValidatedEnvironment({ environment, now }: { environment: SessionSummary["environment"] | undefined; now: number }) {
+	if (!environment) return null;
+	return (
+		<span className="repo-fact tone-dim" title={`Setup and ${environment.checks === 1 ? "the saved check" : `${environment.checks} saved checks`} passed at ${environment.commit.slice(0, 12)}, ${absoluteTime(environment.validatedAt)}`}>
+			from a validated environment ({relativeTime(environment.validatedAt, now)})
+		</span>
+	);
+}
+
+/**
+ * The run it is in, or ended last: its step, and the rounds of fixing it took. Rounds are not capped: a run stops when the
+ * same failure comes back or its budget is used, and asks. The second review's fixes are shown once there were some.
+ */
 export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView["run"]>; events: ItemEvent[]; asks: boolean; now: number }) {
-	const { step, rounds, caps } = run;
+	const { step, rounds } = run;
 	const sentBack = events.filter((event) => event.step === null && event.said.startsWith("Sent back")).length;
 	return (
 		<dl className="usage-facts item-facts">
@@ -384,20 +426,10 @@ export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView
 				<dt>Fixes</dt>
 				<dd>
 					<span className="item-rounds">
-						<span>
-							after your checks {rounds.gate} of {caps.gate}
-						</span>
-						<span>
-							after CI {rounds.ci} of {caps.ci}
-						</span>
-						<span>
-							merging the base {rounds.conflict} of {caps.conflict}
-						</span>
-						{caps.review !== undefined ? (
-							<span>
-								after the second review {rounds.review ?? 0} of {caps.review}
-							</span>
-						) : null}
+						<span>after your checks {rounds.gate}</span>
+						<span>after CI {rounds.ci}</span>
+						<span>merging the base {rounds.conflict}</span>
+						{(rounds.review ?? 0) > 0 ? <span>after the second review {rounds.review}</span> : null}
 					</span>
 				</dd>
 			</div>
@@ -408,16 +440,14 @@ export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView
 // ---- what it asks -------------------------------------------------------------------------------
 
 const BUDGET_FIELDS: Array<{ key: keyof ItemBudget; label: string; unit: string; toInput(value: number): string; fromInput(text: string): number; spelled(value: number): string }> = [
-	{ key: "tokens", label: "Tokens", unit: "millions", toInput: (value) => String(Number((value / 1e6).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 1e6), spelled: compact },
-	{ key: "turns", label: "Turns", unit: "", toInput: String, fromInput: (text) => Math.round(Number(text)), spelled: String },
-	{ key: "activeSeconds", label: "Working time", unit: "hours", toInput: (value) => String(Number((value / 3600).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 3600), spelled: sandboxTime },
+	{ key: "tokens", label: "Tokens", unit: "millions, cost-weighted", toInput: (value) => String(Number((value / 1e6).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 1e6), spelled: compact },
 	{ key: "hostedSeconds", label: "Hosted sandbox time", unit: "hours", toInput: (value) => String(Number((value / 3600).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 3600), spelled: sandboxTime },
 ];
 
 /** The figures of an item's budget that limit it: hosted sandbox time only for an item on a hosted sandbox. */
 const budgetFields = (view: Pick<ItemView, "place">) => BUDGET_FIELDS.filter((field) => field.key !== "hostedSeconds" || view.place.kind === "hosted");
 
-/** The new budget, for "Raise the limit and go on" on a budget question: each figure as it is, to be raised where it was reached. */
+/** Another amount than the question's "Give it N more": the new budget, each figure as it is, raised where it was reached. */
 function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: boolean; onRaise(budget: Partial<ItemBudget>): void; onBack(): void }) {
 	const fields = budgetFields(view);
 	const [values, setValues] = useState(() => Object.fromEntries(fields.map((field) => [field.key, field.toInput(view.budget[field.key])])) as Record<keyof ItemBudget, string>);
@@ -428,7 +458,7 @@ function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: bo
 	const changed = Object.fromEntries(parsed.filter(({ field, value }) => value !== view.budget[field.key]).map(({ field, value }) => [field.key, value])) as Partial<ItemBudget>;
 	return (
 		<div className="item-raise">
-			<div className={`item-raise-fields${fields.length === 3 ? " item-raise-fields-three" : ""}`}>
+			<div className="item-raise-fields">
 				{fields.map((field) => {
 					const reached = view.spent[field.key] >= view.budget[field.key];
 					return (
@@ -445,10 +475,10 @@ function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: bo
 					);
 				})}
 			</div>
-			<p className="field-note">For this item only. {short.length > 0 ? `Raise ${short.map(({ field }) => field.label.toLowerCase()).join(" and ")} above what is used, or it stops again at once.` : ""}</p>
+			<p className="field-note">For this item only{view.parent ? "; what you give a subtask adds to its feature's budget" : ""}. It goes on in the same session and sandbox. {short.length > 0 ? `Raise ${short.map(({ field }) => field.label.toLowerCase()).join(" and ")} above what is used, or it stops again at once.` : ""}</p>
 			<div className="item-choices">
 				<button type="button" className="button button-primary" disabled={busy || bad || short.length > 0 || Object.keys(changed).length === 0} onClick={() => onRaise(changed)}>
-					{busy ? "Sending…" : "Raise and go on"}
+					{busy ? "Sending…" : "Give it this and go on"}
 				</button>
 				<button type="button" className="button button-quiet" onClick={onBack} disabled={busy}>
 					Back
@@ -478,7 +508,17 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 					<When at={question.askedAt} now={now} />
 				</span>
 			</p>
-			<p className="item-question-text">{question.text}</p>
+			<LongText lines={6} className="item-question-text">
+				{question.text}
+			</LongText>
+			{question.check ? <EnvironmentCheck check={question.check} /> : null}
+			{question.kind === "sandboxes" ? (
+				<p className="item-question-text">
+					<a className="link" {...linkProps({ name: "usage" })}>
+						Free a sandbox on Usage
+					</a>
+				</p>
+			) : null}
 			{asked ? <AgentAsked id={ids.asked} asked={asked} busy={busy} onPick={setNote} /> : null}
 			{raising ? (
 				<RaiseBudget view={view} busy={acting.busy === "raise"} onRaise={(budget) => answer("raise", budget)} onBack={() => setRaising(false)} />
@@ -493,21 +533,98 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 						</div>
 					) : null}
 					<div className="item-choices">
-						{question.choices.filter(choice => !view.parent || choice.id !== "hand_over").map((choice, index) => (
+						{question.choices.filter(choice => !view.parent || choice.id !== "hand_over").flatMap((choice, index) => [
 							<button
 								key={choice.id}
 								type="button"
 								className={`button ${index === 0 ? "button-primary" : choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
 								disabled={busy || (choice.id === "reply" && note.trim() === "")}
-								onClick={() => (choice.id === "raise" && question.kind === "budget" ? setRaising(true) : answer(choice.id))}
+								onClick={() => answer(choice.id)}
 							>
 								{acting.busy === choice.id ? "Sending…" : choice.label}
-							</button>
-						))}
+							</button>,
+							// "Give it N more" at another figure: beside it, before the other choices.
+							...(choice.id === "raise" && question.kind === "budget"
+								? [
+										<button key="amount" type="button" className="button button-quiet" disabled={busy} onClick={() => setRaising(true)}>
+											Another amount…
+										</button>,
+									]
+								: []),
+						])}
 					</div>
 				</>
 			)}
 			<Failure error={acting.error} />
+		</section>
+	);
+}
+
+/**
+ * The builder's request for a secret it lacks (`secret_needed`). "Add it and continue" goes through its session
+ * (`setRequestedSecret`), which saves the value and answers the question; the other two are the question's answers,
+ * with no note, as the server takes them. `onSaved` is told the name once the value was taken.
+ *
+ * A save that fails once the item claimed the question (`secret_exists`: the name was saved under Secrets since) reopens it
+ * under a new id. So on any failure the item is read again before the error is shown, and a retry answers the new id; the
+ * error, without the value, goes to `onFailed`, for the new question's card to show from the start.
+ */
+function SecretQuestion({ view, question, secret, acting, now, failure, reload, onSaved, onFailed }: { view: ItemView; question: ItemQuestion; secret: NonNullable<ItemQuestion["secret"]>; acting: Acting; now: number; failure: string | null; reload(): Promise<void> | void; onSaved(name: string): void; onFailed(message: string | null): void }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const offers = (choice: ChoiceId) => question.choices.some((one) => one.id === choice);
+	const answer = (choice: ChoiceId) => async () => {
+		await acting.act({ kind: "answer", question: question.id, choice });
+	};
+	return (
+		<SecretAsk
+			className="item-question"
+			head={
+				<p className="item-question-head">
+					It asks you
+					<span className="item-question-when">
+						<When at={question.askedAt} now={now} />
+					</span>
+				</p>
+			}
+			request={secret}
+			repository={`${view.repository.owner}/${view.repository.name}`}
+			shared={view.agent !== undefined && view.agent.harness !== "windlass"}
+			offline={acting.busy !== null}
+			failure={failure}
+			onAdd={async (value) => {
+				onFailed(null);
+				try {
+					await client.session(auth, view.sessionId).setRequestedSecret({ requestId: question.id, name: secret.name, value });
+				} catch (refused) {
+					const message = withoutValue(explain(refused), value);
+					onFailed(message);
+					await reload();
+					throw new Error(message);
+				}
+				onSaved(secret.name);
+			}}
+			onWithout={answer("without_secret")}
+			onGiveUp={offers("give_up") ? answer("give_up") : undefined}
+		/>
+	);
+}
+
+/** A check the sandbox could not run (`check_environment`): its command and the end of what it printed, as the session shows a check's result. */
+function EnvironmentCheck({ check }: { check: NonNullable<ItemQuestion["check"]> }) {
+	return (
+		<section className="item-check" aria-label={`The check ${check.name}`}>
+			<ul className="check-list">
+				<li>
+					<WarnIcon size={13} className="tone-warn" />
+					<span className="check-name">{check.name}</span>
+					<code>{check.command}</code>
+					<span className="tone-warn">
+						could not run{check.exitCode !== null && check.exitCode !== 0 ? `, exit ${check.exitCode}` : ""}
+					</span>
+				</li>
+			</ul>
+			{check.excerpt !== "" ? <Output text={check.excerpt} tail label={`Output of ${check.name}`} limit={12} /> : null}
 		</section>
 	);
 }
@@ -518,14 +635,18 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
  * words. An option fills the answer box; nothing is answered until the person sends it.
  */
 function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullable<ItemQuestion["asked"]>; busy: boolean; onPick: (text: string) => void }) {
+	// Options of a sentence's length stack as full-width rows rather than wrapping as pills.
+	const stacked = asked.options.some((option) => option.length > LONG_OPTION);
 	return (
 		<figure className="item-asked" id={id}>
 			<figcaption className="item-asked-who">
 				The agent wrote this. Its words may follow what it read in the repository or an issue: read them as its words, not the platform's.
 			</figcaption>
-			<blockquote className="item-asked-text">{asked.text}</blockquote>
+			<LongText lines={6} as="blockquote" className="item-asked-text">
+				{asked.text}
+			</LongText>
 			{asked.options.length > 0 ? (
-				<div className="item-asked-options" role="group" aria-label="Answers the agent suggests">
+				<div className={`item-asked-options${stacked ? " item-asked-options-stacked" : ""}`} role="group" aria-label="Answers the agent suggests">
 					<span className="item-asked-options-label">It suggests</span>
 					{asked.options.map((option) => (
 						<button key={option} type="button" className="button button-outline button-small item-asked-option" disabled={busy} onClick={() => onPick(option)} title="Put this in your answer">
@@ -538,176 +659,8 @@ function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullabl
 	);
 }
 
-// ---- what the verdict rests on ------------------------------------------------------------------
-
-const times = (count: number) => (count === 1 ? "once" : count === 2 ? "twice" : `${count} times`);
-
-/** CI's tone: a failure is bad; CI that was not read, or not in full, or had not finished is a quiet warning; passed and none are plain facts. */
-const CI_TONE: Partial<Record<Verdict["ci"]["state"], string>> = { failed: "tone-bad", not_run: "tone-warn", not_permitted: "tone-warn", timed_out: "tone-warn", unread: "tone-warn" };
-
-/** What the gate said when none of the user's checks is listed. */
-function gateWords(gate: Verdict["gate"]): string {
-	switch (gate.state) {
-		case null:
-			return "No record of the checks for this commit.";
-		case "passed":
-			return "None of yours ran; the repository's own checks passed.";
-		case "unresolved":
-			return "None of yours ran; the repository's own checks did not pass.";
-		case "not_needed":
-			return gate.unneeded?.on === "run" ? "No check needed to run again: they had passed on this state of the work." : "No check verified this state of the work.";
-		case "none_set":
-			return "None saved for this repository. CI decides.";
-		case "off":
-			return "The repository's own file turned verification off.";
-		case "no_sandbox":
-			return "Checks could not run in this sandbox.";
-		case "not_in_force":
-			return "No checks were in force.";
-		case "stopped":
-			return "The turn was stopped before its checks finished.";
-		case "failed":
-			return "The turn failed before its checks finished.";
-	}
-}
-
-/** One verdict. `reviewing`: it is the latest, and the second reviewer has it yet, so it is not handed over and its word waits. */
-function VerdictBlock({ verdict, view, now, reviewing = false }: { verdict: Verdict; view: ItemView; now: number; reviewing?: boolean }) {
-	const { gate, ci } = verdict;
-	const { said } = verdict;
-	return (
-		<article className="item-verdict-block">
-			<p className="item-verdict-head">
-				{reviewing ? <ReviewWord item={view} /> : <VerdictWord verdict={{ result: verdict.result, flags: verdict.flags, ci: verdict.ci.state }} />}
-				<span className="agent-meta">
-					<span>at {verdict.head.slice(0, 7)}</span>
-					<span>
-						<When at={verdict.at} now={now} />
-					</span>
-					{view.verdicts.length > 1 ? <span>the {ordinal(verdict.run)} run</span> : null}
-				</span>
-			</p>
-			<dl className="usage-facts item-facts">
-				<div>
-					<dt>CI</dt>
-					<dd>
-						{/* "not_permitted" quotes GitHub's own words: shown as text, never read as Markdown. */}
-						{ci.state === "not_permitted" ? <span className={CI_TONE[ci.state]}>{said.ci}</span> : <InlineMarkdown className={CI_TONE[ci.state]} text={said.ci} />}
-						{ci.runs.length > 0 ? (
-							<ul className="item-checks">
-								{ci.runs.map((run) => (
-									<li key={`${run.app}/${run.name}`}>
-										<a className="item-check-name item-link" href={run.url} target="_blank" rel="noreferrer">
-											{run.name}
-											<ExternalIcon size={10} />
-										</a>{" "}
-										<span className={conclusionTone(run.conclusion)}>{conclusionWord(run.conclusion)}</span>
-										{run.app === "github-actions" ? null : <span className="tone-dim"> · {run.app === "status" ? "a commit status" : run.app}</span>}
-									</li>
-								))}
-							</ul>
-						) : null}
-					</dd>
-				</div>
-				<div>
-					<dt>Your checks</dt>
-					<dd>
-						{gate.required.length === 0 ? (
-							gateWords(gate)
-						) : (
-							<ul className="item-checks">
-								{gate.required.map((check) => (
-									<li key={check.name}>
-										<span className="item-check-name">{check.name}</span> <span className={`tone-${CHECK_TONE[check.status]}`}>{CHECK_WORD[check.status]}</span>
-										{check.sentBack > 0 ? <span className="tone-dim">, after the agent was sent back {times(check.sentBack)}</span> : null}
-									</li>
-								))}
-							</ul>
-						)}
-					</dd>
-				</div>
-				{verdict.flags.length > 0 ? (
-					<div>
-						<dt>To look at</dt>
-						<dd>
-							<ul className="item-checks">
-								{verdict.flags.map((flag, index) => (
-									<li key={flag.kind}>
-										<span className="tone-warn">
-											<InlineMarkdown text={said.flags[index] ?? flag.kind} />:
-										</span> <code className="item-paths">{flag.where.join(", ")}</code>
-									</li>
-								))}
-							</ul>
-						</dd>
-					</div>
-				) : null}
-				{verdict.acceptance.length > 0 ? (
-					<div>
-						<dt>For you to check</dt>
-						<dd>
-							<ul className="item-criteria-list">
-								{verdict.acceptance.map((line) => (
-									<li key={line}>{line}</li>
-								))}
-							</ul>
-							<span className="usage-gloss">No machine checked these.</span>
-						</dd>
-					</div>
-				) : null}
-				<div>
-					<dt>Merging</dt>
-					<dd className={verdict.mergeable === false ? "tone-warn" : undefined}>
-						{verdict.mergeable === false ? "GitHub says the pull request conflicts with its base." : verdict.mergeable ? "GitHub says it can be merged." : "GitHub had not said whether it can be merged."}
-					</dd>
-				</div>
-			</dl>
-		</article>
-	);
-}
-
-function Verdicts({ view, now }: { view: ItemView; now: number }) {
-	const [open, setOpen] = useState(false);
-	const earlier = useId();
-	const latest = view.verdicts[view.verdicts.length - 1];
-	const before = view.verdicts.slice(0, -1).reverse();
-	const check = view.verifiedCheck;
-	const checkLabel = check?.conclusion ? { success: "Success", action_required: "Action required", failure: "Failure", cancelled: "Cancelled" }[check.conclusion] : "In progress";
-	return (
-		<section className="usage-section" aria-labelledby="item-verdict">
-			<h2 className="usage-title" id="item-verdict">
-				Verdict
-			</h2>
-			<p className="usage-lede">What the pushed work rests on: CI on the pushed commit, your checks where you set them, and what was seen in the changes; never the agent's words. A verdict merges nothing.</p>
-			{latest === undefined ? (
-				<p className="usage-empty">None yet: a verdict is made when the work is handed over.</p>
-			) : (
-				<>
-					<VerdictBlock verdict={latest} view={view} now={now} reviewing={inSecondReview(view)} />
-					<p className="usage-note">{inSecondReview(view) ? "From the platform's own records. Its word is given when the second review is filed and the work is handed over." : "From the platform's own records."}</p>
-					{before.length > 0 ? (
-						<>
-							<p className="agents-fold items-fold">
-								<button type="button" className="link machine-toggle" aria-expanded={open} aria-controls={earlier} onClick={() => setOpen((value) => !value)}>
-									<ChevronIcon size={11} className="machine-chevron" />
-									{open ? "Hide the earlier verdicts" : `Show ${plural(before.length, "earlier verdict")}`}
-								</button>
-							</p>
-							<div id={earlier} hidden={!open}>
-								{before.map((verdict) => (
-									<VerdictBlock key={verdict.id} verdict={verdict} view={view} now={now} />
-								))}
-							</div>
-						</>
-					) : null}
-				</>
-			)}
-			{check && <p className="usage-note">{check.state === "not_posted" ? check.said :
-				`On GitHub as windlass/verified: ${checkLabel} at ${check.sha.slice(0, 7)}.${check.conclusion === "action_required" ? " " + check.said + "." : ""}`}</p>}
-			{view.report === null && view.state === "review" ? <p className="usage-note">The agent that made the change filed no report.</p> : null}
-		</section>
-	);
-}
+/** An option longer than this stacks all of a question's options as rows. */
+const LONG_OPTION = 40;
 
 // ---- what the agent says ------------------------------------------------------------------------
 
@@ -717,7 +670,7 @@ function verdictFor(report: ItemReport, verdicts: Verdict[]): Verdict | null {
 	return at ?? verdicts.findLast((verdict) => verdict.run === report.run) ?? null;
 }
 
-/** The agent that made the change, in its own words: below the verdict, labelled as its own, and never what the verdict rests on. */
+/** The agent that made the change, in its own words: below the checks, labelled as its own, and never what the verdict rests on. */
 function Report({ view, report, links, now }: { view: ItemView; report: ItemReport; links: ScreenshotLinks; now: number }) {
 	const latest = view.verdicts[view.verdicts.length - 1];
 	const earlierRun = view.run !== null && report.run !== view.run.n;
@@ -728,7 +681,7 @@ function Report({ view, report, links, now }: { view: ItemView; report: ItemRepo
 			<h2 className="usage-title" id="item-report">
 				From the agent that made the change
 			</h2>
-			<p className="usage-lede">{earlierRun ? `From its report in the ${ordinal(report.run)} run. ` : ""}Its own words, filed with its report: the verdict above does not rest on them.</p>
+			<p className="usage-lede">{earlierRun ? `From its report in the ${ordinal(report.run)} run. ` : ""}Its own words, filed with its report: the checks above do not rest on them.</p>
 			<article className="item-verdict-block">
 				<p className="item-verdict-head">
 					<span className="item-report-title">{report.title}</span>
@@ -749,7 +702,16 @@ function Report({ view, report, links, now }: { view: ItemView; report: ItemRepo
 
 // ---- what it cost -------------------------------------------------------------------------------
 
-function Cost({ view }: { view: ItemView }) {
+/** What an item spent that no budget of its holds: its turns and its working time, said and not metered. */
+function spendFacts(view: ItemView): { label: string; value: string }[] {
+	return [
+		{ label: "Turns", value: plural(view.spent.turns, "turn") },
+		{ label: "Working time", value: sandboxTime(view.spent.activeSeconds) },
+	];
+}
+
+function Cost({ view, now }: { view: ItemView; now: number }) {
+	const step = view.run?.step;
 	const rows = budgetFields(view);
 	const hosted = view.place.kind === "hosted";
 	return (
@@ -757,11 +719,17 @@ function Cost({ view }: { view: ItemView }) {
 			<h2 className="usage-title" id="item-cost">
 				Cost so far
 			</h2>
-			<p className="usage-note">Built by {agentLine(view.agent)}.</p>
+			<p className="usage-note">
+				Built by <AgentGlyph harness={view.agent?.harness ?? "windlass"} size={11} inline />
+				{agentLine(view.agent)}.
+			</p>
+			{view.state === "working" && view.spent.turns === 0 && step?.turn === "started" && (
+				<p className="usage-note">Spend is counted when the running turn ends. This step started {sandboxTime((now - step.startedAt) / 1000)} ago.</p>
+			)}
 			<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
-			{agentFacts(view.agent).length > 0 ? (
+			{[...spendFacts(view), ...agentFacts(view.agent)].length > 0 ? (
 				<dl className="usage-facts item-facts">
-					{agentFacts(view.agent).map((fact) => (
+					{[...spendFacts(view), ...agentFacts(view.agent)].map((fact) => (
 						<div key={fact.label}>
 							<dt>{fact.label}</dt>
 							<dd className="usage-number">{fact.value}</dd>
@@ -770,6 +738,7 @@ function Cost({ view }: { view: ItemView }) {
 				</dl>
 			) : null}
 			<p className="usage-note">
+				Tokens count cost-weighted: an input token read from the prompt cache counts as a tenth. When the budget is used, the item asks you for more and keeps its work.{" "}
 				{hosted
 					? "Working time counts only while the item works: waiting for a turn, for CI or for you does not."
 					: "Working time counts only while the item works: waiting for a turn, for your machine, for CI or for you does not. On your machine it costs no hosted time."}
@@ -808,10 +777,17 @@ function LogEntry({ event, now, uid }: { event: ItemEvent; now: number; uid: str
 				<When at={event.at} now={now} />
 			</span>
 			<span className="item-event-step">{event.step ? STEP_WORD[event.step.kind] : ""}</span>
-			<p className="item-event-said">
+			<LongText lines={2} className="item-event-said">
 				<InlineMarkdown text={event.said} />
 				{person ? <span className="tone-faint"> · {event.by === `person:${uid}` ? "you" : "a person"}</span> : null}
-			</p>
+			</LongText>
+			{/* The agent's own question, kept after it was answered: its words in plain text, as `AgentAsked` shows them. */}
+			{event.asked ? (
+				<figure className="item-event-asked">
+					<figcaption className="item-asked-who">The agent asked:</figcaption>
+					<blockquote className="item-asked-text">{event.asked}</blockquote>
+				</figure>
+			) : null}
 		</li>
 	);
 }
@@ -887,7 +863,13 @@ function IssueOrigin({ origin }: { origin: NonNullable<ItemView["origin"]> }) {
 function TaskText({ task, codeSpans = false }: { task: ItemView["task"]; codeSpans?: boolean }) {
 	return (
 		<>
-			{task.body ? <p className="item-body-text">{task.body}</p> : <p className="usage-empty">Only the title was given.</p>}
+			{task.body ? (
+				<LongText lines={6} className="item-body-text">
+					{task.body}
+				</LongText>
+			) : (
+				<p className="usage-empty">Only the title was given.</p>
+			)}
 			{task.acceptance.length > 0 ? (
 				<>
 					<p className="machine-label item-task-label">Acceptance criteria</p>
@@ -931,11 +913,48 @@ function ReadFirst({ view, acting }: { view: ItemView; acting: Acting }) {
 
 // ---- the page -----------------------------------------------------------------------------------
 
+/**
+ * "Allow for this repository" on the item's Network block, sent through its builder's session, whose
+ * repository is the item's. None for a feature over several repositories, which names no repository for
+ * a host, or before the item has a session.
+ */
+function useAllowHost(view: ItemView | null): AllowHostContext | null {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const sessionId = view?.sessionId ?? "";
+	const several = (view?.repositories?.length ?? 1) > 1;
+	const repositoryId = view?.repository.id ?? null;
+	const allow = useCallback(
+		async (host: string) => {
+			try {
+				return await client.session(auth, sessionId).allowHost(host);
+			} catch (failure) {
+				throw new Error(explain(failure));
+			}
+		},
+		[client, auth, sessionId, explain],
+	);
+	return useMemo(() => (several || !sessionId || repositoryId === null ? null : { allow, repositoryId }), [several, sessionId, repositoryId, allow]);
+}
+
 export function Item({ page }: { page: ItemPage }) {
 	const now = useNow(30_000);
+	const { sessions } = useSessions();
 	const { view } = page;
 	// A plan action refused because the plan moved on: the page reads the item again, and its card says so until the next action.
 	const [conflicted, setConflicted] = useState(false);
+	// The name of the secret just added for the builder's request, said until the item asks something else.
+	const [secretSaved, setSecretSaved] = useState<string | null>(null);
+	// The last save's error for the builder's request, kept for the question it reopens under a new id; dropped once the item asks something else.
+	const [secretFailure, setSecretFailure] = useState<{ name: string; message: string } | null>(null);
+	const asking = view?.question?.id ?? null;
+	const askingSecret = view?.question?.kind === "secret_needed" ? (view.question.secret?.name ?? null) : null;
+	useEffect(() => {
+		if (asking !== null) setSecretSaved(null);
+	}, [asking]);
+	useEffect(() => {
+		if (asking !== null && askingSecret === null) setSecretFailure(null);
+	}, [asking, askingSecret]);
 	const acting = useActing(
 		view?.id ?? "",
 		(next) => {
@@ -954,6 +973,9 @@ export function Item({ page }: { page: ItemPage }) {
 	// Undefined for a hosted item and while the list is read; null once its machine is known to be removed.
 	const machine = useSessionMachine(view?.place);
 	const { platform } = useApp();
+	const allowContext = useAllowHost(view);
+	// A subtask's feature, for its siblings: read as the feature's own page is, and kept current by the feed.
+	const feature = useItem(view?.parent?.itemId ?? "", Boolean(view?.parent));
 
 	if (view === null) {
 		return (
@@ -991,6 +1013,8 @@ export function Item({ page }: { page: ItemPage }) {
 	const reviewer = platform.info?.items?.reviewer !== false;
 	const { repository } = view;
 	const reading = readFirst(view);
+	// A subtask's place in its feature's plan, once the feature is read: "Part 2 of 5 of <feature>".
+	const part = view.parent && feature.view?.plan ? partOf(feature.view.plan, view.parent.key) : null;
 
 	return (
 		<main className="home usage repo item">
@@ -999,7 +1023,7 @@ export function Item({ page }: { page: ItemPage }) {
 					<p className="eyebrow">
 						{view.parent ? (
 							<>
-								subtask of{" "}
+								{part ? `Part ${part.n} of ${part.of} of` : "subtask of"}{" "}
 								<a className="eyebrow-link" {...linkProps({ name: "item", id: view.parent.itemId })}>
 									{view.parent.title}
 								</a>
@@ -1011,12 +1035,13 @@ export function Item({ page }: { page: ItemPage }) {
 						)}
 					</p>
 					<h1 className="display display-small item-title">{view.title}</h1>
+					{view.parent && feature.view?.plan ? <SubtaskStrip plan={feature.view.plan} children={feature.view.children ?? []} jobs={feature.view.subtasks} current={view.parent.key} /> : null}
 					<p className="home-account repo-facts">
 						<a className="repo-link" {...linkProps({ name: "repository", id: repository.id })}>
 							{repository.owner}/{repository.name}
 						</a>
 						<span className="repo-fact">into {view.task.base}</span>
-						{view.place.kind === "machine" ? <span className="repo-fact">{machine === null ? "on a machine that was removed" : machine ? `on your machine “${machineLabel(machine)}”` : "on your machine"}</span> : null}
+						{view.place.kind === "machine" ? <span className="repo-fact">{machine === null ? "on a machine that was removed" : machine ? `on your machine “${machineLabel(machine)}”` : "on your machine"}</span> : view.placement ? <span className="repo-fact">runs on {view.placement.name}</span> : null}
 						{view.pullRequest ? (
 							<a className="repo-link" href={view.pullRequest.url} target="_blank" rel="noreferrer">
 								Pull request #{view.pullRequest.number}
@@ -1026,6 +1051,7 @@ export function Item({ page }: { page: ItemPage }) {
 						<a className="repo-link" {...linkProps({ name: "session", id: view.sessionId })} title="What its agent did, turn by turn">
 							Open the agent
 						</a>
+						<ValidatedEnvironment environment={sessions?.find((s) => s.id === view.sessionId)?.environment} now={now} />
 						{view.reviewerSessionId ? (
 							<a className="repo-link" {...linkProps({ name: "session", id: view.reviewerSessionId })}>
 								Open the reviewer
@@ -1083,13 +1109,43 @@ export function Item({ page }: { page: ItemPage }) {
 
 			<section className="usage-section item-where" aria-label="Where it is">
 				<ItemStages item={view} reviewer={reviewer} step={view.run?.step.kind ?? null} />
+				{secretSaved !== null && !view.question ? (
+					<p className="callout secret-ask-saved" role="status">
+						<CheckIcon size={14} className="tone-good" />
+						<span>
+							<code className="secret-ask-name">{secretSaved}</code> saved; the agent continues.
+						</span>
+					</p>
+				) : null}
 				{/* A question is where the item is: its own block says so, with when it was asked. */}
 				{view.question && planOpen(view) ? (
 					<PlanQuestion view={view} review={review} acting={acting} conflicted={conflicted} when={<When at={view.question.askedAt} now={now} />} />
 				) : view.question?.kind === "placement_refused" && view.plan ? (
 					<PlacementQuestion key={view.question.id} view={view} question={view.question} review={review} acting={acting} when={<When at={view.question.askedAt} now={now} />} />
+				) : view.question?.kind === "secret_needed" && view.question.secret ? (
+					<>
+						<SecretQuestion
+							key={view.question.id}
+							view={view}
+							question={view.question}
+							secret={view.question.secret}
+							acting={acting}
+							now={now}
+							failure={secretFailure?.name === view.question.secret.name ? secretFailure.message : null}
+							reload={page.reload}
+							onSaved={(name) => {
+								setSecretSaved(name);
+								setSecretFailure(null);
+								void page.reload();
+							}}
+							onFailed={(message) => setSecretFailure(message === null ? null : { name: view.question!.secret!.name, message })}
+						/>
+						<Failure error={acting.error} />
+					</>
 				) : view.question ? (
 					<Question key={view.question.id} view={view} question={view.question} acting={acting} now={now} />
+				) : showsSubtasks(view) ? (
+					<SubtasksBlock plan={view.plan!} children={view.children ?? []} jobs={view.subtasks} now={now} />
 				) : (
 					<Now view={view} now={now} />
 				)}
@@ -1110,11 +1166,11 @@ export function Item({ page }: { page: ItemPage }) {
 			) : null}
 			{reading ? <ReadFirst view={view} acting={acting} /> : null}
 
-			<Verdicts view={view} now={now} />
-			<GithubFeedback view={view} when={(at) => <When at={at} now={now} />} />
-			<SecondReview view={view} links={links} when={(at) => <When at={at} now={now} />} />
+			<ItemChecks view={view} links={links} when={(at) => <When at={at} now={now} />} />
+
+			<ItemNetwork network={view.blockedNetwork} context={allowContext} now={now} />
 			{view.report ? <Report view={view} report={view.report} links={links} now={now} /> : null}
-			<Cost view={view} />
+			<Cost view={view} now={now} />
 
 			{reading ? null : (
 				<section className="usage-section" aria-labelledby="item-task">

@@ -67,11 +67,11 @@ export interface HarnessCapabilities {
 /** The platform's tools by name (platform-tools.ts); literal here so that this file imports nothing of the server's. */
 const tools = (...names: PlatformToolName[]): readonly PlatformToolName[] => Object.freeze(names);
 /** What an ACP agent takes over MCP: every tool platform-tools.ts's `TOOL_REACH` does not keep to Windlass's host tools (harness-check holds them equal). */
-const MCP_PLATFORM_TOOLS = tools("report", "ask_person", "publish", "push", "fetch_base");
+const MCP_PLATFORM_TOOLS = tools("report", "ask_person", "request_secret", "publish", "push", "fetch_base");
 
 export const WINDLASS_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	events: "windlass", resume: "windlass", steer: true, cancelCall: true, questions: true,
-	platformTools: tools("publish", "report", "ask_person", "push", "fetch_base", "file_review"),
+	platformTools: tools("publish", "report", "ask_person", "request_secret", "push", "fetch_base", "file_review"),
 	reportScreenshots: true, restrictedReview: true, userServers: "config-file", projectServerApproval: true,
 	checks: "required", envLists: true, sessionHome: true, usage: "tokens", models: "account",
 	signIn: "chatgpt", backups: true, steps: "engine", untrustedMarker: "taint", planMode: false, demo: true,
@@ -131,6 +131,11 @@ export interface AcpProfile {
 	capabilities: HarnessCapabilities;
 	/** Whose sign-in it runs with, in a sentence's words: "your Claude subscription". */
 	signedInWith: string;
+	/**
+	 * A line of the agent's own error log (stderr) saying it gave up on the provider's usage or rate limit, where
+	 * the agent then answers nothing more: the turn is ended at once as a usage limit (acp-harness.ts).
+	 */
+	limitGiveUp?: RegExp;
 }
 
 /** How a machine's Codex is signed in, as its runner reports it. */
@@ -154,6 +159,8 @@ export const OPENCODE: AcpProfile = {
 	// Its image's wlp-acp-mcp serves it the platform's MCP server.
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
 	signedInWith: "the provider sign-in kept on this machine",
+	// OpenCode 1.19.6 retries a 429 three times, logs this, and never answers the prompt (wlp-opencode-acp prints its errors).
+	limitGiveUp: /AI_RetryError: Failed after \d+ attempts\. Last error: The provider's usage or rate limit was reached\./,
 };
 
 export const CODEX: AcpProfile = {

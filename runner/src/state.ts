@@ -44,6 +44,7 @@ export function read(file: string): unknown {
 		throw new RunnerError(`Cannot read ${file}. Repair or restore that file in the runner state volume.`);
 	}
 }
+export function forget(file: string) { rmSync(join(directory, file), { force: true }); }
 export function save(file: string, value: unknown): void {
 	const path = join(directory, file);
 	const temp = path + "." + randomUUID();
@@ -138,6 +139,12 @@ export function pairingTrust(pair: NonNullable<ReturnType<typeof loadPair>>): Tr
 
 // flock also works across Docker PID namespaces (two services can both be PID 1).
 // Keep the fd open until exit. The kernel releases it even on SIGKILL; the PID is diagnostic.
+let lockFd: number | undefined;
+/** Setup lets go of the lock before it starts the runner service, which takes it. */
+export function releaseLock() {
+	if (lockFd !== undefined) closeSync(lockFd);
+	lockFd = undefined;
+}
 export function tryLock(): boolean {
 	mkdirSync(directory, { mode: 0o700, recursive: true });
 	chmodSync(directory, 0o700);
@@ -148,7 +155,8 @@ export function tryLock(): boolean {
 		if (result.status === 1) return false;
 		throw new RunnerError("The runner needs flock to lock its state.");
 	}
-	process.once("exit", () => closeSync(fd));
+	lockFd = fd;
+	process.once("exit", releaseLock);
 	ftruncateSync(fd);
 	writeFileSync(fd, String(process.pid) + "\n");
 	return true;

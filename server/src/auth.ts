@@ -8,6 +8,7 @@
  */
 
 import { UserError } from "rivetkit";
+import { isActorGone, isSessionGone } from "./actor-errors.js";
 import { mayUse } from "./access.js";
 import { config } from "./config.js";
 import type { UserProfile } from "./contract.js";
@@ -132,10 +133,15 @@ export function isSandboxUserError(error: unknown): error is Error {
 
 /**
  * What to throw to the client for a failure: a UserError passes through, a SandboxUserError becomes
- * one with its message, and anything else is logged here and replaced by `fallback`.
+ * one with its message, a missing actor is a lookup miss, and unexpected failures use `fallback`.
  */
-export function clientError(log: { error: (entry: unknown) => void }, error: unknown, fallback: string, code = "internal_error"): UserError {
+export function clientError(log: { debug?: (entry: unknown) => void; error: (entry: unknown) => void }, error: unknown, fallback: string, code = "internal_error"): UserError {
 	if (error instanceof UserError) return error;
+	if (isSessionGone(error)) {
+		const session = !isActorGone(error);
+		log.debug?.({ msg: "A requested actor no longer exists." });
+		return new UserError(session ? "This agent was deleted." : "The requested resource no longer exists.", { code: session ? "session_not_found" : "not_found" });
+	}
 	if (isSandboxUserError(error)) return new UserError(error.message, { code: "sandbox_error" });
 	log.error({ msg: fallback, error: error instanceof Error ? (error.stack ?? error.message) : String(error) });
 	return new UserError(fallback, { code });

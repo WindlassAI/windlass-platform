@@ -4,7 +4,8 @@ import type { createClient } from "rivetkit/client";
 import type { RawAccess } from "rivetkit/db";
 import { requireServiceFor, requireUser, serviceParams } from "../auth.js";
 import { config } from "../config.js";
-import { machineLabel, MAX_MACHINES, type HarnessOptions, type MachineClaim, type MachineSummary, type SandboxPlace, type SessionSummary } from "../contract.js";
+import { accountLimits, type UserLimits } from "../user-limits.js";
+import { machineLabel, type HarnessOptions, type MachineClaim, type MachineSummary, type SandboxPlace, type SessionSummary } from "../contract.js";
 import type { Registry } from "../registry.js";
 import { machineDetails } from "../machines/details.js";
 import { machineProfiles } from "../machines/profiles.js";
@@ -21,13 +22,20 @@ import { PROVIDER_TABLE, accountsAt, providerAccounts } from "./provider-account
 
 interface Ctx {
 	db: RawAccess; key: string[]; client(): unknown; conn?: { params: unknown } | null;
-	vars: { tokenGen: number; machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; github: { user: { login: string } } | null };
+	vars: { tokenGen: number; machines: Map<string, MachineSummary>; sessions: Map<string, SessionSummary>; github: { user: { login: string } } | null; items?: { limits: UserLimits } };
 	broadcast(name: string, ...args: unknown[]): void;
 }
 const actors = (c: Pick<Ctx, "client">) => c.client() as ReturnType<typeof createClient<Registry>>;
 const machine = (c: Pick<Ctx, "client" | "key">, id: string) => actors(c).machine.get([c.key[0]!, id], { params: serviceParams() });
 const missing = () => new UserError("That machine is not in your account.", { code: "machine_not_found" });
-const full = () => new UserError(`An account can connect up to ${MAX_MACHINES} machines.`, { code: "too_many_machines" });
+/** How many machines the account may pair: the deployment's MAX_MACHINES, or its plan's where there is billing (billing/plans.ts). */
+const limitsOf = (c: Pick<Ctx, "vars">) => accountLimits(c.vars.items?.limits ?? { id: 0, overrides: {} });
+const machineLimit = (c: Pick<Ctx, "vars">) => limitsOf(c).machines;
+const full = (c: Pick<Ctx, "vars">) => {
+	const limits = limitsOf(c);
+	const more = limits.plan?.id === "free" ? " Pro connects up to 10." : "";
+	return new UserError(`An account can connect up to ${limits.machines} machines.${more}`, { code: "too_many_machines" });
+};
 function enabled() {
 	if (!config.machines) throw new UserError("Machines are not available on this platform.", { code: "machines_off" });
 }
@@ -103,6 +111,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 			...(report?.egressDomains && { egressDomains: report.egressDomains }),
 			...(report?.claudeRelay && { claudeRelay: true as const }),
 			...(report?.harnesses ? { harnesses: report.harnesses } : {}),
+			...(report?.warmSpares && { readySandboxes: report.warmSpares.ready }),
 			...(report?.maxRunning !== undefined ? { maxRunning: report.maxRunning } : {}),
 			...(report?.maxSandboxes !== undefined ? { maxSandboxes: report.maxSandboxes } : {}),
 			// A runner 0.3.1 or older reports none: it applies its built-in limits.
@@ -177,7 +186,7 @@ export const machineActions = {
 		const charged = await c.db.execute("INSERT INTO machine_claims SELECT ? WHERE (SELECT count(*) FROM machine_claims) < 5 RETURNING at", now);
 		if (!charged.length) throw new UserError("Too many code lookups. Try again in ten minutes.", { code: "too_many_claims" });
 		const [{ n }] = await c.db.execute<{ n: number }>("SELECT count(*) AS n FROM machines WHERE expires IS NULL OR expires > ?", now);
-		if (n >= MAX_MACHINES) throw full();
+		if (n >= machineLimit(c)) throw full(c);
 		return (await pairing(c, input)).internalClaim(uid).catch(asPairingError);
 	},
 	async confirmMachine(c: Ctx, input: { code: string; keyConfirmed: true }): Promise<MachineSummary> {
@@ -192,9 +201,9 @@ export const machineActions = {
 		await c.db.execute("DELETE FROM machines WHERE expires <= ?", now);
 		// A slot is private until the machine accepts it. Retries share the pairing's fixed id.
 		await c.db.execute(`INSERT OR IGNORE INTO machines(id, name, os, arch, facts, login, expires) SELECT ?, ?, ?, ?, ?, ?, ?
-			WHERE ? > ? AND (SELECT count(*) FROM machines) < ?`, id, details.name, details.os, details.arch, JSON.stringify(facts), c.vars.github?.user.login ?? null, expires, expires, Date.now(), MAX_MACHINES);
+			WHERE ? > ? AND (SELECT count(*) FROM machines) < ?`, id, details.name, details.os, details.arch, JSON.stringify(facts), c.vars.github?.user.login ?? null, expires, expires, Date.now(), machineLimit(c));
 		const [slot] = await c.db.execute<{ expires: number | null }>("SELECT expires FROM machines WHERE id = ?", id);
-		if (!slot) { if (expires <= Date.now()) throw pairingGone(); throw full(); }
+		if (!slot) { if (expires <= Date.now()) throw pairingGone(); throw full(c); }
 		if (slot.expires !== null) {
 			const key = [uid, id];
 			const handle = actors(c).machine.getOrCreate(key, { params: serviceParams(), createWithInput: { grant: createGrant("machine", key), details, publicKey: claim.publicKey, expires } });

@@ -6,7 +6,7 @@ const { pipeline, Transform } = require('node:stream');
 const { StringDecoder } = require('node:string_decoder');
 const { createGunzip, createInflate, createBrotliDecompress, createZstdDecompress } = require('node:zlib');
 const { existsSync, rmSync } = require('node:fs');
-const { readFile } = require('node:fs/promises');
+const { readFile, rename, writeFile } = require('node:fs/promises');
 const http = require('node:http');
 const https = require('node:https');
 
@@ -239,10 +239,43 @@ function reject(res, status, { restarting = false, message: own, headers = {}, c
 	res.end(JSON.stringify({ type: 'error', error: { type, ...(code && { code }), message: own ?? message } }));
 }
 
+/**
+ * What the relay notes about an answer it did not pass on as the provider gave it: never a body, a header that
+ * could carry a credential, or a query string. The latest notes are also
+ * kept in a file beside the socket (`notesFile`), which `windlass-runner status` reads.
+ */
+// Restrict diagnostics to known values. Even printable response headers can echo a secret.
+const mediaTypes = new Set(['application/json', 'text/event-stream', 'text/html', 'text/plain', 'application/octet-stream']);
+const encodings = new Set(['identity', ...decoders.keys()]);
+const networkErrors = new Set(['ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'EPIPE']);
+const diagnostic = (value, allowed) => value === undefined ? 'none' : allowed.has(value) ? value : 'other';
+const NOTES_KEPT = 20;
+exports.NOTES_FILE = '/workspace/relay-notes.json';
+function notesOf(notesFile) {
+	const kept = [];
+	let writing = Promise.resolve();
+	const note = fields => {
+		const entry = { at: new Date().toISOString(), ...fields };
+		console.error('[wlp-relay] ' + Object.entries(entry).map(([k, v]) => k + '=' + v).join(' '));
+		kept.push(entry);
+		if (kept.length > NOTES_KEPT) kept.shift();
+		if (!notesFile) return;
+		const body = JSON.stringify(kept);
+		writing = writing.then(async () => {
+			const temp = notesFile + '.' + process.pid;
+			await writeFile(temp, body, { mode: 0o644 });
+			await rename(temp, notesFile);
+		}).catch(() => {});
+	};
+	note.kept = kept;
+	return note;
+}
+
 exports.createRelay = function createRelay({ publicKey, machine,
 	readToken = () => readFile('/run/wlp-harness/claude/token', 'utf8'), forward = https.request,
-	domain = 'windlass-claude-relay-v2', provider, signedOut = () => existsSync(SIGNED_OUT), limits: overrides, host = '127.0.0.1:17892' }) {
+	domain = 'windlass-claude-relay-v2', provider, signedOut = () => existsSync(SIGNED_OUT), limits: overrides, host = '127.0.0.1:17892', notesFile }) {
 	const limits = { ...exports.limits, ...overrides };
+	const note = notesOf(notesFile);
 	const sessions = new WeakMap();
 	// Per nonce: open connections, requests in flight and requests waiting. `waiting` is the relay's one FIFO.
 	const open = new Map(), inFlight = new Map(), queued = new Map(), waiting = [];
@@ -294,6 +327,8 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				drain();
 			};
 			const start = () => {
+				// Releasing a slot on socket close can drain a waiter on that same socket.
+				if (req.socket.destroyed || res.destroyed) return resolve(false);
 				add(inFlight, nonce, 1);
 				if (user !== undefined) add(userInFlight, user, 1);
 				machineInFlight++;
@@ -365,10 +400,13 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				target = { hostname: 'api.anthropic.com', path: req.url, headers };
 			}
 			if (res.destroyed) return;
+			const route = req.method + ' ' + req.url.split('?')[0].replace(/(\/models\/)[^/]+:/, '$1[model]:');
 			const up = forward({ port: 443, ...target, method: req.method }, reply => {
+				const described = { route, upstream: reply.statusCode, contentType: diagnostic(reply.headers['content-type']?.split(';')[0].trim().toLowerCase(), mediaTypes), contentEncoding: diagnostic(reply.headers['content-encoding']?.toLowerCase(), encodings) };
 				// No redirects, reflected upstream error bodies, cookies, or diagnostic headers.
 				if (reply.statusCode !== 200) {
 					const status = reply.statusCode >= 400 && reply.statusCode < 600 ? reply.statusCode : 502;
+					note({ event: 'upstream_error', ...described, answered: status });
 					if (provider?.errorBody && status !== 502) {
 						// The provider's own error, cut down to what the client classifies it by: read whole, bounded, then rewritten.
 						const parts = [];
@@ -394,16 +432,19 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				}
 				let type = reply.headers['content-type']?.split(';')[0].trim().toLowerCase();
 				// A provider may name the type of an answer that comes without one (or as text/plain) on its streaming route.
+				const given = type;
 				if ((!type || type === 'text/plain') && provider?.untyped) type = provider.untyped(req.method, req.url) ?? type;
 				if (type !== 'text/event-stream' && type !== 'application/json') {
+					note({ event: 'refused_200', ...described, answered: 502 });
 					reject(res, 502); reply.destroy(); return;
 				}
+				if (type !== given) note({ event: 'untyped_200', ...described, passedAs: type });
 				// Decode before redaction. Only the whitelisted media type reaches the client.
 				const stages = [reply];
 				const encoding = reply.headers['content-encoding']?.toLowerCase();
 				if (encoding && encoding !== 'identity') {
 					const decode = decoders.get(encoding);
-					if (!decode) { reject(res, 502); reply.destroy(); return; }
+					if (!decode) { note({ event: 'refused_200', ...described, answered: 502 }); reject(res, 502); reply.destroy(); return; }
 					stages.push(decode());
 				}
 				const filter = claudeToken ? scrubStream([claudeToken], type) : provider?.responseFilter?.(type, req.url, own);
@@ -412,8 +453,9 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				res.writeHead(200, { ...limitHeaders(reply.headers, secrets()), 'content-type': type, 'cache-control': 'no-store' });
 				pipeline([...stages, res], () => {});
 			});
-			up.on('error', () => {
+			up.on('error', error => {
 				if (res.destroyed || res.writableEnded) return;
+				if (!res.headersSent) note({ event: 'unreachable', route, error: diagnostic(error?.code, networkErrors), answered: 502 });
 				if (res.headersSent) res.destroy(); else reject(res, 502);
 			});
 			up.setTimeout?.(600_000, () => up.destroy());
@@ -494,5 +536,5 @@ if (process.env.WLP_CLAUDE_RELAY_PUBLIC_KEY) {
 	const publicKey = createPublicKey({ key: Buffer.from(process.env.WLP_CLAUDE_RELAY_PUBLIC_KEY, 'base64'), format: 'der', type: 'spki' });
 	const socket = '/workspace/relay.sock';
 	rmSync(socket, { force: true });
-	exports.createRelay({ publicKey, machine: process.env.WLP_CLAUDE_RELAY_MACHINE }).listen(socket);
+	exports.createRelay({ publicKey, machine: process.env.WLP_CLAUDE_RELAY_MACHINE, notesFile: exports.NOTES_FILE }).listen(socket);
 }

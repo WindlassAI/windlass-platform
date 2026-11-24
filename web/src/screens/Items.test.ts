@@ -107,7 +107,7 @@ describe("filing a work item", () => {
 		act(() => radio("m_nas")?.click());
 		expect(host.querySelector(".sandbox-chosen-name")?.textContent).toBe("nas");
 		expect(text()).toContain("It runs without asking on “nas”, inside its container, and costs no hosted time. If the machine is away, the item waits until it is back.");
-		expect(text()).toContain("It starts as soon as one of your factory turns is free and “nas” is online; until then it waits, and says for what.");
+		expect(text()).toContain("It starts as soon as “nas” is online and has a free slot; until then it waits, and says for what.");
 		typeTitle("Cache the station list");
 		await file();
 		expect(sent[0]?.place).toEqual({ kind: "machine", machineId: "m_nas" });

@@ -3,9 +3,10 @@
  * composer's pills, tooltips, key caps and skeletons. Small, no framework; styles in styles/ui.css.
  */
 export { Button, SplitButton, type ButtonProps, type ButtonSize, type ButtonVariant, type SplitButtonProps } from "./Button";
+export { Check, type CheckProps } from "./Check";
 export { Kbd, KeyHints } from "./Kbd";
 export { Menu, MenuList, MenuSheet, PickerPanel, type MenuFilter, type MenuGroup, type MenuItem, type MenuProps, type MenuSpec, type TriggerProps } from "./Menu";
-export { AgentGlyph, Pill, type PillProps } from "./Pill";
+export { AgentGlyph, AgentLogo, agentId, Pill, type PillProps } from "./Pill";
 export { Popover, inLayer, type CloseReason, type PopoverProps } from "./Popover";
 export { place, type Align, type Placement, type Side } from "./position";
 export { Sheet, type SheetProps } from "./Sheet";

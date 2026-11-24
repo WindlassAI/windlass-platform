@@ -43,7 +43,9 @@ const CUT_SHORT: ReadonlySet<TurnOutcome> = new Set(["stopped", "failed", "inter
 
 /** The checks of the gate's run that failed: started, and did not pass. */
 function failingChecks(verified: Verified): Array<{ name: string; output?: string }> {
-	return (verified.run?.checks ?? []).filter((check) => check.status !== "passed" && check.startError === undefined);
+	// A turn without its own run can carry a previous failure for the timeline.
+	if (verified.run?.turn !== verified.turn) return [];
+	return verified.run.checks.filter((check) => check.status !== "passed" && check.startError === undefined);
 }
 
 /** What the gate makes of a turn by itself, before anything is pushed (§2.1 step 2): "fail" sends the agent back, "pass" and "unverified" publish. */
@@ -52,7 +54,7 @@ export function gateResult(outcome: TurnOutcome, verified: Verified | null): Ver
 	if (verified === null) return "unverified";
 	switch (verified.state) {
 		case "passed":
-			return verified.changedAfter ? "unverified" : "pass";
+			return verified.changedAfter || (verified.run !== null && verified.run.turn !== verified.turn) ? "unverified" : "pass";
 		case "unresolved":
 			return failingChecks(verified).length > 0 ? "fail" : "unverified";
 		case "not_needed":
@@ -95,12 +97,13 @@ export const movedSentence = (head: string, moved: string) => `The pull request 
 
 export function verdictOf(input: VerdictInput): Verdict {
 	const verified = input.gate?.verified ?? null;
-	const checks = verified?.run?.checks ?? [];
 	const gate = input.gate === null ? "unverified" : gateResult(input.gate.outcome, verified);
+	// A carried run is evidence for this commit only when the gate attests to its state.
+	const checks = verified?.run && (verified.run.turn === verified.turn || gate === "pass") ? verified.run.checks : [];
 	const usersRan = checks.some((check) => check.whose === "user");
 	const moved = input.moved ?? null;
 	// A pass is of the commit verified: a pull request that holds another one is not passed, whatever its earlier commit came to.
-	const passed = moved === null && (input.ci.state === "passed" || (gate === "pass" && usersRan));
+	const passed = moved === null && (input.ci.state === "passed" || (input.ci.state !== "cancelled" && gate === "pass" && usersRan));
 	const result: Verdict["result"] = gate === "fail" || input.ci.state === "failed" ? "fail" : gate === "incomplete" ? "incomplete" : passed ? "pass" : "unverified";
 	return {
 		id: input.id,
@@ -131,8 +134,20 @@ const FAILING_CONCLUSIONS = ["failure", "timed_out", "startup_failure", "action_
 export function ciSentence(ci: Verdict["ci"]): string {
 	const count = new Set(ci.runs.map((run) => run.name)).size;
 	switch (ci.state) {
-		case "passed":
-			return `CI passed (${count} ${count === 1 ? "check" : "checks"}).`;
+		case "passed": {
+			const passed = new Set(ci.runs.filter(run => run.conclusion === "success").map(run => run.name)).size;
+			return `CI passed (${passed} ${passed === 1 ? "check" : "checks"}).`;
+		}
+		case "cancelled": {
+			const cancelled = ci.runs.filter(run => run.conclusion === "cancelled" || run.conclusion === "stale");
+			const describe = (runs: typeof cancelled) => `${runs.length} ${runs.length === 1 ? "check was" : "checks were"} cancelled (${runs.map(run => run.name).join(", ")})`;
+			const stopped = cancelled.filter(run => run.stopped || run.conclusion === "stale");
+			const other = cancelled.filter(run => !stopped.includes(run));
+			return "CI did not finish: " + [
+				...(stopped.length ? [`${describe(stopped)}; not rerun because ${stopped.length === 1 ? "it was" : "they were"} stopped while running.`] : []),
+				...(other.length ? [`${describe(other)}; nothing failed.`] : []),
+			].join(" ");
+		}
 		case "failed": {
 			const failing = ci.runs.filter((run) => FAILING_CONCLUSIONS.includes(run.conclusion));
 			return `CI failed: ${[...new Set(failing.map((run) => run.name))].join(", ")}.`;

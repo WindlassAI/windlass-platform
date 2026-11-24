@@ -1,63 +1,38 @@
 /**
- * Agents: the user's sessions, live, with rename and delete, and the start composer at the top
- * (components/StartComposer.tsx): a task and Enter launch one. Without agents, the composer is the
- * empty page's one action. The agents stand under the
- * repository they were launched on, the repository that was used last first, and each repository's
- * name leads to its page; the agents on no repository of the GitHub connection come last. A list with
- * no such repository in it is shown as it always was, without a heading.
+ * The Agents home's right side when no one repository is chosen (screens/Workspace.tsx): "Everything",
+ * or with `scope` "none" the agents on no repository of the GitHub connection.
  *
- * Under the groups, the repositories something is saved for that have no agent: their pages are
- * where what was saved is changed or deleted, and nothing else leads there.
+ * At the top the start composer (components/StartComposer.tsx): a task and Enter launch an agent.
+ * Without agents, the composer is the empty page's one action. Under it one feed (lib/feed.ts,
+ * components/Feed.tsx): what needs its person, what is at work, and the rest, each newest first, the
+ * user's agents and their work items together. The repository is a quiet label on each row; the rail
+ * is where repositories are chosen, so a repository with nothing on it has no place here.
  *
  * The sessions of work items are not listed: each is part of its item, and is opened from the item's
- * row and page. A repository that has only work items keeps its heading, with how many, so that its
- * page is still a click away. The count of what is at work is the server's, against the ceiling on
- * running turns, and says how much of it is work items'.
+ * row and page. The count of what is at work is the server's, against the ceiling on running turns,
+ * and says how much of it is work items'.
+ *
+ * The filters of the home (lib/workspace.ts) narrow the feed; they are set from the Recent heading.
  */
-import { USAGE_LOW_SHARE, type ItemSummary, type SavedRepository, type UsageNumbers } from "@contract";
-import { useEffect, useId, useState } from "react";
-import { AgentList } from "../components/Agents";
+import { periodWords, minutes, monthReset } from "../lib/hosted";
+import { HostedNotice } from "../components/Plan";
+import { USAGE_LOW_SHARE, type ItemSummary, type MachineSummary, type SavedRepository, type SessionSummary, type UsageNumbers } from "@contract";
+import { useEffect, useState } from "react";
+import { FeedSection } from "../components/Feed";
 import { Mark, WarnIcon } from "../components/Icons";
-import { NeedsYouCard } from "../components/NeedsYouCard";
 import { StartComposer } from "../components/StartComposer";
+import { FilterBar } from "../components/WorkspaceFilters";
+import { feedOf } from "../lib/feed";
 import { count, localTime, plural, sandboxTime } from "../lib/format";
-import { NO_REPOSITORY, groupSessions, ownAgents, shownLimit, workingCounts, workingWords, type SessionGroup } from "../lib/repositories";
+import { ownAgents, workingCounts, workingWords } from "../lib/repositories";
 import { linkProps } from "../lib/router";
+import { filterCount, type Filters } from "../lib/workspace";
 import { useApp, useAuth } from "../state/app";
 import { asking } from "./Items";
-import { allowanceState, useAllowance, useChatgpt, useFactoryLimits, useNow, useSessions } from "../state/hooks";
+import { allowanceState, useChatgpt, useFactoryLimits, useNow, type SessionsState } from "../state/hooks";
 
-/** One repository's agents under its name, or the agents on none. `headed` is false for a list that has only the latter. */
-function Group({ group, limit, headed, now }: { group: SessionGroup; limit: number; headed: boolean; now: number }) {
-	const heading = useId();
-	const repository = group.repository;
-	const name = repository ? `${repository.owner}/${repository.name}` : "No connected repository";
-	return (
-		<section className="agent-group" aria-labelledby={headed ? heading : undefined} aria-label={headed ? undefined : "Your agents"}>
-			{headed ? (
-				<h2 className="agent-group-head" id={heading}>
-					{repository ? (
-						<a className="agent-group-name" {...linkProps({ name: "repository", id: repository.id })} title={`What is saved for ${name}, and its pull requests`}>
-							<span className="agent-group-owner">{repository.owner}/</span>
-							{repository.name}
-						</a>
-					) : (
-						<span className="agent-group-name">{name}</span>
-					)}
-					<span className="agent-group-count">
-						{[group.sessions.length > 0 ? plural(group.sessions.length, "agent") : null, group.working > 0 ? `${group.working} working` : null, group.items > 0 ? plural(group.items, "work item") : null].filter((part) => part !== null).join(" · ")}
-					</span>
-				</h2>
-			) : null}
-			{group.sessions.length > 0 ? (
-				<AgentList sessions={group.sessions} limit={limit} foldKey={`home:${group.key}`} label={repository ? `Your agents on ${name}, the most recently used first` : "Your agents on no connected repository, the most recently used first"} grouped={repository !== null} now={now} />
-			) : null}
-		</section>
-	);
-}
-
-/** The repositories something is saved for and no session is on (one with only work items has its heading): asked when the screen opens and when a session is added or deleted. */
-function useSavedWithoutAgents(sessions: ReturnType<typeof useSessions>["sessions"]): SavedRepository[] {
+/** The repositories something is saved for: asked when the screen opens and when a session is added or deleted. Empty until they arrive, or where they could not be read. */
+export function useSavedRepositories(sessions: readonly SessionSummary[] | null): SavedRepository[] {
 	const { client } = useApp();
 	const auth = useAuth();
 	const [saved, setSaved] = useState<SavedRepository[]>([]);
@@ -77,11 +52,8 @@ function useSavedWithoutAgents(sessions: ReturnType<typeof useSessions>["session
 			current = false;
 		};
 	}, [client, auth, known]);
-	if (sessions === null) return [];
-	const used = new Set(sessions.map((session) => session.repository?.id));
-	return saved.filter((repository) => !used.has(repository.id));
+	return saved;
 }
-
 
 function AccountLine() {
 	const auth = useAuth();
@@ -106,8 +78,9 @@ function AccountLine() {
  * The day's sandbox time as a small meter, and the sandboxes kept, leading to the usage page. It takes
  * the warning hue when the day's time runs low or out, or no more sandboxes may be kept.
  */
-function UsageMeter({ numbers }: { numbers: UsageNumbers | null }) {
+export function UsageMeter({ numbers }: { numbers: UsageNumbers | null }) {
 	if (numbers === null) return null;
+	if (numbers.hosted) return <MonthMeter numbers={numbers} />;
 	const { allowanceSeconds, leftSeconds, sandboxes } = numbers;
 	const spent = numbers.usedSeconds + numbers.heldSeconds;
 	const state = allowanceState(numbers, USAGE_LOW_SHARE);
@@ -130,6 +103,30 @@ function UsageMeter({ numbers }: { numbers: UsageNumbers | null }) {
 				{kept}
 				{full ? <span className="visually-hidden"> (the most an account may keep)</span> : null}
 			</span>
+		</a>
+	);
+}
+
+/** The month's hosted minutes as the small meter, where a plan sets them (lib/hosted.ts). */
+function MonthMeter({ numbers }: { numbers: UsageNumbers }) {
+	const month = numbers.hosted!;
+	const spent = month.usedSeconds + month.heldSeconds;
+	const state = allowanceState(numbers, USAGE_LOW_SHARE);
+	const { sandboxes } = numbers;
+	const full = sandboxes.limit !== null && sandboxes.kept >= sandboxes.limit;
+	const share = month.limitSeconds === 0 ? null : Math.min(1, spent / month.limitSeconds);
+	return (
+		<a className={`home-usage${state !== "plenty" ? " home-usage-warn" : ""}`} {...linkProps({ name: "usage" })} title="Usage: hosted minutes and sandboxes">
+			<span className="home-usage-time">
+				Hosted {periodWords(month)} <strong>{minutes(spent)}</strong> of {minutes(month.limitSeconds)} min
+				{state !== "plenty" ? <span className="home-usage-left">{state === "used" ? `, used up until ${monthReset(month)}` : `, ${minutes(month.leftSeconds)} left`}</span> : null}
+			</span>
+			{share === null ? null : (
+				<span className="home-meter" role="meter" aria-label={`Hosted minutes used ${periodWords(month)}`} aria-valuemin={0} aria-valuemax={month.limitSeconds} aria-valuenow={Math.min(spent, month.limitSeconds)} aria-valuetext={`${minutes(spent)} of ${minutes(month.limitSeconds)} hosted minutes`}>
+					<span className="home-meter-fill" style={{ width: `${Math.max(share, spent > 0 ? 0.04 : 0) * 100}%` }} />
+				</span>
+			)}
+			<span className={full ? "home-usage-full" : undefined}>{sandboxes.limit === null ? plural(sandboxes.kept, "sandbox kept", "sandboxes kept") : `${count(sandboxes.kept)} of ${count(sandboxes.limit)} kept`}</span>
 		</a>
 	);
 }
@@ -163,38 +160,52 @@ function Facts({ agents, counts, ceiling, waiting }: { agents: number | null; co
 	);
 }
 
-/** `items`: the user's work items, read once for the page and the bar (null until they arrive; none where the deployment offers none). */
-export function Home({ items }: { items: readonly ItemSummary[] | null }) {
-	const { sessions, connection, error } = useSessions();
-	const now = useNow(15_000);
-	const agents = sessions === null ? null : ownAgents(sessions);
-	// The ceiling on running turns is the deployment's: the user's agents on the platform's sandboxes and every work item's turn count against it.
-	const ceiling = useFactoryLimits().value?.runningTurns ?? null;
-	const counts = workingCounts(sessions ?? []);
-	// Asked again when a session starts or stops working, and when one is added or deleted.
-	const usage = useAllowance(`${counts.ceilinged + counts.onMachines}:${sessions?.length ?? 0}`);
+export interface HomeProps {
+	/** The user's sessions, live, as the home reads them once for the rail and this side both. */
+	state: SessionsState;
+	/** The user's work items, read once for the page and the bar (null until they arrive; none where the deployment offers none). */
+	items: readonly ItemSummary[] | null;
+	usage: UsageNumbers | null;
+	/** "none": the agents on no repository of the GitHub connection alone. */
+	scope?: "all" | "none";
+	filters: Filters;
+	onFilters(filters: Filters): void;
+	machines: readonly MachineSummary[];
+}
 
-	const groups = sessions === null ? [] : groupSessions(sessions);
-	const saved = useSavedWithoutAgents(sessions);
+export function Home({ state, items, usage, scope = "all", filters, onFilters, machines }: HomeProps) {
+	const { sessions, connection, error } = state;
+	const { platform } = useApp();
+	const now = useNow(15_000);
+	const filtering = filterCount(filters) > 0;
+	const agents = sessions === null ? null : ownAgents(sessions);
+	// The ceiling is the deployment's, on hosted sandboxes: the user's agents and work items on the platform's sandboxes count against it, never a machine's.
+	const ceiling = useFactoryLimits().value?.hostedRunning ?? null;
+	const counts = workingCounts(sessions ?? []);
 	const waiting = agents?.filter((session) => session.status === "waiting").length ?? 0;
 	const asked = asking(items ?? []).length;
-	// Without agents the composer stands in the empty page; otherwise at the top, over the list.
-	const empty = sessions !== null && connection !== "failed" && groups.length === 0;
+	const feed = feedOf({ sessions, items, filters, scope });
+	const total = feed.needs.length + feed.working.length + feed.recent.length;
+	// Without agents or work items the composer stands in the empty page; otherwise at the top, over the feed.
+	const empty = sessions !== null && connection !== "failed" && (agents?.length ?? 0) === 0 && (scope === "none" || (items ?? []).length === 0) && !filtering;
 
 	return (
-		<main className="home home-agents">
+		<main className="home home-agents ws-pane">
 			<header className="home-head">
 				<div className="home-title">
-					<h1 className="display">Agents</h1>
+					<h1 className="display">{scope === "none" ? "No repository" : "Agents"}</h1>
 					<Facts agents={agents === null ? null : agents.length} counts={counts} ceiling={ceiling} waiting={waiting + asked} />
 					<AccountLine />
 				</div>
-				<UsageMeter numbers={usage} />
+				<div className="ws-head-usage">
+					<UsageMeter numbers={usage} />
+				</div>
 			</header>
+			<HostedNotice numbers={usage} pro={platform.info?.billing?.plans.find((plan) => plan.id === "pro") ?? null} />
 
 			{empty ? null : (
 				<section className="home-start" aria-label="Launch an agent">
-					<StartComposer sessions={sessions} />
+					<StartComposer sessions={sessions} hostedNotice />
 				</section>
 			)}
 
@@ -204,8 +215,6 @@ export function Home({ items }: { items: readonly ItemSummary[] | null }) {
 					<span>The connection dropped. Reconnecting; the list may be behind.</span>
 				</p>
 			) : null}
-
-			<NeedsYouCard sessions={agents ?? []} items={items} now={now} />
 
 			{connection === "failed" ? (
 				<div className="state state-error" role="alert">
@@ -228,27 +237,28 @@ export function Home({ items }: { items: readonly ItemSummary[] | null }) {
 						</li>
 					))}
 				</ul>
-			) : groups.length === 0 ? (
+			) : empty ? (
 				<div className="state state-empty home-empty">
 					<Mark size={56} />
 					<h2>No agents yet</h2>
-					<p>Say what it should do and press Enter. The repository, where it runs and its sandbox are under the field.</p>
-					<StartComposer sessions={sessions} autoFocus />
+					<p>Say what it should do and press Enter. Where it runs and the repository are under the field.</p>
+					<StartComposer sessions={sessions} autoFocus hostedNotice />
 				</div>
 			) : (
-				groups.map((group) => <Group key={group.key} group={group} limit={shownLimit(groups.length)} headed={groups.length > 1 || group.key !== NO_REPOSITORY} now={now} />)
+				<div className="home-feed">
+					<FeedSection title="Needs you" tone="needs" entries={feed.needs} now={now} />
+					<FeedSection title="Working now" tone="working" entries={feed.working} now={now} />
+					<FeedSection
+						title="Recent"
+						tone="recent"
+						entries={feed.recent}
+						now={now}
+						limit={12}
+						tools={<FilterBar filters={filters} onChange={onFilters} machines={machines} />}
+						empty={filtering ? (total === 0 ? "Nothing here matches the filters." : "Nothing else matches the filters.") : scope === "none" ? "No agent of yours is on no repository." : "Nothing has ended yet."}
+					/>
+				</div>
 			)}
-
-			{saved.length > 0 ? (
-				<p className="home-saved">
-					<span>Saved settings for repositories with no agent:</span>
-					{saved.map((repository) => (
-						<a key={repository.id} className="link" {...linkProps({ name: "repository", id: repository.id })}>
-							{repository.name ?? `repository ${repository.id}`}
-						</a>
-					))}
-				</p>
-			) : null}
 		</main>
 	);
 }

@@ -34,7 +34,7 @@ import type { Attachment, MachineFacts, TurnSlot } from "../actors/machine.js";
 import type { SandboxProfile, SandboxProfileId, SessionSnapshot } from "../contract.js";
 import { harnessName, machineHarness } from "./harnesses.js";
 import { describeError, serviceParams } from "../auth.js";
-import { type ChannelSocket, ConversationLost, ServerChannel } from "../runner/channel.js";
+import { type ChannelSocket, type ConversationRecord, ConversationLost, ServerChannel } from "../runner/channel.js";
 import { machineProfiles } from "../machines/profiles.js";
 import { PROFILE_DENIED, type Args, type Name, type Value } from "../runner/protocol.js";
 import { AttachTickets } from "../machines/ticket.js";
@@ -73,6 +73,8 @@ export function machineActor(client: () => any, uid: string, machineId: string) 
 	return {
 		turnSlot: (sessionId: string, turn: number, size: number): Promise<TurnSlot> => machine().internalTurnSlot(sessionId, turn, size),
 		releaseSlot: (sessionId: string, turn: number): Promise<void> => machine().internalReleaseTurnSlot(sessionId, turn),
+		/** The session's turn is paused while the machine is away (`on`): the machine wakes it when its runner is back. */
+		pausedSession: (sessionId: string, on: boolean): Promise<void> => machine().internalPausedSession(sessionId, on),
 		attach: (sessionId: string, ticket: string) => machine().internalAttach({ sessionId, ticket }),
 		facts: () => machine().internalFacts(),
 		removeSandbox: async (sandboxId: string | null, sessionId?: string) => {
@@ -149,6 +151,11 @@ export class RunnerLink {
 		private readonly machine: MachineSeam,
 		onReset: (reason: string) => void,
 		private readonly onReach?: (reach: MachineReach) => void,
+		/**
+		 * The conversation is kept in the session's storage (`ServerChannel.keepIn`, runner/journal.ts):
+		 * `from` is what a restarted server read back, `onDirty` asks the owner to save.
+		 */
+		durable?: { from: ConversationRecord | null; onDirty(): void },
 	) {
 		this.channel = new ServerChannel({
 			platform: config.machines?.identity && { ...who, identity: config.machines.identity },
@@ -157,8 +164,13 @@ export class RunnerLink {
 			onConnect: () => this.connected(),
 			onDisconnect: () => this.lost(),
 		});
+		this.durable = !!durable;
+		if (durable) this.channel.keepIn(durable.onDirty, durable.from);
 		this.initialFacts = this.facts().catch(() => null);
 	}
+
+	/** Whether the conversation is kept in storage, so that a turn's process can outlive this server. */
+	readonly durable: boolean;
 
 	/** A socket from `onWebSocket`. The channel decides by its hello whether it counts. */
 	socket(ws: RawSocket): void {
@@ -245,6 +257,75 @@ export class RunnerLink {
 	/** A process: `ready` and the channel's `start`, with what is written meanwhile held in order. */
 	start(args: Args<"start">, onOutput: (fd: 1 | 2, data: string) => void): RunnerProcess {
 		return new RunnerProcess(this, args, onOutput);
+	}
+
+	/**
+	 * A process a turn of the server before a restart started, in the conversation read back from storage:
+	 * null when the channel has no such conversation. The runner is asked back for it, again and again,
+	 * until it resumes the conversation or the grace ends it (the process has then ended with ConversationLost).
+	 */
+	adopt(id: string, args: Args<"start">, onOutput: (fd: 1 | 2, data: string) => void): RunnerProcess | null {
+		const held = this.held.get(id);
+		if (!held) return null;
+		this.held.delete(id);
+		held.to = onOutput;
+		for (const [fd, data] of held.chunks.splice(0)) onOutput(fd, data);
+		return new RunnerProcess(this, args, onOutput, { id, ended: held.ended });
+	}
+
+	/**
+	 * Takes the process a restarted server's turn will take up (`adopt`), before anything can ask for the
+	 * runner's socket: what it sends meanwhile is kept for the turn, and while it is (`holding`) nothing
+	 * received is committed, so a server that stops again before the turn took it up loses none of it.
+	 */
+	hold(id: string): boolean {
+		const entry: { chunks: Array<[1 | 2, string]>; ended: Promise<ProcessEnd>; to: ((fd: 1 | 2, data: string) => void) | null } = { chunks: [], ended: Promise.resolve({ code: null, signal: null, error: null }), to: null };
+		const taken = this.channel.adoptProcess(id, (fd, data) => (entry.to ? entry.to(fd, data) : entry.chunks.push([fd, data])));
+		if (!taken) return false;
+		entry.ended = taken.ended;
+		this.held.set(id, entry);
+		return true;
+	}
+
+	/** A held process nobody took up (the turn could not go on): it is stopped on the runner, and its output is no longer taken. */
+	release(): void {
+		for (const id of [...this.held.keys()]) {
+			this.held.delete(id);
+			this.channel.forgetProcess(id);
+			void this.request("signal", { process: id, sig: "KILL", who: "all" }).catch(() => undefined);
+		}
+	}
+
+	/** Whether a process is held for a turn that has not taken it up yet. */
+	get holding(): boolean {
+		return this.held.size > 0;
+	}
+
+	private readonly held = new Map<string, { chunks: Array<[1 | 2, string]>; ended: Promise<ProcessEnd>; to: ((fd: 1 | 2, data: string) => void) | null }>();
+
+	/** The server is going away and its storage keeps the conversation for the next (`ServerChannel.abandon`): nothing is ended. */
+	abandon(): void {
+		if (this.closed) return;
+		this.closed = true;
+		clearTimeout(this.idle);
+		clearTimeout(this.retry);
+		this.waiting?.settle(new ConversationLost(SLEPT));
+		this.channel.abandon();
+	}
+
+	/** Waits for the runner's socket for as long as the conversation lasts, not only ATTACH_WAIT_MS: it is back within the grace or not at all. */
+	async reconnect(until: Promise<unknown>): Promise<void> {
+		let over = false;
+		void until.finally(() => { over = true; });
+		while (!over && !this.closed) {
+			try {
+				await this.wait();
+				return;
+			} catch (error) {
+				if (!(error instanceof MachineUnreachable) || error.reason === "removed") throw error;
+				await Promise.race([new Promise((done) => setTimeout(done, REATTACH_MS)), until]);
+			}
+		}
 	}
 
 	/** Counts `work` as outstanding while it runs. */
@@ -395,8 +476,15 @@ class RunnerProcess implements SandboxProcess {
 		private readonly link: RunnerLink,
 		readonly args: Args<"start">,
 		onOutput: (fd: 1 | 2, data: string) => void,
+		/** A process the runner already runs (`RunnerLink.adopt`). */
+		adopted?: { id: string; ended: Promise<ProcessEnd> },
 	) {
+		if (adopted) this.id = adopted.id;
 		const ran = link.busy(async () => {
+			if (adopted) {
+				await link.reconnect(adopted.ended).catch(() => undefined);
+				return await adopted.ended;
+			}
 			await link.ready();
 			const { id, ended } = link.channel.start(args, onOutput);
 			this.id = id;
@@ -415,6 +503,11 @@ class RunnerProcess implements SandboxProcess {
 
 	get tag(): string {
 		return this.args.tag;
+	}
+
+	/** Once the runner has it, on a durable link: what a turn checkpoint names (`SandboxProcess.runnerProcess`). */
+	get runnerProcess(): string | null {
+		return this.link.durable && this.id !== null && !this.hasEnded && this.link.channel.running(this.id) ? this.id : null;
 	}
 
 	write(text: string): boolean {
@@ -448,33 +541,57 @@ class RunnerProcess implements SandboxProcess {
 
 class RunnerHandle implements TurnSandbox {
 	readonly approval: "auto" | "full";
+	readonly profile: SandboxProfileId;
+	readonly cwd: string;
+	readonly runnerScreenshots: boolean;
+	readonly snapshot?: SnapshotSource;
+	readonly ownData: boolean;
+	readonly runnerStart?: RunnerStartTimes;
+	readonly readyKey?: string;
+	readonly readySetup?: TurnSandbox["readySetup"];
+	readonly image?: string;
+	readonly memoryEvents?: TurnSandbox["memoryEvents"];
 
-	constructor(
-		private readonly link: RunnerLink,
-		readonly id: string,
-		readonly profile: SandboxProfileId,
-		readonly cwd: string,
-		readonly runnerScreenshots: boolean,
-		readonly snapshot?: SnapshotSource,
-		/** As the runner's connect said (`SandboxHandle.ownData`): false from a runner that does not say. */
-		readonly ownData = false,
-		/** The runner's connect said `modelRelay` (docs/model-relay.md): false from a runner 0.3.x, whose turns get the token in the sandbox. */
-		relay = false,
-		/** What the runner said of making it (`SandboxHandle.runnerStart`), on the first connect after its create. */
-		readonly runnerStart?: RunnerStartTimes,
-	) {
-		this.approval = findProfile(profile).approval;
+	constructor(private readonly link: RunnerLink, readonly id: string, found: NonNullable<Value<"connect">>) {
+		this.profile = found.profile;
+		this.cwd = found.cwd;
+		this.runnerScreenshots = found.screenshots === true;
+		this.snapshot = found.snapshot;
+		this.ownData = found.ownData === true;
+		this.runnerStart = found.startTimes;
+		this.readyKey = found.readyKey;
+		this.readySetup = found.readySetup;
+		this.image = found.image;
+		this.approval = findProfile(found.profile).approval;
 		markTurnSandbox(this);
-		if (relay) this.modelRelay = () => this.openRelay();
+		if (found.memoryEvents) this.memoryEvents = () => link.request("memoryEvents", { id }, { signal: AbortSignal.timeout(5_000) });
+		if (found.blockedNetwork) this.blockedNetwork = (turn, retained) => link.request("blockedNetwork", { id, turn, retained }, { signal: AbortSignal.timeout(5_000) });
+		if (found.modelRelay && config.modelRelay.on) {
+			this.modelRelay = () => this.openRelay();
+			if (link.durable) this.resumeRelay = (lease) => this.relayOf(lease);
+		}
+		if (link.durable) this.adopt = (process, tag, { onStdout, onStderr }) => link.adopt(process, { id, tag, argv: [] }, (fd, data) => (fd === 1 ? onStdout : onStderr)?.(data));
 	}
 
 	/** `TurnSandbox.modelRelay`, on a runner that offers it. */
+	readonly blockedNetwork?: TurnSandbox["blockedNetwork"];
 	readonly modelRelay?: () => Promise<TurnModelRelay>;
 
 	/** Not repeated: a lease lost with its conversation was ended by the runner (its `orphan`), and the turn fails. */
 	private async openRelay(): Promise<TurnModelRelay> {
 		const { lease, placeholder, env } = await this.link.request("modelRelay", { id: this.id });
+		return this.relayOf({ lease, placeholder, env });
+	}
+
+	/** `TurnSandbox.resumeRelay`: the runner kept the lease with the conversation; the restarted turn hands it a token again at once. */
+	readonly resumeRelay?: TurnSandbox["resumeRelay"];
+
+	/** `TurnSandbox.adopt`, on a durable link. */
+	readonly adopt?: TurnSandbox["adopt"];
+
+	private relayOf({ lease, placeholder, env }: { lease: string; placeholder: string; env: Record<string, string> }): TurnModelRelay {
 		return {
+			lease,
 			placeholder,
 			env,
 			hand: async (token) => {
@@ -603,13 +720,14 @@ class RunnerSandboxes implements Sandboxes {
 		// Request the screenshots image only when this runner offers it.
 		const agent = input.harness ? machineHarness(input.harness) : null;
 		if (agent && !agent.profiles.includes(input.profile)) throw new SandboxUserError(`${agent.name} requires the ${agent.profiles.join(" or ")} profile.`);
-		const report = input.profile === "docker-windlass-sandbox" || input.mirrorRepo || input.harness || input.screenshots || (input.size ?? 1) > 1 ? (await link.facts()).report : null;
+		const report = input.profile === "docker-windlass-sandbox" || input.spareRecipe || input.mirrorRepo || input.harness || input.screenshots || (input.size ?? 1) > 1 ? (await link.facts()).report : null;
 		if ((input.size ?? 1) > 1 && !report?.slots) throw new SandboxUserError("This runner does not support sizing beyond one slot.");
 		if (report?.allowedProfiles && !report.allowedProfiles.includes(input.profile)) throw new SandboxUserError(PROFILE_DENIED);
 		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
 			throw new SandboxUserError(`This machine's runner does not offer ${harnessName(input.harness)}. Update it and start it with --harness ${input.harness}.`);
 		const screenshots = !!(input.screenshots && !input.harness && report?.screenshots);
-		const args = { profile: input.profile, ...(report?.gitMirrors && input.mirrorRepo && { mirrorRepo: input.mirrorRepo }), ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
+		const spare = report?.warmSpares && input.spareRecipe ? await input.spareRecipe(report.warmSpares.ready).catch(() => undefined) : undefined;
+		const args = { profile: input.profile, ...(spare && { spare }), ...(report?.gitMirrors && input.mirrorRepo && { mirrorRepo: input.mirrorRepo }), ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
 		if (input.fromSnapshot && !input.harness && config.machines?.identity) {
 			await link.ready();
 			if (link.channel.authenticated) {
@@ -637,7 +755,7 @@ class RunnerSandboxes implements Sandboxes {
 	async connect(id: string): Promise<TurnSandbox | undefined> {
 		const { link } = this;
 		const found = await link.again("connect", { id });
-		return found ? new RunnerHandle(link, id, found.profile, found.cwd, found.screenshots === true, found.snapshot, found.ownData === true, found.modelRelay === true && config.modelRelay.on, found.startTimes) : undefined;
+		return found ? new RunnerHandle(link, id, found) : undefined;
 	}
 
 	/** On a machine that cannot be reached, what its last report said. */

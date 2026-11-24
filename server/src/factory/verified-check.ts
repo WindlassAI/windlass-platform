@@ -1,4 +1,4 @@
-import type { CheckConclusion, ItemAgent, ItemBudget, Verdict } from "../contract.js";
+import type { CheckConclusion, ItemAgent, ItemBudget, ItemSpend, Verdict } from "../contract.js";
 import { tokenWords } from "./budget.js";
 import { spellSeconds } from "../usage.js";
 import { flagWords } from "../verified.js";
@@ -37,7 +37,7 @@ export function evidenceLine(itemUrl: string): string {
 }
 
 /** The public output accepts only platform observations. Never interpolate a filing, diagnostic or acceptance criterion. */
-export function checkSummary(v: Verdict, review: CheckReview | null, spent: ItemBudget, budget: ItemBudget, itemUrl: string, agent?: ItemAgent, unfinished = false): string {
+export function checkSummary(v: Verdict, review: CheckReview | null, spent: ItemSpend, budget: ItemBudget, itemUrl: string, agent?: ItemAgent, unfinished = false): string {
 	const sha = commentText(v.head.slice(0, 7), 7);
 	// Name the agent that built the commit: "Claude Code at abc1234", not the platform's own name.
 	const head = `${harnessName(agent?.harness ?? "windlass")} at ${v.moved ? commentText(v.moved.slice(0, 7), 7) : sha}: ${checkTitle(v, review, unfinished)}.`;
@@ -64,7 +64,7 @@ export function checkSummary(v: Verdict, review: CheckReview | null, spent: Item
 		review ? `Second review: ${words[review.recommendation]}, ${review.blocking} blocking finding${review.blocking === 1 ? "" : "s"}.`
 			: unfinished ? "No second review finished for this commit; the last one filed did not approve." : "No second review was filed for this commit.",
 		`${n} acceptance ${n === 1 ? "criterion is" : "criteria are"} left to you.`,
-		`Spent: ${tokenWords(spent, budget, agent)}, ${spent.turns} of ${budget.turns} turns, ${spellSeconds(spent.activeSeconds)} of ${spellSeconds(budget.activeSeconds)} working time.`,
+		`Spent: ${tokenWords(spent, budget, agent)}, ${spent.turns} ${spent.turns === 1 ? "turn" : "turns"}, ${spellSeconds(spent.activeSeconds)} working time.`,
 		evidenceLine(itemUrl),
 	].join("\n\n");
 	// Shorten names and paths before dropping a row. Reserve the headline, totals and evidence link.

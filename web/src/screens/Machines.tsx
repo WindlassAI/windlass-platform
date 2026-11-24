@@ -22,13 +22,15 @@ import { Dialog } from "../components/Dialog";
 import { ArrowLeftIcon, CheckIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, PencilIcon, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
 import { RowsSkeleton } from "../components/Skeleton";
 import { SandboxState } from "../components/Status";
-import { HARNESS_NAMES, loginCommand, type ReportedHarness } from "../lib/acp";
+import { HARNESS_NAMES, loginCommand, signInWords, type ReportedHarness } from "../lib/acp";
 import { absoluteTime, plural, relativeTime, spelledDuration } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
 import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, tagsOf } from "../lib/machines";
 import { ORCHESTRATOR_CHOICES, orchestratorNote, orchestratorOf, type Orchestrator } from "../lib/placement";
+import { Check } from "../components/ui/Check";
+import { AgentGlyph } from "../components/ui/Pill";
 
 /** What the top bar shows on this page: the way back and where one is. */
 export function MachinesCrumb() {
@@ -49,7 +51,7 @@ export function MachinesCrumb() {
 }
 
 /** The command that starts the runner on a machine, as `MachinesInfo` describes it; null while no runner image is published. */
-function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode?: boolean; codex?: boolean } = {}, setup?: { importKeys: boolean }): string | null {
+function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode?: boolean; codex?: boolean; windlassSandbox?: boolean } = {}, setup?: { importKeys: boolean }): string | null {
 	if (info.runnerImage === null) return null;
 	return [
 		(setup ? "docker run -it --rm" + (agents.codex ? " --log-driver none" : "") : "docker run -d --name windlass-runner --restart unless-stopped") + " \\",
@@ -57,8 +59,13 @@ function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode
 		"  -v /var/run/docker.sock:/var/run/docker.sock \\",
 		"  -v windlass-runner:/var/lib/windlass-runner \\",
 		...(agents.openCode && setup?.importKeys ? ['  --mount "type=bind,src=$HOME/.local/share/opencode,dst=/import/opencode,readonly" \\'] : []),
-		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}${agents.codex ? " --harness codex" : ""}`,
+		`  ${info.runnerImage}${setup ? " setup" : ""} --platform ${info.platformUrl}${agents.claude ? " --harness claude" : ""}${agents.openCode ? " --harness opencode" : ""}${agents.codex ? " --harness codex" : ""}${agents.windlassSandbox ? " --allow-profile docker-windlass-sandbox" : " --allow-profile docker-hardened"}`,
 	].join("\n");
+}
+
+/** The one-line install the platform serves (server/src/install-script.ts); null while no runner image is published. */
+export function oneLineInstall(info: MachinesInfo): string | null {
+	return info.runnerImage === null ? null : `curl -fsSL ${info.platformUrl}/install.sh | sh`;
 }
 
 /** A time of day, with the day when it is not today: "14:02", "17 Nov, 14:02". */
@@ -76,7 +83,7 @@ function diskSize(bytes: number): string {
 }
 
 /** The snapshot and Git mirror limits in force on a machine (`MachineSummary.storeLimits`). */
-function storeLimits(limits: NonNullable<MachineSummary["storeLimits"]>): string {
+export function storeLimits(limits: NonNullable<MachineSummary["storeLimits"]>): string {
 	return `${diskSize(limits.machine)} in all, ${diskSize(limits.user)} per user, keeps ${limits.free === 0 ? "no disk" : diskSize(limits.free)} free`;
 }
 
@@ -244,18 +251,14 @@ function SecretsSwitch({ machine, onChanged }: { machine: MachineSummary; onChan
 	};
 	return (
 		<div>
-			<label className={`check${machine.sendSecrets ? " check-on" : ""}`}>
-				<input className="check-input" type="checkbox" checked={machine.sendSecrets} disabled={busy} onChange={(event) => set(event.target.checked)} />
-				<span className="check-box" aria-hidden="true" />
-				<span className="check-text">
-					<span className="check-name">Send saved secrets to this machine</span>
-					<span className="check-means">
-						{machine.sendSecrets
-							? "Each turn of an agent here gets the saved secrets it is allowed, the repository's and the account's. Turned off, none are sent, and what needs one fails on this machine."
-							: "No saved secret is sent here, so what needs one fails on this machine. Turned on, each agent gets them from its next turn."}
-					</span>
+			<Check checked={machine.sendSecrets} disabled={busy} onChange={(on) => set(on)}>
+				<span className="check-name">Send saved secrets to this machine</span>
+				<span className="check-means">
+					{machine.sendSecrets
+						? "Each turn of an agent here gets the saved secrets it is allowed, the repository's and the account's. Turned off, none are sent, and what needs one fails on this machine."
+						: "No saved secret is sent here, so what needs one fails on this machine. Turned on, each agent gets them from its next turn."}
 				</span>
-			</label>
+			</Check>
 			{error ? (
 				<p className="field-note tone-bad" role="alert">
 					{error}
@@ -317,7 +320,7 @@ function PlacementPolicy({ machine, onChanged }: { machine: MachineSummary; onCh
 
 /** An agent's sandbox on a machine: the agent, whether the sandbox runs, and when it was last used. */
 /** How many sandboxes the machine's runner may run and keep, as its owner started it: "no limit" unless a cap is set. */
-function sandboxLimit(machine: MachineSummary): string {
+export function sandboxLimit(machine: MachineSummary): string {
 	const caps = [machine.maxRunning === undefined ? null : `at most ${machine.maxRunning} running at once`, machine.maxSandboxes === undefined ? null : `at most ${machine.maxSandboxes} kept`].filter((cap) => cap !== null);
 	return caps.length === 0 ? "no limit" : caps.join(", ");
 }
@@ -369,20 +372,30 @@ function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
 				const command = loginCommand(harness);
 				return (
 					<li key={harness.id} className={`machine-agent machine-agent-${harness.signIn}`}>
-						<span className="machine-agent-name">{HARNESS_NAMES[harness.id]}</span>
+						<span className="machine-agent-name">
+							<AgentGlyph harness={harness.id} size={11} inline />
+							{HARNESS_NAMES[harness.id]}
+						</span>
 						{harness.signIn === "token" ? (
 							<span className="machine-agent-state">
 								{" "}
 								<CheckIcon size={13} />
 								signed in{harness.id === "codex" && harness.method ? ` with ${harness.method === "chatgpt" ? "ChatGPT" : "an API key"}` : ""}
 							</span>
+						) : harness.signIn === "none" ? (
+							<span className="machine-agent-state">: {signInWords(harness)}</span>
 						) : (
-							<span className="machine-agent-state">: {harness.signIn === "none" ? "sign in needed" : "sign-in not reported"}</span>
+							// Unknown is the runner's check failing, not a sign-in to redo: its reason, where it gave one, and no login prompt.
+							<span className="machine-agent-state" title={harness.signInReason}>
+								: {signInWords(harness)}{harness.signInReason ? ` (${harness.signInReason})` : ""}
+							</span>
 						)}
-						<span className="machine-agent-command">
-							<code>{command}</code>
-							<CopyButton text={command} label={`Copy the command that signs ${HARNESS_NAMES[harness.id]} in`} />
-						</span>
+						{harness.signIn === "unknown" ? null : (
+							<span className="machine-agent-command">
+								<code>{command}</code>
+								<CopyButton text={command} label={`Copy the command that signs ${HARNESS_NAMES[harness.id]} in`} />
+							</span>
+						)}
 					</li>
 				);
 			})}
@@ -643,14 +656,17 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	const [codex, setCodex] = useState(false);
 	const [openCode, setOpenCode] = useState(false);
 	const [importKeys, setImportKeys] = useState(false);
+	// Windlass's command sandbox, the second wall around each command (`docker-windlass-sandbox`): on unless the person turns it off.
+	const [windlassSandbox, setWindlassSandbox] = useState(true);
 	/** The person says the runner's terminal shows the same machine key (or, for a runner that prints none, that they started it). */
 	const [keyMatches, setKeyMatches] = useState(false);
 	const offersCodex = info.runnerHarnesses?.includes("codex") === true;
 	const offersOpenCode = info.runnerHarnesses?.includes("opencode") === true;
 	const offersClaude = info.runnerHarnesses?.includes("claude") ?? true;
-	const agents = { codex: offersCodex && codex, claude: offersClaude && claude, openCode: offersOpenCode && openCode };
+	const agents = { codex: offersCodex && codex, claude: offersClaude && claude, openCode: offersOpenCode && openCode, windlassSandbox };
 	const setup = installCommand(info, agents, { importKeys });
 	const install = installCommand(info, agents);
+	const oneLine = oneLineInstall(info);
 	const complete = code.replace(/-/g, "").length === 8;
 
 	const shown = useRef(step.step);
@@ -725,23 +741,19 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 					<div className="machine-key">
 						<p className="eyebrow">Machine key</p>
 						<p className="machine-key-value">{claim.keyFingerprint ?? <span className="tone-faint">not known</span>}</p>
-						<label className={`check${keyMatches ? " check-on" : ""}`}>
-							<input className="check-input" type="checkbox" checked={keyMatches} disabled={busy} onChange={(event) => setKeyMatches(event.target.checked)} ref={aim} />
-							<span className="check-box" aria-hidden="true" />
-							<span className="check-text">
-								{claim.keyPrinted ? (
-									<>
-										<span className="check-name">The runner's terminal shows the same machine key</span>
-										<span className="check-means">The runner prints it under the code. If it shows another key, or someone gave you this code, press Back: connecting would send your agents' work to their machine.</span>
-									</>
-								) : (
-									<>
-										<span className="check-name">I started this runner myself, in the last few minutes</span>
-										<span className="check-means">Runner {claim.runnerVersion} does not print its machine key, so it cannot be compared. A newer runner prints it under the code. If someone gave you this code, press Back: connecting would send your agents' work to their machine.</span>
-									</>
-								)}
-							</span>
-						</label>
+						<Check checked={keyMatches} disabled={busy} onChange={(on) => setKeyMatches(on)} inputRef={aim}>
+							{claim.keyPrinted ? (
+								<>
+									<span className="check-name">The runner's terminal shows the same machine key</span>
+									<span className="check-means">The runner prints it under the code. If it shows another key, or someone gave you this code, press Back: connecting would send your agents' work to their machine.</span>
+								</>
+							) : (
+								<>
+									<span className="check-name">I started this runner myself, in the last few minutes</span>
+									<span className="check-means">Runner {claim.runnerVersion} does not print its machine key, so it cannot be compared. A newer runner prints it under the code. If someone gave you this code, press Back: connecting would send your agents' work to their machine.</span>
+								</>
+							)}
+						</Check>
 					</div>
 					<div>
 						<p className="eyebrow">What the machine says about itself</p>
@@ -825,7 +837,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	return (
 		<Dialog
 			title="Add a machine"
-			lede="Run this in a terminal on a Linux machine with Docker. The runner connects out to the platform; nothing needs to reach your machine from outside."
+			lede="Run this in a terminal on a machine with Docker: Linux, a Mac with Docker Desktop or OrbStack, or Windows with Docker Desktop, in a WSL terminal. The runner connects out to the platform; nothing needs to reach your machine from outside."
 			onClose={onClose}
 			footer={
 				<>
@@ -839,26 +851,12 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 			}
 		>
 			<div className="machine-dialog">
-				{setup ? (
+				{oneLine ? (
 					<div>
-						<p className="machine-step">Set it up</p>
-						<div className="machine-setup-agents">
-							{offersClaude && <label><input type="checkbox" checked={claude} onChange={event => setClaude(event.target.checked)} /> Enable Claude Code</label>}
-							{offersCodex && <label><input type="checkbox" checked={codex} onChange={e => setCodex(e.target.checked)} /> Enable Codex</label>}
-							{offersOpenCode && <label><input type="checkbox" checked={openCode} onChange={event => setOpenCode(event.target.checked)} /> Enable OpenCode</label>}
-							{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
-							{agents.openCode && <label><input type="checkbox" checked={importKeys} onChange={event => setImportKeys(event.target.checked)} /> Import existing OpenCode API keys during setup</label>}
-						</div>
-						<Command text={setup} label="The setup command" />
-						<p className="field-note">It pairs the machine and signs its agents in, asking in the terminal as it goes. Sign an agent in or out later with <code>windlass-runner login</code> or <code>logout</code> and the agent's name.</p>
-					</div>
-				) : null}
-				{install ? (
-					<div>
-						<p className="machine-step">Or start the runner in the background</p>
-						<Command text={install} label="The install command" />
+						<p className="machine-step">Install</p>
+						<Command text={oneLine} label="The install command" />
 						<p className="field-note">
-							Where rootless Docker works, use it: the runner then gets less of your machine. Mount <code>$XDG_RUNTIME_DIR/docker.sock</code> in place of <code>/var/run/docker.sock</code>.
+							It checks Docker (Docker Desktop, OrbStack or Docker Engine), fetches the runner and opens its setup in your terminal. Setup pairs the machine, asks its name, signs its agents in, asks whether to allow Windlass's command sandbox (recommended, and on by default), its network and its limits, then starts the runner in the background. Nothing else is installed. <a href={`${info.platformUrl}/install.sh`} target="_blank" rel="noreferrer">Read the script</a>.
 						</p>
 					</div>
 				) : (
@@ -867,6 +865,43 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						<span>The runner is not published yet, so there is nothing to install from here. Once it is, its command is shown here.</span>
 					</p>
 				)}
+				{oneLine && setup && install ? (
+					<details className="panel-more machine-other-ways">
+						<summary>
+							<ChevronIcon size={12} className="panel-more-chevron" />
+							Other ways
+						</summary>
+						<div className="machine-other-ways-body">
+							<div>
+								<p className="machine-step">Set it up with Docker</p>
+								<div className="machine-setup-agents">
+									{offersClaude && <Check checked={claude} onChange={setClaude} label="Enable Claude Code" />}
+									{offersCodex && <Check checked={codex} onChange={setCodex} label="Enable Codex" />}
+									{offersOpenCode && <Check checked={openCode} onChange={setOpenCode} label="Enable OpenCode" />}
+									{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
+									{agents.openCode && <Check checked={importKeys} onChange={setImportKeys} label="Import existing OpenCode API keys during setup" />}
+									<Check checked={windlassSandbox} onChange={setWindlassSandbox} label="Allow Windlass's command sandbox (recommended for Windlass and Codex)" />
+									<p>
+										{windlassSandbox ? (
+											<>Adds <code>--allow-profile docker-windlass-sandbox</code> to both commands: sessions may also run each command in a sandbox without network. Their container is loosened so that the sandbox can run inside it.</>
+										) : (
+											<>Adds <code>--allow-profile docker-hardened</code> to both commands: sessions run only on hardened Docker, and setup starts with the sandbox turned off.</>
+										)}
+									</p>
+								</div>
+								<Command text={setup} label="The setup command" />
+								<p className="field-note">It pairs the machine and signs its agents in, asking in the terminal as it goes, then prints the command that starts the runner. With no agent ticked it is the same setup as the install. Sign an agent in or out later with <code>windlass-runner login</code> or <code>logout</code> and the agent's name. Under Docker Desktop the machine is named <code>docker-desktop</code> unless you add <code>--name</code> and a name of your own.</p>
+							</div>
+							<div>
+								<p className="machine-step">Or start the runner in the background</p>
+								<Command text={install} label="The background command" />
+								<p className="field-note">
+									Where rootless Docker works, use it: the runner then gets less of your machine. Mount <code>$XDG_RUNTIME_DIR/docker.sock</code> in place of <code>/var/run/docker.sock</code>.
+								</p>
+							</div>
+						</div>
+					</details>
+				) : null}
 				<p>The runner prints a code to pair the machine with: the next step asks for it.</p>
 			</div>
 		</Dialog>
@@ -917,14 +952,10 @@ function RemoveDialog({ machine, onClose, onRemoved }: { machine: MachineSummary
 					: `${agents === 1 ? "The agent on it keeps its conversation" : `The ${agents} agents on it keep their conversations`} here but cannot run again; ${agents === 1 ? "its" : "their"} files stay on the machine unless you also remove its sandboxes.`}
 			</p>
 			{agents > 0 || machine.sandboxes.length > 0 ? (
-				<label className={`check machine-remove-check${sandboxes ? " check-on" : ""}`}>
-					<input className="check-input" type="checkbox" checked={sandboxes} disabled={busy} onChange={(event) => setSandboxes(event.target.checked)} />
-					<span className="check-box" aria-hidden="true" />
-					<span className="check-text">
-						<span className="check-name">Also remove the agents' sandboxes on it</span>
-						<span className="check-means">{machine.status === "online" ? "Its runner removes them now." : "Its runner removes them when it is next online."}</span>
-					</span>
-				</label>
+				<Check className="machine-remove-check" checked={sandboxes} disabled={busy} onChange={(on) => setSandboxes(on)}>
+					<span className="check-name">Also remove the agents' sandboxes on it</span>
+					<span className="check-means">{machine.status === "online" ? "Its runner removes them now." : "Its runner removes them when it is next online."}</span>
+				</Check>
 			) : null}
 			{error ? (
 				<p className="callout callout-bad" role="alert">
@@ -936,6 +967,24 @@ function RemoveDialog({ machine, onClose, onRemoved }: { machine: MachineSummary
 	);
 }
 
+/** How many machines the account may pair: its plan's where the deployment has billing, MAX_MACHINES otherwise. */
+function useMachineLimit(): number {
+	const { platform } = useApp();
+	const [limit, setLimit] = useState(MAX_MACHINES);
+	const { client } = useApp();
+	const auth = useAuth();
+	const billed = Boolean(platform.info?.billing);
+	useEffect(() => {
+		if (!billed) return;
+		let current = true;
+		client.user(auth).billing().then((view) => {
+			if (current && view.enabled) setLimit(view.plans.find((plan) => plan.id === view.plan)?.machines ?? MAX_MACHINES);
+		}, () => undefined);
+		return () => { current = false; };
+	}, [billed, client, auth]);
+	return limit;
+}
+
 export function Machines({ adding }: { adding: boolean }) {
 	const { platform } = useApp();
 	const machines = useMachines();
@@ -943,7 +992,8 @@ export function Machines({ adding }: { adding: boolean }) {
 	const [removing, setRemoving] = useState<MachineSummary | null>(null);
 	const info = platform.info?.machines ?? null;
 	const { list } = machines;
-	const full = list !== null && list.length >= MAX_MACHINES;
+	const maxMachines = useMachineLimit();
+	const full = list !== null && list.length >= maxMachines;
 	const add = () => navigate({ name: "machines", add: true });
 	const closeAdd = () => navigate({ name: "machines" }, { replace: true });
 	// The address a runner prints opens the dialog once what it needs is known; an account that cannot add another goes to its list.
@@ -958,14 +1008,14 @@ export function Machines({ adding }: { adding: boolean }) {
 				<div className="repo-head">
 					<p className="eyebrow">account</p>
 					<h1 className="display display-small">Machines</h1>
-					<p className="home-account">Run agents on your own Linux machine with Docker. The runner on it connects out to the platform; nothing needs to reach your machine from outside.</p>
+					<p className="home-account">Run agents on your own computer with Docker: a Mac, a Linux machine, or Windows with WSL. The runner on it connects out to the platform; nothing needs to reach your machine from outside.</p>
 				</div>
 				<div className="machines-add">
 					<button type="button" className="button button-outline" onClick={add} disabled={info === null || full}>
 						<PlusIcon />
 						Add a machine
 					</button>
-					{full ? <p className="field-note">An account can connect up to {MAX_MACHINES} machines.</p> : null}
+					{full ? <p className="field-note">Your account can connect up to {maxMachines} machines.{maxMachines < 10 && platform.info?.billing ? " Pro connects up to 10." : ""}</p> : null}
 				</div>
 			</header>
 
@@ -1003,7 +1053,7 @@ export function Machines({ adding }: { adding: boolean }) {
 					<section className="usage-section" aria-labelledby="machines-list">
 						<h2 className="usage-title" id="machines-list">
 							Your machines
-							{list.length > 0 ? <span className="usage-count">{`${list.length} of ${MAX_MACHINES}`}</span> : null}
+							{list.length > 0 ? <span className="usage-count">{`${list.length} of ${maxMachines}`}</span> : null}
 						</h2>
 						{list.length === 0 ? (
 							<div className="state state-empty">

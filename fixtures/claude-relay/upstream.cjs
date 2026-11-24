@@ -23,6 +23,12 @@ https.createServer({ key: fs.readFileSync('/fixture/key.pem'), cert: fs.readFile
 	}
 	const request = JSON.parse(body);
 	const {model} = request;
+	if (request.messages?.some(message => Array.isArray(message.content) && message.content.some(block => block.type === 'text' && block.text === 'Hello'))) {
+		const input = JSON.stringify({ system: request.system, messages: request.messages, tools: request.tools });
+		const extras = request.tools?.some(tool => ['Workflow', 'ReportFindings', 'ScheduleWakeup'].includes(tool.name));
+		console.log('first-turn input bytes=' + Buffer.byteLength(input), 'instructions=' + input.includes('plum-quartz'),
+			'language=' + input.includes('Icelandic'), 'repoCommand=' + input.includes('repo-fixture'), 'extras=' + extras);
+	}
 	// A prompt that asks for the platform's tools, offered over MCP: a call of report, then of ask_person, then a closing text.
 	if (body.includes('Platform tool check.') && (request.tools ?? []).some(tool => tool.name === 'mcp__windlass_platform__report')) {
 		const results = (request.messages ?? []).flatMap(m => Array.isArray(m.content) ? m.content : []).filter(block => block.type === 'tool_result');

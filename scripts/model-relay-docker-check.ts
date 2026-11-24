@@ -61,6 +61,7 @@ http.createServer((req, res) => {
 	req.on("end", () => {
 		if (req.url === "/__seen") { res.writeHead(200, { "content-type": "application/json" }); return res.end(JSON.stringify(seen)); }
 		seen.push({ method: req.method, url: req.url, authorization: req.headers.authorization ?? null, cookie: req.headers.cookie ?? null });
+		if (body.includes("private-relay-check")) { res.writeHead(403); return res.end("refused"); }
 		if (req.url === "/v1/models") {
 			res.writeHead(200, { "content-type": "application/json" });
 			return res.end(JSON.stringify({ models: [{ slug: "relay-model", display_name: "Relay model", visibility: "list" }] }));
@@ -100,8 +101,20 @@ Promise.all(Array.from({ length: Number(count || 1) }, (_, i) => new Promise((ok
 const LOAD = `
 const [bearer, count, pad, kb] = process.argv.slice(1);
 const body = JSON.stringify({ stream: Number(kb), pad: "p".repeat(Number(pad)) });
-const one = () => fetch("http://127.0.0.1:17893/v1/responses", { method: "POST", body, headers: { authorization: "Bearer " + bearer, "content-type": "application/json" } })
-	.then(async (r) => { let bytes = 0, tail = ""; for await (const c of r.body) { bytes += c.length; tail = (tail + Buffer.from(c).toString("latin1")).slice(-400); } return { status: r.status, bytes, done: tail.includes("response.completed") }; }, (e) => ({ status: 0, bytes: 0, done: false, error: String(e.cause?.code ?? e) }));
+async function one() {
+	let status = 0, bytes = 0, tail = "";
+	try {
+		const r = await fetch("http://127.0.0.1:17893/v1/responses", { method: "POST", body, headers: { authorization: "Bearer " + bearer, "content-type": "application/json" } });
+		status = r.status;
+		for await (const chunk of r.body) {
+			bytes += chunk.length;
+			tail = (tail + Buffer.from(chunk).toString("latin1")).slice(-400);
+		}
+		return { status, bytes, done: tail.includes("response.completed") };
+	} catch (e) {
+		return { status, bytes, done: false, error: String(e.cause?.code ?? e) };
+	}
+}
 Promise.all(Array.from({ length: Number(count) }, one)).then((r) => console.log(JSON.stringify(r)));`;
 
 async function seen(): Promise<{ method: string; url: string; authorization: string | null; cookie: string | null }[]> {
@@ -129,7 +142,7 @@ try {
 	cleanup.push(() => docker(["volume", "rm", "-f", `wlp-user-${uid}`]));
 	const make = async (session: string) => {
 		const id = await layer.sandboxes.create({ uid, sessionId: session, profile: "docker-hardened" });
-		cleanup.unshift(() => layer.sandboxes.destroy(id));
+		cleanup.push(() => layer.sandboxes.destroy(id));
 		const box = (await layer.sandboxes.connect(id)) as DockerSandboxHandle | undefined;
 		if (!box) throw new Error("the sandbox could not be connected");
 		return box;
@@ -204,10 +217,16 @@ try {
 	expect("the relay's caps hold: past them a request waits, then is refused with the session's ceiling named",
 		statuses.filter((s) => s === 200).length === 2 && statuses.filter((s) => s === 503).length === 3 && capped.some((r) => /from this session/.test(r.text)), JSON.stringify(capped));
 
-	// 4d. The relay itself: no logs, no token on its command line or in its environment.
+	// 4d. Inspect a diagnostic from the scoped relay through Docker's actual log driver.
+	await request(a, placeholderA, "/v1/responses", '{"input":"private-relay-check"}');
 	const inspected = await docker(["inspect", relayName], { timeoutMs: 20_000 });
+	const config = JSON.parse(inspected.stdout)[0].HostConfig.LogConfig;
 	const logs = await docker(["logs", relayName], { timeoutMs: 20_000 });
-	expect("the relay keeps no logs, and its configuration holds no token", !inspected.stdout.includes(REAL_A) && !inspected.stdout.includes(REAL_B) && /logging driver|configured logging driver does not support/i.test(logs.stderr + logs.stdout), logs.stderr);
+	const output = logs.stdout + logs.stderr;
+	expect("the scoped relay rotates two 4 MiB Docker logs", config.Type === "json-file" && config.Config["max-size"] === "4m" && config.Config["max-file"] === "2");
+	expect("docker logs includes the refused request's status", logs.code === 0 && output.includes("upstream=403"));
+	expect("relay diagnostics and configuration omit the request body and credentials",
+		[REAL_A, REAL_B, REAL_C, placeholderA, placeholderB, "private-relay-check"].every(value => !output.includes(value) && !inspected.stdout.includes(value)));
 
 	// 4e. After the turn.
 	await fileA.stop();
@@ -280,9 +299,9 @@ try {
 	const load = new DockerModelRelay({ machine: loadScope, image, network, upstream: `http://${upstreamName}:8080`, requests: 64,
 		limits: { sessionRequests: 64, sessionConnections: 80, sessionWaiting: 64, waitMs: 60_000 } });
 	cleanup.push(() => docker(["volume", "rm", "-f", `wlp-model-socket-${loadScope}`]));
-	cleanup.unshift(() => docker(["rm", "-f", `wlp-model-relay-${loadScope}`]));
+	cleanup.push(() => docker(["rm", "-f", `wlp-model-relay-${loadScope}`]));
 	const leaseL = await load.open(a.container, a.id, uid);
-	cleanup.unshift(() => leaseL.close());
+	cleanup.push(() => leaseL.close());
 	await leaseL.hand({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 });
 	const loadRelay = `wlp-model-relay-${loadScope}`;
 	const loadStart = Date.now();
@@ -294,14 +313,21 @@ try {
 	const peakMiB = Math.round(Number(peak.stdout.trim()) / 2 ** 20);
 	const limitMiB = Math.round(Number(state.stdout.trim().split("|")[2]) / 2 ** 20);
 	console.log(`      64 streams: ${Date.now() - loadStart} ms, relay memory peak ${peakMiB} MiB of ${limitMiB} MiB (${RELAY_MEMORY})`);
-	expect("64 streams at once with 1 MiB bodies and 2 MiB answers all complete through a relay of the hosted relay's memory, which is not killed",
-		results.length === 64 && results.every((r) => r.status === 200 && r.done && r.bytes > 2 * 1024 * 1024) && state.stdout.trim().startsWith("true|false|") && peakMiB > 0 && peakMiB < limitMiB,
-		JSON.stringify({ statuses: results.map((r) => r.status).join(), short: results.filter((r) => !r.done).length, errors: [...new Set(results.map((r) => r.error).filter(Boolean))], peakMiB, limitMiB, state: state.stdout.trim(), stderr: said?.stderr.slice(0, 500) }));
+	const incomplete = results.filter(r => r.status !== 200 || !r.done || r.bytes <= 2 * 1024 * 1024);
+	const passed = said?.code === 0 && results.length === 64 && incomplete.length === 0 && state.stdout.trim().startsWith("true|false|") && peakMiB > 0 && peakMiB < limitMiB;
+	let details = "";
+	if (!passed) {
+		const forwarder = await docker(["inspect", "--format", "{{.State.Status}} OOMKilled={{.State.OOMKilled}} exit={{.State.ExitCode}}", load.forwarderName(a.id)], { timeoutMs: 20_000 });
+		details = JSON.stringify({ results: results.length, incomplete: incomplete.length, firstFailure: incomplete[0], peakMiB, limitMiB,
+			relay: state.stdout.trim(), forwarder: (forwarder.stdout || forwarder.stderr).trim(), clientExit: said?.code, stderr: said?.stderr.slice(-1000) });
+	}
+	expect("64 streams at once with 1 MiB bodies and 2 MiB answers all complete through a relay of the hosted relay's memory, which is not killed", passed, details);
 } catch (error) {
 	failed += 1;
 	console.log(`FAIL  the check could not run: ${error instanceof Error ? error.stack : String(error)}`);
 } finally {
-	for (const step of cleanup) await step().catch(() => undefined);
+	// Last made, first removed: a container goes before the network and volumes it uses.
+	for (const step of cleanup.reverse()) await step().catch(() => undefined);
 }
 console.log(failed === 0 ? "\nall model relay Docker checks passed" : `\n${failed} model relay Docker check(s) failed`);
 process.exit(failed === 0 ? 0 : 1);

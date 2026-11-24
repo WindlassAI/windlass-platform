@@ -30,6 +30,10 @@ export function workflowReportsPush(source: string, branch: string): boolean {
 
 export async function hasPushCi(app: GithubApp, token: string, owner: string, repo: string, base: string, branches: string[]): Promise<boolean> {
 	const sha = await refHead(app, token, owner, repo, base);
+	return hasPushCiAt(app, token, owner, repo, sha, branches);
+}
+
+export async function hasPushCiAt(app: GithubApp, token: string, owner: string, repo: string, sha: string, branches: string[]): Promise<boolean> {
 	const root = "/repos/" + owner + "/" + repo;
 	const auth = { bearer: token };
 	const missing = new Set(branches);

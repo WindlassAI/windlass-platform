@@ -235,10 +235,9 @@ async function testNode() {
 		},
 	});
 	Object.assign(githubHooks.config.actions!, {
-		checkDailyLimit: (c: Ctx, limit: number, drafts = 20) => {
+		checkDailyLimit: (c: Ctx, limit: number) => {
 			requireServiceFor(c, "call");
 			config.factory.githubItemsPerDay = limit;
-			config.factory.githubDrafts = drafts;
 		},
 		checkPlanning: (c: Ctx, enabled: boolean) => {
 			requireServiceFor(c, "call");
@@ -1402,24 +1401,22 @@ async function run() {
 			await signal("closed", peer); await signal("closed", author);
 			await until("writer's close despite an out-of-order stranger delivery", async () => (await g2User.item(item.id)).state === "cancelled", 25_000);
 		});
-		await check("G3 review limits: yesterday's interrupted filing expires and only an existing draft occupies a draft slot", async () => {
+		await check("G3 the one filing limit: yesterday's interrupted filing and draft are not today's, today's interrupted filing is", async () => {
 			const { person, account } = await newWriter("g3-interrupted");
 			const who = await client.githubAccount.get([String(person.id)], service()).internalWho();
 			const fixture = client.user.get([who!.uid], service()) as unknown as { checkInterruptedFiling(id: string, at: number): Promise<void> };
-			const settings = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkDailyLimit(daily: number, drafts: number): Promise<void> };
+			const settings = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkDailyLimit(daily: number): Promise<void> };
 			const midnight = Math.floor(Date.now() / DAY) * DAY;
 			await fixture.checkInterruptedFiling("i_0000000000000000", midnight - 1);
-			await settings.checkDailyLimit(1, 1);
+			await settings.checkDailyLimit(1);
 			try {
 				const first = make(66, reader); await change(first, "labeled", person);
 				const [draft] = await items(first, account); assert.equal(draft?.state, "draft");
 				await fixture.checkInterruptedFiling(draft.id, midnight - 1);
-				const second = make(67, reader); await change(second, "labeled", person);
-				assert.match(bots(second)[0]?.body ?? "", /are drafts/);
 				await fixture.checkInterruptedFiling("i_0000000000000001", midnight);
-				const third = make(68, reader); await change(third, "labeled", person);
-				assert.match(bots(third)[0]?.body ?? "", /from GitHub today/);
-			} finally { await settings.checkDailyLimit(20, 20); }
+				const second = make(67, reader); await change(second, "labeled", person);
+				assert.match(bots(second)[0]?.body ?? "", /from GitHub today/);
+			} finally { await settings.checkDailyLimit(20); }
 		});
 		await check("G3 two labels and a mention file once; handled IDs survive cancellation and a new generation", async () => {
 			const issue = make(47, reader); standin.issueEvent(issue, "labeled", writer);
@@ -1534,7 +1531,7 @@ async function run() {
 			await fail(); await mention(issue, msg.id, person);
 			assert.equal((await account.item(item.id)).state, "failed"); assert.equal((await items(issue, account)).length, 1);
 		});
-		await check("G3 twenty drafts use the writer's daily budget; the 21st gets one refusal", async () => {
+		await check("G3 twenty drafts use the writer's daily limit; the 21st gets one refusal, and a higher limit takes it", async () => {
 			const quotaUser = standin.addUser("g3-quota"); projectG2.access.set(quotaUser.login, "write");
 			const account = await connectUser(quotaUser.login);
 			for (let n = 100; n < 120; n++) await change(make(n, stranger), "labeled", quotaUser);
@@ -1546,9 +1543,10 @@ async function run() {
 			const settings = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkDailyLimit(n: number): Promise<void> };
 			await settings.checkDailyLimit(21);
 			try {
+				// Drafts are no cap of their own: the one daily limit holds them.
 				const another = make(121, stranger); await change(another, "labeled", quotaUser);
-				assert.match(bots(another)[0].body, /20 of your work items from GitHub are drafts/);
-				assert.equal((await account.user.listItems()).length, 20);
+				assert.ok(!bots(another).some(c => /Not taken/.test(c.body)));
+				assert.equal((await account.user.listItems()).length, 21);
 			} finally { await settings.checkDailyLimit(20); }
 		});
 		await check("unlinked status creates no inbox, installation lifecycle events are admitted", async () => {

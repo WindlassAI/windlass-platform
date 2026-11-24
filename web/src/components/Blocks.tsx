@@ -1,22 +1,25 @@
 /** The pieces of a conversation: one component per kind of block the timeline reducer produces. */
 import type { Verified } from "@contract";
 import { createContext, memo, useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { FOLD_WORDS, FoldToggle, LongText } from "./Fold";
+import { SecretNotice } from "./SecretAsk";
 import { createPortal } from "react-dom";
 import { parseDiff } from "../lib/diff";
-import { linkProps } from "../lib/router";
 import { absoluteTime, count, duration, percent, plural, spelledDuration } from "../lib/format";
 import { codeText, toolCopyLabels, toolInputText, toolOutputText } from "../lib/copy";
 import { reasoningTitle, renderInlineMarkdown, renderMarkdown } from "../lib/markdown";
 import { contextWords, costWords } from "../lib/acp";
-import { asksAbout, toolBlocks, ZERO_USAGE, type Block, type ChecksBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlanBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type SubagentRun, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
+import { asksAbout, shownBlocks, toolBlocks, ZERO_USAGE, type Block, type ChecksBlock, type NetworkBlock, type ErrorBlock, type NoteBlock, type NoticeBlock, type PlanBlock, type PlatformBlock, type ReasoningBlock, type SetupBlock, type SubagentRun, type TextBlock, type ToolBlock, type ToolState, type TurnView, type UserBlock } from "../lib/timeline";
 import { formatInput, parseInput, summarizeTool } from "../lib/toolSummary";
 import { summarizeWork, turnRows, type WorkBlock } from "../lib/workGroups";
 import { checkLine, gateWord, overruledLine, ranEarlier, unneededLine, unresolvedLine, unrunLine } from "../lib/verified";
 import { useNow } from "../state/hooks";
+import { linkProps } from "../lib/router";
 import { CopyButton, useLatest } from "./Copy";
 import { DiffHunks } from "./DiffView";
-import { AskIcon, CheckIcon, ChevronIcon, CrossIcon, DotIcon, InfoIcon, Mark, RefusedIcon, RingIcon, SandboxedIcon, SteerIcon, StopIcon, ThoughtIcon, WarnIcon } from "./Icons";
+import { AskIcon, CheckIcon, ChevronIcon, CrossIcon, DotIcon, InfoIcon, Mark, PauseIcon, RefusedIcon, ResumeIcon, RingIcon, SandboxedIcon, SteerIcon, StopIcon, ThoughtIcon, WarnIcon } from "./Icons";
 import { AnswerLine, AskedLine, InlineQuestion, useInteractive } from "./Question";
+import { AllowHost, BlockedList, blockedHeadline } from "./BlockedNetwork";
 import { OUTCOME_TONE, OUTCOME_WORD, OutcomeGlyph } from "./Status";
 
 // ---------------------------------------------------------------------------------------------
@@ -95,34 +98,32 @@ function CodeCopies({ root, html }: { root: RefObject<HTMLDivElement | null>; ht
  * turn runs.
  */
 /**
- * Set by the conversation of an item's second reviewer: every prompt there is the platform's own (the
- * brief it builds for the review, or its word after an interruption), never a person's, and the first
- * arrives with no text of its own. Each stands as one quiet line, its text folded under it when it has one.
+ * Set by the conversation of an item's session, to the role of its agent: every prompt there is the
+ * platform's own (the factory's brief, a fix it asks for, the reviewer's brief, its word after an
+ * interruption), never a person's; a reviewer's first arrives with no text of its own. Each stands as one
+ * quiet line, the start of its text under it, clamped, with "Show all".
  */
-export const PlatformPrompts = createContext(false);
+export const PlatformPrompts = createContext<"builder" | "reviewer" | null>(null);
 
-/** The line a prompt of the platform's to the second reviewer stands as. `first`: the one that starts its timeline. */
-export const platformPromptLabel = (first: boolean) => (first ? "The platform's brief for this review" : "The platform's word to the reviewer");
+/**
+ * A prompt's model as the rest of the page names it (lib/acp.ts, `sessionModelWords`): another agent's by the
+ * name it gave the model ("6.2 Sol"), Windlass's by its id. Set by the conversation; the id as it is without it.
+ */
+export const ModelLabel = createContext<(id: string) => string>((id) => id);
 
-function PlatformPrompt({ block, first }: { block: UserBlock; first: boolean }) {
-	const [open, setOpen] = useState(false);
-	const shown = useId();
+/** The line a prompt of the platform's stands as, by the role of the agent it is to. `first`: the one that starts its timeline. */
+export const platformPromptLabel = (first: boolean, role: "builder" | "reviewer" = "reviewer") =>
+	role === "builder" ? (first ? "The factory's brief" : "The factory's word to the agent") : first ? "The platform's brief for this review" : "The platform's word to the reviewer";
+
+function PlatformPrompt({ block, first, role }: { block: UserBlock; first: boolean; role: "builder" | "reviewer" }) {
 	const text = block.text.trim();
-	const label = platformPromptLabel(first);
 	return (
 		<div className="user user-platform">
+			<p className="user-platform-line">{platformPromptLabel(first, role)}</p>
 			{text ? (
-				<button type="button" className="link user-platform-line" aria-expanded={open} aria-controls={shown} onClick={() => setOpen((value) => !value)}>
-					<ChevronIcon size={11} className="user-platform-chevron" />
-					{label}
-				</button>
-			) : (
-				<p className="user-platform-line">{label}</p>
-			)}
-			{text ? (
-				<p className="user-text user-platform-text" id={shown} hidden={!open}>
-					{block.text}
-				</p>
+				<LongText lines={2} className="user-text user-platform-text">
+					{text}
+				</LongText>
 			) : null}
 			{block.at !== null ? (
 				<p className="user-meta">
@@ -134,17 +135,19 @@ function PlatformPrompt({ block, first }: { block: UserBlock; first: boolean }) 
 }
 
 function UserPrompt({ block, first = false }: { block: UserBlock; first?: boolean }) {
-	const platform = useContext(PlatformPrompts);
-	if (platform) return <PlatformPrompt block={block} first={first} />;
+	const role = useContext(PlatformPrompts);
+	if (role) return <PlatformPrompt block={block} first={first} role={role} />;
 	return <PersonPrompt block={block} />;
 }
 
 function PersonPrompt({ block }: { block: UserBlock }) {
 	const steer = block.steer;
+	const held = block.held === true;
+	const modelLabel = useContext(ModelLabel);
 	return (
 		<div className={`user${steer ? " user-steer" : ""}`}>
 			<p className="user-text">
-				<span className="visually-hidden">{steer ? "You, while it worked: " : "You: "}</span>
+				<span className="visually-hidden">{held ? "You, while the turn was paused: " : steer ? "You, while it worked: " : "You: "}</span>
 				{block.text}
 			</p>
 			<div className="user-foot">
@@ -152,14 +155,19 @@ function PersonPrompt({ block }: { block: UserBlock }) {
 					<span className="user-who" aria-hidden="true">
 						You
 					</span>
-					{steer ? (
+					{held ? (
+						<span className="user-held-word" title="Sent while the turn was paused: the agent reads it when the turn resumes.">
+							<PauseIcon size={12} />
+							held
+						</span>
+					) : steer ? (
 						<span className="user-steer-word">
 							<SteerIcon size={12} />
 							steer
 						</span>
 					) : (
 						<>
-							<span>{block.model}</span>
+							<span title={modelLabel(block.model) === block.model ? undefined : block.model}>{modelLabel(block.model)}</span>
 							{block.effort ? <span>effort {block.effort}</span> : null}
 						</>
 					)}
@@ -238,20 +246,17 @@ const OUTPUT_LINES = 24;
 /** Monospace output, capped: the first lines of a finished output, or the last lines of one still arriving. */
 export function Output({ text, tail = false, limit = OUTPUT_LINES, label }: { text: string; tail?: boolean; limit?: number; label: string }) {
 	const [all, setAll] = useState(false);
+	const id = useId();
 	const lines = useMemo(() => text.replace(/\n$/, "").split("\n"), [text]);
 	const hidden = Math.max(0, lines.length - limit);
 	const shown = all || hidden === 0 ? lines : tail ? lines.slice(-limit) : lines.slice(0, limit);
 	return (
 		<div className="output">
 			{tail && hidden > 0 && !all ? <p className="output-more output-more-top">{plural(hidden, "earlier line")} above</p> : null}
-			<pre className="output-text" tabIndex={0} aria-label={label}>
+			<pre id={id} className="output-text" tabIndex={0} aria-label={label}>
 				{shown.join("\n")}
 			</pre>
-			{hidden > 0 ? (
-				<button type="button" className="output-more" onClick={() => setAll((value) => !value)}>
-					{all ? "show less" : `show ${plural(hidden, "more line")}`}
-				</button>
-			) : null}
+			{hidden > 0 ? <FoldToggle open={all} controls={id} label={FOLD_WORDS.more(hidden, hidden === 1 ? "more line" : "more lines")} onToggle={() => setAll((value) => !value)} /> : null}
 		</div>
 	);
 }
@@ -786,6 +791,7 @@ function TaintLine({ block }: { block: NoticeBlock }) {
 function Notice({ block }: { block: NoticeBlock }) {
 	if (block.noticeKind === "taint") return <TaintLine block={block} />;
 	const [open, setOpen] = useState(false);
+	const id = useId();
 	const [first = "", ...rest] = block.text.split("\n");
 	const more = rest.join("\n").trim();
 	return (
@@ -793,10 +799,10 @@ function Notice({ block }: { block: NoticeBlock }) {
 			<p className="callout-text">{first}</p>
 			{more !== "" ? (
 				<>
-					{open ? <pre className="callout-more">{more}</pre> : null}
-					<button type="button" className="link" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
-						{open ? "hide the details" : "what would fix it"}
-					</button>
+					<pre className="callout-more" id={id} hidden={!open}>
+						{more}
+					</pre>
+					<FoldToggle open={open} controls={id} label={FOLD_WORDS.all} onToggle={() => setOpen((value) => !value)} />
 				</>
 			) : null}
 		</Callout>
@@ -805,8 +811,9 @@ function Notice({ block }: { block: NoticeBlock }) {
 
 function ErrorLine({ block }: { block: ErrorBlock }) {
 	return (
-		<Callout tone="bad" title={block.title} detail={block.detail}>
+		<Callout tone="bad" title={block.title}>
 			<p className="callout-text">{block.message}</p>
+			{block.detail ? <Output text={block.detail} limit={12} label="The error's details" /> : null}
 		</Callout>
 	);
 }
@@ -828,13 +835,36 @@ function withLinks(text: string): ReactNode {
 
 function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
 	const tone = block.kind === "platform" ? (block.level === "error" ? "bad" : block.level === "warn" ? "warn" : "dim") : block.tone;
+	// The turn paused, or resumed after a pause: a line of its own kind, so the gap in the turn reads as one.
+	if (block.kind === "platform" && block.resume) {
+		return (
+			<p className={`system system-resume system-${block.resume}`}>
+				<span className="system-rule" aria-hidden="true" />
+				<span className="system-resume-mark" aria-hidden="true">
+					{block.resume === "paused" ? <PauseIcon size={12} /> : <ResumeIcon size={12} />}
+				</span>
+				<span className="system-source">{block.resume}</span>
+				<span className="system-text">{block.text}</span>
+			</p>
+		);
+	}
+	// A request for a secret: its notice is shown under the line, apart from the agent's reason, so it is not said twice.
+	const text = block.kind === "platform" && block.secret?.notice ? withoutNotice(block.text, block.secret.notice) : block.text;
 	const line = (
 		<p className={`system tone-${tone}`}>
 			<span className="system-rule" aria-hidden="true" />
 			<span className="system-source">{block.kind === "platform" ? "platform" : "windlass"}</span>
-			<span className="system-text">{block.kind === "platform" ? withLinks(block.text) : block.text}</span>
+			<span className="system-text">{block.kind === "platform" ? withLinks(text) : text}</span>
 		</p>
 	);
+	if (block.kind === "platform" && block.secret) {
+		return (
+			<>
+				{line}
+				<SecretRequested secret={block.secret} />
+			</>
+		);
+	}
 	if (block.kind !== "platform" || !block.blocked) return line;
 	return (
 		<>
@@ -844,50 +874,87 @@ function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
 	);
 }
 
+/** The platform's line of a request for a secret without the notice it ends with (`A secret was requested for NAME.\n…`). */
+function withoutNotice(text: string, notice: string): string {
+	const tail = "\n" + notice;
+	return text.endsWith(tail) ? text.slice(0, -tail.length) : text;
+}
+
 /**
- * Under a line about a host a command could not reach: "Allow for this repository", which adds it to
- * the network list of the session's repository and lets the sandbox reach it at once while a turn runs
- * in it (from the next turn otherwise), and the
- * way to the list itself. Nothing is allowed without the click.
+ * Under the line of the agent's `request_secret`: the name, and its reason quoted as the agent's own words, in plain text.
+ * The value is never asked for here: an open request is answered above the field, an item's on the item's page.
+ */
+function SecretRequested({ secret }: { secret: NonNullable<PlatformBlock["secret"]> }) {
+	const interactive = useInteractive();
+	const open = interactive?.secretRequestId === secret.id;
+	const itemId = interactive?.itemId ?? null;
+	// A person's own session with no repository saves it for the account: every agent of theirs would have it.
+	const account = interactive !== null && !itemId && interactive.repositoryId === null;
+	return (
+		<section className="system-secret" aria-label={`The agent asks for the secret ${secret.name}`}>
+			<p className="system-secret-name">
+				The agent asks for a secret: <code className="secret-ask-name">{secret.name}</code>
+			</p>
+			<figure className="item-asked secret-ask-why">
+				<figcaption className="item-asked-who">Its reason, in the agent's own words.</figcaption>
+				<LongText lines={3} as="blockquote" className="item-asked-text">
+					{secret.why}
+				</LongText>
+			</figure>
+			{secret.notice ? <SecretNotice notice={secret.notice} account={account} /> : null}
+			{open ? (
+				<p className="system-secret-where">Add it or go on without it above the field below.</p>
+			) : itemId ? (
+				<p className="system-secret-where">
+					<a className="link" {...linkProps({ name: "item", id: itemId })}>
+						Answer on the item's page
+					</a>
+				</p>
+			) : null}
+		</section>
+	);
+}
+
+/**
+ * Under a line about a host a command could not reach (an older server's, or a turn whose
+ * `network.blocked` row does not list it): "Allow for this repository" and the way to the list.
  */
 function BlockedHost({ host, repository }: { host: string; repository: boolean }) {
 	const interactive = useInteractive();
-	const [state, setState] = useState<{ kind: "idle" } | { kind: "busy" } | { kind: "done"; text: string } | { kind: "failed"; text: string }>({ kind: "idle" });
-	const allow = interactive?.allowHost ?? null;
 	const repositoryId = interactive?.repositoryId ?? null;
 	if (!repository || repositoryId === null) return null;
-	const go = async () => {
-		if (!allow || state.kind === "busy") return;
-		setState({ kind: "busy" });
-		try {
-			const answer = await allow(host);
-			setState({ kind: "done", text: answer.applied ? `${host} is allowed. This sandbox reaches it now.` : `${host} is allowed. It applies from the next turn.` });
-		} catch (failure) {
-			setState({ kind: "failed", text: failure instanceof Error ? failure.message : String(failure) });
-		}
-	};
 	return (
 		<p className="system-actions">
-			{state.kind === "done" ? (
-				<span className="system-done tone-good" role="status">
-					<CheckIcon size={13} /> {state.text}
-				</span>
-			) : (
-				<button type="button" className="button button-outline button-small" onClick={() => void go()} disabled={!allow || state.kind === "busy"} aria-label={`Allow ${host} for this repository`}>
-					{state.kind === "busy" ? "Allowing…" : "Allow for this repository"}
-				</button>
-			)}
-			<a className="link" {...linkProps({ name: "repository", id: repositoryId, view: "settings", section: "network" })}>
-				Network list
-			</a>
-			{state.kind === "failed" ? (
-				<span className="system-failed tone-bad" role="alert">
-					<WarnIcon size={13} /> {state.text}
-				</span>
-			) : null}
+			<AllowHost host={host} context={{ allow: interactive?.allowHost ?? null, repositoryId }} listLink />
 		</p>
 	);
 }
+
+/** "16:15", the time of day a destination was last refused. */
+const lastSeen = (at: number) => `last ${new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}`;
+
+/**
+ * A turn's blocked network requests (`network.blocked`): one quiet line that counts them, then each
+ * destination with what can be done about it, folded after three. Live while the turn runs: a newer
+ * revision replaces it in place. Its id is what the side panel links to.
+ */
+const NetworkRow = memo(function NetworkRow({ block }: { block: NetworkBlock }) {
+	const interactive = useInteractive();
+	const repositoryId = interactive?.repositoryId ?? null;
+	const context = interactive ? { allow: interactive.allowHost ?? null, repositoryId } : null;
+	return (
+		<section className="blocked" id={`network-${block.seq}`} aria-label="Blocked network requests">
+			<p className="system tone-dim">
+				<span className="system-rule" aria-hidden="true" />
+				<span className="system-source">network</span>
+				<span className="system-text">
+					Blocked network requests: {blockedHeadline(block)}
+				</span>
+			</p>
+			<BlockedList hosts={block.hosts} overflow={block.overflow} context={context} when={lastSeen} label="Blocked destinations" />
+		</section>
+	);
+});
 
 // ---------------------------------------------------------------------------------------------
 // A turn
@@ -1064,6 +1131,8 @@ function renderBlock(block: Block, nested = false, first = false): ReactNode {
 		case "platform":
 		case "note":
 			return <SystemLine block={block} />;
+		case "network":
+			return <NetworkRow block={block} />;
 	}
 }
 
@@ -1109,7 +1178,7 @@ export const Turn = memo(function Turn({ turn }: { turn: TurnView }) {
 	const question = interactive?.flow.question ?? null;
 	// A question about a call this timeline does not show (a subagent's own call) goes at the end of its turn.
 	const loose = question !== null && question.turn === turn.turn && !turn.blocks.some((block) => block.kind === "tool" && asksAbout(block, question)) ? question : null;
-	const rows = useMemo(() => turnRows(turn.blocks, question ? (block) => asksAbout(block, question) : null), [turn.blocks, question]);
+	const rows = useMemo(() => turnRows(shownBlocks(turn.blocks), question ? (block) => asksAbout(block, question) : null), [turn.blocks, question]);
 	return (
 		<section className="turn" aria-label={`Turn ${turn.turn}`}>
 			{rows.map((row) =>

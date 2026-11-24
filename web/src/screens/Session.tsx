@@ -18,25 +18,28 @@
  * offered where it has its own list (`models`), and Plan mode where it has one (`planMode`). Where its
  * machine says it is not signed in, the line above the composer shows the machine terminal command.
  */
-import { USAGE_LOW_SHARE, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
-import { useCallback, useMemo, useState } from "react";
+import { monthSentence, monthState } from "../lib/hosted";
+import { USAGE_LOW_SHARE, type ItemView, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { HarnessStatus } from "../components/HarnessStatus";
 import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
-import { ArrowLeftIcon, Mark, PullRequestIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon, CheckIcon, Mark, PauseIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "../components/Icons";
+import { SecretAsk, withoutValue } from "../components/SecretAsk";
+import { hasReason } from "../api/client";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
 import { acpHarnessName, HARNESS_NAMES, harnessModelsOf, sessionModelWords } from "../lib/acp";
 import { currentMode, sessionModes } from "../lib/modes";
 import { SidePanel } from "../components/SidePanel";
 import { STATUS_WORD, StatusBadge, StatusGlyph } from "../components/Status";
-import { Tooltip } from "../components/ui";
+import { AgentGlyph, Popover, Tooltip } from "../components/ui";
 import { clockDuration, localTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import type { ToolBlock } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { takeHandover } from "../state/handover";
 import { allowanceState, useAllowance, useModels, useNow, type useSession } from "../state/hooks";
-import { requestPublish, setPanelHidden, usePanelHidden } from "../state/sessionChrome";
+import { requestPublish, setPanelHidden, setPublishFeedback, usePanelHidden, usePublishFeedback } from "../state/sessionChrome";
 import { clockTime, useMachines } from "./Machines";
 import { machineLabel } from "../lib/machines";
 
@@ -91,14 +94,45 @@ function BarPublish({ summary }: { summary: SessionSummary }) {
 			</a>
 		);
 	}
+	return <BarPublishButton summary={summary} />;
+}
+
+/**
+ * "Publish pull request": never a silent press. While the panel reads what there is to publish (on a machine,
+ * through its runner, for seconds), it says so and the dialog opens by itself; where the dialog cannot open,
+ * why not, in a small popover at the button, with the way to the panel's section.
+ */
+function BarPublishButton({ summary }: { summary: SessionSummary }) {
+	const button = useRef<HTMLButtonElement>(null);
+	const feedback = usePublishFeedback(summary.id);
 	const busy = summary.status !== "idle";
+	const reading = feedback?.kind === "reading";
+	const close = () => setPublishFeedback(summary.id, null);
+	const refused = feedback?.kind === "refused";
+	const control = (
+		<button ref={button} type="button" className="bar-button" onClick={() => (busy || reading ? undefined : requestPublish(summary.id))} aria-disabled={busy || reading || undefined} aria-busy={reading || undefined}>
+			{reading ? <RefreshIcon size={14} className="spin" /> : <PullRequestIcon size={14} />}
+			<span className="bar-button-label">{reading ? "Reading changes…" : "Publish pull request"}</span>
+		</button>
+	);
 	return (
-		<Tooltip content={busy ? "Available when this turn ends" : "Commit, push and open a pull request"}>
-			<button type="button" className="bar-button" onClick={() => (busy ? undefined : requestPublish(summary.id))} aria-disabled={busy || undefined}>
-				<PullRequestIcon size={14} />
-				<span className="bar-button-label">Publish pull request</span>
-			</button>
-		</Tooltip>
+		<>
+			{/* No tooltip over the popover that says why. */}
+			{refused ? control : <Tooltip content={busy ? "Available when this turn ends" : reading ? "Reading what the workspace has to publish" : "Commit, push and open a pull request"}>{control}</Tooltip>}
+			<Popover open={refused} onClose={close} anchor={button} align="end" maxWidth={320} role="dialog" label="Why the pull request cannot be published now" initialFocus="none" className="bar-publish-why">
+				<p className="bar-publish-why-text">{feedback?.kind === "refused" ? feedback.reason : null}</p>
+				<button
+					type="button"
+					className="link"
+					onClick={() => {
+						close();
+						requestPublish(summary.id, "show");
+					}}
+				>
+					Open the pull request section
+				</button>
+			</Popover>
+		</>
 	);
 }
 
@@ -131,7 +165,8 @@ function PanelToggle() {
  * right what runs it and the way out. A work item's session is part of its item, and the way back is to
  * the item. `summary`, once known, adds the repository, the turn's time, the facts and the actions.
  */
-export function SessionCrumb({ title, status, place, machine, item, harness, summary = null }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: { id: string }; harness?: SessionSummary["harness"]; summary?: SessionSummary | null }) {
+/** `itemView`: a work item's agent's item, once read: the crumb names it, and its feature first for a subtask. */
+export function SessionCrumb({ title, status, place, machine, item, harness, summary = null, itemView = null }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: { id: string }; harness?: SessionSummary["harness"]; summary?: SessionSummary | null; itemView?: ItemView | null }) {
 	const harnessName = acpHarnessName({ harness });
 	const machineName = machine ? machineLabel(machine) : null;
 	const repository = summary?.repository ?? null;
@@ -139,10 +174,25 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
 	return (
 		<>
 			<nav className="crumb" aria-label="Where you are">
-				<a className="crumb-back" {...linkProps(item ? { name: "item", id: item.id } : { name: "home" })}>
-					<ArrowLeftIcon size={14} />
-					<span>{item ? "Work item" : "Agents"}</span>
-				</a>
+				{item && itemView?.parent ? (
+					<>
+						<a className="crumb-back" {...linkProps({ name: "item", id: itemView.parent.itemId })} title={itemView.parent.title}>
+							<ArrowLeftIcon size={14} />
+							<span className="crumb-feature">{itemView.parent.title}</span>
+						</a>
+						<span className="crumb-sep" aria-hidden="true">
+							/
+						</span>
+						<a className="crumb-repo crumb-feature" {...linkProps({ name: "item", id: item.id })} title={itemView.title}>
+							{itemView.title}
+						</a>
+					</>
+				) : (
+					<a className="crumb-back" {...linkProps(item ? { name: "item", id: item.id } : { name: "home" })} title={itemView?.title}>
+						<ArrowLeftIcon size={14} />
+						<span className={itemView ? "crumb-feature" : undefined}>{item ? (itemView?.title ?? "Work item") : "Agents"}</span>
+					</a>
+				)}
 				{repository && !item ? (
 					<>
 						<span className="crumb-sep" aria-hidden="true">
@@ -158,8 +208,15 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
 						<span className="crumb-sep" aria-hidden="true">
 							/
 						</span>
+						{/* A work item's agent is named by its item, just before: the last part says only what this page is. */}
 						<h1 className="crumb-title" title={title}>
-							{title}
+							{item && itemView ? (
+								<>
+									session<span className="visually-hidden"> of {title}</span>
+								</>
+							) : (
+								title
+							)}
 						</h1>
 					</>
 				) : null}
@@ -167,7 +224,17 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
 			</nav>
 			<div className="crumb-end">
 				<p className="crumb-facts">
-					{place?.kind === "machine" ? <span className="chip crumb-place">{harnessName ? `${harnessName} on ${machineName ? `“${machineName}”` : "your machine"}` : `On ${machineName ?? "your machine"}`}</span> : summary ? <span>{harnessName ?? "Windlass"}</span> : null}
+					{place?.kind === "machine" ? (
+						<span className="chip crumb-place">
+							{harnessName ? <AgentGlyph harness={harness ?? "windlass"} size={11} inline /> : null}
+							{harnessName ? `${harnessName} on ${machineName ? `“${machineName}”` : "your machine"}` : `On ${machineName ?? "your machine"}`}
+						</span>
+					) : summary ? (
+						<span>
+							<AgentGlyph harness={harness ?? "windlass"} size={11} inline />
+							{harnessName ?? "Windlass"}
+						</span>
+					) : null}
 					{summary ? <CrumbModel summary={summary} /> : null}
 				</p>
 				{summary ? <BarPublish summary={summary} /> : null}
@@ -182,7 +249,7 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
  * says what the session last found, the live list whether the machine is offline now or gone; a machine
  * the list says came back after what the snapshot found is not reported.
  */
-function machineNote(reach: SessionSnapshot["machine"], machine: MachineSummary | null | undefined, sandbox: SessionSummary["sandbox"], now: number, item = false): { text: string; removed: boolean } | null {
+function machineNote(reach: SessionSnapshot["machine"], machine: MachineSummary | null | undefined, sandbox: SessionSummary["sandbox"], now: number, item = false, paused = false): { text: string; removed: boolean } | null {
 	if (reach?.state === "removed" || machine === null) return { removed: true, text: `This agent's machine was removed. Its files were there.${item ? "" : " Start a new agent to go on."}` };
 	const named = machine ? `Your machine "${machineLabel(machine)}"` : "Your machine";
 	const back = reach != null && machine?.status === "online" && machine.since >= reach.since;
@@ -191,6 +258,8 @@ function machineNote(reach: SessionSnapshot["machine"], machine: MachineSummary 
 	}
 	const offline = machine?.status === "offline" ? machine.since : reach?.state === "offline" && !back ? reach.since : null;
 	if (offline === null) return null;
+	// A turn paused for the machine resumes by itself: nothing is to be sent again.
+	if (paused) return { removed: false, text: `${named} is offline since ${clockTime(offline, now)}. This turn resumes by itself when it is back${item ? "" : "; what you send meanwhile is held for it"}.` };
 	return { removed: false, text: `${named} is offline since ${clockTime(offline, now)}.${sandbox === "none" ? "" : " The agent's files are there."}${item ? "" : " Send a prompt once it is back."}` };
 }
 
@@ -199,6 +268,12 @@ function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): strin
 	if (numbers === null) return null;
 	const left = allowanceState(numbers, USAGE_LOW_SHARE);
 	const resets = localTime(numbers.resetsAt);
+	// The month's hosted minutes count only where the agent runs hosted.
+	if (summary.place.kind === "hosted" && monthState(numbers) !== "plenty") {
+		const month = monthSentence(numbers, null);
+		if (month !== null) return monthState(numbers) === "used" && summary.status !== "idle" ? `${month} This turn is stopped when the time it holds is over, with its files kept.` : month;
+	}
+	if (summary.place.kind !== "hosted" && numbers.hosted) return null;
 	if (left === "used") {
 		return summary.status === "idle"
 			? `Today's sandbox time is used up, so a turn cannot start before ${resets}.`
@@ -206,12 +281,12 @@ function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): strin
 	}
 	if (left === "low" && numbers.leftSeconds !== null) return `${sandboxTime(numbers.leftSeconds)} of today's sandbox time is left. A turn that runs longer is stopped; the allowance is whole again at ${resets}.`;
 	const { kept, limit } = numbers.sandboxes;
-	if (summary.sandbox === "none" && limit !== null && kept >= limit) return `You keep ${limit} sandboxes, the most an account may have, so this agent cannot start until one is freed.`;
+	if (summary.sandbox === "none" && limit !== null && kept >= limit) return `You keep ${limit} hosted sandboxes, the most an account may have, so this agent cannot start until one is freed.`;
 	return null;
 }
 
 /** `machine`: the machine the session runs on, as `useSessionMachine` says. */
-export function Session({ sessionId, state, machine }: { sessionId: string; state: ReturnType<typeof useSession>; machine?: MachineSummary | null }) {
+export function Session({ sessionId, state, machine, item = null }: { sessionId: string; state: ReturnType<typeof useSession>; machine?: MachineSummary | null; item?: ItemView | null }) {
 	const { client, explain, platform } = useApp();
 	const models = useModels();
 	const auth = useAuth();
@@ -221,7 +296,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 	// Asked again when a turn starts or ends, and when a prompt was refused: each moves what is left of the day.
 	const [planMode, setPlanMode] = useState(false);
 	const [refusals, setRefusals] = useState(0);
-	const allowance = useAllowance(`${state.turnsEnded}:${state.summary?.status ?? ""}:${refusals}`);
+	const allowance = useAllowance(`${state.turnsEnded}:${state.summary?.status ?? ""}:${refusals}`, state.phase !== "missing");
 	const online = state.connection === "connected";
 	const flow = useQuestionFlow(api, state.phase === "ready" ? state.question : null, explain);
 	const stopCall = useCallback(
@@ -266,14 +341,51 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 		[api, explain],
 	);
 	const repositoryId = state.summary?.repository?.id ?? null;
-	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && cancelCall ? stopCall : null, allowHost: online ? allowHost : null, repositoryId }), [flow, stopCall, online, cancelCall, allowHost, repositoryId]);
+	// The agent's open request for a secret, answered above the field. Hidden once answered here, before the turn it starts closes it.
+	const [answeredSecret, setAnsweredSecret] = useState<string | null>(null);
+	const [savedSecret, setSavedSecret] = useState<{ name: string; turnsEnded: number } | null>(null);
+	const secretRequest = state.secretRequest && state.secretRequest.id !== answeredSecret ? state.secretRequest : null;
+	const secretRequestId = secretRequest?.id ?? null;
+	const itemId = state.summary?.item?.id ?? null;
+	const interactive = useMemo<Interactive>(() => ({ flow, stopCall: online && cancelCall ? stopCall : null, allowHost: online ? allowHost : null, repositoryId, secretRequestId, itemId }), [flow, stopCall, online, cancelCall, allowHost, repositoryId, secretRequestId, itemId]);
+	// The last save's error, for the card of the same name should the session's snapshot bring the request back under a new id.
+	const [secretFailure, setSecretFailure] = useState<{ name: string; message: string } | null>(null);
+	const addSecret = useCallback(
+		async (request: { id: string; name: string }, value: string) => {
+			setSecretFailure(null);
+			try {
+				await api.setRequestedSecret({ requestId: request.id, name: request.name, value });
+			} catch (failure) {
+				const message = withoutValue(explain(failure), value);
+				setSecretFailure({ name: request.name, message });
+				// The name was saved under Secrets since it was asked (`secret_exists`), or the request moved on: read the session
+				// again, so that a retry answers the request it has now.
+				if (hasReason(failure, "secret_exists") || hasReason(failure, "no_question")) api.resync();
+				throw new Error(message);
+			}
+			setSecretFailure(null);
+			setAnsweredSecret(request.id);
+			setSavedSecret({ name: request.name, turnsEnded: state.turnsEnded });
+		},
+		[api, explain, state.turnsEnded],
+	);
+	const continueWithout = useCallback(
+		async (request: { id: string; name: string }) => {
+			try {
+				await api.prompt({ text: `Continue without ${request.name}.` });
+			} catch (failure) {
+				throw new Error(explain(failure));
+			}
+			setAnsweredSecret(request.id);
+		},
+		[api, explain],
+	);
 
 	if (state.phase === "missing") {
 		return (
 			<main className="state state-page">
 				<Mark size={56} />
-				<h1 className="display display-small">No agent at this address</h1>
-				<p>It may have been deleted, or the address is not one of yours.</p>
+				<h1 className="display display-small">This agent was deleted</h1>
 				<a className="button button-outline" {...linkProps({ name: "home" })}>
 					Back to your agents
 				</a>
@@ -317,7 +429,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 	}
 
 	const { summary, profile, view } = state;
-	const reach = summary.place.kind === "machine" ? machineNote(state.machine, machine, summary.sandbox, Date.now(), summary.item !== undefined) : null;
+	const reach = summary.place.kind === "machine" ? machineNote(state.machine, machine, summary.sandbox, Date.now(), summary.item !== undefined, summary.status === "paused" && summary.paused?.reason === "machine") : null;
 
 	return (
 		<main className={`session${panelHidden ? " session-panel-hidden" : ""}`}>
@@ -336,20 +448,62 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 						</button>
 					</p>
 				) : null}
+				{item?.question && summary.item?.role !== "reviewer" ? (
+					<p className="banner banner-needs" role="status">
+						<span className="banner-needs-dot" aria-hidden="true" />
+						{item.parent ? "This subtask waits for your answer." : "This work item waits for your answer."} The agent is idle until you reply.
+						<a className="link" {...linkProps({ name: "item", id: item.id })}>
+							Answer on its page
+						</a>
+					</p>
+				) : null}
 				<InteractiveProvider value={interactive}>
 					<Conversation view={view} summary={summary} profile={profile} onSuggest={(text) => setSuggestion((current) => ({ key: (current?.key ?? 0) + 1, text }))} />
 				</InteractiveProvider>
 				{reach ? (
+					// In the composer's column, at its width and inner padding: it is about what the composer can do now.
+					<div className="session-banner">
 					<p className={`banner ${reach.removed ? "banner-bad" : "banner-warn"}`} role="status">
 						<WarnIcon size={14} />
 						{reach.text}
+						{/* A turn paused while the machine is away: it is not over, and resumes by itself when the machine is back. */}
+						{summary.status === "paused" && summary.paused?.reason === "machine" && !reach.removed ? (
+							<span className="chip banner-chip" title="The turn resumes by itself when the machine is back. Stop ends it.">
+								<PauseIcon size={11} />
+								turn paused
+							</span>
+						) : null}
 					</p>
+					</div>
 				) : null}
 				{machine?.harnesses?.filter(h => h.id === summary.harness).map(h => <HarnessStatus key={h.id} harness={h} machineName={machineLabel(machine)} />)}
 				<QuestionDock flow={flow} />
-				{summary.capabilities.planMode && <label>Plan mode <select value={planMode ? "plan" : "default"} onChange={e => setPlanMode(e.target.value === "plan")}>
-					<option value="default">Off</option><option value="plan">On</option>
-				</select></label>}
+				{secretRequest ? (
+					<div className="q-dock-wrap">
+						<div className="q-dock secret-dock">
+							<SecretAsk
+								key={secretRequest.id}
+								compact
+								request={secretRequest}
+								repository={summary.repository ? `${summary.repository.owner}/${summary.repository.name}` : null}
+								shared={summary.harness !== undefined && summary.harness !== null && summary.harness !== "windlass"}
+								offline={!online}
+								failure={secretFailure?.name === secretRequest.name ? secretFailure.message : null}
+								onAdd={(value) => addSecret(secretRequest, value)}
+								onWithout={() => continueWithout(secretRequest)}
+							/>
+						</div>
+					</div>
+				) : savedSecret && savedSecret.turnsEnded === state.turnsEnded ? (
+					<div className="q-dock-wrap">
+						<p className="callout secret-ask-saved" role="status">
+							<CheckIcon size={14} className="tone-good" />
+							<span>
+								<code className="secret-ask-name">{savedSecret.name}</code> saved; the agent continues.
+							</span>
+						</p>
+					</div>
+				) : null}
 				{summary.item ? (
 					<ItemNote item={summary.item} status={summary.status} online={online} onStop={stop} />
 				) : (
@@ -362,6 +516,7 @@ export function Session({ sessionId, state, machine }: { sessionId: string; stat
 						modes={sessionModes(summary, profile)}
 						mode={summary.mode}
 						onMode={setMode}
+						planMode={summary.capabilities.planMode ? { on: planMode, onChange: setPlanMode } : null}
 						initial={handover}
 						suggestion={suggestion}
 						limitNote={summary.place.kind === "machine" ? null : limitNote(allowance, summary)}

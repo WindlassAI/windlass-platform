@@ -53,6 +53,20 @@ export const StopIcon = (props: IconProps) => (
 	</Svg>
 );
 
+/** Paused: two bars. A turn that waits, and resumes by itself. */
+export const PauseIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M6 4.2v7.6M10 4.2v7.6" />
+	</Svg>
+);
+
+/** Resumed: a turn that goes on, an arrow into the work. */
+export const ResumeIcon = (props: IconProps) => (
+	<Svg {...props}>
+		<path d="M5.5 4.2l5.6 3.8-5.6 3.8z" />
+	</Svg>
+);
+
 export const ChevronIcon = (props: IconProps) => (
 	<Svg {...props}>
 		<path d="M6 3.5L10.5 8 6 12.5" />

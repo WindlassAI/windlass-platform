@@ -37,6 +37,10 @@ import { clockTime, useMachines } from "./Machines";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
 import { ItemModeCost, ItemModePicker } from "../components/ItemModePicker";
 import { ITEM_MODE_WORDS } from "../lib/feature";
+import { Check } from "../components/ui/Check";
+import { AgentGlyph } from "../components/ui/Pill";
+import { LongText } from "../components/Fold";
+import { childrenOf, FactorySubtasks } from "./Subtasks";
 
 export interface ItemsState {
 	/** What the feed holds, open items first: every open item and the newest ended ones. Null until it was read, and when it could not be. */
@@ -142,8 +146,10 @@ export function inSecondReview(item: Pick<ItemSummary, "review">): boolean {
 /**
  * Where an item stands beside its row: the verdict's word once it is handed over, with the second
  * reviewer's recommendation; while the reviewer runs or waits to, a quiet working word in its place.
+ * A merged item has nothing left to review: its glyph and track say done, and no word stands there.
  */
-export function ItemStanding({ item, reviewer = true }: { item: Pick<ItemSummary, "review" | "verdict">; reviewer?: boolean }) {
+export function ItemStanding({ item, reviewer = true }: { item: Pick<ItemSummary, "review" | "verdict" | "state">; reviewer?: boolean }) {
+	if (item.state === "done") return null;
 	if (reviewer && inSecondReview(item)) return <ReviewWord item={item} />;
 	return (
 		<>
@@ -159,6 +165,7 @@ export const CI_WORD: Record<NonNullable<ItemSummary["verdict"]>["ci"], { word: 
 	failed: { word: "CI failed", tone: "bad" },
 	none: { word: "no CI", tone: "dim" },
 	skipped: { word: "CI skipped", tone: "dim" },
+	cancelled: { word: "CI did not finish", tone: "warn" },
 	not_run: { word: "CI did not start", tone: "warn" },
 	timed_out: { word: "CI unfinished", tone: "warn" },
 	not_permitted: { word: "CI not readable", tone: "warn" },
@@ -197,7 +204,7 @@ export function ItemGlyph({ item }: { item: Pick<ItemSummary, "state" | "questio
 }
 
 /** What a wait is for, in a word or two beside the track. */
-const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { provider: "provider limit", children: "subtasks", capacity: "for a turn", machine: "for its machine", review_cap: "review cap", ci: "CI", person: "for you", budget: "budget", integration: "testing together" };
+const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { provider: "provider", children: "subtasks", capacity: "for a turn", machine: "machine", ci: "CI", person: "for you", budget: "budget", integration: "testing", sandboxes: "sandbox" };
 
 /**
  * Where an item is on its way to you, as a track of short bars (Helm's steps): built, pushed, CI, the
@@ -234,6 +241,7 @@ function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number 
 		case "subtasks":
 		case "refine":
 		case "implement":
+		case "run_checks":
 		case "gate":
 			return 1;
 		case "publish":
@@ -285,10 +293,12 @@ export function ItemStages({ item, reviewer = true, step = null }: { item: Pick<
 	return (
 		<ol className={`item-stages item-stages-${track.tone}`} aria-label="Where it is on its way to you">
 			{track.stages.map((stage, index) => {
-				const done = index < track.at - 1 || (index === track.at - 1 && !track.now);
+				// The step's own stage is not done while the item works or waits in it (a question while it builds): it is where it stands.
+				const standing = at !== null && index === track.at - 1;
+				const done = index < track.at - 1 || (index === track.at - 1 && !track.now && !standing);
 				const now = index === track.at - 1 && track.now;
 				return (
-					<li key={stage} className={`item-stage${done ? " item-stage-done" : ""}${now ? " item-stage-now" : ""}`} aria-current={now || (track.at === index + 1 && !track.now) ? "step" : undefined}>
+					<li key={stage} className={`item-stage${done ? " item-stage-done" : ""}${now ? " item-stage-now" : standing ? " item-stage-at" : ""}`} aria-current={now || (track.at === index + 1 && !track.now) ? "step" : undefined}>
 						<span className="item-stage-bar" aria-hidden="true" />
 						<span className="item-stage-name">{stage}</span>
 					</li>
@@ -303,7 +313,9 @@ export function questionLine(item: ItemSummary): string | null {
 	if (!item.question) return null;
 	if (item.question.kind === "plan_approval") return "Its plan waits for your approval.";
 	if (item.question.kind === "replan_approval") return "A subtask stopped: its revised plan waits for your approval.";
-	return item.question.text;
+	// The agent's own question says more than "The agent stopped to ask you…": its first line.
+	const asked = item.question.kind === "agent_ask" ? item.question.asked?.text.trim().split("\n")[0] : undefined;
+	return asked || item.question.text;
 }
 
 /** Why the item is where it is, in a line: the server's sentence while it waits, and what ended it. */
@@ -352,9 +364,11 @@ export function dayWord(word: string, at: number, now: number): string {
 }
 
 /** `filed`: the row says when the item was filed, not when it last changed (an ended list, in filing order). */
-export function ItemRow({ item, now, repository = false, why, ci = false, reviewer = true, filed = false }: { item: ItemSummary; now: number; repository?: boolean; why?: ReactNode; ci?: boolean; reviewer?: boolean; filed?: boolean }) {
+/** `subtasks`: the feed's open subtasks; a feature's row counts its own and lists the active ones in place of the wait sentence. */
+export function ItemRow({ item, now, repository = false, why, ci = false, reviewer = true, filed = false, subtasks }: { item: ItemSummary; now: number; repository?: boolean; why?: ReactNode; ci?: boolean; reviewer?: boolean; filed?: boolean; subtasks?: readonly ItemSummary[] }) {
 	const asks = item.question !== null;
 	const line = why ?? rowWhy(item);
+	const running = !asks && item.mode === "orchestrate" && subtasks !== undefined && childrenOf(item, subtasks).length > 0;
 	return (
 		<li className={`agent-row item-row item-row-is-${item.state}${asks ? " item-row-asks" : ""}${item.state === "working" ? " agent-row-active" : ""}${filed ? " item-row-filed" : ""}`}>
 			<span className="agent-glyph">
@@ -365,7 +379,13 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 					<RowTitle item={item} />
 					{asks ? <span className="visually-hidden"> (waiting for your answer)</span> : null}
 				</a>
-				{line ? <p className="item-row-why">{line}</p> : null}
+				{running ? (
+					<FactorySubtasks feature={item} children={subtasks!} now={now} />
+				) : line ? (
+					<LongText lines={2} className="item-row-why">
+						{line}
+					</LongText>
+				) : null}
 				<p className="agent-meta">
 					{repository ? (
 						<span className="agent-repo">
@@ -392,7 +412,12 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 					) : null}
 					{ci && item.origin && !item.origin.issue.trusted ? <span>from an outside author</span> : null}
 					{item.source === "api" ? <span>from the API</span> : null}
-					{item.agent && item.agent.harness !== "windlass" ? <span>{HARNESS_NAMES[item.agent.harness]}</span> : null}
+					{item.agent && item.agent.harness !== "windlass" ? (
+						<span>
+							<AgentGlyph harness={item.agent.harness} size={11} inline />
+							{HARNESS_NAMES[item.agent.harness]}
+						</span>
+					) : null}
 					{ci && item.verdict ? <span className={`tone-${CI_WORD[item.verdict.ci].tone}`}>{CI_WORD[item.verdict.ci].word}</span> : null}
 					{item.state === "draft" ? null : (
 						<span>
@@ -578,16 +603,18 @@ function Group({ name, items, now, count: said, filed = false, children }: { nam
  * work can be filed on it now. The open items come from the live feed; the ended ones are folded, said
  * by the feed's counts, and read from the server a page at a time once unfolded, newest filed first.
  */
-export function RepositoryItems({ repositoryId, name, base, launchable, now }: { repositoryId: GithubId; name: string; base: string | null; launchable: boolean; now: number }) {
+export function RepositoryItems({ repositoryId, name, base, launchable, now, filter }: { repositoryId: GithubId; name: string; base: string | null; launchable: boolean; now: number; filter?: (item: ItemSummary) => boolean }) {
 	const { platform } = useApp();
 	const offered = Boolean(platform.info?.items);
 	const items = useItems(offered);
 	const [filing, setFiling] = useState(false);
 	const [open, setOpen] = useState(false);
 	const ended = useId();
+	// `filter`: the Agents home's filters, which narrow the open items and the ended ones read so far; the counts stay the feed's.
 	const onIt = (item: ItemSummary) => !item.parent && String(item.repository.id) === String(repositoryId);
+	const shown = (item: ItemSummary) => filter?.(item) ?? true;
 	const live = items.list?.filter(onIt) ?? null;
-	const mine = items.feed?.open.filter(onIt) ?? null;
+	const mine = items.feed?.open.filter((item) => onIt(item) && shown(item)) ?? null;
 	const counts = feedCounts(items.feed, { repository: repositoryId });
 	const pages = useEndedPages(open, { repository: repositoryId }, live);
 	const of = (state: ItemState) => mine?.filter((item) => item.state === state) ?? [];
@@ -643,7 +670,7 @@ export function RepositoryItems({ repositoryId, name, base, launchable, now }: {
 							</p>
 							<div id={ended} hidden={!open}>
 								{open ? (
-									<Group name="Ended" items={pages.items} now={now} filed count={pages.items.length < counts.ended ? `${count(pages.items.length)} of ${count(counts.ended)}` : undefined}>
+									<Group name="Ended" items={filter ? pages.items.filter(shown) : pages.items} now={now} filed count={pages.items.length < counts.ended ? `${count(pages.items.length)} of ${count(counts.ended)}` : undefined}>
 										<EndedFoot pages={pages} />
 									</Group>
 								) : null}
@@ -848,20 +875,16 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 						</p>
 					</div>
 				) : null}
-				<label className={`check${start ? " check-on" : ""}`}>
-					<input className="check-input" type="checkbox" checked={start} disabled={busy} onChange={(event) => setStart(event.target.checked)} />
-					<span className="check-box" aria-hidden="true" />
-					<span className="check-text">
-						<span className="check-name">Start now</span>
-						<span className="check-means">
-							{start
-								? chosenMachine
-									? `It starts as soon as one of your factory turns is free and “${machineLabel(chosenMachine)}” is online; until then it waits, and says for what.`
-									: "It starts as soon as one of your factory turns and a sandbox are free; until then it waits, and says for what."
-								: "It is kept as a draft until you start it from its page."}
-						</span>
+				<Check checked={start} disabled={busy} onChange={(on) => setStart(on)}>
+					<span className="check-name">Start now</span>
+					<span className="check-means">
+						{start
+							? chosenMachine
+								? `It starts as soon as “${machineLabel(chosenMachine)}” is online and has a free slot; until then it waits, and says for what.`
+								: "It starts as soon as one of your hosted sandboxes is free; until then it waits, and says for what."
+							: "It is kept as a draft until you start it from its page."}
 					</span>
-				</label>
+				</Check>
 				{error ? (
 					<p className="callout callout-bad" role="alert">
 						<WarnIcon />

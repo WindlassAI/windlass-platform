@@ -478,6 +478,15 @@
 	font-weight: var(--weight-medium);
 	color: var(--ink);
 }
+/* The commands from before the one-line install, folded under it. */
+.machine-other-ways {
+	margin-top: 0;
+}
+.machine-other-ways-body {
+	display: grid;
+	gap: 16px;
+	padding-top: 4px;
+}
 
 /* When to use the machine, for a feature's planner: one quiet line in its card, its tags as hairline chips. */
 .machine-use {
@@ -597,5 +606,88 @@
 		flex: 1;
 		text-align: center;
 		padding: 6px 8px;
+	}
+}
+
+/* ---- Usage, "On your machines" (components/MachineUsage.tsx) ----------------------------------- */
+
+/* One card a machine: its name and state on one line, its sandboxes under it at the card's width. */
+.usage-machines {
+	display: grid;
+	gap: 12px;
+	margin: 12px 0 0;
+	padding: 0;
+	list-style: none;
+}
+.usage-machine {
+	padding: 14px 16px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-box);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
+}
+.usage-machine-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 4px 12px;
+}
+.usage-machine-name {
+	min-width: 0;
+	overflow-wrap: anywhere;
+	font-size: var(--text-15);
+	font-weight: var(--weight-strong);
+	letter-spacing: -0.01em;
+}
+/* Its state as the Machines page's chip. */
+.usage-machine-head > .machine-state {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	height: 24px;
+	padding: 0 9px 0 8px;
+	border-radius: var(--r-item);
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+	font-family: var(--font-text);
+	font-size: 12px;
+	color: var(--ink-dim);
+}
+.usage-machine-head > .machine-state-online .sandbox-state-dot {
+	border-color: var(--ok);
+	background: var(--ok);
+}
+.usage-machine-limits {
+	margin-top: 4px;
+	font-size: var(--size-small);
+	color: var(--ink-dim);
+}
+.usage-machine-empty {
+	margin-top: 6px;
+	font-size: var(--size-small);
+	color: var(--ink-faint);
+}
+/* Each sandbox a row: the agent, its state and when it was used, in columns that line up. */
+.usage-machine-sandboxes {
+	margin-top: 10px;
+	padding-top: 8px;
+	border-top: 1px solid var(--line);
+}
+.usage-machine-sandboxes li {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto auto;
+	align-items: baseline;
+	gap: 2px 16px;
+}
+.usage-machine-sandboxes li > :first-child {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+	.usage-machine-sandboxes li {
+		grid-template-columns: minmax(0, 1fr) auto;
+	}
+	.usage-machine-sandboxes li > :first-child {
+		grid-column: 1 / -1;
 	}
 }

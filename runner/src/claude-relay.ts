@@ -1,6 +1,6 @@
 import { providers } from "./opencode-providers.js";
 import { createHash, createPublicKey, randomBytes, sign } from "node:crypto";
-import { docker, helperFlags, LABEL, LABEL_ARG, NO_LOGS, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
+import { docker, helperFlags, LABEL, LABEL_ARG, RELAY_LOGS, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
 import { waitForListener } from "./helper-ready.js";
 import { image, type MachineHarness, type MachineDocker } from "./policy.js";
 import { loadPair, Refusal, RunnerError } from "./state.js";
@@ -52,6 +52,27 @@ async function ownedRelay(m: MachineDocker, harness: MachineHarness) {
 	const box = await inspect(relayName(m, harness));
 	if (box && !owned(box.Config.Labels, m)) throw new Refusal("The credential relay container belongs to a different pairing.");
 	return box;
+}
+
+/**
+ * The relay's latest notes about answers it did not pass on as the provider gave them (sandbox/relay/server.cjs
+ * `notesFile`). Only the fields the relay writes, as short printable text.
+ */
+export async function relayNotes(m: MachineDocker, harness: MachineHarness, latest = 3): Promise<string[]> {
+	const box = await ownedRelay(m, harness).catch(() => undefined);
+	if (!box?.State?.Running) return [];
+	// Copied out as a tar stream, never run in the relay (status starts and runs nothing: runner-check.ts). One file, so one header.
+	const read = await docker(["cp", box.Id + ":/workspace/relay-notes.json", "-"], { timeoutMs: 15_000 });
+	if (read.code !== 0 || read.stdout.length < 512) return [];
+	const size = Number.parseInt(read.stdout.slice(124, 136).replace(/\0/g, "").trim(), 8);
+	if (!Number.isSafeInteger(size) || size <= 0 || size > 65_536) return [];
+	let notes: unknown;
+	try { notes = JSON.parse(read.stdout.slice(512, 512 + size)); } catch { return []; }
+	if (!Array.isArray(notes)) return [];
+	const field = (value: unknown) => (typeof value === "string" || typeof value === "number") && /^[A-Za-z0-9 ./;=_+:,-]{0,120}$/.test(String(value)) ? String(value) : "?";
+	return notes.slice(-latest).filter(note => note && typeof note === "object").map((note: Record<string, unknown>) =>
+		[field(note.at), field(note.event), field(note.route), note.upstream !== undefined ? `upstream ${field(note.upstream)}, content-type ${field(note.contentType)}` : `error ${field(note.error)}`,
+			note.passedAs !== undefined ? `passed as ${field(note.passedAs)}` : `answered ${field(note.answered)}`].join("  "));
 }
 
 // Call under the login lock, including logout from a standalone runner command.
@@ -108,7 +129,7 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 	await m.ensureImage();
 	const socketVolume = relaySocketVolume(m, harness);
 	await m.ownedVolume(true, socketVolume);
-	const version = createHash("sha256").update(script).update(JSON.stringify(login ?? null)).digest("hex");
+	const version = createHash("sha256").update(script).update(JSON.stringify(login ?? null)).update(JSON.stringify(RELAY_LOGS)).digest("hex");
 	const publicKey = createPublicKey(pair.key).export({ format: "der", type: "spki" }).toString("base64");
 	let box = await ownedRelay(m, harness);
 	if (box && (box.Config.Labels[role + ".version"] !== version || box.Config.Image !== image ||
@@ -118,7 +139,7 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 	if (!box) {
 		await docker(["create", "--pull", "never", "--name", relayName(m, harness), ...flags(m), "--label", role + ".version=" + version,
 			"--user", "1000:1000", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-			...NO_LOGS, "--memory", "192m", "--pids-limit", "48",
+			...RELAY_LOGS, "--memory", "192m", "--pids-limit", "48",
 			"--network", "bridge", "--mount", `type=volume,src=${socketVolume},dst=/workspace`,
 			"--mount", `type=volume,src=${credentials},dst=/run/wlp-harness/${harness},${login ? "" : "readonly,"}volume-nocopy`,
 			"-e", prefix + "PUBLIC_KEY=" + publicKey, "-e", prefix + "MACHINE=" + m.identity.machineId,
@@ -134,10 +155,10 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 	return pair.key;
 }
 
-export async function prepareRelay(m: MachineDocker, login?: ProviderLogin) {
+export async function prepareRelay(m: MachineDocker, login?: ProviderLogin, nonce = randomBytes(16).toString("hex")) {
 	const key = await ensureRelay(m, login);
 	const domain = login ? sessionDomain(login) : "windlass-claude-relay-v2";
-	const nonce = randomBytes(16).toString("hex");
+	if (!/^[a-f0-9]{32}$/.test(nonce)) throw new Refusal("Invalid session relay nonce.");
 	const signature = sign(null, Buffer.from(domain + "\n" + m.identity.machineId + "\n" + nonce), key);
 	return {
 		env: login?.harness === "codex" ? ["-e", "WLP_SESSION_BEARER=" + nonce + "." + signature.toString("base64url")] : login ? projection(login.providers ?? login.provider, nonce + "." + signature.toString("base64url")) : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=" + nonce + "." + signature.toString("base64url")],

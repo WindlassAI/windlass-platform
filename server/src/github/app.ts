@@ -105,7 +105,7 @@ export type PermissionLevel = "read" | "write";
 export interface TokenScope {
 	/** GitHub's id of the one repository the token is good for; omitted only to list the installation's repositories. */
 	repositoryId?: GithubId;
-	permissions: { metadata: "read"; issues?: PermissionLevel; contents?: PermissionLevel; pull_requests?: PermissionLevel; checks?: PermissionLevel; statuses?: "read"; actions?: "read" };
+	permissions: { metadata: "read"; issues?: PermissionLevel; contents?: PermissionLevel; pull_requests?: PermissionLevel; checks?: PermissionLevel; statuses?: "read"; actions?: PermissionLevel };
 }
 
 export interface InstallationToken {

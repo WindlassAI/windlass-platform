@@ -178,6 +178,30 @@ export class TokenFile {
 		this.schedule();
 	}
 
+	/** The relay's lease, where a restarted server can take it up again (`TurnModelRelay.lease`); null without one. */
+	get lease(): { lease: string; placeholder: string; env: Record<string, string> } | null {
+		const relay = this.relay;
+		return relay?.lease ? { lease: relay.lease, placeholder: relay.placeholder, env: relay.env } : null;
+	}
+
+	/**
+	 * For a turn a restarted server takes up (turn.ts, `takeUp`): the token is never stored, so the file is
+	 * written again now, through the same relay lease when the turn had one, and replaced on schedule from here.
+	 */
+	async resume(relay: { lease: string; placeholder: string; env: Record<string, string> } | null): Promise<void> {
+		const token = await this.tokens.current(this.sandbox.uid);
+		if (relay !== null) {
+			if (this.sandbox.resumeRelay === undefined) throw new TokenFileError("the model relay's lease cannot be taken up here");
+			this.relay = this.sandbox.resumeRelay(relay);
+		}
+		const written = await this.write(token).catch((error: unknown) => {
+			throw new TokenFileError(error instanceof Error ? error.message : String(error));
+		});
+		if (!written) return;
+		this.log(`[wlp] token.handed_again sandbox=${this.sandbox.id} uid=${this.sandbox.uid}: the turn taken up after a restart was handed an access token that lasts ${Math.round((token.expiresAt - Date.now()) / 1000)} s more${this.relay ? ", through the model relay" : ""}`);
+		this.schedule();
+	}
+
 	/** Ends the schedule and waits for a write in progress. The file itself is the caller's to remove. */
 	async stop(): Promise<void> {
 		this.stopped = true;

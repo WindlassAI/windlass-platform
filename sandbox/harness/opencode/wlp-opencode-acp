@@ -7,4 +7,6 @@ export OPENCODE_PURE=true OPENCODE_DISABLE_EXTERNAL_SKILLS=true OPENCODE_DISABLE
 export XDG_CONFIG_HOME=/etc/wlp-opencode
 : "${OPENCODE_CONFIG_CONTENT:?missing runner provider configuration}"
 # OpenCode takes MCP servers by URL only: wlp-acp-mcp serves it the ones the platform declares over ACP.
-exec node /usr/local/bin/wlp-acp-mcp.mjs opencode acp --hostname 127.0.0.1 --no-mdns
+# Its errors go to stderr: OpenCode 1.19.6 logs that it gave up on a provider's rate limit and then never answers
+# the prompt, and the platform ends the turn as a usage limit on that line (acp-harness.ts, `limitGiveUp`).
+exec node /usr/local/bin/wlp-acp-mcp.mjs opencode acp --hostname 127.0.0.1 --no-mdns --print-logs --log-level ERROR

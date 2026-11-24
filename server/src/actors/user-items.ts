@@ -25,10 +25,10 @@ import { windlassAccountKey } from "../provider-usage.js";
 import { accountsAt, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
 import { choosePlacement, machineSlots, placeKey, type AgentModels, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
-import type { ChildPlacement, HarnessId, ItemFeed, PlanSubtask } from "../contract.js";
+import type { ChildPlacement, HarnessId, HostedSize, ItemFeed, PlanSubtask } from "../contract.js";
 import { harnessName, itemHarnessProblem, itemProfiles, knownHarness } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
-import { featureBranch } from "../github/feature.js";
+import { featureBranch, subtaskBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
 import type { IntakeTrigger, IssueBinding } from "../factory/intake.js";
 import { GithubProblem, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
@@ -73,6 +73,7 @@ import {
 	USAGE_HISTORY_DAYS,
 	type UserProfile,
 	type Wait,
+	isHostedSize,
 } from "../contract.js";
 import { createItem } from "../factory/blueprint.js";
 import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
@@ -81,9 +82,10 @@ import { getLayer } from "../layer.js";
 import { reviewerAllowed } from "../factory/review.js";
 import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
-import { effectiveUserLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } from "../user-limits.js";
-import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply } from "../usage.js";
-import { createItemActor, isActorGone, itemActor, sessionActor } from "./internal.js";
+import { hostedSizesForPlan } from "../billing/plans.js";
+import { accountLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } from "../user-limits.js";
+import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply, keptHolder } from "../usage.js";
+import { createItemActor, isSessionGone, itemActor, sessionActor } from "./internal.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
 import { launchPlace, launchMachineProfiles } from "./user-machines.js";
 import type { ItemMeta } from "./work-item.js";
@@ -219,7 +221,7 @@ export interface ItemsCtx {
 }
 
 /** `makeSession` of user.ts: makes the item's session under the id given, with the item as its origin, and puts it in the index. */
-export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer"; size?: number; owns?: string[]; issue?: { number: number; installationId: GithubId }; effort?: string }) => Promise<SessionSummary>;
+export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer"; size?: number; /** Hosted: the item's size, where it chose one (`CreateItemInput.hostedSize`, a subtask's placement). */ hostedSize?: HostedSize; owns?: string[]; childBranch?: { name: string; start: string }; issue?: { number: number; installationId: GithubId }; effort?: string }) => Promise<SessionSummary>;
 
 // ---------------------------------------------------------------------------------------------
 // The index
@@ -230,12 +232,12 @@ function itemList(state: ItemsState): ItemSummary[] {
 }
 
 /** What the live feed carries: open items, the newest ended ones, the counts (item-pages.ts). */
-const feedOf = (state: ItemsState): ItemFeed => itemFeed(itemList(state));
+const feedOf = (state: ItemsState): ItemFeed => itemFeed(itemList(state), state.items.values());
 
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
 function summaryFields(item: ItemSummary): ItemSummary {
 	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
-	return { id, title, repository, place, ...(item.placement && { placement: item.placement }), source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision };
+	return { id, title, repository, place, ...(item.placement && { placement: item.placement }), source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision, ...(item.step && { step: item.step }) };
 }
 
 /** Takes a summary the item reported when it is newer than the one held: reports can arrive out of order. */
@@ -260,7 +262,7 @@ const githubItemId = (uid: string, key: string) => `i_${hex16(JSON.stringify(["g
 const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
 /** The input of a new item, checked. */
-function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; repositories: FeatureRepoInput[] | null; profile: SandboxProfileId | null; model: string | null; effort: string | null; start: boolean; mode: "single" | "orchestrate"; harness: HarnessId } {
+function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; repositories: FeatureRepoInput[] | null; profile: SandboxProfileId | null; model: string | null; effort: string | null; start: boolean; mode: "single" | "orchestrate"; harness: HarnessId; hostedSize?: HostedSize } {
 	const bad = (message: string) => new UserError(message, { code: "bad_input" });
 	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput | "harness" | "mode", unknown>>;
 	if (input.mode !== undefined && input.mode !== "single" && input.mode !== "orchestrate") throw bad("Choose single or orchestrate for the work item.");
@@ -290,6 +292,8 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 	const repositories = cleanRepositories(input.repositories, repository.id as GithubId, input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate"), bad);
 	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 	if (input.effort !== undefined && input.effort !== null && (typeof input.effort !== "string" || input.effort.length > 64)) throw new UserError("Choose one of the efforts the item's agent offers.", { code: "bad_effort" });
+	if (input.hostedSize !== undefined && input.hostedSize !== null && !isHostedSize(input.hostedSize)) throw bad("Choose a hosted size: small, standard or large.");
+	if (isHostedSize(input.hostedSize) && place.kind !== "hosted") throw bad("A hosted size is for an item that runs hosted.");
 	return {
 		mode: input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate"),
 		place,
@@ -303,6 +307,7 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 		effort: text(input.effort),
 		start: input.start === true,
 		harness,
+		...(isHostedSize(input.hostedSize) && { hostedSize: input.hostedSize }),
 	};
 }
 
@@ -395,10 +400,12 @@ async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxPr
  * before anything is asked of the engine, and one that exists already is taken as made: a creation
  * that is tried again after a lost answer, or after the server stopped half way, finishes the first.
  */
-async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { placement: ChildPlacement; id: string; base: string; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
+async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { placement: ChildPlacement; id: string; base: string; start?: string | null; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
 	// A GitHub issue proposes a feature in its own repository only: a sibling needs the owner's own filing.
 	if (github && input.repositories) throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
+	// Where the deployment has billing, a feature over two repositories is Pro's (billing/plans.ts).
+	if (input.repositories && accountLimits(c.vars.items.limits).plan?.crossRepo === false) throw new UserError("Features over two repositories are on Pro. Upgrade in Settings, or file one item per repository.", { code: "bad_input" });
 	const uid = profile.uid;
 	const itemId = child?.id ?? (github && submission ? githubItemId(uid, submission.key) : `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
 	const sessionId = itemSessionId(itemId);
@@ -423,19 +430,20 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const repos = input.repositories && !child ? await bindRepositories(c, input.repositories, input.repository.branch) : undefined;
 		begun = true;
 		// The builder runs the item's harness; the reviewer (hosted only) stays Windlass.
-		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child && { size: child.placement.units }), ...(input.effort && { effort: input.effort }) }));
+		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child?.start && { childBranch: { name: subtaskBranch(child.parent.itemId, child.parent.key, itemId), start: child.start } }), ...(child && { size: child.placement.units }), ...((child?.placement.hostedSize ?? input.hostedSize) && { hostedSize: child?.placement.hostedSize ?? input.hostedSize! }), ...(input.effort && { effort: input.effort }) }));
 		const repository = session.repository;
 		if (!repository) throw new Error("the item's session has no repository");
-		const reviewer = child || !config.factory.reviewer ? { off: "deployment" } as const :
+		const reviewer = child ? { off: "feature" } as const : !config.factory.reviewer ? { off: "deployment" } as const :
 			session.place.kind === "hosted" && reviewerAllowed(session.place, (await getLayer()).sandboxes.profile(session.profile)) ? { on: true } as const : { off: "profile" } as const;
 		const reviewerSessionId = "on" in reviewer ? `s_${hex16(`review\n${itemId}`)}` : null;
 		if (reviewerSessionId && !c.vars.sessions.has(reviewerSessionId)) {
-			await makeSession(c, profile, { title: input.title, profile: session.profile, model: session.model, repository: { id: repository.id, branch: repository.branch } }, null, { sessionId: reviewerSessionId, itemId, role: "reviewer", issue });
+			// The reviewer runs the builder's checks too: in a sandbox of the builder's size.
+			await makeSession(c, profile, { title: input.title, profile: session.profile, model: session.model, repository: { id: repository.id, branch: repository.branch } }, null, { sessionId: reviewerSessionId, itemId, role: "reviewer", issue, ...(session.hostedSize && { hostedSize: session.hostedSize }) });
 		}
 		const now = Date.now();
 		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
-		const limits = effectiveUserLimits(c.vars.items.limits.overrides).factory;
-		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, featureMultiplier: limits.featureMultiplier, budget: child?.budget ?? limits.item, agent: { harness: session.harness ?? "windlass", model: session.model, effort: input.effort, ...(session.item?.signIn && { signIn: session.item.signIn }) } });
+		const limits = accountLimits(c.vars.items.limits).factory;
+		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: child?.budget ?? limits.item, agent: { harness: session.harness ?? "windlass", model: session.model, effort: input.effort, ...(session.item?.signIn && { signIn: session.item.signIn }) } });
 		if (child) { item.parent = child.parent; item.childBase = child.base; item.placement = child.placement; }
 		// An issue someone else wrote is not the person's own text: every turn that hands the agent the task says where it came from.
 		const outside = sources(child?.untrusted, github && !github.origin.issue.trusted ? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)] : []);
@@ -544,9 +552,11 @@ async function storeRequest(db: RawAccess, request: Request): Promise<void> {
 	);
 }
 
-/** The factory's slots held now, for `internalAcquireRun`: they count against the person's turns too. */
-export function factorySlots(c: { vars: { items: ItemsState } }): number {
-	return c.vars.items.slots.size;
+/** The factory's slots held now on hosted sandboxes, for `internalAcquireRun`: they count against the person's hosted ceiling too. A machine's never do. */
+export function factorySlots(c: { vars: { items: ItemsState; sessions: ReadonlyMap<string, SessionSummary> } }): number {
+	let hosted = 0;
+	for (const slot of c.vars.items.slots.values()) if (hostedLimitsApply(c.vars.sessions.get(slot.session)?.place ?? { kind: "hosted" })) hosted++;
+	return hosted;
 }
 
 /**
@@ -570,14 +580,14 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		if (!state.requests.has(slot.key)) state.requests.set(slot.key, { key: slot.key, session: slot.session, item: slot.item, title: slot.title, startsRun: false, at: slot.at, attempt: 0, full: null, deferUntil: null, wait: null });
 		console.warn(`[wlp] factory.slot_expired uid=${c.key[0]} slot=${slot.id} key=${slot.key}: held past ${Math.round(SLOT_LEASE_MS / 60_000)} min without its turn's end being reported; given back and asked for again`);
 	}
-	const limits = effectiveUserLimits(state.limits.overrides).factory;
+	const limits = accountLimits(state.limits).factory;
 	const tokenWait = dailyTokenWait(c.vars.usage.modelTokens(now), limits.dailyTokens);
 	const sessions = [...c.vars.sessions.values()];
-	// The person's own agents at work, as `internalAcquireRun` counts them: one on a machine of theirs is not (`hostedLimitsApply`).
-	const own = sessions.filter((session) => !session.item && session.status !== "idle" && hostedLimitsApply(session.place)).length;
-	const inReview = [...state.items.values()].filter((item) => item.state === "review").length;
 	const usage = c.vars.usage.numbers(now);
-	const hostedRunning = new Set(sessions.filter((session) => session.place.kind === "hosted" && session.sandbox === "running").map((session) => session.id));
+	// What holds the hosted places, in words, for an item told it waits for one (budget.ts `admit`).
+	const holders = c.vars.usage.kept().filter((claim) => !c.vars.usage.shares(claim.session)).map((claim) => keptHolder(c.vars.sessions, claim.session));
+	// The user's hosted sandboxes at work: running ones, and the person's own agents working (`internalAcquireRun` counts those).
+	const hostedRunning = new Set(sessions.filter((session) => hostedLimitsApply(session.place) && (session.sandbox === "running" || (!session.item && session.status !== "idle"))).map((session) => session.id));
 	// A session given a slot runs a sandbox from then on, whether or not its summary has said so yet: counted across admissions, not only within one.
 	for (const slot of state.slots.values()) {
 		if (c.vars.sessions.get(slot.session)?.place.kind === "hosted") hostedRunning.add(slot.session);
@@ -594,7 +604,6 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			dropped.push(request.key);
 			continue;
 		}
-		const slots = [...state.slots.values()];
 		const machine = session.place.kind === "machine" ? c.vars.machines.get(session.place.machineId) : null;
 		if (session.place.kind === "machine" && !machine) {
 			// Keep the request until the item's durable withdrawal. Its creation can precede the index entry.
@@ -608,9 +617,6 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			at: now,
 			limits,
 			dailyTokenWait: usesPlatformModel(session.place, session.harness) ? tokenWait : null,
-			turns: { running: own + slots.length, factory: slots.map((slot) => slot.title) },
-			startsRun: request.startsRun,
-			inReview,
 			// The session's own sandbox, running already, is not one more for its turn.
 			place: machine ? {
 				kind: "machine", name: machineLabel(machine), online: machine.status === "online",
@@ -619,7 +625,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 				running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
 				max: machine.maxRunning ?? Infinity,
 				keptFull: machine.maxSandboxes !== undefined && machine.sandboxes.length >= machine.maxSandboxes && !machine.sandboxes.some(box => box.sessionId === session.id),
-			} : { kind: "hosted", usage, running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0), needsSandbox: session.sandbox === "none", deploymentFull: (request.deferUntil ?? 0) > now ? request.full : null },
+			} : { kind: "hosted", usage, running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0), needsSandbox: session.sandbox === "none" && !c.vars.usage.keeps(session.id) && !c.vars.usage.shares(session.id), holders, deploymentFull: (request.deferUntil ?? 0) > now ? request.full : null },
 			attempt: request.attempt,
 		});
 		if (answer.ok) {
@@ -663,7 +669,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			slot.told = true;
 			await c.db.execute("DELETE FROM turn_grant WHERE slot = ?", slot.id);
 		} catch (error) {
-			if (!isActorGone(error)) {
+			if (!isSessionGone(error)) {
 				// Kept, slot and all: the session may have taken it and only its answer was lost. Told again on the next run, or freed by its lease.
 				c.log.warn({ msg: "could not give a session its slot; it is told again later", session: slot.session, error: String(error) });
 				continue;
@@ -807,7 +813,7 @@ async function reserveAttachment(c: ItemsCtx, input: Reservation): Promise<Reser
 	const { sessionId, itemId, key, sha256, bytes } = input;
 	const item = c.vars.items.items.get(itemId);
 	if (!item || ended(item) || c.vars.sessions.get(sessionId)?.item?.id !== itemId || !key.startsWith(itemId + ":")) return { refused: "item_ended" };
-	const limits = effectiveUserLimits(c.vars.items.limits.overrides).factory.attachments;
+	const limits = accountLimits(c.vars.items.limits).factory.attachments;
 	if (!Number.isSafeInteger(bytes) || bytes <= 0 || !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("Invalid screenshot size or digest.");
 	if (bytes > limits.bytes) return { refused: "too_large" };
 	await armSweep(c, Date.now());
@@ -859,7 +865,7 @@ async function links(c: ItemsCtx, item: string, ttlMs: number, only?: string) {
 
 export function accountTokenWait(c: Pick<ItemsCtx, "vars">): string | null {
 	const used = c.vars.usage.modelTokens(Date.now());
-	return dailyTokenWait(used, effectiveUserLimits(c.vars.items.limits.overrides).factory.dailyTokens);
+	return dailyTokenWait(used, accountLimits(c.vars.items.limits).factory.dailyTokens);
 }
 
 /**
@@ -878,7 +884,8 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
 	// Where a fresh post-setup snapshot of the child's repository is: a bonus among the places the route allows.
 	const fresh = repositoryId === undefined ? [] : await snapshotPlaces(c.db, setupProjectKey(repositoryId) ?? "", c.vars.github?.connectedAt).catch(() => []);
-	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(),
+	const hostedSizes = hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(size => size.id);
+	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(), ...(hostedSizes.length > 1 && { hostedSizes }),
 		featureModel, ...((task.agent?.model !== undefined || task.agent?.effort !== undefined) && { models: await agentModels() }), ...(fresh.length && { snapshotPlaces: fresh }) };
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
 	if (!selected.decision) return selected;
@@ -940,12 +947,12 @@ export const itemActions = {
 				const previous = request.previous;
 				const handoff = previous?.place && placeKey(previous.place) !== placeKey(placement.place) && route.alternatives.length
 					? "\n\nPrevious subtask at the pushed feature head (quoted data):\n" + JSON.stringify({ head: previous.head, report: previous.report }) : "";
-				const body = job.task.brief + "\n\nOwned paths: " + job.task.owns.join(", ") + handoff + "\n\nFeature and dependency context (quoted data):\n" + context;
+				const body = job.task.brief + "\n\nOwned paths: " + (job.task.owns ?? []).join(", ") + handoff + "\n\nFeature and dependency context (quoted data):\n" + context;
 				const agent = childAgent(job.task, placement, session.model, feature.agent?.effort);
 				try {
 					existing = await makeItem(c, owner, { mode: "single", repository: { id: target.id, branch: featureBranch(input.parent) }, place: placement.place,
 						profile: placement.profile, ...agent, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
-						{ id: input.child, placement, base: target.base, owns: job.task.owns, budget: job.task.budget, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
+						{ id: input.child, placement, base: target.base, start: job.start, owns: job.task.owns ?? [], budget: job.budget ?? { tokens: job.task.budget.tokens, hostedSeconds: accountLimits(c.vars.items.limits).factory.item.hostedSeconds }, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
 				} catch (error) {
 					// Refused before its session was made (a model or effort the place no longer offers, an agent signed out
 					// since approval): the subtask can't be placed, and the feature asks the person. Nothing stays pinned.
@@ -1019,7 +1026,7 @@ export const itemActions = {
 			await armSweep(c, fire.firedAt);
 			const rows = await c.db.execute<{ id: string; key: string }>(
 				"SELECT id,key FROM attachments WHERE state!='removed' AND at<=? AND (state='discarded' OR ended_at=0 OR (state='reserved' AND at<?) OR (state='kept' AND ended_at<?))",
-				fire.firedAt - ATTACHMENT_DRAIN_MS, fire.firedAt - 2 * 3600_000, fire.firedAt - effectiveUserLimits(c.vars.items.limits.overrides).factory.attachments.days * DAY,
+				fire.firedAt - ATTACHMENT_DRAIN_MS, fire.firedAt - 2 * 3600_000, fire.firedAt - accountLimits(c.vars.items.limits).factory.attachments.days * DAY,
 			);
 			await removeRows(c, rows, true);
 		});
@@ -1085,7 +1092,7 @@ export const itemActions = {
 	// Answered with work items off too: the ceiling on running agents among these holds for a person's own agents as well.
 	factoryLimits: (c: ItemsCtx): FactoryLimits => {
 		requireUser(c);
-		return effectiveUserLimits(c.vars.items.limits.overrides).factory;
+		return accountLimits(c.vars.items.limits).factory;
 	},
 
 	apiTokens: async (c: ItemsCtx): Promise<ApiToken[]> => {
@@ -1139,11 +1146,9 @@ export const itemActions = {
 		await notifyProviderWaits(c, [summary]);
 		if (summary.parent && before && summary.revision > before.revision && (ended(summary) || summary.question?.id !== before.question?.id)) {
 			const parent = itemActor(c, c.key[0]!, summary.parent.itemId);
-			void c.keepAwake(parent.internalChildNotice({ id: summary.id, spent: summary.spent, state: summary.state }).catch(error =>
+			void c.keepAwake(parent.internalChildNotice({ id: summary.id, spent: summary.spent, budget: summary.budget, state: summary.state }).catch(error =>
 				c.log.warn({ msg: "The feature will read the child on its scheduled check.", child: summary.id, error: String(error) })));
 		}
-		// An item that left review, or came to it, changes what the review cap holds back.
-		if (before && (before.state === "review") !== (summary.state === "review")) queueChanged(c);
 	},
 
 	/** What an item reads of its user: the hosted sandbox seconds the ledger has for its session, and the user's open items. */
@@ -1177,7 +1182,8 @@ export const itemActions = {
 		const now = Date.now();
 		const known = state.requests.get(key);
 		const full = typeof input.deploymentFull === "number" && input.deploymentFull > 0 ? input.deploymentFull : (known?.full ?? null);
-		const request: Request = { key, session: session.id, item: input.itemId, title: String(input.title ?? ""), startsRun: input.startsRun === true, at: known?.at ?? now, attempt: known?.attempt ?? 0, full, deferUntil: input.deploymentFull ? now + FULL_FOR_MS : known?.deferUntil ?? null, wait: known?.wait ?? null };
+		const resumeAt = typeof input.resumeAt === "number" && Number.isSafeInteger(input.resumeAt) && input.resumeAt > 0 ? Math.min(input.resumeAt, now) : null;
+		const request: Request = { key, session: session.id, item: input.itemId, title: String(input.title ?? ""), startsRun: input.startsRun === true, at: resumeAt !== null ? Math.min(resumeAt, known?.at ?? now) : (known?.at ?? now), attempt: known?.attempt ?? 0, full, deferUntil: input.deploymentFull ? now + FULL_FOR_MS : known?.deferUntil ?? null, wait: known?.wait ?? null };
 		state.requests.set(key, request);
 		await storeRequest(c.db, request);
 		const mine = await runQueue(c, key);

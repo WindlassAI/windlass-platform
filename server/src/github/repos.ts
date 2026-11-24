@@ -17,6 +17,8 @@
  * restart forgets it. Nothing here is the record of anything.
  */
 
+import { GithubProblem } from "./problem.js";
+export { GithubProblem };
 import type { GithubId, GithubRepository } from "../contract.js";
 import { type GithubApp, GithubError, type Repository } from "./app.js";
 import type { ConfirmedConnection } from "./state.js";
@@ -31,17 +33,6 @@ export interface StoredConnection extends ConfirmedConnection {
 }
 
 export type StoredInstallation = StoredConnection["installations"][number];
-
-/** A failure with a sentence for the user; `code` is the UserError's code (contract.ts, `publish`). */
-export class GithubProblem extends Error {
-	constructor(
-		readonly code: "github_gone" | "github_denied" | "github_unreachable" | "github_failed",
-		message: string,
-	) {
-		super(message);
-		this.name = "GithubProblem";
-	}
-}
 
 export const NOT_CONNECTED = "GitHub is not connected any more. Connect GitHub again from the account menu, then try once more.";
 

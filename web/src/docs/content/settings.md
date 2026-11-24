@@ -1,6 +1,6 @@
 ## Account settings
 
-Open the account menu and choose **Settings**. What you save here holds for every agent of yours, whatever the repository. What you save for one repository is on that repository's page.
+Open the account menu and choose **Settings**. What you save here holds for every agent of yours, whatever the repository. What you save for one repository is under **Saved settings** when you choose it in **Agents**.
 
 ### Defaults for new agents
 
@@ -30,17 +30,46 @@ Where the platform offers work items, you can make up to 20 API tokens for scrip
 
 A token works until you revoke it. Choose **Revoke token** to stop it at once. Work items it filed stay.
 
+### Plans and billing
+
+Where the platform has plans, **Plan** at the top of Settings shows your plan, the hosted minutes you've used since your last reset, and **Upgrade to Pro** or **Manage billing**.
+
+A **hosted minute** is one minute of a standard sandbox on the platform (2 vCPU, 4 GiB). A small one counts half and a large one twice. Agents on your own machines are never counted, on any plan.
+
+| | Free | Pro |
+| --- | --- | --- |
+| Price | $0 | $15 a month, or $144 a year ($12 a month) |
+| Your own machines | Unlimited runs, up to 3 machines | Unlimited runs, up to 10 machines |
+| Hosted minutes | 120 a month | 1,800 a month |
+| Hosted at once | 1 | 5 |
+| Sandbox sizes | Small, standard | Small, standard, large |
+| Features over two repositories | No | Yes |
+| Items filed from GitHub | 20 a day | 100 a day |
+| Past the included minutes | Hosted agents stop until the month resets | Monthly Pro bills $0.006 a minute up to your spend cap. Yearly Pro stops at 1,800 minutes a month. |
+
+- **Reset dates.** Free resets at 00:00 UTC on the first of the month. Pro starts when your subscription starts. Monthly Pro resets at the end of your billing period. Yearly Pro resets on each monthly anniversary, on the last day of a shorter month. Settings shows your next reset.
+- **Near the limit** the Agents page shows how many of your minutes you've used. **At the limit** hosted agents can't start, and a running turn stops when the time it holds is over, with its files kept. Agents on your own machines keep running.
+- **Spend cap.** On monthly Pro, minutes past the included 1,800 are billed at $0.006 each, up to the cap. The cap starts at $20 per billing period. Set it lower under **Spend cap**, or to $0 for no overage. At the cap hosted agents stop until the period resets, so you're never billed past it.
+- **Yearly Pro** has no overage or spend cap. Switch to monthly Pro for overage.
+- **Upgrade** opens the payment provider's checkout. Choose **Monthly** or **Yearly** on the **Plans** page first. Pro's limits apply as soon as the payment goes through.
+- **Manage billing** opens the provider's portal, where you change your card or cancel. A cancelled plan stays Pro until the end of the period you paid for.
+- **If a payment fails or the subscription is paused**, Pro's limits stay for a grace period (seven days unless the platform says otherwise), and Settings says until when. Then the account moves to Free's limits. Nothing is deleted. Kept sandboxes, machines and items stay, and only what can start next follows Free's limits. Use **Manage billing** to resume a paused subscription.
+
+Without plans, the platform's operator sets your limits, and **Usage** shows them.
+
 ### Sign out everywhere
 
 **Sign out everywhere** signs you out on every device, including this one. **Also revoke all API tokens** is checked by default. Clear it to keep your scripts working with their existing tokens. Running agents continue, and paired machines keep working. On the **Machines** page, you can [remove a pairing](/docs/machines#remove-a-machine).
 
 ## Repository settings
 
-Open a repository's page and choose **Settings**. Each section has its own address, for example `/repositories/<id>/settings#checks`.
+Choose a repository in the rail of **Agents**, then **Saved settings**. Each section has its own address, for example `/repositories/<id>/settings#checks`.
 
 ### Defaults for new agents
 
 The sandbox and model a new agent on this repository starts from. You can still change them when you launch an agent. An agent that exists keeps what it was launched with.
+
+Where the platform offers more than one, **Hosted size** sets the CPUs and memory of the repository's hosted sandboxes, for its agents and its work items. Each choice shows its estimated price an hour. Without a saved size, agents start on **Small** and work items on **Standard**. A size chosen when you launch an agent or file an item wins over the saved one. See [Hosted sizes](/docs/start-an-agent#hosted-sizes).
 
 ### Screenshots
 
@@ -65,6 +94,28 @@ Commands that Windlass runs before it calls a turn done, in the agent's own sand
 | File patterns | 20, of up to 200 characters each |
 
 Agents on the repository have new checks from their next turn.
+
+### Environment
+
+A prepared sandbox for the repository: the platform runs the setup command in a fresh sandbox, then every check above, all of them, on the default branch. It keeps the result when setup passes and the sandbox could run every check. New agents and work items on the repository then start from it, with setup already done, and say "Started from a validated environment". Until one passes, and while the one there is stale, they start cold, as without one.
+
+There is one environment for each place the repository's agents and work items ran in the last 14 days: this platform, or one of your machines (at most three). The section shows each place with its state:
+
+| State | What it means |
+| --- | --- |
+| Ready | It passed, under the setup command and checks saved now. New sessions start from it. When a check ran and failed on the default branch's own code (main is red), it is still ready and says so: "Ready · main's checks fail: lint". |
+| Building | A build is running. |
+| Failed | The latest build failed because of the sandbox: setup failed, or the sandbox could not run a check (an **environment problem**, such as a pnpm that is not the one the repository pins). The section shows which check, what kind of problem, and the end of its output. A failed build never replaces the last one that passed: if that one still matches the saved settings, sessions keep starting from it. |
+| Stale | The setup command or the checks changed since it was built, or the image is no longer at that place. Sessions start cold until it is rebuilt. |
+
+It is rebuilt:
+
+- on a schedule: **Nightly** (the default once a setup command is saved), every 12 hours, every 6 hours, or **Off**;
+- 10 minutes after a push to the default branch (or a merged pull request), at most an hour after the first of several;
+- 2 minutes after you save the setup command or the checks;
+- when you choose **Rebuild** for a place, or **Rebuild all**.
+
+A build takes sandbox time like an agent, counts as one of your running agents while it runs, and is held to the same limits. When a limit is reached it waits, says why, and tries again later. It is built only on machines left on **Any feature** under [Let features use it](/docs/machines#let-features-use-it), never on one set to **When named** or **Never**, and waits while a machine is offline. A repository with saved secrets has no environment. Only Windlass sessions start from one. On this platform an environment is built in one [hosted size](/docs/start-an-agent#hosted-sizes), that of the repository's latest agent or work item here (else its saved size, else **Standard**), and only sandboxes of that size start from it: one of another size starts cold.
 
 ### Network
 
@@ -92,7 +143,9 @@ Where the platform limits its hosted sandboxes' network (**Restricted**, see Sec
 - **Asked for by its agents** lists the hosts a command in one of the repository's sandboxes looked up and could not reach. Choose **Allow** or **Dismiss**. The agent and the repository's scripts choose what a command looks up, so allow only a host you expect. The list keeps 30 hosts; once it is full, a new one is not added, and the agent's timeline says so, until you allow or dismiss some.
 - **Look for hosts in the repository** reads the manifests, lockfiles, install scripts and CI files of the default branch, and the setup command, and lists the presets and hosts they name that the sandboxes cannot reach yet, each with where it was found, for example "package.json scripts.postinstall". Nothing is allowed until you choose **Allow** for it: a file in a repository can name any host.
 
-A change applies to each agent from its next turn. **Allow for this repository** in an agent's timeline applies at once to that agent's sandbox while a turn is running in it, and otherwise from its next turn. Only you can change this list: it is saved with your settings for the repository.
+The repository list applies to restricted E2B sandboxes. A turn's **Blocked network requests** row in the session timeline, and a work item's **Network** block, offer **Allow for this repository** for a host this list can allow. On a paired machine, the machine owner controls the runner’s public host list with `--egress-domains`, and the row says so for each host the machine refused. Work-item pull requests include a count of blocked requests.
+
+A change applies to each hosted agent from its next turn. **Allow for this repository** in an agent's timeline applies at once to that agent's sandbox while a turn is running in it, and otherwise from its next turn. Only you can change this list: it is saved with your settings for the repository.
 
 ### Secrets
 
@@ -127,15 +180,15 @@ Sandbox time is the time your agents' sandboxes run: while an agent works, and f
 
 When less than a fifth of the day's time is left, the session and the composer warn you. When it is used up, a turn cannot start, and a running turn is stopped at the end of the time it held. Its sandbox is paused with its files as they are, and the conversation is kept.
 
-### Sandboxes you keep
+### Hosted sandboxes you keep
 
-You can keep 5 sandboxes at once, running or paused. Nothing is removed to make room by itself. To free one, choose **Free…** beside it, then **Free sandbox**. The dialog says what is lost and what is kept: the workspace's files that are not on GitHub go with the sandbox, while the agent, its conversation and, where the platform keeps one, the copy of the agent's memory stay. The agent's next prompt starts a new sandbox. This cannot be undone.
+You can keep 5 of the platform's own sandboxes at once, running or paused. Sandboxes on your own machines are not counted: **On your machines** lists them, with the only limits a machine has, the ones its owner set on its runner (`--max-running`, `--max-sandboxes`, and the snapshot and mirror disk limits). With none set there is no cap; the machine's slots and free disk decide. Nothing is removed to make room by itself. To free one, choose **Free…** beside it, then **Free sandbox**. The dialog says what is lost and what is kept: the workspace's files that are not on GitHub go with the sandbox, while the agent, its conversation and, where the platform keeps one, the copy of the agent's memory stay. The agent's next prompt starts a new sandbox. This cannot be undone.
 
-A sandbox left behind by an agent that no longer exists is listed too, and can be freed the same way.
+A hosted sandbox left behind by an agent that no longer exists takes no place, and the platform removes it within 30 minutes. A work item's second reviewer is listed as **Reviewer of “…”**, and shares its item's place.
 
 ### Estimated cost
 
-Where the platform's sandboxes are billed by the second, as on E2B, the page shows an estimated cost: the counted seconds times the provider's published price for the sandbox size. It is labelled as an estimate. The provider's bill can differ by a few seconds, and by more when a server stops under a running sandbox.
+Where the platform's sandboxes are billed by the second, as on E2B, the page shows an estimated cost: the counted seconds times the provider's published price for the sandbox size. Where there are hosted sizes, **Sandbox time today** lists each size with its price an hour, and **Today by agent** names each agent's size and prices its time at that size. The daily allowance counts seconds the same whatever the size: a larger sandbox costs more, and uses no more of the allowance. Earlier days in the history are priced at the small size. It is labelled as an estimate. The provider's bill can differ by a few seconds, and by more when a server stops under a running sandbox.
 
 ### Other sections
 
@@ -146,17 +199,18 @@ Where the platform's sandboxes are billed by the second, as on E2B, the page sho
 
 ## Limits
 
-These are the platform's defaults. Whoever runs the platform can change them.
+The platform limits only what costs its owner money or could be abused. Your own machines have no platform limit: their runners decide what they run. These are the defaults, and whoever runs the platform can change them for your account.
 
 | Limit | Default |
 | --- | --- |
-| Model tokens | Unlimited |
 | Sandbox time on this platform | 2 hours a day, reset at 00:00 UTC |
+| Sandboxes running at once on this platform | 3, your agents and work items together |
 | Sandboxes kept on this platform | 5 |
-| Agents working at once on this platform | 6 |
+| A paused sandbox on this platform | removed after 7 days without use |
+| Model tokens | Unlimited |
 | Prompt length | 20,000 characters |
 | Turn length | 45 minutes |
-| Time to answer a question | 10 minutes |
+| Time to answer a question during a turn | 10 minutes; 5 minutes for an approval in a hosted sandbox |
 | Note with an answer | 2,000 characters |
 | Clone of a repository | 3 minutes |
 | Setup command | 10 minutes |
@@ -168,4 +222,6 @@ These are the platform's defaults. Whoever runs the platform can change them.
 | Secrets per repository | 50 |
 | API tokens | 20 |
 
-A paused sandbox on this platform is removed after 7 days without use. On your own machines, your runner sets sandbox limits. Windlass shares the daily model cap shown on Usage. See [Runner reference](/docs/runner#run-options).
+A question during a turn is one the agent asks while its turn runs, for example to approve a command. The turn holds its sandbox while it waits, so after 10 minutes the question is declined and the agent goes on. In a hosted sandbox an unanswered approval ends the turn after 5 minutes instead, and the sandbox pauses until you send a prompt. A work item never asks this way: its questions end the turn and wait for days if need be.
+
+Work items have their own budgets and one limit on items filed from GitHub. See [Factory limits](/docs/factory#limits). On your own machines, your runner sets sandbox limits. Windlass shares the daily model cap shown on Usage. See [Runner reference](/docs/runner#run-options).

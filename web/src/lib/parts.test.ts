@@ -179,10 +179,14 @@ describe("routes", () => {
 		expect(parseRoute("/nowhere")).toEqual({ name: "notfound" });
 	});
 
-	it("reads a repository's two views, and the new agent's page from each", () => {
+	it("reads a repository's views in the Agents home, the agents on no repository, and the old new agent's pages", () => {
 		expect(parseRoute("/repositories/7101")).toEqual({ name: "repository", id: 7101 });
 		expect(parseRoute("/repositories/7101/")).toEqual({ name: "repository", id: 7101 });
 		expect(parseRoute("/repositories/7101/settings")).toEqual({ name: "repository", id: 7101, view: "settings" });
+		expect(parseRoute("/repositories/7101/agents")).toEqual({ name: "repository", id: 7101, view: "agents" });
+		expect(parseRoute("/repositories/7101/items")).toEqual({ name: "repository", id: 7101, view: "items" });
+		expect(parseRoute("/repositories/7101/pulls")).toEqual({ name: "repository", id: 7101, view: "pulls" });
+		expect(parseRoute("/repositories/none")).toEqual({ name: "home", scope: "none" });
 		expect(parseRoute("/repositories/7101/new")).toEqual({ name: "new", repository: 7101 });
 		expect(parseRoute("/repositories/7101/settings/new")).toEqual({ name: "new", repository: 7101, over: "settings" });
 		expect(parseRoute("/repositories/7101/work")).toEqual({ name: "notfound" });
@@ -201,7 +205,9 @@ describe("routes", () => {
 			expect(href({ name: "new", repository: 7101, over: "settings" })).toBe("/repositories/7101/settings/new?mock=1");
 			globalThis.location = { search: "" } as Location;
 			expect(href({ name: "repository", id: 7101, view: "settings", section: "checks" })).toBe("/repositories/7101/settings#checks");
-			for (const route of [{ name: "repository", id: 7101 }, { name: "repository", id: 7101, view: "settings" }, { name: "new", repository: 7101, over: "settings" }] as const) expect(parseRoute(href(route))).toEqual(route);
+			expect(href({ name: "repository", id: 7101, view: "pulls" })).toBe("/repositories/7101/pulls");
+			expect(href({ name: "home", scope: "none" })).toBe("/repositories/none");
+			for (const route of [{ name: "repository", id: 7101 }, { name: "repository", id: 7101, view: "settings" }, { name: "repository", id: 7101, view: "agents" }, { name: "repository", id: 7101, view: "items" }, { name: "home", scope: "none" }, { name: "new", repository: 7101, over: "settings" }] as const) expect(parseRoute(href(route))).toEqual(route);
 		} finally {
 			globalThis.location = was;
 		}

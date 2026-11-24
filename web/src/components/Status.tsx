@@ -1,8 +1,8 @@
 /** How a session's state is shown: a glyph that moves when work is happening, and a word. */
 import type { SessionStatus, SessionSummary, TurnOutcome } from "@contract";
-import { AskIcon, CheckIcon, CrossIcon, Mark, RingIcon, StopIcon, WarnIcon } from "./Icons";
+import { AskIcon, CheckIcon, CrossIcon, Mark, PauseIcon, RingIcon, StopIcon, WarnIcon } from "./Icons";
 
-export const STATUS_WORD: Record<SessionStatus, string> = { idle: "idle", starting: "starting", running: "working", waiting: "needs you", stopping: "stopping" };
+export const STATUS_WORD: Record<SessionStatus, string> = { idle: "idle", starting: "starting", running: "working", waiting: "needs you", stopping: "stopping", paused: "paused" };
 
 export const OUTCOME_WORD: Record<TurnOutcome, string> = {
 	succeeded: "done",
@@ -28,12 +28,14 @@ export function StatusGlyph({ status, size = 16 }: { status: SessionStatus; size
 	if (status === "stopping") return <StopIcon size={size} className="status-glyph status-stopping" />;
 	// Waiting on the user: still, not turning. Nothing moves until they answer.
 	if (status === "waiting") return <AskIcon size={size} className="status-glyph status-waiting" />;
+	// Paused: the turn is not over, and resumes by itself. Still, like waiting.
+	if (status === "paused") return <PauseIcon size={size} className="status-glyph status-paused" />;
 	return <RingIcon size={size} className="status-glyph status-idle" />;
 }
 
 export function StatusBadge({ status }: { status: SessionStatus }) {
 	return (
-		<span className={`status-badge status-badge-${status}`} title={status === "waiting" ? "A question waits for your answer" : undefined}>
+		<span className={`status-badge status-badge-${status}`} title={status === "waiting" ? "A question waits for your answer" : status === "paused" ? "The turn is paused and resumes by itself" : undefined}>
 			<StatusGlyph status={status} size={14} />
 			{STATUS_WORD[status]}
 		</span>

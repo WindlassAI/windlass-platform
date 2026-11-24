@@ -75,6 +75,24 @@ describe("adding a machine", () => {
 		expect((await client.user(ada).machines()).length).toBe(before + 1);
 	});
 
+	it("shows the one-line install first, and the Docker commands under Other ways", async () => {
+		history.replaceState(null, "", "/machines");
+		client = createMockClient({ pace: 0, origin: "http://localhost:5173" });
+		saveAuth("mock", ada);
+		root = createRoot(host);
+		act(() => root.render(createElement(AppProvider, { client, children: createElement(App) })));
+		await settle();
+		act(() => button("Add a machine")?.click());
+		const commands = [...document.body.querySelectorAll<HTMLElement>(".machine-dialog .machine-command pre")];
+		expect(commands[0]?.textContent).toBe("curl -fsSL http://localhost:5173/install.sh | sh");
+		const other = document.body.querySelector<HTMLDetailsElement>("details.machine-other-ways");
+		expect(other?.open).toBe(false);
+		expect(other?.querySelector("summary")?.textContent).toBe("Other ways");
+		expect(commands.slice(1).map((pre) => pre.closest("details") === other)).toEqual([true, true]);
+		expect(commands[1]?.textContent).toContain(" setup --platform http://localhost:5173");
+		expect(commands[2]?.textContent).toContain("docker run -d --name windlass-runner");
+	});
+
 	it("is refused by the mock, as by the platform, without the person's word", async () => {
 		client = createMockClient({ pace: 0 });
 		const user = client.user(ada);

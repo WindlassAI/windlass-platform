@@ -482,6 +482,13 @@ describe("a turn the platform ended", () => {
 		expect(turn(ended).end).toMatchObject({ outcome: "error", message: "The sandbox stopped responding." });
 	});
 
+	it("takes another agent's session id from its turn's end, so the panel has it without a reload", () => {
+		let view = applyItem(emptyView(), { seq: 1, at: 1, turn: 1, kind: "user", text: "go", model: "gpt-6.2-sol", effort: null });
+		expect(view.windlassSessionId).toBeNull();
+		view = applyItem(view, { seq: 2, at: 2, turn: 1, kind: "turn.ended", outcome: "succeeded", verified: null, exitCode: null, steps: null, durationMs: 1000, usage: null, cachedShare: null, message: null, context: null, sessionId: "019a-codex-thread" });
+		expect(view.windlassSessionId).toBe("019a-codex-thread");
+	});
+
 	it("shows the platform's own lines", () => {
 		let view = applyItem(emptyView(), { seq: 1, at: 1, turn: 1, kind: "user", text: "go", model: "gpt-test", effort: "low" });
 		view = applyItem(view, { seq: 2, at: 2, turn: 1, kind: "platform", level: "info", text: "Creating sandbox" });

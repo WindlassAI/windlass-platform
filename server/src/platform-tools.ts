@@ -26,8 +26,11 @@
  *   report      text for the person, taken as a claim and never as the verdict (whether the work is
  *               ready is decided from the checks and CI). A rogue call can file a wrong report, which the
  *               agent's own later call replaces, and which the person reads labelled as the agent's.
- *   ask_person  one question, with the limits Windlass's has (one per turn, `ASK_LIMITS.perRun` per run,
+ *   ask_person  one question, with the limits Windlass's has (one per turn, its length and options,
  *               the same cleaning), the answer coming from the person as the next turn's message.
+ *   request_secret asks the person to supply a missing variable. The request names the sandbox as its
+ *               source and says where the value would be saved. Only the person's separate action
+ *               can save it and grant the next turn access.
  *   push        commits the workspace and pushes it to the session's own branch, which the platform names
  *               (a call that names another is refused, and nothing in a call chooses the ref, a force or a
  *               lease), with a token that never enters the container, under a lease that replaces only the
@@ -41,8 +44,7 @@
  *               `agentPublish`). A rogue call reaches a question the person answers, which says the call
  *               may not be the agent's.
  *
- * None of them hands anything to the container: no credential, no token, nothing it could not already do
- * there; and a call is answered only while the turn runs. The timeline says of every push, fetch and
+ * The tool replies carry no credentials and are sent only while the turn runs. The timeline says of every push, fetch and
  * publish that came over MCP that any process in the sandbox may have made it (agent-publish.ts,
  * `MCP_CALL_WORDS`). This is the exposure Windlass already has where it does not sandbox commands
  * ("Docker, hardened"), whose commands can write on the engine's own connection (docs/known-limitations.md).
@@ -57,14 +59,14 @@
  */
 
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
-import { ASK_TOOL, FETCH_BASE_TOOL, PUBLISH_SERVER, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools, type HostToolDeclaration } from "./agent-publish.js";
+import { SECRET_TOOL, ASK_TOOL, FETCH_BASE_TOOL, PUBLISH_SERVER, PUBLISH_TOOL, PUSH_TOOL, REPORT_TOOL, callArguments, platformTools, type HostToolDeclaration } from "./agent-publish.js";
 import { config } from "./config.js";
 import type { RunTurnInput, TurnPublishRequest } from "./sandbox/api.js";
 
 export const PLAN_TOOL = "file_plan";
 
 /** One of the platform's tools. */
-export type PlatformTool = typeof PUBLISH_TOOL | typeof REPORT_TOOL | typeof ASK_TOOL | typeof PUSH_TOOL | typeof FETCH_BASE_TOOL | typeof REVIEW_TOOL | typeof PLAN_TOOL;
+export type PlatformTool = typeof PUBLISH_TOOL | typeof REPORT_TOOL | typeof SECRET_TOOL | typeof ASK_TOOL | typeof PUSH_TOOL | typeof FETCH_BASE_TOOL | typeof REVIEW_TOOL | typeof PLAN_TOOL;
 
 /** What decides and does a call: the agent is told what it resolves with. */
 export type PlatformToolHandler = (call: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
@@ -83,6 +85,7 @@ export type PlatformToolHandler = (call: TurnPublishRequest, signal: AbortSignal
 export const TOOL_REACH: Readonly<Record<PlatformTool, "sandbox" | "asked" | "host">> = Object.freeze({
 	[REPORT_TOOL]: "sandbox",
 	[ASK_TOOL]: "sandbox",
+	[SECRET_TOOL]: "sandbox",
 	[PUBLISH_TOOL]: "asked",
 	[PUSH_TOOL]: "sandbox",
 	[FETCH_BASE_TOOL]: "sandbox",
@@ -135,6 +138,7 @@ export function turnPlatformTools(input: RunTurnInput, reach: "host" | "sandbox"
 			tools.set(REPORT_TOOL, input.onReport);
 			if (input.onAsk) tools.set(ASK_TOOL, input.onAsk);
 		}
+		if (input.onRequestSecret) tools.set(SECRET_TOOL, input.onRequestSecret);
 		if (input.onPush && input.onFetchBase) {
 			tools.set(PUSH_TOOL, input.onPush);
 			tools.set(FETCH_BASE_TOOL, input.onFetchBase);
@@ -150,7 +154,7 @@ export function platformToolDeclarations(tools: ReadonlyMap<string, unknown>, op
 	return platformTools({
 		plan, ...(options.crossRepo && plan && { crossRepo: true }),
 		publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL),
-		review: tools.has(REVIEW_TOOL), ask: tools.has(ASK_TOOL), screenshots: options.screenshots,
+		review: tools.has(REVIEW_TOOL), ask: tools.has(ASK_TOOL), secret: tools.has(SECRET_TOOL), screenshots: options.screenshots,
 		...(options.mcp && { mcp: { pushes: MCP_LIMITS[PUSH_TOOL] ?? 0, fetches: MCP_LIMITS[FETCH_BASE_TOOL] ?? 0 } }),
 	}, config.questionTimeoutMs).filter(tool => tools.has(tool.name));
 }

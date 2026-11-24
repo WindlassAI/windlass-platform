@@ -4,6 +4,8 @@ import { RunnerError } from "./state.js";
 import { DEFAULT_STORE_LIMITS, parseStoreSize, type StoreLimits } from "../../server/src/sandbox/store-limits.js";
 
 const GiB = 2 ** 30;
+const defaultCpus = 2;
+const floorMemory = 4 * GiB;
 type Overrides = { slots?: number; cpus?: number; slotMemory?: number; sandboxMemory?: number };
 type Flags = Partial<Record<"slots" | "max-turns" | "slot-cpus" | "slot-memory" | "sandbox-memory", string>>;
 
@@ -27,24 +29,44 @@ export function sizingFlags(flags: Flags, envCpus?: string): Overrides {
 		sandboxMemory: bytes(flags["sandbox-memory"], "sandbox-memory", /^(\d+(?:\.\d+)?)(g)$/) };
 }
 
+function memoryShare(usableMem: number, slots: number, cpus: number) {
+	const quantum = GiB / 4;
+	return Math.min(Math.floor(4 * GiB * cpus), Math.floor(usableMem / slots / quantum) * quantum);
+}
+
+function checkMemoryBudget(slots: number, perSlot: number, usableMem: number) {
+	if (slots * perSlot > usableMem) throw new RunnerError(`The requested --slots × --slot-memory (${slots * perSlot / GiB} GiB) exceeds the available --sandbox-memory budget (${Number((usableMem / GiB).toFixed(2))} GiB).`);
+}
+
 export function sizeMachine({ cores, memoryBytes }: { cores: number; memoryBytes: number }, overrides: Overrides = {}): MachineSlotCapacity {
+	const reserve = { cpus: Math.max(1, Math.ceil(cores / 8)), memoryBytes: Math.ceil(Math.max(GiB, memoryBytes / 10) + GiB / 2) };
+	if (Object.values(overrides).every(value => value === undefined)) {
+		const usableMem = memoryBytes - reserve.memoryBytes;
+		const max = Math.min(16, Math.floor((cores - reserve.cpus) / defaultCpus), Math.floor(usableMem / floorMemory));
+		if (max >= 1) {
+			return { max, unit: { cpus: defaultCpus, memoryBytes: memoryShare(usableMem, max, defaultCpus), pids: 512 * defaultCpus }, reserve };
+		}
+		const memoryReserve = Math.max(GiB, Math.ceil(memoryBytes / 4));
+		const remaining = memoryBytes - memoryReserve;
+		checkMemoryBudget(1, GiB, remaining);
+		const perSlot = Math.min(floorMemory, remaining);
+		return { max: 1, unit: { cpus: cores, memoryBytes: perSlot, pids: Math.min(4096, 512 * cores) },
+			reserve: { cpus: 0, memoryBytes: memoryReserve } };
+	}
+
+	// Keep existing allocations and validation for machines with explicit sizing.
 	const small = cores <= 2;
-	const reserve = {
-		cpus: small ? 0 : Math.max(1, Math.ceil(cores / 8)),
-		memoryBytes: small ? 0 : Math.ceil(Math.max(GiB, memoryBytes / 10) + GiB / 2),
-	};
+	if (small) { reserve.cpus = 0; reserve.memoryBytes = 0; }
 	const usableMem = overrides.sandboxMemory ?? memoryBytes - reserve.memoryBytes;
-	const cpus = overrides.cpus ?? (small ? Math.max(0.5, cores / 2) : 2);
+	const cpus = overrides.cpus ?? (small ? Math.max(0.5, cores / 2) : defaultCpus);
 	if (!Number.isFinite(cpus) || cpus < 0.01 || cpus > cores) throw new RunnerError(`Give --slot-cpus or WLP_RUNNER_CPUS a CPU count from 0.01 to ${cores}.`);
 	const max = overrides.slots ?? (small ? 2 : Math.min(16, Math.max(2, Math.floor((cores - reserve.cpus) / cpus))));
 	if (!Number.isInteger(max) || max < 1 || max > 64) throw new RunnerError("Give --slots (or --max-turns) a whole number from 1 to 64.");
 	if (overrides.sandboxMemory !== undefined && (!Number.isSafeInteger(usableMem) || usableMem <= 0)) throw new RunnerError("Give --sandbox-memory a positive memory budget.");
-	const quantum = GiB / 4;
-	const share = Math.floor(usableMem / max / quantum) * quantum;
-	const defaultMemory = small ? 1.5 * GiB : Math.max(1.5 * GiB, Math.min(Math.floor(4 * GiB * cpus), share));
+	const defaultMemory = small ? 1.5 * GiB : Math.max(1.5 * GiB, memoryShare(usableMem, max, cpus));
 	const perSlot = overrides.slotMemory ?? defaultMemory;
 	if (!Number.isSafeInteger(perSlot) || perSlot < GiB) throw new RunnerError("Give --slot-memory at least 1 GiB.");
-	if (max * perSlot > usableMem) throw new RunnerError(`The requested --slots × --slot-memory (${max * perSlot / GiB} GiB) exceeds the available --sandbox-memory budget (${Number((usableMem / GiB).toFixed(2))} GiB).`);
+	checkMemoryBudget(max, perSlot, usableMem);
 	return { max, unit: { cpus, memoryBytes: perSlot, pids: small ? 512 : Math.min(4096, 512 * Math.ceil(cpus)) }, reserve };
 }
 

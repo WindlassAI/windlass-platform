@@ -2,6 +2,7 @@ import "./check-secret.js";
 import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { test } from "node:test";
+import { clientError } from "../server/src/auth.js";
 import { user } from "../server/src/actors/user.js";
 import { issueUserToken } from "../server/src/tokens.js";
 
@@ -115,4 +116,36 @@ test("the generation belongs to the canonical single-uid user actor", () => {
 	const admit = (key: string[]) => user.config.onBeforeConnect!({ ...context, key } as never, params);
 	assert.doesNotThrow(() => admit([profile.uid]));
 	assert.throws(() => admit([profile.uid, "extra"]), { code: "forbidden" });
+});
+
+test("a deleted session is forgotten after one launch check, including after the actor reloads", async t => {
+	const f = fixture(() => false);
+	t.after(() => f.sql.close());
+	await schema.onMigrate(f.db as never);
+	const id = "deleted", until = Date.now(), summary = { id, status: "starting", turns: 0 };
+	f.sql.prepare("INSERT INTO sessions(id, created_at, summary, launch_until) VALUES (?, 0, ?, ?)").run(id, JSON.stringify(summary), until);
+	let calls = 0;
+	const ctx = {
+		key: ["u_test"], db: f.db, broadcast() {}, scheduledFire: { id: "launch" },
+		client: () => ({ agentSession: { get: () => ({ internalSummary: async () => {
+			calls++;
+			throw { group: "actor", code: "not_found" };
+		} }) } }),
+	};
+	for (let i = 0; i < 2; i++) {
+		const vars = await createVars(ctx as never, undefined);
+		await user.config.actions!.internalCheckLaunch({ ...ctx, vars } as never, id, until);
+		assert.equal(vars.sessions.has(id), false);
+	}
+	assert.equal(calls, 1);
+});
+
+test("a stray actor lookup answers not_found at debug level", () => {
+	const errors: unknown[] = [], debug: unknown[] = [];
+	const log = { debug: (entry: unknown) => debug.push(entry), error: (entry: unknown) => errors.push(entry) };
+	assert.equal(clientError(log, { group: "actor", code: "not_found" }, "Lookup failed").code, "not_found");
+	assert.equal(debug.length, 1);
+	assert.equal(errors.length, 0);
+	assert.equal(clientError(log, new Error("storage failed"), "Lookup failed").code, "internal_error");
+	assert.equal(errors.length, 1);
 });

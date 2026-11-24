@@ -49,6 +49,7 @@ export const INBOX_TABLES = [
 		asks_left INTEGER,
 		untrusted TEXT NOT NULL DEFAULT '[]',
 		unsandboxed INTEGER NOT NULL DEFAULT 0,
+		fresh TEXT,
 		starts_run INTEGER NOT NULL,
 		state TEXT NOT NULL,
 		turn INTEGER,
@@ -100,6 +101,19 @@ export interface Delivery {
 	 * on "Docker, hardened" the turn then goes labelled only instead of being refused.
 	 */
 	unsandboxed?: boolean;
+	/**
+	 * A builder's turn that goes on with its step: the prompt for when its agent no longer has the step's
+	 * conversation (a new sandbox, a memory that was lost), which `text` assumes it has: the step's whole task, with
+	 * the outside sources of that text and whether the person let them run (as `untrusted` and `unsandboxed` are
+	 * for `text`). Absent (null in the row) for a step's first turn, which carries the task already, and for rows stored before it.
+	 */
+	fresh?: FreshPrompt | null;
+}
+
+export interface FreshPrompt {
+	text: string;
+	untrusted: string[];
+	unsandboxed?: boolean;
 }
 
 export interface InboxRow extends Delivery {
@@ -118,7 +132,7 @@ export interface TurnRelease {
 }
 
 /** What the outbox sends: a fact to the item, or a slot given back to the user's turn queue. */
-export type OutboxMessage = { to: "tokens"; receipt: TokenReceipt } | { to: "item"; itemId: string; fact: Fact } | { to: "user"; done: Omit<TurnRelease, "sessionId"> };
+export type OutboxMessage = { to: "network"; itemId: string; revision: number; network: import("../contract.js").BlockedNetwork } | { to: "tokens"; receipt: TokenReceipt } | { to: "item"; itemId: string; fact: Fact } | { to: "user"; done: Omit<TurnRelease, "sessionId"> };
 
 /** What a slot request hands the user's turn queue (user-items.ts `internalRequestTurn`). */
 export interface TurnRequest {
@@ -129,6 +143,8 @@ export interface TurnRequest {
 	startsRun: boolean;
 	/** Set when the sandbox layer refused the last try because the deployment runs as many as it may: that number (factory/budget.ts `PlaceNow`). */
 	deploymentFull?: number | null;
+	/** A paused turn that gave its slot back while its machine was away asks for one again: queued as of when it first started, ahead of the turns that came since. */
+	resumeAt?: number;
 }
 
 /** The queue's answer: a slot, named, or why the turn waits (it is granted later, by `internalGrant`). */
@@ -143,13 +159,13 @@ interface InboxCtx {
 	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
 }
 
-type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; checkout: string | null; asks_left: number | null; untrusted: string | null; unsandboxed: number | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
+type Row = { key: string; item: string; title: string; text: string; agent: string | null; max_steps: number; fetch_base: string | null; checkout: string | null; asks_left: number | null; untrusted: string | null; unsandboxed: number | null; fresh: string | null; starts_run: number; state: InboxRow["state"]; turn: number | null; slot: string | null; ended: string | null };
 
 function rowOf(row: Row): InboxRow {
-	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, checkout: row.checkout ? JSON.parse(row.checkout) as ReviewDelivery : null, asksLeft: row.asks_left, untrusted: untrustedOf(row.untrusted ? JSON.parse(row.untrusted) : []), unsandboxed: row.unsandboxed === 1, startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
+	return { key: row.key, itemId: row.item, title: row.title, text: row.text, agent: row.agent, maxSteps: row.max_steps, fetchBase: row.fetch_base, checkout: row.checkout ? JSON.parse(row.checkout) as ReviewDelivery : null, asksLeft: row.asks_left, untrusted: untrustedOf(row.untrusted ? JSON.parse(row.untrusted) : []), unsandboxed: row.unsandboxed === 1, fresh: row.fresh ? freshOf(JSON.parse(row.fresh)) : null, startsRun: row.starts_run === 1, state: row.state, turn: row.turn, slot: row.slot };
 }
 
-const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, starts_run, state, turn, slot, ended FROM inbox";
+const SELECT = "SELECT key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, fresh, starts_run, state, turn, slot, ended FROM inbox";
 
 /** The sources of a delivery or a row: strings, each kept to Windlass's length, at most a handful; anything else is none. */
 export function untrustedOf(value: unknown): string[] {
@@ -179,7 +195,24 @@ export function deliveryOf(input: unknown): Delivery | null {
 	const checkout = given.checkout as ReviewDelivery | undefined;
 	if (checkout && (!/^[0-9a-f]{40}$/.test(checkout.head) || !/^[0-9a-f]{40}$/.test(checkout.baseSha) || !Number.isSafeInteger(checkout.pr) || checkout.pr < 1)) return null;
 	const asksLeft = typeof given.asksLeft === "number" && Number.isSafeInteger(given.asksLeft) && given.asksLeft >= 0 ? given.asksLeft : null;
-	return { key, itemId, checkout, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true, asksLeft, untrusted: untrustedOf(given.untrusted), unsandboxed: given.unsandboxed === true };
+	return { key, itemId, checkout, title: text(given.title) ?? "", text: body, agent: text(given.agent), maxSteps: given.maxSteps, fetchBase: text(given.fetchBase), startsRun: given.startsRun === true, asksLeft, untrusted: untrustedOf(given.untrusted), unsandboxed: given.unsandboxed === true, fresh: freshOf(given.fresh) };
+}
+
+/** A whole-task prompt of a delivery or a row, checked; null for none or one that cannot be taken. */
+function freshOf(value: unknown): FreshPrompt | null {
+	if (typeof value !== "object" || value === null) return null;
+	const given = value as Record<string, unknown>;
+	if (typeof given.text !== "string" || given.text.trim() === "") return null;
+	return { text: given.text, untrusted: untrustedOf(given.untrusted), ...(given.unsandboxed === true && { unsandboxed: true }) };
+}
+
+/**
+ * What an item's turn gives its agent: the row's text and its sources, or its whole-task prompt (`fresh`) when the
+ * agent has no conversation to go on with (no session id to resume: a new sandbox, a memory that was lost).
+ */
+export function itemTurnText(row: Pick<InboxRow, "untrusted" | "unsandboxed" | "fresh">, text: string, resumed: string | null | undefined): { text: string; untrusted: string[]; unsandboxed?: boolean; fresh: boolean } {
+	if (row.fresh && !resumed) return { ...row.fresh, fresh: true };
+	return { text, untrusted: row.untrusted, unsandboxed: row.unsandboxed, fresh: false };
 }
 
 /** Writes the delivery's row, in one statement. False when a row of that key was there: the delivery came before. */
@@ -187,7 +220,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 	const before = await inboxRow(db, delivery.key);
 	if (before) return false;
 	await db.execute(
-		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
+		"INSERT OR IGNORE INTO inbox (key, item, title, text, agent, max_steps, fetch_base, checkout, asks_left, untrusted, unsandboxed, fresh, starts_run, state, turn, slot, ended, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, NULL, NULL, ?)",
 		delivery.key,
 		delivery.itemId,
 		delivery.title,
@@ -199,6 +232,7 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 		delivery.asksLeft ?? null,
 		JSON.stringify(delivery.untrusted ?? []),
 		delivery.unsandboxed ? 1 : 0,
+		delivery.fresh ? JSON.stringify(delivery.fresh) : null,
 		delivery.startsRun ? 1 : 0,
 		now,
 	);
@@ -206,8 +240,8 @@ export async function receive(db: RawAccess, delivery: Delivery, now: number): P
 }
 
 /** Asks the user's turn queue for a slot for the row. A queue that does not answer leaves the request to be sent again (the item's check, or the next wake). */
-export function requestTurn(c: InboxCtx, uid: string, row: InboxRow, deploymentFull: number | null = null): Promise<TurnAnswer> {
-	const request: TurnRequest = { sessionId: c.key[1] as string, itemId: row.itemId, key: row.key, title: row.title, startsRun: row.startsRun, deploymentFull };
+export function requestTurn(c: InboxCtx, uid: string, row: InboxRow, deploymentFull: number | null = null, resumeAt?: number): Promise<TurnAnswer> {
+	const request: TurnRequest = { sessionId: c.key[1] as string, itemId: row.itemId, key: row.key, title: row.title, startsRun: row.startsRun, deploymentFull, ...(resumeAt !== undefined && { resumeAt }) };
 	return userActor(c, uid).internalRequestTurn(request);
 }
 
@@ -317,10 +351,12 @@ export async function settleTokenReceipts(c: InboxCtx, uid: string): Promise<voi
 const OUTBOX_RETRY_FIRST_MS = 10_000;
 const OUTBOX_RETRY_MOST_MS = 5 * 60_000;
 
-// Do not release a slot or advance the item past unacknowledged spending, even during a
-// receipt's retry delay. Unrelated earlier facts can still be sent.
+// Spending must settle before slot release. A turn end must also follow its network receipt,
+// so an item publishing immediately can include the final counts even after a retry.
 const sendable = `(json_extract(message, '$.to') = 'tokens' OR NOT EXISTS (
-	SELECT 1 FROM outbox earlier WHERE earlier.id < outbox.id AND json_extract(earlier.message, '$.to') = 'tokens'))`;
+	SELECT 1 FROM outbox earlier WHERE earlier.id < outbox.id AND json_extract(earlier.message, '$.to') = 'tokens'))
+	AND (json_extract(message, '$.to') <> 'item' OR NOT EXISTS (
+	SELECT 1 FROM outbox earlier WHERE earlier.id < outbox.id AND json_extract(earlier.message, '$.to') = 'network'))`;
 
 /**
  * Sends what is due in the outbox, oldest first; removes each once it was acknowledged, and sets the
@@ -333,7 +369,8 @@ export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 		for (const row of rows) {
 			const message = JSON.parse(row.message) as OutboxMessage;
 			try {
-				if (message.to === "item") await itemActor(c, uid, message.itemId).internalFact(message.fact);
+				if (message.to === "network") await itemActor(c, uid, message.itemId).internalBlockedNetwork({ sessionId: c.key[1]!, revision: message.revision, network: message.network });
+				else if (message.to === "item") await itemActor(c, uid, message.itemId).internalFact(message.fact);
 				else if (message.to === "tokens") await userActor(c, uid).internalRecordTurnTokens({ sessionId: c.key[1]!, receipt: message.receipt });
 				else await userActor(c, uid).internalTurnDone({ sessionId: c.key[1] as string, ...message.done });
 				await c.db.execute("DELETE FROM outbox WHERE id = ?", row.id);
@@ -355,7 +392,7 @@ export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 /** The observations on the turn's changes that a reviewer would want to look at (verified.ts), from git in the sandbox; none when git says nothing. */
 export async function turnFlags(sandbox: SandboxHandle, baseSha: string | null, checks: ReadonlyArray<RepositoryCheck>, verified: Verified | null, owns?: string[]) {
 	const work = await readWork(sandbox, baseSha);
-	return work === null ? [] : workFlags(work, [...checks, ...(verified?.run?.checks ?? [])], owns && (path => ownsPath(owns, path)));
+	return work === null ? [] : workFlags(work, [...checks, ...(verified?.run?.checks ?? [])], owns?.length ? path => ownsPath(owns, path) : undefined);
 }
 
 /** The fact of a turn's end, for the item. `hostedSeconds` is the ledger's, which the item reads from the user's actor. */

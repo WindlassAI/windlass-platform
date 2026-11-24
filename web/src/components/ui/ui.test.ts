@@ -7,7 +7,7 @@ import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Menu, type MenuSpec } from "./Menu";
-import { Pill } from "./Pill";
+import { AgentGlyph, agentId, Pill } from "./Pill";
 import { place } from "./position";
 import { Sheet } from "./Sheet";
 import { Tooltip } from "./Tooltip";
@@ -282,5 +282,23 @@ describe("a tooltip", () => {
 		expect(button.getAttribute("aria-describedby")).toBe(tip.id);
 		act(() => button.blur());
 		expect(document.querySelector('[role="tooltip"]')).toBeNull();
+	});
+});
+
+describe("agent badges", () => {
+	it("draws each agent's own logo, by its id or its name", () => {
+		const drawn = (harness: string) => {
+			const host = document.createElement("div");
+			const root = createRoot(host);
+			act(() => root.render(createElement(AgentGlyph, { harness })));
+			const svg = host.querySelector(".ui-glyph svg")?.outerHTML ?? "";
+			act(() => root.unmount());
+			return svg;
+		};
+		const logos = ["windlass", "claude", "opencode", "codex"].map(drawn);
+		expect(logos.every((svg) => svg.startsWith("<svg"))).toBe(true);
+		expect(new Set(logos).size).toBe(logos.length);
+		expect(drawn("Claude Code")).toBe(drawn("claude"));
+		expect(agentId("OpenCode")).toBe("opencode");
 	});
 });
