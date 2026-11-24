@@ -279,6 +279,7 @@ For a missing environment variable, the builder can request a secret by name and
 - **Start** a draft.
 - **Retry** a failed top-level item if it has not started dispatching subtasks. A retry starts a new run.
 - **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. You can also ask for changes on the pull request itself (see below).
+- **Send note** to a working item's agent, or on a feature's page to a running part. While its builder's turn runs, the note goes into that turn, as a message you send to a running agent does. Otherwise it goes with the builder's next turn. The note is your own words, shown as yours in **What happened**, and the second review is held to it as it is to a send-back.
 - **Cancel…** an item.
 
 ### Feedback from GitHub
