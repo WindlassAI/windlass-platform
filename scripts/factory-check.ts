@@ -1767,6 +1767,25 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const unchanged = walk(retried, [cancelledPoll(first, replacement, 0)]).item;
 	assert.deepEqual(choices(unchanged), ["wait", "give_up"]);
 	assert.equal(walk(unchanged, [{ kind: "answer", choice: "update_from_base" }]).item, unchanged);
+	const targetAhead = walk(retried, [{ ...cancelledPoll(first, replacement, 0), featureTarget: "release" }]).item;
+	assert.deepEqual(choices(targetAhead), ["wait", "update_feature", "give_up"]);
+	assert.equal(targetAhead.question!.choices[1].label, "Update the feature from release");
+	assert.deepEqual(choices(walk(retried, [{ ...cancelledPoll(first, replacement, 2), featureTarget: "release" }]).item),
+		["wait", "update_from_base", "update_feature", "give_up"]);
+	const requested = walk(targetAhead, [{ kind: "answer", choice: "update_feature", target: H(5) }]);
+	assert.equal(effect(requested.last, "update_parent_feature")?.target, H(5));
+	const checking = walk(requested.item, [{ kind: "parent_update_finished" }]);
+	assert.equal(effect(checking.last, "poll_ci")?.head, H(1));
+	assert.ok(choices(walk(checking.item, [cancelledPoll(first, replacement, 1)]).item).includes("update_from_base"));
+	const feature = walk(newItem(), pushedRun(H(1))).item;
+	feature.mode = "orchestrate";
+	const featureQuestion = walk(feature, [{ ...ciFact(failingCi("build failed")), featureTarget: "main" }]).item;
+	assert.ok(choices(featureQuestion).includes("update_feature"));
+	const updating = walk(featureQuestion, [{ kind: "answer", choice: "update_feature", target: H(3) }]);
+	const finishing = walk(updating.item, [{ kind: "feature_updated", key: updating.item.joining!.key, result: { head: H(4) } }]);
+	assert.equal(effect(finishing.last, "poll_ci")?.head, H(4));
+	assert.equal(finishing.item.run?.ci?.last, null);
+	expect("part and whole-feature CI offer the target update and recheck the correct heads", true);
 	const asked = walk(retried, [cancelledPoll(first, replacement, 2)]).item;
 	assert.deepEqual(choices(asked), ["wait", "update_from_base", "give_up"]);
 	assert.match(asked.question!.text, /windlass\/feature-i_feature is 2 commits ahead/);
@@ -1808,6 +1827,9 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	assert.equal(fixed.item.run?.step.kind, "ci_fix");
 	const spent = walk(pushed.item, [{ ...timeout, head: H(2), prHead: null }]).item;
 	assert.ok(!choices(spent).includes("update_from_base"));
+	const previouslyUpdated = structuredClone(pushed.item);
+	previouslyUpdated.run!.updatedBaseTip = H(1);
+	assert.ok(choices(walk(previouslyUpdated, [{ ...timeout, head: H(2), prHead: null, baseTip: H(3) }]).item).includes("update_from_base"));
 	expect("base updates cover cancelled subtasks, failed or timed-out single items, clean and conflicting merges, stale CI and conflict rounds", true);
 }
 
@@ -1915,6 +1937,24 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const claim = (child: string) => ({ kind: "claim_join", key: child + "/ci", child });
 	const claimed = walk(parallel, [claim(a.id)]).item;
 	assert.equal(walk(claimed, [claim(b.id)]).item, claimed);
+	const queued = walk(claimed, [{ kind: "update_feature", target: H(3) }]);
+	assert.equal(queued.item.joining?.child, a.id);
+	assert.equal(effect(queued.last, "merge_feature_target"), undefined);
+	const granted = walk(queued.item, [{ kind: "finish_join", child: a.id, result: { key: a.id + "/ci", head: H(2) } }]);
+	const merge = effect(granted.last, "merge_feature_target")!;
+	assert.equal(merge.target, H(3));
+	assert.equal(walk(granted.item, [claim(b.id)]).item, granted.item);
+	assert.equal(granted.item.head, H(2));
+	const merged = walk(granted.item, [{ kind: "feature_updated", key: merge.key, result: { head: H(4) } }]).item;
+	assert.equal(merged.head, H(4));
+	assert.equal(update(merged, "a", "done").jobs!.find(job => job.task.key === "c")?.start, H(4));
+	assert.equal(walk(merged, [claim(b.id)]).item.joining?.child, b.id);
+	const blocked = walk(granted.item, [{ kind: "feature_updated", key: merge.key, result: { problem: "main conflicts with the feature branch. Resolve it on GitHub or give up." } }]).item;
+	assert.equal(blocked.head, H(2));
+	assert.equal(blocked.question?.kind, "feature_update");
+	assert.deepEqual(blocked.question.choices.map(option => option.id), ["update_feature", "give_up"]);
+	assert.ok(effect(walk(blocked, [{ kind: "answer", choice: "update_feature", target: H(3) }]).last, "merge_feature_target"));
+	expect("target updates wait for a part’s receipt, hold the same grant, and leave the recorded head on conflict", true);
 	const refusal = { key: a.id + "/ci", reason: "Merge conflict", conflict: true };
 	const released = walk(claimed, [{ kind: "finish_join", child: a.id, result: refusal }, claim(b.id)]).item;
 	assert.equal(released.joining?.child, b.id);

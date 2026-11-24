@@ -1826,7 +1826,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
-export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
+export type QuestionKind = "feature_update" | "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1841,7 +1841,7 @@ export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "f
  *   fresh_sandbox  a `sandbox_failed` question: the session's sandbox is removed and the step runs in a new one
  *   larger_sandbox an `out_of_memory` question: the same, in a sandbox of the next hosted size
  */
-export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base";
+export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base" | "update_feature";
 
 /** Render the reason as quoted plain text, separately from the platform's own notice. */
 export interface SecretRequest {
@@ -2246,6 +2246,9 @@ export interface BlockedNetwork {
 }
 
 export interface ItemView extends ItemSummary {
+	/** Commits on the target missing from the feature. Absent when the comparison is unavailable. */
+	featureTargetAhead?: number;
+	canUpdateFeature?: boolean;
 	/** Union by host and port across all turns of the builder and reviewer. Absent on older servers. */
 	blockedNetwork?: BlockedNetwork;
 	feedback: { batches: FeedbackBatch[]; notTaken: number };
@@ -2491,6 +2494,7 @@ export interface CreateItemInput {
 
 /** What a person does to an item: each is refused (`item_conflict`) where the item's state does not allow it. */
 export type ItemAction =
+	| { kind: "update_feature" }
 	| { kind: "cancel_subtask"; key: string }
 	| { kind: "edit_plan"; version: number; plan: FeaturePlanEdit }
 	/**

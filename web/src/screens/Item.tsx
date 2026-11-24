@@ -1070,6 +1070,11 @@ export function Item({ page }: { page: ItemPage }) {
 					{view.origin ? <IssueOrigin origin={view.origin} /> : null}
 				</div>
 				<div className="item-actions">
+					{view.canUpdateFeature && !view.question?.choices.some(choice => choice.id === "update_feature") ? (
+						<button type="button" className="button button-outline" onClick={() => acting.act({ kind: "update_feature" })} disabled={busy}>
+							Update the feature from {view.task.base}
+						</button>
+					) : null}
 					{view.state === "draft" && !reading ? (
 						<button type="button" className="button button-primary" onClick={() => acting.act({ kind: "start" })} disabled={busy}>
 							{acting.busy === "start" ? "Starting…" : "Start"}

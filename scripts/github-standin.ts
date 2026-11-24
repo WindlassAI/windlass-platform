@@ -189,6 +189,8 @@ export class GithubStandin {
 	readonly checks: StandinCheck[] = [];
 	/** Runs of a repository's integration workflow, as dispatched: a check finishes one by setting its status and conclusion. */
 	readonly integrationRuns: Array<{ id: number; repository: number; ref: string; inputs: Record<string, string>; head_sha: string; path: string; triggering_actor: { login: string; type: string }; status: string; conclusion: string | null; display_title: string; html_url: string; created_at: string; run_started_at: string; updated_at: string }> = [];
+	/** A test may keep a part integration in flight while the feature receives another action. */
+	beforeFastForward?: () => Promise<void>;
 	checkFault: 403 | 422 | "lose_reply" | null = null;
 	checkTokenFault: 403 | 422 | null = null;
 	readonly pulls: StandinPull[] = [];
@@ -908,12 +910,14 @@ export class GithubStandin {
 				const paths = git(["ls-tree","-r","--name-only",repository.defaultBranch,"--",".github/workflows"],repository.path);
 				return pageOf("workflows", paths.split("\n").filter(Boolean).map(path => ({path,state:"active"})));
 			}
-			const comparison = /^\/compare\/(.+)\.\.\.([0-9a-f]{40})$/.exec(rest);
+			const comparison = /^\/compare\/(.+)\.\.\.(.+)$/.exec(rest);
 			if (comparison && method === "GET") {
 				if (!this.allows(token, repository, "contents", "read")) return denied();
 				const base = this.branchHead(repository, decodeURIComponent(comparison[1]));
 				if (!base) return answer(404, { message: "Branch not found" });
-				try { return answer(200, { behind_by: Number(git(["rev-list", "--count", base, "^" + comparison[2]], repository.path)) }); }
+				const head = /^[0-9a-f]{40}$/.test(comparison[2]) ? comparison[2] : this.branchHead(repository, decodeURIComponent(comparison[2]));
+				if (!head) return answer(404, { message: "Branch not found" });
+				try { return answer(200, { base_commit: { sha: base }, behind_by: Number(git(["rev-list", "--count", base, "^" + head], repository.path)) }); }
 				catch { return answer(404, { message: "Commit not found" }); }
 			}
 			if (rest === "/merges" && method === "POST") {
@@ -923,8 +927,11 @@ export class GithubStandin {
 				if (!old || !/^[a-f0-9]{40}$/.test(head)) return answer(422, { message: "Invalid merge" });
 				if (git(["merge-base", old, head], repository.path) === head) return answer(204, null);
 				let tree: string;
-				try { tree = git(["merge-tree", "--write-tree", old, head], repository.path); }
-				catch { return answer(409, { message: "Merge conflict" }); }
+				try { tree = git(["merge-tree", "--write-tree", "--name-only", "--no-messages", old, head], repository.path); }
+				catch (error) {
+					const conflicts = String((error as { stdout?: string }).stdout ?? "").trim().split("\n").slice(1);
+					return answer(409, { message: "Merge conflict", conflicts });
+				}
 				const sha = git(["commit-tree", tree, "-p", old, "-p", head, "-m", commit_message], repository.path);
 				git(["update-ref", "refs/heads/" + base, sha, old], repository.path);
 				return answer(201, { sha });
@@ -948,6 +955,7 @@ export class GithubStandin {
 						return answer(201,{object:{sha:fields.sha}});
 					}
 					if (rest.startsWith("/git/refs/heads/") && method === "PATCH") {
+						await this.beforeFastForward?.();
 						const ref = rest.slice("/git/".length);
 						if (fields.force !== false) return answer(422,{message:"Forced update refused"});
 						if (git(["merge-base",ref,fields.sha],repository.path) !== git(["rev-parse",ref],repository.path)) return answer(422, { message: "Update is not a fast forward" });

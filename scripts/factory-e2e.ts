@@ -474,6 +474,79 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 }
 
 if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
+	const updateServer = new Server();
+	try {
+		await check("orchestrator target update: a part requests main while its sibling integrates", async () => {
+			const repo = standin.addRepository({ owner: "ada", name: "feature-update", installation, files: {
+				".github/workflows/build.yml": "on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n",
+			} });
+			const { user, client } = await world(updateServer, standin, { WLP_FEATURE_TEST_GIT: join(updateServer.storage, "git") });
+			let release = () => {};
+			try {
+				await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
+				const feature = await user.createItem({ repository: { id: repo.id }, title: "Search documents", body: "Index and search documents.", mode: "orchestrate", start: true });
+				const proposal = await untilItem(user, feature.id, "the plan approval", v => v.question?.kind === "plan_approval");
+				const plan = structuredClone(proposal.plan!);
+				plan.subtasks[0].brief += " (change-setup-fixture)";
+				plan.subtasks[1].brief += " (consume-setup-fixture)";
+				plan.subtasks[1].dependsOn = [];
+				const edited = await user.actOnItem({ id: feature.id, action: { kind: "edit_plan", version: plan.version, plan } });
+				await user.actOnItem({ id: feature.id, action: { kind: "approve_plan", version: edited.plan!.version } });
+				const branch = "windlass/feature-" + feature.id;
+				const marker = await waitFor("the feature ref", () => standin.branchHead(repo, branch), 60_000);
+				const target = standin.commit(repo, "main", { "ci-fix": "build\n" }, "Fix CI");
+				const ahead = await untilItem(user, feature.id, "both pushed parts and one new target commit",
+					v => v.featureTargetAhead === 1 && v.children?.length === 2 && v.children.every(ch => ch.step?.kind === "ci"), CI_WAIT_MS);
+				assert(ahead.canUpdateFeature, "The ahead feature did not offer its item action");
+				const compares = () => standin.requests.filter(r => r.path.includes("/compare/main...")).length;
+				const reads = compares();
+				await Promise.all([user.item(feature.id), user.item(feature.id)]);
+				assert(compares() === reads, "Repeated feature views compared the target again");
+				const part = (key: string) => ahead.children!.find(child => child.parent?.key === key)!;
+				const index = part(plan.subtasks[0].key), search = part(plan.subtasks[1].key);
+				const headOf = (child: ItemSummary) => standin.branchHead(repo, subtaskBranch(feature.id, child.parent!.key, child.id))!;
+				setCi(repo, headOf(search), "failure");
+				const asked = await untilItem(user, search.id, "a part offering the feature update",
+					v => !!v.question?.choices.some(c => c.id === "update_feature"), CI_WAIT_MS);
+				assert(!asked.question!.choices.some(c => c.id === "update_from_base"), "The feature was already ahead of the part");
+
+				let integrating = false;
+				const held = new Promise<void>(done => { release = done; });
+				standin.beforeFastForward = async () => { integrating = true; await held; };
+				const indexHead = headOf(index);
+				setCi(repo, indexHead, "success");
+				await waitFor("the sibling holding the integration grant", () => integrating, CI_WAIT_MS);
+				await user.actOnItem({ id: search.id, action: { kind: "answer", question: asked.question!.id, choice: "update_feature" } });
+				await untilItem(user, feature.id, "the queued target update", v => v.wait?.sentence === "Updating the feature from main.");
+				assert(standin.branchHead(repo, branch) === marker, "The update passed the sibling’s grant");
+				release();
+				const updated = await untilItem(user, feature.id, "the recorded target merge", v => !!v.head && v.head !== indexHead &&
+					standin.fileOn(repo, branch, "ci-fix") === "build\n" && v.head === standin.branchHead(repo, branch));
+				const parents = execFileSync("git", ["show", "-s", "--format=%P", updated.head!], { cwd: repo.path, encoding: "utf8" }).trim();
+				assert(parents === indexHead + " " + target && updated.featureTargetAhead === 0, "The merge did not preserve both tips");
+				await untilItem(user, search.id, "the part’s next CI question offering its new base",
+					v => !!v.question?.choices.some(c => c.id === "update_from_base"), CI_WAIT_MS);
+
+				standin.commit(repo, "main", { "index/setup.sh": "echo conflicting-target\n" }, "Change setup on main");
+				await user.actOnItem({ id: feature.id, action: { kind: "update_feature" } });
+				const conflict = await untilItem(user, feature.id, "the target merge conflict", v => v.question?.kind === "feature_update");
+				assert(conflict.head === updated.head && standin.branchHead(repo, branch) === updated.head &&
+					conflict.question!.text.includes("in index/setup.sh") && conflict.question!.text.includes("Resolve it on GitHub") && conflict.question!.choices.some(c => c.id === "give_up"),
+					"The conflict moved the branch or did not ask the owner");
+				// The person resolves on GitHub, keeping the feature’s copy of the one conflicting file.
+				const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Owner", "-c", "user.email=owner@example.com", ...args], { cwd: repo.path, encoding: "utf8" }).trim();
+				const resolved = git("commit-tree", updated.head + "^{tree}", "-p", updated.head!, "-p", "main", "-m", "Resolve setup conflict");
+				git("update-ref", "refs/heads/" + branch, resolved, updated.head!);
+				await user.actOnItem({ id: feature.id, action: { kind: "answer", question: conflict.question!.id, choice: "update_feature" } });
+				await untilItem(user, feature.id, "the recorded GitHub resolution", v => v.head === resolved && !v.question);
+				return "serialized both writers, refreshed the part’s CI choices, named the conflict and resumed at the resolved tip";
+			} finally {
+				release();
+				delete standin.beforeFastForward;
+				await client.dispose();
+			}
+		});
+	} finally { await updateServer.stop(); updateServer.remove(); }
 	const summaryServer = new Server();
 	try {
 		await check("orchestrator summary: the feature files its report after planning and hands over the PR", async () => {

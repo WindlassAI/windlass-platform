@@ -40,6 +40,8 @@ export interface GateEvidence {
 
 /** CI of the head that was pushed last. */
 export interface CiProgress {
+	/** Base branch tip observed when this part was offered a CI update. */
+	baseTip?: string;
 	/** Older item rows predate webhook polling. */
 	webhooks?: boolean;
 	/** The person accepted CI alone for this published head. A new publication starts without it. */
@@ -78,6 +80,8 @@ export interface Run extends ItemRun {
 	failures?: string[];
 	/** Set while the workspace is pushed for "Hand it over as it is" (blueprint.ts `answer`): it is handed over once pushed. */
 	handOver?: true;
+	/** A part can take another base update once its feature tip changes again. */
+	updatedBaseTip?: string;
 	/** A person's base update stays attached to its publish step across retries. */
 	updateFromBase?: { head: string; at: number };
 	/** The turn that produced the work about to be published, including across publish retries. */
@@ -173,6 +177,8 @@ export interface FeatureJob {
 	placementRefusal?: string;
 	/** Last serialized integration result, retained so a restarted child can receive it again. */
 	join?: JoinResult;
+	/** Receipt for a target update requested from this part’s CI question. */
+	featureUpdateReceipt?: string;
 	route?: PlacementRoute;
 	warm?: string[];
 	placement?: ChildPlacement;
@@ -248,6 +254,8 @@ export interface FactoryItem {
 	placement?: ChildPlacement;
 	jobs?: FeatureJob[];
 	joining?: { child: string; key: string };
+	/** Target commit pinned when requested. Waits behind a part already holding the join grant. */
+	featureUpdate?: { key: string; target: string; child?: string };
 	stoppedJob?: string;
 	retryChildren?: boolean;
 	forceSplit?: boolean;
@@ -411,6 +419,9 @@ export type Fact =
 	| { kind: "repo_pr_lost"; at: number; key: string; repo: string; said: string }
 	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null; /** `merged_at` (ms), null when GitHub did not say. */ mergedAt?: number | null }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
+	| { kind: "update_feature"; at: number; by: Cause; target?: string; child?: string; request?: string }
+	| { kind: "feature_updated"; at: number; key: string; result: { head: string } | { problem: string } }
+	| { kind: "parent_update_finished"; at: number; key: string }
 	| { kind: "claim_join"; at: number; child: string; key: string }
 	| { kind: "finish_join"; at: number; child: string; result: JoinResult }
 	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget }
@@ -433,7 +444,7 @@ export type Fact =
 	| { kind: "send_back"; at: number; by: Cause; note: string }
 	| { kind: "claim_secret"; at: number; by: Cause; question: string; name: string }
 	| { kind: "settle_secret"; at: number; by: Cause; question: string; error: string | null }
-	| { kind: "answer"; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] }
+	| { kind: "answer"; target?: string; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] }
 	/** The turn of `key` cannot start yet (`admit`). Sent again when the reason or its numbers change. */
 	| { kind: "sandbox_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan; loginChanged?: boolean }
@@ -508,7 +519,7 @@ export type Fact =
 	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: CancelledJob[]; openItems: number }
 	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
-	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
+	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
 	| { kind: "pr_read"; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
 	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
 	| { kind: "spent"; at: number; hostedSeconds: number };
@@ -538,6 +549,8 @@ export type Effect =
 	| { kind: "cancel_children"; key: string; ids: string[] }
 	| { kind: "notify_integrated"; key: string; head: string }
 	| { kind: "integrate"; key: string; head: string }
+	| { kind: "merge_feature_target"; key: string; target: string }
+	| { kind: "update_parent_feature"; key: string; target: string }
 	| { kind: "describe_feature"; key: string }
 	/** A cross-repo feature: write the managed section that links its pull requests on each of them. */
 	| { kind: "link_prs"; key: string }
