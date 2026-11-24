@@ -209,7 +209,7 @@ export function ModelProviders() {
 				Model providers
 			</h2>
 			<p className="usage-lede">
-				One API key per provider. Every agent that can use a provider uses its key: Windlass, Claude Code for Anthropic, Codex for OpenAI, and OpenCode for any of them. The key never enters a sandbox. Agents start using these keys once the platform's relay update ships; until then, saved keys are stored and checked but not used by agents.
+				One API key per provider. Soon every agent that can use a provider will use its key: Windlass, Claude Code for Anthropic, Codex for OpenAI, and OpenCode for any of them. For now, saved keys are only stored and checked. A key never enters a sandbox.
 			</p>
 			{list === null ? (
 				state.error ? (
