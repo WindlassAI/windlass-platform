@@ -313,15 +313,20 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 				const q = page.question!;
 				assert(page.plan && q.approvalBlock?.includes("windlass/**") && q.text.includes(q.approvalBlock), "Missing push-branch guidance before approval.");
 				assert(q.choices.some(c => c.id === "run_single" && c.label === "Run as a single item") && !q.choices.some(c => c.id === "approve"), "Wrong choices for a blocked plan.");
+				const githubReads = () => standin.requests.length;
+				const before = githubReads();
 				standin.commit(repo, "main", { [workflow]: restricted.replace("[main]", "[main, 'windlass/**']") }, "Enable branch builds");
-				const ready = await user.item(feature.id);
-				assert(!ready.question?.approvalBlock && ready.question?.choices.some(c => c.id === "approve"), "The new workflow head did not clear the blocker.");
+				const pages = await Promise.all(Array.from({ length: 4 }, () => user.item(feature.id)));
+				assert(pages.every(v => v.question?.approvalBlock === q.approvalBlock) && githubReads() === before, "Repeated previews read GitHub within a minute.");
+				const refreshed = await untilItem(user, feature.id, "the expired preview to read the new head", v => !v.question?.approvalBlock && !!v.question?.choices.some(c => c.id === "approve"), 80_000);
+				const afterRefresh = githubReads();
+				assert(refreshed.question && afterRefresh > before, "The expired preview did not refresh.");
 				standin.commit(repo, "main", { [workflow]: restricted }, "Restrict branch builds");
 				const refusal = await refused(() => user.actOnItem({ id: feature.id, action: { kind: "approve_plan", version: page.plan!.version } }), "bad_input");
-				assert(refusal === q.approvalBlock, "Approval did not freshly check push CI.");
+				assert(refusal === q.approvalBlock && githubReads() > afterRefresh, "Approval did not freshly check push CI.");
 				const single = await user.actOnItem({ id: feature.id, action: { kind: "answer", question: q.id, choice: "run_single" } });
 				assert(single.mode === "single" && single.run?.step.kind === "implement" && !single.children?.length, stateOf(single));
-				return "main/PR CI blocked upfront, a changed head cleared it, and the fallback started one implementer";
+				return "main/PR CI blocked upfront, repeated views reused the preview, and the fallback started one implementer";
 			} finally { await client.dispose(); }
 		});
 	} finally { await ciServer.stop(); ciServer.remove(); }
@@ -2512,7 +2517,7 @@ try {
 		assert(marks.prompts.length === 0 && marks.taint === null, `the fix turn reached Windlass marked: ${JSON.stringify(marks)}`);
 		const { hardenedUnmarkedNote, untrustedWords } = await import("../server/src/factory/untrusted.js");
 		const timeline = (await client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } }).snapshot()).timeline;
-		assert(timeline.some(e => e.kind === "platform" && e.text.includes("third-party text was not shown as a secret prompt")) && !timeline.some(e => e.kind === "platform" && e.secretRequest), "outside text produced a secret prompt or no refusal notice");
+		assert(timeline.some(e => e.kind === "platform" && e.text === "A secret request was refused.") && !timeline.some(e => e.kind === "platform" && e.secretRequest), "outside text produced a secret prompt or no refusal notice");
 		const notes = timeline.filter((entry) => entry.kind === "platform" && entry.text === hardenedUnmarkedNote([untrustedWords.ci(pull.head)]));
 		assert(notes.length === 1, `the timeline's line: ${notes.length}; ${JSON.stringify(timeline.filter((entry) => entry.kind === "platform").map((entry) => (entry as { text?: string }).text))}`);
 		const prompt = JSON.stringify(timeline.filter((entry) => entry.kind === "user"));
@@ -2565,7 +2570,7 @@ try {
 				await session.prompt({ text: "Use the service. (secret)" });
 				const snapshot = await waitFor("the refusal", async () => {
 					const s = await session.snapshot();
-					return s.timeline.some(e => e.kind === "platform" && e.text.includes(`already exists for this ${store}`)) && s;
+					return s.timeline.some(e => e.kind === "windlass" && e.event.type === "tool.settled" && e.event.data?.output === `${name} cannot be requested; ask your person to set it under Secrets if you need it.`) && s;
 				}, 90_000);
 				assert(!snapshot.secretRequest && !snapshot.timeline.some(e => e.kind === "platform" && e.secretRequest), "an existing name raised a question");
 			} finally {
@@ -2588,26 +2593,29 @@ try {
 				const session = client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } });
 				const timeline = (await session.snapshot()).timeline;
 				assert(timeline.some(e => e.kind === "user" && e.text.includes("Continue without SERVICE_TOKEN.")), "missing skip prompt");
-				assert(timeline.some(e => e.kind === "platform" && e.text.includes("Do not request it again in this run")), "repeat request was not refused");
+				assert(timeline.some(e => e.kind === "platform" && e.text === "A secret request was refused."), "repeat request was not refused");
 				await user.actOnItem({ id: item.id, action: { kind: "cancel" } });
 			}
 		}
 		return "both choices settled the question";
 	});
 
-	await check("ask-secret: a plain session remembers skipped names and stops at three", async () => {
+	await check("ask-secret: a plain session counts refusals and stops at three", async () => {
 		const created = await user.createSession({ profile: "docker-hardened" });
 		const session = client.agentSession.get([auth.profile.uid, created.id], { params: { token: auth.token } });
-		for (const [name, refusal] of [["FIRST_TOKEN", null], ["FIRST_TOKEN", "Do not request it again in this session"], ["SECOND_TOKEN", null], ["THIRD_TOKEN", null], ["FOURTH_TOKEN", "three questions have already been recorded"]] as const) {
+		for (const [name, refusal] of [["FIRST_TOKEN", null], ["GITHUB_TOKEN", "cannot be requested"], ["SECOND_TOKEN", null], ["THIRD_TOKEN", "three questions have already been recorded"], ["FOURTH_TOKEN", "three questions have already been recorded"]] as const) {
 			const sent = await session.prompt({ text: `Use the service. (secret) (secret-name ${name})` });
 			const snap = await waitFor("the end of the request turn", async () => {
 				const s = await session.snapshot();
 				return s.summary.status === "idle" && s.timeline.some(e => e.turn === sent.turn) && s;
 			}, 90_000);
-			if (refusal) assert(!snap.secretRequest && snap.timeline.some(e => e.turn === sent.turn && e.kind === "platform" && e.text.includes(refusal)), "missing refusal");
+			if (refusal) {
+				assert(!snap.secretRequest && snap.timeline.some(e => e.turn === sent.turn && e.kind === "windlass" && e.event.type === "tool.settled" && String(e.event.data?.output).includes(refusal)), "missing refusal");
+				assert(snap.timeline.filter(e => e.kind === "platform" && e.text === "A secret request was refused.").length === 1, "duplicate refusal note");
+			}
 			else assert(snap.secretRequest?.name === name, "missing open request");
 		}
-		return "a repeat and a fourth request were refused";
+		return "refused attempts counted and repeated refusals wrote one note";
 	});
 
 	await check("ask-secret: a plain session sets an account secret and continues", async () => {

@@ -62,7 +62,7 @@ import { clientError, describeError, requireService, requireServiceFor, serviceP
 import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
-import { secretRequestLimit } from "../repo-secrets.js";
+import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { activeJob, advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey, singlePlanAlternative, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
@@ -117,7 +117,7 @@ interface Stored {
 }
 
 interface ItemVars {
-	pushCi?: { key: string; eligible: boolean; expires: number };
+	pushCi?: { key: string; reading: Promise<boolean> };
 	savingSecret?: Promise<void>;
 	/** Null for an actor `user` did not create. */
 	stored: Stored | null;
@@ -825,26 +825,46 @@ async function checkCrossRepo(c: Ctx, stored: Stored, bases: Readonly<Record<str
 	if (problems.length) throw new PlanError("Approval needs every repository ready first. " + problems.join(" "));
 }
 
+/** One durable preview slot per feature, including lookups interrupted by an actor restart. */
+async function previewPushCi(c: Ctx, key: string, read: () => Promise<{ head: string; eligible: boolean }>): Promise<boolean> {
+	const unavailable = () => new PlanError("The platform could not verify this repository’s push CI. Refresh the item in a minute to check again.");
+	if (c.vars.pushCi) {
+		if (c.vars.pushCi.key !== key) throw unavailable();
+		return c.vars.pushCi.reading;
+	}
+	const reading = (async () => {
+		const now = Date.now();
+		const reserved = await c.db.execute("INSERT INTO push_ci_preview(id, inputs, expires) VALUES(1, ?, ?) ON CONFLICT(id) DO UPDATE SET inputs=excluded.inputs, expires=excluded.expires, head=NULL, eligible=NULL WHERE expires <= ? RETURNING id", key, now + 60_000, now);
+		if (!reserved.length) {
+			const [cached] = await c.db.execute<{ inputs: string; eligible: number | null }>("SELECT inputs, eligible FROM push_ci_preview WHERE id=1");
+			if (cached?.inputs !== key || cached.eligible === null) throw unavailable();
+			return cached.eligible === 1;
+		}
+		const result = await read();
+		await c.db.execute("UPDATE push_ci_preview SET head=?, eligible=?, expires=? WHERE id=1", result.head, Number(result.eligible), Date.now() + 60_000);
+		return result.eligible;
+	})();
+	c.vars.pushCi = { key, reading };
+	try { return await reading; } finally { delete c.vars.pushCi; }
+}
+
 async function checkFeatureCi(c: Ctx, stored: Stored, bases: Readonly<Record<string, string>> = {}, preview = false) {
 	if (crossRepo(stored.item)) return checkCrossRepo(c, stored, bases);
 	const { item, meta } = stored;
 	if (!await userActor(c, meta.uid).internalHasChecks(meta.repository.id))
 		throw new PlanError(item.replans ? "Add saved repository checks before approving the revised plan." : "Use a single item or add saved repository checks before approving orchestration.");
-	const hub = await github(c, meta, "write");
 	const plan = item.featurePlan!;
 	const pending = plan.subtasks.filter(s => !item.jobs?.some(j => j.task.key === s.key && j.state === "done"));
 	const branches = [featureBranch(item.id), ...pending.map(s => subtaskBranch(item.id, s.key, childItemId(item.id, plan.version, s.key)))];
-	const eligible = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" } },
-		async token => {
-			const head = await refHead(hub.app, token, hub.owner, hub.name, item.pr ? featureBranch(item.id) : meta.repository.branch);
-			const key = JSON.stringify([head, branches]);
-			const cached = c.vars.pushCi;
-			if (preview && cached?.key === key && cached.expires > Date.now()) return cached.eligible;
-			const eligible = await hasPushCiAt(hub.app, token, hub.owner, hub.name, head, branches);
-			// Enabled workflows and external CI evidence can change even at the same commit.
-			c.vars.pushCi = { key, eligible, expires: Date.now() + 60_000 };
-			return eligible;
+	const ref = item.pr ? featureBranch(item.id) : meta.repository.branch;
+	const read = async () => {
+		const hub = await github(c, meta, "write");
+		return hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" } }, async token => {
+			const head = await refHead(hub.app, token, hub.owner, hub.name, ref);
+			return { head, eligible: await hasPushCiAt(hub.app, token, hub.owner, hub.name, head, branches) };
 		}, { reuse: true });
+	};
+	const eligible = preview ? await previewPushCi(c, JSON.stringify([ref, branches]), read) : (await read()).eligible;
 	if (!eligible) throw new PlanError(`This repository’s CI does not report on pushes to the feature and child branches. ${item.replans ? "Add" : "Run as a single item or add"} windlass/** to the workflow’s push branches.`);
 }
 
@@ -1700,6 +1720,7 @@ export const workItem = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS item (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, data TEXT NOT NULL, due TEXT, issue_checked_at INTEGER NOT NULL DEFAULT 0)");
 			await db.execute("CREATE TABLE IF NOT EXISTS effects (id TEXT PRIMARY KEY, effect TEXT NOT NULL, due_at INTEGER NOT NULL, attempts INTEGER NOT NULL)");
 			await db.execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, data TEXT NOT NULL)");
+			await db.execute("CREATE TABLE IF NOT EXISTS push_ci_preview(id INTEGER PRIMARY KEY CHECK(id=1), inputs TEXT NOT NULL, expires INTEGER NOT NULL, head TEXT, eligible INTEGER)");
 			await db.execute(CHECKS_TABLE);
 			await db.execute(REPORTS_TABLE);
 			await db.execute(REVIEWS_TABLE);
@@ -1881,13 +1902,17 @@ export const workItem = actor({
 			return await viewOf(c);
 		},
 
-		internalSecretRequestLimit: (c, key: string, name: string): string | null => {
+		internalSecretRequestLimit: async (c, key: string, name: string): Promise<string | null> => {
 			requireServiceFor(c, "call");
 			const item = c.vars.stored?.item;
 			// The turn can reach the tool before the item's turn_started receipt arrives.
 			if (!item?.run || currentKey(item) !== key || item.question || item.claimedSecret || !["queued", "working"].includes(item.state)
 				|| !item.run.step.turn) return "This turn can no longer request a secret.";
-			return secretRequestLimit(name, item.run.asks ?? 0, item.run.declinedSecrets ?? [], "run");
+			const previous = item.run.asks ?? 0;
+			const problem = secretRequestLimit(name, previous, item.run.declinedSecrets ?? [], "run");
+			if (previous >= MAX_SECRET_REQUESTS) return problem;
+			const counted = await take(c, { kind: "secret_attempt", key, previous, at: Date.now() });
+			return problem ?? (counted ? null : "This turn can no longer request a secret.");
 		},
 
 		internalSetRequestedSecret: async (c, input: RequestedSecretSave): Promise<void> => {

@@ -43,7 +43,7 @@
  * that fires after the item moved on. No clock is read: every time is a fact's `at`.
  */
 
-import { secretRequestLimit } from "../repo-secrets.js";
+import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
 import type { OutOfMemory } from "../sandbox/api.js";
 import { MAX_ITEM_BODY_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
@@ -481,6 +481,12 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "claim_join" | "finish_
 		return false;
 	}
 	switch (fact.kind) {
+		case "secret_attempt":
+			if (fact.previous !== (run.asks ?? 0) || fact.key !== key || !ASKING.has(step.kind as TurnStepKind) || !step.turn || c.item.question || c.item.claimedSecret ||
+				!["queued", "working"].includes(c.item.state) || (run.asks ?? 0) >= MAX_SECRET_REQUESTS) return false;
+			run.asks = (run.asks ?? 0) + 1;
+			run.secretAttemptKey = key;
+			return true;
 		case "file_plan": return false;
 		case "feature_seed":
 			if (fact.key !== key || step.kind !== "subtasks") return false;
@@ -1099,8 +1105,9 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	}
 	// The builder asked its person (`ask_person`) and was told the question is recorded: it is asked, even of a turn cut short.
 	// Nothing of the turn is judged: the workspace and any pushed head stay as they are, and the answer resumes this step.
-	if (fact.secret && ASKING.has(kind) && !secretRequestLimit(fact.secret.name, run.asks ?? 0, run.declinedSecrets ?? [], "run")) {
-		run.asks = (run.asks ?? 0) + 1;
+	const prepaid = run.secretAttemptKey === fact.key;
+	if (fact.secret && ASKING.has(kind) && !secretRequestLimit(fact.secret.name, prepaid ? 0 : run.asks ?? 0, run.declinedSecrets ?? [], "run")) {
+		if (!prepaid) run.asks = (run.asks ?? 0) + 1; // A receipt from a session predating upfront accounting.
 		const text = [`A secret was requested for ${fact.secret.name}.`, fact.secret.notice].filter(Boolean).join("\n");
 		return ask(c, "secret_needed", text, [choice("add_secret"), choice("without_secret"), choice("give_up")], null, { ...IMPLEMENT, kind, newStep: false }, text, { secret: fact.secret });
 	}
@@ -1372,7 +1379,7 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	if (reading.kind === "read" && state !== "retry" && state !== "not_permitted" && (settled || run.step.kind === "handoff")) {
 		ci.last = {
 			state,
-			runs: reading.runs.map(({ name, app, state, conclusion, url }) => ({ name, app, conclusion: state === "not_run" ? "not_run" : conclusion, url })),
+			runs: reading.runs.map(({ name, app, state, conclusion, url, retryRunId }) => ({ name, app, conclusion: state === "not_run" ? "not_run" : conclusion, url, ...(state === "cancelled" && !retryRunId && { stopped: true as const }) })),
 			said: state === "not_run" ? reading.runs.find((run) => run.state === "not_run")?.summary ?? null : null,
 		};
 	}
@@ -1417,10 +1424,11 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			if (reading.kind !== "read") return;
 			const cancelled = reading.runs.filter(check => check.state === "cancelled");
 			const sentence = ciSentence(verdictCi(ci));
-			if (!rerun && isSha(reading.head)) {
+			const eligible = cancelled.filter(check => check.retryRunId);
+			if (eligible.length && !rerun && isSha(reading.head)) {
 				c.say(sentence);
 				c.effects.push({ kind: "rerun_ci", key: c.key, head: reading.head, openItems: fact.openItems,
-					jobs: cancelled.map(({ name, jobId }) => ({ name, jobId })) });
+					jobs: eligible.map(({ name, jobId, retryRunId }) => ({ name, jobId, retryRunId })) });
 				return;
 			}
 			if (since < CI_POLLING.timeoutMs && rerun?.some(job => !reading.runs.some(check => check.name === job.name) ||

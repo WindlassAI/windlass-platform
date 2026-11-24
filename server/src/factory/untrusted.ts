@@ -43,6 +43,7 @@ export const untrustedWords = {
 	builder: (pr: number) => `the builder's report on pull request #${pr}`,
 	reports: "reports of the feature's subtasks",
 	earlier: "reports of earlier subtasks",
+	conversation: "earlier agent messages from the session timeline",
 	/** A cross-repo feature's combined run on GitHub Actions: what it said, as GitHub reported it. */
 	integration: "the combined run's result",
 };

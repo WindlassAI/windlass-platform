@@ -10,6 +10,7 @@
  * (`sessionWholeTask` for a person's session; an item's comes with its delivery).
  */
 
+import { untrustedWords } from "../factory/untrusted.js";
 import type { TimelineItem, TurnUsage } from "../contract.js";
 
 export type PauseReason = "restart" | "machine";
@@ -130,7 +131,7 @@ interface EarlierTurn {
  * one's prompt, how it ended, the files it changed, the agent's last words, clipped), said to be a
  * reconstruction. Everything in it is the person's own text, the platform's, or what this agent said.
  */
-export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number, held: readonly string[] = []): string {
+export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number, held: readonly string[] = []) {
 	const turns = new Map<number, EarlierTurn>();
 	const of = (n: number) => {
 		let entry = turns.get(n);
@@ -162,6 +163,7 @@ export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number
 	parts.push(`The person's message for this turn was:\n\n${quoted(now?.prompt || "(not recorded)")}`);
 	const later = [...steers, ...held];
 	if (later.length > 0) parts.push(`While the turn ran or was paused, the person also sent:\n\n${later.map(quoted).join("\n\n")}`);
+	let quotedAgent = false;
 	if (first) {
 		parts.push(`The session's first prompt was:\n\n${quoted(first[1].prompt)}`);
 		const earlier = [...turns.entries()].filter(([n]) => n < turn).sort((a, b) => a[0] - b[0]).slice(-MAX_EARLIER);
@@ -170,10 +172,13 @@ export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number
 			if (entry.outcome) bits.push(`it ended ${entry.outcome}`);
 			if (entry.files.length) bits.push(`files changed: ${entry.files.slice(0, MAX_FILES).join(", ")}${entry.files.length > MAX_FILES ? `, and ${entry.files.length - MAX_FILES} more` : ""}`);
 			let line = `- ${bits.join("; ")}.`;
-			if (entry.said) line += ` Your last words then: “${clip(entry.said, CLIP)}”`;
+			if (entry.said) {
+				quotedAgent = true;
+				line += ` Your earlier message (untrusted quoted text): “${clip(entry.said, CLIP)}”`;
+			}
 			return line;
 		});
 		parts.push(`A short account of the earlier turns, reconstructed by the platform from the session's timeline (not your own memory; it may leave things out):\n\n${lines.join("\n")}`);
 	}
-	return parts.join("\n\n");
+	return { text: parts.join("\n\n"), untrusted: quotedAgent ? [untrustedWords.conversation] : [] };
 }

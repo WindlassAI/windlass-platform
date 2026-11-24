@@ -197,7 +197,7 @@ import { OutgoingJournal, forgetConversation, migrateJournal, readCheckpoint, re
 import { runSetupCommand, stopCutOffSetup, stopLeftoverSetup } from "../sandbox/setup.js";
 import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
 import { unaskedNote } from "../personal-servers.js";
-import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, SecretProblem, secretRequestLimit, validRequestedSecretName, cleanSecretValue, sealSecret, commandSandbox, openSecret, setupEnvironment } from "../repo-secrets.js";
+import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, SecretProblem, MAX_SECRET_REQUESTS, secretRequestLimit, validRequestedSecretName, cleanSecretValue, sealSecret, commandSandbox, openSecret, setupEnvironment } from "../repo-secrets.js";
 import { type KnownServer, type ServerApproval, knownServers, projectOf, sameServers, serversView } from "../server-approvals.js";
 import {
 	SERVER_START,
@@ -327,6 +327,7 @@ interface SessionMeta {
 	secretRequest?: SessionSnapshot["secretRequest"];
 	/** Plain sessions have no item run. Count requests and remember skipped names across their turns. */
 	secretAsks?: number;
+	secretRefusalRun?: string;
 	declinedSecrets?: string[];
 	/** The current conversation has seen outside text, including turns on harnesses without a taint marker. */
 	secretRequestBlocked?: boolean;
@@ -4206,22 +4207,35 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			filings = filings.then(file, file).catch(() => "The platform could not finish filing this report. File it again.");
 			return tracked(filings);
 		} : undefined;
-		meta.secretRequestBlocked = outsideText || (!!resumed && !!meta.secretRequestBlocked);
+		meta.secretRequestBlocked = outsideText || ((!!resumed || !!active.resume) && !!meta.secretRequestBlocked);
 		const onRequestSecret: RunTurnInput["onRequestSecret"] = !planner && !reviewer && (!item || typeof item.row.asksLeft === "number") && platformTool("request_secret") ? async (request, withdrawn) => {
-			const refuse = (message: string) => {
-				note(c, turn, "warn", message);
+			const refuse = async (message: string) => {
+				const scope = item ? item.row.key.split(":").slice(0, 2).join(":") : "session";
+				if (meta.secretRefusalRun !== scope) {
+					meta.secretRefusalRun = scope;
+					note(c, turn, "warn", "A secret request was refused.");
+					await persist(c);
+				}
 				return message;
 			};
 			const validate = () => requestSecret(request.arguments, !!item?.asked || !!meta.secretRequest, !!meta.secretRequestBlocked || !!meta.tainted, held.redactor);
 			if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
 			const taken = validate();
-			if (!taken.request) return refuse(taken.told);
-			const { name } = taken.request;
+			const name = taken.request?.name ?? "";
 			let problem: string | null;
 			try {
-				problem = item ? await itemActor(c, meta.uid, item.row.itemId).internalSecretRequestLimit(item.row.key, name)
-					: secretRequestLimit(name, meta.secretAsks ?? 0, meta.declinedSecrets ?? [], "session");
-				problem ??= await secretsActor(c, meta.uid, meta.sessionId).internalRequestedSecretConflict(meta.sessionId, name);
+				if (item) {
+					problem = await itemActor(c, meta.uid, item.row.itemId).internalSecretRequestLimit(item.row.key, name);
+				} else {
+					const attempts = meta.secretAsks ?? 0;
+					problem = secretRequestLimit(name, attempts, meta.declinedSecrets ?? [], "session");
+					if (attempts < MAX_SECRET_REQUESTS) {
+						meta.secretAsks = attempts + 1;
+						await serial(c, () => c.db.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta)));
+					}
+				}
+				if (!problem && !taken.request) problem = taken.told;
+				if (!problem) problem = await secretsActor(c, meta.uid, meta.sessionId).internalRequestedSecretConflict(meta.sessionId, name);
 			} catch {
 				problem = "The platform could not check this secret request. Try again.";
 			}
@@ -4233,7 +4247,6 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			const notice = secretRequestNotice(caps.events === "acp", !setupProjectOf(meta));
 			const secretRequest = { ...current.request, notice, id: String(turn) };
 			meta.secretRequest = secretRequest;
-			if (!item) meta.secretAsks = (meta.secretAsks ?? 0) + 1;
 			append(c, { turn, kind: "platform", level: "info", text: `A secret was requested for ${name}.\n${notice}`, secretRequest });
 			await persist(c);
 			return current.told;
@@ -4962,7 +4975,7 @@ async function wholeTask(c: Ctx, meta: SessionMeta, active: ActiveTurn, turn: nu
 		turn,
 	);
 	const timeline = rows.map((row) => JSON.parse(row.item) as TimelineItem);
-	return { text: sessionWholeTask(timeline, turn, active.resume?.held ?? []), untrusted: [] };
+	return sessionWholeTask(timeline, turn, active.resume?.held ?? []);
 }
 
 /**

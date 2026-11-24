@@ -3356,8 +3356,8 @@ async function resumeChecks(server: Server, client: Client, uid: string, token: 
 	const handleOf = (id: string) => client.agentSession.get([uid, id], { params: { token } });
 	/** The sessions made here, deleted at the end: their sandboxes go with them. */
 	const made: string[] = [];
-	const make = async (title: string) => {
-		const id = (await userHandle.createSession({ profile: profile as never, title })).id;
+	const make = async (title: string, selectedProfile = profile) => {
+		const id = (await userHandle.createSession({ profile: selectedProfile as never, title })).id;
 		made.push(id);
 		return id;
 	};
@@ -3503,7 +3503,7 @@ async function resumeChecks(server: Server, client: Client, uid: string, token: 
 		const bucket = join(server.storage, "resume-bucket");
 		const memory = { WLP_FAKE_BACKUP_DIR: bucket };
 		await restart("stop", memory);
-		const id = await make("Memory lost while paused");
+		const id = await make("Memory lost while paused", FAKE ? "docker-windlass-sandbox" : profile);
 		const first = new Watch(client, uid, id, token);
 		try {
 			const { turn } = await first.conn.prompt({ text: "Write a short program that prints the date." });
@@ -3512,7 +3512,7 @@ async function resumeChecks(server: Server, client: Client, uid: string, token: 
 		} finally {
 			await first.conn.dispose().catch(() => undefined);
 		}
-		const turn = await startLong(id, `Now add a flag for the time zone. ${LONG}`);
+		const turn = await startLong(id, `Now add a flag for the time zone. ${LONG}${FAKE ? " (secret)" : ""}`);
 		// The copy of its memory goes too: the new sandbox has none to restore.
 		rmSync(join(bucket, "sessions", uid, `${id}.tgz`), { force: true });
 		await restart("stop", memory);
@@ -3523,6 +3523,13 @@ async function resumeChecks(server: Server, client: Client, uid: string, token: 
 		const given = promptsAfter(snap.timeline, turn, resumed[0]!.seq).join(" | ");
 		for (const part of ["Your earlier conversation is gone", "Now add a flag for the time zone.", "The session's first prompt was", "Write a short program that prints the date.", "reconstructed by the platform from the session's timeline"]) {
 			assert(given.includes(part), `the agent's whole task lacks "${part}": ${given.slice(0, 400)}`);
+		}
+		if (FAKE) {
+			const events = snap.timeline.filter(item => item.turn === turn && item.seq > resumed[0]!.seq && item.kind === "windlass");
+			const source = (await import("../server/src/factory/untrusted.js")).untrustedWords.conversation;
+			assert(events.some(item => item.kind === "windlass" && item.event.type === "fake.prompt_untrusted" && item.event.data?.source === source), "rebuilt prompt missing its earlier-agent source");
+			assert(!snap.secretRequest && events.some(item => item.kind === "windlass" && item.event.type === "tool.settled" &&
+				item.event.data?.output === "A request coming from third-party text was not shown as a secret prompt."), "rebuilt conversation did not block the secret request");
 		}
 		return "this turn's message, the first prompt and a reconstruction of the earlier turn";
 	});

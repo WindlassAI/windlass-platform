@@ -140,9 +140,13 @@ export function ciSentence(ci: Verdict["ci"]): string {
 		}
 		case "cancelled": {
 			const cancelled = ci.runs.filter(run => run.conclusion === "cancelled" || run.conclusion === "stale");
-			const names = cancelled.map(run => run.name).join(", ");
-			const outcomes = [...new Set(cancelled.map(run => run.conclusion))].join(" or ");
-			return `CI did not finish: ${cancelled.length} ${cancelled.length === 1 ? "check was" : "checks were"} ${outcomes} (${names}); nothing failed.`;
+			const describe = (runs: typeof cancelled) => `${runs.length} ${runs.length === 1 ? "check was" : "checks were"} cancelled (${runs.map(run => run.name).join(", ")})`;
+			const stopped = cancelled.filter(run => run.stopped || run.conclusion === "stale");
+			const other = cancelled.filter(run => !stopped.includes(run));
+			return "CI did not finish: " + [
+				...(stopped.length ? [`${describe(stopped)}; not rerun because ${stopped.length === 1 ? "it was" : "they were"} stopped while running.`] : []),
+				...(other.length ? [`${describe(other)}; nothing failed.`] : []),
+			].join(" ");
 		}
 		case "failed": {
 			const failing = ci.runs.filter((run) => FAILING_CONCLUSIONS.includes(run.conclusion));

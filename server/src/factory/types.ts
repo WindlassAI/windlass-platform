@@ -82,8 +82,10 @@ export interface Run extends ItemRun {
 	gate: (GateEvidence & { turn: string }) | null;
 	ci: CiProgress | null;
 	review: RunReview | null;
-	/** Questions the builder asked the person in this run (`ask_person` and `request_secret`), shown in its log. Absent on runs stored before the tool: none. */
+	/** Questions asked with `ask_person` plus all `request_secret` attempts in this run. Absent on runs stored before the tool: none. */
 	asks?: number;
+	/** Delivery whose secret request was already charged before checking its name. */
+	secretAttemptKey?: string;
 	declinedSecrets?: string[];
 }
 
@@ -499,6 +501,7 @@ export type Fact =
 	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string } | null; openItems: number; webhooks: boolean }
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */
 	| { kind: "publish_failed"; at: number; key: string; said: string; transient: boolean }
+	| { kind: "secret_attempt"; at: number; key: string; previous: number }
 	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: CancelledJob[]; openItems: number }
 	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */

@@ -452,7 +452,7 @@ platform is served at, `https://<name>.onrivet.dev` below:
 | Enable Device Flow | not selected |
 | Webhook | "Active" selected where work items should hear from GitHub at once (issue intake, CI, pull request state): URL `https://<name>.onrivet.dev/github/webhook`, and a secret of at least 32 characters, which is `WLP_GITHUB_WEBHOOK_SECRET`. Without a webhook, items poll GitHub and nothing is taken in from issues |
 | Subscribe to events | Issues, Issue comment, Check run, Check suite, Status, Pull request, Pull request review, Pull request review comment (installation events come by themselves) |
-| Repository permissions | Contents: read and write. Pull requests: read and write. Issues: read and write. Checks: read and write. Commit statuses: read-only. Actions: read-only. Metadata: read-only (GitHub adds it). Nothing else |
+| Repository permissions | Contents: read and write. Pull requests: read and write. Issues: read and write. Checks: read and write. Commit statuses: read-only. Actions: read and write. Metadata: read-only (GitHub adds it). Nothing else |
 | Organization and account permissions | none |
 | Where can this GitHub App be installed? | Choose "Only on this account" for a single-owner deployment. Choose "Any account" if other accounts need to install the App. |
 
@@ -473,7 +473,7 @@ that installation during redelivery sweeps. The endpoint still accepts `installa
 Then, on the app's page: note the App ID and the Client ID, generate a client secret, and generate a private
 key (a `.pem` file is downloaded).
 
-Issues access lets the Factory file work items from GitHub issues and comment on them. Reading CI uses a token with read access to Checks, Commit statuses and Actions. Publishing `windlass/verified` uses a separate token with Checks write access for the item's repository. Each installation owner must approve a new permission before GitHub grants it. With read-only Checks, work items can read CI and hand over as usual. [Enable the Factory check on GitHub](github-and-repositories.md#enable-the-factory-check-on-github).
+Issues access lets the Factory file work items from GitHub issues and comment on them. Reading CI uses a token with read access to Checks, Commit statuses and Actions. Actions write access is used to rerun checks that never got a runner or timed out. Publishing `windlass/verified` uses a separate token with Checks write access for the item's repository. Each installation owner must approve a new permission before GitHub grants it. With read-only Checks, work items can read CI and hand over as usual. [Enable the Factory check on GitHub](github-and-repositories.md#enable-the-factory-check-on-github).
 
 | Variable | Effect |
 |---|---|
