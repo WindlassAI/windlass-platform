@@ -27,6 +27,7 @@ import { linkProps } from "../lib/router";
 import { perHour, sizeName, sizeSpec } from "../lib/sizes";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
+import { readTwice } from "../lib/retry";
 
 /** A length of sandbox time in a sentence: the number and its unit stay on one line. */
 const sandboxTime = (seconds: number) => spelledTime(seconds).replace(/ /g, "\u00a0");
@@ -66,9 +67,7 @@ function useUsage(): { view: UsageView | null; error: string | null; items: Map<
 			return;
 		}
 		reading.current = true;
-		client
-			.user(auth)
-			.usage()
+		readTwice(() => client.user(auth).usage())
 			.then(
 				(value) => {
 					setView(value);

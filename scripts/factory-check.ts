@@ -2053,6 +2053,13 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const limited = start(hostedTasks, undefined, seconds);
 	assert.deepEqual(keys(limited), ["first", "second"]);
 	assert.deepEqual(keys(update(limited, "first", "done")), ["first", "second", "third"]);
+	// After approval, a subtask not started yet takes a new agent; a started one keeps its own.
+	const inventory = { machines: [], hostedProfiles: ["daytona"], models: { windlass: { source: "account", defaultModel: "m1", models: [{ id: "m1", efforts: [] }, { id: "m2", efforts: [] }] } } };
+	const chosen = walk(limited, [{ kind: "set_subtask_agent", key: "third", agent: { harness: "windlass", model: "m2" }, inventory }]).item;
+	assert.deepEqual([chosen.featurePlan!.subtasks[2]!.agent, chosen.approvedPlan!.subtasks[2]!.agent], [{ harness: "windlass", model: "m2" }, { harness: "windlass", model: "m2" }]);
+	assert.equal(walk(limited, [{ kind: "set_subtask_agent", key: "first", agent: { harness: "windlass", model: "m2" }, inventory }]).item.featurePlan!.subtasks[0]!.agent, undefined);
+	assert.throws(() => walk(limited, [{ kind: "set_subtask_agent", key: "third", agent: { harness: "windlass", model: "m9" }, inventory }]), /not among/);
+	expect("an approved feature changes the agent of a subtask that has not started only", true);
 
 	const done = update(hosted, "first", "done", 0, seconds / 2);
 	const failed = update(done, "second", "failed", 0, seconds);

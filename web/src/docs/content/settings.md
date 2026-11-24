@@ -6,7 +6,7 @@ Open the account menu and choose **Settings**. What you save here holds for ever
 
 Choose a default **Sandbox** and **Model**, or **No default**. They save as soon as you choose. A new agent starts from these where its repository has no default of its own. See [Defaults](/docs/start-an-agent#defaults) for the full order.
 
-**Where work items run** sets the place for new work items. Choose Hosted, a paired machine, or Any of my machines. For machine places, choose the agent, profile and whether an unavailable machine should wait or fall back to hosted Windlass. A repository can inherit your account setting or save its own.
+**Where work items run** sets the place for new work items. Choose Hosted, a paired machine, or Any of my machines. For machine places, choose the agent, its model and effort, the profile, and whether an unavailable machine should wait or fall back to hosted Windlass. A repository can inherit your account setting or save its own.
 
 **Where new agents start** shows where your last agent started. A new agent starts there too. Choose **Forget** to start the next one on this platform with Windlass.
 

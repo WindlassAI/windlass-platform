@@ -3,8 +3,12 @@
  * of its spend (server/src/factory/budget.ts, `noteAgentTurn`). Where its tokens are not counted against
  * the item's budget, no meter is drawn: a 0 that was never measured is not shown as one.
  */
-import type { ItemAgent } from "@contract";
+import type { ItemAgent, ItemSpend } from "@contract";
 import { HARNESS_NAMES } from "./acp";
+import { plural, sandboxTime } from "./format";
+
+/** What a subscription agent spent, which no token budget holds: "4 turns, 12 min". */
+export const subscriptionSpend = (spent: Pick<ItemSpend, "turns" | "activeSeconds">): string => `${plural(spent.turns, "turn")}, ${sandboxTime(spent.activeSeconds)}`;
 
 /** "Claude Code · sonnet · effort high", "Windlass · gpt-6.2-sol"; the agent's default model is said as such. */
 export function agentLine(agent: ItemAgent | undefined): string {
