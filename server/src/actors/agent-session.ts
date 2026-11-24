@@ -1,3 +1,5 @@
+import { spareRecipe, type SpareRecipe, type SpareSetup } from "../runner/spare-recipe.js";
+import { refHead } from "../github/feature.js";
 /**
  * `agentSession`, key [uid, sessionId]: one agent, its sandbox, its timeline and its turns.
  *
@@ -180,7 +182,7 @@ import { billing } from "../billing/config.js";
 import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
 import { blockedHostNote, hostsForTurn } from "../repository-network.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
-import { CLONE_GIT_START, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview, materializeInput, removeInputs } from "../github/git.js";
+import { cloneCommand, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview, materializeInput, removeInputs } from "../github/git.js";
 import { INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY, isHostName } from "../sandbox/e2b/network.js";
@@ -1044,10 +1046,10 @@ function scheduleWrite(c: Ctx, always = false): void {
 	}, FLUSH_DELAY_MS);
 }
 
-function numberItem(c: Ctx, item: NewItem): TimelineItem {
+function numberItem(c: Ctx, item: NewItem, at = Date.now()): TimelineItem {
 	// Network observations scrub their free text before aggregation. Keep protocol enum values intact.
 	const redactor = c.vars.turn?.secrets?.redactor;
-	const numbered = { ...(redactor && item.kind !== "network.blocked" ? redactor.deep(item) : item), seq: c.vars.nextSeq, at: Date.now() } as TimelineItem;
+	const numbered = { ...(redactor && item.kind !== "network.blocked" ? redactor.deep(item) : item), seq: c.vars.nextSeq, at } as TimelineItem;
 	return numbered.kind === "acp" ? boundedAcpItem(numbered) : numbered;
 }
 
@@ -1056,8 +1058,8 @@ function numberItem(c: Ctx, item: NewItem): TimelineItem {
  * a turn holds its repository's secrets, their values are taken out of every text of the item first,
  * whatever wrote it: nothing a turn adds to the timeline carries one.
  */
-function append(c: Ctx, item: NewItem): TimelineItem {
-	const full = numberItem(c, item);
+function append(c: Ctx, item: NewItem, at?: number): TimelineItem {
+	const full = numberItem(c, item, at);
 	c.vars.nextSeq += 1;
 	c.vars.unwritten.push(full);
 	c.broadcast("item", full);
@@ -1262,25 +1264,6 @@ function onWindlassEvent(c: Ctx, meta: SessionMeta, turn: number, event: Windlas
 
 function shellQuote(text: string): string {
 	return `'${text.replace(/'/g, `'\\''`)}'`;
-}
-
-/**
- * Clones into the workspace. A new sandbox's workspace holds an empty repository and nothing else, which
- * the clone replaces; if anything else is there, the clone goes into a directory of its own.
- */
-function cloneCommand(repoUrl: string): string {
-	const url = shellQuote(repoUrl);
-	const name = (repoUrl.replace(/\/+$/, "").split("/").pop() ?? "repo").replace(/\.git$/, "").replace(/[^A-Za-z0-9._-]/g, "-") || "repo";
-	return [
-		"set -e",
-		CLONE_GIT_START,
-		`if [ -z "$(ls -A | grep -v '^\\.git$' || true)" ]; then`,
-		"  rm -rf .git",
-		`  git clone --quiet -- ${url} "$(pwd -P)"`,
-		"else",
-		`  git clone --quiet -- ${url} "$(pwd -P)"/${shellQuote(name)}`,
-		"fi",
-	].join("\n");
 }
 
 /**
@@ -1534,9 +1517,50 @@ export function applySandboxClamp(meta: Pick<SessionMeta, "hostedSize">, size: H
 	return true;
 }
 
+// An empty pool still needs an authorized seed. Repeated cold creates for the same
+// branch can reuse its head briefly. A claim always observes the head afresh.
+let lastSpareHead: { key: string; commit: string; until: number } | undefined;
+export async function spareHead(key: string, seedOnly: boolean, read: () => Promise<string>) {
+	if (seedOnly && lastSpareHead?.key === key && Date.now() < lastSpareHead.until) return lastSpareHead.commit;
+	const commit = await read();
+	lastSpareHead = { key, commit, until: Date.now() + 30_000 };
+	return commit;
+}
+
+export function readySetupItems(turn: number, recipe: NonNullable<SpareRecipe["connected"]>, setup: SpareSetup) {
+	const item = { turn, kind: "setup" as const, id: `su_${randomBytes(6).toString("hex")}`, command: recipe.command,
+		limitMs: recipe.timeoutMs, output: "", truncated: false };
+	return [
+		{ ...item, state: "started" as const, at: setup.startedAt, exitCode: null, durationMs: null },
+		{ ...item, state: "succeeded" as const, at: setup.startedAt + setup.durationMs, exitCode: 0, durationMs: setup.durationMs },
+	];
+}
+
+/** Resolve the current permission and immutable base outside the machine. A mirror alone
+ * cannot establish either. Only the ordinary base checkout can run setup in advance. */
+async function readyRecipe(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | null, plan: SnapshotPlan | null, seedOnly = false): Promise<SpareRecipe | undefined> {
+	if (!meta.repoUrl || (meta.profile !== "docker-hardened" && meta.harness !== "codex") || meta.environmentBuild ||
+		meta.windlassSessionId || meta.pushedHead || meta.origin?.role === "reviewer" || meta.origin?.owns !== undefined || plan?.writer) return;
+	if (!meta.repo) return spareRecipe({ url: meta.repoUrl }) ? { url: meta.repoUrl } : undefined;
+	const repo = meta.repo, project = setupProjectOf(meta), app = githubApp();
+	if (!project || !app || !secrets || secrets.opened.length || secrets.unopened.length || await childSetupSeed(c, meta)) return;
+	const connection = await githubConnection(c, meta);
+	if (!connection) return;
+	const saved = await userActor(c, meta.uid).internalSetupCommand(project.key);
+	const { installation, repository } = await sessionRepository(app, connection, repo, "read");
+	const key = digest([meta.uid, connection.connectedAt, installation.id, repo.id, repo.branch]);
+	const commit = plan?.commit || await spareHead(key, seedOnly, () => app.withToken(installation.id, { repositoryId: repo.id, permissions: { metadata: "read", contents: "read" } },
+		token => refHead(app, token, repository.owner, repository.name, repo.branch), { revokeAfter: true }));
+	const recipe = { url: app.cloneUrl(repository.owner, repository.name), connected: { repo: String(repo.id), branch: repo.branch, commit,
+		command: saved.command?.trim() ?? "", timeoutMs: config.setupTimeoutMs, generation: snapshotGeneration(String(repo.id), saved.updatedAt, connection.connectedAt) } };
+	return spareRecipe(recipe) ? recipe : undefined;
+}
+
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
 async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer, secrets: HeldSecrets | null, allowSnapshot = true): Promise<SandboxHandle> {
 	let plan: SnapshotPlan | null = null;
+	let recipe: SpareRecipe | undefined;
+	let ready = false;
 	// A setup cut off with the server is being stopped: let it finish first, or it could stop this turn's processes.
 	await c.vars.setupReap;
 	// What the repository's network list allows now: this turn's connect sets the sandbox's network to it. A host
@@ -1593,7 +1617,14 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		const vars = c.vars;
 		plan = allowSnapshot ? await snapshotPlan(c, meta, secrets, layer) : null;
 		const fromSnapshot = plan ? { ...plan.key, writer: plan.writer } : undefined;
-		const id = await layer.sandboxes.create({ ...sessionSandboxInput(meta, secrets?.screenshots), fromSnapshot, mirrorRepo: meta.repo ? String(meta.repo.id) : undefined, ...connectOptions(meta) });
+		const id = await layer.sandboxes.create({ ...sessionSandboxInput(meta, secrets?.screenshots), fromSnapshot,
+			...(allowSnapshot && meta.place.kind === "machine" && meta.repoUrl && { spareRecipe: async (ready: number) => {
+				const candidate = await readyRecipe(c, meta, secrets, plan, ready === 0);
+				// A spare may finish after an empty report. Revalidate before accepting that claim.
+				if (ready > 0) recipe = candidate;
+				return candidate;
+			} }),
+			mirrorRepo: meta.repo ? String(meta.repo.id) : undefined, ...connectOptions(meta) });
 		console.log(`[wlp] sandbox.created id=${id} session=${meta.sessionId}`);
 		if (vars.destroying) {
 			await layer.sandboxes.destroy(id);
@@ -1632,6 +1663,28 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		if (meta.windlassSessionId && !(await privateSessionData(meta, layer.sandboxes, id))) meta.freshWorkspace = true;
 	}
 
+	if (!meta.cloned && handle.readyKey) {
+		// A replayed create (or connect after an actor restart) must agree with today's recipe too.
+		recipe ??= allowSnapshot ? await readyRecipe(c, meta, secrets, plan).catch(() => undefined) : undefined;
+		if (!recipe || digest([recipe]) !== handle.readyKey || (!handle.snapshot && recipe.connected?.command && !handle.readySetup)) {
+			await layer.sandboxes.destroy(handle.id);
+			meta.sandboxId = null;
+			await persist(c);
+			return openSandbox(c, meta, turn, signal, layer, secrets, false);
+		}
+		if (!handle.snapshot) {
+			if (meta.repo && recipe.connected) meta.repo.baseSha = recipe.connected.commit;
+			if (recipe.connected?.command && handle.readySetup) {
+				for (const item of readySetupItems(turn, recipe.connected, handle.readySetup)) append(c, item, item.at);
+			}
+			meta.cloneDirectory = ".";
+			meta.setupDue = null;
+			meta.cloned = true;
+			await persist(c);
+		}
+		ready = true;
+	}
+
 	if (!meta.cloned && handle.snapshot) {
 		// A restarted actor can find the container before it recorded the successful refresh.
 		if (!await restorePrepared(c, meta, turn, handle, plan, secrets?.environment).catch(() => false)) {
@@ -1644,6 +1697,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		}
 	}
 
+	if (ready) note(c, turn, "info", "Started from a ready sandbox.");
 	const active = c.vars.turn;
 	if (active) active.finishNetwork = await observeNetwork(c, meta, turn, handle, layer);
 

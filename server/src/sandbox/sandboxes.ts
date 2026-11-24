@@ -1,3 +1,4 @@
+import type { SnapshotSelection } from "./snapshot-key.js";
 /**
  * Sandboxes: one Docker container per agent session, `wlp-session-<id>`.
  *
@@ -646,7 +647,7 @@ export class DockerSandboxes implements Sandboxes {
 	 * the data went with the sandbox. Left out: it gets one of its own where the provider makes them
 	 * (`DockerSandboxOptions.ownVolumeName`).
 	 */
-	async create(input: CreateSandboxInput & { ownData?: boolean }): Promise<string> {
+	async create(input: CreateSandboxInput & { ownData?: boolean; reservedId?: string; deferredRelayNonce?: string }): Promise<string> {
 		assertUid(input.uid);
 		const harness = this.options.sessionRelay ? this.options.harness ?? "claude" : undefined;
 		const agent = machineHarness(input.harness ?? harness) ?? CLAUDE;
@@ -661,7 +662,8 @@ export class DockerSandboxes implements Sandboxes {
 		const flags = PROFILE_RUN_FLAGS[input.profile];
 		if (!profile.available || flags === undefined) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
 		// Older runners adopt only wlp-session-<12 hex>. Keep Claude sessions outside that namespace from creation.
-		const id = (harness ? harness + "-" : "") + randomId(6);
+		if (input.reservedId && !/^[a-f0-9]{12}$/.test(input.reservedId)) throw new Error("Invalid reserved sandbox id.");
+		const id = (harness ? harness + "-" : "") + (input.reservedId ?? randomId(6));
 		const name = containerName(id);
 		// The reviewer cannot share transcripts or project-wide MCP approvals with the user's other sessions.
 		// A session whose commands run directly in the container gets a volume of its own.
@@ -669,7 +671,9 @@ export class DockerSandboxes implements Sandboxes {
 		const volume = input.privateData || this.options.sessionRelay !== undefined ? null : await this.options.dataVolume(input.uid, own ? id : undefined);
 		const scope = this.mirrorScope;
 		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(this.helperImage, scope, this.machine, input.uid, input.mirrorRepo, { floor: this.limits().free }).catch(() => null) : null;
-		const relay = await this.options.sessionRelay?.();
+		// An idle harness has only its public routing nonce. The runner signs it and
+		// opens its forwarder once a session has claimed this container.
+		const relay = harness && input.deferredRelayNonce ? { nonce: input.deferredRelayNonce, env: [] } : await this.options.sessionRelay?.();
 		const requested = sandboxSlots(input.size ?? 1, 4);
 		const size = Math.min(requested, this.options.slots?.max ?? 1);
 		const limits = this.resources(size);
@@ -710,6 +714,8 @@ export class DockerSandboxes implements Sandboxes {
 			{ timeoutMs: 120_000 },
 		);
 		if (result.code !== 0) {
+			// A conflict belongs to the container that already held the name.
+			if (/container name .*already in use/i.test(result.stderr)) throw new Error("The sandbox name was already in use.");
 			await docker(["rm", "-f", name]);
 			// The error said below is the one that matters: a volume left behind goes with the next sweep.
 			if (own) await this.dropOwnVolume(input.uid, id).catch(() => {});
@@ -797,6 +803,11 @@ export class DockerSandboxes implements Sandboxes {
 	}
 
 	async hasSnapshot(uid: string, repo: string) { return this.snapshots().has(uid, repo); }
+
+	async selectedImage(input: SnapshotSelection, uid: string, profile: SandboxProfileId, shots: boolean) {
+		const selection = await this.snapshots(shots ? this.shotsImage : this.image, shots).select(input, uid, profile);
+		return selection.hit ? selection.image : null;
+	}
 
 	async saveSnapshot(id: string, source: SnapshotSource) {
 		const found = await this.inspect(id);

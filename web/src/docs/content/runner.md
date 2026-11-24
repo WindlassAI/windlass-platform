@@ -110,6 +110,7 @@ These options go after the runner image, with the `run` command or with no comma
 | --- | --- | --- |
 | `--platform URL` | The saved platform | The platform to connect to. It must be HTTPS, or HTTP on loopback. |
 | `--slots N`, `--max-turns N` | As many 2 CPU, 4 GiB slots as fit after host reserves (1–16) | Total turn capacity in slots (1–64). A personal session uses one slot. Large factory sessions use more. |
+| `--spares N` | 1 | Prepare up to two ready sandboxes for the most recently used repository when slots and disk are free. Set to 0 to disable. |
 | `--slot-cpus X` | 2, or all cores if a full slot cannot fit after reserves | CPU limit per slot. Overrides `WLP_RUNNER_CPUS`. |
 | `--slot-memory Nm\|Ng` | An even share of usable memory (4–8 GiB) in quarter-GiB steps, or up to 4 GiB if a full slot cannot fit | Memory per slot, at least 1 GiB. The swap limit equals the memory limit. |
 | `--sandbox-memory Ng` | Host memory after reserves | Total memory budget used to size the slots. |

@@ -1,5 +1,10 @@
+import { randomBytes } from "node:crypto";
+import { WarmSpares, validSpec, SPARE_SESSION, type SpareSpec } from "./warm-spares.js";
+import { cloneCommand, cloneReadyBase, refreshReadyClone, WORKSPACE_HEAD_COMMAND } from "../../server/src/github/git.js";
+import { runSetupCommand } from "../../server/src/sandbox/setup.js";
+import { spareSetup, type SpareSetup, type SpareRecipe } from "../../server/src/runner/spare-recipe.js";
 import { dropPreviousSnapshots } from "./snapshot-retention.js";
-import type { SnapshotSelection, SnapshotSource } from "../../server/src/sandbox/snapshot-key.js";
+import { digest, type SnapshotSelection, type SnapshotSource } from "../../server/src/sandbox/snapshot-key.js";
 import { availableParallelism, freemem, loadavg, totalmem } from "node:os";
 import type { HarnessOptions } from "../../server/src/contract.js";
 import { innerModesReason, reportedCodexModes } from "../../server/src/sandbox/codex-modes.js";
@@ -19,7 +24,7 @@ import { DOCKER_BWRAP_PROBE } from "../../server/src/sandbox/docker-flags.js";
 import { NAME, WORKSPACE } from "../../server/src/sandbox/provider.js";
 import { containerName, removeRunningTokenFiles, DockerSandboxes, DockerSandboxHandle } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
-import { saveSessionMirror } from "../../server/src/sandbox/git-mirrors.js";
+import { mirrorOwner, saveSessionMirror } from "../../server/src/sandbox/git-mirrors.js";
 import { clampStoreLimits, DEFAULT_STORE_LIMITS, type StoreCaps, type StoreLimits } from "../../server/src/sandbox/store-limits.js";
 import { DockerModelRelay } from "../../server/src/sandbox/model-relay.js";
 import { readsModelRelay } from "../../server/src/model-relay-url.js";
@@ -32,10 +37,10 @@ import { cleanClaudeOutput } from "./claude-output.js";
 import { claudeLoginGeneration, dockerReason, loginFileState, dropDetachedLoginVolume, retireClaudeRelay, withLoginVolume } from "./harness-login.js";
 import { open, type Egress } from "./egress-policy.js";
 import { EgressNetwork } from "./egress-network.js";
-import { loadPair, Refusal, RunnerError, type Identity } from "./state.js";
+import { forget, loadPair, read, Refusal, RunnerError, save, VERSION, type Identity } from "./state.js";
 
 type Lifecycle = Extract<Operation, { name: "connect" | "state" | "suspend" | "destroy" }>;
-export interface Box { startTimes?: { image: number; pulled?: true; create: number }; resizePending?: true; snapshotCandidate?: boolean; savingSnapshot?: boolean; egress?: string; legacyClaude?: boolean; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: MachineHarness; usedAt: number; busy: number; workspaceChecked: boolean }
+export interface Box { size?: number; claim?: Claim; startTimes?: { spare?: true; image: number; pulled?: true; create: number }; resizePending?: true; snapshotCandidate?: boolean; savingSnapshot?: boolean; egress?: string; legacyClaude?: boolean; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: MachineHarness; usedAt: number; busy: number; workspaceChecked: boolean }
 
 // Docker's archive HEAD stats just the path, even in a stopped or paused container.
 // Use the CLI's daemon connection so this also respects the owner's Docker context.
@@ -73,12 +78,160 @@ const INVENTORY_TTL_MS = 6 * 60 * 60_000;
 const SIGN_IN_RETRIES_MS = [10_000, 30_000, 60_000];
 const INVENTORY_RETRY_MS = 5 * 60_000;
 
+interface Claim { session: string; key: string; setup?: SpareSetup; attempt?: string; relayEnv?: Record<string, string> }
+
+// The Docker session label is immutable. The pairing's private state binds each claimed
+// id exactly once, before any session can receive it. Unbound spares never enter boxes.
+function claimFor(value: unknown): Claim | undefined {
+	if (value && typeof value === "object" && "session" in value && typeof value.session === "string" && NAME.test(value.session) &&
+		"key" in value && typeof value.key === "string" && /^[a-f0-9]{64}$/.test(value.key) &&
+		(!("setup" in value) || spareSetup(value.setup)) &&
+		(!("relayEnv" in value) || value.relayEnv && typeof value.relayEnv === "object" && Object.values(value.relayEnv).every(v => typeof v === "string")) &&
+		(!("attempt" in value) || typeof value.attempt === "string" && /^[a-f0-9]{32}$/.test(value.attempt))) return value as Claim;
+}
+
 export class Executor extends MachineDocker {
 	readonly provider: DockerSandboxes;
 	readonly network: EgressNetwork;
 	readonly slots: Report["slots"];
 	get maxTurns() { return this.slots?.max; }
 	readonly boxes = new Map<string, Box>();
+	warmSpares = false;
+	spareSetupTimes = false;
+	private readonly spares = new WarmSpares((raw, spec, signal) => this.buildSpare(raw, spec, signal), raw => this.removeUnbound(raw), Date.now, () => this.publishReport?.());
+	private waitForTurn?: string;
+	private nextSpareDisk = 0;
+	private spareDisk = 0;
+	private readonly unbound = new Set<string>();
+	private claimFile(raw: string) { return `claim-${this.identity.machineId}-${raw}.json`; }
+	private spareContext() {
+		return digest([this.identity.uid, this.identity.machineId, VERSION, image, shotsImage, this.claudePin, this.codexPin, this.opencodePin, this.network.policy, this.network.domains(),
+			this.slots, this.screenshots, this.allowedProfiles, this.sessionVolumes]);
+	}
+	private async dropSpare(raw: string) {
+		const rows = await dockerOutput(["ps", "-aq", ...this.filters(), "--filter", "label=" + LABEL + ".session=" + SPARE_SESSION,
+			"--filter", "name=^/" + containerName(raw) + "$"]);
+		if (claimFor(read(this.claimFile(raw)))) return;
+		// A previous removal may have left just the pairing's labelled helpers.
+		try { await this.network.detach(raw); }
+		finally { if (rows.trim()) await this.provider.destroy(raw); }
+	}
+	private async buildSpare(raw: string, spec: SpareSpec, signal: AbortSignal) {
+		const { spare, profile, harness, prepared, screenshots, size, mirrorRepo } = spec.args;
+		const { uid } = this.identity;
+		if (read(this.claimFile(raw)) !== undefined || await this.disk() <= Math.max(5e9, this.storeLimits().free)) throw new Error("Spare admission refused");
+		signal.throwIfAborted();
+		if (harness) this.requireHarness(profile, harness);
+		this.requireProfile(profile);
+		const provider = this.providerFor(harness);
+		await provider.create({ reservedId: raw.slice(-12), uid, sessionId: SPARE_SESSION, profile, harness, screenshots, size, mirrorRepo,
+			deferredRelayNonce: harness ? randomBytes(16).toString("hex") : undefined,
+			fromSnapshot: prepared && { ...prepared, attempt: randomBytes(16).toString("hex") }, ownData: true });
+		signal.throwIfAborted();
+		await this.network.attach(raw, containerName(raw), false);
+		const box = await provider.connect(raw, { ownData: true });
+		if (!box || (!harness && !box.ownData)) throw new Error("Missing private workspace");
+		signal.throwIfAborted();
+		if (profile === bubblewrap && (await box.ask(DOCKER_BWRAP_PROBE, { timeoutMs: 20_000 }))?.code !== 0) throw new Error("Command sandbox unavailable");
+		if (prepared) {
+			if (!box.snapshot || box.snapshot.inputs !== prepared.inputs || box.snapshot.generation !== prepared.generation) throw new Error("Prepared image missing");
+			// The platform refreshes and validates this image through restorePrepared after claim.
+			return;
+		}
+		const c = spare.connected;
+		if (!c) {
+			const result = await box.run(cloneCommand(spare.url), { timeoutMs: 180_000, signal });
+			if (result.exitCode !== 0) throw new Error("Clone failed");
+		} else {
+			if (!await cloneReadyBase(box, spare.url, c.branch, c.commit, mirrorOwner(uid, c.repo), signal)) throw new Error("Unconfirmed base");
+			let setup: SpareSetup | undefined;
+			if (c.command) {
+				const startedAt = Date.now();
+				const result = await runSetupCommand(box, { command: c.command, cwd: box.cwd, timeoutMs: c.timeoutMs, signal });
+				if (result.state !== "succeeded") throw new Error("Setup failed");
+				setup = { startedAt, durationMs: result.durationMs };
+			}
+			// Check after setup, off the claim path. No process or socket can use a
+			// ready container between this check and its single claim.
+			const head = await box.run(WORKSPACE_HEAD_COMMAND, { timeoutMs: 30_000, signal });
+			if (head.exitCode !== 0 || head.stdout.trim() !== c.commit) throw new Error("Setup changed the base");
+			return setup;
+		}
+	}
+	private async verifySpare(raw: string, built: SpareSpec, spec: SpareSpec) {
+		const { spare, prepared } = spec.args, c = spare.connected;
+		const box = await this.provider.connect(raw, { ownData: true });
+		if (!box || (!spec.args.harness && !box.ownData) || box.uid !== this.identity.uid || box.profile !== spec.args.profile) return false;
+		if (prepared) return !!box.snapshot && !!box.image && box.image === await this.provider.selectedImage(prepared, this.identity.uid, spec.args.profile, !!spec.args.screenshots);
+		// A connected request carries a freshly authorized GitHub ref. Setup may depend
+		// on any source file, so its outputs cannot be carried to a different commit.
+		if (c && c.commit === built.args.spare.connected?.commit) return true;
+		if (c?.command) return false;
+		return (await box.run(refreshReadyClone(spare.url, c?.branch, c?.commit), { timeoutMs: 10_000 })).exitCode === 0;
+	}
+	private providerFor(harness?: MachineHarness) {
+		return harness === "codex" ? this.codexProvider! : harness === "opencode" ? this.opencodeProvider! : harness === "claude" ? this.claudeProvider! : this.provider;
+	}
+	private async claimRelay(raw: string, harness: MachineHarness) {
+		return withLoginVolume(this, async () => {
+			const nonce = (await dockerOutput(["inspect", "-f", `{{index .Config.Labels "${LABEL}.relay-session"}}`, containerName(raw)])).trim();
+			const login = harness === "codex" ? codexLogin(this) : harness === "opencode" ? currentProvider(this) : undefined;
+			if (harness !== "claude" && !login) throw new Refusal(`Run windlass-runner login ${harness} on this machine.`);
+			const relay = await prepareRelay(this, login ?? undefined, nonce);
+			const env: Record<string, string> = {};
+			for (const assignment of relay.env.filter(arg => arg !== "-e")) {
+				const split = assignment.indexOf("=");
+				env[assignment.slice(0, split)] = assignment.slice(split + 1);
+			}
+			return env;
+		});
+	}
+
+	private spareRoom(size = 1, incoming = 0) {
+		const running = [...this.boxes.values()].filter(b => b.state === "running");
+		const slots = this.maxTurns ?? 1;
+		return Math.max(0, Math.min(this.limits.spares ?? 1, Math.floor((slots - incoming * size - running.reduce((n, b) => n + (b.size ?? 1), 0)) / size),
+			(this.limits.maxRunning ?? Infinity) - running.length - incoming, (this.limits.maxSandboxes ?? Infinity) - this.boxes.size - incoming));
+	}
+	private async removeUnbound(raw: string) {
+		try {
+			await this.dropSpare(raw);
+			this.unbound.delete(raw);
+		} catch {
+			this.unbound.add(raw);
+			console.warn(`Could not remove spare ${raw}.`);
+		}
+	}
+	private async reapUnbound() {
+		for (const raw of this.unbound) await this.removeUnbound(raw);
+	}
+	/** Preparation never owns the executor's serial queue. */
+	async maintainSpares(online = () => true) {
+		if (!this.inventoryStarted) return;
+		if (!this.warmSpares || !this.sessionVolumes || !this.dockerHealth.ok || this.egressError || this.limits.spares === 0) {
+			return this.spares.trim();
+		}
+		const spec = this.spares.recipe;
+		if (!spec || spec.context !== this.spareContext()) return this.spares.trim();
+		const limit = this.spareRoom(spec.args.size);
+		if (!limit) return this.spares.trim();
+		if (this.waitForTurn && this.boxes.get(this.waitForTurn)?.state === "running") return this.spares.trim(limit, spec);
+		if (Date.now() >= this.nextSpareDisk) {
+			this.nextSpareDisk = Date.now() + 30_000;
+			this.spareDisk = await this.disk().catch(() => 0);
+		}
+		if (this.spareDisk <= Math.max(this.storeLimits().free, 5e9)) return this.spares.trim();
+		// A create or resume can have reserved capacity without having published its
+		// running box yet. Admit in its order, then build outside that order.
+		await this.serial(async () => {
+			if (online() && this.warmSpares && this.spares.recipe === spec) this.spares.fill(this.spareRoom(spec.args.size));
+		});
+	}
+	stopSpares() { void this.spares.trim(); }
+	turnEnded(box: Box) {
+		if (this.waitForTurn === externalId(this.identity.machineId, box.raw)) this.waitForTurn = undefined;
+	}
+
 	private readonly codexPin?: string;
 	private readonly codexProvider?: DockerSandboxes;
 	private codexCredential?: ReturnType<typeof codexLogin>;
@@ -365,17 +518,21 @@ private signInRetries = 0;
 	}
 	async discover(onlySession?: string) {
 		const filters = this.filters();
-		if (onlySession) filters.push("--filter", `label=${LABEL}.session=${onlySession}`);
-		const rows = await dockerOutput(["ps", "-a", ...filters, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${LABEL}.profile"}}|{{.Label "${LABEL}.harness"}}|{{.Label "${LABEL}.egress"}}|{{.Label "${LABEL}.relay-session"}}`]);
+		if (onlySession && ![...this.boxes.values()].some(b => b.sessionId === onlySession && b.claim)) filters.push("--filter", `label=${LABEL}.session=${onlySession}`);
+		const rows = await dockerOutput(["ps", "-a", ...filters, "--format", `{{.Names}}|{{.State}}|{{.Label "${LABEL}.session"}}|{{.Label "${LABEL}.profile"}}|{{.Label "${LABEL}.harness"}}|{{.Label "${LABEL}.egress"}}|{{.Label "${LABEL}.relay-session"}}|{{.Label "${LABEL}.slots"}}`]);
 		const found = new Set<string>();
 		for (const line of rows.trim().split("\n")) {
-			const [name, state, sessionId, profile, harness, egress, relay] = line.split("|");
+			const [name, state, labelSession, profile, harness, egress, relay, size] = line.split("|");
 			const raw = /^wlp-session-((?:(?:claude|opencode|codex)-)?[a-f0-9]{12})$/.exec(name)?.[1];
+			const claim = raw && labelSession === SPARE_SESSION ? claimFor(read(this.claimFile(raw))) : undefined;
+			const sessionId = claim?.session ?? labelSession;
+			if (raw && labelSession === SPARE_SESSION && !claim && !this.spares.owns(raw)) this.unbound.add(raw);
+			if (onlySession && sessionId !== onlySession) continue;
 			if (!raw || (raw.startsWith("claude-") && harness !== "claude") || (raw.startsWith("opencode-") !== (harness === "opencode")) || (raw.startsWith("codex-") !== (harness === "codex")) || (harness && harness !== "claude" && harness !== "opencode" && harness !== "codex") || !NAME.test(sessionId) || (profile !== bubblewrap && profile !== "docker-hardened")) continue;
 			const id = externalId(this.identity.machineId, raw);
 			found.add(id);
 			const box = this.boxes.get(id) ?? { raw, sessionId, profile, ...(harness === "claude" || harness === "opencode" || harness === "codex" ? { harness: harness as MachineHarness } : {}), usedAt: Date.now(), busy: 0, workspaceChecked: false };
-			this.boxes.set(id, Object.assign(box, { egress, legacyClaude: !!harness && !/^[0-9a-f]{32}$/.test(relay), state: state === "running" || state === "restarting" ? "running" as const : "paused" as const }));
+			this.boxes.set(id, Object.assign(box, { egress, claim, size: Number(size) || 1, legacyClaude: !!harness && !/^[0-9a-f]{32}$/.test(relay), state: state === "running" || state === "restarting" ? "running" as const : "paused" as const }));
 		}
 		for (const [id, box] of this.boxes) {
 			if ((!onlySession || box.sessionId === onlySession) && !found.has(id)) this.boxes.delete(id);
@@ -417,7 +574,7 @@ private signInRetries = 0;
 	// advertising a tighter policy. Its workspace remains available to the owner.
 	private async reconcileEgress() {
 		await this.discover();
-		const running = new Set<string>();
+		const running = new Set([...this.spares.raws, ...this.unbound]); // Spare helpers are removed by their own reaper.
 		for (const [id, box] of this.boxes) {
 			if (box.state !== "running") continue;
 			if (box.legacyClaude || (box.egress || "open") !== this.network.policy.mode) {
@@ -441,6 +598,7 @@ private signInRetries = 0;
 					this.egressError = error instanceof RunnerError ? error.message : "Docker could not apply the runner’s network policy.";
 					throw new RunnerError(this.egressError);
 				}
+				await this.reapUnbound();
 			} else if (this.dockerHealth.ok) await dockerOutput(["version", "--format", "{{.Server.Version}}"]);
 			else await this.discover();
 			await this.refreshLogin();
@@ -558,7 +716,7 @@ private signInRetries = 0;
 			loginGeneration: this.opencodeLogin?.generation,
 			...(this.opencodeOptions && { options: this.opencodeOptions }),
 		});
-		return { kind: "report", blockedNetwork: this.network.policy.mode === "restricted", gitMirrors: true, sessionVolumes: true, modelRelay: this.modelRelayReady, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
+		return { kind: "report", ...(this.warmSpares && this.sessionVolumes && this.limits.spares !== 0 && { warmSpares: { ready: this.spares.ready } }), blockedNetwork: this.network.policy.mode === "restricted", gitMirrors: true, sessionVolumes: true, modelRelay: this.modelRelayReady, egress: this.network.policy.mode, allowedProfiles: this.allowedProfiles,
 			slots: this.slots,
 			host: { cpus: availableParallelism(), sandboxCpus: this.slots?.unit.cpus ?? 1, memoryBytes: totalmem(), memoryFreeBytes: freemem(), load1: loadavg()[0] ?? null },
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
@@ -611,7 +769,7 @@ private signInRetries = 0;
 			}
 		}
 	}
-	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness, size = 1, prepared?: SnapshotSelection & { privateData: boolean }, mirrorRepo?: string) {
+	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness, size = 1, prepared?: SnapshotSelection & { privateData: boolean }, mirrorRepo?: string, spare?: SpareRecipe): Promise<string> {
 		// Another create could have finished while this one waited for the image.
 		if (harness) this.requireHarness(profile, harness);
 		const existing = await this.existing(sessionId, profile, harness);
@@ -619,16 +777,37 @@ private signInRetries = 0;
 		if (this.limits.maxSandboxes !== undefined && this.boxes.size >= this.limits.maxSandboxes)
 			throw new SandboxUserError("This machine has reached its own limit on kept sandboxes, set by --max-sandboxes.");
 		this.room();
+		const candidate = spare && { context: this.spareContext(), args: { spare, profile, harness, screenshots, size, prepared, mirrorRepo } };
+		const spec = this.warmSpares && this.sessionVolumes && (this.limits.spares ?? 1) > 0 && validSpec(candidate) ? candidate : undefined;
+		await this.spares.foreground(spec);
 		await this.network.prepare();
 		this.freeDiskBytes = await this.disk();
+		if (this.freeDiskBytes <= this.storeLimits().free) await this.spares.trim();
 		if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
+
+		const taken = spec && this.freeDiskBytes > this.storeLimits().free ? await this.spares.take(spec, (raw, built) => this.verifySpare(raw, built, spec)) : undefined;
+		let claimed = taken?.raw;
+		// Give back the units needed for this turn. A second matching spare may still fit.
+		await this.spares.trim(spec ? this.spareRoom(size, 1) : 0, spec);
+		const claim: Claim | undefined = claimed && spec ? { session: sessionId, key: digest([spec.args.spare]), setup: taken?.setup, attempt: prepared?.attempt } : undefined;
+		if (claimed && claim) {
+			try {
+				if (harness) claim.relayEnv = await this.claimRelay(claimed, harness);
+				save(this.claimFile(claimed), claim);
+			}
+			catch { await this.removeUnbound(claimed); claimed = undefined; }
+		}
 		const input = { uid: this.identity.uid, sessionId, profile, size, mirrorRepo };
-		const raw = harness ? await withLoginVolume(this, () => (harness === "codex" ? this.codexProvider! : harness === "opencode" ? this.opencodeProvider! : this.claudeProvider!).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: prepared?.privateData, screenshots: this.screenshots && screenshots, ownData: this.sessionVolumes });
+		const raw = claimed ?? (harness ? await withLoginVolume(this, () => this.providerFor(harness).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: prepared?.privateData, screenshots: this.screenshots && screenshots, ownData: this.sessionVolumes }));
 		const id = externalId(this.identity.machineId, raw);
-		this.boxes.set(id, { raw, sessionId, profile, harness, snapshotCandidate: !!prepared?.writer && !prepared.privateData && !harness, egress: this.network.policy.mode, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
+		this.boxes.set(id, { raw, sessionId, profile, harness, size, claim: claimed ? claim : undefined, snapshotCandidate: !!prepared?.writer && !prepared.privateData && !harness, egress: this.network.policy.mode, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
 		try { await this.network.attach(raw, containerName(raw)); }
-		catch (error) { await this.remove(id); throw error; }
-		if (profile === bubblewrap) {
+		catch (error) {
+			await this.remove(id);
+			if (claimed) return this.create(sessionId, profile, screenshots, harness, size, prepared, mirrorRepo);
+			throw error;
+		}
+		if (profile === bubblewrap && !claimed) {
 			const result = await new DockerSandboxHandle(raw, profile, this.identity.uid).ask(DOCKER_BWRAP_PROBE, { timeoutMs: 20_000 });
 			if (result?.code !== 0) {
 				const why = result?.stderr.trim();
@@ -639,6 +818,8 @@ private signInRetries = 0;
 			}
 			this.commandSandbox = { ok: true };
 		}
+		this.spares.used(spec);
+		this.waitForTurn = spec ? id : undefined;
 		this.publishReport?.();
 		return id;
 	}
@@ -711,7 +892,7 @@ private signInRetries = 0;
 					await ensureRelay(this, login);
 				});
 			}
-			if (box.state === "paused") this.room();
+			if (box.state === "paused") { await this.spares.trim(); this.room(); }
 			const handle = await this.provider.connect(box.raw, { ownData: this.sessionVolumes });
 			if (!!box.resizePending !== !!handle?.resizePending) {
 				box.resizePending = handle?.resizePending || undefined;
@@ -725,7 +906,7 @@ private signInRetries = 0;
 			}
 			if (!box.egress) await this.network.migrateOpen(containerName(box.raw));
 			await this.network.attach(box.raw, containerName(box.raw));
-			const answer = { cwd: handle.cwd, profile: box.profile, ...(handle.snapshot && { snapshot: handle.snapshot }), ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}),
+			const answer = { cwd: handle.cwd, profile: box.profile, ...(handle.snapshot && { snapshot: { ...handle.snapshot, ...(box.claim?.attempt && { attempt: box.claim.attempt }) } }), ...(this.warmSpares && box.claim && { readyKey: box.claim.key, ...(this.spareSetupTimes && box.claim.setup && { readySetup: box.claim.setup }) }), ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}),
 				// Only to a server that reads it (`sessionVolumes`): an older one refuses a key it does not know.
 				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}),
 				// Windlass's own sandboxes only, and only to a server that named `model-relay`.
@@ -734,7 +915,8 @@ private signInRetries = 0;
 				...(this.blockedNetwork && box.egress === "restricted" ? { blockedNetwork: true as const } : {}),
 				...(this.memoryEvents && { memoryEvents: true as const }),
 				// Once, and only to a server that named `start-times`.
-				...(this.startTimes && box.startTimes ? { startTimes: box.startTimes } : {}),
+				...(this.startTimes && box.startTimes ? { startTimes: this.warmSpares ? box.startTimes :
+					{ image: box.startTimes.image, create: box.startTimes.create, ...(box.startTimes.pulled && { pulled: true as const }) } } : {}),
 				// Only to a server that named `environment-image`: an older one refuses a key it does not know.
 				...(this.environmentImage && handle.image ? { image: handle.image } : {}),
 			};
@@ -756,6 +938,7 @@ private signInRetries = 0;
 			this.noteState(id, box, state);
 			if (state === "running") throw new RunnerError("Docker could not stop the sandbox.");
 		}
+		this.turnEnded(box);
 		return null;
 	}
 	async requestedRemoval(id: string) {
@@ -765,10 +948,11 @@ private signInRetries = 0;
 		// The control acknowledgement also covers a sandbox that was never this machine's.
 	}
 	private async remove(id: string) {
-		const { raw, harness, egress } = this.boxes.get(id)!;
+		const { raw, harness, egress, claim } = this.boxes.get(id)!;
 		if (egress === "restricted" || harness) await this.network.detach(raw);
 		await this.provider.destroy(raw);
 		this.boxes.delete(id);
+		if (claim) forget(this.claimFile(raw));
 		if (harness === "claude") await withLoginVolume(this, async () => {
 			if (await loginFileState(this).catch(() => "unknown") === "none") {
 				await removeRelay(this);
@@ -803,7 +987,11 @@ private signInRetries = 0;
 		if (failed) throw new RunnerError("Docker could not stop all kept sandboxes.");
 	}
 	async prune() {
+		await this.spares.trim();
 		await this.discover();
+		await this.reapUnbound();
+		this.spares.used();
+		forget(`recent-${this.identity.machineId}.json`); // Clean up the restart hint from older versions.
 		for (const [id, b] of this.boxes) {
 			await this.lifecycle("destroy", id);
 			audit(b.sessionId, id, "prune", "done");

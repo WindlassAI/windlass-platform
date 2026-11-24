@@ -44,6 +44,7 @@ export function read(file: string): unknown {
 		throw new RunnerError(`Cannot read ${file}. Repair or restore that file in the runner state volume.`);
 	}
 }
+export function forget(file: string) { rmSync(join(directory, file), { force: true }); }
 export function save(file: string, value: unknown): void {
 	const path = join(directory, file);
 	const temp = path + "." + randomUUID();

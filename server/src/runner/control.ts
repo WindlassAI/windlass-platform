@@ -170,7 +170,7 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *                    restarted server resumes, so a graceful stop need not end a machine turn
  *                    (runner/journal.ts)
  */
-export const SERVER_CAPABILITIES = ["git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
+export const SERVER_CAPABILITIES = ["warm-spares", "spare-setup-times", "git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a
@@ -301,6 +301,7 @@ const report = object({
 	commandSandbox: probe,
 	/** The runner was started with --screenshots and has a pinned screenshots image. */
 	screenshots: optional(boolean),
+	warmSpares: optional(object({ ready: is<number>(v => count(v) && v <= 2) })),
 	gitMirrors: optional(boolean),
 	/** A Windlass session in a new hardened sandbox gets a data volume of its own (SESSION_VOLUME_PROFILES). */
 	sessionVolumes: optional(boolean),
@@ -328,7 +329,7 @@ export type Report = Of<typeof report>;
 /** The report a server that named `capabilities` in its welcome reads: without the fields of those it did not name. */
 export function reportFor<R extends Report>(report: R, named: readonly string[] | undefined): R {
 	// `start-times` has no field in the report: only a connect says it.
-	const fields: Partial<Record<Capability, keyof Report>> = { "blocked-network": "blockedNetwork", "git-mirrors": "gitMirrors", "egress-domains": "egressDomains", "session-volumes": "sessionVolumes", "model-relay": "modelRelay", "store-limits": "storeLimits", "resumable-conversation": "resumableConversation" };
+	const fields: Partial<Record<Capability, keyof Report>> = { "warm-spares": "warmSpares", "blocked-network": "blockedNetwork", "git-mirrors": "gitMirrors", "egress-domains": "egressDomains", "session-volumes": "sessionVolumes", "model-relay": "modelRelay", "store-limits": "storeLimits", "resumable-conversation": "resumableConversation" };
 	const kept: Report = { ...report };
 	for (const [capability, field] of Object.entries(fields) as [Capability, keyof Report][])
 		if (!named?.includes(capability)) delete kept[field];

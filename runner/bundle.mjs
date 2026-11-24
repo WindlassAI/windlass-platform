@@ -43,7 +43,7 @@ await build({
 	plugins: [sandboxLayout], external: ["./sandbox-layout.json"], sourcemap: false,
 	banner: { js: "#!/usr/bin/env node" },
 	bundle: true, platform: "node", target: "node22", format: "cjs",
-	define: { EGRESS_SOURCE: JSON.stringify(await readFile(new URL("src/egress-proxy.mjs", import.meta.url), "utf8")), "import.meta.dirname": "__dirname", BUNDLED_SECCOMP_FILE: JSON.stringify("seccomp-bwrap.json"), SANDBOX_IMAGE: JSON.stringify(pin), SHOTS_IMAGE_PIN: JSON.stringify(shotsPin ?? ""), HARNESS_IMAGES: JSON.stringify(harnessImages),
+	define: { PRIVATE_GIT_SOURCE: JSON.stringify(await readFile(new URL("../server/src/github/private-git.py", import.meta.url), "utf8")), EGRESS_SOURCE: JSON.stringify(await readFile(new URL("src/egress-proxy.mjs", import.meta.url), "utf8")), "import.meta.dirname": "__dirname", BUNDLED_SECCOMP_FILE: JSON.stringify("seccomp-bwrap.json"), SANDBOX_IMAGE: JSON.stringify(pin), SHOTS_IMAGE_PIN: JSON.stringify(shotsPin ?? ""), HARNESS_IMAGES: JSON.stringify(harnessImages),
 		CODEX_RELAY_SCRIPT: JSON.stringify(codexRelay.outputFiles[0].text),
 		WINDLASS_RELAY_SCRIPT: JSON.stringify(windlassRelay.outputFiles[0].text),
 		OPENCODE_RELAY_SCRIPT: JSON.stringify(relay.outputFiles[0].text),

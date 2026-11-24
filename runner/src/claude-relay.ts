@@ -155,10 +155,10 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 	return pair.key;
 }
 
-export async function prepareRelay(m: MachineDocker, login?: ProviderLogin) {
+export async function prepareRelay(m: MachineDocker, login?: ProviderLogin, nonce = randomBytes(16).toString("hex")) {
 	const key = await ensureRelay(m, login);
 	const domain = login ? sessionDomain(login) : "windlass-claude-relay-v2";
-	const nonce = randomBytes(16).toString("hex");
+	if (!/^[a-f0-9]{32}$/.test(nonce)) throw new Refusal("Invalid session relay nonce.");
 	const signature = sign(null, Buffer.from(domain + "\n" + m.identity.machineId + "\n" + nonce), key);
 	return {
 		env: login?.harness === "codex" ? ["-e", "WLP_SESSION_BEARER=" + nonce + "." + signature.toString("base64url")] : login ? projection(login.providers ?? login.provider, nonce + "." + signature.toString("base64url")) : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=" + nonce + "." + signature.toString("base64url")],

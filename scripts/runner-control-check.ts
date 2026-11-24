@@ -313,6 +313,130 @@ try {
 	};
 	for (const [name, attempt] of Object.entries(attempts))
 		await checkControl(name, () => assert.rejects(attempt, error => error instanceof Refusal && error.message.includes("--allow-profile " + profile)));
+	await checkControl("spares match the complete create, expire, yield to turns and are consumed exactly once", async () => {
+		const { WarmSpares, validSpec, SPARE_TTL } = await import("../runner/src/warm-spares.js");
+		const base = { context: "pairing, image and egress", args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
+		assert.ok(validSpec(base));
+		for (const args of [{ harness: "claude", screenshots: true }, { profile: "docker-windlass-sandbox" }, { spare: { url: "https://secret@example.org/r" } },
+			{ spare: { ...base.args.spare, prompt: "anything" } }]) assert.equal(validSpec({ ...base, args: { ...base.args, ...args } }), false);
+		let now = 0;
+		const removed = new Set<string>();
+		const pool = new WarmSpares(async () => {}, async raw => { removed.add(raw); }, () => now);
+		pool.used(base);
+		const fill = async () => { await until(() => !pool.raws.length); pool.fill(1); await until(() => pool.ready === 1); return pool.raws[0]!; };
+		for (const other of [{ ...base, args: { ...base.args, harness: "codex" as const } }, { ...base, context: "another owner, image or egress" }, { ...base, args: { ...base.args, size: 2 } },
+			{ ...base, args: { ...base.args, screenshots: true } }, { ...base, args: { ...base.args, spare: { url: "https://example.org/another.git" } } }]) {
+			const raw = await fill();
+			assert.equal(await pool.take(other, async () => true), undefined);
+			assert.ok(removed.has(raw));
+		}
+		const old = await fill();
+		now += SPARE_TTL;
+		assert.equal(await pool.take(base, async () => true), undefined);
+		assert.ok(removed.has(old));
+		const dirty = await fill();
+		assert.equal(await pool.take(base, async () => false), undefined);
+		assert.ok(removed.has(dirty));
+		const hit = await fill();
+		assert.equal((await pool.take(base, async () => true))?.raw, hit);
+		assert.equal(await pool.take(base, async () => true), undefined);
+		assert.ok(!removed.has(hit));
+		const waiting = await fill();
+		await pool.trim(0);
+		assert.ok(removed.has(waiting));
+		let cancelled = false;
+		const building = new WarmSpares(async (_raw, _spec, signal) => new Promise(resolve =>
+			signal.addEventListener("abort", () => { cancelled = true; resolve(); }, { once: true })), async () => {});
+		building.used(base);
+		building.fill(1);
+		await building.trim(0);
+		assert.ok(cancelled);
+		assert.equal(building.ready, 0);
+		let builds = 0, finish!: () => void;
+		const retiring = new WarmSpares(async () => { builds++; }, () => new Promise(resolve => { finish = resolve; }));
+		retiring.used(base);
+		retiring.fill(1);
+		await until(() => retiring.ready === 1);
+		const removal = retiring.trim(0);
+		await until(() => !!finish);
+		retiring.fill(1);
+		assert.equal(builds, 1, "a retiring container still occupies its background reservation");
+		finish();
+		await removal;
+		retiring.fill(1);
+		assert.equal(builds, 2);
+	});
+
+	await checkControl("two consecutive failed builds wait for another real create and a successful build resets the count", async () => {
+		const { WarmSpares } = await import("../runner/src/warm-spares.js");
+		const spec = { context: "owner", args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
+		let now = 0, builds = 0, fail = true;
+		const pool = new WarmSpares(async () => { builds++; if (fail) throw new Error("setup"); }, async () => {}, () => now);
+		const attempt = async () => { pool.fill(1); await until(() => pool.ready === 1 || pool.raws.length === 0); };
+		pool.used(spec);
+		await attempt();
+		await attempt();
+		assert.equal(builds, 1, "the first retry backs off");
+		now += 60_000;
+		await attempt();
+		now += 3_600_000;
+		await attempt();
+		assert.equal(builds, 2);
+		pool.used(spec);
+		await attempt();
+		now += 60_000;
+		fail = false;
+		await attempt();
+		assert.equal(pool.ready, 1);
+		await pool.trim();
+		fail = true;
+		await attempt();
+		now += 60_000;
+		await attempt();
+		assert.equal(builds, 6);
+	});
+
+	await checkControl("six-hour replacements expire after 24 hours without a real session", async () => {
+		const { WarmSpares, SPARE_TTL } = await import("../runner/src/warm-spares.js");
+		const spec = { context: "owner", args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
+		const day = 24 * 60 * 60_000;
+		let now = 0, builds = 0;
+		const pool = new WarmSpares(async () => { builds++; }, async () => {}, () => now);
+		pool.used(spec);
+		pool.fill(1);
+		await until(() => pool.ready === 1);
+		now = SPARE_TTL;
+		pool.fill(1);
+		await until(() => pool.raws.length === 0);
+		pool.fill(1);
+		await until(() => pool.ready === 1);
+		now = day;
+		pool.fill(1);
+		await until(() => pool.raws.length === 0);
+		pool.fill(1);
+		assert.equal(pool.recipe, undefined);
+		assert.equal(builds, 2, "the replacement did not renew demand");
+		pool.used(spec);
+		pool.fill(1);
+		await until(() => pool.ready === 1);
+		assert.equal(builds, 3);
+	});
+
+	await checkControl("a cold seed can share a short-lived branch head but a claim always rereads it", async () => {
+		const { spareHead } = await import("../server/src/actors/agent-session.js");
+		let now = 0, reads = 0;
+		const clock = mock.method(Date, "now", () => now);
+		const read = async () => String(++reads);
+		try {
+			assert.equal(await spareHead("main", true, read), "1");
+			assert.equal(await spareHead("main", true, read), "1");
+			assert.equal(await spareHead("main", false, read), "2");
+			now += 30_000;
+			assert.equal(await spareHead("main", true, read), "3");
+			assert.equal(await spareHead("other", true, read), "4");
+		} finally { clock.mock.restore(); }
+	});
+
 	await checkControl("an idle stop reports the paused sandbox immediately", async () => {
 		const machineId = "m_0123456789abcdef";
 		Object.assign(globalThis, { SANDBOX_IMAGE: "sha256:" + "0".repeat(64) });
@@ -606,6 +730,107 @@ try {
 			});
 		}
 	});
+	await checkControl("an unremovable spare is retried without blocking egress, capacity, create or connect", async () => {
+		const owner = new LocalExecutor({ uid: "u_fixture", machineId }, { maxSandboxes: 1, maxRunning: 1 });
+		const stuck = "aaaaaaaaaaaa", other = "bbbbbbbbbbbb";
+		const pending = new Set([stuck, other]), attempts: string[] = [];
+		let fail = true;
+		const warn = mock.method(console, "warn", () => {});
+		try {
+			Object.assign(owner, { unbound: pending, enforceEgress: true, secureCredentialPath: async () => {}, refreshLogin: async () => {},
+				dockerHealth: { ok: true }, disk: async () => 100e9, discover: async () => {},
+				dropSpare: async (raw: string) => { attempts.push(raw); if (fail && raw === stuck) throw Error("private diagnostic"); } });
+			owner.network.reconcile = async running => { if (fail) assert.ok(running.has(stuck)); };
+			owner.network.prepare = owner.network.attach = async () => {};
+			owner.provider.create = async () => "cccccccccccc";
+			owner.provider.connect = async () => ({ cwd: "/workspace" }) as DockerSandboxHandle;
+			await owner.refresh();
+			assert.deepEqual([...pending], [stuck]);
+			assert.deepEqual(owner.report().docker, { ok: true });
+			assert.equal(owner.report().sandboxes.length, 0);
+			assert.deepEqual(warn.mock.calls.map(call => call.arguments), [[`Could not remove spare ${stuck}.`]]);
+			const id = await owner.create("s_real", "docker-hardened");
+			assert.ok(await owner.lifecycle("connect", id, "s_real"));
+			fail = false;
+			await owner.refresh();
+			assert.deepEqual(attempts, [stuck, other, stuck]);
+			assert.equal(pending.size, 0);
+			owner.network.reconcile = async () => { throw Error(); };
+			await owner.refresh();
+			assert.equal(owner.report().docker.ok, false, "a genuine network policy failure still blocks admission");
+		} finally { warn.mock.restore(); }
+	});
+
+	await checkControl("the executor admits on free disk, claims once, binds the new session and falls back cold under pressure", async () => {
+		const owner = new LocalExecutor({ uid: "u_fixture", machineId: "m_0123456789abcdef" }, { maxTurns: 1 });
+		const built: string[] = [], removed: string[] = [];
+		const recipe = { url: "https://example.org/fixture.git", connected: { repo: "42", branch: "main", commit: "c".repeat(40),
+			generation: "a".repeat(64), command: "make deps", timeoutMs: 3000 } };
+		let setupRuns = 0;
+		const oldRecipe = join(dir, `recent-${machineId}.json`);
+		let cold = 0, disk = 100e9;
+		Object.assign(owner, { warmSpares: true, spareSetupTimes: true, sessionVolumes: true, inventoryStarted: true, dockerHealth: { ok: true }, disk: async () => disk,
+			dropSpare: async (raw: string) => { removed.push(raw); } });
+		owner.network.prepare = owner.network.attach = async () => {};
+		owner.provider.create = async input => {
+			if (input.reservedId) { built.push(input.reservedId); return input.reservedId; }
+			return (++cold).toString(16).padStart(12, "0");
+		};
+		owner.provider.connect = async () => ({ uid: "u_fixture", profile: "docker-hardened", ownData: true, cwd: "/workspace",
+			run: async (command: string) => {
+				if (command === "exec 2>&1; make deps") setupRuns++;
+				return { exitCode: 0, stdout: command.includes("wlp:dir") ? "wlp:dir ." : recipe.connected.commit, stderr: "" };
+			} }) as unknown as DockerSandboxHandle;
+		owner.modelRelay.endSandbox = owner.provider.destroy = async () => {};
+		writeFileSync(oldRecipe, JSON.stringify({ uid: owner.identity.uid, spec: { context: "previous process", args: { profile: "docker-hardened", spare: recipe, mirrorRepo: "42" } } }));
+		await owner.maintainSpares();
+		assert.deepEqual(built, [], "restart ignores even a valid recipe from disk until a real create");
+		unlinkSync(oldRecipe);
+		const first = await owner.create("s_first", "docker-hardened", false, undefined, 1, undefined, "42", recipe);
+		assert.ok(!readdirSync(dir).includes(`recent-${machineId}.json`), "create does not persist a recipe");
+		owner.boxes.get(first)!.state = "paused";
+		await owner.lifecycle("destroy", first, "s_first");
+		const beforeBuild = Date.now();
+		await owner.maintainSpares();
+		await until(() => owner.report().warmSpares?.ready === 1);
+		assert.equal(owner.report().sandboxes.length, 0);
+		const beforeClaim = Date.now();
+		const second = await owner.create("s_second", "docker-hardened", false, undefined, 1, undefined, "42", recipe);
+		assert.ok(second.endsWith(built[0]!));
+		assert.equal(cold, 1);
+		assert.throws(() => owner.running(second, "s_first"));
+		const connected = await owner.lifecycle("connect", second, "s_second");
+		assert.ok(validValue("connect", connected) && connected?.readySetup);
+		const setup = connected.readySetup;
+		assert.equal(setupRuns, 1);
+		assert.ok(setup.startedAt >= beforeBuild && setup.startedAt + setup.durationMs <= beforeClaim);
+		const { readySetupItems } = await import("../server/src/actors/agent-session.js");
+		const [started, ended] = readySetupItems(1, recipe.connected, connected.readySetup);
+		assert.equal(started!.id, ended!.id);
+		assert.deepEqual([started, ended].map(i => [i!.kind, i!.command, i!.state, i!.exitCode, i!.at, i!.durationMs]), [
+			["setup", "make deps", "started", null, setup.startedAt, null],
+			["setup", "make deps", "succeeded", 0, setup.startedAt + setup.durationMs, setup.durationMs],
+		]);
+		owner.spareSetupTimes = false;
+		const legacy = await owner.lifecycle("connect", second, "s_second");
+		assert.ok(validValue("connect", legacy) && legacy?.readyKey && !legacy.readySetup);
+		owner.boxes.get(second)!.state = "paused";
+		await owner.lifecycle("destroy", second, "s_second");
+		await owner.maintainSpares();
+		await until(() => owner.report().warmSpares?.ready === 1);
+		disk = 6e9;
+		let finish!: () => void;
+		Object.assign(owner, { dropSpare: async (raw: string) => { removed.push(raw); await new Promise<void>(resolve => { finish = resolve; }); } });
+		const starting = owner.create("s_third", "docker-hardened", false, undefined, 1, undefined, "42", recipe);
+		await until(() => !!finish);
+		assert.equal(cold, 1, "the cold container waits for removal to finish");
+		finish();
+		const third = await starting;
+		assert.equal(cold, 2);
+		assert.equal(owner.boxes.get(third)?.claim, undefined);
+		assert.deepEqual(removed, [built[1]]);
+	});
+
 } finally {
 	for (const file of readdirSync(dir)) unlinkSync(join(dir, file));
 	rmdirSync(dir);

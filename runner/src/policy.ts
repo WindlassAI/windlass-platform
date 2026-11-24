@@ -23,7 +23,7 @@ export type Profile = Args<"create">["profile"];
 
 // The machine belongs to its owner, so the platform sets no default sandbox limits.
 /** `store`: the snapshot and Git mirror limits its owner set (`--snapshot-disk`, `--snapshot-user`, `--keep-free`); the defaults when left out. */
-export type Limits = { slots?: MachineSlotCapacity | null; maxTurns?: number; maxRunning?: number; maxSandboxes?: number; store?: StoreLimits };
+export type Limits = { spares?: number; slots?: MachineSlotCapacity | null; maxTurns?: number; maxRunning?: number; maxSandboxes?: number; store?: StoreLimits };
 // The Docker name distinguishes Claude containers. The platform keeps the original sandbox id across upgrades.
 export const externalId = (machine: string, raw: string) => `m${machine}-${raw.replace(/^(?:claude|opencode|codex)-/, "")}`;
 export function rawId(machine: string, id: string) {

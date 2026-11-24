@@ -11,6 +11,7 @@
  * Validation is here and nowhere else. A type and its check are one definition, so they cannot drift
  * apart, and the `Same` assertions at the end tie the operations to the provider interfaces they carry.
  */
+import { spareRecipe, spareSetup } from "./spare-recipe.js";
 import { isIP } from "node:net";
 import { DEFERRED_INPUTS } from "../sandbox/snapshot-key.js";
 import { helloFields, welcomeFields } from "./frame-auth.js";
@@ -74,7 +75,7 @@ const operations = {
 	memoryEvents: [object(sandbox), nullable(object({ oomKills: count, totalMiB: positiveLimit }))],
 	/** The proxy's cumulative snapshot for this turn. A new turn starts its counters before setup. */
 	blockedNetwork: [object({ ...sandbox, turn: positiveLimit, retained: list(object(endpoint), 50) }), object({ broker: fingerprint, hosts: list(refusalEntry, 50), overflow: count })],
-	create: [object({ profile: machineProfile, mirrorRepo: optional(snapshotKey.repo), size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
+	create: [object({ spare: optional(spareRecipe), profile: machineProfile, mirrorRepo: optional(snapshotKey.repo), size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
 	hasSnapshot: [object({ repo: snapshotKey.repo }), boolean],
 	saveMirror: [object({ ...sandbox, stage: is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v)), partial: boolean }), boolean],
 	saveSnapshot: [object({ ...sandbox, source: snapshotSource, options: optional(object({ timeoutMs: duration })) }), boolean],
@@ -85,7 +86,8 @@ const operations = {
 		blockedNetwork: optional(oneOf(true)),
 		memoryEvents: optional(oneOf(true)),
 		/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */
-		startTimes: optional(object({ image: count, pulled: optional(oneOf(true)), create: count })),
+		readyKey: optional(fingerprint), readySetup: optional(spareSetup),
+		startTimes: optional(object({ spare: optional(oneOf(true)), image: count, pulled: optional(oneOf(true)), create: count })),
 		/** The Docker image id it was made from (SandboxHandle.image), said only to a server that named `environment-image`. */
 		image: optional(is<string>(v => typeof v === "string" && /^sha256:[a-f0-9]{64}$/.test(v))) }))],
 	state: [object(sandbox), oneOf("none", "running", "paused")],

@@ -4,6 +4,8 @@ An agent on one of your machines runs in a Docker container there, made by a sma
 
 The runner connects out to the platform. Nothing needs to reach your machine from outside.
 
+After a session ends, your runner can prepare a fresh sandbox for the same repository. This works with a session-private workspace and setup that needs no secrets. It clones the base and runs setup without credentials, or starts from the validated environment. It checks the base again when a new session arrives. The timeline says **Started from a ready sandbox** when it uses one. A spare belongs to your pairing, yields its slot to a turn, and expires after six hours. The runner replaces expired spares only while the repository’s recipe has been used in the past 24 hours. After two consecutive build failures or a runner restart, it waits for another session to start with that recipe. The runner keeps one by default when disk is above `--keep-free`. Set `--spares 0` to turn it off.
+
 If you have no spare computer, you can [run agents on a cheap cloud VM](/docs/cheap-vm).
 
 ## What you need

@@ -111,6 +111,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 			...(report?.egressDomains && { egressDomains: report.egressDomains }),
 			...(report?.claudeRelay && { claudeRelay: true as const }),
 			...(report?.harnesses ? { harnesses: report.harnesses } : {}),
+			...(report?.warmSpares && { readySandboxes: report.warmSpares.ready }),
 			...(report?.maxRunning !== undefined ? { maxRunning: report.maxRunning } : {}),
 			...(report?.maxSandboxes !== undefined ? { maxSandboxes: report.maxSandboxes } : {}),
 			// A runner 0.3.1 or older reports none: it applies its built-in limits.

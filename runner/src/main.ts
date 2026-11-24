@@ -45,7 +45,7 @@ async function main() {
 		provider: { type: "string" }, egress: { type: "string" }, "egress-allow": { type: "string" }, "egress-domains": { type: "string" },
 		"allow-profile": { type: "string", multiple: true }, platform: { type: "string" }, name: { type: "string" }, harness: { type: "string", multiple: true }, screenshots: { type: "boolean", default: false },
 		slots: { type: "string" }, "slot-cpus": { type: "string" }, "slot-memory": { type: "string" }, "sandbox-memory": { type: "string" }, "max-turns": { type: "string" }, "max-sandboxes": { type: "string" }, "max-running": { type: "string" },
-		"snapshot-disk": { type: "string" }, "snapshot-user": { type: "string" }, "keep-free": { type: "string" },
+		spares: { type: "string" }, "snapshot-disk": { type: "string" }, "snapshot-user": { type: "string" }, "keep-free": { type: "string" },
 		quick: { type: "boolean" }, "no-tui": { type: "boolean" },
 	} });
 	const command = positionals[0] ?? "run";
@@ -73,7 +73,7 @@ async function main() {
 	const validCommand = auth ? positionals.length === 2 && ["claude", "opencode", "codex"].includes(agent)
 		: positionals.length <= (wizard ? 2 : 1) && ["setup", "run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
-		throw new RunnerError("Use windlass-runner [setup [--quick|--no-tui|name|agents|claude|codex|opencode|profile|network|limits]|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--slots N | --max-turns N] [--slot-cpus X] [--slot-memory Nm|Ng] [--sandbox-memory Ng] [--snapshot-disk SIZE] [--snapshot-user SIZE] [--keep-free SIZE] [--screenshots] [--harness claude] [--harness opencode] [--harness codex] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]] [--egress-domains host|*.host|@preset[,...]].");
+		throw new RunnerError("Use windlass-runner [setup [--quick|--no-tui|name|agents|claude|codex|opencode|profile|network|limits]|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--spares 0|1|2] [--slots N | --max-turns N] [--slot-cpus X] [--slot-memory Nm|Ng] [--sandbox-memory Ng] [--snapshot-disk SIZE] [--snapshot-user SIZE] [--keep-free SIZE] [--screenshots] [--harness claude] [--harness opencode] [--harness codex] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]] [--egress-domains host|*.host|@preset[,...]].");
 	if (values.name !== undefined && (!["setup", "run", "pair"].includes(command) || !validMachineName(values.name)))
 		throw new RunnerError("Use --name with setup, run or pair and a printable name of 1 to 64 characters.");
 	const requestedEgress = egressFlags(values.egress, values["egress-allow"], values["egress-domains"]);
@@ -95,7 +95,8 @@ async function main() {
 	const slots = sizingCommand ? localSizing(values) : null;
 	if (!sizingCommand && [values["snapshot-disk"], values["snapshot-user"], values["keep-free"]].some(v => v !== undefined))
 		throw new RunnerError("Use --snapshot-disk, --snapshot-user and --keep-free with run or setup.");
-	const limits = { slots, maxTurns: slots?.max, maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]), store: storeFlags(values) };
+	if (values.spares !== undefined && (!sizingCommand || !/^[012]$/.test(values.spares))) throw new RunnerError("Give --spares 0, 1 or 2 with run or setup.");
+	const limits = { spares: Number(values.spares ?? 1), slots, maxTurns: slots?.max, maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]), store: storeFlags(values) };
 	if ((values.quick || values["no-tui"]) && command !== "setup") throw new RunnerError("Use --quick and --no-tui with setup.");
 	if (values.quick && !wizard) throw new RunnerError("Use --quick with setup alone, without --harness.");
 	if (wizard) return setupWizard(positionals.slice(1), values);
