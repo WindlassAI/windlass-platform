@@ -47,6 +47,8 @@ export interface SandboxProfile {
 	commandNetworkText?: string;
 	/** Runner-confirmed credential isolation for Claude sessions using this profile. */
 	claudeRelay?: true;
+	/** Hosted ACP agents can reach the Settings-key relay from this profile. */
+	platformKeys?: true;
 	/**
 	 * Whether commands the agent runs can read the turn's token file: the short-lived access token of the
 	 * user's ChatGPT sign-in that each turn is handed, or with the model relay (`modelRelay`) only a
@@ -1492,6 +1494,7 @@ export interface UsagePrice {
 
 /** What the usage page shows. */
 export interface UsageView extends UsageNumbers {
+	providerTokens?: { provider: ModelProvider; tokens: number }[];
 	/** Model usage reported by requests using the platform credential on this UTC day. */
 	usedModelTokens: number;
 	factoryLimits: FactoryLimits;
@@ -2419,7 +2422,7 @@ export interface PlacementNeeds {
 	tags?: string[];
 	screenshots?: boolean;
 	egress?: "open" | "restricted";
-	profile?: "docker-hardened" | "docker-windlass-sandbox";
+	profile?: "docker-hardened" | "docker-windlass-sandbox" | "e2b-open";
 	cpus?: number;
 	memoryGiB?: number;
 }

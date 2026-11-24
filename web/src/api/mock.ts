@@ -64,7 +64,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
  * The world is rebuilt from the token on every page load, so the seeded sessions keep their IDs
  * across a reload and sessions created by hand do not survive one.
  */
-import { initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
+import { hostedKeyMessage, hostedProfiles, hostedProvider, initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
 import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { mockEnvironments, mockRebuild, mockSchedule } from "./mock-environments";
@@ -1418,7 +1418,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			plans: MOCK_PLANS, month,
 		};
 	}
-	const profiles = options.sandbox === "e2b" ? MOCK_E2B_PROFILES : MOCK_PROFILES;
+	const profiles = (options.sandbox === "e2b" ? MOCK_E2B_PROFILES : MOCK_PROFILES).map(p =>
+		p.available && hostedProfiles.includes(p.id) ? { ...p, platformKeys: true as const } : p);
 	const origin = options.origin ?? (typeof location === "undefined" ? "http://localhost:5173" : location.origin);
 	/** Set while history is being written in the past (the seeded sessions). */
 	let clock: number | null = null;
@@ -1449,6 +1450,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	// Work items, API tokens and the factory's limits live in mock-items.ts; an item's agent is made here, as `createSession` makes one.
 	// On one of the user's machines, it takes the machines as they are listed now, and is told of every change of them.
 	const items = createMockItems({
+		hosted: auth => ({ hostedKeys: [...worldOf(auth).account.providers.keys()], hostedProfiles: profiles.filter(p => p.available).map(p => p.id),
+			keyProfiles: profiles.filter(p => p.available && p.platformKeys).map(p => p.id) }),
 		state: options.items,
 		long: options.long,
 		reviewer: options.reviewer,
@@ -2109,7 +2112,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					}
 					emit(session, turn, stamped);
 					const usage = reportedModelUsage(stamped);
-					if (usage && usesPlatformModel(session.summary.place, session.summary.harness)) {
+					if (usage && usesPlatformModel(session.summary.harness)) {
 						const day = dayOf(now());
 						world.modelTokens.set(day, (world.modelTokens.get(day) ?? 0) + usage.inputTokens + usage.outputTokens);
 					}
@@ -3802,17 +3805,17 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const options = machine?.harnesses?.find(entry => entry.id === input.harness)?.options;
 				const harness: HarnessId = input.harness ?? "windlass";
 				if (harness !== "windlass") {
-					if (!machine) throw new PlatformError("user", `${HARNESS_NAMES[harness]} runs only on a machine of yours.`, { reason: "bad_input" });
-					if (input.profile !== "docker-hardened") throw new PlatformError("user", `${HARNESS_NAMES[harness]} requires the docker-hardened profile.`, { reason: "bad_input" });
+					if (!machine && !hostedProvider(harness, input.model, [...world().account.providers.keys()])) throw new PlatformError("user", hostedKeyMessage(harness), { reason: "harness_signed_out" });
+					if (machine ? input.profile !== "docker-hardened" : !profile.platformKeys) throw new PlatformError("user", `${HARNESS_NAMES[harness]} requires the docker-hardened profile.`, { reason: "bad_input" });
 					if (input.publishUnasked) throw new PlatformError("user", publishAsksEveryTime(HARNESS_NAMES[harness]), { reason: "bad_input" });
-					if (!machine.harnesses?.some((offered) => offered.id === harness)) throw new PlatformError("user", `This machine does not offer ${HARNESS_NAMES[harness]}.`, { reason: "bad_input" });
+					if (machine && !machine.harnesses?.some((offered) => offered.id === harness)) throw new PlatformError("user", `This machine does not offer ${HARNESS_NAMES[harness]}.`, { reason: "bad_input" });
 				}
 				const models = harness !== "windlass" ? initialHarnessModels(options) : modelsFor(world().profile);
 				if (input.model) {
 					if (harness !== "windlass" && options && !models.models.some(m => m.id === input.model)) throw new PlatformError("user", "Choose a model offered by this machine.", { reason: "bad_input" });
 					checkModel(models, input.model);
 				}
-				const modes = initialSessionModes(profile.id, harness, false, options?.modes ?? (harness === "claude" ? [...CLAUDE_LAUNCH_MODES] : undefined));
+				const modes = initialSessionModes(profile.id, harness, false, options?.modes ?? (harness === "claude" ? [...CLAUDE_LAUNCH_MODES] : harness === "codex" ? codexModes(profile.id) : harness === "opencode" ? [{ id: "build", name: "Build", description: null }, { id: "plan", name: "Plan", description: null }] : undefined));
 				if (input.mode !== undefined) {
 					if (!modes.availableModes.some(m => m.id === input.mode)) throw new PlatformError("user", "Choose a mode offered by this agent.", { reason: "bad_input" });
 					modes.mode = input.mode;
@@ -4390,7 +4393,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					const place = session.summary.place;
 					const machine = place.kind === "machine" ? machinesView(auth).find((one) => one.machineId === place.machineId) : undefined;
 					const offered = machine?.harnesses?.find((one) => one.id === harness);
-					if (unreachable === null && !offered) throw new PlatformError("user", `This machine does not offer ${name}.`, { reason: "bad_input" });
+					if (hosted && !hostedProvider(harness, input.model ?? session.summary.model, [...world.account.providers.keys()])) throw new PlatformError("user", hostedKeyMessage(harness), { reason: "harness_signed_out" });
+					if (!hosted && unreachable === null && !offered) throw new PlatformError("user", `This machine does not offer ${name}.`, { reason: "bad_input" });
 					if (unreachable === null && offered?.signIn === "none") throw new PlatformError("user", `${name} on “${machine?.name ?? "your machine"}” is not signed in. Run windlass-runner login ${harness} there.`, { reason: "harness_signed_out" });
 					const listed = session.summary.harnessModels ?? null;
 					if (input.model !== undefined && !(listed?.models ?? [{ id: "default" }]).some((one) => one.id === input.model)) throw new PlatformError("user", `${name} offers no model "${input.model}".`, { reason: "bad_model" });

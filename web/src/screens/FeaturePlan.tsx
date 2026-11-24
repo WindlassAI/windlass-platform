@@ -41,7 +41,7 @@ import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, 
 import { plural } from "../lib/format";
 import { subscriptionSpend } from "../lib/item-agent";
 import { useApp } from "../state/app";
-import { useCatalogs, useModels } from "../state/hooks";
+import { useHostedProviders, useCatalogs, useModels } from "../state/hooks";
 import { effortChoices, effortsOf, modelLabel } from "../lib/models";
 import type { AgentModels } from "../../../server/src/factory/placement.js";
 import { agentChanged, agentChoices, agentModelsOf, agentParts, cleanAgent, machineModels, preferredMachine, UNATTENDED_MEANS, UNATTENDED_WORDS, withAgent, worksWithoutAsking, type Catalogs } from "../lib/subtask-agents";
@@ -94,6 +94,8 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 	const machines = useMachines(platform.info?.machines != null && view?.mode === "orchestrate" && plan !== null && plan.status !== "superseded").list;
 	// What each place's agents offer: the account's models for Windlass, each machine agent's catalog.
 	const accountModels = useModels().list;
+	const hostedKeys = useHostedProviders();
+	const keyProfile = platform.info?.profiles.some(p => p.available && p.platformKeys) === true;
 	const catalogs = useCatalogs(open || plan?.status === "approved" ? machines : null);
 	const models: AgentModels = useMemo(() => agentModelsOf(machines, catalogs, accountModels), [machines, catalogs, accountModels]);
 	// Another version is another plan: what was typed for the one before is not this one's.
@@ -184,7 +186,7 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 		agents,
 		setAgent: (key: string, agent: SubtaskAgent | null) => setAgents((now) => ({ ...now, [key]: agent })),
 		models,
-		catalogs,
+		catalogs, hostedKeys, keyProfile,
 		accountModels,
 		unattended,
 		confirmed,
@@ -544,6 +546,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 			changed: editing && agentChanged(task, review.agents[task.key]),
 			editable: (editing && !done.has(task.key)) || later,
 			machine,
+			hostedKeys: review.hostedKeys, keyProfile: review.keyProfile,
 			list: harness === "windlass" ? review.accountModels : machineModels(machine, harness, review.catalogs),
 			onAgent: (agent) => (later ? void acting.act({ kind: "set_subtask_agent", key: task.key, agent }) : review.setAgent(task.key, agent)),
 		};
@@ -975,6 +978,8 @@ function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubta
 
 /** What a subtask's row needs to say which agent it runs, and to change it while the plan is open. */
 interface AgentRow {
+	hostedKeys: ReturnType<typeof useHostedProviders>;
+	keyProfile: boolean;
 	/** The agent as saved, or as edited while the plan is open; undefined runs Windlass on the feature's model. */
 	draft: SubtaskAgent | undefined;
 	changed: boolean;
@@ -1008,7 +1013,7 @@ function agentMenu(row: AgentRow, title: string): MenuSpec {
 		groups: [
 			{
 				id: "agents",
-				items: agentChoices(row.machine).map((choice) => ({
+				items: agentChoices(row.machine, row.hostedKeys, row.keyProfile).map((choice) => ({
 					id: choice.id,
 					label: choice.name,
 					description: choice.problem ?? (worksWithoutAsking(choice.id) ? `In its hardened container; ${UNATTENDED_WORDS}.` : choice.id === "windlass" ? "On the feature's model unless you choose one." : undefined),

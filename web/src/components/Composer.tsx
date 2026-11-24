@@ -49,6 +49,7 @@ export interface ComposerProps {
 	models: ModelList | null;
 	/** The model the session is on. */
 	model: string;
+	modelProblem?: (model: string) => string | null;
 	/** Rejects with what the client threw: a `turn_running` or `steer_unavailable` refusal is shown briefly and the text kept. */
 	onSend(input: PromptInput): Promise<void>;
 	onStop(): Promise<void>;
@@ -158,7 +159,7 @@ export function ItemNote({ item, status, online, onStop }: { item: { id: string;
 	);
 }
 
-export function Composer({ status, online, models, model, onSend, onStop, initial, suggestion, limitNote, closed, harness = null, modes = [], mode = null, onMode, planMode = null }: ComposerProps) {
+export function Composer({ status, online, models, model, modelProblem, onSend, onStop, initial, suggestion, limitNote, closed, harness = null, modes = [], mode = null, onMode, planMode = null }: ComposerProps) {
 	const [text, setText] = useState(initial?.text ?? "");
 	const [error, setError] = useState<string | null>(initial?.error ?? null);
 	/** Whether `error` is a refusal by one of the user's limits. */
@@ -202,8 +203,9 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 		return id === models?.defaultModel && !saysDefault(name) ? `${name} (default)` : name;
 	};
 	const tooLong = text.length > MAX_PROMPT_CHARS;
-	const canSend = writable && online && !sending && text.trim() !== "" && !tooLong;
-	const reason = closed || (!online ? "The connection is down. Reconnecting…" : (REASON[status] ?? (sending ? "Sending…" : null)));
+	const keyProblem = idle ? modelProblem?.(currentModel) : null;
+	const canSend = !keyProblem && writable && online && !sending && text.trim() !== "" && !tooLong;
+	const reason = closed || keyProblem || (!online ? "The connection is down. Reconnecting…" : (REASON[status] ?? (sending ? "Sending…" : null)));
 
 	useEffect(() => {
 		if (notice === null) return;
@@ -252,7 +254,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 
 	// The held message goes as the next prompt once the turn has ended; refused then, it is back in the field.
 	useEffect(() => {
-		if (!idle || !online || held === null || closed) return;
+		if (!idle || !online || held === null || closed || keyProblem) return;
 		const message = held;
 		setHeld(null);
 		setSending(true);
@@ -266,7 +268,7 @@ export function Composer({ status, online, models, model, onSend, onStop, initia
 				setSending(false);
 			},
 		);
-	}, [idle, online, held, closed, onSend]);
+	}, [idle, online, held, closed, keyProblem, onSend]);
 
 	const send = async () => {
 		if (!canSend) return;

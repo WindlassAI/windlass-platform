@@ -90,6 +90,7 @@ export const MOCK_ITEMS_STATES = ["all", "few", "features", "none", "full", "man
 export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 
 export interface MockItemsDeps {
+	hosted(auth: AuthResult): Pick<PlacementInventory, "hostedProfiles" | "keyProfiles" | "hostedKeys">;
 	defaultPlace(auth: AuthResult, repo: GithubId): ItemPlaceDefaults | undefined;
 	waitingRepository(auth: AuthResult, input: CreateItemInput["repository"]): Promise<SessionRepository>;
 	state?: MockItemsState;
@@ -1850,7 +1851,7 @@ export function createMockItems(deps: MockItemsDeps) {
 	/** Where an item on a machine stands with it now: null for a hosted item. */
 	/** The places a feature's subtasks may take, as the server reads them for placement: the user's machines, and the platform's own sandboxes. */
 	function placementInventory(auth: AuthResult): PlacementInventory {
-		return { machines: plannerMachines(deps.machines(auth)?.list ?? []), hostedProfiles: ["docker-windlass-sandbox", "docker-hardened"] };
+		return { machines: plannerMachines(deps.machines(auth)?.list ?? []), ...deps.hosted(auth) };
 	}
 
 	function machineOfItem(auth: AuthResult, item: ItemView): { machine: MachineSummary | null } | null {
@@ -2024,7 +2025,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					question: { id: `${item.id}:placement${at}`, kind: "placement_refused", askedAt: at, text: `${sub.title}: ${fit.refused}`, choices: [{ id: "revise", label: "Revise the placement" }, { id: "again", label: "Retry allowed places" }, { id: "give_up", label: "Give up the subtask" }] } }, ["Approved the plan."], "person");
 				// The subtask's own agent and model: a machine agent never takes the feature's Windlass model (user-items.ts, `childAgent`).
 				const agentHarness = fit.decision.harness ?? "windlass";
-				const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id }, ...(agentHarness !== "windlass" && { harness: agentHarness, profile: "docker-hardened" as const }), ...(sub.agent?.model && { model: sub.agent.model }) });
+				const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id }, ...(agentHarness !== "windlass" && { harness: agentHarness, profile: fit.decision.profile }), ...(sub.agent?.model && { model: sub.agent.model }) });
 				if (item.plan !== plan || !item.question || plan.status !== "proposed") throw conflict("The plan changed.");
 				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:FEATURE_REVIEW,
 					pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,rawTokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, startedAt: at, step: { ...item.run!.step, startedAt: at, kind: "implement", turn: "started" } },
@@ -2216,9 +2217,8 @@ export function createMockItems(deps: MockItemsDeps) {
 				// The builder's agent, as user-items.ts `cleanItemInput` and user.ts `makeSession` take it.
 				const harness = input.harness === undefined ? "windlass" : knownHarness(input.harness);
 				if (harness === null) throw new PlatformError("user", "Choose an agent this platform runs: windlass, or one of your machine's.", { reason: "bad_input" });
-				if (!destination?.wait && harness !== "windlass") {
-					if (place.kind !== "machine") throw new PlatformError("user", `${harnessName(harness)} runs only on a machine of yours. Choose one that offers it, or Windlass.`, { reason: "bad_input" });
-					if ((input.mode ?? "orchestrate") === "orchestrate") throw new PlatformError("user", `Plan first runs only with Windlass. Choose Quick for ${harnessName(harness)}.`, { reason: "bad_input" });
+				if (!destination?.wait && harness !== "windlass" && (input.mode ?? "orchestrate") === "orchestrate") throw new PlatformError("user", `Plan first runs only with Windlass. Choose Quick for ${harnessName(harness)}.`, { reason: "bad_input" });
+				if (!destination?.wait && harness !== "windlass" && place.kind === "machine") {
 					const offered = machineFor(auth, place.machineId).harnesses?.find((one) => one.id === harness);
 					if (!offered) throw new PlatformError("user", `This machine does not offer ${harnessName(harness)}.`, { reason: "bad_input" });
 					if (offered.signIn !== "token") throw new PlatformError("user", `${harnessName(harness)} on “${machineFor(auth, place.machineId).name}” is not signed in. Run windlass-runner login ${harness} there.`, { reason: "harness_signed_out" });
@@ -2242,7 +2242,7 @@ export function createMockItems(deps: MockItemsDeps) {
 						throw new PlatformError("user", (problem as Error).message, { reason: "bad_effort" });
 					}
 				}
-				const session = destination?.wait ? null : destination ? await openDefaultSession(auth, input, destination) : await deps.session(auth, { title, repository: input.repository, ...(place.kind === "machine" ? { place, profile } : {}), ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}) });
+				const session = destination?.wait ? null : destination ? await openDefaultSession(auth, input, destination) : await deps.session(auth, { title, repository: input.repository, ...(place.kind === "machine" ? { place, profile } : harness !== "windlass" ? { profile: input.profile ?? deps.hosted(auth).keyProfiles?.[0] } : {}), ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}) });
 				const repository = session?.repository ?? await deps.waitingRepository(auth, input.repository);
 				const at = deps.now();
 				const id = `it_${fresh(12)}`;

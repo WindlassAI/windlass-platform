@@ -127,9 +127,9 @@ export class DockerSandboxHandle implements TurnSandbox {
 		// The user names the lease in the relay, whose ceiling per user counts by it.
 		if (relay) {
 			this.modelRelay = () => relay.open(this.container, this.id, this.uid);
-			this.modelKeyRelay = (sessionId, key) => {
+			this.modelKeyRelay = (sessionId, key, signal) => {
 				if (sessionId !== session) throw new Error("This model relay belongs to another session.");
-				return relay.openKey(this.container, this.id, this.uid, sessionId, key);
+				return relay.openKey(this.container, this.id, this.uid, sessionId, key, signal);
 			};
 		}
 	}
@@ -488,6 +488,7 @@ export type DockerSandboxOptions = {
 	network?: { name: string; env: Record<string, string>; mode: string };
 	/** Windlass's model relay (docs/model-relay.md) for the Windlass sandboxes of this provider; none: their turns' tokens go into the sandbox. */
 	modelRelay?: DockerModelRelay;
+	hostedKeys?: boolean;
 	/** The Windlass version of the image, which decides whether `modelRelay` is used (0.6.0 or later): the one the layer's `windlass.problem()` reads. */
 	modelRelayWindlass?: () => Promise<string | null>;
 	/** The sandbox image; windlass-platform-sandbox:latest when left out. */
@@ -613,7 +614,8 @@ export class DockerSandboxes implements Sandboxes {
 	}
 
 	profiles(): SandboxProfile[] {
-		return profilesFor("docker", undefined, this.relayOn === true);
+		return profilesFor("docker", undefined, this.relayOn === true).map(p =>
+			this.options.hostedKeys && p.id === "docker-hardened" ? { ...p, platformKeys: true } : p);
 	}
 
 	/** Whether the image's Windlass reads the relay's address, once known (`modelRelayReady`). */
@@ -658,12 +660,16 @@ export class DockerSandboxes implements Sandboxes {
 	 */
 	async create(input: CreateSandboxInput & { ownData?: boolean | "required"; reservedId?: string; deferredRelayNonce?: string }): Promise<string> {
 		assertUid(input.uid);
-		const harness = this.options.sessionRelay ? this.options.harness ?? "claude" : undefined;
+		const harness = this.options.sessionRelay ? this.options.harness ?? "claude" : this.options.machine === null ? input.harness : undefined;
 		const agent = machineHarness(input.harness ?? harness) ?? CLAUDE;
 		if (harness !== input.harness) throw new SandboxUserError(`${agent.name} runs only on a machine offering it.`);
-		if (harness && (!agent.profiles.includes(input.profile) || input.screenshots))
+		if (harness && this.options.machine === null && !this.options.hostedKeys) throw new SandboxUserError("Hosted agents need a configured platform model relay.");
+		const supported = this.options.machine === null ? input.profile === "docker-hardened" : agent.profiles.includes(input.profile);
+		if (harness && (!supported || input.screenshots))
 			throw new SandboxUserError(`${agent.name} requires the hardened ${agent.name} image.`);
-		const base = input.screenshots ? this.shotsImage : this.image;
+		const base = harness && this.options.machine === null
+			? process.env[`WLP_${harness.toUpperCase()}_IMAGE`] || `windlass-platform-${harness}:dev`
+			: input.screenshots ? this.shotsImage : this.image;
 		const selected = input.fromSnapshot && !harness ? await this.snapshots(base, !!input.screenshots)
 			.select(input.fromSnapshot, input.uid, input.profile).catch(() => null) : null;
 		const image = selected?.image ?? base;
@@ -680,7 +686,7 @@ export class DockerSandboxes implements Sandboxes {
 		const own = !harness && !input.privateData && this.options.ownVolumeName !== undefined &&
 			(input.ownData === "required" || SESSION_VOLUME_PROFILES.includes(input.profile) && input.ownData !== false);
 		if (input.ownData === "required" && !own) throw new Error("The sandbox requires a private data volume.");
-		const volume = input.privateData || this.options.sessionRelay !== undefined ? null : await this.options.dataVolume(input.uid, own ? id : undefined);
+		const volume = input.privateData || harness || this.options.sessionRelay ? null : await this.options.dataVolume(input.uid, own ? id : undefined);
 		const scope = this.mirrorScope;
 		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(this.helperImage, scope, this.machine, input.uid, input.mirrorRepo, { floor: this.limits().free }).catch(() => null) : null;
 		// An idle harness has only its public routing nonce. The runner signs it and
@@ -716,7 +722,8 @@ export class DockerSandboxes implements Sandboxes {
 				...flags,
 				// Windlass reads its handed-in token in this container's /dev/shm.
 				...(!harness ? ["--ipc", "private"] : []),
-				...(relay ? ["--label", `${LABEL}.harness=${harness}`, "--label", `${LABEL}.relay-session=${relay.nonce}`, ...relay.env] : []),
+				...(harness ? ["--label", `${LABEL}.harness=${harness}`] : []),
+				...(relay ? ["--label", `${LABEL}.relay-session=${relay.nonce}`, ...relay.env] : []),
 				// The Codex image starts in Container access; on the Windlass sandbox profile it starts inside its own sandbox.
 				...(harness === "codex" ? ["-e", "INITIAL_AGENT_MODE=" + codexDefaultMode(input.profile)] : []),
 				...(mirror ? ["--mount", mirror] : []),
@@ -735,6 +742,7 @@ export class DockerSandboxes implements Sandboxes {
 			// Eviction can race docker run. Older daemons also lack volume-subpath.
 			if (mirror && /mount|subpath|sub-path|volume|no such file/i.test(message)) return this.create({ ...input, mirrorRepo: undefined });
 			if (selected && /No such image|not found/i.test(message)) return this.create({ ...input, fromSnapshot: undefined });
+			if (harness && /No such image|pull access denied|not found/i.test(message)) throw new Error(`Missing harness image ${image}. Build it with sandbox/harness/build.sh ${harness} or preload the configured image.`);
 			if (/No such image|pull access denied|not found/i.test(message)) throw new Error(`the sandbox image ${image} is missing; run ${input.screenshots ? "WLP_SANDBOX_VARIANT=shots " : ""}sandbox/build.sh (${message})`);
 			throw new Error(`could not create the sandbox: ${message}`);
 		}
@@ -892,9 +900,9 @@ export class DockerSandboxes implements Sandboxes {
 			const legacy = `${DATA_DIR}/${TOKEN_FILE_PREFIX}*`;
 			await docker(["exec", containerName(id), "/bin/sh", "-c", `/bin/rm -f -- ${legacy}.json ${legacy}.json.tmp`], { timeoutMs: 10_000, check: true });
 		}
-		// Only Windlass's own sandboxes: a harness session has a relay of its own (runner/src/claude-relay.ts).
-		const relay = /^[a-f0-9]{12}$/.test(id) && this.options.sessionRelay === undefined && await this.modelRelayReady() ? this.options.modelRelay : undefined;
-		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData, relay, () => this.limits().free, found.image, found.session);
+		const windlass = /^[a-f0-9]{12}$/.test(id);
+		const relayReady = windlass ? this.options.sessionRelay === undefined && await this.modelRelayReady() : this.options.hostedKeys;
+		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData, relayReady ? this.options.modelRelay : undefined, () => this.limits().free, found.image, found.session);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {

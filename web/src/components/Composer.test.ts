@@ -53,6 +53,19 @@ const send = () => act(async () => (host.querySelector('button[type="submit"]') 
 const noAnswer = () => new PlatformError("network", "The server at http://localhost:6420 did not answer.");
 
 describe("the composer's submissions", () => {
+	it("keeps a hosted draft and disables Send while its selected provider key is missing", async () => {
+		const reason = "Add an Anthropic key in Settings to run Claude Code here.";
+		show({ modelProblem: () => reason });
+		write("Review the parser");
+		await send();
+		expect(sent).toHaveLength(0);
+		expect(field().value).toBe("Review the parser");
+		expect(host.querySelector('[role="status"]')?.textContent).toContain(reason);
+		show({ modelProblem: () => null });
+		await send();
+		expect(sent[0]?.text).toBe("Review the parser");
+	});
+
 	it("keeps a message that was not taken, and sends it again with the key it had", async () => {
 		show();
 		write("Fix the flaky test");

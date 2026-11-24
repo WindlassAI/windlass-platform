@@ -24,8 +24,12 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	const ctx = { client: () => ({user:{get:() => ({internalModelKeys:async () => { calls.push("keys"); return keys; }})}}),
 		vars:{runner:{request:async (op: string) => { calls.push(op); return "google/gemini"; }}} };
 	const resolve = (place: typeof machine | typeof hosted, model: string, keyRelay?: true, defaultModel?: string) =>
-		turnCredential(ctx as never, {place, uid:"owner", harnessModels:{defaultModel}} as never, {id:"opencode", keyRelay} as never, model);
-	assert.deepEqual(await resolve(hosted, "default", true), {model:"default"});
+		turnCredential(ctx as never, {place, uid:"owner", harness:"opencode", harnessModels:{defaultModel}} as never, {id:"opencode", keyRelay} as never, model);
+	assert.deepEqual(await resolve(hosted, "default", true), {model:"default", key:keys[0]});
+	assert.deepEqual(await resolve(hosted, "default", true, "google/gemini"), {model:"google/gemini", key:keys[1]});
+	assert.deepEqual(await resolve(hosted, "google/gemini"), {model:"google/gemini", key:keys[1]});
+	await assert.rejects(resolve(hosted, "anthropic/removed"), /Add an Anthropic key/);
+	assert.deepEqual(calls.splice(0), ["keys","keys","keys","keys"]);
 	assert.deepEqual(await resolve(machine, "default"), {model:"default"});
 	assert.deepEqual(calls, []);
 	assert.deepEqual(await resolve(machine, "default", true), {model:"google/gemini",key:keys[1]});
@@ -567,9 +571,10 @@ async function clientCheck(state: string) {
 	const harness = harnessOf(machine, "claude");
 	assert.equal(harnessOf(machine, "opencode").id, "opencode");
 	assert.equal(harnessOf(machine, "codex").id, "codex");
-	assert.throws(() => harnessOf({} as SandboxLayer, "codex"), /Codex runs only on a machine/);
-	assert.throws(() => harnessOf({} as SandboxLayer, "opencode"), /OpenCode runs only on a machine/);
-	assert.throws(() => harnessOf({} as SandboxLayer, "claude"), /only on a machine/);
+	for (const id of ["claude", "codex", "opencode"] as const) {
+		const hosted = harnessOf({} as SandboxLayer, id);
+		assert.deepEqual((await hosted.capabilities({} as SandboxHandle)).signIn, ["platform-key"]);
+	}
 	const secret = "value-held-only-for-redaction";
 	const redactor = new SecretRedactor([{ name: "FIXTURE", value: secret }]);
 	const secrets = { env: {}, withholdEnv: [], passEnv: [], redactor };

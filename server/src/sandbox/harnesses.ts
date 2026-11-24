@@ -214,6 +214,32 @@ export function withSettingsKeys<T extends KeyHarness & { signIn: "token" | "non
 
 export const machineHarnesses = { claude: CLAUDE, opencode: OPENCODE, codex: CODEX };
 
+export const hostedProfiles: SandboxProfileId[] = ["docker-hardened", "e2b-open"];
+
+export function hostedHarness(id: AcpProfile["id"]): AcpProfile {
+	const agent = machineHarnesses[id];
+	return { ...agent, profiles: hostedProfiles, sandboxedOn: [], capabilities: { ...agent.capabilities, signIn: ["platform-key"] } };
+}
+
+/** A fresh OpenCode session has no model catalog yet. Limit its adapter to one saved provider. */
+export function hostedProvider(id: AcpProfile["id"], model: string | undefined, keys: readonly ModelProvider[]) {
+	if (id === "opencode" && (!model || model === "default")) return keyProviders(id).find(p => keys.includes(p));
+	return selectedKey(id, model, keys);
+}
+
+export function hostedKeyMessage(id: AcpProfile["id"], model?: string): string {
+	const provider = selectedKey(id, model, MODEL_PROVIDERS);
+	const key = provider ? { openai: "an OpenAI", anthropic: "an Anthropic", google: "a Google", openrouter: "an OpenRouter" }[provider] : "an OpenAI, Anthropic, Google or OpenRouter";
+	return `Add ${key} key in Settings to run ${machineHarnesses[id].name} here.`;
+}
+
+/** The reason a hosted agent is disabled in a picker. */
+export function hostedAgentProblem(id: AcpProfile["id"], keys: readonly ModelProvider[] | null, keyProfile: boolean, model?: string) {
+	if (!keys) return "Reading your Settings keys…";
+	if (!hostedProvider(id, model, keys)) return hostedKeyMessage(id, model);
+	return keyProfile ? null : "This deployment has no supported hosted profile.";
+}
+
 /** A machine harness by its id, whatever harnesses this build has; null for Windlass and for an id it does not know. */
 export function machineHarness(id: unknown): AcpProfile | null {
 	return typeof id === "string" && Object.hasOwn(machineHarnesses, id) ? machineHarnesses[id as keyof typeof machineHarnesses] : null;
@@ -243,7 +269,7 @@ export function itemProfiles(id: HarnessId): SandboxProfileId[] {
 
 /** The mode an item's session of a machine harness runs in on a profile; undefined for Windlass or a profile it has none for. */
 export function itemModeOf(id: HarnessId | undefined, profile: SandboxProfileId): string | undefined {
-	return machineHarness(id)?.itemModes[profile];
+	return machineHarness(id)?.itemModes[profile === "e2b-open" ? "docker-hardened" : profile];
 }
 
 /** Why a work item cannot run this agent in this profile, or null when it can. Windlass is the profile's to judge. */
@@ -339,7 +365,7 @@ export function itemSignInMessage(profile: AcpProfile, machine: string, signIn: 
  */
 export function worksWithoutAsking(id: HarnessId | undefined, profile: SandboxProfileId = "docker-hardened"): boolean {
 	const machine = machineHarness(id);
-	return machine?.items === true && machine.itemModes[profile] !== undefined && !machine.sandboxedOn.includes(profile);
+	return machine?.items === true && itemModeOf(id, profile) !== undefined && !machine.sandboxedOn.includes(profile);
 }
 
 /**

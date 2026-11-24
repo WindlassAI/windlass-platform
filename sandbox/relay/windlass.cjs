@@ -20,7 +20,7 @@ const SOCKET = '/workspace/relay.sock';
 const HOST = '127.0.0.1:17893';
 const LEASE = /^wlp-model\.[a-f0-9]{32}$/;
 const NONCE = /^[a-f0-9]{32}$/;
-const { wires, wireMethod: methodFor, forwardHost, forwardPlaceholder, validProofKey, forwardProof, proofHeader } = require('./wires.cjs');
+const { wires, wirePath, wireMethod: methodFor, forwardHost, forwardPlaceholder, validProofKey, forwardProof, proofHeader } = require('./wires.cjs');
 function anyMethod(path) {
 	for (const provider of Object.keys(wires)) {
 		const method = methodFor(provider, path);
@@ -34,7 +34,7 @@ function placeholderOf(headers) {
 }
 // Transport, proxy and SDK metadata is discarded at the relay.
 const transport = new Set(['content-type', 'host', 'connection', 'content-length', 'transfer-encoding', 'accept-encoding', 'accept-language',
-	'via', 'forwarded', 'cdn-loop', 'traceparent', 'tracestate', 'x-real-ip', 'sec-fetch-mode']);
+	'via', 'forwarded', 'cdn-loop', 'traceparent', 'tracestate', 'x-real-ip', 'sec-fetch-mode', 'x-opencode-session-id', 'x-session-affinity', 'x-session-id']);
 function wireTarget(provider, path, incoming, credential) {
 	const method = methodFor(provider, path);
 	if (!method) return;
@@ -59,7 +59,7 @@ function wireTarget(provider, path, incoming, credential) {
 		else if (!wire.dropUnknown && !wire.drop?.includes(name) && name !== 'authorization' && !Object.hasOwn(headers, name) && !transport.has(name)
 			&& !/^(?:cf-|x-forwarded-|x-stainless-)/.test(name)) return;
 	}
-	return { hostname: wire.host, path, headers };
+	return { hostname: wire.host, path: wirePath(provider, path), headers };
 }
 // Room for a long code or message, never a body of its own.
 const CODE = /^[A-Za-z0-9_.:-]{1,128}$/;

@@ -51,7 +51,7 @@
  */
 
 import { INIT_WORKSPACE } from "../../github/git-flags.js";
-import { machineHarnesses } from "../harnesses.js";
+import { hostedProfiles, machineHarnesses } from "../harnesses.js";
 import type { SandboxProfile, SandboxProfileId } from "../../contract.js";
 import { type ConnectOptions, type CreateSandboxInput, DeploymentFull, type ExecOptions, type ExecResult, type ListedSandbox, type OutOfMemory, type SandboxHandle, type SandboxPrice, type SandboxObservation, SandboxUserError, type Sandboxes } from "../api.js";
 import { profilesFor } from "../profiles.js";
@@ -79,6 +79,7 @@ import {
 	shellQuote,
 } from "../provider.js";
 import { tokenFilePath } from "../token-file.js";
+import { config } from "../../config.js";
 import { openRelayLease } from "../relay-leases.js";
 import { E2bBusyError, type E2bClient, type E2bCommand, type E2bConnection, E2bLimitError, type E2bSandboxInfo, E2bSnapshotModeError } from "./client.js";
 import { ADOPT_SCRIPT, AUDIT_SCRIPT, E2bSnapshots, RECORD_PATH, RECORD_SCRIPT, SNAP_META, type SnapshotRecord } from "./snapshots.js";
@@ -227,9 +228,9 @@ export class E2bSandboxHandle implements TurnSandbox {
 				return { uid, sessionId: session, origin: relay, ttlMs: owner.relayLeaseMs };
 			};
 			this.modelRelay = async () => openRelayLease(leaseInput());
-			this.modelKeyRelay = async (sessionId, key) => {
+			this.modelKeyRelay = async (sessionId, key, signal) => {
 				if (sessionId !== session) throw new Error("This model relay belongs to another session.");
-				return openRelayLease({ ...leaseInput(), key });
+				return openRelayLease({ ...leaseInput(), key, signal, ttlMs: owner.turnLimitMs, requestLimit: config.modelRelay.turnRequests });
 			};
 		}
 	}
@@ -643,7 +644,9 @@ export class E2bSandboxes implements Sandboxes {
 		return this.settings.modelRelayOrigin ?? null;
 	}
 
-	/** How long a relay placeholder's signature counts: the longest turn, and some room. The lease itself ends with the turn. */
+	get turnLimitMs(): number { return this.settings.turnLimitMs; }
+
+	/** Windlass's access-token lease allows time for refresh. */
 	get relayLeaseMs(): number {
 		return this.settings.turnLimitMs + 15 * 60_000;
 	}
@@ -688,7 +691,8 @@ export class E2bSandboxes implements Sandboxes {
 	}
 
 	profiles(): SandboxProfile[] {
-		return profilesFor("e2b", { ...this.settings, network: this.network.mode }, this.modelRelayOrigin !== null);
+		return profilesFor("e2b", { ...this.settings, network: this.network.mode }, this.modelRelayOrigin !== null).map(p =>
+			this.modelRelayOrigin && p.id === "e2b-open" ? { ...p, platformKeys: true } : p);
 	}
 
 	/** WLP_E2B_NETWORK: what every sandbox of the deployment may reach (network.ts). */
@@ -852,7 +856,8 @@ export class E2bSandboxes implements Sandboxes {
 	}
 
 	async create(input: CreateSandboxInput): Promise<string> {
-		if (input.harness) throw new SandboxUserError(`${machineHarnesses[input.harness].name} runs only on a machine of yours.`);
+		if (input.harness && (!hostedProfiles.includes(input.profile) || input.screenshots || !this.modelRelayOrigin))
+			throw new SandboxUserError(`${machineHarnesses[input.harness].name} needs the microVM-only profile and a configured model relay.`);
 		if (typeof input.uid !== "string" || !NAME.test(input.uid)) throw new Error('invalid user id: it must be 1 to 64 letters, digits, "_" or "-", starting with a letter or digit');
 		const profile = this.profile(input.profile);
 		if (!profile.available || !E2B_PROFILES.includes(profile.id)) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
@@ -861,9 +866,9 @@ export class E2bSandboxes implements Sandboxes {
 		await this.assertRoom();
 		// The size asked for, or the largest the deployment has a template of below it (WLP_E2B_SIZES).
 		const size = offeredSize(this.settings, input.hostedSize);
-		const template = templateFor(this.settings, size, !!input.screenshots);
+		const template = templateFor(this.settings, size, !!input.screenshots, input.harness);
 		// A post-setup snapshot of this user and repository, when the session asks for one and one fits (snapshots.ts). Of this size's template only: a snapshot starts sandboxes of its own size.
-		const selected = input.fromSnapshot && this.snapshotStore ? await this.snapshotStore.select(input.fromSnapshot, input.uid, input.profile, !!input.screenshots, size).catch(() => null) : null;
+		const selected = !input.harness && input.fromSnapshot && this.snapshotStore ? await this.snapshotStore.select(input.fromSnapshot, input.uid, input.profile, !!input.screenshots, size).catch(() => null) : null;
 		let connection: E2bConnection;
 		try {
 			connection = await this.client.create({
@@ -888,6 +893,7 @@ export class E2bSandboxes implements Sandboxes {
 				throw new SandboxUserError(planRefusal(size, messageOf(error).slice(0, 300)));
 			}
 			// A size the deployment lists without its template built at E2B: said with what to do, not as E2B's words alone.
+			if (input.harness && /not.?found|template/i.test(messageOf(error))) throw new Error(`Missing template "${template}". Run sandbox/e2b/build.sh with WLP_E2B_HARNESS=${input.harness}, WLP_E2B_SIZE=${size} and WLP_E2B_HARNESS_IMAGE set to the published harness image.`);
 			if (size !== "small" && /not.?found|template/i.test(messageOf(error))) throw new Error(`could not create a ${size} sandbox from the template "${template}" (${messageOf(error)}): build it (sandbox/e2b/build.sh with WLP_E2B_SIZE=${size}), or leave ${size} out of WLP_E2B_SIZES`);
 			throw new Error(`could not create the sandbox: ${messageOf(error)}`);
 		}

@@ -2,7 +2,7 @@
 import type { RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, Windlass } from "./api.js";
 import type { HarnessId } from "../contract.js";
 import { AcpHarness } from "./acp-harness.js";
-import { capabilitiesOf, machineHarnesses, WINDLASS_CAPABILITIES, type HarnessCapabilities } from "./harnesses.js";
+import { capabilitiesOf, hostedHarness, machineHarnesses, WINDLASS_CAPABILITIES, type HarnessCapabilities } from "./harnesses.js";
 
 export type { HarnessId } from "../contract.js";
 
@@ -37,6 +37,5 @@ export function harnessOf(layer: SandboxLayer, id: HarnessId): Harness {
 	if (id === "windlass") return new WindlassHarness(layer.windlass);
 	const profile = machineHarnesses[id];
 	if (!profile) throw new Error(`Unknown harness: ${id}`);
-	if (!layer.machine) throw new Error(`${profile.name} runs only on a machine of yours.`);
-	return new AcpHarness(profile, layer.machine.name);
+	return layer.machine ? new AcpHarness(profile, layer.machine.name) : new AcpHarness(hostedHarness(id));
 }

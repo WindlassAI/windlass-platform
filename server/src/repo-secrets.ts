@@ -389,7 +389,7 @@ export interface Redactor {
 	readonly active: boolean;
 	/** `text` with every value replaced by its mark. */
 	text(text: string): string;
-	/** The same for every string in a value of JSON's shapes: the values, never an object's keys. Returns the value itself when nothing was replaced. */
+	/** Redact every JSON string, including object keys. Returns the value itself when nothing was replaced. */
 	deep<T>(value: T): T;
 	/** How many characters at the end of `text` may be the beginning of a value that continues in what comes next. */
 	held(text: string): number;
@@ -445,13 +445,13 @@ export class SecretRedactor implements Redactor {
 		}
 		if (typeof value === "object" && value !== null) {
 			let changed = false;
-			const out: Record<string, unknown> = {};
-			for (const [key, item] of Object.entries(value)) {
+			const entries = Object.entries(value).map(([key, item]) => {
+				const name = this.text(key);
 				const next = this.deep(item);
-				if (next !== item) changed = true;
-				out[key] = next;
-			}
-			return changed ? (out as T) : value;
+				if (next !== item || name !== key) changed = true;
+				return [name, next];
+			});
+			return changed ? Object.fromEntries(entries) as T : value;
 		}
 		return value;
 	}

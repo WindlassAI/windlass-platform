@@ -39,7 +39,7 @@ child.stdin.on('error', () => process.exit(1));
         process.stdout.write(JSON.stringify({ jsonrpc:'2.0', id:msg.id, error:{code:-32000,message:'Authentication required'} }) + '\n');
         continue;
       }
-      msg.params = { providerId:'openai', apiType:'openai', baseUrl:'http://127.0.0.1:17892/codex/v1',
+      msg.params = { providerId:'openai', apiType:'openai', baseUrl:process.env.WLP_CODEX_BASE_URL || 'http://127.0.0.1:17892/codex/v1',
         headers:{authorization:'Bearer ' + process.env.WLP_SESSION_BEARER} };
     }
     if (!child.stdin.write(JSON.stringify(msg) + '\n')) await once(child.stdin, 'drain');

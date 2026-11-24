@@ -25,6 +25,9 @@
  * file would hold the token, and Windlass would have no relay to send to.
  */
 
+import "./check-secret.js";
+import assert from "node:assert/strict";
+import { config } from "../server/src/config.js";
 import { randomBytes } from "node:crypto";
 import { docker } from "../server/src/sandbox/docker.js";
 import { createSandboxLayer } from "../server/src/sandbox/index.js";
@@ -128,20 +131,25 @@ async function request(box: DockerSandboxHandle, bearer: string, path: string, b
 
 const image = await imageId();
 const cleanup: (() => Promise<unknown>)[] = [];
-try {
+async function check() {
+	const keyOnly = process.argv.includes("--hosted-keys");
+	if (keyOnly) {
+		config.modelRelay.url = { host: "relay.example.com", origin: "https://relay.example.com" };
+		process.env.WLP_CODEX_IMAGE ??= image; // The stand-in below drives the CLI's relay from this container.
+	}
 	await docker(["network", "create", network], { check: true });
 	cleanup.push(() => docker(["network", "rm", network]));
 	await docker(["run", "-d", "--name", upstreamName, "--network", network, "--user", "agent", image, "node", "-e", UPSTREAM], { check: true });
 	cleanup.push(() => docker(["rm", "-f", upstreamName]));
 	const layer = createSandboxLayer({ image, signIns: "memory", tokenNetwork: "none",
-		modelRelay: { machine: scope, network, upstream: `http://${upstreamName}:8080`, limits: { sessionRequests: 2, sessionWaiting: 1, waitMs: 1500 } } });
+		modelRelay: { machine: keyOnly ? "" : scope, nameScope: scope, network, upstream: `http://${upstreamName}:8080`, limits: { sessionRequests: 2, sessionWaiting: 1, waitMs: 1500 } } });
 	const relayName = `wlp-model-relay-${scope}`;
 	cleanup.push(() => docker(["volume", "rm", "-f", `wlp-model-socket-${scope}`]));
 	cleanup.push(() => docker(["rm", "-f", relayName]));
 	const uid = `mrcheck${run}`;
 	cleanup.push(() => docker(["volume", "rm", "-f", `wlp-user-${uid}`]));
 	const make = async (session: string) => {
-		const id = await layer.sandboxes.create({ uid, sessionId: session, profile: "docker-hardened" });
+		const id = await layer.sandboxes.create({ uid, sessionId: session, profile: "docker-hardened", ...(keyOnly && { harness: "codex" }) });
 		cleanup.push(() => layer.sandboxes.destroy(id));
 		const box = (await layer.sandboxes.connect(id)) as DockerSandboxHandle | undefined;
 		if (!box) throw new Error("the sandbox could not be connected");
@@ -149,9 +157,28 @@ try {
 	};
 	const a = await make("s-relay-a");
 	const b = await make("s-relay-b");
-	expect("a hosted Windlass sandbox offers the model relay", typeof a.modelRelay === "function");
-	const foreignSession = await openModelKeyRelay(a, "s-relay-b", { provider: "google", generation: "test" }).catch(error => error);
+	expect("the hosted sandbox offers its relay", keyOnly ? typeof a.modelKeyRelay === "function" : typeof a.modelRelay === "function");
+	const foreignSession = await openModelKeyRelay(a, "s-relay-b", { provider: "google", generation: "test", harness: "opencode" }).catch(error => error);
 	expect("a Docker key relay refuses another sandbox's session", foreignSession instanceof Error && /another session/.test(foreignSession.message));
+
+	if (keyOnly) {
+		const key = { provider: "openai", generation: "fixture", harness: "codex" } as const;
+		const own = await openModelKeyRelay(a, "s-relay-a", key);
+		cleanup.push(own.close);
+		const other = await openModelKeyRelay(b, "s-relay-b", key);
+		cleanup.push(other.close);
+		const status = async (box: DockerSandboxHandle, bearer: string) => {
+			const reply = await box.ask(["node", "-e", "fetch(process.argv[1] + '/models', {headers:{authorization:'Bearer ' + process.argv[2]}}).then(r=>console.log(r.status))",
+				own.env.WINDLASS_MODEL_BASE_URL!, bearer]);
+			return Number(reply?.stdout.trim());
+		};
+		assert.equal(await status(a, own.placeholder), 200);
+		assert.equal(await status(b, own.placeholder), 401);
+		assert.equal(await status(b, other.placeholder), 200);
+		assert.equal((await seen()).length, 2);
+		expect("each hosted Docker forwarder accepts only its own container’s Settings-key lease", true);
+		return;
+	}
 
 	// Due for replacement 4 s in, and tried every 500 ms from then: while the source gives the same token, nothing changes.
 	let next: AccessToken = { accessToken: REAL_A, expiresAt: Date.now() + 30 * 60_000 };
@@ -222,10 +249,10 @@ try {
 	// 4d. Inspect a diagnostic from the scoped relay through Docker's actual log driver.
 	await request(a, placeholderA, "/v1/responses", '{"input":"private-relay-check"}');
 	const inspected = await docker(["inspect", relayName], { timeoutMs: 20_000 });
-	const config = JSON.parse(inspected.stdout)[0].HostConfig.LogConfig;
+	const logging = JSON.parse(inspected.stdout)[0].HostConfig.LogConfig;
 	const logs = await docker(["logs", relayName], { timeoutMs: 20_000 });
 	const output = logs.stdout + logs.stderr;
-	expect("the scoped relay rotates two 4 MiB Docker logs", config.Type === "json-file" && config.Config["max-size"] === "4m" && config.Config["max-file"] === "2");
+	expect("the scoped relay rotates two 4 MiB Docker logs", logging.Type === "json-file" && logging.Config["max-size"] === "4m" && logging.Config["max-file"] === "2");
 	expect("docker logs includes the refused request's status", logs.code === 0 && output.includes("upstream=403"));
 	expect("relay diagnostics and configuration omit the request body and credentials",
 		[REAL_A, REAL_B, REAL_C, placeholderA, placeholderB, "private-relay-check"].every(value => !output.includes(value) && !inspected.stdout.includes(value)));
@@ -290,7 +317,7 @@ try {
 	const fileF = new TokenFile(a, { current: async () => ({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 }) } as never, { log: () => {} });
 	await fileF.start();
 	const nextServer = createSandboxLayer({ image, signIns: "memory", tokenNetwork: "none",
-		modelRelay: { machine: scope, network, upstream: `http://${upstreamName}:8080`, limits: { sessionRequests: 2, sessionWaiting: 1, waitMs: 1500 } } });
+		modelRelay: { machine: keyOnly ? "" : scope, nameScope: scope, network, upstream: `http://${upstreamName}:8080`, limits: { sessionRequests: 2, sessionWaiting: 1, waitMs: 1500 } } });
 	const prepared = await nextServer.sandboxes.prepareModelRelay!();
 	const leftFiles = await docker(["exec", relayName, "sh", "-c", "ls /run/wlp-model/tokens | wc -l"], { timeoutMs: 20_000 });
 	expect("a server that starts removes the forwarders and token files a server that died left", /removed 1 forwarder/.test(prepared) && (await docker(["container", "inspect", `wlp-model-fwd-${a.id}`])).code !== 0 && leftFiles.stdout.trim() === "0", prepared + " / " + leftFiles.stdout);
@@ -324,6 +351,9 @@ try {
 			relay: state.stdout.trim(), forwarder: (forwarder.stdout || forwarder.stderr).trim(), clientExit: said?.code, stderr: said?.stderr.slice(-1000) });
 	}
 	expect("64 streams at once with 1 MiB bodies and 2 MiB answers all complete through a relay of the hosted relay's memory, which is not killed", passed, details);
+}
+try {
+	await check();
 } catch (error) {
 	failed += 1;
 	console.log(`FAIL  the check could not run: ${error instanceof Error ? error.stack : String(error)}`);

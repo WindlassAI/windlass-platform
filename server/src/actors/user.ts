@@ -155,9 +155,9 @@ import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
-import { availableCatalog, harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
+import { hostedHarness, hostedKeyMessage, hostedProvider, availableCatalog, harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
-import { MODEL_PROVIDER_TABLES, modelProviderActions } from "../model-providers.js";
+import { MODEL_PROVIDER_TABLES, modelProviderActions, savedProviders } from "../model-providers.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishAsksEveryTime, publishUnaskedProblem } from "../agent-publish.js";
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
@@ -1074,6 +1074,7 @@ async function usageView(c: UsageCtx): Promise<UsageView> {
 	return {
 		...book.numbers(now),
 		usedModelTokens: book.modelTokens(now),
+		providerTokens: await c.db.execute<{ provider: ModelProvider; tokens: number }>("SELECT provider, SUM(tokens) AS tokens FROM model_key_usage WHERE day=? GROUP BY provider ORDER BY provider", dayOf(now)),
 		factoryLimits: accountLimits(c.vars.items.limits).factory,
 		today: book.today(now).map((row) => {
 			const session = c.vars.sessions.get(row.sessionId);
@@ -1173,8 +1174,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	if (harness !== "windlass") {
 		const notForItems = item ? itemHarnessProblem(harness) : null;
 		if (notForItems) throw new UserError(notForItems, { code: "bad_input" });
-		if (place.kind !== "machine") throw new UserError(`${machineHarnesses[harness].name} runs only on a machine of yours.`, { code: "bad_input" });
-		if (input.profile !== "docker-hardened" && !(harness === "codex" && input.profile === "docker-windlass-sandbox")) throw new UserError(`${machineHarnesses[harness].name} requires the docker-hardened profile.`, { code: "bad_input" });
+		const agent = place.kind === "hosted" ? hostedHarness(harness) : machineHarnesses[harness];
+		if (!agent.profiles.includes(input.profile)) throw new UserError(`${agent.name} requires ${agent.profiles.join(" or ")} here.`, { code: "bad_input" });
 		const profileProblem = item ? itemProfileProblem(harness, input.profile) : null;
 		if (profileProblem) throw new UserError(profileProblem, { code: "bad_input" });
 		// Its publish comes over MCP, which any process in the container may reach (platform-tools.ts): it asks every time.
@@ -1227,13 +1228,13 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (repoUrl && machine?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
 		if (repoUrl && place.kind === "hosted" && (await getLayer()).sandboxes.egress?.() === "none") throw new UserError(HOSTED_OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
-		if (harness !== "windlass" && !offered) throw new UserError(`This machine does not offer ${machineHarnesses[harness].name}.`, { code: "bad_input" });
+		if (harness !== "windlass" && machine && !offered) throw new UserError(`This machine does not offer ${machineHarnesses[harness].name}.`, { code: "bad_input" });
 		// A work item is not watched: one filed on a machine whose agent is not known to be signed in would only fail at its first turn.
 		const signedOut = item && harness !== "windlass" && offered ? itemSignInMessage(machineHarnesses[harness], machine?.name ?? "your machine", offered.signIn) : null;
 		if (signedOut) throw new UserError(signedOut, { code: "harness_signed_out" });
-		// Where the sign-in method decides how an item counts its tokens (Claude Code or Codex), it is kept with the item, and refused when it is not one items run with.
-		const itemSignIn = item && harness !== "windlass" && machineHarnesses[harness].itemTokens === "sign-in" ? offered?.method : undefined;
-		const methodProblem = item && harness !== "windlass" ? itemSignInMethodProblem(machineHarnesses[harness], machine?.name ?? "your machine", offered?.method) : null;
+		const itemSignIn = item && harness !== "windlass" && machineHarnesses[harness].itemTokens === "sign-in"
+			? (machine ? offered?.method : "api-key") : undefined;
+		const methodProblem = item && machine && harness !== "windlass" ? itemSignInMethodProblem(machineHarnesses[harness], machine?.name ?? "your machine", offered?.method) : null;
 		if (methodProblem) throw new UserError(methodProblem, { code: "bad_input" });
 		const hostedSize = place.kind === "hosted" ? await sessionHostedSize(c, input.hostedSize, repo ? setupKeyOf(repo.id) : null, item) : undefined;
 		const profiles = machine ? machine.profiles : (await getLayer()).sandboxes.profiles();
@@ -1242,6 +1243,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (!chosen.available) {
 			throw new UserError(`${chosen.name} cannot be chosen yet. ${chosen.unavailableReason ?? ""}`.trim(), { code: "profile_unavailable" });
 		}
+		if (!machine && harness !== "windlass" && !chosen.platformKeys) throw new UserError("This hosted profile has no configured Settings-key relay.", { code: "profile_unavailable" });
 		// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
 		const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
@@ -1250,7 +1252,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		const options = availableCatalog(catalog ?? undefined, offered);
 		if (harness === "codex" && chosen.id === "docker-windlass-sandbox" && !offered?.modes?.includes("workspace-write"))
 			throw new UserError(offered?.modeReason ?? innerModesReason, {code:"bad_input"});
-		const modes = initialSessionModes(chosen.id, harness, !!item, harness === "codex" ? codexModes(chosen.id, offered?.modes ?? []) : options?.modes);
+		const modes = initialSessionModes(chosen.id, harness, !!item, harness === "codex" ? codexModes(chosen.id, machine ? offered?.modes ?? [] : undefined) : options?.modes);
 		if (input.mode !== undefined) {
 			if (typeof input.mode !== "string" || !input.mode.trim() || ((harness === "windlass" || harness === "codex") && !modes.availableModes.some(m => m.id === input.mode))) throw new UserError("Choose a mode offered by this agent.", { code: "bad_input" });
 			modes.mode = input.mode;
@@ -1258,6 +1260,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// A build runs no agent, so it asks for no model list (and needs no sign-in): the stand-in names one.
 		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : build ? standInModels("demo") : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options ? "bad_input" : undefined);
+		if (place.kind === "hosted" && harness !== "windlass" && !hostedProvider(harness, model, await savedProviders(c.db)))
+			throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		// An item's effort runs every turn, unwatched: only one its agent reported is taken.
 		if (item?.effort !== undefined) modelInput(() => checkItemEffort(models, model, item.effort, harness !== "windlass"));
 
@@ -1831,18 +1835,18 @@ export const user = actor({
 			requireService(c);
 			return sizesOf(c, await getLayer()).map(size => size.id);
 		},
+		internalHostedProviders: (c) => { requireServiceFor(c, "call"); return savedProviders(c.db); },
 		internalDailyTokenWait: (c) => { requireServiceFor(c, "call"); return accountTokenWait(c); },
 		internalRecordTurnTokens: async (c, input: { sessionId: string; receipt: TokenReceipt }) => {
 			requireServiceFor(c, "call");
 			// The session can already be out of the index while its deletion settles its last receipt.
 			const inserted = await recordTurnTokens(c.db, input.sessionId, input.receipt);
-			if (input.receipt.key) return;
-			const { at } = input.receipt;
-			c.vars.usage.noteModelTokens(at, await tokensOn(c.db, at));
-			if (inserted) {
-				c.broadcast("usage", c.vars.usage.numbers(Date.now()));
-				if (accountTokenWait(c)) queueChanged(c);
+			if (!input.receipt.key) {
+				const { at } = input.receipt;
+				c.vars.usage.noteModelTokens(at, await tokensOn(c.db, at));
+				if (inserted && accountTokenWait(c)) queueChanged(c);
 			}
+			if (inserted) c.broadcast("usage", c.vars.usage.numbers(Date.now()));
 		},
 		internalRevokeTokens: async (c): Promise<void> => {
 			requireServiceFor(c, "revoke:" + c.key[0]);
@@ -3223,7 +3227,7 @@ export const user = actor({
 			// The user's index can still be a turn behind. The session asking for the slot
 			// cannot start its next turn until we answer, so this is its actual starting count.
 			const own = asking && hostedLimitsApply(asking.place) ? await sessionActor(c, uid, sessionId).internalSummary() : null;
-			const tokenWait = asking && usesPlatformModel(asking.place, asking.harness) ? accountTokenWait(c) : null;
+			const tokenWait = asking && usesPlatformModel(asking.harness) ? accountTokenWait(c) : null;
 			// From here to the `set` nothing is awaited: the count and the claim are one step.
 			const entry = c.vars.sessions.get(sessionId);
 			if (!entry) return { ok: false, running: others().length, known: false, until: null, claim: null };

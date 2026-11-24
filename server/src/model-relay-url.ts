@@ -1,6 +1,3 @@
-import { wires } from "../../sandbox/relay/wires.cjs";
-import type { ModelProvider } from "./contract.js";
-
 /**
  * WLP_MODEL_RELAY_URL (docs/model-relay.md, "Hosted E2B"): the address E2B sandboxes reach the model relay
  * route at. A hostname of its own, so that E2B's `restricted` and `none` networks can allow it by name
@@ -54,9 +51,4 @@ export function requestHost(header: string | null): string | null {
 	const match = /^([A-Za-z0-9.-]+)(?::(\d+))?$/.exec(header.trim());
 	if (!match || (match[2] !== undefined && match[2] !== "443")) return null;
 	return match[1]!.toLowerCase().replace(/\.$/, "");
-}
-
-/** The base expected by each wire's client, relative to the relay's root. */
-export function modelBasePath(provider?: ModelProvider): string {
-	return wires[provider ?? "chatgpt"].base;
 }

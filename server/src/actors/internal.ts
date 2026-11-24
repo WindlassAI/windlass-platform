@@ -69,7 +69,7 @@ export interface EnvironmentBuildOrigin { project: string; place: string; screen
 export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "size" | "origin" | "harness" | "environmentBuild" | "hostedSize">, screenshots = false): CreateSandboxInput {
 	const { uid, sessionId, profile, origin } = session;
 	const size = session.size ?? origin?.size;
-	return { uid, sessionId, profile, ...(session.environmentBuild && { environmentBuild: true }), ...(size && { size }), ...(session.hostedSize && { hostedSize: session.hostedSize }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: (origin?.kind === "item" && screenshots) || session.environmentBuild?.screenshots === true };
+	return { uid, sessionId, profile, ...(session.environmentBuild && { environmentBuild: true }), ...(size && { size }), ...(session.hostedSize && { hostedSize: session.hostedSize }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: (origin?.kind === "item" && screenshots && (!session.harness || session.harness === "windlass")) || session.environmentBuild?.screenshots === true };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
@@ -99,6 +99,7 @@ export interface UserInternal {
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
 	internalDefaultBuilder(input: { id: string; job: import("./user-items.js").DefaultBuilder }): ReturnType<typeof import("./user-items.js").itemActions.internalDefaultBuilder>;
 	internalDiscardPlacement(itemId: string): Promise<void>;
+	internalHostedProviders(): Promise<import("../contract.js").ModelProvider[]>;
 	internalHostedSizes(): Promise<HostedSize[]>;
 	internalDailyTokenWait(): Promise<string | null>;
 	internalRecordTurnTokens(input: { sessionId: string; receipt: import("../usage.js").TokenReceipt }): Promise<void>;

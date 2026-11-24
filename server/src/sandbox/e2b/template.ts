@@ -42,13 +42,14 @@ export function templateDockerfile(dockerfile: string, shots = false): string {
  * The template, from a build context: a directory that holds `Dockerfile`, `wlp-run` and the Windlass
  * binary as `windlass`, which is what sandbox/build.sh makes for `docker build` too.
  */
-export function sandboxTemplate(context: string, shots = false): TemplateClass {
+export function sandboxTemplate(context: string, shots = false, image?: string): TemplateClass {
+	if (image) return Template().fromImage(image).setUser("agent").setWorkdir("/workspace");
 	return Template({ fileContextPath: context }).fromDockerfile(templateDockerfile(readFileSync(join(context, "Dockerfile"), "utf8"), shots));
 }
 
 /** What E2B would be asked to build, as a Dockerfile again: for looking at it without an account. */
-export function describeTemplate(context: string, shots = false): string {
-	return Template.toDockerfile(sandboxTemplate(context, shots));
+export function describeTemplate(context: string, shots = false, image?: string): string {
+	return Template.toDockerfile(sandboxTemplate(context, shots, image));
 }
 
 export interface BuildTemplateOptions {
@@ -56,6 +57,7 @@ export interface BuildTemplateOptions {
 	/** Default `windlass-platform-sandbox`: what WLP_E2B_TEMPLATE names. */
 	name?: string;
 	shots?: boolean;
+	image?: string;
 	cpuCount?: number;
 	memoryMB?: number;
 }
@@ -65,6 +67,6 @@ export async function buildSandboxTemplate(context: string, options: BuildTempla
 	const name = options.name ?? DEFAULT_TEMPLATE;
 	const cpuCount = options.cpuCount ?? DEFAULT_CPU_COUNT;
 	const memoryMB = options.memoryMB ?? DEFAULT_MEMORY_MB;
-	const built = await Template.build(sandboxTemplate(context, options.shots), name, { apiKey: options.apiKey, cpuCount, memoryMB, onBuildLogs: defaultBuildLogger() });
+	const built = await Template.build(sandboxTemplate(context, options.shots, options.image), name, { apiKey: options.apiKey, cpuCount, memoryMB, onBuildLogs: defaultBuildLogger() });
 	return { name: built.name, templateId: built.templateId, buildId: built.buildId, cpuCount, memoryMB };
 }

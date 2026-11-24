@@ -24,11 +24,12 @@
 import { type DefaultDestination, resolveDefaultPlace, savedPlace } from "../factory/default-place.js";
 import { isBranchName } from "../github/git.js";
 import type { ItemPlaceDefaults, SessionRepository } from "../contract.js";
-import { selectedKey } from "../sandbox/harnesses.js";
+import { hostedProvider, selectedKey } from "../sandbox/harnesses.js";
 import { accountFor, accountKey, loginGeneration, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
 import { choosePlacement, machineSlots, placeKey, type AgentModels, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
-import type { ChildPlacement, HarnessId, HostedSize, ItemFeed, PlanSubtask } from "../contract.js";
+import type { ChildPlacement, HarnessId, HostedSize, ItemFeed, ModelProvider, PlanSubtask } from "../contract.js";
+import { savedProviders } from "../model-providers.js";
 import { harnessName, itemHarnessProblem, itemProfiles, knownHarness } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch, subtaskBranch } from "../github/feature.js";
@@ -287,7 +288,6 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 	const place = launchPlace(input.place ?? undefined);
 	if (harness !== "windlass") {
 		const name = harnessName(harness);
-		if (place.kind !== "machine") throw bad(`${name} runs only on a machine of yours. Choose one that offers it, or Windlass.`);
 		// Plan first's planner files its plan with a Windlass tool, which an ACP agent does not have.
 		if ((input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate")) === "orchestrate") throw bad(`Plan first runs only with Windlass. Choose Quick for ${name}.`);
 	}
@@ -510,7 +510,12 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		// A machine harness runs in a profile it has an item mode for: the filed one, else its first (Codex: Docker + Windlass sandbox),
 		// and only in "Docker, hardened" where that is its only one. makeSession refuses any other.
 		const harness = child?.placement.harness ?? input.harness;
-		const sandbox = existing || job ? null : child?.placement.profile ?? await itemProfile(c, input.repository.id, harness === "windlass" ? input.profile : machineItemProfile(harness, input.profile), input.place, harness !== "windlass");
+		let asked = input.profile;
+		if (!existing && !job && harness !== "windlass") {
+			asked = input.place.kind === "machine" ? machineItemProfile(harness, asked)
+				: asked ?? (await getLayer()).sandboxes.profiles().find(p => p.available && p.platformKeys)?.id ?? null;
+		}
+		const sandbox = existing || job ? null : child?.placement.profile ?? await itemProfile(c, input.repository.id, asked, input.place, harness !== "windlass");
 		// Bound before anything is made: a repository the connection cannot read refuses the filing with nothing left behind.
 		const repos = input.repositories && !child ? await bindRepositories(c, input.repositories, input.repository.branch) : undefined;
 		begun = true;
@@ -647,6 +652,12 @@ export function factorySlots(c: { vars: { items: ItemsState; sessions: ReadonlyM
 	return hosted;
 }
 
+function sessionProvider(session: SessionSummary, machine: MachineSummary | undefined | null, hostedKeys: readonly ModelProvider[]) {
+	const model = session.model === "default" ? session.harnessModels?.defaultModel : session.model;
+	if (session.place.kind === "hosted" && session.harness && session.harness !== "windlass") return hostedProvider(session.harness, model, hostedKeys);
+	return selectedKey(session.harness, model, machine?.harnesses?.find(h => h.id === session.harness)?.platformKeys ?? []);
+}
+
 /**
  * Admits what can run now, oldest first, and gives each its slot; every other request gets the wait
  * that holds it. The counts and the grants are one synchronous step; what was decided is then
@@ -655,7 +666,7 @@ export function factorySlots(c: { vars: { items: ItemsState; sessions: ReadonlyM
  * not be told is taken back and tried again later.
  */
 async function runQueue(c: ItemsCtx, answering: string | null = null, retrying = false): Promise<Slot | null> {
-	const accounts = await providerAccounts(c.db, Date.now());
+	const [accounts, hostedKeys] = await Promise.all([providerAccounts(c.db, Date.now()), savedProviders(c.db)]);
 	const state = c.vars.items;
 	const now = Date.now();
 	const released: string[] = [];
@@ -702,10 +713,10 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		const capacity = machine && placement ? machineSlots(machine) : null;
 		const answer = admit({
 			provider: accountFor(accounts, { place: placeKey(session.place), harness: session.harness ?? "windlass",
-				provider: selectedKey(session.harness, session.model === "default" ? session.harnessModels?.defaultModel : session.model, machine?.harnesses?.find(h => h.id === session.harness)?.platformKeys ?? []) }),
+				provider: sessionProvider(session, machine, hostedKeys) }),
 			at: now,
 			limits,
-			dailyTokenWait: usesPlatformModel(session.place, session.harness) ? tokenWait : null,
+			dailyTokenWait: usesPlatformModel(session.harness) ? tokenWait : null,
 			// The session's own sandbox, running already, is not one more for its turn.
 			place: machine ? {
 				kind: "machine", name: machineLabel(machine), online: machine.status === "online",
@@ -804,7 +815,8 @@ export async function notifyProviderWaits(c: ItemsCtx, items: Iterable<ItemSumma
 	const waits = [...items].filter(item => settingsChanged && item.state === "waiting" && item.step?.kind === "subtasks" ||
 		item.wait?.reason === "provider" && (change !== "login" || item.wait.accountKey));
 	if (!waits.length) return;
-	const active = new Set(limitedAccounts(await providerAccounts(c.db, Date.now())).map(a => a.accountKey));
+	const [accounts, hostedKeys] = await Promise.all([providerAccounts(c.db, Date.now()), savedProviders(c.db)]);
+	const active = new Set(limitedAccounts(accounts).map(a => a.accountKey));
 	for (const item of waits) {
 		// A placement wait belongs to the prospective child, which can use a different connection from its parent.
 		if (item.step?.kind === "subtasks") {
@@ -814,7 +826,7 @@ export async function notifyProviderWaits(c: ItemsCtx, items: Iterable<ItemSumma
 			if (!session) continue;
 			const machine = session.place.kind === "machine" ? c.vars.machines.get(session.place.machineId) : undefined;
 			const harness = session.harness ?? "windlass";
-			const provider = selectedKey(harness, session.model === "default" ? session.harnessModels?.defaultModel : session.model, machine?.harnesses?.find(h => h.id === harness)?.platformKeys ?? []);
+			const provider = sessionProvider(session, machine, hostedKeys);
 			const location = { place: placeKey(session.place), harness, provider };
 			const generation = await loginGeneration(c.db, location);
 			if (generation === null ? !settingsChanged : item.wait!.accountKey === accountKey(location, generation)) continue;
@@ -986,7 +998,8 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	// Where a fresh post-setup snapshot of the child's repository is: a bonus among the places the route allows.
 	const fresh = repositoryId === undefined ? [] : await snapshotPlaces(c.db, setupProjectKey(repositoryId) ?? "", c.vars.github?.connectedAt).catch(() => []);
 	const hostedSizes = hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(size => size.id);
-	const inventory: PlacementInventory = { dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(), ...(hostedSizes.length > 1 && { hostedSizes }),
+	const hostedKeys = await savedProviders(c.db);
+	const inventory: PlacementInventory = { hostedKeys, keyProfiles: profiles.filter(p => p.available && p.platformKeys).map(p => p.id), dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(), ...(hostedSizes.length > 1 && { hostedSizes }),
 		featureModel, ...((task.agent?.model !== undefined || task.agent?.effort !== undefined) && { models: await agentModels() }), ...(fresh.length && { snapshotPlaces: fresh }) };
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
 	if (!selected.decision) return selected;

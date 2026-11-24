@@ -33,6 +33,13 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 
+# Harness templates reuse the published amd64 Docker image, including its pinned adapter.
+if [ -n "${WLP_E2B_HARNESS:-}" ]; then
+  : "${WLP_E2B_HARNESS_IMAGE:?set the published amd64 harness image reference}"
+  cd "$repo/server"
+  exec npx tsx ../scripts/e2b-template.ts "$@"
+fi
+
 binary="${WINDLASS_BINARY:-}"
 if [ -z "$binary" ]; then
   binary="$("$here/../fetch-windlass.sh")/windlass-linux-x64"

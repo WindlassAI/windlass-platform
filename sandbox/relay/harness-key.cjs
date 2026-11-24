@@ -1,15 +1,15 @@
 // A machine relay takes the turn's local placeholder. Only the platform can resolve the forwarded one.
 const { readFile } = require('node:fs/promises');
-const { wires, harnessMethod, forwardProof, proofHeader } = require('./wires.cjs');
+const { wires, wirePath, harnessMethod, forwardProof, proofHeader } = require('./wires.cjs');
 
 function keyRoute(harness, url) {
 	if (harness === 'claude') {
 		const path = url.replace(/\?beta=true$/, '');
 		if (harnessMethod(harness, 'anthropic', path)) return { provider: 'anthropic', path };
 	} else if (harness === 'codex') {
-		if (url === '/codex/v1/responses') return { provider: 'openai', path: '/v1/responses' };
-		if (/^\/codex\/v1\/models(?:\?client_version=\d{1,4}\.\d{1,4}\.\d{1,4})?$/.test(url))
-			return { provider: 'openai', path: '/v1/models' };
+		if (!url.startsWith('/codex/')) return;
+		const path = wirePath('openai', url.slice('/codex'.length));
+		if (harnessMethod(harness, 'openai', path)) return { provider: 'openai', path };
 	} else if (harness === 'opencode') {
 		const match = /^\/(anthropic|google|openai|openrouter)(\/.*)$/.exec(url);
 		if (!match) return;

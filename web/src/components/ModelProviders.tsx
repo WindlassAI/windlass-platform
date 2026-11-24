@@ -7,7 +7,7 @@ import { MODEL_PROVIDERS, type ModelProvider, type ModelProviderCheck, type Mode
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { absoluteTime, day, relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
-import { useNow } from "../state/hooks";
+import { PROVIDERS_CHANGED, useNow } from "../state/hooks";
 import { Dialog } from "./Dialog";
 import { AnthropicLogo, OpenAILogo, OpenRouterLogo } from "./AgentLogos";
 import { ExternalIcon, WarnIcon } from "./Icons";
@@ -183,6 +183,7 @@ export function ModelProviders() {
 	}, [reload]);
 
 	const put = (provider: ModelProvider, status: ModelProviderCheck | null) => {
+		window.dispatchEvent(new Event(PROVIDERS_CHANGED));
 		asked.current += 1;
 		setChecks((current) => ({ ...current, [provider]: status?.message ? { message: status.message } : {} }));
 		setState((current) => {
@@ -209,7 +210,7 @@ export function ModelProviders() {
 				Model providers
 			</h2>
 			<p className="usage-lede">
-				On paired machines, Claude Code uses your Anthropic key, Codex uses your OpenAI key, and OpenCode uses the key for its selected provider. Without a matching key, the agent uses its machine login. Windlass still uses ChatGPT. A saved key stays on the platform.
+				On hosted sandboxes and paired machines, Claude Code uses your Anthropic key, Codex uses your OpenAI key, and OpenCode uses the key for its selected provider. A paired machine can also use its own login. Windlass still uses ChatGPT. A saved key stays on the platform.
 			</p>
 			{list === null ? (
 				state.error ? (

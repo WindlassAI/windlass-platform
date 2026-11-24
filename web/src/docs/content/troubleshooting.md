@@ -139,12 +139,13 @@ The runner was started without that agent's `--harness`. The runner does not sav
 **"Run windlass-runner login opencode on this machine."**\
 Sign OpenCode in on the machine with `docker exec -it windlass-runner windlass-runner login opencode`. Claude Code says the same with `login claude`. See [Sign agents in](/docs/machines#sign-agents-in).
 
-**"… runs only on a machine of yours."**\
-**"… requires the docker-hardened profile."**\
-Claude Code and OpenCode run only on your machines, and only in **Hardened Docker on your machine "…"**. Choose both under **on** and **sandbox**.
+**"Add an Anthropic key in Settings to run Claude Code here."**
 
-**"… runs only on a machine of yours."** or **"Plan first runs only with Windlass."**\
-A work item runs Claude Code or OpenCode only on your machine. A Plan first feature's planner runs Windlass, so file it on Windlass and choose the agent for each subtask on its plan, or file it as **Quick**. See [Choose the agent](/docs/factory#choose-the-agent) and [Each subtask's agent](/docs/factory#each-subtasks-agent).
+Open **Settings → Model providers** and add an Anthropic key. Codex uses OpenAI. OpenCode can use any connected provider. The hosted profile must support the key relay.
+
+**"Plan first runs only with Windlass."**
+
+Choose **Quick** to file an item directly with Claude Code, Codex or OpenCode. For **Plan first**, start with Windlass and choose an available agent for each subtask on its plan.
 
 **"… asks you every time it wants to publish …"**\
 Claude Code, OpenCode and Codex can't publish without asking: they reach the publish tool from inside the sandbox, where another program could call it in the agent's name. Answer each request, or publish from the session panel.

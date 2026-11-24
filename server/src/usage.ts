@@ -95,8 +95,8 @@ export function dayOf(ms: number): number {
 export function nextUtcDay(at: number) { return (dayOf(at) + 1) * DAY_MS; }
 
 /** All Windlass turns receive their model credential from the platform, including on a paired runner. */
-export function usesPlatformModel(place: SandboxPlace, harness: HarnessId = "windlass"): boolean {
-	return place.kind === "hosted" || harness === "windlass";
+export function usesPlatformModel(harness: HarnessId = "windlass"): boolean {
+	return harness === "windlass";
 }
 
 /** Windlass reports spending on these request events. The turn summary and the account ledger use the same figures. */

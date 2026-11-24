@@ -76,6 +76,7 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 			shotsImage: options.shotsImage,
 			machine: null,
 			modelRelay,
+			hostedKeys: !!modelRelay && !!config.modelRelay.url,
 			deployment: snapshotDeployment(config.storagePath, config.snapshots),
 			mirrorScope: mirrorDeployment(config.storagePath),
 			// The deployment's own settings (WLP_SNAPSHOT_MACHINE_MAX_GB and the others), or the defaults.

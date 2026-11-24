@@ -123,6 +123,8 @@ With Windlass, you can also stop a single tool call: choose **Stop this call** o
 
 For Windlass, **Tokens** counts input, cached, cache share, output, reasoning and calls, for the whole session and for the last turn. **Cache per call** charts how much of each of the last 40 calls came from the cache.
 
+On hosted, each Claude Code, Codex or OpenCode turn gets a fresh relay placeholder for your Settings key. Removing the selected provider’s key disables Send until you reconnect it or choose an available model with another key. Hosted minutes accrue while the sandbox runs.
+
 For Claude Code, OpenCode and Codex, **Usage** shows how full the context is, for example "38% used", and the cost so far when the agent reports it. Once a turn has answered with its tokens, **Tokens** counts them too, per turn: these agents report no single model calls, so there is no cache chart.
 
 ### Changes
