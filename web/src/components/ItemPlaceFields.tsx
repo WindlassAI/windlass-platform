@@ -15,7 +15,7 @@ export function ItemPlaceFields({ defaults, machines, repository, disabled, chan
 	const profiles = new Map(candidates.flatMap(m => profilesForItems(m, harness ?? "windlass").map(p => [p.id, p] as const)));
 	const available = (list: readonly MachineSummary[]) => list.some(m => profilesForItems(m, "windlass").length);
 	return <fieldset className="item-place-fields" disabled={disabled}>
-		<legend className="usage-title">Where items run</legend>
+		<legend className="usage-title">Where work items run</legend>
 		<div className="field">
 			<label className="label" htmlFor={id}>Place</label>
 			<select className="select" id={id} value={value} onChange={e => {
