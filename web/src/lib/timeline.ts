@@ -103,8 +103,12 @@ export interface PlatformBlock extends BlockBase {
 	blocked?: { host: string; repository: boolean };
 	/** The turn paused (its server restarted, or its machine went away), or resumed after it (`code` "turn_paused", "turn_resumed"). */
 	resume?: "paused" | "resumed";
-	/** The line of the agent's `request_secret`: the name it asks for and its reason, the agent's own words. */
-	secret?: { id: string; name: string; why: string; notice?: string };
+	/**
+	 * The line of the agent's `request_secret`: the name it asks for and its reason, the agent's own words. `answer`: how it
+	 * was answered, read from the prompt the platform sends for the answer ("NAME is now set in your environment.",
+	 * "Continue without NAME."); "none": a turn started with another prompt, which closed it. Absent while it is open.
+	 */
+	secret?: { id: string; name: string; why: string; notice?: string; answer?: "saved" | "without" | "none" };
 }
 
 export interface ReasoningBlock extends BlockBase {
@@ -352,6 +356,7 @@ export function applyItem(view: SessionView, item: TimelineItem): SessionView {
 	const draft = new Draft({ ...view, lastSeq: item.seq, gap });
 	switch (item.kind) {
 		case "user":
+			answerSecret(draft, item.turn, item.text, item.steer === true);
 			draft.push(item.turn, { kind: "user", at: item.at, text: item.text, model: item.model, effort: item.effort, steer: item.steer === true, ...(item.held === true && { held: true }) });
 			break;
 		case "platform": {
@@ -536,6 +541,23 @@ class Draft {
 			return next;
 		});
 		if (changed) this.patchTurn(number, { blocks });
+	}
+}
+
+/**
+ * A prompt that answers the last request for a secret, in the words the platform sends for the answer: the request's line
+ * records which answer it was. Another prompt that starts a turn closes it unanswered, as the server does; a steer leaves
+ * it open. Only the last request, and only once.
+ */
+function answerSecret(draft: Draft, turn: number, text: string, steer: boolean): void {
+	for (const shown of draft.view.turns.toReversed()) {
+		if (shown.turn > turn) continue;
+		const block = shown.blocks.findLast((one): one is PlatformBlock & { secret: NonNullable<PlatformBlock["secret"]> } => one.kind === "platform" && one.secret !== undefined);
+		if (!block) continue;
+		if (block.secret.answer) return;
+		const answer = text === `${block.secret.name} is now set in your environment.` ? "saved" : text === `Continue without ${block.secret.name}.` ? "without" : steer ? null : "none";
+		if (answer) draft.replace(shown.turn, block, { secret: { ...block.secret, answer } });
+		return;
 	}
 }
 

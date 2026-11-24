@@ -190,38 +190,62 @@ const asked: TimelineItem = { seq: 2, at, turn: 1, kind: "platform", level: "inf
 
 describe("the timeline's line", () => {
 	const flow = { question: null } as unknown as QuestionFlow;
-	const renderTurn = (value: Interactive) => {
-		const view: SessionView = [user, asked].reduce(applyItem, emptyView());
-		act(() => root.render(createElement(InteractiveProvider, { value, children: createElement(Turn, { turn: view.turns[0]! }) })));
+	const renderTurn = (value: Interactive, after: TimelineItem[] = []) => {
+		const view: SessionView = [user, asked, ...after].reduce(applyItem, emptyView());
+		act(() => root.render(createElement(InteractiveProvider, { value, children: view.turns.map((turn) => createElement(Turn, { key: turn.turn, turn })) })));
+		return view;
 	};
+	const line = () => host.querySelector(".system-secret .system-text")?.textContent;
+	const toggle = () => button("Show the request");
+	const saved: TimelineItem = { ...user, seq: 3, turn: 2, text: "RESEND_API_KEY is now set in your environment." };
+	const without: TimelineItem = { ...user, seq: 3, turn: 2, text: "Continue without RESEND_API_KEY." };
 
-	it("quotes the reason as text and asks for no value", () => {
-		renderTurn({ flow, stopCall: null, secretRequestId: "1" });
-		const quote = host.querySelector(".system-secret blockquote");
-		expect(quote?.textContent).toBe(WHY);
-		expect(host.querySelector(".system-secret a, .system-secret img, .system-secret input")).toBeNull();
-		expect(host.textContent).toContain("above the field below");
-	});
-
-	it("shows the platform's notice once, apart from the reason, and not as Markdown", () => {
+	it("is one line while the request is open: the name, and where to answer it, the card's reason and notice not repeated", () => {
 		renderTurn({ flow, stopCall: null, secretRequestId: "1", repositoryId: 7101 });
-		expect(host.querySelector(".system-text")?.textContent).toBe("A secret was requested for RESEND_API_KEY.");
-		const notice = host.querySelector(".system-secret .secret-notice")!;
-		expect([...notice.querySelectorAll(".secret-notice-line")].map((line) => line.textContent)).toEqual(NOTICE.split("\n"));
-		expect(notice.querySelector("b, strong")).toBeNull();
-		expect(notice.closest("blockquote")).toBeNull();
-		expect(host.textContent!.split("inside the agent's sandbox").length).toBe(2);
-		expect(notice.classList.contains("secret-notice-account")).toBe(false);
+		expect(host.querySelectorAll(".system-secret .system").length).toBe(1);
+		expect(line()).toBe("Asked for a secret: RESEND_API_KEY · answer it below");
+		expect(host.querySelector(".system-secret code.secret-ask-name")?.textContent).toBe("RESEND_API_KEY");
+		expect(host.querySelector(".system-secret blockquote, .system-secret .secret-notice")).toBeNull();
+		expect(host.textContent).not.toContain("inside the agent's sandbox");
+		expect(host.textContent).not.toContain("Needed for the test.");
+		expect(toggle()).toBeUndefined();
+		expect(host.querySelector(".system-secret a, .system-secret img, .system-secret input")).toBeNull();
 	});
 
-	it("marks the notice of a session with no repository, whose value would be the account's", () => {
-		renderTurn({ flow, stopCall: null, secretRequestId: "1", repositoryId: null });
+	it("records a saved value in one line, and folds the reason, as text, and the notice behind Show the request", () => {
+		const view = renderTurn({ flow, stopCall: null, secretRequestId: null, repositoryId: 7101 }, [saved]);
+		expect(view.turns[0]!.blocks.find((block) => block.kind === "platform")).toMatchObject({ secret: { answer: "saved" } });
+		expect(line()).toBe("RESEND_API_KEY saved");
+		const body = host.querySelector<HTMLElement>(".system-secret-body")!;
+		expect(body.hidden).toBe(true);
+		expect(toggle()!.getAttribute("aria-controls")).toBe(body.id);
+		act(() => toggle()!.click());
+		expect(body.hidden).toBe(false);
+		expect(body.querySelector("blockquote")?.textContent).toBe(WHY);
+		expect(body.querySelector("a, img, input, strong, b, em")).toBeNull();
+		const notice = body.querySelector(".secret-notice")!;
+		expect([...notice.querySelectorAll(".secret-notice-line")].map((one) => one.textContent)).toEqual(NOTICE.split("\n"));
+		expect(notice.closest("blockquote")).toBeNull();
+		expect(notice.classList.contains("secret-notice-account")).toBe(false);
+		expect(host.textContent!.split("inside the agent's sandbox").length).toBe(2);
+	});
+
+	it("records going on without it, and marks the notice of a session with no repository, whose value would be the account's", () => {
+		renderTurn({ flow, stopCall: null, secretRequestId: null, repositoryId: null }, [without]);
+		expect(line()).toBe("Continued without RESEND_API_KEY");
 		expect(host.querySelector(".system-secret .secret-notice-account")).not.toBeNull();
+	});
+
+	it("is only the request's line when a turn started without an answer, and a later prompt of the same words does not answer it", () => {
+		const other: TimelineItem = { ...user, seq: 3, turn: 2, text: "Do something else first." };
+		renderTurn({ flow, stopCall: null, secretRequestId: null }, [other, { ...saved, seq: 4, turn: 3 }]);
+		expect(line()).toBe("Asked for a secret: RESEND_API_KEY");
+		expect(toggle()).toBeDefined();
 	});
 
 	it("sends an item's builder to the item's page", () => {
 		renderTurn({ flow, stopCall: null, secretRequestId: null, itemId: "it_1" });
-		expect(host.querySelector<HTMLAnchorElement>(".system-secret a")?.textContent).toBe("Answer on the item's page");
+		expect(host.querySelector<HTMLAnchorElement>(".system-secret a")?.textContent).toBe("answer on the item's page");
 	});
 });
 

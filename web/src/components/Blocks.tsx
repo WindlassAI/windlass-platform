@@ -848,23 +848,15 @@ function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
 			</p>
 		);
 	}
-	// A request for a secret: its notice is shown under the line, apart from the agent's reason, so it is not said twice.
-	const text = block.kind === "platform" && block.secret?.notice ? withoutNotice(block.text, block.secret.notice) : block.text;
+	// A request for a secret: a line of its own, the platform's text of it said by the line and the card above the field.
+	if (block.kind === "platform" && block.secret) return <SecretRequested secret={block.secret} />;
 	const line = (
 		<p className={`system tone-${tone}`}>
 			<span className="system-rule" aria-hidden="true" />
 			<span className="system-source">{block.kind === "platform" ? "platform" : "windlass"}</span>
-			<span className="system-text">{block.kind === "platform" ? withLinks(text) : text}</span>
+			<span className="system-text">{block.kind === "platform" ? withLinks(block.text) : block.text}</span>
 		</p>
 	);
-	if (block.kind === "platform" && block.secret) {
-		return (
-			<>
-				{line}
-				<SecretRequested secret={block.secret} />
-			</>
-		);
-	}
 	if (block.kind !== "platform" || !block.blocked) return line;
 	return (
 		<>
@@ -874,15 +866,11 @@ function SystemLine({ block }: { block: PlatformBlock | NoteBlock }) {
 	);
 }
 
-/** The platform's line of a request for a secret without the notice it ends with (`A secret was requested for NAME.\n…`). */
-function withoutNotice(text: string, notice: string): string {
-	const tail = "\n" + notice;
-	return text.endsWith(tail) ? text.slice(0, -tail.length) : text;
-}
-
 /**
- * Under the line of the agent's `request_secret`: the name, and its reason quoted as the agent's own words, in plain text.
- * The value is never asked for here: an open request is answered above the field, an item's on the item's page.
+ * The agent's `request_secret`, as one line. While it is open, the card above the field holds its reason, the platform's
+ * notice and the field, so the line only names it and points there; an item's builder points to the item's page. Once
+ * answered, a record ("NAME saved", "Continued without NAME"), with the reason quoted as the agent's own words, in plain
+ * text, and the notice folded behind "Show the request". The value is never asked for here.
  */
 function SecretRequested({ secret }: { secret: NonNullable<PlatformBlock["secret"]> }) {
 	const interactive = useInteractive();
@@ -890,27 +878,40 @@ function SecretRequested({ secret }: { secret: NonNullable<PlatformBlock["secret
 	const itemId = interactive?.itemId ?? null;
 	// A person's own session with no repository saves it for the account: every agent of theirs would have it.
 	const account = interactive !== null && !itemId && interactive.repositoryId === null;
+	const [shown, setShown] = useState(false);
+	const id = useId();
+	const name = <code className="secret-ask-name">{secret.name}</code>;
+	const words = secret.answer === "saved" ? <>{name} saved</> : secret.answer === "without" ? <>Continued without {name}</> : <>Asked for a secret: {name}</>;
+	const where = open ? (
+		"answer it below"
+	) : secret.answer === undefined && itemId ? (
+		<a className="link" {...linkProps({ name: "item", id: itemId })}>
+			answer on the item's page
+		</a>
+	) : null;
 	return (
-		<section className="system-secret" aria-label={`The agent asks for the secret ${secret.name}`}>
-			<p className="system-secret-name">
-				The agent asks for a secret: <code className="secret-ask-name">{secret.name}</code>
+		<section className={`system-secret${open ? " system-secret-open" : ""}`} aria-label={`The agent's request for the secret ${secret.name}`}>
+			<p className="system tone-dim">
+				<span className="system-rule" aria-hidden="true" />
+				<span className="system-source">platform</span>
+				<span className="system-text">
+					{secret.answer === "saved" ? <CheckIcon size={11} className="system-secret-mark tone-good" /> : null}
+					{words}
+					{where ? <> · {where}</> : null}
+				</span>
+				{open ? null : <FoldToggle open={shown} controls={id} label="Show the request" onToggle={() => setShown((now) => !now)} className="system-secret-toggle" />}
 			</p>
-			<figure className="item-asked secret-ask-why">
-				<figcaption className="item-asked-who">Its reason, in the agent's own words.</figcaption>
-				<LongText lines={3} as="blockquote" className="item-asked-text">
-					{secret.why}
-				</LongText>
-			</figure>
-			{secret.notice ? <SecretNotice notice={secret.notice} account={account} /> : null}
-			{open ? (
-				<p className="system-secret-where">Add it or go on without it above the field below.</p>
-			) : itemId ? (
-				<p className="system-secret-where">
-					<a className="link" {...linkProps({ name: "item", id: itemId })}>
-						Answer on the item's page
-					</a>
-				</p>
-			) : null}
+			{open ? null : (
+				<div className="system-secret-body" id={id} hidden={!shown}>
+					<figure className="item-asked secret-ask-why">
+						<figcaption className="item-asked-who">Its reason, in the agent's own words.</figcaption>
+						<LongText lines={3} as="blockquote" className="item-asked-text">
+							{secret.why}
+						</LongText>
+					</figure>
+					{secret.notice ? <SecretNotice notice={secret.notice} account={account} /> : null}
+				</div>
+			)}
 		</section>
 	);
 }
