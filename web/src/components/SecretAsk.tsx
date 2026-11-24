@@ -49,14 +49,14 @@ export interface SecretAskProps {
  * Text the platform wrote, so not quoted as the agent's; still shown as text, one line each. `account`: the value would
  * be saved for the whole account, the case that reaches furthest, which is marked as a warning.
  */
-export function SecretNotice({ notice, account = false, className }: { notice: string; account?: boolean; className?: string }) {
+export function SecretNotice({ notice, account = false, className, id }: { notice: string; account?: boolean; className?: string; id?: string }) {
 	const lines = notice.split("\n").map((line) => line.trim()).filter((line) => line !== "");
 	if (lines.length === 0) return null;
 	return (
-		<div className={`secret-notice${account ? " secret-notice-account" : ""}${className ? ` ${className}` : ""}`} role="note" aria-label="From the platform">
+		<div className={`secret-notice${account ? " secret-notice-account" : ""}${className ? ` ${className}` : ""}`} id={id} role="note" aria-label="From the platform">
 			{account ? <WarnIcon size={14} /> : <InfoIcon size={14} />}
 			<div className="secret-notice-body">
-				<p className="secret-notice-who">From the platform</p>
+				<p className="secret-notice-who">{account ? <strong>From the platform: for your whole account</strong> : "From the platform"}</p>
 				{lines.map((line, index) => (
 					<p key={index} className="secret-notice-line">
 						{line}
@@ -87,6 +87,8 @@ export function SecretAsk({ request, repository, shared = false, onAdd, onWithou
 	const [error, setError] = useState<string | null>(failure);
 	const [saved, setSaved] = useState(false);
 	const disabled = busy !== null || offline;
+	// Saved for the account, and no notice of the platform's to say so: the card says it, as a warning.
+	const warnAccount = repository === null && !request.notice;
 
 	const add = async (event: FormEvent) => {
 		event.preventDefault();
@@ -149,8 +151,17 @@ export function SecretAsk({ request, repository, shared = false, onAdd, onWithou
 					{request.why}
 				</LongText>
 			</figure>
-			{request.notice ? <SecretNotice notice={request.notice} account={repository === null} /> : null}
-			<form className="secret-ask-form" onSubmit={add} method="post" autoComplete="off" noValidate>
+			{request.notice ? <SecretNotice notice={request.notice} account={repository === null} id={repository === null ? ids.note : undefined} /> : null}
+			<form className={`secret-ask-form${warnAccount ? " secret-ask-form-account" : ""}`} onSubmit={add} method="post" autoComplete="off" noValidate>
+				{/* For the account, read before the value is typed: the furthest a value reaches. The notice says it when there is one. */}
+				{!warnAccount ? null : (
+					<p className="callout callout-warn secret-ask-note secret-ask-account" id={ids.note}>
+						<WarnIcon size={14} />
+						<span>
+							<strong>Saved for your account, not one repository.</strong> Every agent of yours can read it in its commands{shared ? ", this session too" : ""}. It is not shown again.
+						</span>
+					</p>
+				)}
 				<label className={compact ? "visually-hidden" : "label"} htmlFor={ids.value}>
 					Value of <code className="secret-ask-name">{request.name}</code>
 				</label>
@@ -179,12 +190,9 @@ export function SecretAsk({ request, repository, shared = false, onAdd, onWithou
 					<p className="field-note secret-ask-note" id={ids.note}>
 						Saved for repository <span className="secret-ask-where">{repository}</span>, as a secret the agent's commands read{shared ? "; this session may use it too" : ""}. It is not shown again.
 					</p>
-				) : (
-					<p className="callout callout-warn secret-ask-note secret-ask-account" id={ids.note}>
-						<WarnIcon size={14} />
-						<span>
-							<strong>Saved for your account, not one repository.</strong> Every agent of yours can read it in its commands{shared ? ", this session too" : ""}. It is not shown again.
-						</span>
+				) : warnAccount ? null : (
+					<p className="field-note secret-ask-note" id={ids.note}>
+						Saved for your account, as a secret every agent of yours can read in its commands{shared ? ", this session too" : ""}. It is not shown again.
 					</p>
 				)}
 				<div className="item-choices secret-ask-choices">

@@ -597,8 +597,13 @@
 .secret-notice-account > svg {
 	color: var(--warn);
 }
+.secret-notice-account .secret-notice-who strong {
+	font-weight: var(--weight-medium);
+	color: var(--warn);
+}
 .secret-ask-account {
-	max-width: 520px;
+	max-width: 74ch;
+	margin-bottom: 4px;
 	border-color: color-mix(in srgb, var(--warn) 45%, var(--line));
 }
 .secret-ask-account strong {
@@ -637,10 +642,16 @@
 	grid-area: note;
 	max-width: none;
 }
+.secret-ask-compact .secret-ask-form-account {
+	grid-template-areas: "note note" "field choices";
+}
 @media (max-width: 720px) {
 	.secret-ask-compact .secret-ask-form {
 		grid-template-columns: minmax(0, 1fr);
 		grid-template-areas: "field" "note" "choices";
+	}
+	.secret-ask-compact .secret-ask-form-account {
+		grid-template-areas: "note" "field" "choices";
 	}
 }
 

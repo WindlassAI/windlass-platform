@@ -95,13 +95,19 @@ describe("the reason", () => {
 		expect(host.querySelector("code.secret-ask-name")?.textContent).toBe("RESEND_API_KEY");
 		expect(host.textContent).toContain("Saved for repository acme/harbor");
 		expect(host.querySelector(".secret-ask-account")).toBeNull();
+		// For the account, the furthest a value reaches: the platform's notice is marked as a warning, and says so first.
 		act(() => root.render(createElement(SecretAsk, { request: { ...request, notice: "Through the host connection.\nIf supplied, this will be saved for your account: every agent of yours will have it." }, repository: null, onAdd: async () => undefined, onWithout: async () => undefined })));
-		// For the account, the furthest a value reaches: said as a warning, the notice marked as one too.
+		const notice = host.querySelector(".secret-notice.secret-notice-account");
+		expect(notice?.querySelector(".secret-notice-who strong")?.textContent).toBe("From the platform: for your whole account");
+		expect(notice?.textContent).toContain("every agent of yours will have it");
+		expect(host.querySelector(".secret-ask-account")).toBeNull();
+		// An older request, with no notice: the card says it as a warning of its own, before the field.
+		act(() => root.render(createElement(SecretAsk, { request, repository: null, onAdd: async () => undefined, onWithout: async () => undefined })));
 		const account = host.querySelector(".secret-ask-account.callout-warn");
 		expect(account?.textContent).toContain("Saved for your account, not one repository.");
 		expect(account?.textContent).toContain("Every agent of yours can read it");
 		expect(field().getAttribute("aria-describedby")).toContain(account!.id);
-		expect(host.querySelector(".secret-notice.secret-notice-account")).not.toBeNull();
+		expect(account!.compareDocumentPosition(field()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 	});
 });
 
