@@ -203,6 +203,27 @@
         "webhook": "tsx ../scripts/webhook-check.ts"
       }
     },
+    "linear": {
+      "timeout": 20,
+      "paths": [
+        "server/src/linear/**",
+        "server/src/factory/**",
+        "server/src/github/**",
+        "server/src/config.ts",
+        "server/src/index.ts",
+        "server/src/registry.ts",
+        "server/src/submissions.ts",
+        "server/src/user-limits.ts",
+        "server/src/repo-secrets.ts",
+        "server/src/actors/{user-linear,linear-workspace,issue-intake,github-intake,github-item,github-inbox,github-repository,github-account,user-github,user-items,user,work-item}.ts",
+        "scripts/{github,linear}-standin.ts",
+        "scripts/linear-{check,protocol-check}.ts"
+      ],
+      "checks": {
+        "linear-protocol": "tsx ../scripts/linear-protocol-check.ts",
+        "linear": "tsx ../scripts/linear-check.ts"
+      }
+    },
     "sandbox-docker": {
       "timeout": 25,
       "images": ["base"],
