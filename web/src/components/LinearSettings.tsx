@@ -1,7 +1,7 @@
 /**
- * Settings: the Linear integration, one-way. The owner connects a workspace through Linear's OAuth, then maps a team
+ * Settings: the Linear integration. The owner connects a workspace through Linear's OAuth, then maps a team
  * to one repository of their GitHub connection. An issue of a mapped team that gains the `windlass` label, or is
- * assigned to the Windlass app user, is filed as a work item. Windlass writes nothing back to Linear.
+ * assigned to the Windlass app user, is filed as a work item.
  *
  * The signed-in user redeems the ticket returned by the OAuth callback.
  */
@@ -119,7 +119,7 @@ export function LinearSettings() {
 				) : null}
 			</h2>
 			<p className="usage-lede">
-				File work items from Linear issues. An issue in a mapped team that gains the <code>windlass</code> label, or is assigned to Windlass (the app's user in your workspace), is filed on that team's repository. Windlass writes nothing back to Linear.
+				File work items from Linear issues. An issue in a mapped team that gains the <code>windlass</code> label, or is assigned to Windlass (the app's user in your workspace), is filed on that team's repository. Windlass posts the pull request and item outcome on the Linear issue.
 			</p>
 			{connected && status?.state === "connected" ? <p className="callout" role="status">Linear is connected. Choose a repository for a team below.</p> : null}
 			{failed ? (
@@ -134,7 +134,7 @@ export function LinearSettings() {
 			) : status.state === "connected" ? (
 				<>
 					<p className="field-note" data-testid="linear-workspace">
-						Connected to {status.connection.workspace.name} as {status.connection.user.name}. An issue you create there starts at once; anyone else's is filed as a draft.
+						Connected to {status.connection.workspace.name} as {status.connection.user.name}. Review and start filed drafts in Windlass.
 					</p>
 					{teams === null ? (
 						<div className="usage-loading" aria-busy="true" aria-label="Loading teams">

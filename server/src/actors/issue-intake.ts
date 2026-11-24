@@ -5,7 +5,7 @@
  *
  * What stays GitHub's: the issue's claim in the repository directory, the permission and subject reads, the refusal
  * comment, and everything an item does with its issue afterwards (the binding of work-item.ts). A Linear item has none of that:
- * its provenance is kept apart (`LinearBinding`) and nothing is written back.
+ * its provenance is kept apart in `LinearBinding`.
  */
 
 import { mayUse } from "../access.js";
@@ -85,7 +85,7 @@ export const linearKey = (issueId: string, generation: number) => `linear:${issu
  *
  * `filing` is what the platform validated: the signed event, the issue as Linear has it, its team's mapping. This checks what
  * the owner's own account decides (may they use Windlass, work items on, the repository still writable through their GitHub
- * connection, the day's cap) and files, or says why not; nothing is written back to Linear.
+ * connection, the day's cap) and files, or says why not.
  *
  * One Linear issue is one active item: a second qualifying event while its item is open, or a repeat of the one that filed it,
  * files nothing (`exists`). Once the item is done, failed or cancelled, the next qualifying event files a new one (generation + 1).
@@ -134,8 +134,9 @@ export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling,
 	const labels = issue.labels.filter((label): label is string => typeof label === "string").map(label => label.trim().toLowerCase());
 	const { mode, reason: modeReason, refusal } = issueMode("", labels, process.env.WLP_FACTORY_ORCHESTRATE !== "0");
 	const resumed = resuming && await existingItem(c, uid, resuming.id);
-	const reason = refusal ?? (resumed ? null : await quotaRefusal(c, resuming?.id, "Linear"));
-	if (reason) return { kind: "refused", reason };
+	if (refusal) return { kind: "refused", reason: refusal };
+	const cap = resumed ? null : await quotaRefusal(c, resuming?.id, "Linear");
+	if (cap) return { kind: "refused", reason: cap, dailyCap: true };
 
 	const key = linearKey(issue.id, generation);
 	const policy = await intakePolicy(c, repository.id);

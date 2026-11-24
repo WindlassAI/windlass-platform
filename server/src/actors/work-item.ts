@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { LinearWrite } from "../linear/app.js";
 import { newAgent } from "../factory/budget.js";
 /**
  * `workItem`, key [uid, itemId]: one work item of the software factory (Plans "software factory" §1,
@@ -85,7 +87,7 @@ export interface ItemMeta {
 	blockedSessions?: Record<string, NetworkReceipt>;
 	/** The GitHub issue the item was filed from: what its polling, issue comment and "Closes #n" are made from. Never set for a Linear item. */
 	github?: IssueBinding;
-	/** The Linear issue it was filed from: provenance only, nothing polled or written back. */
+	/** The Linear issue it was filed from: the destination for its progress updates. */
 	linear?: LinearBinding;
 	criticSessionId?: string;
 	reviewerSessionId: string | null;
@@ -167,7 +169,7 @@ const ISSUE_CHANGE_WINDOW_MS = 15_000;
 
 type FeedbackEffect = { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string; run: number } | { kind: "feedback_comment"; key: string; run: number; who: string };
 /** `register`'s `repo`: a cross-repo feature's other repository, by alias, registered with that repository's directory. */
-type Effect = BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
+type Effect = ({ kind: "linear_write" } & LinearWrite) | BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
 type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
 
 type EffectRow = { id: string; effect: string; due_at: number; attempts: number };
@@ -470,6 +472,22 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 			effects.push({ kind: "issue_comment", key: "link", revision: next.revision });
 		if (before.state === "failed" && !ENDED.has(next.state)) effects.push({ kind: "register_issue", key: String(next.revision) });
 	}
+	if (stored.meta.linear) {
+		const pr = next.pr?.url ?? null;
+		const comment = (key: Extract<LinearWrite, { commentId: string }>["key"]) =>
+			effects.push({ kind: "linear_write", key, commentId: randomUUID(), pr });
+		if (!before.pr && pr) {
+			comment("opened");
+			effects.push({ kind: "linear_write", key: "attachment", pr });
+		}
+		if ((handoff && !next.run?.ci?.autoMergeKey) || (crossRepo(next) && next.run?.step.kind === "merged" && before.run?.step.kind !== "merged")) comment("handed over");
+		if (before.state !== next.state) {
+			if (next.state === "done") {
+				comment("merged");
+				effects.push({ kind: "linear_write", key: "complete" });
+			} else if (next.state === "failed" || next.state === "cancelled") comment(next.state);
+		}
+	}
 	const sibling = fact.kind === "feature_ready" && fact.repo && crossRepo(next) && repoOf(next, fact.repo) !== next.repos![0] ? fact.repo : null;
 	if (sibling && fact.kind === "feature_ready") effects.push({ kind: "register", key: fact.key + "/" + sibling, pr: fact.pr.number, head: fact.head, repo: sibling });
 	else if (fact.kind === "feature_ready" || (fact.kind === "published" && fact.pr)) effects.push({ kind: "register", key: fact.key, pr: fact.pr!.number, head: fact.head });
@@ -524,7 +542,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 					)).length) continue;
 					if (effect.kind === "verified_check" && effect.state === "completed" && handoff && effect.verdictId)
 						await prepareCompletedCheck(tx, next, effect, handoff);
-					await tx.execute(`INSERT OR ${effect.kind === "requested_review" ? "IGNORE" : "REPLACE"} INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)`, rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
+					await tx.execute(`INSERT OR ${effect.kind === "requested_review" || effect.kind === "linear_write" ? "IGNORE" : "REPLACE"} INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)`, rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 				}
 				if (fact.kind === "turn_ended") await storeReport(tx, before, stored.meta.sessionId, fact);
 				if (fact.kind === "published" && before.run?.gate && !before.run.updateFromBase) await publishReport(tx, before.run.gate.turn, fact.head);
@@ -1227,7 +1245,7 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "merge_feature_target") return item.featureUpdate?.key === effect.key && item.joining?.child === item.id && item.joining.key === effect.key;
 	if (effect.kind === "notify_integrated") return item.state === "done" && (item.integratedHead ?? item.head) === effect.head;
 	if (effect.kind === "cancel_children" || effect.kind === "verified_check") return true;
-	if (effect.kind === "issue_comment") return true;
+	if (effect.kind === "issue_comment" || effect.kind === "linear_write") return true;
 	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
 	if (effect.kind === "forget") return ENDED.has(item.state) || !item.run?.ci;
 	if (effect.kind === "register" && effect.repo) {
@@ -1450,6 +1468,13 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	// Checked in the step that sends it: a cancel stored since the row was read leaves it undone.
 	if (!stored || !live(stored.item, effect)) return false;
 	const { item, meta } = stored;
+	if (effect.kind === "linear_write") {
+		const { workspaceId, origin } = meta.linear!;
+		if ((await c.db.execute("SELECT 1 FROM issue_actions WHERE subject=?", row.id)).length) return true;
+		const posted = await userActor(c, meta.uid).internalLinearWrite({ workspaceId, issueId: origin.linear.id, itemId: item.id, write: effect });
+		if (posted) await c.db.execute("INSERT OR IGNORE INTO issue_actions VALUES(?)", row.id);
+		return true;
+	}
 	const sessionId = "to" in effect && effect.to === "critic" ? meta.criticSessionId : "to" in effect && effect.to === "review" ? meta.reviewerSessionId : meta.sessionId;
 	if (!sessionId) throw new Error("Review delivery has no reviewer session.");
 	const session = sessionActor(c, meta.uid, sessionId);

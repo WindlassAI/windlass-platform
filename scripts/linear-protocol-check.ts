@@ -11,7 +11,7 @@
  *
  * What it shows: the configuration, and that without it the integration is off; the OAuth exchange as
  * the app's own user, with PKCE, a reused, forged and declined state, a person's token and a missing
- * scope refused; the identity, team (paged) and issue reads, and that nothing is ever written to Linear;
+ * scope refused; the identity, team (paged) and issue reads, and the item writeback mutations;
  * signed deliveries parsed by Linear's own transition fields (label gained, app assigned) and not by the
  * issue's current state; the assignee passed on as an id, for the owner to tell the app from a person; unrelated edits, removals and unassignment
  * ignored; unmapped teams and unknown workspaces ignored; and malformed, wrong, altered, stale, oversized
@@ -189,7 +189,7 @@ await section("OAuth as the app's own user: the address, the exchange, the ident
 	const url = new URL(begun.url);
 	assert.equal(url.origin + url.pathname, `${standin.url}/oauth/authorize`);
 	assert.equal(url.searchParams.get("actor"), "app");
-	assert.equal(url.searchParams.get("scope"), "read,app:assignable");
+	assert.equal(url.searchParams.get("scope"), "read,write,app:assignable");
 	assert.equal(url.searchParams.get("client_id"), standin.clientId);
 	assert.equal(url.searchParams.get("redirect_uri"), standin.redirectUri);
 	assert.equal(url.searchParams.get("code_challenge_method"), "S256");
@@ -208,7 +208,7 @@ await section("OAuth as the app's own user: the address, the exchange, the ident
 	assert.ok(connection.token.accessToken.startsWith("lin_oauth_"));
 	assert.ok(connection.token.refreshToken);
 	assert.ok(connection.token.expiresAt! > Date.now() + 3600_000);
-	assert.deepEqual(connection.token.scopes.sort(), ["app:assignable", "read"]);
+	assert.deepEqual(connection.token.scopes.sort(), ["app:assignable", "read", "write"]);
 
 	// The app user, not the human who clicked: the installer is not established, so it is not claimed.
 	assert.equal(connection.identity.appUser.id, standin.appUser.id);
@@ -266,8 +266,8 @@ await section("OAuth refusals: reused, forged and declined states; a wrong code;
 	assert.equal(await fragment(await linearCallbackResponse(new Request(await standin.authorize(person.url)), deps)), "#linear-error=not_app");
 	standin.consent = { approve: true };
 
-	// Assignable not granted.
-	const narrow = await LinearStandin.start({ grantScopes: (asked) => asked.filter((scope) => scope !== "app:assignable") });
+	// The write scope is required for a new connection.
+	const narrow = await LinearStandin.start({ grantScopes: (asked) => asked.filter((scope) => scope !== "write") });
 	try {
 		const narrowApp2 = new LinearApp({ clientId: narrow.clientId, apiUrl: narrow.url, webUrl: narrow.url, redirectUrl: narrow.redirectUri }, { clientSecret: () => narrow.clientSecret });
 		const scoped = store.begin("u_owner", narrowApp2);
@@ -320,9 +320,33 @@ await section("refresh, expiry and reads: identity, teams and one issue, with no
 	assert.equal(await app.issue(refreshed.accessToken, randomUUID()), null);
 	assert.equal(await app.issue(refreshed.accessToken, "not an id"), null);
 	assert.deepEqual(standin.writes, [], "something was written to Linear");
+});
+
+await section("writeback uses stable comment IDs, attaches the PR and selects the issue team's completed state", async () => {
+	const { accessToken } = connection.token;
+	const { issue } = standin.createIssue({ team: beta });
+	const pr = "https://github.com/acme/repo/pull/42";
+	for (const [key, outcome] of [["opened", "opened its pull request"], ["handed over", "was handed over"], ["failed", "failed"], ["cancelled", "was cancelled"], ["merged", "merged"]] as const) {
+		const write = { key, commentId: randomUUID(), pr };
+		await app.writeIssue(accessToken, issue.id, "item-1", write);
+		await app.writeIssue(accessToken, issue.id, "item-1", write);
+		assert.deepEqual(standin.comments.get(write.commentId), { issueId: issue.id, body: `Windlass item item-1 ${outcome}. ${pr}` });
+	}
+	assert.equal(standin.comments.size, 5);
+	await app.writeIssue(accessToken, issue.id, "item-1", { key: "attachment", pr });
+	assert.equal(standin.attachments.get(issue.id), pr);
+	assert.equal(issue.stateType, "unstarted");
+	standin.denyStateChange = true;
+	await assert.rejects(app.writeIssue(accessToken, issue.id, "item-1", { key: "complete" }), LinearError);
+	assert.equal(issue.stateType, "unstarted");
+	standin.denyStateChange = false;
+	await app.writeIssue(accessToken, issue.id, "item-1", { key: "complete" });
+	await app.writeIssue(accessToken, issue.id, "item-1", { key: "complete" });
+	assert.equal(issue.stateType, "completed");
+	assert.equal(standin.writes.filter(w => w === "issueUpdate").length, 2);
 	// A revoked token (the app was uninstalled) is told apart from an outage.
-	standin.revoke(refreshed.accessToken);
-	await assert.rejects(app.teams(refreshed.accessToken), (error: unknown) => error instanceof LinearError && error.unauthorized && !error.unreachable);
+	standin.revoke(accessToken);
+	await assert.rejects(app.teams(accessToken), (error: unknown) => error instanceof LinearError && error.unauthorized && !error.unreachable);
 });
 
 // ---- webhooks ------------------------------------------------------------------------------------
@@ -515,14 +539,13 @@ await section("rotated signing secret and the parse of ids: only UUIDs are taken
 
 // ---- credentials -----------------------------------------------------------------------------------
 
-await section("no credential in anything logged, and nothing was written to Linear", async () => {
+await section("no credential in anything logged", async () => {
 	const everything = [...logged, ...logLines].join("\n");
 	for (const secret of [standin.clientSecret, standin.signingSecret, connection.token.accessToken, connection.token.refreshToken!]) {
 		assert.ok(!everything.includes(secret), "a credential was logged");
 	}
 	assert.ok(everything.includes("linear.connect.confirmed"), "the connection was not logged at all");
 	assert.equal(redactLinear("bad lin_oauth_0123456789abcdef and secret-xyz-123", ["secret-xyz-123"]), "bad [redacted] and [redacted]");
-	assert.deepEqual(standin.writes, []);
 });
 
 await standin.close();

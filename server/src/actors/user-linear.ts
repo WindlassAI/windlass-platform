@@ -26,7 +26,7 @@ import type { LinearFiled, LinearFiling } from "../factory/intake.js";
 import { githubApp } from "../github/app.js";
 import { githubId, isGithubId } from "../github/ids.js";
 import { GithubProblem, resolveRepository, type StoredConnection } from "../github/repos.js";
-import { LinearError, isLinearId, linearApp, newVerifier, challengeOf, redactLinear, type LinearApp, type LinearToken, type LinearTeam as ProtocolTeam } from "../linear/app.js";
+import { LinearError, isLinearId, linearApp, newVerifier, challengeOf, redactLinear, type LinearApp, type LinearToken, type LinearWrite, type LinearTeam as ProtocolTeam } from "../linear/app.js";
 import { type LinearClaim, type LinearConnectStore, openLinearTicket } from "../linear/connect.js";
 import { QUICK_LABEL, TRIGGER_LABEL, type LinearDelivery, type LinearDispatch } from "../linear/webhook.js";
 import { openSecret, sealSecret } from "../repo-secrets.js";
@@ -81,7 +81,11 @@ const TOKEN_NAME = "oauth-token";
 export interface LinearCtx {
 	key: string[];
 	db: RawAccess;
-	vars: { items: Pick<ItemsState, "created" | "items">; github: StoredConnection | null };
+	vars: {
+		items: Pick<ItemsState, "created" | "items">;
+		github: StoredConnection | null;
+		claimingTeams?: Set<{ workspaceId: string; teamId: string }>;
+	};
 	client(): any;
 	log: { error(entry: unknown): void; warn(entry: unknown): void };
 }
@@ -211,6 +215,27 @@ async function accessToken(c: LinearCtx, app: LinearApp): Promise<{ stored: Stor
 	});
 }
 
+export interface LinearItemWrite {
+	workspaceId: string;
+	issueId: string;
+	itemId: string;
+	write: LinearWrite;
+}
+
+export async function writeLinearItem(c: LinearCtx, input: LinearItemWrite): Promise<boolean> {
+	try {
+		const app = requireLinear();
+		const { stored, token } = await accessToken(c, app);
+		if (stored.workspace.id !== input.workspaceId) throw notConnected();
+		await app.writeIssue(token, input.issueId, input.itemId, input.write);
+		return true;
+	} catch (error) {
+		if (!(error instanceof UserError || error instanceof LinearError) || (error instanceof LinearError && (error.unreachable || error.rateLimited))) throw error;
+		c.log.warn({ msg: "Linear item update declined", item: input.itemId, event: input.write.key, reason: redactLinear(error.message) });
+		return false;
+	}
+}
+
 // ---------------------------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------------------------
@@ -329,6 +354,22 @@ async function unmap(c: LinearCtx, workspaceId: string, teamId: string): Promise
 	await c.db.execute("DELETE FROM linear_mapping WHERE team_id = ?", teamId);
 }
 
+export async function linearHoldsTeam(c: LinearCtx, workspaceId: string, teamId: string): Promise<boolean> {
+	const connection = await readConnection(c.db);
+	if (connection?.workspace.id !== workspaceId) return false;
+	// The directory can call back before a successful save has written its mapping.
+	for (const claim of c.vars.claimingTeams ?? []) if (claim.workspaceId === workspaceId && claim.teamId === teamId) return true;
+	if (!(await c.db.execute("SELECT 1 FROM linear_mapping WHERE team_id = ?", teamId)).length) return false;
+	try {
+		const app = requireLinear();
+		const { stored, token } = await accessToken(c, app);
+		return stored.workspace.id === workspaceId && lower((await app.identity(token)).workspace.id) === workspaceId;
+	} catch (error) {
+		if ((error instanceof LinearError && (error.unauthorized || error.code === "invalid_grant")) || (error instanceof UserError && error.code === "linear_not_connected")) return false;
+		throw error;
+	}
+}
+
 export async function saveLinearMapping(c: LinearCtx, input: { teamId: string; repositoryId: GithubId }): Promise<LinearTeamList> {
 	requireLinear();
 	const teamId = typeof input?.teamId === "string" ? lower(input.teamId) : "";
@@ -350,16 +391,22 @@ export async function saveLinearMapping(c: LinearCtx, input: { teamId: string; r
 		throw clientError(c.log, error, "The repository could not be checked at GitHub. Try again.");
 	}
 	// The team is this user's alone while it is mapped.
-	let claimed;
-	try { claimed = await workspaceActor(c, stored.workspace.id).internalClaim({ teamId, uid: c.key[0] }); }
-	catch (error) { throw clientError(c.log, error, "The mapping could not be saved. Try again."); }
-	if (!claimed) throw new UserError("Another Windlass user has already mapped that team.", { code: "linear_team_taken" });
+	const pending = c.vars.claimingTeams ??= new Set();
+	const claim = { workspaceId: stored.workspace.id, teamId };
+	pending.add(claim);
 	try {
-		await c.db.execute("INSERT INTO linear_mapping (team_id, repository_id, owner, name, saved_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (team_id) DO UPDATE SET repository_id = excluded.repository_id, owner = excluded.owner, name = excluded.name, saved_at = excluded.saved_at",
-			teamId, String(repository.id), repository.owner, repository.name, Date.now());
+		const claimed = await workspaceActor(c, stored.workspace.id).internalClaim({ teamId, uid: c.key[0] });
+		if (!claimed) throw new UserError("Another Windlass user has already mapped that team.", { code: "linear_team_taken" });
+		await inLinearQueue(c, async () => {
+			if ((await readConnection(c.db))?.connectedAt !== stored.connectedAt) throw notConnected();
+			await c.db.execute("INSERT INTO linear_mapping (team_id, repository_id, owner, name, saved_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (team_id) DO UPDATE SET repository_id = excluded.repository_id, owner = excluded.owner, name = excluded.name, saved_at = excluded.saved_at",
+				teamId, String(repository.id), repository.owner, repository.name, Date.now());
+		});
 	} catch (error) {
-		await releaseTeam(c, stored.workspace.id, teamId).catch(() => undefined);
-		throw error;
+		if (error instanceof UserError) throw error;
+		throw clientError(c.log, error, "The mapping could not be saved. Try again.");
+	} finally {
+		pending.delete(claim);
 	}
 	console.log(`[wlp] linear.mapping.saved uid=${c.key[0]} team=${teamId} repository=${repository.id}`);
 	return teamList(list.teams.map(({ id, key, name }) => ({ id, key, name })), await readMappings(c.db));
@@ -416,7 +463,7 @@ function issueUrl(reported: string, urlKey: string, identifier: string): string 
  * qualified the issue still holds (an interrupted filing is finished anyway, in `fileLinearIssue`).
  *
  * Answers `duplicate` for a delivery id that was already decided. Throws when it must be redelivered: Linear or GitHub
- * unreachable. The decision is kept only then, so a redelivery after a lost reply finds it, and one after a failure files. A filing
+ * unreachable. Final decisions are kept so a redelivery after a lost reply finds them. A daily-cap refusal leaves the delivery open. A filing
  * the lost reply hid is not filed twice either way: the issue's active item has one key.
  */
 export async function fileLinearDelivery(c: LinearCtx, delivery: LinearDelivery, file: (filing: LinearFiling) => Promise<LinearFiled>): Promise<LinearDispatch> {
@@ -435,8 +482,9 @@ export async function fileLinearDelivery(c: LinearCtx, delivery: LinearDelivery,
 	const id = lower(delivery.deliveryId);
 	if ((await c.db.execute("SELECT 1 FROM linear_delivery WHERE id = ?", id)).length > 0) return "duplicate";
 
-	const decision = summary(await decide(c, app, stored, delivery, reasons, teamId, repositoryId, file));
-	await c.db.execute("INSERT OR IGNORE INTO linear_delivery VALUES (?, ?, ?)", id, Date.now(), JSON.stringify(decision));
+	const result = await decide(c, app, stored, delivery, reasons, teamId, repositoryId, file);
+	const decision = summary(result);
+	if (result.kind !== "refused" || !result.dailyCap) await c.db.execute("INSERT OR IGNORE INTO linear_delivery VALUES (?, ?, ?)", id, Date.now(), JSON.stringify(decision));
 	console.log(`linear.delivery.${decision.kind} workspace=${stored.workspace.id} delivery=${id}${decision.itemId ? ` item=${decision.itemId}` : ` (${decision.why})`}`);
 	return "taken";
 }

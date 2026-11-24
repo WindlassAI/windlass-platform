@@ -98,11 +98,7 @@ export interface IssueBinding {
 
 export type IssueFiling = { input: CreateItemInput; binding: IssueBinding };
 
-/**
- * What an item keeps of the Linear issue it was filed from. Provenance only: it is not the GitHub binding (`IssueBinding`),
- * which the item's polling of its issue, its issue comment and the pull request's "Closes #n" are made from. A Linear item
- * has none of those, and nothing is written back to Linear.
- */
+/** The source issue and workspace for a Linear item's progress updates. */
 export interface LinearBinding {
 	origin: LinearIssueOrigin;
 	/** The Linear issue's own id, and its workspace and team: the same issue is one item at a time. */
@@ -157,7 +153,7 @@ export type LinearFiled =
 	| { kind: "filed"; itemId: string; state: ItemState }
 	| { kind: "exists"; itemId: string }
 	| { kind: "ignored"; why: string }
-	| { kind: "refused"; reason: string };
+	| { kind: "refused"; reason: string; dailyCap?: true };
 
 export type IntakeTrigger = { repositoryId: GithubId; installationId: GithubId; issue: number; senderId: GithubId } & ({ via: "label"; label?: string } | { via: "mention"; commentId: string });
 

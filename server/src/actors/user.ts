@@ -143,7 +143,7 @@ import {
 	type UsageView,
 	type UserProfile,
 } from "../contract.js";
-import { LINEAR_TABLES, beginLinearConnect, claimLinearState, completeLinearConnection, fileLinearDelivery, linearStatus, linearTeams, removeLinearMapping, disconnectLinear, saveLinearMapping } from "./user-linear.js";
+import { LINEAR_TABLES, type LinearItemWrite, linearHoldsTeam, writeLinearItem, beginLinearConnect, claimLinearState, completeLinearConnection, fileLinearDelivery, linearStatus, linearTeams, removeLinearMapping, disconnectLinear, saveLinearMapping } from "./user-linear.js";
 import { GITHUB_SYNC, GITHUB_SYNC_TABLE, retryGithubSync, syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
 import { githubApp, type GithubApp } from "../github/app.js";
 import { isBranchName } from "../github/git.js";
@@ -1938,6 +1938,14 @@ export const user = actor({
 		disconnectLinear: async (c): Promise<LinearStatus> => {
 			requireUser(c);
 			return disconnectLinear(c);
+		},
+		internalLinearHoldsTeam: async (c, workspaceId: string, teamId: string) => {
+			requireServiceFor(c, "call");
+			return linearHoldsTeam(c, workspaceId, teamId);
+		},
+		internalLinearWrite: async (c, input: LinearItemWrite) => {
+			requireServiceFor(c, "call");
+			return writeLinearItem(c, input);
 		},
 		/** Takes a state's number out of the list (linear/connect.ts): it is there once. */
 		internalLinearClaim: async (c, nonce: string) => {

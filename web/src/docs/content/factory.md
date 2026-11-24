@@ -51,9 +51,9 @@ On GitHub, removing the label cancels a draft. Closing the issue cancels an item
 
 ### From a Linear issue
 
-Where the platform has a Linear OAuth client and signing secret, you can file a work item from a Linear issue. The integration is one-way: Windlass reads Linear's events and writes nothing back.
+Where the platform has a Linear OAuth client and signing secret, you can file a work item from a Linear issue.
 
-**Set it up.** In **Settings**, under **Linear**, choose **Connect Linear** and approve the workspace at Linear. Windlass returns you to Settings. Then choose a team and one repository from your GitHub connection and **Save mapping**. **Remove** drops a mapping. Issues of a team with no mapping are ignored.
+**Set it up.** In **Settings**, under **Linear**, choose **Connect Linear** and approve the workspace at Linear. Windlass returns you to Settings. Then choose a team and one repository from your GitHub connection and **Save mapping**. **Remove** drops a mapping. A team belongs to one owner at a time. Another owner can map it once the previous mapping or workspace connection is gone. Issues of a team with no mapping are ignored.
 
 **Triggers.**
 
@@ -62,17 +62,13 @@ Where the platform has a Linear OAuth client and signing secret, you can file a 
 
 `windlass:quick` selects **Quick**; otherwise the item is **Plan first**, with the same rules as for GitHub issues. An unrelated edit to an issue that already has the label or the assignment does not file anything. Each delivery from Linear is taken once, and one active issue files one item however many events qualify.
 
-**Placement and limits.** The item uses the same intake as GitHub: the repository's **Where work items run** setting, then the account setting, then Hosted. It shares the daily limit with GitHub issues, drafts and filings in progress included, so a day's items from GitHub and Linear are counted together.
+**Placement and limits.** The item uses the same intake as GitHub: the repository's **Where work items run** setting, then the account setting, then Hosted. It shares the daily limit with GitHub issues, drafts and filings in progress included, so a day's items from GitHub and Linear are counted together. If the daily limit is full, a later trigger or redelivery can file the issue once there is room.
 
-**Trust.** If you created the issue in Linear, the item starts at once. If someone else did, it is filed as a draft with their text quoted as theirs: its page says who wrote it, and you start it yourself. See [Text from someone else](#text-from-someone-else). The item page and list show the Linear identifier, for example ENG-123, as a link to the issue.
+**Trust.** Linear identifies the Windlass app as the connected user. Issues arrive as drafts with their authors' text quoted. Review and start the item in Windlass. Its page and list link to the Linear issue by its identifier, for example ENG-123.
 
-**What Linear does not do.** Unlike GitHub, nothing is written back and nothing is followed afterwards:
+**Updates on the issue.** Windlass comments when the item opens its pull request and attaches the PR link to the issue. It comments once at handover and when the item merges, fails or is cancelled. Each comment includes the PR link when one exists. Only a merge moves the issue to a completed state for its team, if Linear allows the change. A write failure is logged and the item continues. If you connected Linear before Windlass requested the `write` scope, reconnect to grant it.
 
-- Removing the label or unassigning the issue does nothing. The item stays as filed, draft or not. On GitHub, removing the label cancels a draft.
-- Closing, cancelling or editing the issue does nothing. On GitHub, closing the issue cancels an item that has not reached review.
-- Windlass posts no comment, status or pull request link to Linear. On GitHub the App comments on the issue and the pull request says `Closes #n`.
-
-To stop an item filed from Linear, cancel it in Windlass. After an item has ended, a new qualifying event on the same issue files a new item.
+Removing a label, unassigning, editing or closing the Linear issue leaves the item as filed. To stop it, cancel it in Windlass. After the item ends, a new qualifying event on the active issue can file another item.
 
 ### From the API
 

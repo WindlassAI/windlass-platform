@@ -8,7 +8,7 @@
  *      and Linear sends the browser here with `code` and `state`.
  *   3. This route has the store check the state and take it out of the user's list (so it works once),
  *      exchanges the code, and asks Linear who the token is and which workspace it is in. The token must
- *      be the app user's (`LinearApp.identity`) and have the `app:assignable` scope.
+ *      be the app user's (`LinearApp.identity`) and have the requested scopes.
  *   4. The browser returns to Settings with a sealed ticket. The signed-in user redeems it to record
  *      the connection. A failure returns `#linear-error=<code>`.
  *
@@ -35,7 +35,7 @@ export type LinearConnectFailure =
 	| "denied"
 	/** Linear did not accept the code. */
 	| "code"
-	/** Linear did not grant what the app needs: being assignable. */
+	/** Linear did not grant all the requested scopes. */
 	| "scope"
 	/** The token Linear gave is a person's, not the app user's. */
 	| "not_app"

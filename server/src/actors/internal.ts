@@ -95,6 +95,8 @@ export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: st
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
+	internalLinearHoldsTeam(workspaceId: string, teamId: string): Promise<boolean>;
+	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
 	internalDefaultBuilder(input: { id: string; job: import("./user-items.js").DefaultBuilder }): ReturnType<typeof import("./user-items.js").itemActions.internalDefaultBuilder>;
 	internalDiscardPlacement(itemId: string): Promise<void>;
 	internalHostedSizes(): Promise<HostedSize[]>;

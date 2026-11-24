@@ -18,7 +18,7 @@
  * that is not a transition, a removed label, an unassignment and a removal change nothing; the stored issue id, identifier, link
  * and repository; Plan first against `windlass:quick`; the saved placement; the issue's author as third-party text (a draft, quoted)
  * whoever wrote it; GitHub and Linear competing for the one daily cap; a removed mapping filing nothing; a second owner of the
- * workspace unable to take a mapped team, and given it once it is removed; nothing written to Linear
+ * workspace unable to take a live claim, and given a dead one; item progress posted once
  * and no credential in the platform's output.
  */
 import assert from "node:assert/strict";
@@ -43,11 +43,31 @@ async function testNode() {
 	const { workItem } = await import("../server/src/actors/work-item.js");
 	type UserCtx = Parameters<NonNullable<typeof user.config.actions>["internalMachineChanged"]>[0];
 	type ItemCtx = Parameters<NonNullable<typeof workItem.config.actions>["internalView"]>[0];
+	const { CI_POLLING } = await import("../server/src/github/ci.js");
+	Object.assign(CI_POLLING, { everyMs: 250, crowdedEveryMs: 250, prEveryMs: 250, webhookEveryMs: 250, webhookCrowdedEveryMs: 250, webhookPrEveryMs: 250, noneAfterMs: 0 });
+	// Lose the first successful comment reply to the item for each event.
+	const write = user.config.actions!.internalLinearWrite;
+	const lost = new Set<string>();
+	user.config.actions!.internalLinearWrite = async (c, input) => {
+		const posted = await write(c, input);
+		if (posted && "commentId" in input.write && !lost.has(input.write.commentId)) {
+			lost.add(input.write.commentId);
+			throw new Error("The comment reply was lost");
+		}
+		return posted;
+	};
 	Object.assign(user.config.actions!, {
 		// The owner's delivery rows: what was decided for each delivery that was taken in.
 		checkRows: async (c: UserCtx) => {
 			requireServiceFor(c, "call");
 			return c.db.execute<{ id: string; decision: string }>("SELECT id, decision FROM linear_delivery ORDER BY received_at, rowid");
+		},
+		checkPreviousFilingDay: async (c: UserCtx) => {
+			requireServiceFor(c, "call");
+			const yesterday = Date.now() - 86_400_000;
+			for (const item of c.vars.items.items.values()) item.createdAt = yesterday;
+			await c.db.execute("UPDATE items SET created_at=?, summary=json_set(summary, '$.createdAt', ?)", yesterday, yesterday);
+			await c.db.execute("UPDATE github_item_keys SET created_at=?", yesterday);
 		},
 		checkExpireLinearTickets: async (c: UserCtx) => {
 			requireServiceFor(c, "call");
@@ -499,19 +519,11 @@ async function run() {
 				assert.equal((await githubItems(hub))[0].state, "draft");
 				assert.equal(await total(), used + 1);
 				const refused = created(eng, { labels: ["windlass"] });
-				const refusal = await qualifying(refused.payload);
-				assert.equal(refusal.kind, "refused");
-				assert.match(refusal.why ?? "", /work items from Linear today/);
+				const refusal = await send(refused.payload);
+				assert.equal(refusal.status, 202);
+				assert.ok(!(await rows()).some(r => r.id === refusal.deliveryId));
 				assert.equal((await itemsOf(refused.issue)).length, 0);
 				assert.equal(await total(), used + 1);
-				// The refused issue is not remembered: with room, the next qualifying event files it, once.
-				await limit(used + 2);
-				const retried = await qualifying(update(refused.issue, { assignee: linear.appUser }));
-				assert.equal(retried.kind, "filed");
-				assert.equal((await itemsOf(refused.issue)).length, 1);
-				assert.deepEqual(await qualifying(update(refused.issue, { addLabels: ["windlass:quick"] })), { kind: "exists", itemId: retried.itemId });
-				assert.equal(await total(), used + 2);
-
 				// Round 2: the last place is Linear's, and then GitHub's issue gets its one refusal.
 				const second = await total();
 				await limit(second + 1);
@@ -531,17 +543,61 @@ async function run() {
 				const raceLinear = created(eng, { labels: ["windlass"] });
 				const [sentRace] = await Promise.all([send(raceLinear.payload), label(raceHub)]);
 				assert.equal(sentRace.status, 202);
-				const answer = await decided(sentRace.deliveryId);
 				await settleGithub(raceHub).catch(() => undefined);
 				await until("exactly one winner", async () => (await total()) === third + 1);
 				await sleep(500);
 				assert.equal(await total(), third + 1);
 				const linearWon = (await itemsOf(raceLinear.issue)).length === 1;
 				const githubWon = (await githubItems(raceHub)).length === 1;
-				assert.equal(Number(linearWon) + Number(githubWon), 1, `Linear ${answer.kind}, GitHub ${githubWon}`);
-				if (linearWon) { assert.equal(answer.kind, "filed"); assert.ok(refusedOnGithub(raceHub), bots(raceHub)[0]?.body); }
-				else { assert.equal(answer.kind, "refused"); assert.match(answer.why ?? "", /work items from Linear today/); assert.ok(!refusedOnGithub(raceHub), bots(raceHub)[0]?.body); }
+				assert.equal(Number(linearWon) + Number(githubWon), 1);
+				if (linearWon) { assert.equal((await decided(sentRace.deliveryId)).kind, "filed"); assert.ok(refusedOnGithub(raceHub), bots(raceHub)[0]?.body); }
+				else { assert.ok(!(await rows()).some(r => r.id === sentRace.deliveryId)); assert.ok(!refusedOnGithub(raceHub), bots(raceHub)[0]?.body); }
+
+				// A new UTC day has room at the same limit. Redeliver the original ID.
+				await (client.user.get([uid], service()) as unknown as { checkPreviousFilingDay(): Promise<void> }).checkPreviousFilingDay();
+				const retried = await qualifying(refused.payload, { deliveryId: refusal.deliveryId, timestamp: Date.now() });
+				assert.equal(retried.kind, "filed");
+				assert.equal((await itemsOf(refused.issue)).length, 1);
+				assert.deepEqual((await send(refused.payload, { deliveryId: refusal.deliveryId })).json, { taken: "duplicate" });
 			} finally { await limit("default"); }
+		});
+
+		await check("writeback posts the PR, handover and merge once across lost replies and completes only on merge", async () => {
+			const { issue, payload } = created(eng, { labels: ["windlass:quick"], title: "Print hello", description: "Add a short program." });
+			const { itemId } = await qualifying(payload);
+			const id = itemId!;
+			const comments = () => [...linear.comments.values()].filter(c => c.issueId === issue.id).map(c => c.body);
+			await owner.actOnItem({ id, action: { kind: "start" } });
+			const pr = await until("the Linear item's pull request", async () => (await owner.item(id)).pullRequest, 45_000);
+			await until("the PR link and handover on the issue", async () => linear.attachments.get(issue.id) === pr.url && comments().some(b => b.includes("was handed over")));
+			assert.equal(issue.stateType, "unstarted");
+			const pull = github.pulls.find(p => p.repository === repo.id && p.number === pr.number)!;
+			pull.state = "closed";
+			pull.merged = true;
+			await until("the completed issue", async () => issue.stateType === "completed");
+			assert.equal((await owner.item(id)).state, "done");
+			await until("all three lost replies retried", async () => linear.calls.filter(c => c === "POST /graphql comment").length >= 3, 40_000);
+			assert.deepEqual(comments().sort(), ["opened its pull request", "was handed over", "merged"].map(event => `Windlass item ${id} ${event}. ${pr.url}`).sort());
+			assert.equal(linear.writes.filter(w => w === "issueUpdate").length, 1);
+			const cancelled = created(eng, { labels: ["windlass"] });
+			const filed = await qualifying(cancelled.payload);
+			await owner.actOnItem({ id: filed.itemId!, action: { kind: "cancel" } });
+			await until("cancellation before a PR", async () => [...linear.comments.values()].some(c => c.issueId === cancelled.issue.id && c.body === `Windlass item ${filed.itemId} was cancelled.`));
+			assert.equal(cancelled.issue.stateType, "unstarted");
+		});
+
+		await check("a failed item reports its outcome and leaves the issue open", async () => {
+			await owner.saveRepositoryDefaults({ repositoryId: repo.id, profile: "docker-hardened" });
+			try {
+				const { issue, payload } = created(eng, { labels: ["windlass:quick"] });
+				const { itemId } = await qualifying(payload);
+				const id = itemId!;
+				await owner.actOnItem({ id, action: { kind: "start" } });
+				const question = await until("the untrusted turn's question", async () => (await owner.item(id)).question);
+				await owner.actOnItem({ id, action: { kind: "answer", question: question.id, choice: "give_up" } });
+				await until("failure on the Linear issue", async () => [...linear.comments.values()].some(c => c.issueId === issue.id && c.body === `Windlass item ${id} failed.`));
+				assert.equal(issue.stateType, "unstarted");
+			} finally { await owner.saveRepositoryDefaults({ repositoryId: repo.id, profile: null }); }
 		});
 
 		await check("a removed mapping files nothing, and the same issue files again once it is mapped", async () => {
@@ -597,8 +653,12 @@ async function run() {
 			await ignored(created(stale, { labels: ["windlass"] }).payload);
 			assert.equal((await linearItems()).length, ownItems + 1);
 			assert.equal(linear.calls.filter(call => call === "POST /graphql issue").length, reads, "a stale route read an issue for the former owner");
-			// Linear already revoked this token. Local disconnect still succeeds.
+			// The previous claimant has no mapping. The next mapper gets the team.
+			await other.saveLinearMapping({ teamId: stale.id, repositoryId: second.id });
+			assert.equal(await code(owner.saveLinearMapping({ teamId: stale.id, repositoryId: repo.id })), "linear_team_taken");
+			// A revoked connection also gives way, even with its old mapping still stored.
 			linear.revoke(openLinearTicket(auth2.profile.uid, ticket).token.accessToken);
+			await owner.saveLinearMapping({ teamId: stale.id, repositoryId: repo.id });
 			assert.deepEqual(await other.disconnectLinear(), { state: "disconnected" });
 		});
 
@@ -620,9 +680,7 @@ async function run() {
 			assert.equal(await code(owner.linearComplete(ticket)), "linear_ticket");
 		});
 
-		await check("the platform wrote nothing to Linear, and logged no credential", async () => {
-			assert.deepEqual(linear.writes, []);
-			assert.ok(linear.calls.every(call => ["POST /oauth/token", "POST /oauth/revoke", "POST /graphql viewer", "POST /graphql teams", "POST /graphql issue"].includes(call)), linear.calls.join("\n"));
+		await check("the platform logged no credential", async () => {
 			assert.ok(logs.includes("linear.connected"), "the connection was logged");
 			assert.ok(logs.includes("linear.delivery.filed"));
 			for (const secret of [linear.clientSecret, linear.signingSecret, githubSecret, "lin_oauth_", "lin_refresh_", "code-"]) assert.ok(!logs.includes(secret), "a credential appeared in the platform's output");
