@@ -2914,6 +2914,8 @@ export type TimelineItem =
 			 * model reads it at its next step. Absent or false for the prompt that started the turn.
 			 */
 			steer?: boolean;
+			/** Sources of quoted GitHub feedback, also used when rebuilding the prompt after a pause. */
+			untrusted?: string[];
 			/** A message sent while the turn was paused: held, and given to the agent when the turn resumes. */
 			held?: boolean;
 	  }

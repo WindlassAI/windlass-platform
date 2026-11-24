@@ -824,6 +824,64 @@ async function run() {
 		const commentFields = (pr: number, id: number, sender = writer, association = "OWNER") => ({
 			action:"created", issue:{number:pr,pull_request:{}}, sender:{...sender,type:"User"}, comment:{id,author_association:association,body:"/windlass decoy webhook text"},
 		});
+		const prComment = (pull: (typeof standin.pulls)[number], id: number, author: typeof writer, body: string) => {
+			pull.comments.push({ id, body, user: { ...author, type: "User" }, created_at: new Date().toISOString() });
+			return delivered("issue_comment", commentFields(pull.number, id, author));
+		};
+		await check("Session PR feedback queues comments and marks a collaborator’s review", async () => {
+			const created = await g2User.createSession({ profile: "docker-windlass-sandbox", repository: { id: projectG2.id } });
+			const agent = client.agentSession.get([uid, created.id], { params: { token: ownerToken } });
+			try {
+				await agent.prompt({ text: "Write a short program." });
+				await until("first session turn", async () => (await agent.snapshot()).summary.status === "idle");
+				const published = await agent.publish({ message: { title: "A session PR", body: "" } });
+				const pr = published.state.pullRequest!.number;
+				const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === pr)!;
+				const approval = standin.submitReview(projectG2, pull, peer, "approved", "Looks good.");
+				await delivered("pull_request_review", reviewFields(pr, approval.review));
+				assert.equal((await agent.snapshot()).summary.turns, 1);
+				await agent.prompt({ text: "Fetch the website headers." });
+				await until("turn awaiting approval", async () => (await agent.snapshot()).summary.status === "waiting");
+				await prComment(pull, 66001, reader, "/windlass do not take this");
+				assert.ok(!standin.reactions.has("issues:66001"));
+				await prComment(pull, 66002, writer, "/windlass Handle empty input.\u2028Quote this line too.");
+				assert.ok(standin.reactions.has("issues:66002"));
+				assert.equal((await agent.snapshot()).summary.turns, 2);
+				await agent.stop();
+				const review = standin.submitReview(projectG2, pull, peer, "changes_requested", "Use a clearer name.", ["@windlass-fk4w Fix this line."]);
+				await delivered("pull_request_review", reviewFields(pr, review.review));
+				await delivered("pull_request_review_comment", { action: "created", sender: review.lines[0].user, pull_request: { number: pr }, comment: review.lines[0] });
+				await prComment(pull, 66003, peer, "@windlass-fk4w Document the change.");
+				await delivered("issue_comment", commentFields(pr, 66003, peer));
+				assert.ok(standin.reactions.has("review:" + review.review.id));
+				assert.ok(standin.reactions.has("pulls:" + review.lines[0].id));
+				assert.ok(standin.reactions.has("issues:66003"));
+				const { timeline } = await until("three feedback turns", async () => {
+					const view = await agent.snapshot();
+					return view.summary.status === "idle" && view.summary.turns >= 5 ? view : null;
+				});
+				const prompts = timeline.filter(e => e.kind === "user");
+				assert.equal(prompts.length, 5);
+				assert.match(prompts[2].text, /> Handle empty input\.\n> Quote this line too\./);
+				assert.match(prompts[3].text, /> Use a clearer name\./);
+				assert.match(prompts[3].text, /src\/main\.ts, line 1/);
+				assert.match(prompts[4].text, /> Document the change\./);
+				assert.ok(prompts.every(p => !p.text.includes("decoy") && !p.text.includes("do not take this")));
+				const marks = timeline.flatMap(e => e.kind === "windlass" && e.event.type === "fake.prompt_untrusted" ? [[e.turn, e.event.data?.source]] : []);
+				assert.deepEqual(marks, [[4, "GitHub feedback from @" + peer.login], [5, "GitHub feedback from @" + peer.login]]);
+			} finally { await g2User.deleteSession(created.id); }
+		});
+		await check("Session PR feedback explains an unlinked PR once", async () => {
+			const pull: (typeof standin.pulls)[number] = { repository: projectG2.id, number: 660, title: "Unlinked", body: "", head: "topic", base: "main",
+				state: "open", draft: false, merged: false, mergeable: true, requestedReviewers: [], comments: [] };
+			standin.pulls.push(pull);
+			const replies = () => pull.comments.filter(c => c.user.login === standin.slug + "[bot]");
+			await prComment(pull, 66101, reader, "/windlass reader");
+			assert.equal(replies().length, 0);
+			await prComment(pull, 66102, writer, "/windlass first");
+			await prComment(pull, 66103, peer, "@windlass-fk4w second");
+			assert.deepEqual(replies().map(c => c.body), ["This pull request is not linked to a Windlass agent."]);
+		});
 		await check("G4 owner review batches its lines, acknowledges once, reopens the check and requests review again", async () => {
 			standin.appPermissions.checks = "write";
 			const item = await feedbackItem();

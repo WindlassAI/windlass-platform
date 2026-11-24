@@ -820,7 +820,7 @@ export class GithubApp {
 		if (!author || !id || parent !== pull) return null;
 		const commit = text(kind === "line" && row.line === null ? row.original_commit_id ?? row.commit_id : row.commit_id);
 		if (!/^[a-f0-9]{40}$/i.test(commit)) return null;
-		return { id, author, association: text(row.author_association), body: text(row.body), commit,
+		return { id, nodeId: text(row.node_id), author, association: text(row.author_association), body: text(row.body), commit,
 			path: kind === "line" ? text(row.path) : null, line: whole(row.line ?? row.original_line) || null,
 			at: Date.parse(text(kind === "review" ? row.submitted_at : row.created_at)), state: text(row.state).toLowerCase(),
 			url: this.repositoryUrl(repo.owner, repo.name) + "/pull/" + pr + (kind === "review" ? "#pullrequestreview-" : "#discussion_r") + id };
@@ -859,6 +859,21 @@ export class GithubApp {
 		const { body } = await this.call({ path: `/repos/${repo.owner}/${repo.name}/pulls/comments/${id}`, auth: { bearer: token }, what: "read the line comment" });
 		const line = this.feedbackSubject(repo, pr, body, "line");
 		return line?.id === id ? line : null;
+	}
+
+	async acknowledgeFeedback(installationId: GithubId, repo: Pick<Repository, "id" | "owner" | "name">, key: string, reviewNodeId?: string) {
+		const [kind, id] = key.split(":");
+		const permission = kind === "issue_comment" ? "issues" : "pull_requests";
+		await this.withToken(installationId, { repositoryId: repo.id, permissions: { metadata: "read", [permission]: "write" } }, async token => {
+			if (kind === "issue_comment" || kind === "review_comment") return this.react(token, repo, { kind, id }, "eyes");
+			// A review body is a GraphQL Reactable. The REST endpoints take comments only.
+			if (kind !== "review" || !reviewNodeId) throw new Error("Missing GitHub review node.");
+			const path = this.settings.apiUrl.endsWith("/api/v3") ? "/../graphql" : "/graphql";
+			const query = "mutation($id:ID!) { addReaction(input:{subjectId:$id,content:EYES}) { reaction { content } } }";
+			const { body } = await this.call({ method: "POST", path, auth: { bearer: token }, body: { query, variables: { id: reviewNodeId } }, what: "acknowledge a review" });
+			const result = record(record(body).data).addReaction;
+			if (record(record(result).reaction).content !== "EYES") throw new Error("GitHub did not acknowledge the review.");
+		});
 	}
 
 	async react(token: string, repo: Pick<Repository, "owner" | "name">, comment: { kind: "issue_comment" | "review_comment"; id: string }, content: "eyes") {

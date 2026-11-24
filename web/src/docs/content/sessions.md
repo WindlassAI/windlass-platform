@@ -141,6 +141,10 @@ The platform commits the changes, pushes a branch named `windlass/<title>-<id>` 
 
 After that, the button is **Push changes**. Use it to push new work to the same pull request, with a **Commit message**.
 
+On that pull request, anyone with write access can start a comment with `/windlass` or the GitHub App’s @mention, or submit a **Request changes** review. Windlass reacts with 👀 and sends the feedback to this session. If the agent is working, the feedback waits for its next turn. The prompt quotes each author’s words. Feedback from another writer is marked as untrusted where the agent supports it. On **Docker, hardened**, the session stops before running that text.
+
+If the pull request has no linked session or work item, Windlass replies once to explain.
+
 The platform does not push while the agent is working. Wait for the turn to end.
 
 ### When the agent opens it

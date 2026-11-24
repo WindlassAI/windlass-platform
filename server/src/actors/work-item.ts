@@ -1419,9 +1419,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return "deferred";
 		case "feedback_ack": {
 			const hub = await github(c, meta);
-			const [kind, id] = effect.key.split(":") as ["issue_comment" | "review_comment", string];
-			await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", [kind === "issue_comment" ? "issues" : "pull_requests"]: "write" } },
-				token => hub.app.react(token, hub, { kind, id }, "eyes")).catch(error => {
+			await hub.app.acknowledgeFeedback(hub.installationId, { id: meta.repository.id, owner: hub.owner, name: hub.name }, effect.key).catch(error => {
 				if (!(error instanceof GithubError && [404, 410].includes(error.status))) throw error;
 			});
 			return true;
