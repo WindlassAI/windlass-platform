@@ -417,7 +417,7 @@ async function listCommitCi(app: GithubApp, token: string, repo: string, ref: st
 	return {
 		head,
 		checks: checks.items.map(record).filter(check => (!check.head_sha || check.head_sha === head) && !ownApp(record(check.app), app.settings) &&
-			!otherBranch(record(check.check_suite)) && !otherSuites.has(decimalId(record(check.check_suite).id))),
+			!otherSuites.has(decimalId(record(check.check_suite).id))),
 		statuses: statuses.items,
 		workflows: workflows.items.filter(run => !otherBranch(run)),
 		truncated: checks.truncated || statuses.truncated || workflows.truncated,

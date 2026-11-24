@@ -374,11 +374,7 @@ function queued<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 
 async function repositoryAutonomy(c: Ctx, meta: ItemMeta, repositoryId = meta.repository.id) {
 	try { return await userActor(c, meta.uid).internalRepositoryAutonomy(repositoryId); }
-	catch { return { autoApprovePlans: false, autoMergeSingles: false }; }
-}
-
-async function waitForPartCi(c: Ctx, meta: ItemMeta, repositoryId = meta.repository.id) {
-	return (await userActor(c, meta.uid).internalRepositoryAutonomy(repositoryId)).waitForCiOnEachPart;
+	catch { return { autoApprovePlans: false, autoMergeSingles: false, waitForCiOnEachPart: false }; }
 }
 
 /** Both receipt paths charge the same settled holds, including a replay after a restart. */
@@ -894,6 +890,12 @@ async function placementInventory(c: Ctx, uid: string, featureModel: string | un
 	return { machines, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models, ...(featureModel && { featureModel }), ...(snapshotPlaces?.length && { snapshotPlaces }) };
 }
 
+async function planCiBranches(c: Ctx, { item, meta }: Stored, repo?: FeatureRepoState) {
+	const branch = repo ?? item;
+	const waitForParts = branch.pr ? !branch.featureCi : (await repositoryAutonomy(c, meta, repo?.repositoryId)).waitForCiOnEachPart;
+	return requiredCiBranches(item, waitForParts, repo?.alias);
+}
+
 /**
  * Approval of a cross-repo plan: every repository is checked through its own installation before any
  * branch is made, and every refusal is named at once. Each needs saved checks and push CI on the actual
@@ -910,7 +912,7 @@ async function checkCrossRepo(c: Ctx, stored: Stored, bases: Readonly<Record<str
 		const label = `${repo.owner}/${repo.name}`;
 		try {
 			if (!await userActor(c, meta.uid).internalHasChecks(repo.repositoryId)) problems.push(`${label}: add saved repository checks.`);
-			const branches = requiredCiBranches(item, repo.pr ? !repo.featureCi : await waitForPartCi(c, meta, repo.repositoryId), repo.alias);
+			const branches = await planCiBranches(c, stored, repo);
 			problems.push(...await repoHub(c, meta, repo, "write", { contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" }, async ({ app, token, owner, name, private: hidden }) => {
 				const found = await repositoryAdmission(app, token, owner, name, { alias: repo.alias, baseRef: repo.baseRef, ciBase: repo.pr ? featureBranch(item.id) : repo.baseRef, branches, planningBaseSha: repo.planningBaseSha,
 					reconfirmed: bases[repo.alias], runsIntegration: plan.finalIntegration?.runFrom === repo.alias, opened: !!repo.pr });
@@ -975,7 +977,7 @@ async function checkFeatureCi(c: Ctx, stored: Stored, bases: Readonly<Record<str
 	const { item, meta } = stored;
 	if (!await userActor(c, meta.uid).internalHasChecks(meta.repository.id))
 		throw new PlanError(item.replans ? "Add saved repository checks before approving the revised plan." : "Use a single item or add saved repository checks before approving orchestration.");
-	const branches = requiredCiBranches(item, item.pr ? !item.featureCi : await waitForPartCi(c, meta));
+	const branches = await planCiBranches(c, stored);
 	const ref = item.pr ? featureBranch(item.id) : meta.repository.branch;
 	const read = async () => {
 		const hub = await github(c, meta, "write");
@@ -1366,7 +1368,7 @@ async function crossOpenOrDescribe(c: Ctx, meta: ItemMeta, item: FactoryItem, ef
 					return;
 				}
 				const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: repo.baseRef, seed: repo.seed!, author, created: meta.createdAt, body: networkBody(withSection(item.featurePlan!.spec.goal, linkSection(item, repo.alias)), itemNetwork(meta), false), draftOnly: true });
-				await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart: await waitForPartCi(c, meta, repo.repositoryId), repo: repo.alias, at: Date.now() });
+				await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart: (await repositoryAutonomy(c, meta, repo.repositoryId)).waitForCiOnEachPart, repo: repo.alias, at: Date.now() });
 			});
 			return;
 		}
@@ -1669,7 +1671,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 						await take(c, { kind: "feature_seed", key, sha, at: Date.now() });
 					} else {
 						const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: meta.repository.branch, seed: item.seed, author: hub.author, created: meta.createdAt, body: networkBody(item.featurePlan!.spec.goal, itemNetwork(meta), hub.repository.private) });
-						await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart: await waitForPartCi(c, meta), at: Date.now() });
+						await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart: (await repositoryAutonomy(c, meta)).waitForCiOnEachPart, at: Date.now() });
 					}
 				});
 			} catch (error) {
@@ -1871,26 +1873,25 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const head = reading.kind === "read" && !/^[0-9a-f]{40}$/.test(effect.head) ? reading.head : effect.head;
 				const itemCi = item.run?.step.kind === "ci" && item.mode !== "orchestrate" && (!pull?.headSha || pull.headSha === head);
 				const mergeCheck = autoMergeSingles && pull?.state === "open" && pull.base === item.task.base && pull.headSha === effect.head;
-				const needsDiff = !!branch.featureCi && state === "failed" && pull?.headSha === head && !item.jobs?.some(j => j.ciFix && activeJob(j));
-				const compare = needsDiff || mergeCheck || itemCi && /^[0-9a-f]{40}$/.test(head) && (state === "failed" || state === "cancelled" || timedOut || noChildCi);
+				const needsPaths = !!branch.featureCi && state === "failed" && pull?.headSha === head && !item.jobs?.some(j => j.ciFix && activeJob(j));
+				const compare = needsPaths || mergeCheck || itemCi && /^[0-9a-f]{40}$/.test(head) && (state === "failed" || state === "cancelled" || timedOut || noChildCi);
 				const comparison = compare ? await hub.app.withToken(hub.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", contents: "read" } },
-					token => compareBranches(hub.app, token, hub.owner, hub.name, needsDiff ? branch.seed! : item.task.base, head), { reuse: true }).catch(() => null) : null;
+					token => compareBranches(hub.app, token, hub.owner, hub.name, needsPaths ? branch.seed! : item.task.base, head), { reuse: true }).catch(() => null) : null;
 				if (itemCi && state === "failed" && reading.kind === "read" && reading.head === head) {
 					const base = comparison?.base ?? (pull?.base === item.task.base ? pull.baseSha : null);
 					if (base) await checkBaseFailures(hub.app, { ...target, head: base }, reading, tests =>
 						session.internalBaseTests({ head, base, tests }).catch(() => "unknown"));
 					else for (const check of reading.runs) if (check.state === "failed" && !check.environment) check.baseResult = "pending";
 				}
-				const files = needsDiff ? comparison?.files : undefined;
-				const diff = files?.map(f => f.filename + "\n" + (f.patch ?? "(patch unavailable)")).join("\n").slice(0, 7000);
-				return { reading, featureHead, diff, paths: files?.map(f => f.filename), baseAhead: comparison?.behind, baseTip: comparison?.base, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
+				const paths = needsPaths ? comparison?.files?.map(f => f.filename) : undefined;
+				return { reading, featureHead, paths, baseAhead: comparison?.behind, baseTip: comparison?.base, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
 			};
-			const { reading, featureHead, diff, paths, baseAhead, baseTip, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, featureHead: undefined, diff: undefined, paths: undefined, baseAhead: 0, baseTip: undefined, mergeable: null, prHead: null, baseSha: null }));
+			const { reading, featureHead, paths, baseAhead, baseTip, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, featureHead: undefined, paths: undefined, baseAhead: 0, baseTip: undefined, mergeable: null, prHead: null, baseSha: null }));
 			const target = item.run?.step.kind === "ci" && (item.parent || item.mode === "orchestrate") && (ciState(reading) !== "passed" || mergeable === false)
 				? await targetStatus(c, stored).catch(() => null) : null;
 			const featureTarget = target?.available && target.value > 0 ? target.branch : undefined;
 			const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
-			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, repo: effect.repo, featureHead, diff, paths, reading, autoMergeSingles, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
+			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, repo: effect.repo, featureHead, paths, reading, autoMergeSingles, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
 			return true;
 		}
 		case "poll_pr": {

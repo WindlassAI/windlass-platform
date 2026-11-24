@@ -2055,8 +2055,8 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	{
 		const parts = [task("one"), task("two", ["two"], ["one"])];
 		let feature = start(parts);
-		const read = (item: FactoryItem, reading: CiReading) => ({ ...ciFact(reading, item.head!), key: item.featureCi!.key,
-			paths: ["one"], diff: "+fixed = false" });
+		feature.seed = H(1);
+		const read = (item: FactoryItem, reading: CiReading) => ({ ...ciFact(reading, item.head!), key: item.featureCi!.key, paths: ["one"] });
 		const failed = ciRead([{ name: "build", state: "failed", log: "Unexpected result" }]);
 		function join(item: FactoryItem, key: string, head: string) {
 			const job = item.jobs!.find(j => j.task.key === key)!;
@@ -2080,6 +2080,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		feature = update(feature, "two", "working");
 		const red = read(feature, failed);
 		const queued = walk(feature, [{ ...red, paths: ["two"] }]).item;
+		assert.equal(queued.jobs!.at(-1)?.task.key, `ci-fix-${feature.revision + 1}`);
 		assert.equal(queued.jobs!.at(-1)?.dispatchKey, undefined, "overlapping work keeps the fix queued");
 		assert.equal(walk(queued, [read(queued, failed)]).item.jobs!.length, 3);
 		assert.equal(walk(queued, [read(queued, passedCi)]).item.jobs!.length, 2, "a green rerun retires the queued fix");
@@ -2087,7 +2088,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		const fix = feature.jobs!.find(j => j.ciFix)!;
 		assert.equal(fix.start, H(2));
 		assert.ok(fix.dispatchKey);
-		for (const text of ["build", "Unexpected result", "+fixed = false"]) assert.ok(fix.task.brief.includes(text));
+		for (const text of ["build", "Unexpected result", `git diff ${H(1)}...${H(2)}`]) assert.ok(fix.task.brief.includes(text));
 		assert.equal(walk(feature, [red]).item, feature);
 		assert.equal(walk(feature, [read(feature, failed)]).item.jobs!.length, 3);
 		feature = join(feature, "two", H(3));

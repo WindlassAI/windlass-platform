@@ -233,8 +233,9 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 	if (receipt) spendTurn(change, fact.spend);
 	else if (!apply(change, fact)) return unchanged;
 	if (watchingParts(change.item)) {
+		const started = !watchingParts(item) && fact.kind !== "ci_read";
 		for (const target of featureBranches(change.item)) {
-			if (target.featureCi && target.head && (target.featureCi.head !== target.head || (!watchingParts(item) && fact.kind !== "ci_read"))) {
+			if (target.featureCi && target.head && (target.featureCi.head !== target.head || started)) {
 				target.featureCi = { head: target.head, since: fact.at };
 				queueFeatureCi(change, "alias" in target ? target.alias : undefined);
 			}
@@ -454,7 +455,6 @@ function apply(c: Change, fact: Fact): boolean {
 			if (fact.kind === "edit_plan" && !Object.hasOwn(fact.plan as object, "overflow")) plan.overflow = item.featurePlan?.overflow ?? false;
 			if (item.forceSplit && plan.singleSuggested) throw new PlanError("Propose two to six subtasks as requested.");
 			const keys = [...plannedJobs.map(job => job.task.key), ...plan.subtasks.map(task => task.key)];
-			if (plan.subtasks.some(t => item.jobs?.some(j => j.ciFix && j.task.key === t.key))) throw new PlanError("Choose a new key for the planned subtask. That key belongs to a feature CI fix.");
 			if (new Set(keys).size > 6) throw new PlanError("A feature may have at most six distinct subtasks across its plans.");
 			if (fact.kind === "file_plan") {
 				const approvedPlan = item.replans ? item.approvedPlan : undefined;
@@ -2472,12 +2472,9 @@ function readFeatureCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>) {
 		const fingerprint = ciFingerprint(reading);
 		ci.repeated = item.jobs!.some(j => j.state === "done" && j.ciFix?.fingerprint === fingerprint && j.task.repo === fact.repo);
 		if (!ci.repeated) {
-			let n = item.revision + 1;
-			const used = new Set([...item.jobs!.map(j => j.task.key), ...item.featurePlan!.subtasks.map(t => t.key)]);
-			while (used.has("ci-fix-" + n)) n++;
-			const key = "ci-fix-" + n;
+			const key = `ci-fix-${item.revision + 1}`;
 			const brief = `Inspect the feature diff with git diff ${branch.seed ?? item.task.base}...${fact.head}.\n\n` +
-				ciFixText(fact.head, reading).slice(0, 10_000) + "\n\nFeature diff (quoted data):\n" + (fact.diff || "Read the pinned diff in your checkout.");
+				ciFixText(fact.head, reading).slice(0, 10_000);
 			const task = { key, title: "Fix feature CI on " + shortSha(fact.head), brief, repo: fact.repo,
 				dependsOn: [], owns: fact.paths ?? [], acceptance: ["The failing feature checks pass."],
 				budget: { tokens: Math.min(...item.featurePlan!.subtasks.map(t => t.budget.tokens)) } };
@@ -2528,17 +2525,6 @@ function nextChild(c: Change) {
 		if (!running.length) ask(c, "rounds", repeatedWords("ci_fix", item.task), [choice("revise"), choice("give_up")], "repeated", null);
 		return;
 	}
-	if (!running.length && !fix && plan.subtasks.every(s => done.has(s.key))) {
-		if (branches.some(b => b.featureCi && (b.featureCi.head !== b.head || !b.featureCi.passed))) {
-			c.state("waiting", { reason: "ci", sentence: "Waiting for CI on the current feature head.", retryAt: null });
-			return;
-		}
-		if (c.run.confirmFeatureCi) {
-			delete c.run.confirmFeatureCi;
-			if (isDeepStrictEqual(item.integration?.heads, integrationHeads(item))) return crossHandOver(flow(c));
-		}
-		return crossRepo(item) ? beginIntegration(flow(c)) : closing(c);
-	}
 	// Spend already includes each child's receipts. Reserve only the unused part of live allowances.
 	const perChildSeconds = (item.singleBudget ?? item.budget).hostedSeconds;
 	const free = { tokens: item.budget.tokens - item.spent.tokens, hostedSeconds: item.budget.hostedSeconds - item.spent.hostedSeconds };
@@ -2568,13 +2554,27 @@ function nextChild(c: Change) {
 		running.push(job);
 		dispatchJob(c, job);
 	}
-	if (short && !running.length) {
-		ask(c, "budget", "The remaining feature budget cannot cover the next subtask.", [choice("raise"), choice("revise"), choice("give_up")], short, null);
+	if (running.length) return;
+	if (short) return ask(c, "budget", "The remaining feature budget cannot cover the next subtask.", [choice("raise"), choice("revise"), choice("give_up")], short, null);
+	if (!featureSettled(item)) {
+		c.state("waiting", { reason: "ci", sentence: "Waiting for CI on the current feature head.", retryAt: null });
+		return;
 	}
+	if (c.run.confirmFeatureCi) {
+		delete c.run.confirmFeatureCi;
+		if (isDeepStrictEqual(item.integration?.heads, integrationHeads(item))) return crossHandOver(flow(c));
+	}
+	return crossRepo(item) ? beginIntegration(flow(c)) : closing(c);
 }
 
 /** The keys of the subtasks whose work is integrated: approval neither places nor confirms them again. */
 export const completedKeys = (item: Pick<FactoryItem, "jobs">): Set<string> => new Set(item.jobs?.filter(j => j.state === "done").map(j => j.task.key));
+
+function featureSettled(item: FactoryItem): boolean {
+	const done = completedKeys(item);
+	return !item.jobs?.some(activeJob) && !!item.featurePlan?.subtasks.every(t => done.has(t.key)) &&
+		featureBranches(item).every(b => !b.featureCi || (b.featureCi.passed && b.featureCi.head === b.head));
+}
 
 /**
  * The plan is approved: each subtask still to run is bound to its places. A subtask whose agent works
@@ -2656,11 +2656,7 @@ const choice = (id: ChoiceId) => ({ id, label: CHOICES[id] });
  * that pushed nothing yet (sent back, and stopped before a push) has nothing of its own to hand over.
  */
 function handOver(item: FactoryItem) {
-	if (item.featureCi) {
-		const done = completedKeys(item);
-		if (!item.featureCi.passed || item.featureCi.head !== item.head || item.jobs?.some(activeJob) ||
-			!item.featurePlan?.subtasks.every(t => done.has(t.key))) return [];
-	}
+	if (item.featureCi && !featureSettled(item)) return [];
 	return !item.parent && item.run?.ci && item.run.ci.head === item.head ? [choice("hand_over")] : [];
 }
 

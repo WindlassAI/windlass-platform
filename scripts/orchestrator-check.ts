@@ -69,6 +69,7 @@ test("validate the entire plan, including dependencies, paths and its one token 
 		(p: FeaturePlanEdit) => p.subtasks[0].dependsOn.push("page"),
 		(p: FeaturePlanEdit) => p.subtasks[0].dependsOn.push("missing"),
 		(p: FeaturePlanEdit) => p.subtasks[0].owns = ["../other"],
+		(p: FeaturePlanEdit) => p.subtasks[1].key = "ci-fix-1",
 		(p: FeaturePlanEdit) => p.subtasks[0].acceptance = [],
 		(p: FeaturePlanEdit) => p.subtasks[0].budget.tokens = 0,
 		(p: FeaturePlanEdit) => p.subtasks[0].budget.tokens++,

@@ -74,7 +74,7 @@ export interface CiProgress {
 
 /** One attempt of the blueprint (§1.2 `runs`): what the contract shows (`ItemRun`), and what the gate and CI read. */
 export interface Run extends ItemRun {
-	/** Recheck the feature heads after writing the combined run’s PR summaries. */
+	/** The PR summaries were published in this run. A retry can inherit a passing integration on the same heads. */
 	confirmFeatureCi?: true;
 	/** All planning deliveries in this run were checked for third-party input. Absent on older runs. */
 	planInputsTrusted?: boolean;
@@ -563,7 +563,7 @@ export type Fact =
 	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
 	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
-	| { kind: "ci_read"; featureHead?: string; repo?: string; diff?: string; paths?: string[]; autoMergeSingles?: boolean; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
+	| { kind: "ci_read"; featureHead?: string; repo?: string; paths?: string[]; autoMergeSingles?: boolean; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
 	| { kind: "auto_merge_result"; behind?: boolean; at: number; key: string; head: string; reason: string | null }
 	| { kind: "pr_read"; mergedByApp?: boolean; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
 	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
