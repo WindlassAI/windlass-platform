@@ -134,6 +134,7 @@ import {
 	type PullRequestInfo,
 	type RepositoryApproval,
 	type RepositoryDefaults,
+	type RepositoryAutonomy,
 	type RepositorySecrets,
 	type RepositorySetup,
 	type RepositoryView,
@@ -1322,7 +1323,7 @@ interface World {
 	/** What new agents on a repository start with, where the user said so, by GitHub's id for it. */
 	defaults: Map<GithubId, SavedDefaults>;
 	/** The repositories whose work items' agents can take screenshots, with when that was saved (`RepositoryDefaults.screenshots`). */
-	autonomy: Map<GithubId, { autoApprovePlans?: boolean; autoMergeSingles?: boolean; updatedAt: number }>;
+	autonomy: Map<GithubId, RepositoryAutonomy & { updatedAt: number }>;
 	screenshotsEnabled: Map<GithubId, number>;
 	/** What a repository was called when something was last saved for it or GitHub was last asked: what names one that has no session. */
 	names: Map<GithubId, string>;
@@ -3218,7 +3219,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** Saves as the server does (server/src/repository-defaults.ts): the same refusals in the same words, and only the fields that are named. */
 	/** Each repository's saved hosted size. */
 	const hostedSizes = new Map<GithubId, HostedSize>();
-	function saveDefaults(world: World, machines: MachineSummary[], repositoryId: GithubId, { screenshots, hostedSize, autoApprovePlans, autoMergeSingles, ...change }: ItemPlaceDefaults & { autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): RepositoryDefaults {
+	function saveDefaults(world: World, machines: MachineSummary[], repositoryId: GithubId, { screenshots, hostedSize, autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, ...change }: ItemPlaceDefaults & RepositoryAutonomy & { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): RepositoryDefaults {
 		if (screenshots !== undefined && typeof screenshots !== "boolean") throw new PlatformError("user", "Screenshots must be true or false.", { reason: "bad_input" });
 		if (hostedSize !== undefined && hostedSize !== null && !isHostedSize(hostedSize)) throw new PlatformError("user", "Choose one of the hosted sizes: small, standard, large.", { reason: "bad_input" });
 		if (hostedSize === null) hostedSizes.delete(repositoryId);
@@ -3227,11 +3228,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		if (next === null) world.defaults.delete(repositoryId);
 		else world.defaults.set(repositoryId, next);
 		const flags = { ...world.autonomy.get(repositoryId), updatedAt: now() };
-		for (const [key, value] of Object.entries({ autoApprovePlans, autoMergeSingles }) as Array<["autoApprovePlans" | "autoMergeSingles", boolean | undefined]>) {
+		for (const [key, value] of Object.entries({ autoApprovePlans, autoMergeSingles, waitForCiOnEachPart }) as Array<[keyof RepositoryAutonomy, boolean | undefined]>) {
 			if (value === true) flags[key] = true;
 			else if (value === false) delete flags[key];
 		}
-		if (flags.autoApprovePlans || flags.autoMergeSingles) world.autonomy.set(repositoryId, flags);
+		if (flags.autoApprovePlans || flags.autoMergeSingles || flags.waitForCiOnEachPart) world.autonomy.set(repositoryId, flags);
 		else world.autonomy.delete(repositoryId);
 		if (screenshots === false) world.screenshotsEnabled.delete(repositoryId);
 		if (screenshots === true) world.screenshotsEnabled.set(repositoryId, now());
@@ -3903,7 +3904,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				world().names.set(repositoryId, `${found.owner}/${found.name}`);
 				return describeRepository(found);
 			},
-			async saveRepositoryDefaults(repositoryId: GithubId, change: ItemPlaceDefaults & { autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults> {
+			async saveRepositoryDefaults(repositoryId: GithubId, change: ItemPlaceDefaults & RepositoryAutonomy & { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults> {
 				await latency(300);
 				nameAtSave(world(), repositoryId);
 				return saveDefaults(world(), machinesOf(auth).list, repositoryId, change);

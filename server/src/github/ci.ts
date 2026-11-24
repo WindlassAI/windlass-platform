@@ -398,7 +398,7 @@ function listed(value: unknown, what: string): unknown[] {
 }
 
 /** The combined status resolves branch refs to the SHA used for the workflow listing. */
-async function listCommitCi(app: GithubApp, token: string, repo: string, ref: string) {
+async function listCommitCi(app: GithubApp, token: string, repo: string, ref: string, branch?: string) {
 	const auth = { bearer: token };
 	const base = `${repo}/commits/${ref}`;
 	const checks = await app.pages({ path: `${base}/check-runs`, auth, what: "list check runs" }, body => listed(record(body).check_runs, "check runs"));
@@ -411,11 +411,15 @@ async function listCommitCi(app: GithubApp, token: string, repo: string, ref: st
 	const head = answeredFor || (/^[0-9a-f]{40}$/i.test(ref) ? ref : text(record(checks.items[0]).head_sha) || ref);
 	const workflows = await app.pages({ path: `${repo}/actions/runs`, query: { head_sha: head }, auth, what: "list workflow runs for the commit" },
 		body => listed(record(body).workflow_runs, "workflow runs").map(record));
+	// Fast-forwarding a part can leave two branches' workflow runs on the same SHA.
+	const otherBranch = (run: Record<string, unknown>) => !!branch && !!run.head_branch && run.head_branch !== branch;
+	const otherSuites = new Set(workflows.items.filter(otherBranch).map(run => decimalId(run.check_suite_id)).filter(Boolean));
 	return {
 		head,
-		checks: checks.items.map(record).filter(check => (!check.head_sha || check.head_sha === head) && !ownApp(record(check.app), app.settings)),
+		checks: checks.items.map(record).filter(check => (!check.head_sha || check.head_sha === head) && !ownApp(record(check.app), app.settings) &&
+			!otherBranch(record(check.check_suite)) && !otherSuites.has(decimalId(record(check.check_suite).id))),
 		statuses: statuses.items,
-		workflows: workflows.items,
+		workflows: workflows.items.filter(run => !otherBranch(run)),
 		truncated: checks.truncated || statuses.truncated || workflows.truncated,
 	};
 }
@@ -503,14 +507,14 @@ async function readRuns(app: GithubApp, token: string, target: CiTarget, listing
 }
 
 /** Reads the CI of a commit. Never throws for anything GitHub answers: every outcome is a `CiReading`. */
-export async function readCi(app: GithubApp, target: CiTarget, { baseResultsOnly = false, since = Date.now() }: { baseResultsOnly?: boolean; since?: number } = {}): Promise<CiReading> {
+export async function readCi(app: GithubApp, target: CiTarget, { baseResultsOnly = false, since = Date.now(), branch }: { baseResultsOnly?: boolean; since?: number; branch?: string } = {}): Promise<CiReading> {
 	// GitHub's answer to a call of the reading, as against one to the request for its token.
 	let answered: GithubError | null = null;
 	try {
 		return await app.withToken(target.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", checks: "read", statuses: "read", actions: "read" } }, async (token) => {
 			try {
 				const repo = `/repos/${target.owner}/${target.name}`;
-				const listing = await listCommitCi(app, token, repo, target.head);
+				const listing = await listCommitCi(app, token, repo, target.head, branch);
 				const reading = await readRuns(app, token, target, listing, baseResultsOnly);
 				if (!baseResultsOnly && reading.kind === "read" && ciState(reading) === "none") {
 					const gracePeriod = Date.now() - since < CI_POLLING.noneAfterMs;

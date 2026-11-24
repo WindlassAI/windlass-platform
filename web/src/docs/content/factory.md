@@ -216,7 +216,7 @@ Each automatic action appears in the timeline and counts against that run’s al
 | The agent changes nothing | Ask it once to finish the task or explain in its report why no change is needed. |
 | The sandbox runs out of memory | Try the next allowed hosted size once, or retry the same size once. Resizing also starts from GitHub. |
 | Checks cannot run in the environment | Retry the step once. |
-| Local checks did not verify a subtask | Run the saved checks once. If they still give no local evidence and CI passes on that exact commit, integrate and record the missing evidence in the verdict. |
+| Local checks did not verify a subtask | Run the saved checks once. By default, the part waits for passing local checks. With per-part CI enabled, the factory can accept passing CI on the exact commit and record the missing local evidence in the verdict. |
 | CI is cancelled or times out | Request one eligible infrastructure rerun, update from an ahead base once, then wait once. |
 | A blocked part’s feature is behind its target | Update the feature from the target once, between integrations. |
 | No sandbox or approved place is free, or a machine is away | Show the reason and wait up to six hours. Work resumes when the place becomes available. |
@@ -355,7 +355,7 @@ Plan first starts with a plan whether the feature needs one implementer or sever
 Approving a split into subtasks needs two things on the repository:
 
 - saved [checks](/docs/settings#checks);
-- CI that reports on pushes to the feature's branches, `windlass/feature-<id>` and its subtasks' branches. An enabled GitHub Actions workflow with `on: push` will do, as long as its branch filters do not leave those branches out. CI of another kind counts once it has passed on an earlier `windlass/` branch pushed without a pull request. A workflow that runs only on pull requests is not enough.
+- CI that reports on pushes to the feature branch, `windlass/feature-<id>`. If **Wait for CI on each part** is enabled, CI must also report on subtask branches. An enabled GitHub Actions workflow with `on: push` will do, as long as its branch filters do not leave those branches out. CI of another kind counts once it has passed on an earlier `windlass/` branch pushed without a pull request. A workflow that runs only on pull requests is not enough.
 
 If these checks are missing, you can still run the plan with one implementer. The composer flags repositories with no saved checks.
 
@@ -428,7 +428,7 @@ Each subtask is a work item with its own page, which says **subtask of** the fea
 
 Up to three subtasks can run together when their dependencies are done and their owned paths are disjoint. A subtask with no owned paths runs alone. Each gets its own branch, place and reserved budget. If a place or budget share is unavailable, it waits while the others work.
 
-After local checks and push CI pass, the platform integrates one branch at a time by fast-forward or merge commit. A conflict goes back to that subtask to merge the feature branch and pass its checks again. The final summary and review wait for every subtask.
+By default, each part can join the feature as soon as its local checks pass. Dependent parts can then start. To require passing GitHub CI on each part as well, turn on **Wait for CI on each part** in the repository’s settings before the feature branch opens. The platform integrates one branch at a time by fast-forward or merge commit. A conflict goes back to that subtask to merge the feature branch and pass its checks again. The final summary and review wait for every subtask.
 
 When the target branch moves during a single-repository feature, choose **Update the feature from main** (or the name of your target) on the feature page or a CI question. The platform merges the target into the feature branch between subtask integrations. New parts start from the updated tip. A running part whose CI needs attention can then choose **Update from the base branch and run CI again**. If the target conflicts with the feature, resolve it on GitHub and check the branch again, or choose **Give up**.
 
@@ -444,15 +444,17 @@ If a subtask fails or is cancelled, the planner revises the plan for the work le
 
 When you approve a split plan, the platform opens a draft pull request from `windlass/feature-<id>` into the base branch. Each subtask's work lands on that branch. When the feature is handed over, the pull request is marked ready for review. Merging a feature stays yours.
 
-A feature gets no turns of its own to fix CI or merge its base. If CI fails on the whole feature, or the pull request conflicts with its base, the feature asks you, with **Check the feature PR again**, **Hand it over as it is** and **Give up**.
+By default, the factory watches CI on the current feature head as parts join. A failure queues one fix part with the failing checks, their logs and the feature diff. The fix passes the local gate and joins through the same integration queue. Each new head supersedes the previous CI result. Handover waits until all parts have finished and CI passes on the current head. If the same failure comes back after a fix, the feature stops and asks you.
+
+With **Wait for CI on each part** enabled, a failure on the assembled feature asks you to check the PR again, hand it over as it is, or give up.
 
 ### When orchestration stops
 
 These stop the feature and ask you:
 
-- a subtask has no passing checks or no CI on its push: "Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up.";
+- with per-part CI enabled, a subtask has no passing checks or no CI on its push: "Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up.";
 - two subtasks stopped with the same failure, or one subtask stopped a second time;
-- the whole feature has no CI or every check was skipped or neutral: "No passing CI reported on the complete feature. Wait for a check or hand over the PR."
+- with per-part CI enabled, the whole feature has no CI or every check was skipped or neutral: "No passing CI reported on the complete feature. Wait for a check or hand over the PR."
 
 Cancelling a feature cancels its subtasks too.
 
@@ -478,7 +480,7 @@ A GitHub issue files a feature in its own repository only. A second repository n
 
 Changing any of these after approval counts as a change of scope. The combined run runs on GitHub Actions: its time counts as the feature's working time, not its hosted time.
 
-**Approval** checks each repository through its own installation before any branch is made, and names every problem at once. Each needs saved checks and CI on pushes to its `windlass/**` branches; the Windlass CLI's CI on `main` and pull requests only is refused. The repository the combined run starts from needs `.github/workflows/windlass-integration.yml`, enabled, on its base (this repository has one). That workflow must run on `workflow_dispatch` only (no `pull_request_target`, push or other trigger), set top-level permissions of at most `contents: read`, give no job more, and reference no secret. Approval names the rule it breaks. The other repository must be public, as GitHub says it at approval, since the run checks it out without a token. If a base moved since the planner read it, approval names the move. Revise the plan, or approve with `bases: {"<alias>": "<new commit>"}` to reconfirm it. Approval takes that commit only if it is where the base is when approval reads it.
+**Approval** checks each repository through its own installation before any branch is made, and names every problem at once. Each repository needs saved checks and push CI on its feature branch. Repositories with **Wait for CI on each part** enabled also need push CI on their subtask branches. The repository the combined run starts from needs `.github/workflows/windlass-integration.yml`, enabled, on its base (this repository has one). That workflow must run on `workflow_dispatch` only (no `pull_request_target`, push or other trigger), set top-level permissions of at most `contents: read`, give no job more, and reference no secret. Approval names the rule it breaks. The other repository must be public, as GitHub says it at approval, since the run checks it out without a token. If a base moved since the planner read it, approval names the move. Revise the plan, or approve with `bases: {"<alias>": "<new commit>"}` to reconfirm it. Approval takes that commit only if it is where the base is when approval reads it.
 
 **Pull requests.** Each repository gets its own branch, `windlass/feature-<id>`, and a draft pull request. Both can be #1. A repository without draft pull requests stops the feature before any subtask runs; the pull request already opened in the other one is kept, and **Try the remaining repository again** retries only the one that failed. Each pull request carries a section, kept up to date, that links the other by its full address, says which is primary, the merge order and the combined result. Anything you write around it is kept. Neither says `Closes #n`, so the issue is not closed by the first of the two merges.
 

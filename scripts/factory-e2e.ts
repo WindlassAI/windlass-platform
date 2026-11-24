@@ -365,7 +365,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 				assert(q.choices.some(c => c.id === "run_single" && c.label === "Run as a single item") && !q.choices.some(c => c.id === "approve"), "Wrong choices for a blocked plan.");
 				const githubReads = () => standin.requests.length;
 				const before = githubReads();
-				standin.commit(repo, "main", { [workflow]: restricted.replace("[main]", "[main, 'windlass/**']") }, "Enable branch builds");
+				standin.commit(repo, "main", { [workflow]: restricted.replace("[main]", `[main, 'windlass/feature-${feature.id}']`) }, "Enable the feature branch build");
 				const pages = await Promise.all(Array.from({ length: 4 }, () => user.item(feature.id)));
 				assert(pages.every(v => v.question?.approvalBlock === q.approvalBlock) && githubReads() === before, "Repeated previews read GitHub within a minute.");
 				const refreshed = await untilItem(user, feature.id, "the expired preview to read the new head", v => !v.question?.approvalBlock && !!v.question?.choices.some(c => c.id === "approve"), 80_000);
@@ -483,6 +483,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const { user, client } = await world(updateServer, standin, { WLP_FEATURE_TEST_GIT: join(updateServer.storage, "git") });
 			let release = () => {};
 			try {
+				await user.saveRepositoryDefaults({ repositoryId: repo.id, waitForCiOnEachPart: true });
 				await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
 				const feature = await user.createItem({ repository: { id: repo.id }, title: "Search documents", body: "Index and search documents.", mode: "orchestrate", start: true });
 				const proposal = await untilItem(user, feature.id, "the plan approval", v => v.question?.kind === "plan_approval");
@@ -554,14 +555,18 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const proposed = await untilItem(user, feature.id, "the feature plan", v => !!v.question);
 			assert(proposed.plan && proposed.question?.kind === "plan_approval", stateOf(proposed));
 			await user.actOnItem({ id: feature.id, action: { kind: "approve_plan", version: proposed.plan.version } });
+			let failedHead: string | null = null;
 			const done = await untilItem(user, feature.id, "the final summary and handoff", v => {
-				for (const child of v.children ?? []) {
-					const head = standin.branchHead(repo, subtaskBranch(feature.id, child.parent!.key, child.id));
-					if (head && !repo.ci.has(head)) setCi(repo, head, "success");
-				}
+				const head = standin.branchHead(repo, "windlass/feature-" + feature.id);
+				if (!failedHead && head && v.children?.length === proposed.plan!.subtasks.length && v.children.every(c => c.state === "done")) {
+					failedHead = head;
+					setCi(repo, head, "failure");
+				} else if (failedHead && head && head !== failedHead && !repo.ci.has(head)) setCi(repo, head, "success");
 				return v.state === "review" || !!v.question || !!v.children?.some(child => child.question);
 			}, 320_000);
 			assert(done.state === "review" && done.report && done.pullRequest, stateOf(done));
+			assert(failedHead && done.head !== failedHead && done.children?.length === proposed.plan.subtasks.length + 1 &&
+				done.children.every(c => c.state === "done" && c.verdict?.ci === "unread"), "Expected one locally verified CI fix before handover.");
 			const { timeline } = await client.agentSession.get([auth.profile.uid, feature.sessionId], { params: { token: auth.token } }).snapshot();
 			const called = timeline.find(e => e.kind === "windlass" && e.event.type === "tool.called" && e.event.data?.name === "report");
 			assert(called && called.turn > 1, "The feature summary did not call report.");
@@ -570,13 +575,14 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const pr = await waitFor("the ready feature PR", () => standin.pulls.find(p => p.repository === repo.id && p.number === done.pullRequest!.number && !p.draft), 30_000);
 			assert(pr.body.includes("What the fake agent did."), "The ready PR omitted the filed summary.");
 			await client.dispose();
-			return "the summary called report and reached handoff";
+			return "the parts joined without CI, one fix repaired the feature and the summary reached handoff";
 		});
 	} finally { await summaryServer.stop(); summaryServer.remove(); }
 	const server = new Server();
 	try {
 		await check("orchestrator: Orchestrate anyway replans, integrates two checked children and hands over one reviewed PR", async () => {
 			const { user, client, auth } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_GITHUB_WEBHOOK_SECRET: server.secret, WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
+			await user.saveRepositoryDefaults({ repositoryId: harbor.id, waitForCiOnEachPart: true });
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{name:"build",command:"true"}] });
 			const single = (await user.factoryLimits()).item;
 			const token = (await user.createApiToken({ name: "feature", scopes: ["items:create", "items:read"] })).secret;
@@ -689,6 +695,7 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 				".github/workflows/windlass-integration.yml": readFileSync(join(root, ".github/workflows/windlass-integration.yml"), "utf8"), "README.md": "# platform\n" } });
 			// The Windlass CLI's actual CI: pushes to main and pull requests only.
 			const cli = standin.addRepository({ owner: "ada", name: "xcli", installation, files: { ".github/workflows/ci.yml": readFileSync(join(root, "fixtures/windlass-ci/main.yml"), "utf8"), "CROSS.md": "only the CLI has this line\n" } });
+			await user.saveRepositoryDefaults({ repositoryId: cli.id, waitForCiOnEachPart: true });
 			for (const repo of [platform, cli]) await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
 			await refused(() => user.createItem({ repository: { id: platform.id }, repositories: [{ alias: "platform", id: platform.id }, { alias: "cli", id: cli.id }, { alias: "docs", id: harbor.id }], title: "Three", body: "x", mode: "orchestrate" }), "bad_input");
 			await refused(() => user.createItem({ repository: { id: platform.id }, repositories: [{ alias: "platform", id: platform.id }, { alias: "cli", id: cli.id }], title: "Quick", body: "x", mode: "single" }), "bad_input");
@@ -736,12 +743,15 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 				for (const child of v.children ?? []) {
 					const repo = child.repository.id === cli.id ? cli : platform;
 					children.add(child.id + ":" + child.repository.id);
-					const pushed = standin.branchHead(repo, subtaskBranch(child.parent!.itemId, child.parent!.key, child.id));
+					const branch = repo === cli ? subtaskBranch(id, child.parent!.key, child.id) : "windlass/feature-" + id;
+					const pushed = standin.branchHead(repo, branch);
 					if (pushed && !repo.ci.has(pushed)) setCi(repo, pushed, "success");
 				}
 				return v.run?.step.kind === "integration" || !!v.question || !!v.children?.some(c => c.question);
 			}, 320_000);
 			assert(integrating.run?.step.kind === "integration", integrating.question?.text ?? integrating.children?.find(c => c.question)?.question?.text ?? stateOf(integrating));
+			assert(integrating.children?.every(child => child.verdict?.ci === (child.repository.id === cli.id ? "passed" : "unread")),
+				"Each child must follow its own repository’s CI setting.");
 			const pulls = [platform, cli].map(repo => standin.pulls.filter(p => p.repository === repo.id));
 			assert(pulls.every(list => list.length === 1 && list[0].number === 1 && list[0].draft), "Expected exactly one draft PR #1 per repository: " + JSON.stringify(pulls.map(l => l.map(p => [p.number, p.draft]))));
 			assert(pulls.every(list => countsOnly(list[0].body)), "A cross-repository draft did not show just the refusal count");

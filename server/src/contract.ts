@@ -1070,6 +1070,7 @@ export interface RepositorySecrets {
 export interface RepositoryAutonomy {
 	autoApprovePlans?: boolean;
 	autoMergeSingles?: boolean;
+	waitForCiOnEachPart?: boolean;
 }
 
 export type DefaultPlace = "hosted" | "any-machine" | { machine: string };
@@ -2658,7 +2659,7 @@ export interface UserActions {
 	 * null saves none for it. Throws a UserError with code `bad_input` for a sandbox this deployment
 	 * does not offer or cannot run, and `bad_model` for a model that is not among the user's.
 	 */
-	saveRepositoryDefaults(input: ItemPlaceDefaults & { repositoryId: GithubId; autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(input: ItemPlaceDefaults & RepositoryAutonomy & { repositoryId: GithubId; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
 	/**
 	 * Forgets the user's remembered approvals of that MCP server for a repository, whatever its
 	 * definition was (`RepositoryView.forgetting` says what stays). Resolves when nothing was remembered, too.

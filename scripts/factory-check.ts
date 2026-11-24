@@ -1893,6 +1893,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	assert.equal(log({ autoApprovePlans: true, autoMergeSingles: false }), prefix + " auto_approve_plans=true auto_merge_singles=false");
 	assert.equal(log({ autoApprovePlans: false }), prefix + " auto_approve_plans=false");
 	assert.equal(log({ screenshots: true }), prefix);
+	assert.equal(log({ waitForCiOnEachPart: true }), prefix + " wait_for_ci_on_each_part=true");
 	expect("the defaults audit records each supplied autonomy switch with its true or false value", true);
 }
 
@@ -2009,6 +2010,76 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		return walk(item, [{ kind: "child_update", key: job.dispatchKey, child: job.id, state, spent: { ...zero, tokens, hostedSeconds }, head: H(2), report: state }]).item;
 	}
 	const keys = (item: FactoryItem) => item.jobs!.map(j => j.task.key);
+	{
+		const parts = [task("one"), task("two", ["two"], ["one"])];
+		let feature = start(parts);
+		const read = (item: FactoryItem, reading: CiReading) => ({ ...ciFact(reading, item.head!), key: item.featureCi!.key,
+			paths: ["one"], diff: "+fixed = false" });
+		const failed = ciRead([{ name: "build", state: "failed", log: "Unexpected result" }]);
+		function join(item: FactoryItem, key: string, head: string) {
+			const job = item.jobs!.find(j => j.task.key === key)!;
+			const child = { ...newItem(), id: job.id, joinOnGate: true, parent: { itemId: item.id, title: "Feature", key } };
+			const pushed = walk(child, [...pushedRun(head).slice(0, -1), { kind: "published", webhooks: false, head, pr: null, openItems: 1 }]);
+			const grant = effect(pushed.last, "integrate")!;
+			assert.equal(grant.head, head);
+			assert.equal(effect(pushed.last, "poll_ci"), undefined);
+			assert.equal(pushed.last.storeVerdict?.verdict.ci.state, "unread");
+			const claimed = walk(item, [{ kind: "claim_join", child: job.id, key: grant.key }]).item;
+			assert.equal(claimed.joining?.child, job.id);
+			assert.equal(walk(pushed.item, [{ kind: "integrated", head }]).item.state, "done");
+			return walk(claimed, [{ kind: "finish_join", child: job.id, result: { key: grant.key, head } },
+				{ kind: "child_update", child: job.id, key: job.dispatchKey, state: "done", spent: zero, head, report: "Joined" }]).item;
+		}
+		assert.deepEqual(keys(feature), ["one"]);
+		const stale = read(feature, failed);
+		feature = join(feature, "one", H(2));
+		assert.deepEqual(keys(feature), ["one", "two"]);
+		assert.equal(walk(feature, [stale]).item, feature);
+		feature = update(feature, "two", "working");
+		const red = read(feature, failed);
+		const queued = walk(feature, [{ ...red, paths: ["two"] }]).item;
+		assert.equal(queued.jobs!.at(-1)?.dispatchKey, undefined, "overlapping work keeps the fix queued");
+		assert.equal(walk(queued, [read(queued, failed)]).item.jobs!.length, 3);
+		assert.equal(walk(queued, [read(queued, passedCi)]).item.jobs!.length, 2, "a green rerun retires the queued fix");
+		feature = walk(feature, [red]).item;
+		const fix = feature.jobs!.find(j => j.ciFix)!;
+		assert.equal(fix.start, H(2));
+		assert.ok(fix.dispatchKey);
+		for (const text of ["build", "Unexpected result", "+fixed = false"]) assert.ok(fix.task.brief.includes(text));
+		assert.equal(walk(feature, [red]).item, feature);
+		assert.equal(walk(feature, [read(feature, failed)]).item.jobs!.length, 3);
+		feature = join(feature, "two", H(3));
+		feature = walk(feature, [read(feature, passedCi)]).item;
+		assert.equal(feature.run?.step.kind, "subtasks");
+		feature = join(feature, fix.task.key, H(4));
+		assert.equal(feature.wait?.reason, "ci");
+		const repeated = walk(feature, [read(feature, failed)]).item;
+		assert.equal(repeated.question?.cause, "repeated");
+		assert.equal(repeated.jobs!.length, 3);
+		const green = walk(feature, [read(feature, passedCi)]).item;
+		assert.equal(green.run?.step.kind, "summary");
+		const summary = walk(green, [{ ...turnEnded("succeeded", null), report: "Summary" },
+			{ kind: "published", webhooks: false, head: H(4), pr: green.pr, openItems: 1 }]).item;
+		assert.equal(walk(summary, [ciFact(passedCi, H(4), H(5))]).item.state, "waiting");
+		const moved = walk(summary, [{ ...ciFact(failed, H(4), H(5)), featureHead: H(5) }]);
+		assert.equal(moved.item.head, H(5));
+		assert.equal(effect(moved.last, "poll_ci")?.head, H(5));
+		assert.equal(moved.item.jobs!.length, 3);
+		const handed = walk(summary, [ciFact(passedCi, H(4))]);
+		assert.equal(effect(handed.last, "handoff")?.verdict.head, H(4));
+		expect("local gates release dependent parts; one feature CI fix joins, then only the current green head hands over", true);
+
+		const strict = { ...newItem(), joinOnGate: false, parent: { itemId: feature.id, title: "Feature", key: "one" } };
+		const pushed = walk(strict, pushedRun(H(1)));
+		assert.ok(effect(pushed.last, "poll_ci"));
+		assert.equal(effect(pushed.last, "integrate"), undefined);
+		assert.ok(effect(walk(pushed.item, [ciFact(passedCi)]).last, "integrate"));
+		const unchecked = walk({ ...strict, joinOnGate: true }, [{ kind: "start" }, turnEnded("succeeded", null),
+			{ kind: "published", webhooks: false, head: H(1), pr: null, openItems: 1 }]);
+		assert.equal(effect(unchecked.last, "integrate"), undefined);
+		assert.equal(unchecked.item.run?.step.kind, "run_checks");
+		expect("strict parts still require CI and gate-only parts require a verified local gate", true);
+	}
 	const opening = start([task("one"), task("two")]);
 	opening.repos = ["one", "two"].map((alias, i) => ({ alias, repositoryId: String(i + 1), installationId: "42", owner: "org", name: alias, url: "", private: false, baseRef: "main", planningBaseSha: H(1) }));
 	const openingProblem = (reason: string) => ({ kind: "feature_problem", reason });
@@ -2822,7 +2893,7 @@ const { checkConclusion, checkSummary } = await import("../server/src/factory/ve
 		!["@someone", "private.invalid", "<!--", "private -->"].some(text => summary.includes(text)));
 	expect("public output fits 4000 characters and keeps the evidence link", summary.length <= 4000 && summary.includes(url));
 }
-const ciData = { runs: [] as unknown[], statuses: [] as unknown[], workflows: [] as { status: string; updated_at?: string; run_started_at?: string }[] };
+const ciData = { runs: [] as unknown[], statuses: [] as unknown[], workflows: [] as { status: string; updated_at?: string; run_started_at?: string; head_branch?: string; check_suite_id?: number }[] };
 repo.ci.set(HEAD, ciData);
 const secrets = { clientSecret: () => standin.clientSecret, privateKey: () => standin.privateKeyPem };
 const app = new GithubApp({ appId: standin.appId, slug: standin.slug, clientId: standin.clientId, apiUrl: standin.apiUrl, webUrl: standin.url }, secrets);
@@ -2937,6 +3008,12 @@ try {
 	ciData.workflows = [{ status: "completed" }];
 	assert.equal(ciState(await readCi(app, target)), "incomplete");
 	ciData.workflows = [];
+	ciData.runs = [{ ...checkRun(411, "build", "failure"), check_suite: { id: 51 } }, { ...checkRun(412, "build", "success"), check_suite: { id: 52 } }];
+	ciData.workflows = [{ head_branch: "part", check_suite_id: 51, status: "in_progress" }, { head_branch: "feature", check_suite_id: 52, status: "completed" }];
+	expect("a feature fast-forward reads only its branch’s workflow and checks on the shared commit", ciState(await readCi(app, target, { branch: "feature" })) === "passed");
+	ciData.workflows = [];
+	ciData.runs = [];
+
 	expect("active workflows keep a subtask pending and only an in-progress workflow can exceed six hours", true);
 
 	standin.commit(repo, repo.defaultBranch, {}, "Default-branch tip without CI");

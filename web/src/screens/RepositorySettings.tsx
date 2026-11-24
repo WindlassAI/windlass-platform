@@ -5,7 +5,7 @@
  * forget it; and the way to delete everything saved for it at once. Nothing here is read until the
  * view is shown. An address's fragment (`#checks`) opens it at that section once what is saved was read.
  */
-import type { RepositoryView } from "@contract";
+import type { RepositoryAutonomy, RepositoryView } from "@contract";
 import { useEffect, useState } from "react";
 import { ChecksEditor } from "../components/Checks";
 import { DefaultsSection } from "../components/Defaults";
@@ -84,7 +84,7 @@ function AutonomySettings({ page, view }: { page: RepositoryPage; view: Reposito
 	const auth = useAuth();
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
-	async function save(field: "autoApprovePlans" | "autoMergeSingles", on: boolean) {
+	async function save(field: keyof RepositoryAutonomy, on: boolean) {
 		setBusy(true);
 		setError("");
 		try {
@@ -103,6 +103,10 @@ function AutonomySettings({ page, view }: { page: RepositoryPage; view: Reposito
 			<Check checked={!!view.defaults.autoMergeSingles} disabled={busy} onChange={on => save("autoMergeSingles", on)}>
 				<span className="check-name">Auto-merge single items</span>
 				<span className="check-means">Squash-merge a current single-item PR when its verdict, CI and second review all pass.</span>
+			</Check>
+			<Check checked={!!view.defaults.waitForCiOnEachPart} disabled={busy} onChange={on => save("waitForCiOnEachPart", on)}>
+				<span className="check-name">Wait for CI on each part</span>
+				<span className="check-means">Require GitHub CI to pass on each part before it joins the feature branch.</span>
 			</Check>
 			{error && <p className="field-note tone-bad" role="alert">{error}</p>}
 		</div>
@@ -123,7 +127,7 @@ function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { pa
 		view.saved.network > 0 ? "its network list" : null,
 		view.defaults.profile !== null || view.defaults.model !== null ? "the defaults for new agents" : null,
 		view.defaults.place ? "where new work items run" : null,
-		view.defaults.autoApprovePlans || view.defaults.autoMergeSingles ? "automatic work item approvals" : null,
+		view.defaults.autoApprovePlans || view.defaults.autoMergeSingles || view.defaults.waitForCiOnEachPart ? "work item approval settings" : null,
 		view.defaults.screenshots ? "the choice to take screenshots" : null,
 		view.approvals.length > 0 ? (view.approvals.length === 1 ? "the remembered approval of one MCP server" : `the remembered approvals of ${view.approvals.length} MCP servers`) : null,
 	].filter((part): part is string => part !== null);
@@ -199,7 +203,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 	const accountChoices = startingChoices(account.settings?.defaults ?? null, info, models.list, "account");
 	const choices = layerChoices(startingChoices(view?.defaults ?? null, info, models.list), accountChoices);
 	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
-	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.saved.network > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.defaults.place || view.defaults.screenshots || view.defaults.autoApprovePlans || view.defaults.autoMergeSingles || view.approvals.length > 0);
+	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.saved.network > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.defaults.place || view.defaults.screenshots || view.defaults.autoApprovePlans || view.defaults.autoMergeSingles || view.defaults.waitForCiOnEachPart || view.approvals.length > 0);
 
 	// Opened at a section: it is gone to once the sections stand, which is when what is saved was read. The sections
 	// above it read their own lists after that and grow: it is kept in view while they do, until its person scrolls.

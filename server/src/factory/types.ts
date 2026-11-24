@@ -74,6 +74,8 @@ export interface CiProgress {
 
 /** One attempt of the blueprint (§1.2 `runs`): what the contract shows (`ItemRun`), and what the gate and CI read. */
 export interface Run extends ItemRun {
+	/** Recheck the feature heads after writing the combined run’s PR summaries. */
+	confirmFeatureCi?: true;
 	/** All planning deliveries in this run were checked for third-party input. Absent on older runs. */
 	planInputsTrusted?: boolean;
 	/** Ordered policy positions taken and the evidence that prompted each one. */
@@ -150,6 +152,7 @@ export type Task = ItemTask & { featureBody?: string };
  * item's own (`seed`, `pr`, `head`).
  */
 export interface FeatureRepoState extends FeatureRepository {
+	featureCi?: FeatureCi;
 	seed?: string;
 	marker?: string;
 	head?: string | null;
@@ -175,7 +178,17 @@ export interface IntegrationRun extends IntegrationView {
 
 export type JoinResult = { key: string } & ({ head: string } | { reason: string; conflict: boolean });
 
+/** The independent CI poll on one feature branch, pinned to its current head. */
+export interface FeatureCi {
+	head: string;
+	since: number;
+	key?: string;
+	passed?: boolean;
+	repeated?: boolean;
+}
+
 export interface FeatureJob {
+	ciFix?: { head: string; fingerprint: string };
 	/** Immutable tip from which this child branches, after repository setup at the original seed. */
 	start?: string | null;
 	/** Current attempt attached to a creation request by the parent actor. */
@@ -268,6 +281,8 @@ export interface FactoryItem {
 	routes?: Record<string, PlacementRoute>;
 	placement?: ChildPlacement;
 	jobs?: FeatureJob[];
+	featureCi?: FeatureCi;
+	joinOnGate?: boolean;
 	joining?: { child: string; key: string };
 	/** Target commit pinned when requested. Waits behind a part already holding the join grant. */
 	featureUpdate?: { key: string; target: string; child?: string };
@@ -427,7 +442,7 @@ export type Fact =
 	| { kind: "reverify"; at: number; head: string }
 	/** `repo`: a cross-repo feature's repository, by alias; absent: the one repository. */
 	| { kind: "feature_seed"; at: number; key: string; sha: string; repo?: string }
-	| { kind: "feature_ready"; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]>; repo?: string }
+	| { kind: "feature_ready"; waitForCiOnEachPart?: boolean; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]>; repo?: string }
 	/** A cross-repo feature's combined run was asked of GitHub (`runId` once GitHub named it). */
 	| { kind: "integration_started"; at: number; key: string; attempt: number; runId: string | null; url: string | null }
 	/** What the combined run came to, or that it could not be started or read (`unavailable`). `seconds`: how long it ran. */
@@ -539,7 +554,7 @@ export type Fact =
 	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
 	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
-	| { kind: "ci_read"; autoMergeSingles?: boolean; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
+	| { kind: "ci_read"; featureHead?: string; repo?: string; diff?: string; paths?: string[]; autoMergeSingles?: boolean; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
 	| { kind: "auto_merge_result"; behind?: boolean; at: number; key: string; head: string; reason: string | null }
 	| { kind: "pr_read"; mergedByApp?: boolean; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
 	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
@@ -596,7 +611,7 @@ export type Effect =
 	/** Commit and push the session's branch, then open or update its pull request with the agent's report and the verified section. */
 	| { kind: "publish"; key: string; at?: number }
 	| { kind: "rerun_ci"; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
-	| { kind: "poll_ci"; key: string; head: string; at: number; notBefore?: number }
+	| { kind: "poll_ci"; repo?: string; key: string; head: string; at: number; notBefore?: number }
 	| { kind: "poll_pr"; key: string; pr: number; at: number }
 	/** Record the question and show it ("Needs you"). */
 	| { kind: "ask"; question: Question }

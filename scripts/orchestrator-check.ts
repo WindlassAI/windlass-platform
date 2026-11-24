@@ -253,7 +253,7 @@ test("stopped child spend is charged once and re-planning requires fresh approva
 });
 test("finished children unlock their dependents, and the final summary uses a read-only turn", () => {
 	let item = approved();
-	item = advance(item, { kind: "feature_ready", at: 5, key: currentKey(item)!, head, pr }).item;
+	item = advance(item, { kind: "feature_ready", waitForCiOnEachPart: true, at: 5, key: currentKey(item)!, head, pr }).item;
 	for (const key of ["index", "page"]) {
 		const job = item.jobs!.at(-1)!; assert.equal(job.task.key, key);
 		item = advance(item, { kind: "child_update", child: job.id, key: currentKey(item)!, at: 9, state: "done", spent: { ...zero, turns: 1 }, head, report: key + " passed" }).item;
@@ -409,7 +409,7 @@ test("the planner uses high effort when its model offers it, never ultra or max"
 
 test("the whole-feature review uses child evidence and needs the pinned head and an available reviewer", () => {
 	let item = approved();
-	item = advance(item, {kind:"feature_ready", key:currentKey(item)!, head, pr, at:5}).item;
+	item = advance(item, {kind:"feature_ready", waitForCiOnEachPart: true, key:currentKey(item)!, head, pr, at:5}).item;
 	for (const jobKey of ["index","page"]) {
 		item = advance(item, {kind:"child_update", key:currentKey(item)!, child:item.jobs!.at(-1)!.id, state:"done", head, report:jobKey+" evidence", spent:zero, at:6}).item;
 	}
@@ -480,7 +480,7 @@ test("a withdrawn feature turn settles its late usage receipt exactly once", () 
 
 test("a feature's second review stays advisory: changes requested hands over the feature PR", () => {
 	let item = approved();
-	item = advance(item, {kind:"feature_ready", key:currentKey(item)!, head, pr, at:5}).item;
+	item = advance(item, {kind:"feature_ready", waitForCiOnEachPart: true, key:currentKey(item)!, head, pr, at:5}).item;
 	for (const jobKey of ["index","page"]) {
 		item = advance(item, {kind:"child_update", key:currentKey(item)!, child:item.jobs!.at(-1)!.id, state:"done", head, report:jobKey+" evidence", spent:zero, at:6}).item;
 	}
@@ -1461,8 +1461,8 @@ const step = (item: ReturnType<typeof crossItem>, fact: Record<string, unknown>)
 function crossOpened() {
 	let item = advance(crossProposed(), { kind: "approve_plan", version: 1, at: 4, by: "person:owner" }).item;
 	for (const [repo, c] of [["platform", "3"], ["cli", "4"]] as const) item = step(item, { kind: "feature_seed", repo, sha: sha(c) }).item;
-	item = step(item, { kind: "feature_ready", repo: "platform", head: sha("5"), pr: { number: 1, url: "https://github.com/ada/platform/pull/1" } }).item;
-	return step(item, { kind: "feature_ready", repo: "cli", head: sha("6"), pr: { number: 1, url: "https://github.com/ada/cli/pull/1" } });
+	item = step(item, { kind: "feature_ready", waitForCiOnEachPart: true, repo: "platform", head: sha("5"), pr: { number: 1, url: "https://github.com/ada/platform/pull/1" } }).item;
+	return step(item, { kind: "feature_ready", waitForCiOnEachPart: true, repo: "cli", head: sha("6"), pr: { number: 1, url: "https://github.com/ada/cli/pull/1" } });
 }
 /** Every child integrated: the combined run is asked for. */
 function crossIntegrating() {
