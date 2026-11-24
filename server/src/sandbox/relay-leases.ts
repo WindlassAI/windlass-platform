@@ -14,22 +14,25 @@
  * Every limit here is of one server process: a deployment of several has each of them once per process.
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { forwardProof } from "../../../sandbox/relay/wires.cjs";
 import { modelBasePath } from "../model-relay-url.js";
 import type { AccessToken } from "./api.js";
 import { config } from "../config.js";
 import { serverSealer } from "../signin/seal.js";
 import type { ForwardedKeyLease, KeyTurnRelay, ModelKeyLease, TurnModelRelay } from "./provider.js";
-import { readSignedPayload, signedPayload } from "../signatures.js";
+import { keyedDigest, readSignedPayload, signedPayload } from "../signatures.js";
 
 /** All model routes live under this prefix on the dedicated relay host. */
 export const RELAY_PREFIX = "/model-relay";
 const PREFIX = "wlpm1";
 
+export type RelayToken = (AccessToken & { kind: "access" }) | (ModelKeyLease & { kind: "key" });
+
 interface Lease {
 	uid: string;
 	sessionId: string;
-	token: AccessToken | ModelKeyLease | null;
+	token: RelayToken | null;
 	/** When its placeholder's signature stops counting. */
 	expiresAt: number;
 	/** Its requests running in this process: `close` aborts them. */
@@ -68,6 +71,7 @@ export function endedLease(nonce: string, now = Date.now()): boolean {
 
 /** What a placeholder names, once its signature and expiry are checked. */
 export interface Placeholder {
+	machine?: string;
 	uid: string;
 	sessionId: string;
 	nonce: string;
@@ -77,18 +81,20 @@ export interface Placeholder {
 
 /** A placeholder's payload, or null for anything this deployment did not sign, or signed for something else, or that expired. */
 export function readPlaceholder(bearer: string, now = Date.now()): Placeholder | null {
-	const payload = readSignedPayload(bearer, PREFIX, 1024, (kind) => (kind === "m" ? "model-relay" : null));
+	const payload = readSignedPayload(bearer, PREFIX, 1024, (kind) => (kind === "m" || kind === "f" ? "model-relay" : null));
 	if (payload === null) return null;
-	const { u, s, n, exp } = payload;
+	const { u, s, n, exp, machine } = payload;
 	if (typeof u !== "string" || typeof s !== "string" || typeof n !== "string" || !/^[a-f0-9]{32}$/.test(n) || typeof exp !== "number" || exp <= now) return null;
-	return { uid: u, sessionId: s, nonce: n, expiresAt: exp };
+	const placeholder = { uid: u, sessionId: s, nonce: n, expiresAt: exp };
+	if (payload.k === "m") return machine === undefined ? placeholder : null;
+	return typeof machine === "string" && machine ? { ...placeholder, machine } : null;
 }
 
-export function leaseToken(nonce: string, uid: string, sessionId: string, now = Date.now()): AccessToken | ModelKeyLease | null {
+export function leaseToken(nonce: string, uid: string, sessionId: string, now = Date.now()): RelayToken | null {
 	const lease = leases.get(nonce);
 	if (!lease || lease.uid !== uid || lease.sessionId !== sessionId || lease.expiresAt <= now) return null;
 	const token = lease.token;
-	return token && ("provider" in token || token.expiresAt > now) ? token : null;
+	return token && (token.kind === "key" || token.expiresAt > now) ? token : null;
 }
 
 export interface RemoteLease {
@@ -104,7 +110,7 @@ export function remoteLease(nonce: string, uid: string, sessionId: string, reque
 	const lease = leases.get(nonce);
 	if (!lease || lease.uid !== uid || lease.sessionId !== sessionId) return { held: false, token: null };
 	const token = leaseToken(nonce, uid, sessionId);
-	return { held: true, token: token && "accessToken" in token
+	return { held: true, token: token?.kind === "access"
 		? serverSealer().seal("transit", relayTransitSubject(uid, sessionId, nonce, request), JSON.stringify({ ...token, exp: Date.now() + 60_000 }))
 		: token };
 }
@@ -129,39 +135,61 @@ export function trackRequest(nonce: string, controller: AbortController): (() =>
  * A turn's lease. `origin`: WLP_PUBLIC_URL, the address the sandbox reaches the route at. `ttlMs`: how long
  * the placeholder's signature counts, at most; the lease itself ends with the turn, before that.
  */
-export function openRelayLease(input: { uid: string; sessionId: string; origin: string; ttlMs: number; key?: ModelKeyLease }): TurnModelRelay {
+type LeaseInput = { uid: string; sessionId: string; origin: string; ttlMs: number };
+
+function closeLease(nonce: string, lease: Lease) {
+	leases.delete(nonce);
+	lease.token = null;
+	endLease(nonce, lease.expiresAt);
+	for (const controller of lease.requests) controller.abort(new Error("the turn's model relay lease has ended"));
+}
+
+export function openRelayLease(input: LeaseInput & { key?: undefined }): TurnModelRelay;
+export function openRelayLease(input: LeaseInput & { key: ModelKeyLease; machine?: string }): KeyTurnRelay;
+export function openRelayLease(input: LeaseInput & { key?: ModelKeyLease; machine?: string }): TurnModelRelay | KeyTurnRelay {
+	const now = Date.now();
+	for (const [nonce, lease] of leases) if (lease.expiresAt <= now) closeLease(nonce, lease);
 	const nonce = randomBytes(16).toString("hex");
-	const expiresAt = Date.now() + input.ttlMs;
-	leases.set(nonce, { uid: input.uid, sessionId: input.sessionId, token: input.key ? { ...input.key } : null, expiresAt, requests: new Set() });
-	const placeholder = signedPayload(PREFIX, "model-relay", { k: "m", u: input.uid, s: input.sessionId, n: nonce, exp: expiresAt });
-	return {
-		placeholder,
+	const expiresAt = now + input.ttlMs;
+	const lease: Lease = { uid: input.uid, sessionId: input.sessionId, token: input.key ? { ...input.key, kind: "key" } : null, expiresAt, requests: new Set() };
+	leases.set(nonce, lease);
+	const relay = {
+		// An older platform process cannot accept a machine lease without verifying its proof.
+		placeholder: signedPayload(PREFIX, "model-relay", { k: input.machine ? "f" : "m", u: input.uid, s: input.sessionId, n: nonce, exp: expiresAt, machine: input.machine }),
 		env: { WINDLASS_MODEL_BASE_URL: input.origin + RELAY_PREFIX + modelBasePath(input.key?.provider), WINDLASS_MODEL_ALLOWED_ORIGIN: input.origin },
-		hand: async (token) => {
-			const lease = leases.get(nonce);
-			if (!lease || input.key) throw new Error("This lease cannot receive an access token");
-			lease.token = { accessToken: token.accessToken, expiresAt: token.expiresAt };
-		},
-		close: async () => {
-			const lease = leases.get(nonce);
-			leases.delete(nonce);
-			endLease(nonce, expiresAt);
-			// Its requests still running end now, not when they would have finished.
-			for (const controller of lease?.requests ?? []) controller.abort(new Error("the turn's model relay lease has ended"));
-		},
+		close: async () => closeLease(nonce, lease),
 	};
+	if (input.key) return relay;
+	return { ...relay, hand: async (token: AccessToken) => {
+		if (!leases.has(nonce)) throw new Error("This relay lease has ended.");
+		lease.token = { kind: "access", accessToken: token.accessToken, expiresAt: token.expiresAt };
+	} };
+}
+
+// Only used with a placeholder we just signed or verified. Its signing-key id survives key rotation.
+function proofKey(placeholder: string): string {
+	return keyedDigest("model-relay", "forward-proof/" + placeholder, placeholder.split(".")[1]!).toString("base64url");
+}
+
+export function verifiedMachine(placeholder: string, machine: string, proof: string | undefined, method: string, path: string, now: number): string | undefined {
+	if (!proof || !/^[1-9]\d{12}\.[A-Za-z0-9_-]{43}$/.test(proof)) return;
+	const time = Number(proof.split(".")[0]);
+	if (Math.abs(now - time) > 60_000) return;
+	const expected = forwardProof(proofKey(placeholder), machine, method, path, time);
+	if (timingSafeEqual(Buffer.from(expected), Buffer.from(proof))) return machine;
 }
 
 /** Keep the Settings key on the platform. The Docker relay forwards with a second, turn-scoped placeholder. */
-export async function forwardKeyLease(uid: string, sessionId: string, key: ModelKeyLease,
+export async function forwardKeyLease(uid: string, sessionId: string, key: ModelKeyLease, machine: string | undefined,
 	open: (forward: ForwardedKeyLease) => Promise<KeyTurnRelay>): Promise<KeyTurnRelay> {
 	const url = config.modelRelay.url;
 	if (!config.modelRelay.on || !url || !sessionId) throw new Error("A saved provider key requires a platform model relay.");
-	const ttlMs = config.turnTimeoutMs + 15 * 60_000;
+	const ttlMs = config.turnTimeoutMs + 60_000;
 	const expiresAt = Date.now() + ttlMs;
-	const platform = openRelayLease({ uid, sessionId, key, origin: url.origin, ttlMs });
+	const platform = openRelayLease({ uid, sessionId, key, machine, origin: url.origin, ttlMs });
 	try {
-		const local = await open({ provider: key.provider, host: url.host, placeholder: platform.placeholder, expiresAt });
+		const local = await open({ provider: key.provider, host: url.host, placeholder: platform.placeholder, expiresAt,
+			...(machine && { proofKey: proofKey(platform.placeholder) }) });
 		return { env: local.env, placeholder: local.placeholder, close: async () => { await platform.close(); await local.close(); } };
 	} catch (error) {
 		await platform.close();

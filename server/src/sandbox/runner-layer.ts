@@ -41,7 +41,7 @@ import { AttachTickets } from "../machines/ticket.js";
 import { type ConnectOptions, type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type RunnerStartTimes, type SandboxLayer, type Sandboxes, ENVIRONMENT_SLOT_WAIT, SandboxUserError } from "./api.js";
 import { SESSION_VOLUME_PROFILES, findProfile } from "./profiles.js";
 import { forwardKeyLease } from "./relay-leases.js";
-import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type ForwardedKeyLease, type TurnModelRelay, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
+import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnModelRelay, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
 import { SandboxWindlass } from "./turn.js";
 
 /** The raw socket's path: `agentSession.get([uid, sessionId]).webSocket(RUNNER_SOCKET)` on the runner's side. */
@@ -568,10 +568,11 @@ class RunnerHandle implements TurnSandbox {
 		if (found.memoryEvents) this.memoryEvents = () => link.request("memoryEvents", { id }, { signal: AbortSignal.timeout(5_000) });
 		if (found.blockedNetwork) this.blockedNetwork = (turn, retained) => link.request("blockedNetwork", { id, turn, retained }, { signal: AbortSignal.timeout(5_000) });
 		if (found.modelRelay && config.modelRelay.on) {
-			this.modelRelay = () => this.openRelay();
+			this.modelRelay = async () => this.relayOf(await link.request("modelRelay", { id }));
 			this.modelKeyRelay = (sessionId, key) => {
 				if (sessionId !== link.who.sessionId) throw new Error("This model relay belongs to another session.");
-				return forwardKeyLease(this.uid, sessionId, key, forward => this.openRelay(forward));
+				return forwardKeyLease(this.uid, sessionId, key, link.who.machineId, async forward =>
+					this.closeableRelay(await link.request("modelRelay", { id, forward })));
 			};
 			if (link.durable) this.resumeRelay = (lease) => this.relayOf(lease);
 		}
@@ -583,30 +584,22 @@ class RunnerHandle implements TurnSandbox {
 	readonly modelRelay?: () => Promise<TurnModelRelay>;
 	readonly modelKeyRelay?: TurnSandbox["modelKeyRelay"];
 
-	/** Not repeated: a lease lost with its conversation was ended by the runner (its `orphan`), and the turn fails. */
-	private async openRelay(forward?: ForwardedKeyLease): Promise<TurnModelRelay> {
-		const { lease, placeholder, env } = await this.link.request("modelRelay", { id: this.id, ...(forward && { forward }) });
-		return this.relayOf({ lease, placeholder, env });
-	}
-
 	/** `TurnSandbox.resumeRelay`: the runner kept the lease with the conversation; the restarted turn hands it a token again at once. */
 	readonly resumeRelay?: TurnSandbox["resumeRelay"];
 
 	/** `TurnSandbox.adopt`, on a durable link. */
 	readonly adopt?: TurnSandbox["adopt"];
 
-	private relayOf({ lease, placeholder, env }: { lease: string; placeholder: string; env: Record<string, string> }): TurnModelRelay {
-		return {
-			lease,
-			placeholder,
-			env,
-			hand: async (token) => {
-				await this.link.again("modelRelayToken", { id: this.id, lease, accessToken: token.accessToken, expiresAt: token.expiresAt });
-			},
-			close: async () => {
-				await this.link.again("modelRelayClose", { id: this.id, lease }).catch(() => undefined);
-			},
-		};
+	private closeableRelay(opened: Value<"modelRelay">) {
+		return { ...opened, close: async () => {
+			await this.link.again("modelRelayClose", { id: this.id, lease: opened.lease }).catch(() => undefined);
+		} };
+	}
+
+	private relayOf(opened: Value<"modelRelay">): TurnModelRelay {
+		return { ...this.closeableRelay(opened), hand: async (token) => {
+			await this.link.again("modelRelayToken", { id: this.id, lease: opened.lease, accessToken: token.accessToken, expiresAt: token.expiresAt });
+		} };
 	}
 
 	get uid(): string {

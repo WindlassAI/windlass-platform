@@ -23,8 +23,9 @@ import { MODEL_PROVIDER_TABLES, modelProviderActions } from "../server/src/model
 import { issueServiceToken, issueUserToken } from "../server/src/tokens.js";
 import { serverSealer } from "../server/src/signin/seal.js";
 import { TokenFile, TokenFileError, openModelKeyRelay } from "../server/src/sandbox/token-file.js";
-import { BodyBudget, RelayLimiter, UserRate, forwardKeyLease, leaseToken, remoteLease, relayTransitSubject, openRelayLease, readPlaceholder } from "../server/src/sandbox/relay-leases.js";
-import { type RelayRouteDeps, type RemoteLease, modelRelayResponse, modelRelayRoute, upstreamFetch } from "../server/src/model-relay-route.js";
+import { BodyBudget, RelayLimiter, UserRate, forwardKeyLease, holdsLease, leaseToken, remoteLease, relayTransitSubject, openRelayLease, readPlaceholder, type RemoteLease } from "../server/src/sandbox/relay-leases.js";
+import { proofHeader } from "../sandbox/relay/wires.cjs";
+import { type RelayRouteDeps, modelRelayResponse, modelRelayRoute, upstreamFetch } from "../server/src/model-relay-route.js";
 import { createServer } from "node:http";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 import { e2bModelRelay, e2bModelRelayOrigin, readE2bNetwork } from "../server/src/sandbox/e2b/network.js";
@@ -444,6 +445,15 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	}));
 	assert.equal(expired.status, 401);
 }
+{
+	const input = { uid: "sweep", sessionId: "expired", origin: "https://relay.example.com" };
+	const expired = openRelayLease({ ...input, ttlMs: -1 });
+	const nonce = readPlaceholder(expired.placeholder, 0)!.nonce;
+	assert.ok(holdsLease(nonce));
+	const next = openRelayLease({ ...input, ttlMs: 60_000 });
+	assert.ok(!holdsLease(nonce));
+	await next.close();
+}
 const hosts = { openai: "api.openai.com", anthropic: "api.anthropic.com", google: "generativelanguage.googleapis.com", openrouter: "openrouter.ai" };
 const paths = { openai: ["/v1/models", "/v1/responses", "/v1/chat/completions"], anthropic: ["/v1/models", "/v1/messages"],
 	google: ["/v1beta/models", "/v1beta/models/gemini-test:generateContent", "/v1beta/models/gemini-test:streamGenerateContent?alt=sse"],
@@ -458,6 +468,7 @@ for (const provider of MODEL_PROVIDERS) {
 	const origin = "https://relay.example.com";
 	const e2b = new E2bSandboxHandle({modelRelayOrigin: origin, relayLeaseMs:60_000} as never, {} as never, "box", uid, "e2b", "auto", undefined, sessionId);
 	const lease = await openModelKeyRelay(e2b, sessionId, keyLease);
+	assert.ok(!("hand" in lease));
 	const auth = provider === "anthropic" ? "x-api-key" : provider === "google" ? "x-goog-api-key" : "authorization";
 	const credential = (value: string) => auth === "authorization" ? "Bearer " + value : value;
 	const sql = new DatabaseSync(":memory:");
@@ -479,6 +490,8 @@ for (const provider of MODEL_PROVIDERS) {
 		assert.equal(req.headers[auth] === credential(key), true, "upstream auth must use saved key");
 		assert.equal(["authorization", "x-api-key", "x-goog-api-key"].filter(name => req.headers[name]).length, 1);
 		assert.equal(req.headers["x-unknown"], undefined);
+		assert.equal(req.headers["x-goog-api-client"], undefined);
+		assert.equal(req.headers[proofHeader], undefined);
 		assert.equal(req.method, path.endsWith("/models") ? "GET" : "POST");
 		seen.push(path);
 		res.setHeader("x-request-id", key);
@@ -522,7 +535,8 @@ for (const provider of MODEL_PROVIDERS) {
 	config.modelRelay.url = {origin, host:"relay.example.com"};
 	let forward!: ForwardedKeyLease;
 	let localClosed = false;
-	const forwarded = await forwardKeyLease(uid, sessionId, keyLease, async value => {
+	const machineId = "test-machine";
+	const forwarded = await forwardKeyLease(uid, sessionId, keyLease, machineId, async value => {
 		forward = value;
 		return { placeholder:localPlaceholder, env:{}, close:async () => { localClosed = true; } };
 	});
@@ -532,17 +546,22 @@ for (const provider of MODEL_PROVIDERS) {
 	const args = {id:"box", forward};
 	assert.ok(validArgs("modelRelay", args) && carriesSecret({kind:"op", id:"test", name:"modelRelay", args}));
 	const nonce = randomBytes(16).toString("hex");
-	const machine = windlassProvider({ load:async () => ({lease:localPlaceholder, forward, expiresAt:Date.now()+60_000}) });
+	const relayFor = (machine: string, now = Date.now) => windlassProvider({ machine, now, load:async () => ({lease:localPlaceholder, forward, expiresAt:forward.expiresAt}) });
+	const machine = relayFor(machineId);
 	try {
 		console.warn = (...args) => { logs.push(args); };
 		for (const path of paths[provider]) {
-			const request = endpoint(path);
+			const request = endpoint(path, provider === "google" ? { "x-goog-api-client": "gl-node/test" } : {});
 			const local = { ...Object.fromEntries(request.headers), [auth]:credential(localPlaceholder) };
 			assert.ok(await machine.authorize(machine.bearer(local), nonce));
 			const target = await machine.target(path, local, nonce);
 			assert.equal(target.hostname, forward.host);
 			assert.equal(target.headers[auth] === credential(forward.placeholder), true);
 			assert.equal(target.path, "/model-relay" + path);
+			if (provider === "google") {
+				assert.equal(target.headers["x-goog-api-client"], undefined);
+				assert.deepEqual(await machine.target(path, { ...local, "x-unknown": "value" }, nonce), { refused: true });
+			}
 			const response = await modelRelayResponse(new Request(origin + target.path, { method:request.method, headers:target.headers }), d);
 			const body = await response.text();
 			assert.equal(response.status, 200);
@@ -551,6 +570,20 @@ for (const provider of MODEL_PROVIDERS) {
 			assert.equal(response.headers.get("x-request-id"), null);
 		}
 		const models = paths[provider][0]!;
+		const signed = readPlaceholder(forward.placeholder)!;
+		assert.equal(signed.machine, machineId);
+		assert.ok(signed.expiresAt <= Date.now() + config.turnTimeoutMs + 60_000);
+		const local = { [auth]: credential(localPlaceholder) };
+		const foreign = await relayFor("another-machine").target(models, local, nonce);
+		const forwardedRequest = (headers: Record<string, string>) => new Request(origin + foreign.path, { headers });
+		const beforeRefusals = sent;
+		assert.equal((await modelRelayResponse(forwardedRequest(foreign.headers), d)).status, 401);
+		assert.equal((await modelRelayResponse(forwardedRequest({ [auth]: credential(forward.placeholder) }), d)).status, 401);
+		const stale = await relayFor(machineId, () => Date.now() - 61_000).target(models, local, nonce);
+		assert.equal((await modelRelayResponse(forwardedRequest(stale.headers), d)).status, 401);
+		const valid = await machine.target(models, local, nonce);
+		assert.equal((await modelRelayResponse(forwardedRequest(valid.headers), { ...d, now: () => signed.expiresAt })).status, 401);
+		assert.equal(sent, beforeRefusals);
 		const failure = await modelRelayResponse(endpoint(models), {...d, fetch:async () => { throw Error(key); }});
 		assert.equal(failure.status, 502);
 		assert.ok(!(await failure.text()).includes(key));

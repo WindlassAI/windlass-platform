@@ -11,18 +11,20 @@ import { randomBytes } from "node:crypto";
 import { openModelKeyTransit } from "./model-providers.js";
 import { serverSealer } from "./signin/seal.js";
 import { isModelProvider, type ModelProvider } from "./contract.js";
-import type { ModelKeyLease } from "./sandbox/provider.js";
+import { proofHeader } from "../../sandbox/relay/wires.cjs";
 import { isActorGone, modelKeyActor } from "./actors/internal.js";
 import { serviceParams } from "./auth.js";
 import { config, ownEngineEndpoint } from "./config.js";
 import { requestHost } from "./model-relay-url.js";
 import type { Registry } from "./registry.js";
-import type { AccessToken } from "./sandbox/api.js";
 import {
 	BodyBudget,
 	RELAY_PREFIX,
 	relayTransitSubject,
 	type RemoteLease,
+	type RelayToken,
+	type Placeholder,
+	verifiedMachine,
 	RelayLimiter,
 	ROUTE_LIMITS,
 	UserRate,
@@ -62,8 +64,6 @@ function refusal(status: number, message: string, headers: Record<string, string
 }
 /** The relay has no live lease for the placeholder: never the provider's refusal of the user's token. */
 const leaseEnded = (message = "The session placeholder is no longer valid: its turn has ended.") => refusal(401, message, {}, LEASE_ENDED);
-
-export type { RemoteLease } from "./sandbox/relay-leases.js";
 
 export interface RelayRouteDeps {
 	/** B1 returns a transit blob bound to this request nonce. */
@@ -134,10 +134,12 @@ export function upstreamFetch(url: string, init: RequestInit): Promise<Response>
 	});
 }
 
-const cached = new Map<string, { token: AccessToken; until: number }>();
+const cached = new Map<string, { token: Extract<RelayToken, { kind: "access" }>; until: number }>();
 
 /** The lease's current token; null when it has none (ended, or not yet handed one). An ended lease is remembered as such until its placeholder expires. */
-async function tokenFor(deps: RelayRouteDeps, uid: string, sessionId: string, nonce: string, placeholderExpires: number): Promise<AccessToken | ModelKeyLease | null> {
+async function tokenFor(deps: RelayRouteDeps, placeholder: Placeholder, machine: string | undefined): Promise<RelayToken | null> {
+	const { uid, sessionId, nonce, expiresAt: placeholderExpires } = placeholder;
+	if (machine !== placeholder.machine) return null;
 	const now = deps.now();
 	if (placeholderExpires <= now || endedLease(nonce, now)) return null;
 	// This process runs the turn: what it holds is the answer, and a lease it no longer holds has ended.
@@ -159,13 +161,14 @@ async function tokenFor(deps: RelayRouteDeps, uid: string, sessionId: string, no
 	}
 	if (typeof answer.token !== "string") {
 		const { provider, generation } = answer.token;
-		return isModelProvider(provider) && typeof generation === "string" ? { provider, generation } : null;
+		return isModelProvider(provider) && typeof generation === "string" ? { kind: "key", provider, generation } : null;
 	}
 	const token = JSON.parse(serverSealer().open("transit", relayTransitSubject(uid, sessionId, nonce, request), answer.token));
 	if (!Number.isSafeInteger(token.exp) || token.exp <= deps.now() || !Number.isSafeInteger(token.expiresAt)
 		|| token.expiresAt <= deps.now() || typeof token.accessToken !== "string") return null;
-	cached.set(nonce, { token, until: Math.min(token.exp, now + REMOTE_CACHE_MS) });
-	return token;
+	const access = { kind: "access" as const, accessToken: token.accessToken, expiresAt: token.expiresAt };
+	cached.set(nonce, { token: access, until: Math.min(token.exp, now + REMOTE_CACHE_MS) });
+	return access;
 }
 
 /**
@@ -173,16 +176,16 @@ async function tokenFor(deps: RelayRouteDeps, uid: string, sessionId: string, no
  * lease is looked at every REMOTE_CACHE_MS while it has a request running, and its requests are aborted
  * once it has ended.
  */
-const watched = new Map<string, { uid: string; sessionId: string; expires: number; deps: RelayRouteDeps; requests: Set<AbortController> }>();
+const watched = new Map<string, { lookup: () => Promise<RelayToken | null>; expires: number; requests: Set<AbortController> }>();
 let watching: NodeJS.Timeout | null = null;
-function watchRemote(nonce: string, uid: string, sessionId: string, expires: number, deps: RelayRouteDeps, controller: AbortController): () => void {
+function watchRemote(nonce: string, expires: number, lookup: () => Promise<RelayToken | null>, controller: AbortController): () => void {
 	let entry = watched.get(nonce);
-	if (!entry) watched.set(nonce, (entry = { uid, sessionId, expires, deps, requests: new Set() }));
+	if (!entry) watched.set(nonce, (entry = { expires, lookup, requests: new Set() }));
 	entry.requests.add(controller);
 	watching ??= setInterval(() => {
 		for (const [key, lease] of watched) {
-			void tokenFor(lease.deps, lease.uid, lease.sessionId, key, lease.expires).then((token) => {
-				if (token === null && endedLease(key)) for (const request of lease.requests) request.abort(new Error("the turn's model relay lease has ended"));
+			void lease.lookup().then((token) => {
+				if (token === null && (endedLease(key) || lease.expires <= Date.now())) for (const request of lease.requests) request.abort(new Error("the turn's model relay lease has ended"));
 			}, () => undefined);
 		}
 	}, REMOTE_CACHE_MS);
@@ -295,8 +298,10 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 	}
 	// Before any lookup: a placeholder that keeps being sent costs at most this much.
 	if (!deps.rate.take(placeholder.uid, deps.now())) return refusal(503, `Too many model requests from your sessions (${ROUTE_LIMITS.userPerMinute} a minute).`, { "retry-after": "2" });
-	const lookup = () => tokenFor(deps, placeholder.uid, placeholder.sessionId, placeholder.nonce, placeholder.expiresAt);
-	let token: AccessToken | ModelKeyLease | null;
+	const machine = placeholder.machine && verifiedMachine(bearer!, placeholder.machine, incoming[proofHeader], method, path, deps.now());
+	if (placeholder.machine) delete incoming[proofHeader];
+	const lookup = () => tokenFor(deps, placeholder, machine);
+	let token: RelayToken | null;
 	try {
 		token = await lookup();
 	} catch {
@@ -310,7 +315,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 	if ("refused" in slot) return refusal(503, slot.refused, { "retry-after": "2" });
 	// The lease's end (`close`, here or in the process that holds it) aborts the request from here on.
 	const ended = new AbortController();
-	const untrack = trackRequest(placeholder.nonce, ended) || watchRemote(placeholder.nonce, placeholder.uid, placeholder.sessionId, placeholder.expiresAt, deps, ended);
+	const untrack = trackRequest(placeholder.nonce, ended) || watchRemote(placeholder.nonce, placeholder.expiresAt, lookup, ended);
 	let taken = 0;
 	let released = false;
 	const release = () => {
@@ -340,7 +345,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 		let provider: ModelProvider | "chatgpt" = "chatgpt";
 		try {
 			token = await lookup();
-			if (token && "provider" in token) {
+			if (token?.kind === "key") {
 				provider = token.provider;
 				const nonce = randomBytes(16).toString("hex");
 				const sealed = await deps.key(placeholder.uid, provider, nonce);

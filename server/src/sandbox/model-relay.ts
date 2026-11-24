@@ -27,7 +27,7 @@ import { join } from "node:path";
 import type { AccessToken } from "./api.js";
 import { LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, RELAY_LOGS, docker } from "./docker.js";
 import { modelBasePath } from "../model-relay-url.js";
-import { SECRET_FILE_SCRIPT, type ForwardedKeyLease, type ModelKeyLease, type TurnModelRelay } from "./provider.js";
+import { SECRET_FILE_SCRIPT, type ForwardedKeyLease, type KeyTurnRelay, type ModelKeyLease, type TurnModelRelay } from "./provider.js";
 
 declare const WINDLASS_RELAY_SCRIPT: string;
 declare const EGRESS_SOURCE: string;
@@ -59,8 +59,9 @@ export function relayScript(): string {
 	const read = (name: string) => readFileSync(join(root(), "sandbox", "relay", name), "utf8");
 	return [
 		"const __require = require;",
+		`const __wires = (() => { const module = { exports: {} }; const exports = module.exports; ${read("wires.cjs")}\n; return module.exports; })();`,
 		`const __server = (() => { const module = { exports: {} }; const exports = module.exports; ${read("server.cjs")}\n; return module.exports; })();`,
-		`(() => { const module = { exports: {} }; const exports = module.exports; const require = (id) => id === "./server.cjs" ? __server : __require(id); ${read("windlass.cjs")}\n})();`,
+		`(() => { const module = { exports: {} }; const exports = module.exports; const require = (id) => id === "./server.cjs" ? __server : id === "./wires.cjs" ? __wires : __require(id); ${read("windlass.cjs")}\n})();`,
 	].join("\n");
 }
 function forwarderScript(): string {
@@ -108,16 +109,18 @@ export interface DockerModelRelayOptions {
 }
 
 /** The turn's relay as a turn of a Docker sandbox has it. */
-export interface DockerTurnRelay extends TurnModelRelay {
+export interface DockerKeyRelay extends KeyTurnRelay {
 	/** The turn's nonce: what its forwarder writes, and its token file's name in the relay. */
 	readonly nonce: string;
 }
+
+export type DockerTurnRelay = DockerKeyRelay & TurnModelRelay;
 
 export class DockerModelRelay {
 	private readonly suffix: string;
 	private ensuring: Promise<string> | null = null;
 	/** The leases this process opened and has not closed, by sandbox: what `endSandbox` closes. */
-	private readonly open_ = new Map<string, DockerTurnRelay>();
+	private readonly open_ = new Map<string, DockerKeyRelay>();
 
 	constructor(private readonly options: DockerModelRelayOptions) {
 		if (options.machine !== "" && !/^[A-Za-z0-9_-]+$/.test(options.machine)) throw new Error("invalid machine id");
@@ -197,6 +200,7 @@ export class DockerModelRelay {
 			"--mount", `type=volume,src=${this.socketVolume},dst=/workspace`,
 			"--tmpfs", `${TOKENS}:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000,size=4m`,
 			"-e", "WLP_MODEL_RELAY_PROGRAM=1",
+			...(this.options.machine ? ["-e", "WLP_MODEL_RELAY_MACHINE=" + this.options.machine] : []),
 			...(Object.keys(limits).length ? ["-e", `WLP_MODEL_RELAY_LIMITS=${JSON.stringify(limits)}`] : []),
 			...(this.options.upstream ? ["-e", `WLP_MODEL_RELAY_UPSTREAM=${this.options.upstream}`] : []),
 			this.options.image, "node", "-e", relayScript(),
@@ -230,14 +234,16 @@ export class DockerModelRelay {
 
 	openKey(container: string, sandbox: string, uid: string, sessionId: string, key: ModelKeyLease) {
 		if (!this.options.forwardKeyLease) throw new Error("A saved provider key requires a platform model relay.");
-		return this.options.forwardKeyLease(uid, sessionId, key, forward => this.open(container, sandbox, uid, forward));
+		return this.options.forwardKeyLease(uid, sessionId, key, this.options.machine || undefined, forward => this.open(container, sandbox, uid, forward));
 	}
 
 	/**
 	 * A lease for one turn of `sandbox`, whose container is `container` and running: the relay is there,
 	 * the turn's forwarder listens in the container's namespace, and nothing is in the relay for it yet.
 	 */
-	async open(container: string, sandbox: string, user?: string, forward?: ForwardedKeyLease): Promise<DockerTurnRelay> {
+	open(container: string, sandbox: string, user?: string): Promise<DockerTurnRelay>;
+	open(container: string, sandbox: string, user: string | undefined, forward: ForwardedKeyLease | undefined): Promise<DockerKeyRelay | DockerTurnRelay>;
+	async open(container: string, sandbox: string, user?: string, forward?: ForwardedKeyLease): Promise<DockerKeyRelay | DockerTurnRelay> {
 		const relay = await this.ensure();
 		const nonce = randomBytes(16).toString("hex");
 		const placeholder = `wlp-model.${randomBytes(16).toString("hex")}`;
@@ -272,14 +278,10 @@ export class DockerModelRelay {
 			const result = await docker(["exec", "-i", "-u", "1000:1000", relay, "sh", "-c", SECRET_FILE_SCRIPT, "sh", file], { stdin: content, timeoutMs: 30_000 });
 			if (result.code !== 0) throw new Error("Could not write the turn's model relay lease.");
 		};
-		const lease: DockerTurnRelay = {
+		const lease: DockerKeyRelay = {
 			nonce,
 			placeholder,
 			env: { WINDLASS_MODEL_BASE_URL: new URL(MODEL_RELAY_URL).origin + modelBasePath(forward?.provider) },
-			hand: async (token: AccessToken) => {
-				if (closed || forward) throw new Error("This lease cannot receive an access token");
-				await write({ accessToken: token.accessToken, expiresAt: token.expiresAt });
-			},
 			// The file first: the relay then stops the turn's requests still running, and the forwarder's removal ends its connections.
 			close: async () => {
 				closed = true;
@@ -293,7 +295,11 @@ export class DockerModelRelay {
 			catch (error) { await lease.close(); throw error; }
 		}
 		this.open_.set(sandbox, lease);
-		return lease;
+		if (forward) return lease;
+		return { ...lease, hand: async (token: AccessToken) => {
+			if (closed) throw new Error("This relay lease has ended.");
+			await write({ accessToken: token.accessToken, expiresAt: token.expiresAt });
+		} };
 	}
 
 	/** Removes the files of these nonces from the relay's tmpfs. Never rejects. */

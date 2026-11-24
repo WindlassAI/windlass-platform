@@ -99,7 +99,7 @@ function structuredStream(secrets, type, responses) {
 			pieces.delete(key);
 		}
 	}
-	function modelPieces(event, emit) {
+	function anthropicPieces(event, emit) {
 		const type = event?.type;
 		if (type === 'content_block_delta') {
 			const index = event.index;
@@ -110,13 +110,17 @@ function structuredStream(secrets, type, responses) {
 				text => ({type, index, delta:{type:kind, [field]:text}}));
 		} else if (type === 'content_block_stop') flushPieces(emit, 'block/' + event.index + '/');
 		else if (type === 'message_stop') flushPieces(emit, 'block/');
-		if (!responses) return;
+	}
+	function responsesPieces(event, emit) {
+		const type = event?.type;
 		if (typeof type === 'string' && type.startsWith('response.')) {
 			const key = 'responses/' + JSON.stringify([type.replace(/\.(?:done|delta)$/, ''), event.item_id, event.output_index, event.content_index, event.summary_index]);
 			if (type.endsWith('.delta')) piece(key, event, 'delta', false, delta => ({...event, delta}));
 			else if (type.endsWith('.done')) flushPieces(emit, key);
 			else if (type === 'response.completed') flushPieces(emit, 'responses/');
 		}
+	}
+	function chatPieces(event, emit) {
 		for (const choice of event?.choices ?? []) {
 			const index = choice.index ?? 0;
 			const prefix = 'chat/' + index + '/';
@@ -131,6 +135,8 @@ function structuredStream(secrets, type, responses) {
 			}
 			if (choice.finish_reason) flushPieces(emit, prefix);
 		}
+	}
+	function geminiPieces(event, emit) {
 		for (const candidate of event?.candidates ?? []) {
 			const index = candidate.index ?? 0;
 			const prefix = 'gemini/' + index + '/';
@@ -141,6 +147,13 @@ function structuredStream(secrets, type, responses) {
 			}
 			if (candidate.finishReason) flushPieces(emit, prefix);
 		}
+	}
+	function modelPieces(event, emit) {
+		anthropicPieces(event, emit);
+		if (!responses) return;
+		responsesPieces(event, emit);
+		chatPieces(event, emit);
+		geminiPieces(event, emit);
 	}
 	function deltaFrame(event) {
 		const safe = clean(event);
@@ -388,6 +401,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			add(queued, nonce, 1);
 		});
 	}
+	const methodFor = provider?.methodFor ?? (url => (provider ? provider.accepts(url) : messages.has(url)) && 'POST');
 	const httpServer = http.createServer(async (req, res) => {
 		// A request arrived: the socket's idle deadline (ingress) no longer applies. Node's own keep-alive one does.
 		req.socket.setTimeout(0);
@@ -395,7 +409,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 		// whether the relay had begun to answer it when the relay went away (runner/src/egress-proxy.mjs).
 		if (provider?.closeEachReply) res.setHeader('connection', 'close');
 		try {
-			if (req.headers.host !== host || (provider?.methodFor ? req.method !== provider.methodFor(req.url) : req.method !== 'POST') || !(provider ? provider.accepts(req.url) : messages.has(req.url)))
+			if (req.headers.host !== host || req.method !== methodFor(req.url))
 				return reject(res, 403);
 			const bearer = provider ? provider.bearer(req.headers, req.url) : req.headers.authorization;
 			const nonce = sessions.get(req.socket);

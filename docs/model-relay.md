@@ -57,7 +57,9 @@ attribution, credentials in query strings, and redirects are refused.
 Hosted Docker and paired machines forward key-backed requests to `WLP_MODEL_RELAY_URL`, which must
 be configured and reachable from the relay container. The container holds a second placeholder for
 the platform lease in its private tmpfs. Its sandbox gets only the local placeholder tied to the forwarder.
-The runner never receives the provider key. Agent selection and provider configuration are separate work.
+A paired machine signs each forwarded request with a per-turn key delivered over its session connection.
+The platform verifies the signature for that machine and path. The forwarding lease expires one minute
+after the turn timeout. The runner never receives the provider key. Agent selection and provider configuration are separate work.
 
 The Docker relay is the program `sandbox/relay/windlass.cjs`, on the shared `createRelay` of
 `sandbox/relay/server.cjs`, the same one the Claude Code, Codex and OpenCode relays of machines use. It
@@ -174,7 +176,8 @@ before a 503 with `retry-after`. A session's connections past 32 are refused. Th
 relay is 24 on a machine, which serves one user. A hosted relay serves every user of the deployment, so
 it uses `WLP_MODEL_RELAY_REQUESTS` (default 64), and 16 in flight per user (`HOSTED_RELAY_USER_REQUESTS`,
 counted by the user each turn's file names). The E2B route applies the same per-turn numbers, the same
-deployment ceiling and 16 in flight per user. It also has:
+deployment ceiling and 16 in flight per user. Key-backed turns on every backend go through this route,
+so the platform's 16 in-flight requests per user is the effective per-user limit. It also has:
 
 - 300 requests a minute per user, after a burst of 100, counted from the placeholder's signed user before
   any lookup. Past it the answer is a 503 with `retry-after`.

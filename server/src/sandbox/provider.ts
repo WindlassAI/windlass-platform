@@ -183,6 +183,8 @@ export type KeyTurnRelay = Pick<TurnModelRelay, "env" | "placeholder" | "close">
 
 /** Only this scoped platform placeholder crosses to a Docker relay. */
 export interface ForwardedKeyLease {
+	/** Delivered only to the paired machine that signs requests for this turn. */
+	proofKey?: string;
 	provider: ModelProvider;
 	host: string;
 	placeholder: string;

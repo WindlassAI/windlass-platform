@@ -20,18 +20,11 @@ const SOCKET = '/workspace/relay.sock';
 const HOST = '127.0.0.1:17893';
 const LEASE = /^wlp-model\.[a-f0-9]{32}$/;
 const NONCE = /^[a-f0-9]{32}$/;
-const gemini = /^\/v1beta\/models\/[A-Za-z0-9][A-Za-z0-9_.-]{0,159}:(?:generateContent|streamGenerateContent(?:\?alt=sse)?)$/;
-const wires = {
-	chatgpt: { host: 'api.openai.com', models: '/v1/models', posts: ['/v1/responses'] },
-	openai: { host: 'api.openai.com', models: '/v1/models', posts: ['/v1/responses', '/v1/chat/completions'] },
-	anthropic: { host: 'api.anthropic.com', models: '/v1/models', posts: ['/v1/messages'], auth: 'x-api-key' },
-	google: { host: 'generativelanguage.googleapis.com', models: '/v1beta/models', posts: [], auth: 'x-goog-api-key' },
-	openrouter: { host: 'openrouter.ai', models: '/api/v1/models', posts: ['/api/v1/chat/completions'] },
-};
+const { wires, forwardHost, forwardPlaceholder, validProofKey, forwardProof, proofHeader } = require('./wires.cjs');
 function methodFor(provider, path) {
 	const wire = wires[provider];
 	if (path === wire.models) return 'GET';
-	if (wire.posts.includes(path) || (provider === 'google' && gemini.test(path))) return 'POST';
+	if (wire.posts.includes(path) || wire.postPattern?.test(path)) return 'POST';
 }
 function anyMethod(path) {
 	for (const provider of Object.keys(wires)) {
@@ -39,7 +32,6 @@ function anyMethod(path) {
 		if (method) return method;
 	}
 }
-const betas = new Set(['interleaved-thinking-2025-05-14']);
 function placeholderOf(headers) {
 	const auth = [headers.authorization, headers['x-api-key'], headers['x-goog-api-key']].filter(value => value !== undefined);
 	if (auth.length !== 1 || typeof auth[0] !== 'string') return;
@@ -55,22 +47,20 @@ function wireTarget(provider, path, incoming, credential) {
 	const auth = wire.auth ?? 'authorization';
 	if (!(incoming[auth] || incoming.authorization) || !placeholderOf(incoming)) return;
 	const headers = { [auth]: wire.auth ? credential : 'Bearer ' + credential };
-	const passed = new Set(['accept', 'user-agent']);
-	if (method === 'POST' || provider === 'chatgpt') passed.add('content-type');
-	if (provider === 'chatgpt' || provider === 'openai') passed.add('session-id');
-	if (provider === 'anthropic') {
-		headers['anthropic-version'] = '2023-06-01';
-		if (incoming['anthropic-version'] && incoming['anthropic-version'] !== headers['anthropic-version']) return;
-		if (incoming['anthropic-beta']) {
-			if (typeof incoming['anthropic-beta'] !== 'string') return;
-			const values = incoming['anthropic-beta'].split(',').map(s => s.trim());
-			if (method !== 'POST' || !values.every(v => betas.has(v))) return;
-			headers['anthropic-beta'] = values.join(',');
-		}
+	for (const [name, value] of Object.entries(wire.fixed ?? {})) {
+		if (incoming[name] !== undefined && incoming[name] !== value) return;
+		headers[name] = value;
+	}
+	if (wire.betas && incoming['anthropic-beta'] !== undefined) {
+		const beta = incoming['anthropic-beta'];
+		if (method !== 'POST' || typeof beta !== 'string') return;
+		const values = beta.split(',').map(value => value.trim());
+		if (!values.every(value => wire.betas.includes(value))) return;
+		headers['anthropic-beta'] = values.join(',');
 	}
 	for (const [name, value] of Object.entries(incoming)) {
-		if (passed.has(name) && typeof value === 'string') headers[name] = value;
-		else if (provider !== 'chatgpt' && name !== 'authorization' && !Object.hasOwn(headers, name) && !transport.has(name)
+		if ((name === 'accept' || name === 'user-agent' || (name === 'content-type' && method === 'POST') || wire.passed?.includes(name)) && typeof value === 'string') headers[name] = value;
+		else if (!wire.dropUnknown && !wire.drop?.includes(name) && name !== 'authorization' && !Object.hasOwn(headers, name) && !transport.has(name)
 			&& !/^(?:cf-|x-forwarded-|x-stainless-)/.test(name)) return;
 	}
 	return { hostname: wire.host, path, headers };
@@ -95,6 +85,7 @@ function errorBody(status, text, secrets = []) {
 	} catch {
 		message = text.trim();
 	}
+	if ((status === 401 || status === 403) && /api key/i.test(message)) message = 'The provider rejected the API key.';
 	for (const secret of secrets) {
 		if (!secret) continue;
 		message = message.split(secret).join('[redacted]');
@@ -123,7 +114,7 @@ function same(a, b) {
  * `api.openai.com:443` but in the relay's own checks.
  */
 function windlassProvider({ load = nonce => readFile(`${TOKENS}/${nonce}.json`, 'utf8').then(JSON.parse),
-	upstream, now = Date.now,
+	upstream, machine = process.env.WLP_MODEL_RELAY_MACHINE, now = Date.now,
 	list = () => readdir(TOKENS), remove = name => unlink(`${TOKENS}/${name}`), changes = onChange => watch(TOKENS, onChange),
 	watchMs = WATCH_MS, sweepMs = SWEEP_MS } = {}) {
 	/** The record of a turn whose lease is live: its file is here, well-formed and not expired. */
@@ -135,8 +126,8 @@ function windlassProvider({ load = nonce => readFile(`${TOKENS}/${nonce}.json`, 
 		const forward = record.forward;
 		if (forward) {
 			if (!Object.hasOwn(wires, forward.provider) || forward.provider === 'chatgpt') return;
-			if (typeof forward.host !== 'string' || !/^(?:[a-z0-9-]+\.)+[a-z][a-z0-9-]*$/.test(forward.host)) return;
-			if (typeof forward.placeholder !== 'string' || !/^wlpm1\.[A-Za-z0-9_.-]{1,1018}$/.test(forward.placeholder)) return;
+			if (!forwardHost(forward.host) || !forwardPlaceholder(forward.placeholder)) return;
+			if (machine && !validProofKey(forward.proofKey)) return;
 		} else if (typeof record.accessToken !== 'string' || !/^[\x21-\x7e]{16,16384}$/.test(record.accessToken)) return;
 		if (record.user !== undefined && (typeof record.user !== 'string' || !/^[\x21-\x7e]{1,256}$/.test(record.user))) return;
 		return record;
@@ -153,7 +144,6 @@ function windlassProvider({ load = nonce => readFile(`${TOKENS}/${nonce}.json`, 
 	}
 	return {
 		methodFor: anyMethod,
-		accepts: url => !!anyMethod(url),
 		bearer: placeholderOf,
 		unauthorizedCode: LEASE_ENDED,
 		async authorize(bearer, nonce) {
@@ -192,11 +182,17 @@ function windlassProvider({ load = nonce => readFile(`${TOKENS}/${nonce}.json`, 
 			const secret = forward?.placeholder ?? record.accessToken;
 			const target = wireTarget(forward?.provider ?? 'chatgpt', url, headers, secret);
 			if (!target) return { refused: true };
+			const secrets = [secret];
 			if (forward) {
+				if (machine) {
+					const proof = forwardProof(forward.proofKey, machine, methodFor(forward.provider, url), url, now());
+					target.headers[proofHeader] = proof;
+					secrets.push(proof);
+				}
 				target.hostname = forward.host;
 				target.path = '/model-relay' + url;
 			}
-			return { ...target, ...upstream, secrets: [secret] };
+			return { ...target, ...upstream, secrets };
 		},
 		responseFilter: (type, url, secrets) => scrubStream(secrets ?? [], type, true),
 		// api.openai.com answers a ChatGPT-token stream with a 200 and no content type (as the server's route found,

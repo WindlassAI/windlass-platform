@@ -12,6 +12,7 @@
  * apart, and the `Same` assertions at the end tie the operations to the provider interfaces they carry.
  */
 import { spareRecipe, spareSetup } from "./spare-recipe.js";
+import { forwardHost, forwardPlaceholder, validProofKey } from "../../../sandbox/relay/wires.cjs";
 import { isIP } from "node:net";
 import { DEFERRED_INPUTS } from "../sandbox/snapshot-key.js";
 import { helloFields, welcomeFields } from "./frame-auth.js";
@@ -58,8 +59,7 @@ const harness = optional(oneOf("claude", "opencode", "codex"));
 const sandbox = { id };
 const relayLease = is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v));
 const forwardKey = object({ provider: oneOf(...MODEL_PROVIDERS),
-	host: is<string>(v => typeof v === "string" && v.length <= 253 && /^(?:[a-z0-9-]+\.)+[a-z][a-z0-9-]*$/.test(v)),
-	placeholder: is<string>(v => typeof v === "string" && /^wlpm1\.[A-Za-z0-9_.-]{1,1018}$/.test(v)), expiresAt: count });
+	host: forwardHost, placeholder: forwardPlaceholder, proofKey: optional(validProofKey), expiresAt: count });
 const startOptions = { gitUser: optional(oneOf(true)), cwd: optional(string), env: optional(env), secretEnv: optional(env) };
 
 /**

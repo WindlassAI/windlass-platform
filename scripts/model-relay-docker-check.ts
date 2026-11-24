@@ -29,7 +29,7 @@ import { randomBytes } from "node:crypto";
 import { docker } from "../server/src/sandbox/docker.js";
 import { createSandboxLayer } from "../server/src/sandbox/index.js";
 import type { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
-import { TokenFile } from "../server/src/sandbox/token-file.js";
+import { TokenFile, openModelKeyRelay } from "../server/src/sandbox/token-file.js";
 import type { AccessToken } from "../server/src/sandbox/api.js";
 import { DATA_DIR } from "../server/src/sandbox/provider.js";
 import { DockerModelRelay, RELAY_MEMORY } from "../server/src/sandbox/model-relay.js";
@@ -150,6 +150,8 @@ try {
 	const a = await make("s-relay-a");
 	const b = await make("s-relay-b");
 	expect("a hosted Windlass sandbox offers the model relay", typeof a.modelRelay === "function");
+	const foreignSession = await openModelKeyRelay(a, "s-relay-b", { provider: "google", generation: "test" }).catch(error => error);
+	expect("a Docker key relay refuses another sandbox's session", foreignSession instanceof Error && /another session/.test(foreignSession.message));
 
 	// Due for replacement 4 s in, and tried every 500 ms from then: while the source gives the same token, nothing changes.
 	let next: AccessToken = { accessToken: REAL_A, expiresAt: Date.now() + 30 * 60_000 };

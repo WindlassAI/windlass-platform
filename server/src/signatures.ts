@@ -8,8 +8,8 @@ const keys = new Map(config.signingKeys.map(({ id, secret }) => [
 ]));
 const current = config.signingKeys[0].id;
 
-export function keyedDigest(purpose: Purpose, text: string): Buffer {
-	return createHmac("sha256", keys.get(current)!.get(purpose)!).update(text).digest();
+export function keyedDigest(purpose: Purpose, text: string, keyId = current): Buffer {
+	return createHmac("sha256", keys.get(keyId)!.get(purpose)!).update(text).digest();
 }
 
 export function signedPayload(prefix: string, purpose: Purpose, payload: object): string {

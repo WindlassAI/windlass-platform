@@ -1,3 +1,4 @@
+import { wires } from "../../sandbox/relay/wires.cjs";
 import type { ModelProvider } from "./contract.js";
 
 /**
@@ -57,9 +58,5 @@ export function requestHost(header: string | null): string | null {
 
 /** The base expected by each wire's client, relative to the relay's root. */
 export function modelBasePath(provider?: ModelProvider): string {
-	switch (provider) {
-		case "anthropic": case "google": return "";
-		case "openrouter": return "/api/v1";
-		default: return "/v1";
-	}
+	return wires[provider ?? "chatgpt"].base;
 }

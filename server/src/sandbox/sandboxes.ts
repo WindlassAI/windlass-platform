@@ -121,12 +121,16 @@ export class DockerSandboxHandle implements TurnSandbox {
 		private readonly mirrorFloor?: () => number,
 		/** The image the container was made from (`SandboxHandle.image`). */
 		readonly image?: string,
+		session?: string,
 	) {
 		markTurnSandbox(this);
 		// The user names the lease in the relay, whose ceiling per user counts by it.
 		if (relay) {
 			this.modelRelay = () => relay.open(this.container, this.id, this.uid);
-			this.modelKeyRelay = (sessionId, key) => relay.openKey(this.container, this.id, this.uid, sessionId, key);
+			this.modelKeyRelay = (sessionId, key) => {
+				if (sessionId !== session) throw new Error("This model relay belongs to another session.");
+				return relay.openKey(this.container, this.id, this.uid, sessionId, key);
+			};
 		}
 	}
 
@@ -395,6 +399,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 }
 
 interface Inspected {
+	session?: string;
 	screenshots: boolean;
 	snapshot?: SnapshotSource;
 	/** The Docker image id the container was made from. */
@@ -571,7 +576,7 @@ export class DockerSandboxes implements Sandboxes {
 		const windlass = !labels[LABEL + ".harness"] && this.options.sessionRelay === undefined && /^[a-f0-9]{12}$/.test(id);
 		const ownName = windlass && this.options.ownVolumeName && NAME.test(uid ?? "") ? this.options.ownVolumeName(uid!, id) : undefined;
 		const ownData = data?.Type === "volume" && ownName !== undefined && data.Name === ownName;
-		return { status, profile, uid, ownData, sharedData: ownName !== undefined && SESSION_VOLUME_PROFILES.includes(profile) && data !== undefined && !ownData,
+		return { status, profile, uid, session: labels[LABEL + ".session"], ownData, sharedData: ownName !== undefined && SESSION_VOLUME_PROFILES.includes(profile) && data !== undefined && !ownData,
 			screenshots: labels[variantLabel] === "shots", snapshot: sourceFromLabels(labels), memory: Number(memory), image: /^sha256:[a-f0-9]{64}$/.test(image ?? "") ? image : undefined,
 			resize: (this.options.slots || this.options.cpus !== undefined) && !matches ? unit : undefined };
 	}
@@ -889,7 +894,7 @@ export class DockerSandboxes implements Sandboxes {
 		}
 		// Only Windlass's own sandboxes: a harness session has a relay of its own (runner/src/claude-relay.ts).
 		const relay = /^[a-f0-9]{12}$/.test(id) && this.options.sessionRelay === undefined && await this.modelRelayReady() ? this.options.modelRelay : undefined;
-		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData, relay, () => this.limits().free, found.image);
+		return new DockerSandboxHandle(id, found.profile, found.uid, found.snapshot, resizePending, this.helperImage, found.ownData, relay, () => this.limits().free, found.image, found.session);
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {

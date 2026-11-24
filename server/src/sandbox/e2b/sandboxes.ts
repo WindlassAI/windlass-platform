@@ -67,7 +67,6 @@ import {
 	SWEEP_SCRIPT,
 	type SandboxProcess,
 	type StartOptions,
-	type ModelKeyLease,
 	type TurnModelRelay,
 	type TurnSandbox,
 	WORKSPACE,
@@ -223,14 +222,14 @@ export class E2bSandboxHandle implements TurnSandbox {
 		// A sandbox that names no session cannot have a lease any server process finds: its turns fail, and
 		// never get the token in the sandbox in its place.
 		if (relay !== null) {
-			const open = async (key?: ModelKeyLease) => {
+			const leaseInput = () => {
 				if (!session) throw new Error("this sandbox names no session (its wlp_session is empty), so its turns cannot use the model relay");
-				return openRelayLease({ uid, sessionId: session, origin: relay, ttlMs: owner.relayLeaseMs, key });
+				return { uid, sessionId: session, origin: relay, ttlMs: owner.relayLeaseMs };
 			};
-			this.modelRelay = () => open();
-			this.modelKeyRelay = (sessionId, key) => {
+			this.modelRelay = async () => openRelayLease(leaseInput());
+			this.modelKeyRelay = async (sessionId, key) => {
 				if (sessionId !== session) throw new Error("This model relay belongs to another session.");
-				return open(key);
+				return openRelayLease({ ...leaseInput(), key });
 			};
 		}
 	}
