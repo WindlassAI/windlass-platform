@@ -388,7 +388,7 @@ try {
 	});
 	await checkControl("spares match the complete create, expire, yield to turns and are consumed exactly once", async () => {
 		const { WarmSpares, validSpec, SPARE_TTL } = await import("../runner/src/warm-spares.js");
-		const base = { context: "pairing, image and egress", args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
+		const base = { context: owner["spareContext"](), args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
 		assert.ok(validSpec(base));
 		assert.ok(validSpec({ ...base, args: { ...base.args, profile: "docker-windlass-sandbox" } }));
 		for (const args of [{ harness: "claude", screenshots: true }, { profile: "docker-windlass-sandbox", harness: "claude" }, { spare: { url: "https://secret@example.org/r" } },
@@ -398,15 +398,17 @@ try {
 		const pool = new WarmSpares(async () => {}, async raw => { removed.add(raw); }, () => now);
 		pool.used(base);
 		const fill = async () => { await until(() => !pool.raws.length); pool.fill(1); await until(() => pool.ready === 1); return pool.raws[0]!; };
-		for (const other of [{ ...base, args: { ...base.args, profile: "docker-windlass-sandbox" as const } }, { ...base, args: { ...base.args, harness: "codex" as const } }, { ...base, context: "another owner, image or egress" }, { ...base, args: { ...base.args, size: 2 } },
+		for (const other of [{ ...base, args: { ...base.args, profile: "docker-windlass-sandbox" as const } }, { ...base, args: { ...base.args, harness: "codex" as const } }, { ...base, context: { ...base.context, uid: "other" } }, { ...base, args: { ...base.args, size: 2 } },
 			{ ...base, args: { ...base.args, screenshots: true } }, { ...base, args: { ...base.args, spare: { url: "https://example.org/another.git" } } }]) {
 			const raw = await fill();
 			assert.equal(await pool.take(other, async () => true), undefined);
+			await pool.trim(0, other, "create");
 			assert.ok(removed.has(raw));
 		}
 		const old = await fill();
 		now += SPARE_TTL;
 		assert.equal(await pool.take(base, async () => true), undefined);
+		await pool.trim(0, base);
 		assert.ok(removed.has(old));
 		const dirty = await fill();
 		assert.equal(await pool.take(base, async () => false), undefined);
@@ -443,7 +445,7 @@ try {
 
 	await checkControl("two consecutive failed builds wait for another real create and a successful build resets the count", async () => {
 		const { WarmSpares } = await import("../runner/src/warm-spares.js");
-		const spec = { context: "owner", args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
+		const spec = { context: owner["spareContext"](), args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
 		let now = 0, builds = 0, fail = true;
 		const pool = new WarmSpares(async () => { builds++; if (fail) throw new Error("setup"); }, async () => {}, () => now);
 		const attempt = async () => { pool.fill(1); await until(() => pool.ready === 1 || pool.raws.length === 0); };
@@ -472,7 +474,7 @@ try {
 
 	await checkControl("six-hour replacements expire after 24 hours without a real session", async () => {
 		const { WarmSpares, SPARE_TTL } = await import("../runner/src/warm-spares.js");
-		const spec = { context: "owner", args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
+		const spec = { context: owner["spareContext"](), args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };
 		const day = 24 * 60 * 60_000;
 		let now = 0, builds = 0;
 		const pool = new WarmSpares(async () => { builds++; }, async () => {}, () => now);
@@ -866,6 +868,59 @@ try {
 		assert.equal(small["spareRoom"](), 1);
 	});
 
+	await checkControl("a ready spare in the second slot survives memory maintenance and serves the next work item", async () => {
+		const { spareKeyFields } = await import("../runner/src/warm-spares.js");
+		const { sizeMachine } = await import("../runner/src/sizing.js");
+		const GiB = 2 ** 30, slots = sizeMachine({ cores: 10, memoryBytes: 12 * GiB });
+		assert.deepEqual([slots.max, slots.unit.cpus, slots.unit.memoryBytes], [2, 2, 5 * GiB]);
+		const uid = "u_fixture";
+		const runner = new LocalExecutor({ uid, machineId }, { slots }, false, false, [profile], { mode: "restricted", allow: [] });
+		const recipe = { url: "https://example.org/r.git", connected: { repo: "42", branch: "main", commit: "c".repeat(40),
+			generation: "a".repeat(64), command: "make deps", timeoutMs: 3000 } };
+		let free = 12 * GiB, disk = 100e9, cold = 0, built = "";
+		let builtKey: ReturnType<typeof spareKeyFields> | undefined;
+		const dropped: string[] = [];
+		const verify = runner["verifySpare"].bind(runner);
+		Object.assign(runner, { warmSpares: true, sessionVolumes: true, inventoryStarted: true, dockerHealth: { ok: true },
+			availableMemory: () => free, disk: async () => disk, dropSpare: async (raw: string) => { dropped.push(raw); },
+			buildSpare: async (raw: string, spec: import("../runner/src/warm-spares.js").SpareSpec) => {
+				built = raw;
+				builtKey = spareKeyFields(spec);
+				return { startedAt: 1000, durationMs: 25 };
+			},
+			verifySpare: (...args: Parameters<typeof verify>) => {
+				const requestedKey = spareKeyFields(args[2]);
+				// Only synthetic fixture values go to test output. Service logs report field names alone.
+				console.log("Fixture spare keys", JSON.stringify({ built: builtKey, requested: requestedKey }, (_key, value) => value ?? null));
+				assert.deepEqual(requestedKey, builtKey);
+				return verify(...args);
+			} });
+		runner.network.prepare = runner.network.attach = async () => {};
+		runner.provider.create = async () => (++cold).toString().padStart(12, "0");
+		runner.provider.connect = async () => ({ uid, profile, ownData: true }) as DockerSandboxHandle;
+		const probe = mock.method(DockerSandboxHandle.prototype, "ask", async () => success);
+		try {
+			const create = (sessionId: string) => runner.serial(() => runner.create(sessionId, profile, false, undefined, 1, undefined, "42", recipe));
+			const first = await create("s_item_a");
+			const kept = runner.boxes.get(first)!;
+			await runner.turnStarted(kept);
+			runner.turnEnded(kept);
+			await runner.maintainSpares();
+			await until(() => runner.report().warmSpares?.ready === 1);
+			// A is handed over. There is still an OS margin, but no extra 5 GiB for a third container.
+			free = 4 * GiB;
+			await runner.maintainSpares();
+			assert.equal(runner.report().warmSpares?.ready, 1);
+			disk = 6e9; // Below the speculative build floor. Claiming needs no new container.
+			const second = await create("s_item_b");
+			assert.equal(runner.boxes.get(second)?.raw, built);
+			assert.deepEqual(dropped, []);
+			assert.equal(cold, 1);
+			assert.equal(kept.state, "running");
+			assert.equal(runner.boxes.get(second)?.claim?.session, "s_item_b");
+		} finally { probe.mock.restore(); }
+	});
+
 	await checkControl("the changes view reads kept item A on a default two-core 12 GiB runner and item B claims its spare, including after restart", async () => {
 		const { STATUS_COMMAND } = await import("../server/src/actors/agent-session.js");
 		const { Session } = await import("../runner/src/session.js");
@@ -1025,7 +1080,7 @@ try {
 				assert.ok(validValue("connect", claimed) && claimed?.readyKey && claimed.readySetup && claimed.ownData);
 				assert.equal(runner.report().warmSpares?.ready, 0);
 				assert.ok(log.mock.calls.some(call => call.arguments[0] === `spare.build id=${ready} reason=ready`));
-				assert.ok(log.mock.calls.some(call => call.arguments[0] === `spare.claim id=${ready} reason=recipe-match`));
+				assert.ok(log.mock.calls.some(call => call.arguments[0] === `spare.claim id=${ready} reason=recipe-match mismatch=none`));
 			}
 		} finally { probe.mock.restore(); log.mock.restore(); }
 	});
@@ -1128,14 +1183,22 @@ try {
 		disk = 6e9;
 		let finish!: () => void;
 		Object.assign(owner, { dropSpare: async (raw: string) => { removed.push(raw); await new Promise<void>(resolve => { finish = resolve; }); } });
-		const starting = owner.create("s_third", "docker-hardened", false, undefined, 1, undefined, "42", recipe);
-		await until(() => !!finish);
-		assert.equal(cold, 1, "the cold container waits for removal to finish");
-		finish();
-		const third = await starting;
-		assert.equal(cold, 2);
-		assert.equal(owner.boxes.get(third)?.claim, undefined);
-		assert.deepEqual(removed, [built[1]]);
+		const changed = { ...recipe, connected: { ...recipe.connected, command: "make changed" } };
+		const log = mock.method(console, "info", () => {});
+		try {
+			const starting = owner.create("s_third", "docker-hardened", false, undefined, 1, undefined, "42", changed);
+			await until(() => !!finish);
+			assert.equal(cold, 1, "the cold container waits for removal to finish");
+			finish();
+			const third = await starting;
+			assert.equal(cold, 2);
+			assert.equal(owner.boxes.get(third)?.claim, undefined);
+			assert.deepEqual(removed, [built[1]]);
+			assert.deepEqual(log.mock.calls.map(call => call.arguments[0]), [
+				`spare.skip id=${built[1]} reason=capacity cause=create mismatch=connected.command`,
+				`spare.skip id=${owner.boxes.get(third)!.raw} reason=recipe-mismatch compared=ready mismatch=connected.command`,
+			]);
+		} finally { finish?.(); log.mock.restore(); }
 	});
 
 } finally {

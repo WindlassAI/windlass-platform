@@ -1545,11 +1545,11 @@ export function readySetupItems(turn: number, recipe: NonNullable<SpareRecipe["c
 
 /** Resolve the current permission and immutable base outside the machine. A mirror alone
  * cannot establish either. Only the ordinary base checkout can run setup in advance. */
-async function readyRecipe(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | null, plan: SnapshotPlan | null, purpose: "claim" | "seed" | "resume" = "claim"): Promise<SpareRecipe | undefined> {
+export async function readyRecipe(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | null, plan: SnapshotPlan | null, purpose: "claim" | "seed" | "resume" = "claim", getApp = githubApp): Promise<SpareRecipe | undefined> {
 	if (!meta.repoUrl || !spareProfile(meta.profile, meta.harness) || meta.environmentBuild ||
 		(purpose !== "resume" && (meta.windlassSessionId || meta.pushedHead)) || meta.origin?.role === "reviewer" || meta.origin?.owns !== undefined || plan?.writer) return;
 	if (!meta.repo) return spareRecipe({ url: meta.repoUrl }) ? { url: meta.repoUrl } : undefined;
-	const repo = meta.repo, project = setupProjectOf(meta), app = githubApp();
+	const repo = meta.repo, project = setupProjectOf(meta), app = getApp();
 	if (!project || !app || !secrets || secrets.opened.length || secrets.unopened.length || await childSetupSeed(c, meta)) return;
 	const connection = await githubConnection(c, meta);
 	if (!connection) return;
