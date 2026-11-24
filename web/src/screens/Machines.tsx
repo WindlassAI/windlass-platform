@@ -31,6 +31,7 @@ import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, 
 import { ORCHESTRATOR_CHOICES, orchestratorNote, orchestratorOf, type Orchestrator } from "../lib/placement";
 import { Check } from "../components/ui/Check";
 import { AgentGlyph } from "../components/ui/Pill";
+import { readTwice } from "../lib/retry";
 
 /** What the top bar shows on this page: the way back and where one is. */
 export function MachinesCrumb() {
@@ -119,9 +120,7 @@ export function useMachines(enabled = true): MachinesState {
 		const mine = ++asked.current;
 		const samples = new Map<string, MachineSummary["host"]>();
 		samplesDuringReload.current = samples;
-		client
-			.user(auth)
-			.machines()
+		readTwice(() => client.user(auth).machines())
 			.then(
 				(list) => mine === asked.current && setState({ list: list.map(machine =>
 					samples.has(machine.machineId) ? { ...machine, host: samples.get(machine.machineId) } : machine), error: null }),

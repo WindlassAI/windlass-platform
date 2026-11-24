@@ -1,5 +1,7 @@
 import { monthState } from "../lib/hosted";
-import type { AccountSettings, ChatgptStatus, FactoryLimits, ModelList, SessionSummary, UsageNumbers } from "@contract";
+import type { AccountSettings, ChatgptStatus, FactoryLimits, MachineSummary, ModelList, SessionSummary, UsageNumbers } from "@contract";
+import type { ReportedOptions } from "../lib/models";
+import type { Catalogs } from "../lib/subtask-agents";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { ConnectionState, PlatformError } from "../api/client";
 import { useApp, useAuth } from "./app";
@@ -229,4 +231,34 @@ export function allowanceState(numbers: UsageNumbers | null, lowShare: number): 
 	if (numbers === null || numbers.allowanceSeconds === null || numbers.leftSeconds === null) return month;
 	if (numbers.leftSeconds < numbers.startSeconds) return "used";
 	return numbers.leftSeconds < numbers.allowanceSeconds * lowShare ? "low" : "plenty";
+}
+
+/**
+ * The catalogs of every agent the user's machines report, fetched once per digest: the models and
+ * efforts a subtask's agent may choose there, as the server checks a child's session against them.
+ */
+export function useCatalogs(machines: readonly MachineSummary[] | null): Catalogs {
+	const { client } = useApp();
+	const auth = useAuth();
+	const [catalogs, setCatalogs] = useState<Record<string, ReportedOptions>>({});
+	const wanted = (machines ?? []).flatMap((machine) => (machine.harnesses ?? []).filter((entry) => entry.optionsDigest && entry.id !== "codex").map((entry) => ({ machineId: machine.machineId, id: entry.id as "claude" | "opencode", digest: entry.optionsDigest! })));
+	const keys = wanted.map((one) => `${one.machineId}/${one.id}/${one.digest}`).join(" ");
+	useEffect(() => {
+		let current = true;
+		for (const one of wanted) {
+			const key = `${one.machineId}/${one.id}/${one.digest}`;
+			if (catalogs[key]) continue;
+			client.user(auth).machineCatalog(one).then((options) => current && options && setCatalogs((now) => ({ ...now, [key]: options })), () => undefined);
+		}
+		return () => {
+			current = false;
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [client, auth, keys]);
+	const out: Catalogs = {};
+	for (const one of wanted) {
+		const options = catalogs[`${one.machineId}/${one.id}/${one.digest}`];
+		if (options) (out[one.machineId] ??= {})[one.id] = options;
+	}
+	return out;
 }

@@ -656,9 +656,9 @@ test("a redelivered planner must file in its own attempt before approval", () =>
 	assert.equal(advance(item, {kind:"approve_plan", version:item.featurePlan!.version, at:6, by:"person"}).item, item);
 });
 
-test("a missing integration prerequisite stops the feature at its last integrated head", () => {
+test("with per-part CI, a missing integration prerequisite stops the feature at its last integrated head", () => {
 	const feature = approved();
-	const item = advance(feature, {kind:"feature_ready", key:currentKey(feature)!, head, pr, at:5}).item;
+	const item = advance(feature, {kind:"feature_ready", waitForCiOnEachPart: true, key:currentKey(feature)!, head, pr, at:5}).item;
 	for (const failure of ["integration/no-ci", "integration/no-gate"]) {
 		const stopped = advance(item, {kind:"child_update", key:currentKey(item)!, child:item.jobs![0].id, state:"failed", failure, head:"b".repeat(40), report:"Stopped", spent:zero, at:6});
 		assert.equal(stopped.item.replans ?? 0, 0);
