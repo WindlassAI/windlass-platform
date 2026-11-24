@@ -140,7 +140,8 @@ export async function setupWizard(sections: string[], values: Values): Promise<v
 				const m = machine();
 				if (agent === "codex") return codexLogin(m) ? "signed-in" : "signed-out";
 				if (agent === "opencode") return await installedProvider(m) ? "signed-in" : "signed-out";
-				const state = await claudeSignIn(m);
+				// Docker Desktop cannot stat the file in a stopped container, so setup also runs the check.
+				const state = await claudeSignIn(m, { start: true });
 				return state === "token" ? "signed-in" : state === "none" ? "signed-out" : "unknown";
 			} catch { return "unknown"; }
 		},

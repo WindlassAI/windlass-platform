@@ -40,9 +40,9 @@ export function volumeFlags(machine: MachineDocker, readonly: boolean) {
 
 // Docker's archive HEAD returns file metadata even with a stopped container. The runner
 // container has no host mountpoint access. Never start a probe or ask Docker for the bytes.
-export async function claudeSignIn(machine: MachineDocker): Promise<"none" | "token" | "unknown"> {
+export async function claudeSignIn(machine: MachineDocker, options: { start?: boolean } = {}): Promise<"none" | "token" | "unknown"> {
 	try {
-		return await withLoginVolume(machine, () => loginFileState(machine));
+		return await withLoginVolume(machine, () => loginFileState(machine, options));
 	} catch { return "unknown"; }
 }
 
