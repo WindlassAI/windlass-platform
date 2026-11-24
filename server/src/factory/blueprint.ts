@@ -1559,13 +1559,13 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			const failed = reading.runs.filter(check => check.state === "failed" && !check.environment);
 			if (failed.some(check => check.baseResult === "pending") && since < CI_POLLING.timeoutMs)
 				return pollCi(c, fact.openItems, null, `Waiting for the same check to finish on ${c.item.task.base}.`);
+			const inherited = failed.filter(check => check.baseResult === "failed");
 			const actionable = failed.filter(check => !check.baseResult);
-			if (!actionable.length) {
-				const inherited = failed.every(check => check.baseResult === "failed");
-				const sentence = inherited ? `This check also fails on ${c.item.task.base}; it is not caused by this change.`
+			if (!actionable.length || (canUpdate && inherited.length)) {
+				const sentence = inherited.length ? `This check also fails on ${c.item.task.base}; it is not caused by this change.`
 					: `The platform could not confirm whether this check fails on ${c.item.task.base}.`;
 				return ask(c, "ci_timeout", sentence, [...(canUpdate ? [choice("update_from_base")] : []), ...handOver(c.item), choice("wait"), choice("give_up")],
-					null, null, undefined, canUpdate ? { policy: "ci_timeout", evidence: ciEvidence } : {});
+					null, null, undefined, canUpdate && inherited.length ? { policy: "ci_timeout", evidence: ciEvidence } : {});
 			}
 			const fixes = { ...reading, runs: actionable, logs: reading.logs.filter(log => actionable.some(check => check.name === log.name)) };
 			const plan: TurnPlan = { ...IMPLEMENT, kind: "ci_fix", text: ciFixText(ci.head, fixes), charge: "ci", fingerprint: ciFingerprint(fixes), ...marked([untrustedWords.ci(ci.head)]) };

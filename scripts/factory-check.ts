@@ -2758,7 +2758,9 @@ try {
 
 	{
 		const { checkBaseFailures } = await import("../server/src/github/ci-base.js");
-		const { runBaseTests } = await import("../server/src/factory/base-tests.js");
+		const { namedTests, runBaseTests } = await import("../server/src/factory/base-tests.js");
+		assert.deepEqual(namedTests("FAIL src/add.test.ts\nError: expected 3"), { runner: "js-files", names: ["src/add.test.ts"] });
+		assert.equal(namedTests("FAIL tests/../../external.test.js"), null);
 		const base = standin.commit(repo, "base-ci", {}, "Base for the CI comparison", "main");
 		const job = checkRun(5360, "unit", "failure");
 		ciData.runs = [job];
@@ -2808,6 +2810,7 @@ try {
 
 		ciData.runs = [job, checkRun(5364, "lint", "failure")];
 		baseCi.runs = [checkRun(5365, "unit", "failure"), checkRun(5366, "lint", "success")];
+		expect("a mixed failure takes a newer base before fixing independent checks", !!effect((await check(1)).last, "publish"));
 		const mixed = effect((await check()).last, "deliver")?.text ?? "";
 		expect("a mixed CI fix receives only the independent failing check and its log", mixed.includes("lint") && !mixed.includes("adds two numbers") && !mixed.includes("- unit"));
 	}
@@ -2815,7 +2818,8 @@ try {
 	{
 		const job = checkRun(5370, "install", "failure");
 		ciData.runs = [job];
-		repo.jobs.set(String(job.id), { run_id: 5371, head_sha: HEAD, status: "completed", conclusion: "failure" });
+		const installJob = { run_id: 5371, head_sha: HEAD, status: "completed", conclusion: "failure", steps: [{ conclusion: "failure" }], runner_id: 17, runner_name: "linux" };
+		repo.jobs.set(String(job.id), installJob);
 		const item = walk(newItem(), pushedRun(HEAD)).item;
 		for (const diagnostic of ["npm ERR! getaddrinfo EAI_AGAIN registry.npmjs.org", "ERR_PNPM_FETCH_503 GET https://registry.npmjs.org/example: Service Unavailable"]) {
 			repo.jobLogs.set(String(job.id), diagnostic);
