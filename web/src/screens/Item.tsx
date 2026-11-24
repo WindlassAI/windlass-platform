@@ -730,9 +730,9 @@ function Cost({ view, now }: { view: ItemView; now: number }) {
 				Cost so far
 			</h2>
 			<p className="usage-note">
-				Built by <AgentGlyph harness={view.agent?.harness ?? "windlass"} size={11} inline />
+				{partAgents.length > 0 ? "Planned by" : "Built by"} <AgentGlyph harness={view.agent?.harness ?? "windlass"} size={11} inline />
 				{agentLine(view.agent)}
-				{partAgents.length > 0 ? `, planning; the parts by ${partAgents.join(" and ")}` : ""}.
+				{partAgents.length > 0 ? `; parts built by ${partAgents.join(" and ")}` : ""}.
 			</p>
 			{view.state === "working" && view.spent.turns === 0 && step?.turn === "started" && (
 				<p className="usage-note">Spend is counted when the running turn ends. This step started {sandboxTime((now - step.startedAt) / 1000)} ago.</p>
