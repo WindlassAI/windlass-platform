@@ -193,7 +193,7 @@ Sign out, sign in with ChatGPT again, then send the prompt again.
 The App's comment on your issue. Only people with write access can file a work item from GitHub.
 
 **"Not taken: you have filed … work items from GitHub today, this deployment's limit. It starts again at 00:00 UTC."**\
-Wait for the next day, or file the item on the Factory page.
+GitHub and Linear filings share the daily issue limit. Wait for the next UTC day, or file the item on the Factory page.
 
 **"Waiting for one of your … hosted sandboxes that run at once: … running now. Your machines don't count toward this."**\
 Not an error. The item waits for a free place on this platform and starts by itself. Items on your machines never wait for it.
@@ -204,12 +204,12 @@ The item paused at its budget. Its work is kept. Choose **Give it … more token
 **"The same failure came back after a fix, so the factory stopped instead of trying it again."**\
 The item is stuck on one failure. Read its log, then choose **Try it once more**, perhaps with a note to the agent, **Hand it over as it is**, or **Give up**.
 
-**"No checks are saved for this repository, so a plan cannot be approved. File it as single, or save checks first."**\
-Shown before you file a feature. Save [checks](/docs/settings#checks) for the repository, or choose **Single**.
+**"No checks are saved for this repository. Save checks before approving subtasks, or run the plan with one implementer."**\
+Shown before you file a feature. Save [checks](/docs/settings#checks) for the repository, or choose **Quick**.
 
 **"Use a single item or add saved repository checks before approving orchestration."**\
-**"Use a single item or add CI that reports on pushes to the feature and child branches before approving orchestration."**\
-A feature's plan needs saved checks and CI that runs on pushes. See [What you need first](/docs/factory#what-you-need-first), or choose **Run as a single item**.
+**"This repository’s CI does not report on pushes to the feature branch."**\
+A split plan needs saved checks and push CI on the feature branch. With **Wait for CI on each part** enabled, it also needs push CI on child branches. See [What you need first](/docs/factory#what-you-need-first), or choose **Run as a single item**.
 
 **"The plan changed while you read it, here or in another tab: version … is shown now. Check it, then approve again."**\
 Someone saved a new version of the plan. Read the version shown, then approve it.
@@ -218,7 +218,7 @@ Someone saved a new version of the plan. Read the version shown, then approve it
 A subtask's budget is below the least a subtask needs, or above what one item may spend.
 
 **"No passing CI reported on the subtask push. Wait for an external check or stop orchestration."**\
-CI did not report on a subtask's branch. Check that your CI runs on pushes to `windlass/` branches. Choose **Keep waiting** or **Give up**.
+**Wait for CI on each part** is enabled and no passing CI was found on this subtask’s branch. Check that your CI runs on pushes to `windlass/` branches. Choose **Keep waiting** or **Give up**.
 
 **"Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up."**\
 A subtask could not join the feature. The pull request holds the subtasks that did. Hand it over as it is, or give up.
@@ -228,7 +228,7 @@ A subtask could not join the feature. The pull request holds the subtasks that d
 Read the subtasks' pages. Choose **Revise the plan** to have the planner try another way, or **Give up**.
 
 **"No passing CI reported on the complete feature. Wait for a check or hand over the PR."**\
-No CI passed on the whole feature within 10 minutes. Check CI on the pull request at GitHub.
+The assembled feature had no CI or only skipped or neutral checks. A queued workflow keeps waiting. Check CI on the pull request at GitHub.
 
 **"Not taken: orchestrated work items are disabled on this deployment."**\
 The App's comment on your issue. This platform does not offer orchestration. File the issue as a single item.

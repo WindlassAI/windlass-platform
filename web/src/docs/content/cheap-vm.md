@@ -30,7 +30,7 @@ curl -fsSL <platform address>/install.sh | sh
 1. When setup shows a pairing code, choose **Enter the code** in the browser, enter it and choose **Check code**. Compare the machine key on the page with the one in your terminal. If they match, tick the confirmation and choose **Connect**.
 2. Give the VM a name you will recognize. Pick your agents and sign them in with your accounts.
 3. At **Network**, keep **Restricted** (`--egress restricted`), the default for a new pairing. Commands can reach public sites through the runner's proxy. The VM itself, private networks and cloud metadata addresses are blocked by default. Choose **Only some public hosts** to narrow public access. **Open** allows local network access too. See [Network access](/docs/machines#network-access).
-4. Review **Limits** and start the runner. Setup waits for **Online**. When you start an agent, choose the VM under **on**.
+4. Review **Limits** and start the runner. Setup waits for **Online**. When you start an agent, choose the VM under **where**.
 
 You can close SSH. Setup starts the `windlass-runner` container with `--restart unless-stopped`, so Docker brings it back after a reboot unless you stopped it yourself. Keep the `windlass-runner` volume. It holds the machine's pairing key.
 

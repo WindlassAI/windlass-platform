@@ -40,7 +40,7 @@ A repository marked **read only** is one you can read on GitHub but not push to.
 The **where** menu lists **Hosted** and, once you have paired one, your machines. It starts on the machine your last agent ran on, if that machine can still be used, and on **Hosted** otherwise.
 
 - **This platform**: a sandbox the platform makes and controls. It counts against your daily sandbox time.
-- **A machine of yours**: the runner on that machine makes the sandbox. The platform's limits do not apply.
+- **A machine of yours**: the runner on that machine makes the sandbox. Turns use the runner’s slots and take no hosted sandbox time.
 
 A machine that cannot be used now is listed under **Listed, but not usable now**, with the reason. For example, its runner may be too old, or it may not have connected yet. See [Use your own machine](/docs/machines).
 
@@ -57,7 +57,7 @@ There are four agents, each shown by its own logo. The row of logos at the top o
 - **OpenCode** runs only on one of your machines whose runner offers it. It runs with the model providers you signed it in with, or OpenCode's free public models.
 - **Codex** runs only on one of your machines whose runner offers it. It runs with the ChatGPT sign-in or API key you signed it in with on that machine.
 
-Choose the machine under **where** first. Claude Code and OpenCode run in the hardened Docker profile only. They do not run the repository's checks; CI's result is on the pull request. The **agent** menu groups the models under each agent's name, with its sign-in state. An agent offered only on another machine of yours says "choose that machine first". Under **Terminal sign-in commands** are the commands that sign each one in.
+Choose the machine under **where** first. Claude Code and OpenCode run in the hardened Docker profile only. The platform runs the repository’s matching saved checks after either agent changes files. The **agent** menu groups the models under each agent's name, with its sign-in state. An agent offered only on another machine of yours says "choose that machine first". Under **Terminal sign-in commands** are the commands that sign each one in.
 
 On machines with the updated runner, Claude Code reads the repository’s `CLAUDE.md` and `.claude/` settings, skills and commands. New sandboxes start with bundled skills such as `/deep-research`, the plugin-authoring plugin, dynamic workflows and account skill and plugin sync turned off. The built-in tools for code-review findings and loop wakeups are disabled. Claude uses shorter tool descriptions and keeps the platform tools and their usual approvals.
 

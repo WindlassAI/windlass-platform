@@ -4,7 +4,7 @@ An agent on one of your machines runs in a Docker container there, made by a sma
 
 The runner connects out to the platform. Nothing needs to reach your machine from outside.
 
-After a session ends, your runner can prepare a fresh sandbox for the same repository. This works with a session-private workspace and setup that needs no secrets. It clones the base and runs setup without credentials, or starts from the validated environment. It checks the base again when a new session arrives. The timeline says **Started from a ready sandbox** when it uses one. A spare belongs to your pairing, yields its slot to a turn, and expires after six hours. The runner replaces expired spares only while the repository’s recipe has been used in the past 24 hours. After two consecutive build failures or a runner restart, it waits for another session to start with that recipe. The runner keeps one by default when disk is above `--keep-free`. Set `--spares 0` to turn it off.
+After a session ends, your runner can prepare a fresh sandbox for the same repository. This works with a session-private workspace and setup that needs no secrets. It clones the base and runs setup without credentials, or starts from the validated environment. It checks the base again when a new session arrives. The timeline says **Started from a ready sandbox** when it uses one. A spare belongs to your pairing, yields its slot to a turn, and expires after six hours. The runner replaces expired spares only while the repository’s recipe has been used in the past 24 hours. After two consecutive build failures it waits for another session with that recipe. After a restart a supported runner can ask the platform for a fresh recipe. A foreground session claims a matching spare first, even on a one-slot machine. An environment build waits if it would displace the spare. The runner keeps one by default when disk is above `--keep-free`. Set `--spares 0` to turn it off.
 
 If you have no spare computer, you can [run agents on a cheap cloud VM](/docs/cheap-vm).
 
@@ -18,7 +18,7 @@ If you have no spare computer, you can [run agents on a cheap cloud VM](/docs/ch
 
 **Allow Windlass's command sandbox.** A new machine offers only **Hardened Docker on your machine**: the agent's commands run directly in the session's container, with the container's network. Setup allows it unless you choose otherwise at its **Profile** step; with the Docker commands, add `--allow-profile docker-windlass-sandbox` to also offer **Docker + Windlass sandbox on your machine**, which puts a second wall around each command: Windlass (or Codex, with its own sandbox) runs every command in a sandbox without network that cannot read the session's token file. To let that sandbox run, the session's container is started with AppArmor and system paths unconfined, and with user namespaces and mounts allowed; the command sandbox inside is the boundary. It is recommended for Windlass and Codex, which use it. Claude Code and OpenCode run only on the hardened profile. See [Allowed profiles](/docs/runner#allowed-profiles).
 
-An account can connect up to 3 machines.
+An account can connect up to 3 machines by default, or 10 on Pro where plans are offered.
 
 ## Add a machine
 
@@ -154,7 +154,7 @@ On a deployment that turns it on, a Windlass turn running on your machine can ou
 
 ### When the machine goes away
 
-If the machine shuts down or goes to sleep during a turn, the turn is paused, not ended. It waits for the machine for as long as it takes, and resumes by itself when the runner connects again. The time offline does not count toward the turn's limit.
+Where turn resumption is enabled, a turn pauses if the machine shuts down or goes to sleep. It waits for the machine for as long as it takes, and resumes by itself when the runner connects again. The time offline does not count toward the turn's limit.
 
 ### CPU and memory
 
@@ -289,7 +289,7 @@ An agent runs only on a machine whose runner was started with its flag: `--harne
 
 The runner does not save `--harness`. Give it each time you start the runner, or the agent is no longer offered.
 
-Claude Code and OpenCode run only in the hardened profile, **Hardened Docker on your machine "…"**. Either can build a work item filed on this machine, without asking and in Quick only (see [Choose the agent](/docs/factory#choose-the-agent)).
+Claude Code and OpenCode run only in the hardened profile, **Hardened Docker on your machine "…"**. Either can run a Quick item or an approved Plan-first subtask on this machine, without asking (see [Choose the agent](/docs/factory#choose-the-agent)).
 
 Codex runs in both profiles, with different modes:
 

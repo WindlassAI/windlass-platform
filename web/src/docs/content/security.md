@@ -9,7 +9,7 @@ Where the platform runs Windlass's model requests through its relay, the sandbox
 - **Docker, here or on your machine.** The placeholder works only on the session's own `127.0.0.1:17893`. A helper in the session's network namespace takes it to the relay. Taken anywhere else, it is of no use.
 - **E2B.** The microVM reaches the relay at a hostname of its own, which serves nothing else. The microVM's allowed hosts include that name and not the platform's own address. The placeholder is signed by the platform and works only while its turn runs. It works only for model requests, within the limits below.
 
-When the turn ends, the relay forgets the token, stops the turn's requests still running, and the placeholder stops working. Anything in the sandbox can still make model requests on your plan through the relay while a turn runs, within the limits: 8 requests at once per session, with up to 32 more waiting, and 16 at once across your sessions. These limits bound how many requests run at once, not how much of your plan they use.
+When the turn ends, the relay forgets the token, stops the turn's requests still running, and the placeholder stops working. Anything in the sandbox can still make model requests on your plan through the relay while a turn runs, within the limits: 8 requests at once per session, with up to 32 more waiting, and 16 at once per hosted user. On a machine the relay allows 24 at once across sessions. These limits bound how many requests run at once, not how much of your plan they use.
 
 If the relay cannot be started, the turn fails with "the model relay could not be started". The platform never falls back to putting the token in the sandbox. If the relay refuses a turn's placeholder (the turn ended, or the relay restarted), the turn fails with "send the prompt again". Your sign-in is untouched. Machines with an older runner (0.3.0 or 0.3.1), or whose sandbox image has an older Windlass, don't offer the relay. Their turns get the token in a file, as described below.
 
@@ -51,13 +51,13 @@ On a machine, the runner uses only the images pinned in its own build. The platf
 - they can write only in the workspace and in a home of the session's own;
 - Windlass hides the session's access token from the agent's commands.
 
-An approved local MCP server runs outside this command sandbox and can read the current token. Repository setup also runs outside it, but setup finishes and its processes are cleared before the turn receives a token.
+An approved local MCP server runs outside this command sandbox and can read the turn’s token file. With the model relay, that file holds a placeholder. Repository setup also runs outside it, but setup finishes and its processes are cleared before the turn receives a token.
 
 So that Windlass's bubblewrap sandbox can work inside it, the container runs under a seccomp filter that is Docker's default plus the namespace and mount calls bubblewrap needs, without Docker's AppArmor profile, and with the system paths unmasked. The isolation of each command then comes from Windlass's sandbox. Its Windlass modes are **Ask** and **Auto**.
 
 ### Docker, hardened
 
-`docker-hardened`. A container under Docker's default seccomp and AppArmor profiles. Commands run directly in it with the container’s network policy. In a Windlass session they can read the turn’s access token. Its Windlass modes are **Ask** and **Full**. Claude Code and OpenCode run only in this profile.
+`docker-hardened`. A container under Docker's default seccomp and AppArmor profiles. Commands run directly in it with the container’s network policy. In a Windlass session they can read the turn’s token file, which holds a placeholder when the model relay is in use. Its Windlass modes are **Ask** and **Full**. Claude Code and OpenCode run only in this profile.
 
 | | Docker + Windlass sandbox | Docker, hardened |
 | --- | --- | --- |
@@ -77,8 +77,8 @@ So that Windlass's bubblewrap sandbox can work inside it, the container runs und
 On a platform that runs on E2B, each sandbox is a microVM of its own, hosted by E2B, where commands run as a non-root user. Which E2B sandboxes are offered depends on the platform, and each one's description says what it promises:
 
 - **E2B + Windlass sandbox**: every command is sandboxed again by Windlass, so the agent's commands have no network and cannot read the access token.
-- **E2B**: nothing is promised inside the microVM. A command may have network and may read the access token. Windlass asks before any command it cannot sandbox.
-- **E2B, microVM only**: no sandbox inside the microVM. Commands run without asking, can reach any host and can read the access token.
+- **E2B**: nothing is promised inside the microVM. A command may have network and may read the turn’s token file. Windlass asks before any command it cannot sandbox.
+- **E2B, microVM only**: no sandbox inside the microVM. Commands run without asking, follow the microVM’s network policy and can read the turn’s token file.
 
 E2B never lets a sandbox reach private or link-local addresses on its side, in any of them. The platform's operator can limit the microVMs' network further, for the whole platform. E2B enforces the limit outside the microVM, so nothing inside it can lift it, and it applies to everything there: the agent's commands, a setup command, MCP servers, and the platform's own clone, push and model calls.
 

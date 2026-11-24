@@ -1,10 +1,10 @@
 ## What a work item is
 
-A work item is a task on one of your GitHub repositories that an agent carries through on its own. You write what you want done. An agent works on it in a sandbox, runs your checks, pushes a branch, waits for CI and hands it to you as a pull request. When it needs a decision from you, it waits under **Needs you**. Merging always stays yours.
+A work item is a task on one of your GitHub repositories that an agent carries through on its own. You write what you want done. An agent works on it in a sandbox, runs your checks, pushes a branch, waits for CI and hands it to you as a pull request. When it needs a decision from you, it waits under **Needs you**. You merge by default. A repository can [auto-merge eligible single items](#automatic-approvals-and-merges).
 
 Work items need a repository from your GitHub connection. They run with Windlass unless you choose another agent on one of your machines: see [Choose the agent](#choose-the-agent). The Factory is offered where the platform turns work items on. Then **Agents · Factory** appears in the bar.
 
-GitHub issues and the Factory composer use the repository’s **Where work items run** setting, then the account setting, then Hosted. You can override the selection in the composer. Any of my machines takes the first compatible online machine with a free slot. If none is ready, the timeline explains the wait or hosted fallback. Plan first uses Windlass to plan and passes the placement preference to the planner for parts that fit. A part on the saved agent starts on its saved model and effort unless the planner chose one.
+GitHub and Linear issues and the Factory composer use the repository’s **Where work items run** setting, then the account setting, then Hosted. You can override the selection in the composer. Any of my machines takes the first compatible online machine with a free slot. If none is ready, the timeline explains the wait or hosted fallback. Plan first uses Windlass to plan and passes the placement preference to the planner for parts that fit. A part on the saved agent starts on its saved model and effort unless the planner chose one.
 
 A work item runs in one of two ways:
 
@@ -27,7 +27,7 @@ To file it without starting it, choose **File as a draft** in the **File** menu,
 
 ### From a repository
 
-Choose the repository in the rail of **Agents**, open **Work items** and choose **New work item…**. Fill in **Title**, **What to do** and, if you like, **Acceptance criteria**. Choose **Plan first** or **Quick** under **How it runs**, where it is offered. On a machine signed into Claude Code or OpenCode, choose the **Agent** under the machine. Leave **Start now** ticked and choose **File and start**, or choose **File as a draft**.
+Choose the repository in the rail of **Agents**, open **Work items** and choose **New work item…**. Fill in **Title**, **What to do** and, if you like, **Acceptance criteria**. Choose **Plan first** or **Quick** under **How it runs**, where it is offered. For a Quick item on a machine, choose a signed-in agent under **Agent**. Codex items need the machine’s ChatGPT sign-in. Leave **Start now** ticked and choose **File and start**, or choose **File as a draft**.
 
 ### From a GitHub issue
 
@@ -53,7 +53,7 @@ On GitHub, removing the label cancels a draft. Closing the issue cancels an item
 
 Where the platform has a Linear OAuth client and signing secret, you can file a work item from a Linear issue.
 
-**Set it up.** In **Settings**, under **Linear**, choose **Connect Linear** and approve the workspace at Linear. Windlass returns you to Settings. Then choose a team and one repository from your GitHub connection and **Save mapping**. **Remove** drops a mapping. A team belongs to one owner at a time. Another owner can map it once the previous mapping or workspace connection is gone. Issues of a team with no mapping are ignored.
+**Set it up.** In **Settings**, under **Linear**, choose **Connect Linear** and approve the workspace at Linear. Windlass returns you to Settings. Then choose a team and one repository from your GitHub connection and **Map team**. **Remove** drops a mapping. A team belongs to one owner at a time. Another owner can map it once the previous mapping or workspace connection is gone. Issues of a team with no mapping are ignored. **Disconnect…** removes the workspace connection and its team mappings. Work items already filed stay in Windlass.
 
 **Triggers.**
 
@@ -100,7 +100,7 @@ What changes with Claude Code or OpenCode:
 - **Publishing.** The platform commits what the agent left, pushes and opens the pull request, as it does for Windlass. The agent's own `git push` fails, because the sandbox holds no GitHub credential. The pull request's description is the item's.
 - **Tokens and cost.** OpenCode's reported tokens count against the item's token budget, and the cost it reports is shown on the item's page. Claude Code runs on your Claude subscription. The tokens it reports are shown but not counted, and its 5-hour window is shown at the first turn and the latest. Claude Code sends that window only when it warns that the window is nearly used, so until then the page says the window is **Not reported**. Its turns are bounded only by the factory's backstop on an item's turns. Where an agent reports no tokens, the page says **Not reported**, never 0. An OpenCode turn that reports no tokens stops the item, because its token budget can't be enforced: the item asks you, and you can give up or hand over a pull request CI has read. The cost OpenCode reports is shown, not capped.
 
-From the API, send `"harness": "claude"` or `"harness": "opencode"` with `"place"` naming the machine and `"mode": "single"`, and optionally `"model"`, for example `"sonnet"`, and `"effort"`, for example `"high"`. The machine's model list is on the **Machines** page. Issues filed from GitHub run Windlass.
+From the API, send `"harness": "claude"` or `"harness": "opencode"` with `"place"` naming the machine and `"mode": "single"`, and optionally `"model"`, for example `"sonnet"`, and `"effort"`, for example `"high"`. The machine's model list is on the **Machines** page. Issue filings use the saved work-item placement and agent. The planner always runs Windlass.
 
 ### Codex items
 
@@ -133,11 +133,11 @@ By default, you merge the pull request. Repository owners can enable automatic m
 
 ### Your checks
 
-Set checks in the repository's settings, under **Checks**. Windlass runs them before it calls a turn done, in the agent's own sandbox, and sends the agent back with what fails, three times at most. Without checks, an item's verdict rests on CI alone.
+Set checks in the repository’s settings under **Checks**. Windlass can send a turn back up to three times for failing checks. On machine agents the platform runs matching checks after a change and can send failures back twice in a turn. Codex on its command-sandboxed profile records matching checks as unable to start. Without local checks, the verdict relies on CI.
 
 ### CI
 
-Windlass waits as long as a workflow is queued. If GitHub reports a workflow in progress for more than six hours, the item asks you what to do. If GitHub reports no workflows, checks or statuses for the push after 10 minutes, Windlass looks at the last three commits on the default branch. It keeps waiting if any show CI. Otherwise, it treats the push as having no CI.
+Windlass waits as long as a workflow is queued. If it cannot reach GitHub to read CI for 90 minutes, it asks you whether to keep waiting. If GitHub reports a workflow in progress for more than six hours, the item asks you what to do. If GitHub reports no workflows, checks or statuses for the push after 10 minutes, Windlass looks at the last three commits on the default branch. It keeps waiting if any show CI. Otherwise, it treats the push as having no CI.
 
 When CI fails, stays cancelled or times out and the base branch has new commits, choose **Update from the base branch and run CI again** to merge the target branch (the feature branch for a subtask) and check the new commit.
 
@@ -145,11 +145,11 @@ When CI fails, stays cancelled or times out and the base branch has new commits,
 
 A second agent, with no part in making the change, checks out the pushed commit in its own sandbox and reads it against the task. It approves, asks for changes, or says it needs you.
 
-It is also given what you said to the work since you filed it, as your decisions: your notes when you sent it back, your notes when you answered a question, and your own feedback on the pull request. Where one disagrees with the task, it reviews against your decision. It is told not to ask for a decision to be undone, and not to ask you again what you already answered. The agent that made the change is told the same: it keeps your choice where a finding asks otherwise, and says so in its report. Feedback from other people is not a decision of yours and is not passed on this way. Its findings are marked **Blocking**, **Should fix** or **Note**. The verdict never rests on its words.
+It is also given what you said to the work since you filed it, as your decisions: notes you sent to its running builder, notes when you sent it back or answered a question, and your own feedback on the pull request. Where one disagrees with the task, it reviews against your decision. It is told not to ask for a decision to be undone, and not to ask you again what you already answered. The agent that made the change is told the same: it keeps your choice where a finding asks otherwise, and says so in its report. Feedback from other people is not a decision of yours and is not passed on this way. Its findings are marked **Blocking**, **Should fix** or **Note**. The verdict never rests on its words.
 
 What happens next depends on its recommendation:
 
-- **Approves**: the item is handed to you.
+- **Approves**: the item is handed to you unless it qualifies for [automatic merge](#automatic-approvals-and-merges).
 - **Asks for changes**: the agent that made the change gets the blocking findings and works on them, on the same branch. It is told to leave a finding it disagrees with and say why in its report. It is also told that no finding justifies removing or skipping tests or checks, changing CI or deploy configuration, adding network calls, or touching credentials: it leaves such a finding and names it in its report. The new commit goes through your checks and CI, and the second agent reviews it again. It says for each earlier blocking finding whether it is fixed, not fixed, or withdrawn. A finding it says is not fixed stays open for the next round, whether or not it files it again, and it cannot approve while one is open. If the agent changes nothing, because it disagrees with every finding, the second agent reviews the same commit again, with the agent's report. Rounds of fixes are not capped: the item stops when the second agent asks for the same changes again, or when its budget is used.
 - **Needs you**: the item asks you, with the reviewer's questions in its review. **Have the agent change it** sends its agent back with the questions and your note. **Hand it over as it is** hands it to you with the review. Or **Give up**.
 
@@ -212,7 +212,7 @@ To require the check, add **windlass/verified** to the required status checks fo
 
 ## When an item needs you
 
-An item waits under **Needs you** when it asks you something, under **It asks you** on its page. For example, when its turn could not start, when GitHub refused the push, when CI has not finished, or when it reached a limit. Choose one of the answers it offers, such as **Try again**, **Keep waiting**, **Give it 2M more tokens**, **Hand it over as it is** or **Give up**. An item's question waits until you answer.
+An item waits under **Needs you** when it asks you something, under **It asks you** on its page. For example, when its turn could not start, when GitHub refused the push, when CI stays unreadable, or when it reached a limit. Choose one of the answers it offers, such as **Try again**, **Keep waiting**, **Give it 2M more tokens**, **Hand it over as it is** or **Give up**. An item's question waits until you answer.
 
 An item also stops and asks you when it is stuck. There is no cap on rounds of fixing; instead it stops when the same failure comes back:
 
@@ -225,7 +225,7 @@ An item also stops and asks you when it is stuck. There is no cap on rounds of f
 
 **Try it once more** goes on in the same run. Choose **Hand it over as it is** to take the work as it is, or **Give up**.
 
-A turn paused by a server restart is not a cut-off either: it resumes by itself, and the item sees one turn. A turn on your machine pauses when the machine goes offline. The item waits, with no failure and no question, and gives its turn slot to other items meanwhile. When the machine is back, the turn resumes first, ahead of turns that came later. The time offline does not count toward the turn's limit or the item's time. If the machine stays offline for six hours, the item asks you once: **Keep waiting**, or **Give up**. To run the item somewhere else, give up and start it again on another place.
+Where turn resumption is enabled, a turn paused by a server restart resumes by itself, and the item sees one turn. A turn on your machine pauses when the machine goes offline. The item waits, with no failure and no question, and gives its turn slot to other items meanwhile. When the machine is back, the turn resumes first, ahead of turns that came later. The time offline does not count toward the turn's limit or the item's time. If the machine stays offline for six hours, the item asks you once: **Keep waiting**, or **Give up**. To run the item somewhere else, give up and start it again on another place.
 
 ### What the Factory does on its own
 
@@ -319,7 +319,7 @@ You can ask for changes on the item's pull request at GitHub instead of on its p
 
 **On a single item**, a batch starts a new run on the same branch, as **Send back…** does. Feedback that arrives while the item works is held. Once CI has finished, it goes before the second review, and that commit is not handed over. Feedback that arrives while the second agent reviews goes first too, when the review asks for changes or has questions: the new run gets the feedback, and the reviewer's points after it. Its questions that only you could answer go to the agent as points too: you are not asked them. The new run's second review starts afresh, without the earlier findings. When the review approves, the commit is handed over first. After three runs started by other writers' feedback, the item asks you before each further batch: **Send it to the agent** or **Leave it**. Your own feedback is never capped. The item's budget still applies.
 
-**On a feature**, feedback that arrives while it works is held in the same way. Your feedback starts a re-plan. Another writer's feedback asks you first: **Plan a fix** or **Leave it**. The planner keeps completed subtasks as they are and adds fix subtasks. You approve the revised plan before anything runs, and its budgets with it. A feature that already has six subtasks does not take feedback. In both cases, file the fix as a new item.
+**On a feature**, feedback that arrives while it works is held in the same way. Your feedback starts a re-plan. Another writer's feedback asks you first: **Plan a fix** or **Leave it**. The planner keeps completed subtasks as they are and adds fix subtasks. You approve the revised plan before anything runs, and its budgets with it. If the feature already has six subtasks, file the fix as a new item.
 
 **Not taken.** Feedback is not taken on a failed, done or cancelled item, on a subtask's own work, or after its machine was removed.
 
@@ -357,8 +357,8 @@ What a turn with such text does depends on the item's profile and its agent:
 | Docker + Windlass sandbox, E2B + Windlass sandbox | Windlass | Windlass is told. Commands run as before: in its sandbox, without network. | The same. |
 | E2B, before the sandbox check | Windlass | Windlass is told. A command Windlass can't sandbox is refused, as before. | The same. |
 | E2B, microVM only | Windlass | Windlass is told. Commands move into its sandbox: no network, and nothing written outside the workspace. | The same. |
-| Docker, hardened | Windlass | Windlass is not told: it can't sandbox commands there, so it would refuse every one. The text goes labelled only, the timeline says so once, and commands run as on any turn, with the container's network. | The turn does not start. The item asks you, naming the text. **Run it anyway** sends that turn labelled only, as for text from the run: Windlass is not told, so the agent's commands run outside Windlass's sandbox, with the container's network and the session's access token, and a command the text talked it into is not stopped. Or file the work again on **Docker + Windlass sandbox**, or give up. |
-| Docker, hardened | Claude Code, OpenCode | The agent can't be told. The text goes labelled only, the timeline says so once, and the agent runs every command without asking, with the container's network. | The turn does not start, as for Windlass. The item asks you, naming the text and the agent. **Run it anyway** sends that turn labelled only, and the agent runs its commands without asking, with the container's network and the session's access. Or file the work again with Windlass on **Docker + Windlass sandbox**, or give up. |
+| Docker, hardened | Windlass | Windlass is not told: it can't sandbox commands there, so it would refuse every one. The text goes labelled only, the timeline says so once, and commands run as on any turn, with the container's network. | The turn does not start. The item asks you, naming the text. **Run it anyway** sends that turn labelled only, as for text from the run: Windlass is not told, so the agent's commands run outside Windlass's sandbox, with the container's network and access to the turn's token file (a placeholder when the model relay is on), and a command the text talked it into is not stopped. Or file the work again on **Docker + Windlass sandbox**, or give up. |
+| Docker, hardened | Claude Code, OpenCode, Codex | The agent can't be told. The text goes labelled only, the timeline says so once, and the agent runs every command without asking, with the container's network. | The turn does not start, as for Windlass. The item asks you, naming the text and the agent. **Run it anyway** sends that turn labelled only, and the agent runs its commands without asking, with the container's network and the session's access. Or file the work again with Windlass on **Docker + Windlass sandbox**, or give up. |
 
 After **Run it anyway**, later turns of the item, and its subtasks, that carry no other text from someone else go the same way. Text from someone new asks again. Where the choice is offered, **Hand it over as it is** is there too, once the item has a pull request this run pushed.
 
@@ -374,7 +374,7 @@ Plan first starts with a plan whether the feature needs one implementer or sever
 2. Review the plan on the item page. If the planner recommends one implementer, choose **Approve for one implementer** to approve that scope. The implementer receives the task and the plan. Planning spend stays visible. The implementer gets one Quick item's budget on top of what planning spent.
 3. If the planner proposes a split, review the subtask budgets and approve the plan. The Factory runs the subtasks in dependency order. Each part receives its brief and the original feature task, including its limits.
 4. **Feature summary**: once every subtask is done, an agent writes the pull request's summary.
-5. CI runs on the whole feature. After the second review, the Factory hands you one pull request. If the feature runs on a machine or second review is off, the Factory hands it over and shows the reason for skipping review on the item page.
+5. CI runs on the whole feature. After the second review, the Factory hands you one pull request. When there is no reviewer, the Factory hands over the feature with the reason on its page. A feature on a machine can have a second review there.
 
 ### What you need first
 
@@ -450,7 +450,7 @@ When the feature's own turns use its own budget, for example a long planning, it
 
 ### Subtasks
 
-Each subtask is a work item with its own page, which says **subtask of** the feature. It starts from the feature's branch, runs at its approved placement with its own agent, model and effort (the feature's Windlass model where it chose none), and has the subtask's budget. It is given its brief, its paths and the reports of the subtasks it waits for.
+Each subtask is a work item with its own page, which says **subtask of** the feature. It starts from the feature's branch, runs at its approved placement with its own agent, model and effort (the feature's model for a Windlass part without its own selection), and has the subtask's budget. It is given its brief, its paths, the original feature task (including the issue text) and the reports of the subtasks it waits for.
 
 Up to three subtasks can run together when their dependencies are done and their owned paths are disjoint. A subtask with no owned paths runs alone. The planner sees how many parts can run at once on the default machine given its free slots, or the three-part limit for hosted work. Each gets its own branch, place and reserved budget. If a place or budget share is unavailable, it waits while the others work.
 
@@ -538,11 +538,11 @@ The Factory page lists your items by what you must do:
 
 A repository's **Work items** tab in **Agents** shows that repository's open items the same way, with its ended ones folded under **Show N ended items**. The **Work items** table on **Usage** shows the cost of your open items and your 25 newest ended ones, and says how many older ended items the Factory page lists.
 
-Filter it with **repo** and **from**: filed from the web, the API or a GitHub issue. The filters are kept in the address, as `?repository=` and `?from=`.
+Filter it with **repo** and **from**: filed from the web, the API, a GitHub issue or a Linear issue. The filters are kept in the address, as `?repository=` and `?from=`.
 
 ## Limits
 
-When a Factory turn reaches a limit of this platform, the item waits and shows the reason. Your own machines have no platform limit: their runners' slots bound them, and the runner queues turns past them. GitHub intake checks its filing limit before it creates an item. The deployment operator can override these limits for your account, and the **Work items** section of the **Usage** page shows them. By default:
+When a Factory turn reaches a limit of this platform, the item waits and shows the reason. Machine turns use the runner's slots and do not count against hosted sandbox limits. GitHub and Linear intake share a daily filing limit. The deployment operator can override these limits for your account, and the **Work items** section of the **Usage** page shows them. By default:
 
 | Limit | Default |
 | --- | --- |
@@ -550,7 +550,7 @@ When a Factory turn reaches a limit of this platform, the item waits and shows t
 | Tokens per item, cost-weighted | 2,000,000 |
 | Hosted sandbox time per item | 2 hours |
 | A feature | its subtasks' budgets and one item's for itself |
-| Items filed from GitHub per day, drafts among them | 20 |
+| Items filed from GitHub and Linear together per UTC day, drafts among them | 20 |
 | Daily model tokens across items and interactive sessions | Unlimited |
 
 When an item reaches its own budget, it pauses and asks you for more: see [When the budget is used](#when-the-budget-is-used). The operator's item budget applies to newly created items.
