@@ -93,6 +93,7 @@ export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: st
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
+	internalDefaultBuilder(input: { id: string; job: import("./user-items.js").DefaultBuilder }): Promise<{ session: import("../contract.js").SessionSummary } | { wait: string }>;
 	internalHostedSizes(): Promise<HostedSize[]>;
 	internalDailyTokenWait(): Promise<string | null>;
 	internalRecordTurnTokens(input: { sessionId: string; receipt: import("../usage.js").TokenReceipt }): Promise<void>;

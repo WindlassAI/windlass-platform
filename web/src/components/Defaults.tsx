@@ -12,11 +12,13 @@
  * user's, is shown as it was saved and said to be ignored. The models are the user's own
  * (`useModels`), and a line under the field says whose list it is.
  */
-import type { AccountDefaults, HostedSize, SandboxProfileId } from "@contract";
+import type { AccountDefaults, ItemPlaceDefaults, HostedSize, SandboxProfileId } from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { modelIds, modelsNote } from "../lib/models";
 import { sizeLabel, sizeName, startingSize } from "../lib/sizes";
 import { type StartingChoices, startingChoices } from "../lib/repositories";
+import { ItemPlaceFields } from "./ItemPlaceFields";
+import { useMachines } from "../screens/Machines";
 import { useApp } from "../state/app";
 import type { ModelsState } from "../state/hooks";
 
@@ -43,16 +45,17 @@ export function DefaultsSection({
 	/** The models the user may choose, as the page read them. */
 	models: ModelsState;
 	/** Saves the fields the change names and answers with what is saved then. */
-	save(change: { profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<AccountDefaults & { hostedSize?: HostedSize | null }>;
+	save(change: ItemPlaceDefaults & { profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<AccountDefaults & { hostedSize?: HostedSize | null }>;
 	onSaved(next: AccountDefaults & { hostedSize?: HostedSize | null }): void;
 	/** More of the section, under the fields: on the account's page, where the last agent started. */
 	children?: ReactNode;
 }) {
 	const { platform, explain } = useApp();
 	const ids = { profile: useId(), model: useId(), size: useId(), profileNote: useId(), modelNote: useId(), sizeNote: useId() };
-	const [saving, setSaving] = useState<"profile" | "model" | "hostedSize" | null>(null);
+	const [saving, setSaving] = useState<"profile" | "model" | "hostedSize" | "place" | null>(null);
 	const [said, setSaid] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
 	const info = platform.info;
+	const machines = useMachines(Boolean(info?.items && info.machines));
 	const choices = startingChoices(defaults, info, models.list, whose);
 	const offered = modelIds(models.list);
 	const savedProfile = info?.profiles.find((profile) => profile.id === defaults.profile) ?? null;
@@ -67,12 +70,12 @@ export function DefaultsSection({
 	const sizes = whose === "repository" ? (info?.hostedSizes ?? []) : [];
 	const savedSize = defaults.hostedSize ?? null;
 
-	const change = async (field: "profile" | "model" | "hostedSize", value: string) => {
+	const persist = async (field: NonNullable<typeof saving>, patch: Parameters<typeof save>[0]) => {
 		if (saving !== null) return;
 		setSaving(field);
 		setSaid(null);
 		try {
-			onSaved(await save(field === "profile" ? { profile: value === "" ? null : (value as SandboxProfileId) } : field === "hostedSize" ? { hostedSize: value === "" ? null : (value as HostedSize) } : { model: value === "" ? null : value }));
+			onSaved(await save(patch));
 			setSaid({ tone: "good", text: "Saved." });
 		} catch (failure) {
 			setSaid({ tone: "bad", text: explain(failure) });
@@ -80,6 +83,8 @@ export function DefaultsSection({
 			setSaving(null);
 		}
 	};
+
+	const change = (field: "profile" | "model" | "hostedSize", value: string) => persist(field, { [field]: value || null });
 
 	return (
 		<section className="usage-section" aria-labelledby={id}>
@@ -163,6 +168,7 @@ export function DefaultsSection({
 							</p>
 						</div>
 					) : null}
+					{info.items && <ItemPlaceFields defaults={defaults} machines={machines.list ?? []} repository={whose === "repository"} disabled={saving !== null || (!!info.machines && machines.list === null && !machines.error)} change={patch => void persist("place", patch)} />}
 					{children}
 				</div>
 			)}

@@ -1,3 +1,4 @@
+import type { ItemPlaceDefaults } from "@contract";
 /**
  * `PlatformClient`: the one interface the screens use to reach the backend. Two implementations:
  * `mock.ts` (in memory, no network) and `rivet.ts` (the real actors over `rivetkit/client`).
@@ -211,7 +212,7 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	 */
 	githubRepository(repositoryId: GithubId): Promise<GithubRepository>;
 	/** Saves what new agents on a repository start with: a field left out stays, null saves none. Throws with reason `bad_input` or `bad_model` for what the deployment does not offer. */
-	saveRepositoryDefaults(repositoryId: GithubId, change: { autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(repositoryId: GithubId, change: ItemPlaceDefaults & { autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
 	/** Forgets the remembered approvals of that MCP server for a repository. */
 	forgetRepositoryApproval(repositoryId: GithubId, name: string): Promise<RepositoryView>;
 	/** Deletes everything kept for a repository: setup command, checks, secrets, defaults and remembered approvals. The agents on it stay. */
@@ -221,7 +222,7 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	/** The account's settings: the defaults for new agents and the user's own MCP servers. No secret's value. */
 	account(): Promise<AccountSettings>;
 	/** Saves what new agents start with where neither the launch form nor the repository says: a field left out stays, null saves none. Throws as `saveRepositoryDefaults` does. */
-	saveAccountDefaults(change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
+	saveAccountDefaults(change: ItemPlaceDefaults & { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
 	/** Forgets where the newest agent was started (`AccountSettings.lastStart`). */
 	forgetLastStart(): Promise<AccountSettings>;
 	/**

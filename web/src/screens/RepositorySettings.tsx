@@ -122,6 +122,7 @@ function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { pa
 		view.saved.secrets > 0 ? (view.saved.secrets === 1 ? "its one secret" : `its ${view.saved.secrets} secrets`) : null,
 		view.saved.network > 0 ? "its network list" : null,
 		view.defaults.profile !== null || view.defaults.model !== null ? "the defaults for new agents" : null,
+		view.defaults.place ? "where new work items run" : null,
 		view.defaults.autoApprovePlans || view.defaults.autoMergeSingles ? "automatic work item approvals" : null,
 		view.defaults.screenshots ? "the choice to take screenshots" : null,
 		view.approvals.length > 0 ? (view.approvals.length === 1 ? "the remembered approval of one MCP server" : `the remembered approvals of ${view.approvals.length} MCP servers`) : null,
@@ -198,7 +199,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 	const accountChoices = startingChoices(account.settings?.defaults ?? null, info, models.list, "account");
 	const choices = layerChoices(startingChoices(view?.defaults ?? null, info, models.list), accountChoices);
 	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
-	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.saved.network > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.defaults.screenshots || view.defaults.autoApprovePlans || view.defaults.autoMergeSingles || view.approvals.length > 0);
+	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.saved.network > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.defaults.place || view.defaults.screenshots || view.defaults.autoApprovePlans || view.defaults.autoMergeSingles || view.approvals.length > 0);
 
 	// Opened at a section: it is gone to once the sections stand, which is when what is saved was read. The sections
 	// above it read their own lists after that and grow: it is kept in view while they do, until its person scrolls.
@@ -263,7 +264,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						under={accountChoices}
 						models={models}
 						save={(change) => client.user(auth).saveRepositoryDefaults(page.id, change)}
-						onSaved={(next) => page.replace({ ...view, defaults: { ...view.defaults, ...next } })}
+						onSaved={(next) => page.replace({ ...view, defaults: { ...view.defaults, place: null, harness: null, machineProfile: null, placeFallback: null, ...next } })}
 					/>
 
 					<ScreenshotsSetting page={page} view={view} />

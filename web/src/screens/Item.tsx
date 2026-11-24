@@ -1042,16 +1042,16 @@ export function Item({ page }: { page: ItemPage }) {
 							{repository.owner}/{repository.name}
 						</a>
 						<span className="repo-fact">into {view.task.base}</span>
-						{view.place.kind === "machine" ? <span className="repo-fact">{machine === null ? "on a machine that was removed" : machine ? `on your machine “${machineLabel(machine)}”` : "on your machine"}</span> : view.placement ? <span className="repo-fact">runs on {view.placement.name}</span> : null}
+						{view.awaitingPlace ? <span className="repo-fact">awaiting machine placement</span> : view.place.kind === "machine" ? <span className="repo-fact">{machine === null ? "on a machine that was removed" : machine ? `on your machine “${machineLabel(machine)}”` : "on your machine"}</span> : view.placement ? <span className="repo-fact">runs on {view.placement.name}</span> : null}
 						{view.pullRequest ? (
 							<a className="repo-link" href={view.pullRequest.url} target="_blank" rel="noreferrer">
 								Pull request #{view.pullRequest.number}
 								<ExternalIcon size={11} />
 							</a>
 						) : null}
-						<a className="repo-link" {...linkProps({ name: "session", id: view.sessionId })} title="What its agent did, turn by turn">
+						{!view.awaitingPlace && <a className="repo-link" {...linkProps({ name: "session", id: view.sessionId })} title="What its agent did, turn by turn">
 							Open the agent
-						</a>
+						</a>}
 						<ValidatedEnvironment environment={sessions?.find((s) => s.id === view.sessionId)?.environment} now={now} />
 						{view.reviewerSessionId ? (
 							<a className="repo-link" {...linkProps({ name: "session", id: view.reviewerSessionId })}>

@@ -58,7 +58,7 @@ function LastStartLine({ lastStart, forget, onForgotten }: { lastStart: LastStar
 	};
 	return (
 		<div className="field last-start">
-			<span className="label">Where it runs, agent and mode</span>
+			<span className="label">Where new agents start</span>
 			<p className="last-start-value" data-testid="last-start">
 				{lastStart === null ? (
 					<span className="last-start-none">Nothing remembered yet</span>

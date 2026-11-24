@@ -4,6 +4,8 @@ A work item is a task on one of your GitHub repositories that an agent carries t
 
 Work items need a repository from your GitHub connection. They run with Windlass unless you choose another agent on one of your machines: see [Choose the agent](#choose-the-agent). The Factory is offered where the platform turns work items on. Then **Agents · Factory** appears in the bar.
 
+GitHub issues and the Factory composer use the repository’s **Where work items run** setting, then the account setting, then Hosted. You can override the selection in the composer. Any of my machines takes the first compatible online machine with a free slot. If none is ready, the timeline explains the wait or hosted fallback. Plan first uses Windlass to plan and passes the placement preference to the planner for parts that fit.
+
 A work item runs in one of two ways:
 
 - **Plan first** is the default. A read-only planner files a feature plan. You approve the scope on the item page, then one implementer follows it or the approved subtasks run. See [Orchestrate a feature](#orchestrate-a-feature).

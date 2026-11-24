@@ -1,4 +1,4 @@
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type ItemState, type ItemSummary, type CreateItemInput, type GithubId } from "../contract.js";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type ItemPlaceDefaults, type ItemState, type ItemSummary, type CreateItemInput, type GithubId } from "../contract.js";
 import type { GithubUser } from "../github/app.js";
 
 const plain = (s: string) => s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, "").replace(/<!--[\s\S]*?(?:-->|$)/g, "").trim();
@@ -52,6 +52,7 @@ export function issueMode(note: string, labels: unknown[], enabled = true) {
 }
 
 export interface IssueBinding {
+	defaultPlace?: ItemPlaceDefaults;
 	modeReason?: string | null;
 	triggerLabel?: string;
 	origin: NonNullable<ItemSummary["origin"]>;

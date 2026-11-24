@@ -222,6 +222,8 @@ export interface FeedbackDecision {
 }
 
 export interface FactoryItem {
+	/** Waiting for the builder to bind to a machine before its first run. */
+	awaitingPlace?: string;
 	/** A foreign push observed on this PR disqualifies it even if the original head returns. */
 	foreignPush?: true;
 	/** Question claimed by Add it and continue. No continuation is delivered until the save settles. */
@@ -418,6 +420,8 @@ export interface AgentTurn {
 }
 
 export type Fact =
+	| { kind: "default_place_ready"; at: number; place: SandboxPlace; agent: NonNullable<FactoryItem["agent"]> }
+	| { kind: "default_place_wait"; at: number; sentence: string }
 	| ({ kind: "github_feedback"; at: number } & FeedbackInput)
 	| { kind: "reverify"; at: number; head: string }
 	/** `repo`: a cross-repo feature's repository, by alias; absent: the one repository. */
@@ -559,6 +563,7 @@ export type VerifiedCheckEffect = {
 } & ({ state: "in_progress"; conclusion: null } | { state: "completed"; conclusion: CheckConclusion });
 
 export type Effect =
+	| { kind: "resolve_default_place"; key: string; at: number }
 	| { kind: "auto_merge"; key: string; head: string; baseTip?: string; pr: number }
 	| VerifiedCheckEffect
 	| { kind: "sandbox_retry"; key: string; at: number; plan: TurnPlan }

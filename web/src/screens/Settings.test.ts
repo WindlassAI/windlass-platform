@@ -87,3 +87,32 @@ it("says where the last agent started, with its agent and mode, and forgets it",
 		localStorage.clear();
 	}
 }, 15_000);
+
+it("saves a machine agent and profile and hides machine choices for Hosted", async () => {
+	const client = createMockClient({ pace: 0 });
+	const auth = { token: "mock:chatgpt:u_places:ada@example.com", profile: { uid: "u_places", email: "ada@example.com", demo: false } };
+	saveAuth("mock", auth);
+	const host = document.body.appendChild(document.createElement("div"));
+	const root = createRoot(host);
+	const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => void await new Promise(r => setTimeout(r, 2))); };
+	const field = (name: string) => [...host.querySelectorAll<HTMLSelectElement>("fieldset select")].find(el => el.labels?.[0]?.textContent === name);
+	const select = async (name: string, value: string) => {
+		await act(async () => { const el = field(name)!; el.value = value; el.dispatchEvent(new Event("change", { bubbles: true })); });
+		await settle();
+	};
+	try {
+		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
+		await settle();
+		expect(field("Agent")).toBeUndefined();
+		await select("Place", "m_nas");
+		await select("Agent", "claude");
+		await select("Machine profile", "docker-hardened");
+		await select("If unavailable", "hosted");
+		expect((await client.user(auth).account()).defaults).toMatchObject({ place: { machine: "m_nas" }, harness: "claude", machineProfile: "docker-hardened", placeFallback: "hosted" });
+		await select("Place", "hosted");
+		expect(field("Machine profile")).toBeUndefined();
+		expect((await client.user(auth).account()).defaults.place).toBe("hosted");
+	} finally {
+		act(() => root.unmount()); host.remove(); client.dispose(); localStorage.clear();
+	}
+});

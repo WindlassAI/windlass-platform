@@ -1,3 +1,5 @@
+import { changedPlace, changesPlace, placeProblem, savedPlace } from "../../../server/src/factory/default-place";
+import type { ItemPlaceDefaults } from "@contract";
 import { shiftMonths } from "../../../server/src/billing/meter.js";
 import { machineDetails } from "../../../server/src/machines/details.js";
 /**
@@ -1297,6 +1299,8 @@ function takenUnder<Answer>(kept: Map<string, Taken<Answer>>, key: string | null
 	return first.answer;
 }
 
+type SavedDefaults = AccountDefaults & { updatedAt: number };
+
 interface World {
 	profile: UserProfile;
 	sessions: Map<string, MockSession>;
@@ -1316,7 +1320,7 @@ interface World {
 	/** The secrets the user saved, by repository and name. A value is not kept at all: nothing here could show one. */
 	secrets: Map<GithubId, Map<string, { scope: SecretScope; updatedAt: number }>>;
 	/** What new agents on a repository start with, where the user said so, by GitHub's id for it. */
-	defaults: Map<GithubId, { profile: SandboxProfileId | null; model: string | null; updatedAt: number }>;
+	defaults: Map<GithubId, SavedDefaults>;
 	/** The repositories whose work items' agents can take screenshots, with when that was saved (`RepositoryDefaults.screenshots`). */
 	autonomy: Map<GithubId, { autoApprovePlans?: boolean; autoMergeSingles?: boolean; updatedAt: number }>;
 	screenshotsEnabled: Map<GithubId, number>;
@@ -1324,7 +1328,7 @@ interface World {
 	names: Map<GithubId, string>;
 	/** What the user keeps for their account, whatever the repository. A secret's value is not kept at all. */
 	account: {
-		defaults: { profile: SandboxProfileId | null; model: string | null; updatedAt: number } | null;
+		defaults: SavedDefaults | null;
 		/** Where the newest agent the user started ran, its agent and mode (`AccountSettings.lastStart`). */
 		lastStart: LastStart | null;
 		servers: Map<string, { definition: Record<string, unknown>; unasked: boolean; updatedAt: number }>;
@@ -1460,6 +1464,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			if (session.summary.item?.id === item.id && session.summary.status === status) return;
 			setSummary(world, session, { availableModes: [], item: { id: item.id, role: "builder" }, status, ...(status === "running" && session.summary.sandbox === "none" ? { sandbox: "running" as const } : {}) });
 		},
+		waitingRepository: async (auth, input) => {
+			const { id, owner, name, private: privateRepo, defaultBranch } = await userApi(auth).githubRepository(input.id);
+			return { provider: "github", id, owner, name, private: privateRepo, branch: input.branch ?? defaultBranch, url: `https://github.com/${owner}/${name}` };
+		},
+		defaultPlace: (auth, repositoryId) => savedPlace(defaultsOf(worldOf(auth), repositoryId), accountDefaultsOf(worldOf(auth))),
 		checks: (auth, repositoryId) => checksOf(worldOf(auth), repositoryId).checks.length,
 		machines: (auth) => (machineState === "off" ? null : { list: machinesOf(auth).list, minRunnerVersion: MOCK_MIN_RUNNER_VERSION }),
 	});
@@ -3157,7 +3166,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const enabled = world.screenshotsEnabled.get(repositoryId);
 		const updatedAt = saved || enabled !== undefined ? Math.max(saved?.updatedAt ?? 0, enabled ?? 0) : null;
 		const size = hostedSizes.get(repositoryId) ?? null;
-		return { ...world.autonomy.get(repositoryId), screenshots: enabled !== undefined, profile: saved?.profile ?? null, model: saved?.model ?? null, hostedSize: size, updatedAt: Math.max(updatedAt ?? 0, world.autonomy.get(repositoryId)?.updatedAt ?? 0) || (size ? now() : null) };
+		return { ...saved, ...world.autonomy.get(repositoryId), screenshots: enabled !== undefined, profile: saved?.profile ?? null, model: saved?.model ?? null, hostedSize: size, updatedAt: Math.max(updatedAt ?? 0, world.autonomy.get(repositoryId)?.updatedAt ?? 0) || (size ? now() : null) };
 	}
 
 	function repositoryViewOf(world: World, repositoryId: GithubId): RepositoryView {
@@ -3208,12 +3217,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** Saves as the server does (server/src/repository-defaults.ts): the same refusals in the same words, and only the fields that are named. */
 	/** Each repository's saved hosted size. */
 	const hostedSizes = new Map<GithubId, HostedSize>();
-	function saveDefaults(world: World, repositoryId: GithubId, { screenshots, hostedSize, autoApprovePlans, autoMergeSingles, ...change }: { autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): RepositoryDefaults {
+	function saveDefaults(world: World, machines: MachineSummary[], repositoryId: GithubId, { screenshots, hostedSize, autoApprovePlans, autoMergeSingles, ...change }: ItemPlaceDefaults & { autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): RepositoryDefaults {
 		if (screenshots !== undefined && typeof screenshots !== "boolean") throw new PlatformError("user", "Screenshots must be true or false.", { reason: "bad_input" });
 		if (hostedSize !== undefined && hostedSize !== null && !isHostedSize(hostedSize)) throw new PlatformError("user", "Choose one of the hosted sizes: small, standard, large.", { reason: "bad_input" });
 		if (hostedSize === null) hostedSizes.delete(repositoryId);
 		else if (hostedSize !== undefined) hostedSizes.set(repositoryId, hostedSize);
-		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change, modelsFor(world.profile));
+		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change, modelsFor(world.profile), machines);
 		if (next === null) world.defaults.delete(repositoryId);
 		else world.defaults.set(repositoryId, next);
 		const flags = { ...world.autonomy.get(repositoryId), updatedAt: now() };
@@ -3243,9 +3252,15 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		throw new PlatformError("user", models.source === "account" ? `That model is not among the ones your ChatGPT plan offers. Choose one of: ${names}` : `That model is not offered. Choose one of: ${names}`, { reason: "bad_model" });
 	}
 
-	function changedDefaults(before: { profile: SandboxProfileId | null; model: string | null; updatedAt: number } | null, change: { profile?: SandboxProfileId | null; model?: string | null }, models: ModelList): { profile: SandboxProfileId | null; model: string | null; updatedAt: number } | null {
+	function changedDefaults(before: SavedDefaults | null, change: ItemPlaceDefaults & { profile?: SandboxProfileId | null; model?: string | null }, models: ModelList, machines: MachineSummary[]): SavedDefaults | null {
 		const saved = before ?? { profile: null, model: null, updatedAt: 0 };
 		const next = { ...saved };
+		if (changesPlace(change)) {
+			const policy = changedPlace(saved, change);
+			const problem = placeProblem(policy, machines);
+			if (problem) throw new PlatformError("user", problem, { reason: "bad_input" });
+			Object.assign(next, policy);
+		}
 		if (change.profile !== undefined) {
 			const chosen = change.profile === null ? null : profiles.find((profile) => profile.id === change.profile);
 			if (chosen === undefined) throw new PlatformError("user", "Choose one of the listed sandboxes.", { reason: "bad_input" });
@@ -3256,15 +3271,15 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			if (change.model !== null) checkModel(models, change.model);
 			next.model = change.model;
 		}
-		if (change.profile === undefined && change.model === undefined) return before;
-		return next.profile === null && next.model === null ? null : { ...next, updatedAt: now() };
+		if (!changesPlace(change) && change.profile === undefined && change.model === undefined) return before;
+		return !next.place && next.profile === null && next.model === null ? null : { ...next, updatedAt: now() };
 	}
 
 	// ---- the account's settings -------------------------------------------------------------------
 
 	function accountDefaultsOf(world: World): AccountDefaults {
 		const saved = world.account.defaults;
-		return { profile: saved?.profile ?? null, model: saved?.model ?? null, updatedAt: saved?.updatedAt ?? null };
+		return saved ?? { profile: null, model: null, updatedAt: null };
 	}
 
 	function accountOf(world: World): AccountSettings {
@@ -3887,10 +3902,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				world().names.set(repositoryId, `${found.owner}/${found.name}`);
 				return describeRepository(found);
 			},
-			async saveRepositoryDefaults(repositoryId: GithubId, change: { autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults> {
+			async saveRepositoryDefaults(repositoryId: GithubId, change: ItemPlaceDefaults & { autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults> {
 				await latency(300);
 				nameAtSave(world(), repositoryId);
-				return saveDefaults(world(), repositoryId, change);
+				return saveDefaults(world(), machinesOf(auth).list, repositoryId, change);
 			},
 			async forgetRepositoryApproval(repositoryId: GithubId, name: string): Promise<RepositoryView> {
 				await serversLatency(360);
@@ -3920,11 +3935,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(180);
 				return accountOf(world());
 			},
-			async saveAccountDefaults(change: { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults> {
+			async saveAccountDefaults(change: ItemPlaceDefaults & { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults> {
 				await latency(300);
 				const current = world();
 				// The same rules as a repository's defaults.
-				current.account.defaults = changedDefaults(current.account.defaults, change, modelsFor(current.profile));
+				current.account.defaults = changedDefaults(current.account.defaults, change, modelsFor(current.profile), machinesOf(auth).list);
 				return accountDefaultsOf(current);
 			},
 			async forgetLastStart(): Promise<AccountSettings> {

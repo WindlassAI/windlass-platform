@@ -98,6 +98,11 @@ async function testNode() {
 			const [r] = await c.db.execute<{ms:number}>("SELECT max(ready)-min(received) AS ms FROM feedback WHERE state='pending'");
 			return r?.ms;
 		},
+		checkPlaceDue: async (c: ItemCtx) => {
+			requireServiceFor(c, "call");
+			await c.db.execute("UPDATE effects SET due_at=0 WHERE id LIKE 'resolve_default_place:%'");
+			await c.schedule.at(Date.now(), "internalDue");
+		},
 		checkPendingWrites: async (c: ItemCtx) => {
 			requireServiceFor(c, "call");
 			return (await c.db.execute("SELECT 1 FROM effects WHERE id LIKE 'verified_check:%' LIMIT 1")).length > 0;
@@ -113,7 +118,20 @@ async function testNode() {
 	});
 	const { user } = await import("../server/src/actors/user.js");
 	type UserCtx = Parameters<NonNullable<typeof user.config.actions>["internalGithubIntake"]>[0];
+	const { changed: machinesChanged } = await import("../server/src/actors/user-machines.js");
 	Object.assign(user.config.actions!, {
+		checkPlaceMachine: async (c: UserCtx, id: string, state: "online" | "offline" | "full" | "signed-out" | "removed") => {
+			requireServiceFor(c, "call");
+			if (state === "removed") await c.db.execute("DELETE FROM machines WHERE id=?", id);
+			else {
+				const facts = { status: state === "offline" ? "offline" : "online", since: Date.now(), runnerVersion: "0.2.0", warnings: [],
+					turns: { max: 1, running: Number(state === "full"), queued: 0 }, report: {
+						docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], egress: "open",
+						harnesses: [{ id: "claude", signIn: state === "signed-out" ? "none" : "token" }] } };
+				await c.db.execute("INSERT INTO machines (id,name,os,arch,facts) VALUES (?,?,'macOS','arm64',?) ON CONFLICT(id) DO UPDATE SET facts=excluded.facts", id, id, JSON.stringify(facts));
+			}
+			await machinesChanged(c);
+		},
 		// Exercise the real migration on a populated legacy table in a disposable actor.
 		checkMigrateGrant: async (c: UserCtx) => {
 			requireServiceFor(c, "call");
@@ -265,7 +283,7 @@ async function run() {
 		}
 	};
 	const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "--node"], {
-		cwd: fileURLToPath(new URL("../server", import.meta.url)), env: { ...process.env, WLP_ITEMS: "1", WLP_MAX_KEPT_SANDBOXES: "unlimited", WLP_FAKE_DELAY_MS: "10" }, stdio: ["ignore", "pipe", "pipe"],
+		cwd: fileURLToPath(new URL("../server", import.meta.url)), env: { ...process.env, WLP_ITEMS: "1", WLP_MACHINES: "1", WLP_MAX_KEPT_SANDBOXES: "unlimited", WLP_FAKE_DELAY_MS: "10" }, stdio: ["ignore", "pipe", "pipe"],
 	});
 	let logs = "";
 	child.stdout.on("data", b => { logs += b.toString(); });
@@ -985,6 +1003,72 @@ async function run() {
 				await item.clock().checkAdvance("poll",0);
 				assert.equal((await item.view()).run?.n,2);
 			} finally { await stop(item.id); }
+		});
+		await check("G3 feature placement defaults bind GitHub filings, wait and fall back", async () => {
+			const writer = standin.addUser("default-places"); projectG2.access.set(writer.login, "write");
+			const { user: account, uid, token } = await connectUser(writer.login);
+			const machine = client.user.get([uid], service()) as unknown as { checkPlaceMachine(id: string, state: string): Promise<void> };
+			const mac = "m_0000000000000001", next = "m_0000000000000002";
+			const repo = (change: import("../server/src/contract.js").ItemPlaceDefaults) => account.saveRepositoryDefaults({ repositoryId: projectG2.id, ...change });
+			let number = 810;
+			const file = async (start = false) => {
+				const issue = make(++number, start ? writer : reader);
+				await applyLabel(issue, "windlass:quick", writer);
+				const [item] = await items(issue, account);
+				assert.ok(item);
+				return account.item(item.id);
+			};
+			assert.deepEqual((await file()).place, { kind: "hosted" });
+			await machine.checkPlaceMachine(mac, "online");
+			await machine.checkPlaceMachine(next, "online");
+			const policy = { place: { machine: mac }, harness: "claude" as const, machineProfile: "docker-hardened" as const };
+			await account.saveAccountDefaults(policy);
+			const quick = await file();
+			assert.deepEqual(quick.place, { kind: "machine", machineId: mac });
+			assert.equal(quick.agent?.harness, "claude");
+			await repo({ place: "hosted" });
+			assert.deepEqual((await file()).place, { kind: "hosted" });
+			await repo({ place: null });
+			await machine.checkPlaceMachine(mac, "offline");
+			const waiting = await file(true);
+			assert.equal(waiting.state, "waiting");
+			assert.match(waiting.wait!.sentence, /offline.*Waiting/);
+			await account.actOnItem({ id: waiting.id, action: { kind: "cancel" } });
+			await repo({ ...policy, placeFallback: "hosted" });
+			const fallback = await file();
+			assert.equal(fallback.place.kind, "hosted");
+			assert.equal(fallback.agent?.harness, "windlass");
+			assert.ok(fallback.events.some(e => /offline.*hosted fallback/.test(e.said)));
+			await machine.checkPlaceMachine(mac, "full");
+			await repo({ ...policy, place: "any-machine" });
+			assert.deepEqual((await file()).place, { kind: "machine", machineId: next });
+			await machine.checkPlaceMachine(next, "offline");
+			const queued = await file(true);
+			assert.match(queued.wait!.sentence, /free slot/);
+			await machine.checkPlaceMachine(next, "online");
+			await (client.workItem.get([uid, queued.id], service()) as unknown as { checkPlaceDue(): Promise<void> }).checkPlaceDue();
+			await until("waiting item bound to the newly free machine", async () => (await account.item(queued.id)).events.some(e => e.said.includes("has a free slot")));
+			assert.deepEqual((await account.item(queued.id)).place, { kind: "machine", machineId: next });
+			await account.actOnItem({ id: queued.id, action: { kind: "cancel" } });
+			await repo({ ...policy, placeFallback: "hosted" });
+			await machine.checkPlaceMachine(mac, "signed-out");
+			assert.ok((await file()).events.some(e => /sign-in.*hosted fallback/.test(e.said)));
+			await assert.rejects(repo(policy), /sign-in|supports/i);
+			await machine.checkPlaceMachine(mac, "removed");
+			assert.ok((await file()).events.some(e => /no longer.*hosted fallback/.test(e.said)));
+			await machine.checkPlaceMachine(next, "full");
+			await repo({ ...policy, place: "any-machine", placeFallback: "hosted" });
+			const feature = make(++number, writer);
+			await applyLabel(feature, "windlass:orchestrate", writer);
+			const [plan] = await items(feature, account);
+			assert.equal(plan.place.kind, "hosted");
+			const planner = client.agentSession.get([uid, plan.sessionId], { params: { token } });
+			const prompt = await until("planner received the preferred place for parts", async () =>
+				(await planner.snapshot()).timeline.find(e => e.kind === "user" && e.text.includes("place.prefer")));
+			assert.ok(prompt.kind === "user");
+			const preference = prompt.text.split("Owner preference (data): ")[1].split("\n")[0];
+			assert.deepEqual(JSON.parse(preference), { selection: "any compatible machine", harness: "claude", profile: "docker-hardened" });
+			await account.actOnItem({ id: plan.id, action: { kind: "cancel" } });
 		});
 		await check("G3 feature filing binds the fetched command and label, and explains bug overrides", async () => {
 			const author = await newWriter("g3-feature-owner");

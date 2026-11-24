@@ -1,3 +1,6 @@
+import type { DefaultDestination } from "../../../server/src/factory/default-place";
+import type { ItemPlaceDefaults } from "@contract";
+import { resolveDefaultPlace } from "../../../server/src/factory/default-place";
 import { approvalText, planTokens, singleAfterPlanning, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
 import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
 import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses.js";
@@ -87,6 +90,8 @@ export const MOCK_ITEMS_STATES = ["all", "few", "features", "none", "full", "man
 export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 
 export interface MockItemsDeps {
+	defaultPlace?(auth: AuthResult, repo: GithubId): ItemPlaceDefaults | undefined;
+	waitingRepository?(auth: AuthResult, input: CreateItemInput["repository"]): Promise<SessionRepository>;
 	state?: MockItemsState;
 	/** True writes the seeded features' texts at length (`?long=1`, `longFeatures`). */
 	long?: boolean;
@@ -1759,6 +1764,7 @@ export function createMockItems(deps: MockItemsDeps) {
 	const state: MockItemsState = deps.state ?? "all";
 	const kept = new Map<string, Kept>();
 
+	const pendingPlaces = new WeakMap<ItemView, { policy: ItemPlaceDefaults; input: CreateItemInput; resolving?: boolean }>();
 	let linksAsked = 0;
 
 	function keptOf(auth: AuthResult): Kept {
@@ -1868,6 +1874,10 @@ export function createMockItems(deps: MockItemsDeps) {
 		const mine = kept.get(auth.profile.uid);
 		if (!mine) return;
 		for (const item of mine.items) {
+			if (pendingPlaces.has(item)) {
+				if (item.state === "waiting") void resolveWaiting(auth, item);
+				continue;
+			}
 			const where = machineOfItem(auth, item);
 			if (where === null || ["done", "failed", "cancelled"].includes(item.state) || item.question?.kind === "machine_removed") continue;
 			if (where.machine === null) askRemoved(auth, item);
@@ -1875,9 +1885,33 @@ export function createMockItems(deps: MockItemsDeps) {
 		}
 	}
 
+	async function resolveWaiting(auth: AuthResult, item: ItemView) {
+		const pending = pendingPlaces.get(item);
+		if (!pending || pending.resolving) return;
+		const destination = resolveDefaultPlace(pending.policy, deps.machines(auth)?.list ?? []);
+		const wait = (sentence: string) => change(auth, item, { state: "waiting", wait: { reason: "machine", sentence, since: item.wait?.since ?? deps.now(), retryAt: deps.now() + 30_000 } }, item.events.at(-1)?.said === sentence ? [] : [sentence], "platform");
+		if (destination.wait) return wait(destination.wait);
+		pending.resolving = true;
+		try {
+			const session = await openDefaultSession(auth, pending.input, destination);
+			if (item.state === "cancelled") return;
+			pendingPlaces.delete(item);
+			Object.assign(item, { awaitingPlace: false, place: session.place, sessionId: session.id, agent: newAgent(session.harness ?? "windlass", session.model, pending.input.effort) });
+			beginRun(auth, item, "A compatible machine has a free slot.");
+		} catch (error) {
+			if (item.state !== "cancelled") wait(error instanceof Error ? error.message : "Waiting for the selected machine.");
+		} finally { pending.resolving = false; }
+	}
+
+	function openDefaultSession(auth: AuthResult, input: CreateItemInput, destination: DefaultDestination) {
+		return deps.session(auth, { title: input.title, repository: input.repository, place: destination.place,
+			profile: destination.profile, harness: input.mode === "single" ? destination.harness : "windlass", model: input.model });
+	}
+
 	/** A new run, queued for its first turn; its turn starts a moment later. */
 	function beginRun(auth: AuthResult, item: ItemView, said: string): void {
 		const at = deps.now();
+		if (pendingPlaces.has(item)) { void resolveWaiting(auth, item); return; }
 		const before = item.run;
 		const run: NonNullable<ItemView["run"]> = { n: (before?.n ?? 0) + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", attempt: 1, startedAt: at, turn: "delivered", checks: 0, interruptions: 0 } };
 		if (item.state === "review" && item.verifiedCheck?.state === "completed")
@@ -1910,7 +1944,7 @@ export function createMockItems(deps: MockItemsDeps) {
 	async function act(auth: AuthResult, item: ItemView, action: ItemAction): Promise<void> {
 		const now = STATE_WORDS[item.state];
 		// An item whose machine was removed can only be handed over, given up or cancelled (blueprint.ts, `apply`), in the server's words.
-		if (machineOfItem(auth, item)?.machine === null) {
+		if (!item.awaitingPlace && machineOfItem(auth, item)?.machine === null) {
 			if (action.kind === "retry") throw conflict("Only an item that failed can be retried.");
 			if (action.kind === "send_back") throw conflict("Only an item in review can be sent back.");
 			if (action.kind === "start" && item.state === "draft") {
@@ -2136,12 +2170,19 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (input.body.length > MAX_ITEM_BODY_CHARS) throw new PlatformError("user", `What to do is at most ${MAX_ITEM_BODY_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
 				if (acceptance.length > MAX_ACCEPTANCE_CRITERIA) throw new PlatformError("user", `An item takes at most ${MAX_ACCEPTANCE_CRITERIA} acceptance criteria.`, { reason: "bad_input" });
 				if (acceptance.some((line) => line.length > MAX_NOTE_CHARS)) throw new PlatformError("user", `An acceptance criterion is at most ${MAX_NOTE_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
+				const policy = input.useDefaultPlace && !input.place ? deps.defaultPlace?.(auth, input.repository.id) : undefined;
+				const destination = policy && resolveDefaultPlace(policy, deps.machines(auth)?.list ?? []);
+				if (destination) {
+					input.place = destination.place;
+					input.harness = (input.mode ?? "orchestrate") === "orchestrate" ? "windlass" : destination.harness;
+					input.profile = destination.profile ?? input.profile;
+				}
 				// On a machine, its first available sandbox unless the one asked for is available (user-items.ts, `itemProfile`).
 				const place: SandboxPlace = input.place?.kind === "machine" ? { kind: "machine", machineId: input.place.machineId } : { kind: "hosted" };
 				// The builder's agent, as user-items.ts `cleanItemInput` and user.ts `makeSession` take it.
 				const harness = input.harness === undefined ? "windlass" : knownHarness(input.harness);
 				if (harness === null) throw new PlatformError("user", "Choose an agent this platform runs: windlass, or one of your machine's.", { reason: "bad_input" });
-				if (harness !== "windlass") {
+				if (!destination?.wait && harness !== "windlass") {
 					if (place.kind !== "machine") throw new PlatformError("user", `${harnessName(harness)} runs only on a machine of yours. Choose one that offers it, or Windlass.`, { reason: "bad_input" });
 					if ((input.mode ?? "orchestrate") === "orchestrate") throw new PlatformError("user", `Plan first runs only with Windlass. Choose Quick for ${harnessName(harness)}.`, { reason: "bad_input" });
 					const offered = machineFor(auth, place.machineId).harnesses?.find((one) => one.id === harness);
@@ -2149,10 +2190,10 @@ export function createMockItems(deps: MockItemsDeps) {
 					if (offered.signIn !== "token") throw new PlatformError("user", `${harnessName(harness)} on “${machineFor(auth, place.machineId).name}” is not signed in. Run windlass-runner login ${harness} there.`, { reason: "harness_signed_out" });
 				}
 				let profile: SandboxProfileId | undefined;
-				if (place.kind === "machine") {
+				if (!destination?.wait && place.kind === "machine") {
 					const machine = machineFor(auth, place.machineId);
 					const available = machine.profiles.filter((one) => one.available);
-					const asked = harness === "windlass" ? input.profile : "docker-hardened";
+					const asked = harness === "windlass" || harness === "codex" ? input.profile : "docker-hardened";
 					const chosen = available.find((one) => one.id === asked) ?? available[0];
 					if (!chosen) throw new PlatformError("user", `Your machine "${machine.name}" offers no available sandbox profile for this item.`, { reason: "bad_profile" });
 					profile = chosen.id;
@@ -2167,8 +2208,8 @@ export function createMockItems(deps: MockItemsDeps) {
 						throw new PlatformError("user", (problem as Error).message, { reason: "bad_effort" });
 					}
 				}
-				const session = await deps.session(auth, { title, repository: input.repository, ...(place.kind === "machine" ? { place, profile } : {}), ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}) });
-				const repository = session.repository;
+				const session = destination?.wait ? null : destination ? await openDefaultSession(auth, input, destination) : await deps.session(auth, { title, repository: input.repository, ...(place.kind === "machine" ? { place, profile } : {}), ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}) });
+				const repository = session?.repository ?? await deps.waitingRepository?.(auth, input.repository);
 				if (!repository) throw new PlatformError("user", "Work items need a repository of your GitHub connection.", { reason: "bad_input" });
 				const at = deps.now();
 				const id = `it_${fresh(12)}`;
@@ -2188,8 +2229,9 @@ export function createMockItems(deps: MockItemsDeps) {
 					verdict: null,
 					budget: { ...MOCK_FACTORY_LIMITS.item },
 					spent: { tokens: 0, rawTokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 },
-					agent: newAgent(session.harness ?? "windlass", session.model, input.effort),
-					sessionId: session.id,
+					agent: newAgent(session?.harness ?? harness, session?.model ?? "default", input.effort),
+					sessionId: session?.id ?? id,
+					...(!session && { awaitingPlace: true }),
 					createdAt: at,
 					updatedAt: at,
 					revision: 0,
@@ -2205,6 +2247,8 @@ export function createMockItems(deps: MockItemsDeps) {
 					reviewerSessionId: null,
 					reviewNone: deps.reviewer === false ? DEPLOYMENT_OFF : place.kind === "machine" ? "in this sandbox the reviewer's commands would run with the network" : null,
 				};
+				if (policy && destination?.wait) pendingPlaces.set(item, { policy, input });
+				if (destination?.note) item.events.push({ at, by: "platform", step: null, said: destination.note });
 				mine.items.unshift(item);
 				if (typeof idempotencyKey === "string") mine.made.set(idempotencyKey, { content, id });
 				if (input.start) beginRun(auth, item, "Started.");
