@@ -543,6 +543,8 @@ export interface TurnCheckpoint {
 export const PLATFORM_RESTART = Symbol("platform restart");
 
 export interface RunTurnInput {
+	/** A requested PR review starts in this transport-owned, read-only checkout. */
+	reviewDirectory?: string;
 	/**
 	 * Told once the turn can say what it would need to be taken up again (`TurnCheckpoint`): `read`
 	 * answers that now, synchronously, or null when it cannot be taken up from here (not prompted yet,

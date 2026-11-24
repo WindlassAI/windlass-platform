@@ -1799,10 +1799,7 @@ function afterCi(c: Change, ci: CiProgress): void {
 	if (item.mode === "orchestrate" && (ci.last?.state === "none" || ci.last?.state === "skipped"))
 		return ask(c, "ci_timeout", "No passing CI reported on the complete feature. Wait for a check or hand over the PR.", [choice("wait"), ...handOver(item), choice("give_up")], null, null);
 	if (!item.reviewer) return handoff(c, skippedReview("this item was created before second reviews were available"));
-	if (item.place.kind === "machine" || "off" in item.reviewer) {
-		const why = "off" in item.reviewer ? REVIEW_OFF_REASON[item.reviewer.off] : REVIEW_OFF_REASON.machine;
-		return handoff(c, skippedReview(why));
-	}
+	if ("off" in item.reviewer) return handoff(c, skippedReview(REVIEW_OFF_REASON[item.reviewer.off]));
 	// Older publishers could report a branch instead of a SHA. It cannot pin an independent review.
 	if (!isSha(ci.head)) return handoff(c, skippedReview("the push did not identify the commit to review"));
 	startReview(c, ci);

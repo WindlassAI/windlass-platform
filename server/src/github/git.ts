@@ -469,6 +469,24 @@ export function reviewCheckoutScript(directory: string, head: string): string {
 	].join("\n");
 }
 
+/** A PR comment requests a source inspection. The transport user owns both the checkout and its
+ * parent under sticky /tmp, so even an unattended agent with a shell cannot edit the reviewed tree. */
+export async function readOnlyReview(sandbox: SandboxHandle, url: string, token: string, head: string, base: string, signal: AbortSignal): Promise<string> {
+	if (![head, base].every(sha => /^[0-9a-f]{40}$/.test(sha))) throw new Error("Invalid review target.");
+	const id = randomBytes(16).toString("hex");
+	const script = [
+		startTransport(id), READ_TOKEN, tokenGit(hostOf(url)), PLAIN_GIT,
+		"plain_git init -q --template= repo",
+		`wlp_git -C repo fetch --quiet --no-tags -- ${shellQuote(url)} ${base} ${head}`,
+		"WLP_T=",
+		`plain_git -C repo checkout -q --detach ${head}`,
+		'chmod -R a+rX repo', 'chmod 711 "$private"',
+	].join("\n");
+	const result = await run(sandbox, script, { gitUser: true, stdin: token + "\n", secrets: [token], timeoutMs: CLONE_TIMEOUT_MS, signal });
+	if (!result.ok) throw new GithubProblem("github_gone", "Could not open the requested pull request at its pinned commit.");
+	return transportDirectory(id) + "/repo";
+}
+
 export async function checkoutReview(sandbox: SandboxHandle, url: string, token: string, directory: string, pr: number, head: string, signal?: AbortSignal) {
 	if (!Number.isSafeInteger(pr) || pr < 1) throw new Error("Invalid pull request number.");
 	const fetch = await fetchRefs(sandbox, token, url, directory, [{ source: `refs/pull/${pr}/head`, destination: "refs/wlp/review" }], signal);
@@ -486,12 +504,12 @@ export async function checkoutReview(sandbox: SandboxHandle, url: string, token:
 	if (!checkout.ok || checkout.marks.get("review") !== head) throw new Error("the checkout of the pull request failed");
 }
 
-export async function changedReviewPaths(sandbox: SandboxHandle, directory: string, base: string, head: string): Promise<string[]> {
+export async function changedReviewPaths(sandbox: SandboxHandle, directory: string, base: string, head: string, readOnly = false): Promise<string[]> {
 	if (![base, head].every(sha => /^[0-9a-f]{40}$/.test(sha))) throw new Error("Invalid review SHA.");
 	const script = [
 		`cd ${shellQuote(directory)} || exit 1`,
-		privateStart(),
-		VERIFY_OBJECTS,
+		// The requested checkout and its Git configuration belong to the transport user.
+		...(readOnly ? [PLAIN_GIT, 'git() { plain_git -c safe.directory="$PWD" "$@"; }'] : [privateStart(), VERIFY_OBJECTS]),
 		`git diff --no-ext-diff --no-renames --name-only -z ${base}...${head} --`,
 	].join("\n");
 	const result = await sandbox.run(script, { timeoutMs: COMMIT_TIMEOUT_MS });

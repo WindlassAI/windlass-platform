@@ -1226,7 +1226,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		question,
 		pullRequest: seed.pr === undefined ? null : { number: seed.pr, url: `${repository.url}/pull/${seed.pr}` },
 		verdict: last ? { result: last.result, flags: last.flags, ci: last.ci.state } : null,
-		review: place.kind === "machine" ? { state: "off", recommendation: null } : seed.review ?? null,
+		review: seed.review ?? null,
 		budget,
 		spent,
 		// Made with the seeded items (`keptOf`), once there is a user to make it for.
@@ -1244,7 +1244,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		verifiedCheck: seed.n === 24 && last ? { sha: last.head, state: "completed", conclusion: "success", said: "Ready for review" } : null,
 		reviews: [],
 		reviewerSessionId: seed.review ? reviewerSessionOf(id) : null,
-		reviewNone: place.kind === "machine" ? MACHINE_REVIEW : null,
+		reviewNone: null,
 		report: seed.n === 24 ? {
 			by: "builder", sessionId: "", run: 1, key: `${id}:1:1:1`, head: null, at: ago(50),
 			title: "Log the SHA-256 after each upload", records: [], screenshots: [],
@@ -1715,7 +1715,6 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 
 /** Match the server’s reasons when an item has no reviewer session. */
 const FEATURE_REVIEW = "the feature’s combined change is reviewed once its parts are done";
-const MACHINE_REVIEW = "second reviews run only on hosted sandboxes";
 const DEPLOYMENT_OFF = "turned off for this deployment";
 
 /** A seeded item as a deployment without the second review keeps it: none, and that reason. */
@@ -1889,7 +1888,6 @@ export function createMockItems(deps: MockItemsDeps) {
 	function reviewAt(place?: SandboxPlace) {
 		let reviewNone = null;
 		if (place && deps.reviewer === false) reviewNone = DEPLOYMENT_OFF;
-		else if (place?.kind === "machine") reviewNone = MACHINE_REVIEW;
 		return { review: reviewNone ? { state: "off" as const, recommendation: null } : null, reviewNone };
 	}
 
@@ -2765,7 +2763,7 @@ const SEEDED_REVIEWS: Record<number, { state: "filed" | "none" | "off" | null; r
 	// Each reason there was none.
 	26: { state: "none", none: "handed over as it is, as you asked" },
 	28: { state: "off", none: "turned off for this deployment" },
-	29: { state: "off", none: "in this sandbox the reviewer's commands would run with the network" },
+	29: { state: "none", none: "the reviewer could not reach the repository" },
 	39: { state: "none", none: "the pull request moved after the agent pushed" },
 	40: { state: "none", reviews: [{ recommendation: null, said: "The reviewer did not file a review the platform could read." }] },
 	43: { state: "none", reviews: [{ recommendation: null, said: `The reviewer's checkout of ${short(hex(43))} failed: GitHub no longer has that commit.` }] },

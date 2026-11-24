@@ -67,7 +67,7 @@ export interface HarnessCapabilities {
 /** The platform's tools by name (platform-tools.ts); literal here so that this file imports nothing of the server's. */
 const tools = (...names: PlatformToolName[]): readonly PlatformToolName[] => Object.freeze(names);
 /** What an ACP agent takes over MCP: every tool platform-tools.ts's `TOOL_REACH` does not keep to Windlass's host tools (harness-check holds them equal). */
-const MCP_PLATFORM_TOOLS = tools("report", "ask_person", "request_secret", "publish", "push", "fetch_base");
+const MCP_PLATFORM_TOOLS = tools("report", "ask_person", "request_secret", "publish", "push", "fetch_base", "file_review");
 
 export const WINDLASS_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	events: "windlass", resume: "windlass", steer: true, cancelCall: true, questions: true,

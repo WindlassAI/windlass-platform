@@ -307,7 +307,7 @@ export interface FactoryItem {
 	 */
 	unsandboxed?: string[];
 	/** Decided when the builder binds to its place. */
-	reviewer?: { on: true } | { off: "deployment" | "profile" | "machine" | "feature" };
+	reviewer?: { on: true } | { off: "deployment" | "feature" };
 	place: SandboxPlace;
 	machineRemoved: boolean;
 	budget: ItemBudget;

@@ -210,6 +210,7 @@ async function testNode() {
 			requireServiceFor(c, "call");
 			config.factory.githubItemsPerDay = limit;
 		},
+		checkReviewer: (c: Ctx, enabled: boolean) => { requireServiceFor(c, "call"); config.factory.reviewer = enabled; },
 		checkPlanning: (c: Ctx, enabled: boolean) => {
 			requireServiceFor(c, "call");
 			process.env.WLP_FACTORY_ORCHESTRATE = enabled ? "1" : "0";
@@ -803,10 +804,11 @@ async function run() {
 		};
 		const bots = (issue: Issue) => issue.comments.filter(c => c.user.login.endsWith("[bot]"));
 		type FeedbackClock = {checkAdvance(kind: "feedback" | "poll", ms: number): Promise<void>; checkWindow(): Promise<number>};
-		const feedbackItem = async () => {
+		const feedbackItem = async (ownerPush = false) => {
 			const item = await push();
 			const clock = () => item.handle() as unknown as FeedbackClock;
 			const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === item.pr)!;
+			if (ownerPush) pull.headSha = standin.commit(projectG2, pull.head, { "README.md": "# Updated by owner\n" }, "Owner update", projectG2.defaultBranch);
 			ci(item.head, "success");
 			await clock().checkAdvance("poll",0);
 			await until("first handoff",async () => pull.comments.some(c=>c.body.startsWith("<!-- windlass-item:")) && (await item.view()).state === "review");
@@ -822,6 +824,58 @@ async function run() {
 			pull.comments.push({ id, body, user: { ...author, type: "User" }, created_at: new Date().toISOString() });
 			return delivered("issue_comment", commentFields(pull.number, id, author));
 		};
+		const reviewerSettings = hooks as unknown as { checkReviewer(enabled: boolean): Promise<void> };
+		await check("G4 requested PR review binds the selected machine agent", async () => {
+			const machines = client.user.get([uid], service()) as unknown as { checkPlaceMachine(id: string, state: string): Promise<void> };
+			const place = { kind: "machine" as const, machineId: "m_0000000000000042" };
+			await machines.checkPlaceMachine(place.machineId, "online");
+			await reviewerSettings.checkReviewer(true);
+			try {
+				const item = await g2User.createItem({ repository: { id: projectG2.id }, mode: "single", title: "Machine review", body: "Review a change.", start: false,
+					place, harness: "claude", profile: "docker-hardened" });
+				const view = await g2User.item(item.id);
+				assert.ok(view.reviewerSessionId);
+				const reviewer = (await client.agentSession.get([uid, view.reviewerSessionId], { params: { token: ownerToken } }).snapshot()).summary;
+				assert.deepEqual(reviewer.place, place);
+				assert.equal(reviewer.harness, "claude");
+				assert.equal(reviewer.profile, "docker-hardened");
+				assert.equal(reviewer.model, view.agent?.model);
+			} finally {
+				await reviewerSettings.checkReviewer(process.env.WLP_FACTORY_REVIEWER === "on");
+				await machines.checkPlaceMachine(place.machineId, "removed");
+			}
+		});
+		for (const feature of [false, true]) await check("G4 requested PR review " + (feature ? "on a feature by a writer" : "on an item by its owner"), async () => {
+			await reviewerSettings.checkReviewer(true);
+			try {
+				const item = await feedbackItem(true);
+				try {
+					if (feature) await (item.handle() as unknown as { checkFinishedFeature(): Promise<void> }).checkFinishedFeature();
+					const before = await item.view();
+					const head = item.pull.headSha!;
+					const author = feature ? peer : writer;
+					const commentId = 66160 + item.pr * 2;
+					await prComment(item.pull, commentId, reader, "/windlass review");
+					await prComment(item.pull, commentId + 1, author, "/windlass review");
+					item.pull.headSha = standin.commit(projectG2, item.pull.head, { "README.md": "# A later commit\n" }, "Another update", item.pull.head);
+					await delivered("issue_comment", commentFields(item.pr, commentId + 1, author));
+					const posted = await until("requested review on the updated head", async () => standin.reviews.find(r => r.pr === item.pr && r.review.body.startsWith("<!-- windlass-review:")), 30_000);
+					assert.equal(posted.review.state, "commented");
+					assert.equal(posted.review.commit_id, head);
+					assert.match(posted.review.body, /The README needs a correction/);
+					assert.match(posted.review.body, /Correct the heading/);
+					assert.deepEqual(posted.lines.map(line => [line.path, line.line]), [["README.md", 1]]);
+					const after = await item.view();
+					assert.equal(after.state, before.state);
+					assert.deepEqual(after.run, before.run);
+					assert.equal(after.head, before.head);
+					assert.equal(after.feedback.batches.length, 0);
+					assert.equal(after.feedback.notTaken, 1);
+					assert.deepEqual(after.reviews.filter(r => r.requestedPull).map(r => [r.head, r.recommendation]), [[head, "changes_requested"]]);
+					assert.equal(standin.reviews.filter(r => r.pr === item.pr && r.review.body.startsWith("<!-- windlass-review:")).length, 1);
+				} finally { await stop(item.id); }
+			} finally { await reviewerSettings.checkReviewer(process.env.WLP_FACTORY_REVIEWER === "on"); }
+		});
 		await check("Session PR feedback merges deliveries into one bounded turn and tolerates a failed acknowledgement", async () => {
 			const created = await g2User.createSession({ profile: "docker-windlass-sandbox", repository: { id: projectG2.id } });
 			const agent = client.agentSession.get([uid, created.id], { params: { token: ownerToken } });
@@ -1147,8 +1201,8 @@ async function run() {
 			const bound = await account.item(queued.id);
 			assert.deepEqual(bound.place, { kind: "machine", machineId: next });
 			assert.equal(bound.reviewNone, quick.reviewNone);
-			assert.equal(bound.reviewNone, process.env.WLP_FACTORY_REVIEWER === "on" ? "second reviews run only on hosted sandboxes" : "turned off for this deployment");
-			assert.equal(bound.reviewerSessionId, null);
+			assert.equal(bound.reviewNone, process.env.WLP_FACTORY_REVIEWER === "on" ? null : "turned off for this deployment");
+			assert.equal(!!bound.reviewerSessionId, process.env.WLP_FACTORY_REVIEWER === "on");
 			await account.actOnItem({ id: queued.id, action: { kind: "cancel" } });
 			await machine.checkPlaceMachine(next, "full");
 			const racing = await file(true);

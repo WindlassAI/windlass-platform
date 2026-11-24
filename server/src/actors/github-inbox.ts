@@ -155,7 +155,7 @@ async function nudgeItems(d: Delivery, c: Ctx): Promise<"no item" | void> {
 export type FeedbackSubject = {
 	kind: "review" | "review_comment" | "issue_comment"; id: string; sender: GithubUser; association: string;
 };
-export type FeedbackNotice = { installationId: GithubId; repositoryId: GithubId; pr: number; entries: FeedbackEntry[]; denied?: string; approval?: { id: string; author: string } };
+export type FeedbackNotice = { installationId: GithubId; repositoryId: GithubId; pr: number; entries: FeedbackEntry[]; requestedReview?: { id: string; head: string; base: string }; denied?: string; approval?: { id: string; author: string } };
 export const feedbackId = (subject: FeedbackSubject) => subject.kind + ":" + subject.id;
 
 /**
@@ -166,7 +166,7 @@ export const feedbackId = (subject: FeedbackSubject) => subject.kind + ":" + sub
  * `author_association` decides nothing: GitHub reckons it for the reader, and to an App a private
  * organisation member, the organisation's owner among them, can read as CONTRIBUTOR or NONE.
  */
-export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">, subject: FeedbackSubject, pollingOwner?: GithubId): Promise<(FeedbackNotice & { repo?: Repository; addressed?: boolean; reviewNodeId?: string }) | null> {
+export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">, subject: FeedbackSubject, pollingOwner?: GithubId, itemPull = true): Promise<(FeedbackNotice & { repo?: Repository; addressed?: boolean; reviewNodeId?: string }) | null> {
 	const { repositoryId, installationId, pr } = target;
 	const denied = { ...target, entries: [], denied: feedbackId(subject) };
 	const params = { params: serviceParams() };
@@ -197,6 +197,11 @@ export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, t
 				const note = isAddressed(r.body, app.settings.slug);
 				if (note === null) return null;
 				const url = app.repositoryUrl(repo.owner, repo.name) + "/pull/" + pr + "#issuecomment-" + subject.id;
+				if (itemPull && /^\/windlass\s+review$/i.test(r.body.trim())) {
+					const pull = await app.pull(token, repo.owner, repo.name, pr);
+					if (!["open", "draft"].includes(pull.state) || ![pull.headSha, pull.baseSha].every(sha => /^[a-f0-9]{40}$/.test(sha))) return null;
+					return { ...target, repo, addressed: true, entries: [], requestedReview: { id: feedbackId(subject), head: pull.headSha, base: pull.baseSha } };
+				}
 				return { ...target, repo, addressed: true, entries: [entry("issue_comment", feedbackId(subject), note, r.at, url, r.author.login)] };
 			}
 			const review = subject.kind === "review";
@@ -255,7 +260,7 @@ async function prFeedback(d: Delivery, c: Ctx): Promise<"no item" | void> {
 		if (!users.length) return "no item";
 		const session = await sessionForPull(c, users, target);
 		if (session && !session.sessionId) return "no item";
-		const notice = await readFeedback(c, session?.uid ?? null, target, subject);
+		const notice = await readFeedback(c, session?.uid ?? null, target, subject, undefined, false);
 		if (!notice?.repo || !notice.entries.length) return "no item";
 		const { repo, entries } = notice;
 		const app = githubApp()!;

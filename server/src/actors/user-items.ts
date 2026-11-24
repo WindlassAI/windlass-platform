@@ -82,7 +82,7 @@ import { createItem } from "../factory/blueprint.js";
 import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
 import { admit, retryAt } from "../factory/budget.js";
 import { getLayer } from "../layer.js";
-import { REVIEW_OFF_REASON, reviewerAllowed } from "../factory/review.js";
+import { REVIEW_OFF_REASON } from "../factory/review.js";
 import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { hostedSizesForPlan } from "../billing/plans.js";
@@ -445,12 +445,10 @@ async function bindReviewer(c: ItemsCtx, owner: UserProfile, session: SessionSum
 	const off = (reason: keyof typeof REVIEW_OFF_REASON) => ({ reviewer: { off: reason }, reviewerSessionId: null });
 	if (child) return off("feature");
 	if (!config.factory.reviewer) return off("deployment");
-	if (session.place.kind === "machine") return off("machine");
-	if (!reviewerAllowed(session.place, (await getLayer()).sandboxes.profile(session.profile))) return off("profile");
 	const reviewerSessionId = `s_${hex16(`review\n${itemId}`)}`;
 	if (!c.vars.sessions.has(reviewerSessionId)) {
 		const { id, branch } = session.repository!;
-		await makeSession(c, owner, { title: session.title, profile: session.profile, model: session.model, repository: { id, branch } }, null,
+		await makeSession(c, owner, { title: session.title, place: session.place, profile: session.profile, harness: session.harness, model: session.model, repository: { id, branch } }, null,
 			{ sessionId: reviewerSessionId, itemId, role: "reviewer", issue, ...(session.hostedSize && { hostedSize: session.hostedSize }) });
 	}
 	return { reviewer: { on: true } as const, reviewerSessionId };
@@ -508,7 +506,6 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		// Bound before anything is made: a repository the connection cannot read refuses the filing with nothing left behind.
 		const repos = input.repositories && !child ? await bindRepositories(c, input.repositories, input.repository.branch) : undefined;
 		begun = true;
-		// The builder runs the item's harness; the reviewer (hosted only) stays Windlass.
 		const placed = job ? await defaultBuilder(c, profile, itemId, job, makeSession) : null;
 		const session = placed ? placed.session : existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child?.start && { childBranch: { name: subtaskBranch(child.parent.itemId, child.parent.key, itemId), start: child.start } }), ...(child && { size: child.placement.units }), ...((child?.placement.hostedSize ?? input.hostedSize) && { hostedSize: child?.placement.hostedSize ?? input.hostedSize! }), ...(input.effort && { effort: input.effort }) }));
 		const repository = session?.repository ?? (job ? await waitingRepository(c, job) : null);

@@ -33,7 +33,7 @@ import { networkBody, unionNetwork } from "../blocked-network.js";
 import type { NetworkReceipt } from "./internal.js";
 import { HIDDEN } from "../agent-publish.js";
 import { readFeedback, feedbackId, type FeedbackNotice, type FeedbackSubject } from "./github-inbox.js";
-import { sources, untrustedWords } from "../factory/untrusted.js";
+import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
 import { batchText, feedbackWords, fingerprint, fits, oversizedFeedback, QUIET_MS, MOST_MS } from "../factory/feedback.js";
 import { isAddressed } from "../github/events.js";
 import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
@@ -65,8 +65,8 @@ import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
-import { activeJob, advance, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
-import { feedbackComment, itemComment, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
+import { RULES, activeJob, advance, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
+import { feedbackComment, itemComment, requestedReviewBody, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { checkBaseFailures } from "../github/ci-base.js";
@@ -162,7 +162,8 @@ const VIEW_EVENTS = 500;
 type IssueCheck = IssueChanges & { kind: "check_issue"; key: "pending"; at: number };
 const ISSUE_CHANGE_WINDOW_MS = 15_000;
 
-type FeedbackEffect = { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string; run: number } | { kind: "feedback_comment"; key: string; run: number; who: string };
+type RequestedReview = { kind: "requested_review"; to: "review"; key: string; pr: number; head: string; base: string; repositoryId: GithubId; installationId: GithubId };
+type FeedbackEffect = RequestedReview | { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string; run: number } | { kind: "feedback_comment"; key: string; run: number; who: string };
 /** `register`'s `repo`: a cross-repo feature's other repository, by alias, registered with that repository's directory. */
 type Effect = BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
 type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
@@ -672,11 +673,26 @@ async function scheduleFeedback(tx: Pick<RawAccess, "execute">, item: FactoryIte
 async function receiveFeedback(c: Ctx, notice: FeedbackNotice) {
 	const changed = await queued(c, async () => {
 		const stored = await load(c.db);
-		if (!stored || stored.meta.repository.id !== notice.repositoryId || stored.item.pr?.number !== notice.pr || await binding(c) !== notice.installationId) return false;
+		if (!stored) return false;
+		const primary = stored.meta.repository.id === notice.repositoryId && stored.item.pr?.number === notice.pr && await binding(c) === notice.installationId;
+		const sibling = notice.requestedReview && stored.item.repos?.some(r => r.repositoryId === notice.repositoryId && r.installationId === notice.installationId && r.pr?.number === notice.pr);
+		if (!primary && !sibling) return false;
 		const { item } = stored;
 		if (item.state === "done" || item.state === "cancelled") return false;
 		const now = Date.now();
 		return c.db.transaction(async tx => {
+			if (notice.requestedReview) {
+				const { id, head, base } = notice.requestedReview;
+				const added = await tx.execute("INSERT OR IGNORE INTO issue_actions VALUES(?) RETURNING subject", id);
+				if (!added.length) return false;
+				if (stored.meta.reviewerSessionId && item.run) {
+					const effect: RequestedReview = { kind: "requested_review", to: "review", key: `${item.id}:${item.run.n}:pr-review:${id}`, head, base, pr: notice.pr, repositoryId: notice.repositoryId, installationId: notice.installationId };
+					await tx.execute("INSERT INTO effects VALUES(?,?,0,0)", rowId(effect), JSON.stringify(effect));
+				} else {
+					await tx.execute("INSERT INTO events(at,data) VALUES(?,?)", now, JSON.stringify({ at: now, step: null, by: "platform", said: "The requested PR review could not start because this item has no reviewer." }));
+				}
+				return true;
+			}
 			if (notice.denied || notice.approval) {
 				const subject = notice.denied ? "feedback-denied:" + notice.denied : notice.approval!.id;
 				const added = await tx.execute("INSERT OR IGNORE INTO issue_actions VALUES(?) RETURNING subject", subject);
@@ -1166,7 +1182,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
 export function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "discard_placement") return item.state === "cancelled";
 	if (effect.kind === "resolve_default_place") return !!item.awaitingPlace && item.state === "waiting" && item.wait?.retryAt === effect.at;
-	if (effect.kind === "feedback_ready" || effect.kind === "feedback_ack") return true;
+	if (effect.kind === "requested_review" || effect.kind === "feedback_ready" || effect.kind === "feedback_ack") return true;
 	if (effect.kind === "feedback_comment") return item.run?.n === effect.run && item.state !== "review" && !ENDED.has(item.state);
 	if (effect.kind === "merge_feature_target") return item.featureUpdate?.key === effect.key && item.joining?.child === item.id && item.joining.key === effect.key;
 	if (effect.kind === "notify_integrated") return item.state === "done" && (item.integratedHead ?? item.head) === effect.head;
@@ -1364,7 +1380,7 @@ async function integrationStep(c: Ctx, meta: ItemMeta, item: FactoryItem, effect
 		else await take(c, { ...base, kind: "integration_read", state: reading.state, url: reading.url, said: reading.said, ...(reading.seconds !== undefined && { seconds: reading.seconds }) });
 	} catch (error) {
 		const denied = error instanceof GithubProblem && (error.code === "github_denied" || error.code === "github_gone");
-		if (!denied && !(error instanceof ForeignRun) && !(error instanceof GithubError && [403, 404, 422].includes(error.status))) throw error;
+		if (!denied && !(error instanceof ForeignRun) && !(error instanceof GithubError && !error.rateLimited && [403, 404, 422].includes(error.status))) throw error;
 		await take(c, { ...base, kind: "integration_read", state: "unavailable", url: null, said: error.message });
 	}
 }
@@ -1414,6 +1430,42 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "provider_retry":
 			await take(c, { ...effect, at: Date.now(), loginChanged: row.due_at < effect.at });
 			return true;
+		case "requested_review": {
+			const { key, head, base, pr, repositoryId, installationId } = effect;
+			const checkout: ReviewDelivery = { requested: { repositoryId, installationId }, head, baseSha: base, pr, round: 1, task: item.task,
+				previousHead: null, earlier: [], records: [], report: null, decisions: item.decisions, filings: RULES.reviewFilings,
+				verdictId: key, verdictWords: "This is a requested review of the current PR head. No platform verdict is attached." };
+			await session.internalDeliver({ itemId: item.id, key, title: item.task.title, text: "", checkout, agent: null, maxSteps: RULES.reviewMaxSteps,
+				fetchBase: null, startsRun: false, untrusted: item.untrusted, unsandboxed: thirdParty(item.untrusted).every(source => item.unsandboxed?.includes(source)) });
+			const ended = await session.internalCheckTurn({ turn: key, check: key });
+			if (ended?.kind !== "review_ended") {
+				await c.db.execute("UPDATE effects SET due_at=? WHERE id=?", Date.now() + 5000, row.id);
+				return "deferred";
+			}
+			const review = ended.review;
+			let said = `Requested review of PR #${pr} at ${head.slice(0, 7)}`;
+			if (review?.requestedPull && review.id === key && review.head === head && review.state === "filed" && ended.outcome === "succeeded") {
+				await c.db.execute("INSERT OR IGNORE INTO reviews VALUES(?,?,?,?,?)", key, review.run, head, review.at, JSON.stringify(review));
+				const app = githubApp(), connection = await userActor(c, meta.uid).internalGithubConnection();
+				if (!app || !connection) throw new Error("The GitHub connection is unavailable.");
+				const { repository } = await resolveBoundRepository(app, connection, repositoryId, installationId, "write");
+				try {
+					await app.withToken(installationId, { repositoryId, permissions: { metadata: "read", contents: "read", pull_requests: "write" } }, token =>
+						app.postRequestedReview(token, repository, pr, base, head, key, requestedReviewBody(item.id, review, repository)));
+					said += " posted on GitHub.";
+				} catch (error) {
+					if (!(error instanceof GithubError && !error.rateLimited && [403, 404, 422].includes(error.status))) throw error;
+					said += ` filed on the item. GitHub refused the review (HTTP ${error.status}).`;
+				}
+			} else said += ": " + (ended.refused || ended.said || "The reviewer did not file a review.");
+			await queued(c, () => c.db.transaction(async tx => {
+				await tx.execute("DELETE FROM effects WHERE id=?", row.id);
+				const at = Date.now();
+				await tx.execute("INSERT INTO events(at,data) VALUES(?,?)", at, JSON.stringify({ at, step: null, by: "platform", said }));
+			}));
+			await take(c, { kind: "issue_note", at: Date.now() });
+			return true;
+		}
 		case "feedback_ready":
 			await feedbackReady(c);
 			return "deferred";
@@ -1434,7 +1486,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					let body = marker + "\n\n" + feedbackComment(effect.who, effect.run);
 					if (prev) {
 						const verdict: Verdict = JSON.parse(prev.data);
-						const [filed] = await c.db.execute<{data:string}>("SELECT data FROM reviews WHERE run=? AND head=? ORDER BY at DESC LIMIT 1", verdict.run, verdict.head);
+						const [filed] = await c.db.execute<{data:string}>("SELECT data FROM reviews WHERE run=? AND head=? AND json_extract(data,'$.requestedPull') IS NULL ORDER BY at DESC LIMIT 1", verdict.run, verdict.head);
 						body = itemComment(verdict, verdictWords(verdict, null), await latestReport(c.db, verdict.run),
 							{ filed: filed ? JSON.parse(filed.data) : null, reason: null, owner: hub.owner, name: hub.name }, effect);
 					}

@@ -288,7 +288,6 @@ export function grantIsValid(grant: unknown, key: readonly string[], kind: strin
 
 export async function createSessionActor(c: HasClient, uid: string, sessionId: string, input: Omit<SessionCreateInput, "grant">): Promise<void> {
 	if (input.origin && input.mode !== undefined) throw new UserError("A work item and its reviewer use the profile’s approval mode.", { code: "bad_input" });
-	if (input.origin?.role === "reviewer" && input.harness !== undefined && input.harness !== "windlass") throw new UserError("A work item's reviewer runs only with Windlass.", { code: "bad_input" });
 	const full: SessionCreateInput = { ...input, grant: createGrant("agentSession", [uid, sessionId]) };
 	await c.client().agentSession.create([uid, sessionId], { input: full, params: serviceParams() });
 }

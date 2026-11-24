@@ -2089,6 +2089,8 @@ export interface ItemReport {
 
 /** A review of one pushed head. Its id is the review step attempt's key. */
 export interface ItemReview {
+	/** Advisory review requested on this GitHub pull request. */
+	requestedPull?: { owner: string; name: string; pr: number };
 	screenshots: ItemAttachment[];
 	id: string;
 	run: number;
@@ -2096,7 +2098,7 @@ export interface ItemReview {
 	head: string;
 	base: string;
 	verdictId: string;
-	by: { sessionId: string; model: string };
+	by: { sessionId: string; model: string; via?: "host" | "mcp" };
 	at: number;
 	state: "filed" | "none";
 	said: string | null;
@@ -2503,7 +2505,7 @@ export interface CreateItemInput {
 	/**
 	 * The builder's agent: "windlass" (the default), or a harness the chosen machine reports and is signed
 	 * into (`MachineSummary.harnesses`), which runs in its hardened container. Not on hosted, not with Plan
-	 * first. The reviewer, hosted only, stays Windlass.
+	 * first. The second reviewer uses the same agent and place.
 	 */
 	harness?: HarnessId;
 	/** Left out: hosted. On a paired machine, use the requested profile if available, otherwise its first available profile. */
