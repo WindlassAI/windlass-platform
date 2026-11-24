@@ -41,7 +41,7 @@ async function create(session, machine = owner) {
 	const [box] = JSON.parse(await cmd(['container', 'inspect', name]));
 	assert.equal(box.Mounts.length, 0);
 	assert.ok(!box.Config.Env.some(s => /^(ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)=/.test(s)));
-	const env = await machine.turnCredentials('claude-' + id.slice(-12), 'claude', {});
+	const { env } = await machine.turnCredentials('claude-' + id.slice(-12), 'claude', {});
 	const placeholder = env.CLAUDE_CODE_OAUTH_TOKEN;
 	saved.set(name, { id, placeholder, env }); return name;
 }
@@ -200,8 +200,20 @@ async function limitTurn(name, text) {
 	assert.ok(!JSON.stringify(events).includes('req_fixture'));
 	return { events, refused, seen: `events=${JSON.stringify(events)} error=${refused?.message} limit=${JSON.stringify(refused?.limit)}` };
 }
-await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'));
-try {
+async function settingsTurn(first, id, change) {
+	const forward = { host: 'relay.fixture.test', provider: 'anthropic', placeholder: 'wlpm1.fixture', proofKey: randomBytes(32).toString('base64url'), expiresAt: Date.now() + 60_000 };
+	const keyLease = await owner.openTurnKey('claude-' + id.slice(-12), 'claude', forward);
+	try {
+		const { env } = await owner.turnCredentials('claude-' + id.slice(-12), 'claude', { anthropic: keyLease.placeholder });
+		assert.equal(env.ANTHROPIC_API_KEY, keyLease.placeholder);
+		await change?.();
+		const before = (await cmd(['logs', upstream])).length;
+		await turn(first, [], false, 'Settings key check.', env);
+		assert.match((await cmd(['logs', upstream])).slice(before), /settings messages authorized=true/);
+	} finally { await keyLease.close(); }
+	ok('The pinned Claude CLI used the Anthropic Settings lease for this turn.');
+}
+async function check() {
 	execFileSync('openssl', ['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=api.anthropic.com',
 		'-addext','subjectAltName=DNS:api.anthropic.com,DNS:relay.fixture.test','-keyout',join(dir,'key.pem'),'-out',join(dir,'cert.pem')], { stdio:'ignore' });
 	await writeFile(join(dir,'expected'),token);
@@ -212,6 +224,15 @@ try {
 	await cmd(['run','-d','--pull','never','--network',uplink,'--network-alias','api.anthropic.com','--network-alias','relay.fixture.test','--name',upstream,
 		'--user',String(process.getuid()),'--cap-drop','ALL',...mounts,image,'node','/fixture/upstream.cjs']);
 	storePair(identity, privateKey, 'https://fixture.invalid');
+	if (process.argv.includes('--settings-keys')) {
+		const id = await owner.create('key', profile, false, 'claude');
+		const peer = await owner.create('peer', profile, false, 'claude');
+		const name = containerName('claude-' + id.slice(-12));
+		await settingsTurn(name, id, () => owner.lifecycle('destroy', peer, 'peer'));
+		await storeClaudeLogin(owner, token);
+		await settingsTurn(name, id);
+		return;
+	}
 	const bundle = join(dir, 'runner.cjs');
 	execFileSync(process.execPath, [join(root, 'runner/bundle.mjs'), image, bundle, 'claude=' + image]);
 	await owner.loginChanged(false);
@@ -258,15 +279,7 @@ try {
 	assert.ok(input, 'expected repository instructions, language and command in the first model request without bundled extras');
 	assert.ok(Number(input[1]) < 33_000, 'first-turn input grew to ' + input[1] + ' bytes');
 	ok('One-word Sonnet turn sent ' + input[1] + ' bytes of model input including repository instructions and settings.');
-	const forward = { host: 'relay.fixture.test', provider: 'anthropic', placeholder: 'wlpm1.fixture', proofKey: randomBytes(32).toString('base64url'), expiresAt: Date.now() + 60_000 };
-	const keyLease = await owner.openTurnKey('claude-' + one.id.slice(-12), 'claude', forward);
-	try {
-		const env = await owner.turnCredentials('claude-' + one.id.slice(-12), 'claude', { anthropic: keyLease.placeholder });
-		assert.deepEqual(env, { ANTHROPIC_BASE_URL: 'http://127.0.0.1:17892', ANTHROPIC_API_KEY: keyLease.placeholder });
-		await turn(first, [], false, 'Settings key check.', env);
-		assert.match(await cmd(['logs', upstream]), /settings messages authorized=true/);
-	} finally { await keyLease.close(); }
-	ok('The pinned Claude CLI chose the Anthropic Settings lease with a machine subscription present.');
+	await settingsTurn(first, one.id);
 	await toolsTurn(first);
 	ok('A builder turn on the pinned CLI reached report and ask_person over MCP under the managed policy; a process without the token was refused.');
 	await pushTurn(first);
@@ -379,6 +392,10 @@ try {
 	assert.notEqual((await docker(['volume','inspect',socketVolume])).code,0);
 	assert.notEqual((await docker(['volume','inspect',owner.claudeVolume])).code,0);
 	ok('Prune removes the owned socket and login volumes.');
+}
+await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'));
+try {
+	await check();
 } catch (error) {
 	const logs = await docker(['logs', upstream]);
 	if (!logs.stderr.includes(token)) process.stderr.write(logs.stderr);

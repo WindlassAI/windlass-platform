@@ -107,7 +107,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 		return {
 			whenToUse: "", tags: [], orchestrator: "yes" as const,
 			...(row.details && JSON.parse(row.details) as import("../contract.js").MachineDetails),
-			providerAccounts: accountsAt(accounts, row.id, keys.filter(p => report?.harnesses?.some(h => keyProviders(h.id).includes(p)))),
+			providerAccounts: accountsAt(accounts, row.id, keys.filter(p => report?.harnesses?.some(h => h.keyRelay && keyProviders(h.id).includes(p)))),
 			personalRunning: sessions.filter(s => !s.item && s.status !== "idle").length,
 			host: row.host ? JSON.parse(row.host) : undefined, screenshots: report?.screenshots,
 			name: row.name, os: row.os, arch: row.arch, ...facts, machineId: row.id,

@@ -249,7 +249,7 @@ import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason, SANDBOX_ESCAPE_REFUSED } from "../sandbox/codex-modes.js";
-import { keyProviders, selectedKey, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
+import { selectedKey, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
 import { stepLimitNote } from "../sandbox/platform-steps.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import { privateSessionData } from "../sandbox/session-data.js";
@@ -1782,25 +1782,25 @@ function megabytes(bytes: number): string {
 const FRESH_WORKSPACE =
 	"[A note from the platform, not from the user: the sandbox you were working in has been replaced by a new one. Your memory of this conversation was carried over, but the workspace was not: it is a fresh one. A repository that was cloned has been cloned again, with whatever of your work had been pushed to its branch; anything else you created or changed earlier is not in it. Look at what is there before you rely on earlier work.]\n\n";
 
-async function turnModelKeys(c: Ctx, meta: SessionMeta) {
-	const providers = keyProviders(meta.harness);
-	return providers.length ? (await modelKeyActor(c, meta.uid).internalModelKeys()).filter(k => providers.includes(k.provider)) : [];
+type MachineFacts = import("./machine.js").MachineFacts;
+type OfferedHarness = NonNullable<NonNullable<MachineFacts["report"]>["harnesses"]>[number];
+
+export async function turnCredential(c: Ctx, meta: SessionMeta, offered: OfferedHarness | undefined, model: string, signal?: AbortSignal) {
+	if (meta.place.kind !== "machine" || !offered?.keyRelay) return { model };
+	const keys = await modelKeyActor(c, meta.uid).internalModelKeys();
+	const providers = keys.map(k => k.provider);
+	if (offered.id === "opencode" && model === "default" && keys.length) {
+		model = await runnerLink(c, meta.place.machineId).request("openCodeDefault", { providers }, { signal });
+	}
+	const provider = selectedKey(offered.id, model, providers);
+	return { model, key: keys.find(k => k.provider === provider) };
 }
 
-/**
- * Why an item's turn on a machine harness cannot start: the machine's last report does not offer the
- * agent, does not say it is signed in (`signIn` "token", as filing requires), or names another sign-in
- * method than the item was filed with, which would count its tokens differently (`itemSignInChanged`).
- * Null where it can, and for Windlass. A machine that cannot be asked is left to the turn, which waits for it.
- */
-async function itemSignInRefusal(c: Ctx, meta: SessionMeta, keys: Awaited<ReturnType<typeof turnModelKeys>>): Promise<string | null> {
+function itemSignInRefusal(meta: SessionMeta, facts: MachineFacts, offered: OfferedHarness | undefined, provider?: import("../contract.js").ModelProvider) {
 	const machine = machineHarness(meta.harness);
-	if (!machine || meta.place.kind !== "machine") return null;
-	const facts = await runnerLink(c, meta.place.machineId).facts().catch(() => null);
-	if (!facts?.report) return null;
-	const offered = facts.report.harnesses?.find(entry => entry.id === machine.id);
+	if (!machine || !facts.report) return null;
 	if (!offered) return `This machine does not offer ${machine.name}.`;
-	const effective = withSettingsKeys(offered, keys.map(k => k.provider), meta.model);
+	const effective = withSettingsKeys(offered, provider ? [provider] : []);
 	return itemSignInMessage(machine, facts.name, effective.signIn) ?? itemSignInChanged(machine, facts.name, meta.origin?.signIn, effective.method);
 }
 
@@ -4133,8 +4133,10 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 
 		layer = await layerOf(c, meta);
 		// A person's turn is checked when it is sent; nobody sends an item's. Refused before the sandbox opens: the item asks, with the login hint.
-		const keys = await turnModelKeys(c, meta);
-		const signedOut = active.item ? await itemSignInRefusal(c, meta, keys) : null;
+		const facts = meta.place.kind === "machine" && machineHarness(meta.harness) ? await runnerLink(c, meta.place.machineId).facts() : null;
+		const offered = facts?.report?.harnesses?.find(h => h.id === meta.harness);
+		const { model, key } = await turnCredential(c, meta, offered, meta.model, signal);
+		const signedOut = active.item && facts ? itemSignInRefusal(meta, facts, offered, key?.provider) : null;
 		if (signedOut) {
 			active.item!.refused = signedOut;
 			active.item!.policyRefusal = true;
@@ -4169,15 +4171,11 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			if (active.item.outOfMemory.larger) throw new TurnProblem(sandbox.notice ?? outOfMemoryWords(sandbox.outOfMemory));
 		}
 		// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
-		const machineGeneration = await userActor(c, meta.uid).internalProviderGeneration(account).catch(() => {
+		account.provider = key?.provider;
+		generation = key?.generation ?? await userActor(c, meta.uid).internalProviderGeneration(account).catch(() => {
 			c.log.warn({ msg: "Provider login generation unavailable for this turn" });
 			return null;
 		});
-		const selectAccount = (model: string) => {
-			account.provider = selectedKey(meta.harness, model, keys.map(k => k.provider));
-			return keys.find(k => k.provider === account.provider)?.generation ?? machineGeneration;
-		};
-		generation = selectAccount(meta.model);
 		const harness = harnessOf(layer, meta.harness ?? "windlass");
 		const caps = await harness.capabilities(sandbox);
 		const profile = layer.sandboxes.profile(meta.profile);
@@ -4240,7 +4238,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			void persist(c);
 		}
 		const common: RunTurnInput = {
-			prompt: text, mode, planMode:active.planMode, windlassSessionId: resumed ?? undefined, model: meta.model, effort: effort ?? undefined, signal,
+			prompt: text, mode, planMode:active.planMode, windlassSessionId: resumed ?? undefined, model, effort: effort ?? undefined, signal,
 			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 			onControl: control => { if (open) active.control = control; },
 			// A machine turn whose conversation is kept: what it would need to be taken up after a restart, read with each timeline write.
@@ -4458,8 +4456,7 @@ fi`, { signal, timeoutMs: 5000 });
 			if (handling.kind === "labelled") unmarked(handling.note);
 			result = await harness.runTurn(sandbox, {
 				...common,
-				...(keys.length && { platformKeys: { sessionId: meta.sessionId, keys } }),
-				onAcpModel: model => { generation = selectAccount(model); },
+				...(key && { machineKey: { sessionId: meta.sessionId, key } }),
 				prompt: notes.text + text,
 				...(fresh && { fresh: { ...fresh, prompt: notes.text + fresh.prompt } }),
 				...(item && { unattended: true }),
@@ -5541,7 +5538,11 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, messag
 			if (!offered) throw new UserError(`This machine does not offer ${harnessName(meta.harness)}.`, { code: "bad_input" });
 			if (offered.id === "codex" && !codexModes(meta.profile, offered.modes ?? []).some(m => m.id === meta.mode))
 				throw new UserError(offered.modeReason ?? innerModesReason, {code:"bad_input"});
-			if (offered.signIn === "none" && withSettingsKeys(offered, (await turnModelKeys(c, meta)).map(k => k.provider), model).signIn === "none") throw new UserError(machineLoginMessage(machineHarnesses[offered.id], facts.name), { code: "harness_signed_out" });
+			if (offered.signIn === "none") {
+				const keys = offered.keyRelay ? await modelKeyActor(c, meta.uid).internalModelKeys() : [];
+				if (withSettingsKeys(offered, keys.map(k => k.provider), model).signIn === "none")
+					throw new UserError(machineLoginMessage(machineHarnesses[offered.id], facts.name), { code: "harness_signed_out" });
+			}
 		} else if (!meta.demo && !meta.environmentBuild && Date.now() >= c.vars.signedInUntil) {
 			const { logins } = await layerOf(c, meta);
 			if (!(await logins.status(meta.uid))) {

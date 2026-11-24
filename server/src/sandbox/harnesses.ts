@@ -193,20 +193,21 @@ export function selectedKey(harness: HarnessId | undefined, model: string | unde
 	return keyProviders(harness).find(provider => keys.includes(provider) && (harness !== "opencode" || model?.startsWith(provider + "/")));
 }
 
+type KeyHarness = { id: AcpProfile["id"]; keyRelay?: true };
+
 /** OpenCode probes its pinned catalog offline. Offer only the providers available to this owner. */
-export function availableCatalog(options: HarnessOptions | undefined, entry?: { machineProviders?: string[]; platformKeys?: ModelProvider[] }) {
-	if (!options || !entry?.machineProviders) return options;
+export function availableCatalog(options: HarnessOptions | undefined, entry?: { keyRelay?: true; machineProviders?: string[]; platformKeys?: ModelProvider[] }) {
+	if (!options || !entry?.keyRelay || !entry.machineProviders) return options;
 	const providers = new Set([...entry.machineProviders.map(p => p === "free" ? "opencode" : p === "chatgpt" ? "openai" : p), ...(entry.platformKeys ?? [])]);
 	const models = options.models.filter(m => providers.has(m.id.split("/")[0]!));
 	if (!models.length) return undefined;
 	if (models.some(m => m.id === options.defaultModel)) return { ...options, models };
-	// The agent chooses its own default among the projected providers on session/new.
 	return { ...options, defaultModel: "default", models: [{ id: "default", name: "Agent default", efforts: [] }, ...models] };
 }
 
 /** Combine a runner report with the owner's current Settings connections. */
-export function withSettingsKeys<T extends { id: AcpProfile["id"]; signIn: "token" | "none" | "unknown"; method?: SignInMethod }>(entry: T, saved: readonly ModelProvider[], model?: string) {
-	const keys = keyProviders(entry.id).filter(provider => saved.includes(provider) && (entry.id !== "opencode" || !model || model === "default" || model.startsWith(provider + "/")));
+export function withSettingsKeys<T extends KeyHarness & { signIn: "token" | "none" | "unknown"; method?: SignInMethod }>(entry: T, saved: readonly ModelProvider[], model?: string) {
+	const keys = keyProviders(entry.id).filter(provider => entry.keyRelay && saved.includes(provider) && (entry.id !== "opencode" || !model || model === "default" || model.startsWith(provider + "/")));
 	if (keys.length) return { ...entry, signIn: "token" as const, method: "api-key" as const, platformKeys: keys };
 	return entry.id === "claude" && entry.signIn === "token" ? { ...entry, method: "subscription" as const } : entry;
 }
@@ -271,6 +272,7 @@ export function itemSignInMethodProblem(profile: AcpProfile, machine: string, me
  * its tokens would be counted differently from then on. Never switched silently. Null where it is the same.
  */
 export function itemSignInChanged(profile: AcpProfile, machine: string, filed: SignInMethod | undefined, now: SignInMethod | undefined): string | null {
+	if (profile.id === "claude") { filed ??= "subscription"; now ??= "subscription"; }
 	if (profile.itemTokens !== "sign-in" || filed === undefined || filed === now) return null;
 	return `${profile.name} on “${machine}” now signs in with ${signInWords(now)}, not ${signInWords(filed)} as when this item was filed. File the work again.`;
 }

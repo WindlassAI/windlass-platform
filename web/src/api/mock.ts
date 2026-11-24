@@ -279,7 +279,7 @@ export const MOCK_MACHINE_SESSIONS = ["answering", "not_answering", "offline", "
 export type MockMachineSession = (typeof MOCK_MACHINE_SESSIONS)[number];
 
 /** Claude Code as a runner started with `--harness claude` reports it (server/src/runner/control.ts, `report.harnesses`). */
-const MOCK_CLAUDE = { id: "claude" as const, adapter: "claude-agent-acp 0.109.0", image: "sha256:3f9a1c0e7b5d2a8c6e4f1b9d7a5c3e1f0b8d6a4c2e0f9b7d5a3c1e8f6b4d2a0c", signIn: "token" as const };
+const MOCK_CLAUDE = { keyRelay: true as const, id: "claude" as const, adapter: "claude-agent-acp 0.109.0", image: "sha256:3f9a1c0e7b5d2a8c6e4f1b9d7a5c3e1f0b8d6a4c2e0f9b7d5a3c1e8f6b4d2a0c", signIn: "token" as const };
 
 /** Model and effort choices reported by the fixture machine. */
 const MOCK_CLAUDE_MODELS: ModelList = {
@@ -3554,7 +3554,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const at = realNow();
 		const claude = { ...MOCK_CLAUDE, options: { models: MOCK_CLAUDE_MODELS.models, defaultModel: MOCK_CLAUDE_MODELS.defaultModel, modes: [...CLAUDE_LAUNCH_MODES], checkedAt: at } };
 		const externalHarnesses: MachineSummary["harnesses"] = [{ ...claude, signIn: "none" }, { ...MOCK_CLAUDE, id: "opencode", adapter: "OpenCode 1.19.6", signIn: "token", options: { models: MOCK_OPENCODE_MODELS.models, defaultModel: MOCK_OPENCODE_MODELS.defaultModel, modes: MOCK_OPENCODE_MODES, checkedAt: at } }];
-		externalHarnesses.push({id:"codex", image:MOCK_CLAUDE.image, adapter:"codex-acp 2.9.0", signIn:"token", method:"api-key", modes:["agent-full-access"],
+		externalHarnesses.push({keyRelay:true, id:"codex", image:MOCK_CLAUDE.image, adapter:"codex-acp 2.9.0", signIn:"token", method:"api-key", modes:["agent-full-access"],
 			options:{defaultModel:MOCK_CODEX_MODELS.defaultModel,models:MOCK_CODEX_MODELS.models, modes:codexModes("docker-hardened"),checkedAt:at}});
 		const slots = (max: number, busy: number) => ({ max, busy, queued: 0, unit: { cpus: 2, memoryBytes: 4 * 2 ** 30, pids: 1024 }, reserve: { cpus: 1, memoryBytes: Math.ceil(2.1 * 2 ** 30) } });
 		const nas = (patch: Partial<MachineSummary>): MachineSummary => ({

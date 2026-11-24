@@ -38,14 +38,24 @@ class Conversation {
 	private active = true;
 	private paused = false;
 	private pipes = new Set<DockerProcess>();
-	private processes = new Map<string, { p: DockerProcess; acp: boolean; handle: Handle; id: string }>();
+	private processes = new Map<string, { p: DockerProcess; acp: boolean; handle: Handle; id: string; closeLogin?: () => Promise<void> }>();
 	private runs = new Map<string, AbortController>();
 	/** The turns' leases of the model relay this conversation opened, by the name the server knows them by. */
-	private relays = new Map<string, { relay: KeyTurnRelay | TurnModelRelay; provider?: ModelProvider; id: string; untrack: () => void }>();
+	private relays = new Map<string, { operation: string; relay: KeyTurnRelay | TurnModelRelay; provider?: ModelProvider; id: string; untrack: () => void }>();
 	constructor(private owner: Executor, private session: string, private channel: RunnerChannel) {}
 	input(id: string, data: string) { this.processes.get(id)?.p.write(data); }
 	eof(id: string) { this.processes.get(id)?.p.closeStdin(); }
-	cancel(id: string) { this.runs.get(id)?.abort(); }
+	cancel(id: string) {
+		this.runs.get(id)?.abort();
+		for (const [lease, held] of this.relays) if (held.operation === id) void this.closeRelay(lease);
+	}
+	private async closeRelay(lease: string) {
+		const held = this.relays.get(lease);
+		if (!held) return;
+		this.relays.delete(lease);
+		held.untrack();
+		await held.relay.close();
+	}
 	pause(paused: boolean) {
 		this.paused = paused;
 		for (const p of this.pipes) p.pauseOutput(paused);
@@ -57,8 +67,9 @@ class Conversation {
 		const leases = [...this.relays.values()].map(({ relay, untrack }) => { untrack(); return relay.close(); });
 		this.relays.clear();
 		await Promise.all(leases);
-		const stops = [...this.processes.values()].map(async ({ p, acp, handle, id }) => {
+		const stops = [...this.processes.values()].map(async ({ p, acp, handle, id, closeLogin }) => {
 			p.closeStdin();
+			await closeLogin?.();
 			if (acp) {
 				const path = tokenFilePath(id);
 				await handle.sweep(p.tag, { waitMs: 3000, files: [path, path + ".tmp"] });
@@ -99,6 +110,7 @@ class Conversation {
 				});
 			}
 			case "seedSpare": return this.channel.authenticated && o.seedSpare(this.session, op.args.id, op.args.spare, op.args.screenshots);
+			case "openCodeDefault": return o.openCodeDefault(op.args.providers);
 			case "hasSnapshot": return o.provider.hasSnapshot(o.identity.uid, op.args.repo);
 			// Not serial: a save runs for minutes in its own helper container, outside the sandbox.
 			case "saveMirror": return o.saveMirror(this.session, op.args.id, op.args.stage, op.args.partial);
@@ -136,6 +148,7 @@ class Conversation {
 				case "start": {
 					const acp = (box.harness && basename(op.args.argv[0] ?? "") === `wlp-${box.harness}-acp`) || basename(op.args.argv[0] ?? "") === "windlass" && op.args.argv.includes("acp");
 					let p: DockerProcess;
+					let closeLogin: (() => Promise<void>) | undefined;
 					try {
 						if (acp) {
 							const retiring = o.turnStarted(box);
@@ -153,20 +166,30 @@ class Conversation {
 							const { WLP_TURN_KEY_LEASES: expected = "", ...secrets } = options.secretEnv ?? {};
 							if (Object.values(keys).sort().join(",") !== expected) throw new Refusal("The turn's provider key leases changed.");
 							const credentials = await o.turnCredentials(box.raw, box.harness, keys);
+							if (credentials.close) {
+								const end = credentials.close;
+								let closed: Promise<void> | undefined;
+								const close = () => closed ??= end().catch(() => { audit(this.session, id, "turn-login", "cleanup-failed"); });
+								const untrack = o.trackRelay(id, close);
+								closeLogin = () => { untrack(); return close(); };
+							}
 							this.requireActive();
-							options.secretEnv = { ...secrets, ...credentials };
+							options.secretEnv = { ...secrets, ...credentials.env };
+							if (box.harness === "opencode") argv = ["env", "-u", "WLP_SESSION_BEARER", ...argv];
 							if (box.harness === "claude") argv = ["env", "-u", keys.anthropic ? "CLAUDE_CODE_OAUTH_TOKEN" : "ANTHROPIC_API_KEY", ...argv];
 						}
 						p = h.start(argv, options, op.args.tag);
 					} catch (error) {
+						await closeLogin?.();
 						if (acp) o.turnEnded(box);
 						throw error;
 					}
-					this.processes.set(op.id, { p, acp, handle: h, id });
+					this.processes.set(op.id, { p, acp, handle: h, id, closeLogin });
 					box.busy++;
 					// start() returns synchronously. Answer in this stack, before any pipe event can run.
 					this.channel.respond(op, null);
-					void p.ended.then(end => {
+					void p.ended.then(async end => {
+						await closeLogin?.();
 						box.busy--; box.usedAt = Date.now();
 						this.processes.delete(op.id);
 						if (acp) o.turnEnded(box);
@@ -196,14 +219,15 @@ class Conversation {
 				case "stopLeftovers": return await h.stopLeftovers(op.args.program);
 				case "sweep": return await h.sweep(op.args.tag, op.args.options);
 				case "modelRelay": {
-					if (!o.modelRelays || (box.harness ? !op.args.forward : !o.modelRelayReady)) throw new Refusal("This sandbox's turns cannot use the model relay.");
+					abort?.signal.throwIfAborted();
+					if (box.harness ? !o.harnessKeyRelays || !op.args.forward : !o.modelRelays || !o.modelRelayReady) throw new Refusal("This sandbox's turns cannot use the model relay.");
 					const relay = box.harness ? await o.openTurnKey(box.raw, box.harness, op.args.forward!)
 						: await o.modelRelay.open(containerName(box.raw), box.raw, undefined, op.args.forward);
-					if (!this.active) { await relay.close(); throw new Refusal("The session conversation ended."); }
+					if (!this.active || abort?.signal.aborted) { await relay.close(); throw new Refusal("The session conversation ended."); }
 					const lease = randomBytes(16).toString("hex");
 					// A suspend or removal of the sandbox ends it too, and takes it out of this conversation.
 					const untrack = o.trackRelay(id, async () => { this.relays.delete(lease); await relay.close(); });
-					this.relays.set(lease, { relay, id, untrack, provider: op.args.forward?.provider });
+					this.relays.set(lease, { operation: op.id, relay, id, untrack, provider: op.args.forward?.provider });
 					return { lease, placeholder: relay.placeholder, env: relay.env };
 				}
 				case "modelRelayToken": {
@@ -214,18 +238,14 @@ class Conversation {
 				}
 				case "modelRelayClose": {
 					const held = this.relays.get(op.args.lease);
-					if (held?.id === id) {
-						this.relays.delete(op.args.lease);
-						held.untrack();
-						await held.relay.close();
-					}
+					if (held?.id === id) await this.closeRelay(op.args.lease);
 					return null;
 				}
 			}
 		} finally { box.busy--; box.usedAt = Date.now(); }
 	}
 	async serve(op: Operation, orphaned: Promise<void>) {
-		const abort = op.name === "run" ? new AbortController() : undefined;
+		const abort = op.name === "run" || op.name === "modelRelay" ? new AbortController() : undefined;
 		if (abort) this.runs.set(op.id, abort);
 		let id = "id" in op.args && this.owner.boxes.has(op.args.id) ? op.args.id : null;
 		let outcome = "done";

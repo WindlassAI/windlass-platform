@@ -13,7 +13,7 @@ import { PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
 import { commonRunFlags } from "../../server/src/sandbox/profiles.js";
 import { tmpName } from "../../server/src/sandbox/docker.js";
 import { currentProvider, installedProvider } from "./opencode-login.js";
-import { ensureRelay, prepareRelay, projection, relaySocketVolume, relayUrl, openHarnessKey, removeRelay, stopLegacyClaude } from "./claude-relay.js";
+import { ensureRelay, prepareRelay, openCodeCredentials, localProviders, relaySocketVolume, keyRelayUrl, openHarnessKey, endHarnessLeases, removeRelay, stopLegacyClaude } from "./claude-relay.js";
 import { probeHarnessOptions } from "./harness-options.js";
 import claudePackage from "../../sandbox/harness/claude/package.json";
 import { MAX_REPORTED_SANDBOXES, type Report } from "../../server/src/runner/control.js";
@@ -191,23 +191,20 @@ export class Executor extends MachineDocker {
 
 	openTurnKey(raw: string, harness: MachineHarness, forward: ForwardedKeyLease) {
 		return withLoginVolume(this, async () => {
-			await ensureRelay(this, this.machineLogin(harness), harness);
 			return openHarnessKey(this, harness, await this.relayNonce(raw), forward);
 		});
 	}
 
 	turnCredentials(raw: string, harness: MachineHarness, keys: Partial<Record<ModelProvider, string>>) {
-		return withLoginVolume(this, async () => {
-			if (harness === "claude" && keys.anthropic) return { ANTHROPIC_BASE_URL: relayUrl, ANTHROPIC_API_KEY: keys.anthropic };
-			if (harness === "codex" && keys.openai) return { WLP_SESSION_BEARER: keys.openai };
+		return withLoginVolume(this, async (): Promise<{ env: Record<string, string>; close?: () => Promise<void> }> => {
+			if (harness === "claude" && keys.anthropic) return { env: { ANTHROPIC_BASE_URL: keyRelayUrl, ANTHROPIC_API_KEY: keys.anthropic } };
+			if (harness === "codex" && keys.openai) return { env: { WLP_SESSION_BEARER: keys.openai } };
 			const login = this.machineLogin(harness);
 			if (!login && harness !== "claude" && !Object.keys(keys).length) throw new Refusal(`Run windlass-runner login ${harness} on this machine.`);
-			const flags = !login && harness === "opencode" ? projection([], "", keys)
-				: (await prepareRelay(this, login, await this.relayNonce(raw), keys)).env;
-			return Object.fromEntries(flags.filter(arg => arg !== "-e").map(arg => {
-				const at = arg.indexOf("=");
-				return [arg.slice(0, at), arg.slice(at + 1)];
-			})) as Record<string, string>;
+			const nonce = await this.relayNonce(raw);
+			if (!/^[a-f0-9]{32}$/.test(nonce)) throw new Refusal("Invalid session relay nonce.");
+			if (harness === "opencode") return openCodeCredentials(this, nonce, login, keys);
+			return prepareRelay(this, login, nonce);
 		});
 	}
 
@@ -355,6 +352,7 @@ private signInRetries = 0;
 	 * relay (docs/model-relay.md), and a connect says so. Set by the control connection on each welcome.
 	 */
 	modelRelays = false;
+	harnessKeyRelays = false;
 	/** The connected server named `start-times`: the first connect after a create says what making the sandbox took (`Box.startTimes`). */
 	startTimes = false;
 	blockedNetwork = false;
@@ -533,6 +531,14 @@ private signInRetries = 0;
 			this.codexOptions = options;
 			this.nextCodexProbe = Date.now() + INVENTORY_TTL_MS;
 		} else console.log("Could not read Codex model options.");
+	}
+	async openCodeDefault(keys: ModelProvider[]) {
+		if (!this.harnessKeyRelays || !this.opencodePin) throw new Refusal("This machine does not offer OpenCode Settings keys.");
+		const login = currentProvider(this);
+		const local = login?.providers ?? (login ? [login.provider] : []);
+		const providers = [...localProviders(local, keys), ...keys];
+		const options = await probeHarnessOptions(this, this.opencodePin, providers, undefined, true);
+		return options.defaultModel;
 	}
 	private async refreshOpenCodeOptions(force = false) {
 		const pin = this.opencodePin;
@@ -750,11 +756,14 @@ private signInRetries = 0;
 	}
 
 	/** Ends every lease of sandbox `id` (its files in the relay, its forwarder, the conversations' entries), also one a process that died left. */
-	private async endRelays(id: string, raw: string): Promise<void> {
+	private async endRelays(id: string, raw: string, harness?: MachineHarness): Promise<void> {
 		const ends = [...(this.relayLeases.get(id) ?? [])];
 		this.relayLeases.delete(id);
 		await Promise.all(ends.map((end) => end().catch(() => {})));
-		await this.modelRelay.endSandbox(raw).catch(() => {});
+		if (harness) {
+			const nonce = await this.relayNonce(raw).catch(() => "");
+			if (nonce) await withLoginVolume(this, () => endHarnessLeases(this, harness, nonce));
+		} else await this.modelRelay.endSandbox(raw).catch(() => {});
 	}
 
 	/** At the first welcome: the pinned image's Windlass, and what a runner that died left of the relay. */
@@ -796,7 +805,7 @@ private signInRetries = 0;
 			docker: this.egressError ? { ok: false, reason: this.egressError } : this.dockerHealth,
 			...(this.claudePin && { claudeRelay: true as const }),
 			...(this.network.policy.domains && { egressDomains: this.network.domains()!.length }),
-			...(harnesses.length ? { harnesses } : {}),
+			...(harnesses.length ? { harnesses: harnesses.map(h => ({ ...h, keyRelay: true as const })) } : {}),
 			...(this.screenshots ? { screenshots: true } : {}),
 			commandSandbox: this.commandSandbox, freeDiskBytes: this.freeDiskBytes, storeLimits: this.reportedStoreLimits(),
 			sandboxes: [...this.boxes.entries()].slice(0, MAX_REPORTED_SANDBOXES).map(([id, { sessionId, state, usedAt, resizePending }]) => ({ id, sessionId, state, usedAt, resizePending })),
@@ -1012,7 +1021,7 @@ private signInRetries = 0;
 				// Only to a server that reads it (`sessionVolumes`): an older one refuses a key it does not know.
 				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}),
 				// A harness uses its credential relay for forwarded platform leases.
-				...(this.modelRelays && (box.harness || this.modelRelayReady) ? { modelRelay: true as const } : {}),
+				...((box.harness ? this.harnessKeyRelays : this.modelRelays && this.modelRelayReady) ? { modelRelay: true as const } : {}),
 				// Only a reporting restricted proxy on a server that opted in.
 				...(this.blockedNetwork && box.egress === "restricted" ? { blockedNetwork: true as const } : {}),
 				...(this.memoryEvents && { memoryEvents: true as const }),
@@ -1031,7 +1040,7 @@ private signInRetries = 0;
 			await new DockerSandboxHandle(box.raw, box.profile, this.identity.uid).removeFiles([path, path + ".tmp"]);
 		}
 		// Its turns' leases end with it: the relay's files of them, their forwarders and the conversations' entries.
-		await this.endRelays(id, box.raw);
+		await this.endRelays(id, box.raw, box.harness);
 		if (op === "destroy") await this.remove(id);
 		else {
 			if (box.egress === "restricted" || box.harness) await this.network.detach(box.raw);
@@ -1057,10 +1066,7 @@ private signInRetries = 0;
 		this.boxes.delete(id);
 		if (claim) forget(this.claimFile(raw));
 		if (harness === "claude") await withLoginVolume(this, async () => {
-			if (await loginFileState(this).catch(() => "unknown") === "none") {
-				await removeRelay(this);
-				await dropDetachedLoginVolume(this);
-			}
+			if (await loginFileState(this) === "none") await dropDetachedLoginVolume(this);
 		});
 		this.publishReport?.();
 	}

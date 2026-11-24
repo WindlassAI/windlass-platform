@@ -27,9 +27,12 @@ import { keyedDigest, readSignedPayload, signedPayload } from "../signatures.js"
 export const RELAY_PREFIX = "/model-relay";
 const PREFIX = "wlpm1";
 
-export type RelayToken = (AccessToken & { kind: "access" }) | (ModelKeyLease & { kind: "key" });
+type Harness = import("./harnesses.js").AcpProfile["id"];
+type KeyReference = ModelKeyLease & { harness?: Harness };
+export type RelayToken = (AccessToken & { kind: "access" }) | (KeyReference & { kind: "key" });
 
 interface Lease {
+	machine?: string;
 	uid: string;
 	sessionId: string;
 	token: RelayToken | null;
@@ -99,7 +102,7 @@ export function leaseToken(nonce: string, uid: string, sessionId: string, now = 
 
 export interface RemoteLease {
 	held: boolean;
-	token: string | ModelKeyLease | null;
+	token: string | KeyReference | null;
 }
 
 export const relayTransitSubject = (uid: string, session: string, lease: string, request: string) =>
@@ -138,20 +141,24 @@ export function trackRequest(nonce: string, controller: AbortController): (() =>
 type LeaseInput = { uid: string; sessionId: string; origin: string; ttlMs: number };
 
 function closeLease(nonce: string, lease: Lease) {
-	leases.delete(nonce);
+	if (!leases.delete(nonce)) return;
 	lease.token = null;
 	endLease(nonce, lease.expiresAt);
 	for (const controller of lease.requests) controller.abort(new Error("the turn's model relay lease has ended"));
 }
 
+export function revokeMachineLeases(uid: string, machine: string) {
+	for (const [nonce, lease] of leases) if (lease.uid === uid && lease.machine === machine) closeLease(nonce, lease);
+}
+
 export function openRelayLease(input: LeaseInput & { key?: undefined }): TurnModelRelay;
-export function openRelayLease(input: LeaseInput & { key: ModelKeyLease; machine?: string }): KeyTurnRelay;
-export function openRelayLease(input: LeaseInput & { key?: ModelKeyLease; machine?: string }): TurnModelRelay | KeyTurnRelay {
+export function openRelayLease(input: LeaseInput & { key: KeyReference; machine?: string }): KeyTurnRelay;
+export function openRelayLease(input: LeaseInput & { key?: KeyReference; machine?: string }): TurnModelRelay | KeyTurnRelay {
 	const now = Date.now();
 	for (const [nonce, lease] of leases) if (lease.expiresAt <= now) closeLease(nonce, lease);
 	const nonce = randomBytes(16).toString("hex");
 	const expiresAt = now + input.ttlMs;
-	const lease: Lease = { uid: input.uid, sessionId: input.sessionId, token: input.key ? { ...input.key, kind: "key" } : null, expiresAt, requests: new Set() };
+	const lease: Lease = { machine: input.machine, uid: input.uid, sessionId: input.sessionId, token: input.key ? { ...input.key, kind: "key" } : null, expiresAt, requests: new Set() };
 	leases.set(nonce, lease);
 	const relay = {
 		// An older platform process cannot accept a machine lease without verifying its proof.
@@ -181,18 +188,28 @@ export function verifiedMachine(placeholder: string, machine: string, proof: str
 
 /** Keep the Settings key on the platform. The Docker relay forwards with a second, turn-scoped placeholder. */
 export async function forwardKeyLease(uid: string, sessionId: string, key: ModelKeyLease, machine: string | undefined,
-	open: (forward: ForwardedKeyLease) => Promise<KeyTurnRelay>): Promise<KeyTurnRelay> {
+	open: (forward: ForwardedKeyLease) => Promise<KeyTurnRelay>, { harness, signal }: { harness?: Harness; signal?: AbortSignal } = {}): Promise<KeyTurnRelay> {
+	signal?.throwIfAborted();
 	const url = config.modelRelay.url;
 	if (!config.modelRelay.on || !url || !sessionId) throw new Error("A saved provider key requires a platform model relay.");
 	const ttlMs = config.turnTimeoutMs + 60_000;
 	const expiresAt = Date.now() + ttlMs;
-	const platform = openRelayLease({ uid, sessionId, key, machine, origin: url.origin, ttlMs });
+	const platform = openRelayLease({ uid, sessionId, key: { ...key, harness }, machine, origin: url.origin, ttlMs });
+	const abort = () => { void platform.close(); };
+	signal?.addEventListener("abort", abort, { once: true });
+	let local: KeyTurnRelay | undefined;
+	let closing: Promise<void> | undefined;
+	const close = () => {
+		signal?.removeEventListener("abort", abort);
+		return closing ??= Promise.all([platform.close(), local?.close()]).then(() => {});
+	};
 	try {
-		const local = await open({ provider: key.provider, host: url.host, placeholder: platform.placeholder, expiresAt,
+		local = await open({ provider: key.provider, host: url.host, placeholder: platform.placeholder, expiresAt,
 			...(machine && { proofKey: proofKey(platform.placeholder) }) });
-		return { env: local.env, placeholder: local.placeholder, close: async () => { await platform.close(); await local.close(); } };
+		signal?.throwIfAborted();
+		return { env: local.env, placeholder: local.placeholder, close };
 	} catch (error) {
-		await platform.close();
+		await close();
 		throw error;
 	}
 }

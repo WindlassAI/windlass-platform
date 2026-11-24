@@ -57,7 +57,7 @@ test("the short picker offers Go and Zen first, searches by name and accepts an 
 test("the ACP projection enables every selected provider with separate placeholder records and loopback endpoints", () => {
 	const ids = ["opencode","opencode-go","zai-coding-plan","google","moonshotai","minimax","deepseek","groq","openrouter","zhipuai-coding-plan"];
 	const env = projection(ids,"fixture-placeholder");
-	const value = (key: string) => JSON.parse(env.find(v => v.startsWith(key+"="))!.slice(key.length+1));
+	const value = (key: keyof typeof env) => JSON.parse(env[key]);
 	const config = value("OPENCODE_CONFIG_CONTENT");
 	assert.deepEqual(config.enabled_providers,ids);
 	for(const id of ids) {
@@ -67,22 +67,22 @@ test("the ACP projection enables every selected provider with separate placehold
 });
 
 test("Settings keys replace only matching machine logins in the ACP projection", () => {
-	const keys = { openai: "turn-openai", anthropic: "turn-anthropic", google: "turn-google", openrouter: "turn-openrouter" };
-	for (const machines of [[], ["chatgpt", "google", "opencode-go"]]) {
-		const env = projection(machines, "machine-placeholder", keys);
-		const field = (name: string) => JSON.parse(env.find(s => s.startsWith(name + "="))!.slice(name.length + 1));
-		const auth = field("OPENCODE_AUTH_CONTENT"), config = field("OPENCODE_CONFIG_CONTENT");
-		for (const [provider, placeholder] of Object.entries(keys)) {
-			assert.deepEqual(auth[provider], { type: "api", key: placeholder });
-			assert.equal(config.provider[provider].options.baseURL, "http://127.0.0.1:17892/" + provider);
-		}
-		if (machines.length) assert.deepEqual(auth["opencode-go"], { type: "api", key: "machine-placeholder" });
+	for (const provider of ["openai", "anthropic", "google", "openrouter"]) {
+		const env = projection(["chatgpt","google","opencode-go"], "machine-placeholder", { [provider]: "turn-key" });
+		assert.ok(!Object.hasOwn(env, "WLP_SESSION_BEARER"));
+		assert.ok(!Array.isArray(env), "project an env map");
+		const auth = JSON.parse(env.OPENCODE_AUTH_CONTENT), config = JSON.parse(env.OPENCODE_CONFIG_CONTENT);
+		assert.deepEqual(auth[provider], {type:"api", key:"turn-key"});
+		assert.equal(config.provider[provider].options.baseURL, "http://127.0.0.1:17894/" + provider);
+		assert.equal(auth["opencode-go"].key, "machine-placeholder");
+		if (provider !== "openai") assert.equal(auth.openai.access, "machine-placeholder");
+		if (provider !== "google") assert.equal(auth.google.key, "machine-placeholder");
 	}
 });
 
 test("free uses the native anonymous model catalog and authenticates only its loopback transport", () => {
 	const env = projection("free","fixture-placeholder");
-	const value = (key: string) => JSON.parse(env.find(v => v.startsWith(key+"="))!.slice(key.length+1));
+	const value = (key: keyof typeof env) => JSON.parse(env[key]);
 	assert.deepEqual(value("OPENCODE_AUTH_CONTENT"), {});
 	assert.deepEqual(value("OPENCODE_CONFIG_CONTENT"), { enabled_providers:["opencode"], provider:{
 		opencode: { options: { baseURL:"http://127.0.0.1:17892/free", headers:{authorization:"Bearer fixture-placeholder"} } }

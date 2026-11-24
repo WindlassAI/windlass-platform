@@ -11,7 +11,7 @@ import { randomBytes } from "node:crypto";
 import { openModelKeyTransit } from "./model-providers.js";
 import { serverSealer } from "./signin/seal.js";
 import { isModelProvider, type ModelProvider } from "./contract.js";
-import { proofHeader } from "../../sandbox/relay/wires.cjs";
+import { harnessMethod, proofHeader } from "../../sandbox/relay/wires.cjs";
 import { isActorGone, modelKeyActor } from "./actors/internal.js";
 import { serviceParams } from "./auth.js";
 import { config, ownEngineEndpoint } from "./config.js";
@@ -24,7 +24,7 @@ import {
 	type RemoteLease,
 	type RelayToken,
 	type Placeholder,
-	verifiedMachine,
+	verifiedMachine, revokeMachineLeases,
 	RelayLimiter,
 	ROUTE_LIMITS,
 	UserRate,
@@ -66,6 +66,7 @@ function refusal(status: number, message: string, headers: Record<string, string
 const leaseEnded = (message = "The session placeholder is no longer valid: its turn has ended.") => refusal(401, message, {}, LEASE_ENDED);
 
 export interface RelayRouteDeps {
+	paired(uid: string, machine: string): Promise<boolean>;
 	/** B1 returns a transit blob bound to this request nonce. */
 	key(uid: string, provider: ModelProvider, request: string): Promise<string | null>;
 	/** The session actor returns a sealed token or a key reference. */
@@ -82,6 +83,10 @@ export interface RelayRouteDeps {
 let client: ReturnType<typeof createClient<Registry>> | undefined;
 const engine = () => (client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() }));
 const defaults: RelayRouteDeps = {
+	paired: async (uid, machine) => {
+		try { return await engine().machine.get([uid, machine], { params: serviceParams() }).internalPaired(); }
+		catch (error) { if (isActorGone(error)) return false; throw error; }
+	},
 	key: (uid, provider, request) => modelKeyActor({ client: engine }, uid).internalModelKey(provider, request),
 	remote: async (uid, sessionId, nonce, request) => {
 		try {
@@ -142,6 +147,11 @@ async function tokenFor(deps: RelayRouteDeps, placeholder: Placeholder, machine:
 	if (machine !== placeholder.machine) return null;
 	const now = deps.now();
 	if (placeholderExpires <= now || endedLease(nonce, now)) return null;
+	if (machine && !await deps.paired(uid, machine)) {
+		revokeMachineLeases(uid, machine);
+		endLease(nonce, placeholderExpires, now);
+		return null;
+	}
 	// This process runs the turn: what it holds is the answer, and a lease it no longer holds has ended.
 	if (holdsLease(nonce)) return leaseToken(nonce, uid, sessionId, now);
 	const hit = cached.get(nonce);
@@ -160,8 +170,8 @@ async function tokenFor(deps: RelayRouteDeps, placeholder: Placeholder, machine:
 		return null;
 	}
 	if (typeof answer.token !== "string") {
-		const { provider, generation } = answer.token;
-		return isModelProvider(provider) && typeof generation === "string" ? { kind: "key", provider, generation } : null;
+		const { provider, generation, harness } = answer.token;
+		return isModelProvider(provider) && typeof generation === "string" ? { kind: "key", provider, generation, harness } : null;
 	}
 	const token = JSON.parse(serverSealer().open("transit", relayTransitSubject(uid, sessionId, nonce, request), answer.token));
 	if (!Number.isSafeInteger(token.exp) || token.exp <= deps.now() || !Number.isSafeInteger(token.expiresAt)
@@ -315,13 +325,15 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 	if ("refused" in slot) return refusal(503, slot.refused, { "retry-after": "2" });
 	// The lease's end (`close`, here or in the process that holds it) aborts the request from here on.
 	const ended = new AbortController();
-	const untrack = trackRequest(placeholder.nonce, ended) || watchRemote(placeholder.nonce, placeholder.expiresAt, lookup, ended);
+	const untrack = trackRequest(placeholder.nonce, ended);
+	const unwatch = (!untrack || machine) && watchRemote(placeholder.nonce, placeholder.expiresAt, lookup, ended);
 	let taken = 0;
 	let released = false;
 	const release = () => {
 		if (!released) {
 			released = true;
-			untrack();
+			if (untrack) untrack();
+			if (unwatch) unwatch();
 			deps.bodies.give(taken);
 			taken = 0;
 			slot.release();
@@ -347,6 +359,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 			token = await lookup();
 			if (token?.kind === "key") {
 				provider = token.provider;
+				if (machine && harnessMethod(token.harness, provider, path) !== method) { release(); return refusal(403, "This request is not allowed by the relay."); }
 				const nonce = randomBytes(16).toString("hex");
 				const sealed = await deps.key(placeholder.uid, provider, nonce);
 				const saved = sealed && openModelKeyTransit(placeholder.uid, provider, nonce, sealed);

@@ -169,6 +169,7 @@ export interface TurnSandbox extends SandboxHandle {
 	 * written into the sandbox.
 	 */
 	modelRelay?(): Promise<TurnModelRelay>;
+	machineKeyRelay?(sessionId: string, key: ModelKeyLease, harness: import("./harnesses.js").AcpProfile["id"], signal?: AbortSignal): Promise<KeyTurnRelay>;
 	modelKeyRelay?(sessionId: string, key: ModelKeyLease): Promise<KeyTurnRelay>;
 	/** The lease a turn of a server that has since restarted opened (`TurnModelRelay.lease`), taken up again for the same process. */
 	resumeRelay?(relay: { lease: string; placeholder: string; env: Record<string, string> }): TurnModelRelay;

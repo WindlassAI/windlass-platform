@@ -359,6 +359,10 @@ export function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: nu
 	);
 }
 
+export function settingsKeyUpgrade(machine: MachineSummary) {
+	return machine.harnesses?.some(h => !h.keyRelay) ? "Update the runner to use Settings keys on this machine." : null;
+}
+
 /**
  * A machine's agents as a status list: each one signed in or not, as its runner last said, with the
  * command that signs it in on the machine. Signing in is done in the machine's terminal only.
@@ -501,6 +505,7 @@ function MachineUse({ machine, onChanged }: { machine: MachineSummary; onChanged
 }
 
 function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: MachineSummary; info: MachinesInfo; now: number; onChanged(list: MachineSummary[]): void; onRemove(machine: MachineSummary): void }) {
+	const upgrade = settingsKeyUpgrade(machine);
 	const [open, setOpen] = useState(false);
 	const details = useId();
 	const reported = machine.commandSandbox !== null;
@@ -550,6 +555,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</p>
 				<MachineUse machine={machine} onChanged={onChanged} />
 				<MachineAgents harnesses={machine.harnesses ?? []} />
+				{upgrade && <p className="field-note">{upgrade}</p>}
 				{machine.providerAccounts?.filter(a => a.state === "limited" && (a.limitedUntil ?? 0) > now).map(a =>
 					<p className="field-note" key={a.key}>{a.provider ? `${a.provider} Settings key` : HARNESS_NAMES[a.harness]}: limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
 			</div>

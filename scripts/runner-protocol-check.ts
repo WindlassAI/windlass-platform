@@ -101,6 +101,19 @@ function runner(serve?: (ch: RunnerChannel, op: Operation) => void, hooks: { onD
 	});
 	return { ch, log };
 }
+{
+	const s = server(), r = runner(), link = join(s.ch, r.ch);
+	const abort = new AbortController();
+	const forward = { provider:"openai" as const, placeholder:"wlpm1.fixture", host:"relay.fixture.test", expiresAt:Date.now()+60_000, proofKey:"a".repeat(43) };
+	const waiting = outcome(s.ch.request("modelRelay", { id:"box", forward }, { signal:abort.signal }));
+	link.flush();
+	abort.abort();
+	link.flush();
+	const result = await now(waiting);
+	expect("abort settles a pending key relay setup and cancels it on the runner", result instanceof Error && r.log.cancels.length === 1);
+	s.ch.close(); r.ch.close();
+}
+if (process.argv.includes("--key-abort")) process.exit(failures ? 1 : 0);
 const answer = (ch: RunnerChannel, op: Operation) => {
 	if (op.name === "state") ch.respond(op, "running");
 	else if (op.name === "readTextFile") ch.respond(op, "x".repeat(9 * 1024 * 1024));

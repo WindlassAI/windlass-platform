@@ -85,7 +85,7 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 
 	const save = (provider: ModelProvider, key: string) => actions.saveModelProvider(c, { provider, key });
 	const nonce = hex();
-	await assert.rejects(actions.internalModelKeys(c), /internal/);
+	await assert.rejects(actions.internalModelKeyGeneration(c, "openai"), /internal/);
 	await assert.rejects(actions.internalModelKey(c, "openai", nonce), /internal/);
 	for (const token of [issueServiceToken(), b.internal.conn.params.token]) {
 		await assert.rejects(actions.internalModelKey({ ...c, conn: { params: { token } } }, "openai", nonce), /internal/);
@@ -135,7 +135,7 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 	now += 59_999;
 	const payload = openModelKeyTransit(c.key[0], "openai", nonce, sealed);
 	const [row] = await c.db.execute<{ sealed: string; generation: string }>("SELECT sealed, generation FROM model_provider WHERE provider = 'openai'");
-	assert.deepEqual((await actions.internalModelKeys(a.internal)).map(k => [k.provider, k.generation]), [["openai", row.generation]]);
+	assert.equal(await actions.internalModelKeyGeneration(a.internal, "openai"), row.generation);
 	assert.ok(serverSealer().isCurrent(row.sealed) && payload.key === keys.openai && payload.generation === row.generation);
 	assert.ok(serverSealer().open("model-key", owner, row.sealed) === keys.openai);
 	for (const subject of [JSON.stringify([b.context.key[0], "openai"]), JSON.stringify([c.key[0], "google"])]) {
@@ -203,17 +203,44 @@ test("Settings key usage and refusals follow the provider and key generation acr
 	assert.equal(await tokensOn(db, at), 0);
 });
 
-test("machine readiness and the OpenCode model menu use the owner's available providers", () => {
-	const entry = { id: "opencode" as const, signIn: "none" as const, machineProviders: ["chatgpt"] };
+test("a Settings change retries a waiting subtask even while its former account is limited", async () => {
+	const { notifyProviderWaits } = await import("../server/src/actors/user-items.js");
+	const { sql, context } = account("owner");
+	sql.exec(PROVIDER_TABLE);
+	const location = { harness: "opencode" as const, place: "desk", provider: "google" as const };
+	sql.exec("INSERT INTO model_provider VALUES ('google','sealed','old','1234',1,NULL,0,NULL)");
+	const key = "settings/google/old";
+	const until = Date.now() + 60_000;
+	sql.prepare("INSERT INTO provider_usage VALUES (?,?,?,?)").run("settings", "google", "old", JSON.stringify({backoff:0,lastRefusal:Date.now(),lastSuccess:-1, account:{ ...location, key, state:"limited", limitedUntil:until, windows:[] }}));
+	const retries: number[] = [];
+	const item = {id:"feature", revision:4, step:{kind:"subtasks"}, wait:{reason:"provider", accountKey:key}};
+	const ctx = { ...context, vars:{sessions:new Map()}, client:() => ({workItem:{get:() => ({ internalProviderChanged:async (revision:number) => retries.push(revision) })}}) };
+	await notifyProviderWaits(ctx as never, [item] as never, "settings");
+	assert.deepEqual(retries, [4]);
+	sql.close();
+});
+
+test("machine readiness and the OpenCode model menu use the owner's available providers", async () => {
+	const { parseRunnerFrame, reportFor } = await import("../server/src/runner/control.js");
+	const h = {id:"opencode" as const, signIn:"token" as const, adapter:"fixture", image:"fixture", keyRelay:true as const, machineProviders:["free"]};
+	const report = {kind:"report" as const, commandSandbox:{ok:true as const}, docker:{ok:true as const}, freeDiskBytes:null, sandboxes:[], harnesses:[h]};
+	assert.deepEqual(parseRunnerFrame(JSON.stringify(reportFor(report, ["harness-key-relay"]))), report);
+	const legacy = reportFor(report, ["model-relay"]);
+	assert.ok(!("keyRelay" in legacy.harnesses[0]!) && !("machineProviders" in legacy.harnesses[0]!));
+	assert.deepEqual(parseRunnerFrame(JSON.stringify(legacy)), legacy);
+	const entry = { id: "opencode" as const, signIn: "none" as const, keyRelay: true as const, machineProviders: ["chatgpt"] };
 	const saved = ["google" as const];
 	const effective = withSettingsKeys(entry, saved);
+	assert.equal(withSettingsKeys({ ...entry, keyRelay: undefined }, saved).signIn, "none");
+	assert.equal(withSettingsKeys({ ...entry, keyRelay: undefined, signIn: "token", method: undefined }, saved).method, undefined);
 	assert.equal(effective.signIn, "token");
 	assert.equal(withSettingsKeys(entry, saved, "anthropic/claude").signIn, "none");
 	assert.equal(selectedKey("opencode", "google/gemini", saved), "google");
 	const models = ["anthropic/claude", "google/gemini", "openai/gpt"].map(id => ({ id, name: id, efforts: [] }));
 	const catalog = availableCatalog({ models, defaultModel: models[0]!.id, modes: [], checkedAt: 1 }, effective);
 	assert.deepEqual(catalog?.models.map(m => m.id), ["default", "google/gemini", "openai/gpt"]);
-	assert.equal(withSettingsKeys({id: "claude", signIn: "token", method: undefined}, []).method, "subscription");
-	assert.equal(withSettingsKeys({id: "claude", signIn: "token", method: undefined}, ["anthropic"]).method, "api-key");
+	assert.equal(catalog?.defaultModel, "default");
+	assert.equal(withSettingsKeys({keyRelay: true, id: "claude", signIn: "token", method: undefined}, []).method, "subscription");
+	assert.equal(withSettingsKeys({keyRelay: true, id: "claude", signIn: "token", method: undefined}, ["anthropic"]).method, "api-key");
 	assert.equal(withSettingsKeys({id: "codex", signIn: "none"}, ["google"]).signIn, "none");
 });

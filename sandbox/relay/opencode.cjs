@@ -154,15 +154,25 @@ function providerFor(provider, generation, { load = async () => JSON.parse(await
 		},
 	};
 }
+function turnLogin(provider) {
+	async function authorize(bearer, nonce, url) {
+		const match = /^Bearer (wlp-login\.[a-f0-9]{32})$/.exec(bearer ?? '');
+		if (!match || !/^[a-f0-9]{32}$/.test(nonce)) return false;
+		const record = await readFile('/run/wlp-keys/' + nonce + '.login', 'utf8').then(JSON.parse).catch(() => null);
+		const id = url.split('/')[1];
+		return record?.placeholder === match[1] && record.allowed.some(p => (p === 'chatgpt' ? 'openai' : p) === id);
+	}
+	return { ...provider, authorize, async target(url, headers, nonce) {
+		if (await authorize(provider.bearer(headers, url), nonce, url)) return provider.target(url, headers);
+	} };
+}
 exports.providerFor = providerFor;
 if (process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY) {
 	const generation = process.env.WLP_OPENCODE_GENERATION;
-	const domain = process.env.WLP_OPENCODE_SESSION_DOMAIN;
-	if (!domain) throw new Error('Missing session signing domain.');
 	const publicKey = createPublicKey({ key: Buffer.from(process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY, 'base64'), format: 'der', type: 'spki' });
 	const socket = '/workspace/relay.sock';
 	rmSync(socket, { force: true });
 	rmSync(SIGNED_OUT, { force: true });
 	const provider = providerFor((process.env.WLP_OPENCODE_PROVIDER || '').split(',').filter(Boolean), generation);
-	stopOnSignal(createRelay({ harness: 'opencode', publicKey, machine: process.env.WLP_OPENCODE_RELAY_MACHINE, domain, provider, notesFile: NOTES_FILE }).listen(socket), provider);
+	stopOnSignal(createRelay({ publicKey, machine: process.env.WLP_OPENCODE_RELAY_MACHINE, provider: turnLogin(provider), notesFile: NOTES_FILE }).listen(socket), provider);
 }

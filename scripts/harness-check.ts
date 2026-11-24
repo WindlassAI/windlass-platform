@@ -1,4 +1,5 @@
 // cd server && npx tsx ../scripts/harness-check.ts
+import "./check-secret.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -14,6 +15,37 @@ import { markTurnSandbox, type ProcessEnd, type StartOptions } from "../server/s
 import { SecretRedactor } from "../server/src/repo-secrets.js";
 import { modeSelection, optionsOf } from "../server/src/sandbox/acp-options.js";
 import { FakeAcpAgent } from "./acp-agent-fake.js";
+
+{
+	const { turnCredential } = await import("../server/src/actors/agent-session.js");
+	const machine = {kind:"machine", machineId:"desk"}, hosted = {kind:"hosted"};
+	const keys = [{provider:"openai",generation:"first"}, {provider:"google",generation:"second"}];
+	const calls: string[] = [];
+	const ctx = { client: () => ({user:{get:() => ({internalModelKeys:async () => { calls.push("keys"); return keys; }})}}),
+		vars:{runner:{request:async (op: string) => { calls.push(op); return "google/gemini"; }}} };
+	const resolve = (place: typeof machine | typeof hosted, model: string, keyRelay?: true, defaultModel?: string) =>
+		turnCredential(ctx as never, {place, uid:"owner", harnessModels:{defaultModel}} as never, {id:"opencode", keyRelay} as never, model);
+	assert.deepEqual(await resolve(hosted, "default", true), {model:"default"});
+	assert.deepEqual(await resolve(machine, "default"), {model:"default"});
+	assert.deepEqual(calls, []);
+	assert.deepEqual(await resolve(machine, "default", true), {model:"google/gemini",key:keys[1]});
+	assert.deepEqual(calls.splice(0), ["keys","openCodeDefault"]);
+	assert.deepEqual(await resolve(machine, "default", true, "openai/gpt"), {model:"google/gemini",key:keys[1]});
+	assert.deepEqual(await resolve(machine, "openai/gpt", true), {model:"openai/gpt",key:keys[0]});
+	assert.deepEqual(await resolve(machine, "opencode/free", true), {model:"opencode/free",key:undefined});
+	assert.deepEqual(calls.splice(0), ["keys","openCodeDefault","keys","keys"]);
+	assert.deepEqual(await resolve(machine, "default", true, "anthropic/removed"), {model:"google/gemini",key:keys[1]});
+	assert.deepEqual(calls, ["keys","openCodeDefault"]);
+	console.log("ok  selected and default provider generation, legacy runner and hosted placement");
+}
+if (process.argv.includes("--turn-provider")) process.exit(0);
+{
+	const { CLAUDE, itemSignInChanged } = await import("../server/src/sandbox/harnesses.js");
+	assert.match(itemSignInChanged(CLAUDE, "Bench", undefined, "api-key") ?? "", /Claude subscription/);
+	assert.equal(itemSignInChanged(CLAUDE, "Bench", undefined, "subscription"), null);
+	console.log("ok  historical Claude item sign-in");
+}
+if (process.argv.includes("--settings-keys")) process.exit(0);
 
 // Compile this consumer along with the server so changes to the wire contract cannot undo narrowing.
 function typedField(update: AcpUpdate): string | undefined {

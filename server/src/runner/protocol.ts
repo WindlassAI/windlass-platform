@@ -75,6 +75,7 @@ const destination = nullable(is<string>(v => typeof v === "string" && v.length <
 const endpoint = { host: destination, port: nullable(is<number>(v => count(v) && v <= 65535)) };
 const refusalEntry = object({ ...endpoint, reason: oneOf("machine_policy", "private", "provider", "malformed"), firstAt: count, lastAt: count, count: positiveLimit });
 const operations = {
+	openCodeDefault: [object({ providers: list(oneOf(...MODEL_PROVIDERS), MODEL_PROVIDERS.length) }), text(512)],
 	memoryEvents: [object(sandbox), nullable(object({ oomKills: count, totalMiB: positiveLimit }))],
 	/** The proxy's cumulative snapshot for this turn. A new turn starts its counters before setup. */
 	blockedNetwork: [object({ ...sandbox, turn: positiveLimit, retained: list(object(endpoint), 50) }), object({ broker: fingerprint, hosts: list(refusalEntry, 50), overflow: count })],

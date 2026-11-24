@@ -1,11 +1,11 @@
 // A machine relay takes the turn's local placeholder. Only the platform can resolve the forwarded one.
 const { readFile } = require('node:fs/promises');
-const { wires, forwardProof, proofHeader } = require('./wires.cjs');
+const { wires, harnessMethod, forwardProof, proofHeader } = require('./wires.cjs');
 
 function keyRoute(harness, url) {
 	if (harness === 'claude') {
 		const path = url.replace(/\?beta=true$/, '');
-		if (wires.anthropic.posts.includes(path)) return { provider: 'anthropic', path };
+		if (harnessMethod(harness, 'anthropic', path)) return { provider: 'anthropic', path };
 	} else if (harness === 'codex') {
 		if (url === '/codex/v1/responses') return { provider: 'openai', path: '/v1/responses' };
 		if (/^\/codex\/v1\/models(?:\?client_version=\d{1,4}\.\d{1,4}\.\d{1,4})?$/.test(url))
@@ -15,7 +15,7 @@ function keyRoute(harness, url) {
 		if (!match) return;
 		const provider = match[1], wire = wires[provider];
 		const path = (provider === 'anthropic' ? '/v1' : provider === 'google' ? '/v1beta' : wire.base) + match[2];
-		if (wire.posts.includes(path) || wire.postPattern?.test(path)) return { provider, path };
+		if (harnessMethod(harness, provider, path)) return { provider, path };
 	}
 }
 
@@ -46,8 +46,8 @@ exports.harnessKeyProvider = function(harness, machine, incoming, scrub, load = 
 			const proof = forwardProof(key.proofKey, machine, method, path, Date.now());
 			const headers = { [auth]: wire.auth ? key.placeholder : 'Bearer ' + key.placeholder, [proofHeader]: proof };
 			if (method === 'POST') headers['content-type'] = 'application/json';
-			if (provider === 'openai' && incoming['content-encoding'] === 'zstd') headers['content-encoding'] = 'zstd';
-			if (wire.betas) {
+			if (method === 'POST' && provider === 'openai' && incoming['content-encoding'] === 'zstd') headers['content-encoding'] = 'zstd';
+			if (method === 'POST' && wire.betas) {
 				const betas = (incoming['anthropic-beta'] ?? '').split(',').map(v => v.trim()).filter(v => wire.betas.includes(v));
 				if (betas.length) headers['anthropic-beta'] = betas.join(',');
 			}

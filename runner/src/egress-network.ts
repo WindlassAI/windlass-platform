@@ -131,6 +131,7 @@ export class EgressNetwork {
 			if (!await this.machine.ownedVolume(false, volume)) throw new Refusal("The session relay socket volume is missing.");
 			mounts.push(`type=volume,src=${volume},dst=/run/wlp-relay,readonly,volume-nocopy`);
 			probes.push("17892");
+			if (harness !== "codex") probes.push("17894");
 		}
 		await this.ensure("forward", this.prefix + "-" + raw, [revision, id, since, relay ? nonce : "", brokerId].join("-"), "container:" + container,
 			source, mounts, [this.policy.mode, ...(harness && relay ? [nonce] : []), ...(harness === "codex" && relay ? ["codex"] : [])], probes, brokerId);

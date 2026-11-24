@@ -6,7 +6,6 @@ import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js"
 import { SandboxUserError, type RunTurnInput, type RunTurnResult, type SandboxHandle, type StartMark } from "./api.js";
 import type { Harness } from "./harness.js";
 import { type AcpProfile, itemHarnessProblem, machineLoginMessage } from "./harnesses.js";
-import { openModelKeyRelay } from "./token-file.js";
 import { isTurnSandbox, type KeyTurnRelay, type SandboxProcess } from "./provider.js";
 import { PLATFORM_MCP_SERVER, PlatformMcpServer, platformToolDeclarations, turnPlatformTools } from "../platform-tools.js";
 import { PlatformChecks } from "./platform-checks.js";
@@ -388,9 +387,8 @@ export class AcpHarness implements Harness {
 				cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
 			} else rpc.end("The turn was stopped.");
 		};
-		const leases: KeyTurnRelay[] = [];
-		let selectedModel = input.model;
-		const loginHint = () => input.platformKeys?.keys.some(k => profile.id !== "opencode" || selectedModel?.startsWith(k.provider + "/"))
+		let lease: KeyTurnRelay | undefined;
+		const loginHint = () => input.machineKey
 			? "Check the provider key in Settings." : machineLoginMessage(profile, this.machine);
 		try {
 			if (!isTurnSandbox(handle) || !profile.profiles.includes(handle.profile)) throw new Error(`${profile.name} requires a supported machine sandbox.`);
@@ -402,10 +400,12 @@ export class AcpHarness implements Harness {
 			const lines = new LineSplitter(line => { lastHeard = Date.now(); rpc.receive(line); });
 			mark("process");
 			const secretEnv = { ...input.secrets?.env };
-			if (input.platformKeys) {
-				const { sessionId, keys } = input.platformKeys;
-				for (const key of keys) leases.push(await openModelKeyRelay(handle, sessionId, key));
-				secretEnv.WLP_TURN_KEY_LEASES = leases.map(lease => lease.placeholder).sort().join(",");
+			if (input.machineKey) {
+				input.signal?.throwIfAborted();
+				const { sessionId, key } = input.machineKey;
+				if (!handle.machineKeyRelay) throw new Error("This machine does not support Settings keys.");
+				lease = await handle.machineKeyRelay(sessionId, key, profile.id, input.signal);
+				secretEnv.WLP_TURN_KEY_LEASES = lease.placeholder;
 				input.signal?.throwIfAborted();
 			}
 			run = handle.start(profile.command, { cwd: input.reviewDirectory ?? handle.cwd, env: turnEnv(profile, input), ...(Object.keys(secretEnv).length > 0 && { secretEnv }), onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
@@ -514,8 +514,6 @@ export class AcpHarness implements Harness {
 					throw new Error(`${profile.name} does not offer effort “${effort}” here.`);
 				}
 			}
-			selectedModel = text(configs.model?.currentValue) || input.model;
-			if (selectedModel) input.onAcpModel?.(selectedModel);
 			const prompt = (value: string) => ({ sessionId, prompt: [{ type: "text", text: value }] });
 			// The state the turn's changes are measured from, for the repository's checks; nothing runs where there are none.
 			await gate.begin();
@@ -576,7 +574,7 @@ export class AcpHarness implements Harness {
 				result.timedOut = error instanceof AcpError && error.reason === "timeout";
 			}
 		} finally {
-			await Promise.all(leases.map(lease => lease.close()));
+			await lease?.close();
 			clearTimeout(cancelDeadline);
 			input.signal?.removeEventListener("abort", cancel);
 			phase = "ended";

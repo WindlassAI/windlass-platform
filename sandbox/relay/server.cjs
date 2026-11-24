@@ -404,6 +404,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 	const machineProvider = provider;
 	const httpServer = http.createServer(async (req, res) => {
 		const key = harness && require('./harness-key.cjs').harnessKeyProvider(harness, machine, req.headers, scrubStream);
+		if (harness && !publicKey && !key) return reject(res, 401);
 		const provider = key || machineProvider;
 		const methodFor = provider?.methodFor ?? (url => (provider ? provider.accepts(url) : messages.has(url)) && 'POST');
 		// A request arrived: the socket's idle deadline (ingress) no longer applies. Node's own keep-alive one does.
@@ -419,7 +420,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			let user;
 			if (provider?.authorize) {
 				// A relay without a signing key: the provider checks the bearer against the lease of the connection's nonce.
-				const lease = nonce ? await provider.authorize(bearer, nonce) : false;
+				const lease = nonce ? await provider.authorize(bearer, nonce, req.url) : false;
 				if (!lease) return unauthorized(res);
 				if (typeof lease === 'object' && typeof lease.user === 'string') user = lease.user;
 			} else {
@@ -588,7 +589,13 @@ exports.stopOnSignal = function stopOnSignal(server, provider) {
 	return server;
 };
 
-if (process.env.WLP_CLAUDE_RELAY_PUBLIC_KEY) {
+if (process.env.WLP_HARNESS_KEYS) {
+	const harness = process.env.WLP_HARNESS_KEYS;
+	const socket = '/workspace/keys.sock';
+	rmSync(socket, { force: true });
+	exports.createRelay({ harness, machine: process.env['WLP_' + harness.toUpperCase() + '_RELAY_MACHINE'],
+		host: harness === 'codex' ? '127.0.0.1:17892' : '127.0.0.1:17894' }).listen(socket);
+} else if (process.env.WLP_CLAUDE_RELAY_PUBLIC_KEY) {
 	const publicKey = createPublicKey({ key: Buffer.from(process.env.WLP_CLAUDE_RELAY_PUBLIC_KEY, 'base64'), format: 'der', type: 'spki' });
 	const socket = '/workspace/relay.sock';
 	rmSync(socket, { force: true });

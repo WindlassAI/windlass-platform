@@ -43,13 +43,21 @@ async function create(session, machine = owner) {
 	const name = containerName('opencode-' + id.slice(-12));
 	const [box] = JSON.parse(await cmd(['container', 'inspect', name]));
 	assert.equal(box.Mounts.length, 0);
-	const env = await machine.turnCredentials('opencode-' + id.slice(-12), 'opencode', {});
+	const { env } = await machine.turnCredentials('opencode-' + id.slice(-12), 'opencode', {});
 	const placeholder = JSON.parse(env.OPENCODE_AUTH_CONTENT).openai;
-	saved.set(name, { id, placeholder, flags: Object.entries(env).flatMap(([k,v]) => ['-e', k + '=' + v]) }); return name;
+	saved.set(name, { id, machine, placeholder, flags: Object.entries(env).flatMap(([k,v]) => ['-e', k + '=' + v]) }); return name;
 }
 let adapter;
+async function startAdapter(name, proxyEnv = []) {
+	const box = saved.get(name);
+	const credentials = box && await box.machine.turnCredentials('opencode-' + box.id.slice(-12), 'opencode', {});
+	const flags = Object.entries(credentials?.env ?? {}).flatMap(([k,v]) => ['-e', k + '=' + v]);
+	const child = adapter = spawn('docker', ['exec','-i',...flags,...proxyEnv,name,...(name === native ? ['opencode','acp'] : ['wlp-opencode-acp'])], {stdio:['pipe','pipe','pipe']});
+	child.once('close', () => { void credentials?.close?.(); });
+	return child;
+}
 async function turn(first, proxyEnv, scan, model) {
-	const child = adapter = spawn('docker', ['exec','-i',...(saved.get(first)?.flags ?? []),...proxyEnv,first,...(first === native ? ['opencode','acp'] : ['wlp-opencode-acp'])], { stdio:['pipe','pipe','pipe'] });
+	const child = await startAdapter(first, proxyEnv);
 	child.stderr.resume();
 	let reply = '';
 	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
@@ -94,7 +102,7 @@ async function toolsTurn(name, model) {
 		}],
 	]);
 	const server = new PlatformMcpServer(handlers, platformToolDeclarations(handlers, { screenshots: false }), () => running);
-	const child = adapter = spawn('docker', ['exec','-i',...saved.get(name).flags,name,'wlp-opencode-acp'], { stdio:['pipe','pipe','pipe'] });
+	const child = await startAdapter(name);
 	child.stderr.resume();
 	let reply = '';
 	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
@@ -137,7 +145,7 @@ async function pushTurn(name, model) {
 	const { PLATFORM_MCP_SERVER } = await import('../server/src/platform-tools.ts');
 	const { pushTurnServer, PUSH_PROMPT, PUSH_REPLY } = await import('../fixtures/acp-agent/platform-push.mjs');
 	const turn = await pushTurnServer({ publishWaitMs: 70_000 });
-	const child = adapter = spawn('docker', ['exec','-i',...saved.get(name).flags,name,'wlp-opencode-acp'], { stdio:['pipe','pipe','pipe'] });
+	const child = await startAdapter(name);
 	child.stderr.resume();
 	let reply = '';
 	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
@@ -168,7 +176,7 @@ await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'
 async function settingsKeyTurns() {
 	const id = await owner.create('keys', profile, false, 'opencode');
 	const anth = 'anthropic/claude-opus-4-6';
-	await channelTurn(owner, 'keys', id, anth, undefined, undefined, ['anthropic']);
+	await channelTurn(owner, 'keys', id, 'default', undefined, undefined, ['anthropic']);
 	await storeProvider(owner, {provider:'anthropic', key:token+'-key'});
 	await storeProvider(owner, {provider:'openai', key:token+'-key'});
 	await channelTurn(owner, 'keys', id, anth, undefined, undefined, ['anthropic','google']);
@@ -178,8 +186,29 @@ async function settingsKeyTurns() {
 	assert.ok(log.split('settings POST /model-relay/v1/messages').length >= 3);
 	assert.match(log, /authorized api.openai.com \/v1\/responses/);
 	ok('Settings-key turns without and with a machine login, mixed providers and machine-only fallback.');
+	const raw = 'opencode-' + id.slice(-12), name = containerName(raw);
+	const lease = await owner.openTurnKey(raw, 'opencode', { host:'relay.fixture.test', provider:'anthropic',
+		placeholder:'wlpm1.fixture', proofKey:randomBytes(32).toString('base64url'), expiresAt:Date.now()+60000 });
+	const post = (route, header, value) => cmd(['exec', name, 'node', '-e',
+		"const [url,header,value]=process.argv.slice(1); fetch('http://127.0.0.1:'+url,{method:'POST',headers:{[header]:value,'content-type':'application/json'},body:'{}'}).then(r=>console.log(r.status))",
+		route, header, value]);
+	try {
+		const first = await owner.turnCredentials(raw, 'opencode', {anthropic:lease.placeholder});
+		const fallback = 'Bearer ' + JSON.parse(first.env.OPENCODE_AUTH_CONTENT).openai.key;
+		assert.equal(await post('17892/anthropic/messages','x-api-key',fallback.slice(7)), '401');
+		await first.close();
+		assert.equal(await post('17892/openai/responses','authorization',fallback), '401');
+		await storeProvider(owner);
+		await storeProvider(owner, {provider:'anthropic', key:token+'-key'});
+		const prior = await owner.turnCredentials(raw, 'opencode', {});
+		const oldKey = JSON.parse(prior.env.OPENCODE_AUTH_CONTENT).anthropic.key;
+		await owner.turnCredentials(raw, 'opencode', {anthropic:lease.placeholder});
+		assert.equal(await post('17892/anthropic/messages','x-api-key',oldKey), '401', 'a replaced turn cannot retain the machine login');
+		await storeProvider(owner);
+		assert.equal(await post('17894/anthropic/messages','x-api-key',lease.placeholder), '200');
+		ok('OpenCode scopes its machine fallback to this turn and keeps its Settings lease across logout.');
+	} finally { await lease.close(); }
 	await owner.lifecycle('destroy', id, 'keys');
-	await storeProvider(owner);
 }
 async function check() {
 	execFileSync('openssl', ['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=api.anthropic.com',
@@ -263,7 +292,7 @@ async function check() {
 	execFileSync(process.execPath,[bundle,'login','opencode','--provider','openai'],{input:token+'-key\n'});
 	const open = executor('open');
 	const third = await create('third',open);
-	const revoked = await cmd(['exec',...saved.get(first).flags,first,'node','-e',`fetch('http://127.0.0.1:17892/openai/responses',{method:'POST',headers:{authorization:'Bearer '+process.env.WLP_SESSION_BEARER}}).then(r=>console.log(r.status))`]);
+	const revoked = await cmd(['exec',...saved.get(first).flags,first,'node','-e',`fetch('http://127.0.0.1:17892/openai/responses',{method:'POST',headers:{authorization:'Bearer '+JSON.parse(process.env.OPENCODE_AUTH_CONTENT).openai.access}}).then(r=>console.log(r.status))`]);
 	assert.equal(revoked, '401', 'a placeholder from before full logout must stay revoked');
 	await channelTurn(open, 'third', saved.get(third).id);
 	assert.match(await cmd(['logs',upstream]),/authorized api.openai.com \/v1\/responses/);
@@ -271,7 +300,7 @@ async function check() {
 	await storeProvider(owner, {provider:'anthropic',key:token+'-key'});
 	await open.lifecycle('connect', saved.get(third).id, 'third');
 	await channelTurn(open, 'third', saved.get(third).id);
-	ok('The existing OpenCode sandbox still runs with its original placeholder after a second provider signs in.');
+	ok('The existing OpenCode sandbox takes its next turn after a second provider signs in.');
 	const anth = await create('anthropic',open);
 	await channelTurn(open,'anthropic',saved.get(anth).id,'anthropic/claude-opus-4-6');
 	ok('Anthropic API-key turn over the runner session channel.');

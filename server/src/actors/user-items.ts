@@ -799,21 +799,26 @@ async function armQueue(c: ItemsCtx): Promise<void> {
 }
 
 /** Recheck persisted timers on adoption. A late summary or an actor restart can also reveal a wait on an older login. */
-export async function notifyProviderWaits(c: ItemsCtx, items: Iterable<ItemSummary>, adopted = false) {
-	const waits = [...items].filter(item => item.wait?.reason === "provider" && (adopted || item.wait.accountKey));
+export async function notifyProviderWaits(c: ItemsCtx, items: Iterable<ItemSummary>, change: "login" | "settings" | "adopted" = "login") {
+	const settingsChanged = change === "settings";
+	const waits = [...items].filter(item => settingsChanged && item.state === "waiting" && item.step?.kind === "subtasks" ||
+		item.wait?.reason === "provider" && (change !== "login" || item.wait.accountKey));
 	if (!waits.length) return;
 	const active = new Set(limitedAccounts(await providerAccounts(c.db, Date.now())).map(a => a.accountKey));
 	for (const item of waits) {
 		// A placement wait belongs to the prospective child, which can use a different connection from its parent.
-		if (item.step?.kind === "subtasks" && item.wait?.accountKey && active.has(item.wait.accountKey)) continue;
-		const session = c.vars.sessions.get(item.sessionId);
-		if (!session) continue;
-		const machine = session.place.kind === "machine" ? c.vars.machines.get(session.place.machineId) : undefined;
-		const harness = session.harness ?? "windlass";
-		const provider = selectedKey(harness, session.model === "default" ? session.harnessModels?.defaultModel : session.model, machine?.harnesses?.find(h => h.id === harness)?.platformKeys ?? []);
-		const location = { place: placeKey(session.place), harness, provider };
-		const generation = await loginGeneration(c.db, location);
-		if (generation === null || item.wait!.accountKey === accountKey(location, generation)) continue;
+		if (item.step?.kind === "subtasks") {
+			if (!settingsChanged && item.wait?.accountKey && active.has(item.wait.accountKey)) continue;
+		} else {
+			const session = c.vars.sessions.get(item.sessionId);
+			if (!session) continue;
+			const machine = session.place.kind === "machine" ? c.vars.machines.get(session.place.machineId) : undefined;
+			const harness = session.harness ?? "windlass";
+			const provider = selectedKey(harness, session.model === "default" ? session.harnessModels?.defaultModel : session.model, machine?.harnesses?.find(h => h.id === harness)?.platformKeys ?? []);
+			const location = { place: placeKey(session.place), harness, provider };
+			const generation = await loginGeneration(c.db, location);
+			if (generation === null ? !settingsChanged : item.wait!.accountKey === accountKey(location, generation)) continue;
+		}
 		await itemActor(c, c.key[0]!, item.id).internalProviderChanged(item.revision).catch(error =>
 			c.log.warn({ msg: "Could not advance the item's provider retry", item: item.id, error: String(error) }));
 	}

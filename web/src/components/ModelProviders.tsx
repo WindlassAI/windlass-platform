@@ -147,7 +147,7 @@ function RemoveDialog({ provider, onClose, onRemoved }: { provider: ModelProvide
 				</>
 			}
 		>
-			<p>New agents can no longer use {name} models through it. Agents already running keep the access they started with until their turn ends.</p>
+			<p>Removing the key blocks new requests. A request already running may finish.</p>
 			<Failure error={error} />
 		</Dialog>
 	);

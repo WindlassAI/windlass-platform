@@ -24,7 +24,7 @@ import { issueServiceToken, issueUserToken } from "../server/src/tokens.js";
 import { serverSealer } from "../server/src/signin/seal.js";
 import { TokenFile, TokenFileError, openModelKeyRelay } from "../server/src/sandbox/token-file.js";
 import { BodyBudget, RelayLimiter, UserRate, forwardKeyLease, holdsLease, leaseToken, remoteLease, relayTransitSubject, openRelayLease, readPlaceholder, type RemoteLease } from "../server/src/sandbox/relay-leases.js";
-import { proofHeader } from "../sandbox/relay/wires.cjs";
+import { forwardProof, proofHeader } from "../sandbox/relay/wires.cjs";
 import { type RelayRouteDeps, modelRelayResponse, modelRelayRoute, upstreamFetch } from "../server/src/model-relay-route.js";
 import { createServer } from "node:http";
 import { brotliCompressSync, gzipSync } from "node:zlib";
@@ -35,7 +35,7 @@ import { DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
 import type { DockerModelRelay } from "../server/src/sandbox/model-relay.js";
 import { RELAY_REFUSED, relayRefused } from "../server/src/sandbox/handoff.js";
 import type { AccessToken } from "../server/src/sandbox/api.js";
-import { signedPayload } from "../server/src/signatures.js";
+import { keyedDigest, signedPayload } from "../server/src/signatures.js";
 import { randomBytes } from "node:crypto";
 
 let failed = 0;
@@ -46,6 +46,81 @@ function expect(what: string, ok: boolean, detail = ""): void {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const REAL_A = "real-chatgpt-token-A-" + "a".repeat(48);
 const REAL_B = "real-chatgpt-token-B-" + "b".repeat(48);
+
+async function machineKeyChecks() {
+	const uid = "owner", session = "turn", machine = "paired", generation = "first";
+	const key = { provider: "openai" as const, generation };
+	const origin = "https://relay.example.com";
+	const old = config.modelRelay.url;
+	config.modelRelay.url = { origin, host: "relay.example.com" };
+	try {
+		const cases = process.argv.find(arg => arg.startsWith("--machine-key="))?.split("=")[1];
+		if (cases) assert.ok(["all", "scope", "unpair", "abort"].includes(cases));
+		for (const name of ["scope", "unpair", "abort"]) {
+			if (cases && cases !== "all" && cases !== name) continue;
+			const controller = new AbortController();
+			let forward!: ForwardedKeyLease, closes = 0;
+			let ready!: () => void;
+			const opening = new Promise<void>(r => { ready = r; });
+			const relay = forwardKeyLease(uid, session, key, machine, async value => {
+				forward = value;
+				await opening;
+				return { placeholder: "local", env: {}, close: async () => { closes++; } };
+			}, { harness: "codex", signal: controller.signal });
+			const nonce = readPlaceholder(forward.placeholder)!.nonce;
+			if (name === "abort") {
+				controller.abort();
+				assert.equal(holdsLease(nonce), false, "abort while runner setup is pending");
+				ready();
+				await assert.rejects(relay);
+				assert.equal(closes, 1);
+			} else {
+				ready();
+				const held = await relay;
+				let paired = true, sent = 0;
+				const d = deps(async () => { sent++; return Response.json({data:[]}); }, {
+					paired: async (owner, id) => paired && owner === uid && id === machine,
+					key: async (user,p,n) => serverSealer().seal("transit", JSON.stringify(["model-key",user,p,n]), JSON.stringify({key:"fixture",generation,exp:Date.now()+60_000})),
+				});
+				const send = (path: string, method: string) => modelRelayResponse(new Request(origin + "/model-relay" + path, { method, headers:{
+					authorization:"Bearer " + forward.placeholder, [proofHeader]: forwardProof(forward.proofKey!, machine, method, path, Date.now()),
+				}}), d);
+				assert.equal((await send("/v1/models","GET")).status, 200);
+				if (name === "scope") assert.equal((await send("/v1/chat/completions","POST")).status, 403);
+				else {
+					// Another process owns this lease and keeps reporting it held after unpair.
+					const remote = signedPayload("wlpm1", "model-relay", { k:"f", u:uid, s:session, machine, n:randomBytes(16).toString("hex"), exp:Date.now()+60_000 });
+					const proof = keyedDigest("model-relay", "forward-proof/" + remote, remote.split(".")[1]!).toString("base64url");
+					const inFlight: AbortSignal[] = [];
+					const running = { ...d, remote:async () => ({ held:true, token:{ ...key, harness:"codex" as const } }),
+						fetch:async (_url: unknown, init?: RequestInit) => {
+							inFlight.push(init!.signal!);
+							return new Promise<Response>((_, reject) => init!.signal!.addEventListener("abort", () => reject(new Error("Lease closed")), {once:true}));
+						} };
+					const requests = Promise.all([forward.placeholder, remote].map(bearer =>
+						modelRelayResponse(new Request(origin + "/model-relay/v1/models", {headers:{authorization:"Bearer " + bearer,
+							[proofHeader]:forwardProof(bearer === remote ? proof : forward.proofKey!, machine, "GET", "/v1/models", Date.now())}}), running)));
+					for (let i = 0; i < 70 && inFlight.length < 2; i++) await sleep(100);
+					assert.equal(inFlight.length, 2);
+					paired = false;
+					for (let i = 0; i < 70 && !inFlight.every(s => s.aborted); i++) await sleep(100);
+					assert.ok(inFlight.every(s => s.aborted), "unpair ends local and remote requests within one poll");
+					assert.deepEqual((await requests).map(r => r.status), [401,401]);
+					assert.equal((await send("/v1/models","GET")).status, 401);
+				}
+				assert.equal(sent, 1);
+				await held.close();
+			}
+			console.log("ok  machine key " + name);
+		}
+	} finally { config.modelRelay.url = old; }
+}
+if (process.argv.includes("--key-wires")) {
+	for (const provider of MODEL_PROVIDERS) await keyWireCheck(provider);
+	process.exit(0);
+}
+await machineKeyChecks();
+if (process.argv.some(arg => arg.startsWith("--machine-key="))) process.exit(0);
 
 // ---- the token file of a relayed turn ---------------------------------------------------------
 
@@ -118,7 +193,7 @@ const call = (placeholder: string, path = "/model-relay/v1/responses", init: Req
 	new Request(`https://wlp.example.com${path}`, { method: path.endsWith("/models") ? "GET" : "POST", body: path.endsWith("/models") ? undefined : "{}", ...init,
 		headers: { authorization: `Bearer ${placeholder}`, "content-type": "application/json", accept: "text/event-stream", "session-id": "s1", cookie: "c=1", ...(init.headers as object) } });
 function deps(fetch: typeof globalThis.fetch, extra: Partial<RelayRouteDeps> = {}): RelayRouteDeps {
-	return { key: async () => null, remote: async () => null, fetch, limiter: new RelayLimiter(), rate: new UserRate(), bodies: new BodyBudget(), now: () => Date.now(), ...extra };
+	return { paired: async () => true, key: async () => null, remote: async () => null, fetch, limiter: new RelayLimiter(), rate: new UserRate(), bodies: new BodyBudget(), now: () => Date.now(), ...extra };
 }
 /** A placeholder of a lease another server process of the deployment opened: signed as theirs are, unknown to this process. */
 function foreignPlaceholder(uid: string, sessionId: string, ttlMs = 60_000): string {
@@ -454,13 +529,14 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	assert.ok(!holdsLease(nonce));
 	await next.close();
 }
-const hosts = { openai: "api.openai.com", anthropic: "api.anthropic.com", google: "generativelanguage.googleapis.com", openrouter: "openrouter.ai" };
-const paths = { openai: ["/v1/models", "/v1/responses", "/v1/chat/completions"], anthropic: ["/v1/models", "/v1/messages"],
-	google: ["/v1beta/models", "/v1beta/models/gemini-test:generateContent", "/v1beta/models/gemini-test:streamGenerateContent?alt=sse"],
-	openrouter: ["/api/v1/models", "/api/v1/chat/completions"] };
-const { harnessKeyProvider } = createRequire(import.meta.url)("../sandbox/relay/harness-key.cjs");
-const { windlassProvider } = createRequire(import.meta.url)("../sandbox/relay/windlass.cjs");
-for (const provider of MODEL_PROVIDERS) {
+for (const provider of MODEL_PROVIDERS) await keyWireCheck(provider);
+async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
+	const hosts = { openai: "api.openai.com", anthropic: "api.anthropic.com", google: "generativelanguage.googleapis.com", openrouter: "openrouter.ai" };
+	const paths = { openai: ["/v1/models", "/v1/responses", "/v1/chat/completions"], anthropic: ["/v1/models", "/v1/messages"],
+		google: ["/v1beta/models", "/v1beta/models/gemini-test:generateContent", "/v1beta/models/gemini-test:streamGenerateContent?alt=sse"],
+		openrouter: ["/api/v1/models", "/api/v1/chat/completions"] };
+	const { harnessKeyProvider } = createRequire(import.meta.url)("../sandbox/relay/harness-key.cjs");
+	const { windlassProvider } = createRequire(import.meta.url)("../sandbox/relay/windlass.cjs");
 	const uid = "relay-wire", sessionId = "session";
 	const key = randomBytes(24).toString("hex");
 	const halves = [key.slice(0, 24), key.slice(24)];
@@ -540,7 +616,7 @@ for (const provider of MODEL_PROVIDERS) {
 	const forwarded = await forwardKeyLease(uid, sessionId, keyLease, machineId, async value => {
 		forward = value;
 		return { placeholder:localPlaceholder, env:{}, close:async () => { localClosed = true; } };
-	});
+	}, { harness: "opencode" });
 	config.modelRelay.url = previousUrl;
 	assert.equal(forwarded.placeholder, localPlaceholder);
 	assert.ok(!JSON.stringify(forward).includes(key));
@@ -571,7 +647,7 @@ for (const provider of MODEL_PROVIDERS) {
 			assert.equal(response.headers.get("x-request-id"), null);
 		}
 		const harnessRoutes = {
-			anthropic: [["claude", "/v1/messages?beta=true"], ["opencode", "/anthropic/messages"]],
+			anthropic: [["claude", "/v1/messages?beta=true"], ["claude", "/v1/messages/count_tokens"], ["claude", "/v1/models"], ["opencode", "/anthropic/messages"]],
 			openai: [["codex", "/codex/v1/responses"], ["codex", "/codex/v1/models?client_version=0.171.0"], ["opencode", "/openai/responses"]],
 			google: [["opencode", "/google/models/gemini-test:streamGenerateContent?alt=sse"]],
 			openrouter: [["opencode", "/openrouter/chat/completions"]],

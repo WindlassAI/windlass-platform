@@ -77,7 +77,7 @@ const boxes = [];
 const boxName = (id) => 'wlp-session-codex-' + id.slice(-12);
 const bearerFlags = new Map();
 async function keepBearer(id) {
-	const env = await runner.turnCredentials('codex-' + id.slice(-12), 'codex', {});
+	const { env } = await runner.turnCredentials('codex-' + id.slice(-12), 'codex', {});
 	bearerFlags.set(boxName(id), ['-e', 'WLP_SESSION_BEARER=' + env.WLP_SESSION_BEARER]);
 }
 const probe =
@@ -220,7 +220,13 @@ async function check() {
 		expires: 0,
 		accountId: 'fixture-account',
 	};
-	await storeCodexLogin(runner, credential);
+	const raw = 'codex-' + boxes[0].slice(-12);
+	const activeKey = await runner.openTurnKey(raw, 'codex', { provider:'openai', host:'relay.fixture.test', placeholder:'wlpm1.fixture',
+		proofKey:randomBytes(32).toString('base64url'), expiresAt:Date.now() + 60_000 });
+	try {
+		await storeCodexLogin(runner, credential);
+		assert.equal(await cmd(['exec', '-e', 'WLP_SESSION_BEARER=' + activeKey.placeholder, boxName(boxes[0]), 'node', '-e', probe]), '200');
+	} finally { await activeKey.close(); }
 	boxes.push(await runner.create('second', 'docker-hardened', false, 'codex'));
 	await Promise.all(boxes.map(keepBearer));
 	assert.deepEqual(await Promise.all(boxes.map((id) => cmd(['exec', ...bearerFlags.get(boxName(id)), boxName(id), 'node', '-e', probe]))), [
@@ -280,8 +286,9 @@ async function check() {
 		assert.notEqual(res.code, 0);
 	}
 	await channelTurn(runner, 'first', boxes[0], undefined, undefined, { observe });
+	const beforeKeyTurn = (await cmd(['logs', upstream])).length;
 	await channelTurn(runner, 'first', boxes[0], undefined, undefined, { observe }, ['openai']);
-	assert.match(await cmd(['logs', upstream]), /settings POST \/model-relay\/v1\/responses/);
+	assert.match((await cmd(['logs', upstream])).slice(beforeKeyTurn), /settings POST \/model-relay\/v1\/responses/);
 	await cmd(['exec', first, 'sh', '-ec', 'test ! -e "$CODEX_HOME/auth.json"']);
 	assert.equal(await scan(first), 0);
 	console.log('PASS Codex used the Settings lease over a machine login and kept the login outside the session.');

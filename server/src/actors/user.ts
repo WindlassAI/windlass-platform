@@ -2935,7 +2935,7 @@ export const user = actor({
 			const saved = await modelProviderActions.saveModelProvider(c, input);
 			await machinesChanged(c);
 			queueChanged(c);
-			await notifyProviderWaits(c, c.vars.items.items.values());
+			await notifyProviderWaits(c, c.vars.items.items.values(), "settings");
 			return saved;
 		},
 		checkModelProvider: (c, provider: ModelProvider) => modelProviderActions.checkModelProvider(c, provider),
@@ -2943,7 +2943,7 @@ export const user = actor({
 			await modelProviderActions.removeModelProvider(c, provider);
 			await machinesChanged(c);
 			queueChanged(c);
-			await notifyProviderWaits(c, c.vars.items.items.values());
+			await notifyProviderWaits(c, c.vars.items.items.values(), "settings");
 		},
 		internalModelKeys: c => modelProviderActions.internalModelKeys(c),
 		internalModelKeyGeneration: (c, provider: ModelProvider) => modelProviderActions.internalModelKeyGeneration(c, provider),
@@ -3077,7 +3077,7 @@ export const user = actor({
 				await (await signIn(c)).adopt(sealed);
 				if (c.vars.machines.size) await machinesChanged(c);
 				queueChanged(c);
-				await notifyProviderWaits(c, c.vars.items.items.values(), true);
+				await notifyProviderWaits(c, c.vars.items.items.values(), "adopted");
 				// From here on the actor is a user's, and stays.
 				c.vars.reached = true;
 				console.log(`[wlp] sign-in.adopted uid=${c.key[0]}`);
