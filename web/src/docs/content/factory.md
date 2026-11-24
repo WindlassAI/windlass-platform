@@ -371,9 +371,9 @@ Plan first starts with a plan whether the feature needs one implementer or sever
 
 1. **Planning**. A read-only planner examines the task, repository and available machines, then files a FeaturePlan with requirements, done-when checks and work that is out of scope.
 2. Review the plan on the item page. If the planner recommends one implementer, choose **Approve for one implementer** to approve that scope. The implementer receives the task and the plan. Planning spend stays visible. The implementer gets one Quick item's budget on top of what planning spent.
-3. If the planner proposes a split, review the subtask budgets and approve the plan. The Factory runs the subtasks in dependency order.
+3. If the planner proposes a split, review the subtask budgets and approve the plan. The Factory runs the subtasks in dependency order. Each part receives its brief and the original feature task, including its limits.
 4. **Feature summary**: once every subtask is done, an agent writes the pull request's summary.
-5. CI runs on the whole feature, a second review reads it, and the feature is handed to you as one pull request.
+5. CI runs on the whole feature. After the second review, the Factory hands you one pull request. If the feature runs on a machine or second review is off, the Factory hands it over and shows the reason for skipping review on the item page.
 
 ### What you need first
 
@@ -439,7 +439,7 @@ A subtask on Claude Code or OpenCode runs in the machine's hardened container, o
 
 **Usage limits.** A subtask waits only for its own agent's usage limits. When Claude Code is at its limit on the preferred machine and overflow is allowed, the subtask can run on an approved alternative whose Claude Code account is not.
 
-**Re-plans.** When the planner revises the plan after a subtask stops, each remaining subtask keeps the agent, model and effort you approved, whatever the planner proposes. Change it on the card if you want another.
+**Re-plans.** When the planner revises the plan after a subtask stops, each remaining subtask keeps the agent, model and effort you approved, whatever the planner proposes. Change it on the card if you want another. Answers carry over when the question text stays the same. You answer new or changed questions and confirm any scope change.
 
 ### Budgets
 

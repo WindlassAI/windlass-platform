@@ -141,7 +141,7 @@ export interface RunReview {
 }
 
 /** The work as the item was given it (`ItemTask`). */
-export type Task = ItemTask;
+export type Task = ItemTask & { featureBody?: string };
 
 /**
  * A repository of a cross-repo feature as its item keeps it (`FeatureRepoView` on its page): bound at
