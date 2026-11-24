@@ -10,13 +10,14 @@
  * (`sessionWholeTask` for a person's session; an item's comes with its delivery).
  */
 
-import { untrustedWords } from "../factory/untrusted.js";
+import { sources, untrustedWords } from "../factory/untrusted.js";
 import type { TimelineItem, TurnUsage, WindlassEvent } from "../contract.js";
 
 export type PauseReason = "restart" | "machine";
 
 /** A running turn's own record, stored with the session while the turn lasts. */
 export interface TurnRun {
+	untrusted?: string[];
 	turn: number;
 	effort: string | null;
 	planMode?: boolean;
@@ -133,6 +134,7 @@ function textOf(value: unknown): string {
 }
 
 interface EarlierTurn {
+	untrusted?: string[];
 	prompt: string;
 	outcome: string | null;
 	files: string[];
@@ -144,7 +146,7 @@ interface EarlierTurn {
  * `turn`: the whole task, from the timeline. This turn's message and what was sent into it since, the
  * held messages among them; the session's first prompt; and a short account of the turns before (each
  * one's prompt, how it ended, the files it changed, the agent's last words, clipped), said to be a
- * reconstruction. Everything in it is the person's own text, the platform's, or what this agent said.
+ * reconstruction. Quoted GitHub feedback keeps its sources alongside any earlier agent messages.
  */
 export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number, held: readonly string[] = []) {
 	const turns = new Map<number, EarlierTurn>();
@@ -158,7 +160,11 @@ export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number
 		if (item.turn > turn) continue;
 		if (item.kind === "user") {
 			if (!item.steer) {
-				if (of(item.turn).prompt === "") of(item.turn).prompt = item.text;
+				const entry = of(item.turn);
+				if (entry.prompt === "") {
+					entry.prompt = item.text;
+					entry.untrusted = item.untrusted;
+				}
 			} else if (item.turn === turn && !item.held) steers.push(item.text);
 		} else if (item.kind === "turn.ended") {
 			of(item.turn).outcome = item.outcome;
@@ -174,15 +180,18 @@ export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number
 	}
 	const now = turns.get(turn);
 	const first = [...turns.entries()].filter(([n, entry]) => n < turn && entry.prompt !== "").sort((a, b) => a[0] - b[0])[0];
-	const parts: string[] = ["Your earlier conversation is gone, and so is any work that was not saved in the workspace. Check what the workspace holds now, then work on the person's message for this turn from the start."];
-	parts.push(`The person's message for this turn was:\n\n${quoted(now?.prompt || "(not recorded)")}`);
+	const parts: string[] = ["Your earlier conversation is gone, and so is any work that was not saved in the workspace. Check what the workspace holds now, then work on the prompt for this turn from the start."];
+	parts.push(`The prompt for this turn was:\n\n${quoted(now?.prompt || "(not recorded)")}`);
 	const later = [...steers, ...held];
 	if (later.length > 0) parts.push(`While the turn ran or was paused, the person also sent:\n\n${later.map(quoted).join("\n\n")}`);
 	let quotedAgent = false;
+	const quotedSources = [...(now?.untrusted ?? [])];
 	if (first) {
+		quotedSources.push(...(first[1].untrusted ?? []));
 		parts.push(`The session's first prompt was:\n\n${quoted(first[1].prompt)}`);
 		const earlier = [...turns.entries()].filter(([n]) => n < turn).sort((a, b) => a[0] - b[0]).slice(-MAX_EARLIER);
 		const lines = earlier.map(([n, entry]) => {
+			quotedSources.push(...(entry.untrusted ?? []));
 			const bits = [`Turn ${n}: “${clip(entry.prompt || "(no prompt recorded)", TITLE)}”`];
 			if (entry.outcome) bits.push(`it ended ${entry.outcome}`);
 			if (entry.files.length) bits.push(`files changed: ${entry.files.slice(0, MAX_FILES).join(", ")}${entry.files.length > MAX_FILES ? `, and ${entry.files.length - MAX_FILES} more` : ""}`);
@@ -195,5 +204,5 @@ export function sessionWholeTask(timeline: readonly TimelineItem[], turn: number
 		});
 		parts.push(`A short account of the earlier turns, reconstructed by the platform from the session's timeline (not your own memory; it may leave things out):\n\n${lines.join("\n")}`);
 	}
-	return { text: parts.join("\n\n"), untrusted: quotedAgent ? [untrustedWords.conversation] : [] };
+	return { text: parts.join("\n\n"), untrusted: sources(quotedSources, quotedAgent ? [untrustedWords.conversation] : []) };
 }

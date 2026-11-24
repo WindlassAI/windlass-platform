@@ -141,6 +141,7 @@ import {
 	type ModelList,
 	type LiveDelta,
 	type ItemReview,
+	type FeedbackEntry,
 	type ReviewRecord,
 	MAX_NOTE_CHARS,
 	MAX_PROMPT_CHARS,
@@ -234,7 +235,10 @@ import { planReviewOf, type PlanReview } from "../factory/autonomy.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
 import { resetTime, windlassAccountKey, type LimitEvent, type UsageObservation } from "../provider-usage.js";
 import { type ProviderRefusal, limitObservation, publicUsageEvent, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
-import { untrustedTurn, unmarkedNote } from "../factory/untrusted.js";
+import type { FeedbackNotice } from "./github-inbox.js";
+import { batchText, feedbackWords, fits, oversizedFeedback } from "../factory/feedback.js";
+import { recentSubject } from "../factory/intake.js";
+import { untrustedTurn, unmarkedNote, untrustedWords } from "../factory/untrusted.js";
 import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact, ItemProviderRefusal, UntrustedRefusal } from "../factory/types.js";
 import { DeploymentFull, PLATFORM_RESTART, observeSandbox } from "../sandbox/api.js";
@@ -325,7 +329,10 @@ const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "f
 // State
 // ---------------------------------------------------------------------------------------------
 
+type FeedbackPrompt = { text: string; entries: FeedbackEntry[] };
+
 interface SessionMeta {
+	githubFeedback?: { pending?: FeedbackPrompt; seen: { id: string; at: number }[] };
 	secretRequest?: SessionSnapshot["secretRequest"];
 	/** Plain sessions have no item run. Count requests and remember skipped names across their turns. */
 	secretAsks?: number;
@@ -539,6 +546,7 @@ type PublishAnswer =
 	| { kind: "withdrawn" };
 
 interface ActiveTurn {
+	untrusted?: string[];
 	/** The turn is being stopped so that it pauses instead of ending (`pauseTurn`): its server is going away, or its machine went. */
 	pausing?: PauseReason;
 	/** A segment that resumes a paused turn (`resumePaused`): why it paused, for how long, and what the person sent meanwhile. */
@@ -3922,6 +3930,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 	} finally {
 		if (machine) await machine.releaseSlot(meta.sessionId, active.number).catch(error =>
 			c.log.warn({ msg: "could not release machine turn slot", error: describeError(error) }));
+		startNextFeedback(c, meta);
 		// A build reports once its turn has closed: the user's actor deletes the session on it.
 		if (meta.environmentBuild) {
 			const result = c.vars.environmentResult ?? { finishedAt: Date.now(), commit: "", image: "", checks: [], snapshot: false, failure: { kind: "setup" as const, check: null, line: "The build could not start its sandbox.", excerpt: "" } };
@@ -3988,11 +3997,16 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	// Where the outside text of an item's turn came from, and the one rule for every agent of how it goes (factory/untrusted.ts):
 	// marked for Windlass where it can contain commands once told, labelled only otherwise, and on "Docker, hardened" someone
 	// else's stops the turn until the person chose to run it anyway (`unsandboxed`).
-	let untrusted = active.item?.row.untrusted ?? [];
+	let untrusted = active.item?.row.untrusted ?? active.untrusted ?? meta.run?.untrusted ?? [];
 	let outsideText = untrusted.length > 0 || !!active.item?.row.fresh?.untrusted.length;
 	let handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
 	/** Refuses the turn on "Docker, hardened" for someone else's text in `retryText`; the item asks, and can run it anyway. */
-	const refuseUntrusted = (item: NonNullable<ActiveTurn["item"]>, stop: Extract<typeof handling, { kind: "stop" }>, retryText: string): never => {
+	const refuseUntrusted = (item: ActiveTurn["item"], stop: Extract<typeof handling, { kind: "stop" }>, retryText: string): never => {
+		if (!item) {
+			const reason = `The GitHub feedback prompt was not run because this session uses “Docker, hardened” and the prompt contains ${stop.sources.join(", ")}. You can review the feedback and send your own instructions.`;
+			note(c, turn, "warn", reason);
+			throw new TurnProblem(reason);
+		}
 		item.refused = stop.reason;
 		item.untrustedRefusal = { sources: stop.sources, retry: { text: retryText, fetchBase: item.row.fetchBase, untrusted } };
 		throw new TurnProblem(stop.reason);
@@ -4122,7 +4136,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}
 		// Someone else's text where no agent can contain what it talks the agent into ("Docker, hardened"): refused before anything
 		// starts, unless the person chose to run it anyway. The item asks, and can run this very turn ("Run it anyway").
-		if (active.item && handling.kind === "stop") refuseUntrusted(active.item, handling, active.item.row.text);
+		if (handling.kind === "stop") refuseUntrusted(active.item, handling, active.item?.row.text ?? text);
 		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
 		active.secrets ??= await readSecrets(c, meta, turn);
 		for (const text of active.secrets.unopened.splice(0)) note(c, turn, "warn", text);
@@ -4180,7 +4194,10 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		if (active.resume && run?.prompted) {
 			const whole = await wholeTask(c, meta, active, turn);
 			outsideText ||= whole.untrusted.length > 0;
-			const wholeHandling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted: whole.untrusted, unsandboxed: whole.unsandboxed });
+			const wholeHandling = untrustedTurn({
+				agent: meta.harness ?? "windlass", profile: meta.profile, untrusted: whole.untrusted,
+				currentSources: active.item ? whole.untrusted : untrusted, unsandboxed: whole.unsandboxed,
+			});
 			if (resumed) {
 				untrusted = [];
 				handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
@@ -4189,7 +4206,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				text = whole.text;
 				untrusted = whole.untrusted;
 				handling = wholeHandling;
-				if (active.item && handling.kind === "stop") refuseUntrusted(active.item, handling, whole.text);
+				if (handling.kind === "stop") refuseUntrusted(active.item, handling, whole.text);
 				note(c, turn, "info", "The agent no longer has its earlier conversation of this turn, so it was given the whole task again.");
 			}
 		} else if (active.item) {
@@ -4458,7 +4475,7 @@ fi`, { signal, timeoutMs: 5000 });
 				secrets: { ...turnEnvironment(planner || reviewer ? [] : held.opened, planner || reviewer ? [] : held.account, profile), redactor: held.redactor },
 				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
 				// In an item's turn nobody watches, a tainted session's calls of the user's servers are Windlass's to refuse: none is answered unasked.
-				servers: planner || reviewer ? [] : item && (untrusted.length || meta.tainted) ? held.servers.map(server => ({ ...server, unasked: false })) : held.servers,
+				servers: planner || reviewer ? [] : (untrusted.length || meta.tainted) ? held.servers.map(server => ({ ...server, unasked: false })) : held.servers,
 				// The checks the user saved for the repository: Windlass runs them before it calls the turn done, as required checks.
 				checks: planner || reviewer ? [] : held.checks,
 				// Windlass's question about a tool of one whose tools run without asking: the layer answers it, and the timeline says for whom and why.
@@ -5266,6 +5283,7 @@ async function endPausedTurn(c: Ctx, meta: SessionMeta, outcome: "stopped" | "in
 	else await persist(c);
 	if (machine && meta.place.kind === "machine") void machineActor(() => c.client(), meta.uid, meta.place.machineId).pausedSession(meta.sessionId, false).catch(() => undefined);
 	await armIdle(c, meta);
+	startNextFeedback(c, meta);
 }
 
 /**
@@ -5351,7 +5369,12 @@ function queuePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, message: str
 	};
 	const queued = previous ? previous.then(start, start) : start();
 	c.vars.nextPrompt = queued;
-	return queued.finally(() => { if (c.vars.nextPrompt === queued) delete c.vars.nextPrompt; });
+	return queued.finally(() => {
+		if (c.vars.nextPrompt === queued) {
+			delete c.vars.nextPrompt;
+			startNextFeedback(c, meta);
+		}
+	});
 }
 
 /**
@@ -5425,7 +5448,18 @@ async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: s
 	return startPrompt(c, meta, input, text, submission);
 }
 
-async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: string, submission: Submission | null): Promise<PromptAnswer> {
+/** GitHub feedback needs its own turn so the harness receives the prompt and its trust marker together. */
+function startNextFeedback(c: Ctx, meta: SessionMeta) {
+	const prompt = meta.githubFeedback?.pending;
+	if (!prompt || meta.status !== "idle" || c.vars.turn || c.vars.accepting || c.vars.nextPrompt) return;
+	if (c.vars.publishing || c.vars.savingSecret || c.vars.stopping || c.vars.destroying) return;
+	void c.keepAwake(startPrompt(c, meta, prompt, prompt, null).catch(error => {
+		note(c, meta.turns, "warn", `Could not start the GitHub feedback prompt: ${describeError(error)}`);
+		return persist(c);
+	}));
+}
+
+async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, message: string | FeedbackPrompt, submission: Submission | null): Promise<PromptAnswer> {
 	// The platform is committing and pushing the workspace: the agent does not start under it.
 	if (c.vars.publishing) throw new UserError("The platform is pushing this agent's work to GitHub. Send the prompt again in a moment.", { code: "turn_running" });
 
@@ -5503,6 +5537,8 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 
+		// Deliveries can merge into the pending prompt while admission awaits a slot.
+		const text = typeof message === "string" ? message : message.text;
 		const shown = held.redactor.text(text);
 		// Accepted. From here to the return nothing is awaited.
 		const turn = meta.turns + 1;
@@ -5517,10 +5553,17 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		meta.turnStartedAt = now;
 		if (turn === 1 && !meta.titleIsTyped && !meta.origin) meta.title = titleFrom(shown);
 		meta.run = newRun(meta, turn, effort, capabilitiesOf(meta.harness).planMode && input.planMode === true, now, c.vars.nextSeq);
-		append(c, { turn, kind: "user", text: shown, model, effort });
+		let untrusted: string[] | undefined;
+		if (typeof message !== "string") {
+			const reviewers = message.entries.filter(e => e.access !== "owner").map(e => e.author);
+			untrusted = [...new Set(reviewers)].map(who => untrustedWords.feedback("@" + who));
+			delete meta.githubFeedback!.pending;
+		}
+		if (meta.run && untrusted?.length) meta.run.untrusted = untrusted;
+		append(c, { turn, kind: "user", text: shown, model, effort, ...(untrusted?.length && { untrusted }) });
 		publish(c);
 
-		const active: ActiveTurn = { number: turn, effort, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, planMode: capabilitiesOf(meta.harness).planMode && input.planMode === true, secrets: held, checks: new VerificationLog(), publishes: new Set() };
+		const active: ActiveTurn = { number: turn, effort, untrusted, controller: new AbortController(), done: Promise.resolve(), control: null, question: null, unsettled: new Set(), aside: [], recalled: new Map(), stopping: false, closed: false, planMode: capabilitiesOf(meta.harness).planMode && input.planMode === true, secrets: held, checks: new VerificationLog(), publishes: new Set() };
 		c.vars.turn = active;
 		// The turn's first step writes the session, and the key with it.
 		const answer = remember(meta, submission, { turn, steered: false });
@@ -5528,6 +5571,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 		release = null;
 		return answer;
 	} catch (error) {
+		if (meta.githubFeedback?.pending === message) delete meta.githubFeedback.pending;
 		if (!c.vars.turn && meta.status !== "idle") {
 			meta.status = "idle";
 			meta.turnStartedAt = null;
@@ -5551,6 +5595,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: 
 	} finally {
 		c.vars.accepting = false;
 		release?.();
+		startNextFeedback(c, meta);
 	}
 }
 
@@ -6097,7 +6142,8 @@ export const agentSession = actor({
 				.then(() => wakeMeter(c, meta, use))
 				.then(() => armIdle(c, meta))
 				// A paused turn resumes once the sandbox's state is known.
-				.then(() => resumePaused(c, meta)),
+				.then(() => resumePaused(c, meta))
+				.then(() => startNextFeedback(c, meta)),
 		);
 	},
 
@@ -6300,7 +6346,34 @@ export const agentSession = actor({
 				}
 			} finally {
 				delete c.vars.savingSecret;
+				startNextFeedback(c, meta);
 			}
+		},
+
+		internalGithubFeedback: async (c, notice: FeedbackNotice): Promise<boolean> => {
+			requireServiceFor(c, "call");
+			const meta = liveMeta(c);
+			if (meta.origin || meta.environmentBuild || meta.repo?.id !== notice.repositoryId || meta.pull?.number !== notice.pr) return false;
+			const feedback = meta.githubFeedback ??= { seen: [] };
+			feedback.seen = feedback.seen.filter(e => recentSubject(e.at));
+			const seen = new Set(feedback.seen.map(e => e.id));
+			const entries = notice.entries.filter(e => !seen.has(e.id));
+			if (entries.length) {
+				const eligible = entries.filter(e => !oversizedFeedback(e));
+				if (eligible.length !== entries.length) note(c, meta.turns, "warn", "GitHub feedback was not run. " + feedbackWords.oversized);
+				const { taken, rest } = fits(eligible, feedback.pending?.entries);
+				if (rest.length) note(c, meta.turns, "warn", "GitHub feedback beyond the pending batch limit was not run.");
+				if (taken.length) {
+					const prompt = feedback.pending ??= { entries: [], text: "" };
+					prompt.entries.push(...taken);
+					prompt.text = "Address the feedback that fits this change on the same branch. Explain any points you leave open.\n\n"
+						+ batchText(prompt.entries, { pr: notice.pr, head: meta.pushedHead, session: true });
+				}
+				feedback.seen.push(...entries.map(({ id, at }) => ({ id, at })));
+			}
+			await serial(c, () => c.db.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta)));
+			startNextFeedback(c, meta);
+			return true;
 		},
 
 		prompt: async (c, input: PromptInput): Promise<PromptAnswer> => {
@@ -6485,6 +6558,7 @@ export const agentSession = actor({
 					throw clientError(c.log, error, "The pull request could not be opened. Try again.");
 				} finally {
 					c.vars.publishing = false;
+					startNextFeedback(c, meta);
 				}
 			}
 			const blocked = publishBlocked(c, meta);
@@ -6499,6 +6573,7 @@ export const agentSession = actor({
 			} finally {
 				c.vars.publishing = false;
 				release();
+				startNextFeedback(c, meta);
 			}
 		},
 

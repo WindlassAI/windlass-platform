@@ -80,6 +80,7 @@ import type { AgentModels } from "../factory/placement.js";
  * whichever servers, and each takes its hold and its place here, so no server counts for itself.
  */
 
+import { mayUse } from "../access.js";
 import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
 import { accountLimits, changeUserLimit, limitsSubject, type LimitAuditRow, type LimitChange } from "../user-limits.js";
@@ -1878,6 +1879,22 @@ export const user = actor({
 		listItems: (c, page?: ItemListPage): ItemSummary[] => itemActions.listItems(c, page),
 		itemFeed: (c): ItemFeed => itemActions.itemFeed(c),
 		item: (c, id: string): Promise<ItemView> => itemActions.item(c, id),
+		internalSessionForPull: (c, installation: GithubId, repository: GithubId, pr: number): { sessionId: string | null } | null => {
+			requireServiceFor(c, "call");
+			const { github, profile } = c.vars;
+			if (!github?.webhookLinked || !github.installations.some(i => i.id === installation)) return null;
+			for (const session of c.vars.sessions.values()) {
+				if (session.repository?.id !== repository || session.pullRequest?.number !== pr) continue;
+				const personal = !session.item && !session.environmentBuild && profile && mayUse(profile, config.access);
+				return { sessionId: personal ? session.id : null };
+			}
+			// A finished item's PR can still be linked after it leaves the live webhook directory.
+			for (const item of c.vars.items.items.values()) {
+				if (item.repository.id === repository && item.pullRequest?.number === pr) return { sessionId: null };
+				if (item.repositories?.some(r => r.repositoryId === repository && r.pr?.number === pr)) return { sessionId: null };
+			}
+			return null;
+		},
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) => itemActions.internalGithubIntake(c, input, itemSession(c)),
 		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),
 		actOnItem: (c, input: { id: string; action: ItemAction }): Promise<ItemView> => itemActions.actOnItem(c, input),

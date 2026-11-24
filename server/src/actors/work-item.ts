@@ -34,7 +34,7 @@ import type { NetworkReceipt } from "./internal.js";
 import { HIDDEN } from "../agent-publish.js";
 import { readFeedback, feedbackId, type FeedbackNotice, type FeedbackSubject } from "./github-inbox.js";
 import { sources, untrustedWords } from "../factory/untrusted.js";
-import { batchText, feedbackWords, fingerprint, fits, QUIET_MS, MOST_MS } from "../factory/feedback.js";
+import { batchText, feedbackWords, fingerprint, fits, oversizedFeedback, QUIET_MS, MOST_MS } from "../factory/feedback.js";
 import { isAddressed } from "../github/events.js";
 import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
 import { GithubProblem } from "../github/repos.js";
@@ -688,7 +688,7 @@ async function receiveFeedback(c: Ctx, notice: FeedbackNotice) {
 			const review = notice.entries.find(e => e.kind === "changes_requested" || e.kind === "commented");
 			let added = false;
 			for (const e of notice.entries) {
-				const oversized = e.body.length > 8000;
+				const oversized = oversizedFeedback(e);
 				const rows = await tx.execute("INSERT OR IGNORE INTO feedback(id,data,at,received,batch,ready,state,reason) VALUES(?,?,?,?,?,?,?,?) RETURNING id",
 					e.id, JSON.stringify(e), e.at, now, review?.id ?? "comments", review ? now : now + QUIET_MS,
 					oversized ? "declined" : "pending", oversized ? feedbackWords.oversized : feedbackWords.waiting);
@@ -1419,9 +1419,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return "deferred";
 		case "feedback_ack": {
 			const hub = await github(c, meta);
-			const [kind, id] = effect.key.split(":") as ["issue_comment" | "review_comment", string];
-			await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", [kind === "issue_comment" ? "issues" : "pull_requests"]: "write" } },
-				token => hub.app.react(token, hub, { kind, id }, "eyes")).catch(error => {
+			await hub.app.acknowledgeFeedback(hub.installationId, { id: meta.repository.id, owner: hub.owner, name: hub.name }, effect.key).catch(error => {
 				if (!(error instanceof GithubError && [404, 410].includes(error.status))) throw error;
 			});
 			return true;

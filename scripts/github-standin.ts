@@ -332,7 +332,7 @@ export class GithubStandin {
 		const id = ++this.nextCommentId, date = new Date(at).toISOString();
 		const fields = { pull_request_url: this.apiUrl + `/repos/${repo.owner}/${repo.name}/pulls/${pull.number}`, user: { ...person, type: person.type ?? "User" },
 			author_association: repo.owner === person.login ? "OWNER" : repo.access.has(person.login) ? "COLLABORATOR" : "NONE", commit_id: pull.headSha ?? this.branchHead(repo, pull.head) ?? "a".repeat(40) };
-		return { repository: repo.id, pr: pull.number, review: { ...fields, id, submitted_at: date, body, state },
+		return { repository: repo.id, pr: pull.number, review: { ...fields, id, node_id: "PRR_" + id, submitted_at: date, body, state },
 			lines: comments.map((line, n) => ({ ...fields, id: ++this.nextCommentId, pull_request_review_id: id, created_at: date,
 				...(typeof line === "string" ? { path: "src/main.ts", line: n + 1, body: line } : line) })) };
 	}
@@ -667,6 +667,13 @@ export class GithubStandin {
 
 		if (path === "/api/graphql" && request.method === "POST") {
 			const token = auth.token, args = body as { query?: string; variables?: {id?: string} };
+			if (args.query?.includes("addReaction")) {
+				const row = this.reviews.find(r => r.review.node_id === args.variables?.id);
+				if (!row || !token || !this.allows(token, this.repositories.get(row.repository)!, "pull_requests", "write")) return answer(403, {});
+				if (!args.query.includes("content:EYES")) return answer(422, {});
+				this.reactions.add("review:" + row.review.id);
+				return answer(200, { data: { addReaction: { reaction: { content: "EYES" } } } });
+			}
 			const pull = this.pulls.find(p => "PR_" + p.repository + "_" + p.number === args.variables?.id);
 			if (!token || !pull || !this.allows(token,this.repositories.get(pull.repository)!,"pull_requests","write") || !args.query?.includes("markPullRequestReadyForReview")) return answer(403,{});
 			pull.draft = false;

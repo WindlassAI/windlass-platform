@@ -97,6 +97,8 @@ export interface UntrustedTurn {
 	profile: SandboxProfileId;
 	/** The turn's sources (`TurnPlan.untrusted`), the run's own and someone else's. */
 	untrusted: readonly string[] | undefined;
+	/** A reconstructed session prompt also quotes earlier turns. Only this turn's own sources can stop it. */
+	currentSources?: readonly string[];
 	/** The person chose to run this turn's text from someone else anyway (`FactoryItem.unsandboxed`). */
 	unsandboxed: boolean | undefined;
 }
@@ -119,7 +121,7 @@ export function untrustedTurn(turn: UntrustedTurn): UntrustedHandling {
 	if (!list.length) return { kind: "none" };
 	const marker = takesUntrustedMarker(turn.agent);
 	if (turn.profile === "docker-hardened") {
-		const outside = turn.unsandboxed ? [] : thirdParty(list);
+		const outside = turn.unsandboxed ? [] : thirdParty(turn.currentSources ?? list);
 		if (outside.length) return { kind: "stop", sources: outside, reason: hardenedRefusal(turn.agent, outside) };
 		return { kind: "labelled", sources: list, note: marker ? hardenedUnmarkedNote(list) : agentUnmarkedNote(harnessName(turn.agent), list, machineHarness(turn.agent)?.sandboxedOn.includes(turn.profile) ?? false) };
 	}
