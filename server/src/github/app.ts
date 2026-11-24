@@ -865,7 +865,7 @@ export class GithubApp {
 		const [kind, id = ""] = key.split(":");
 		const permission = kind === "issue_comment" ? "issues" : "pull_requests";
 		await this.withToken(installationId, { repositoryId: repo.id, permissions: { metadata: "read", [permission]: "write" } }, async token => {
-			if (kind === "issue_comment" || kind === "review_comment") return this.react(token, repo, { kind, id }, "eyes");
+			if (kind === "issue_comment" || kind === "review_comment") return this.react(token, repo, { kind, id: id! }, "eyes");
 			// A review body is a GraphQL Reactable. The REST endpoints take comments only.
 			if (kind !== "review" || !reviewNodeId) throw new Error("Missing GitHub review node.");
 			const path = this.settings.apiUrl.endsWith("/api/v3") ? "/../graphql" : "/graphql";

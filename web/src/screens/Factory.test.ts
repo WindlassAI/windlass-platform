@@ -221,7 +221,7 @@ describe("the Factory page's groups and filters", () => {
 		expect(row.querySelector(`a[href="${ready?.pullRequest?.url}"]`)).not.toBeNull();
 		const fromIssue = (await listed()).find((item) => item.origin !== null) as ItemSummary;
 		const issueRow = rows().find((candidate) => candidate.querySelector(".agent-title")?.firstChild?.textContent === fromIssue.title) as HTMLElement;
-		expect(issueRow.querySelector(`a[href="${fromIssue.origin?.issue.url}"]`)?.textContent).toBe(`issue #${fromIssue.origin?.issue.number}`);
+		expect(issueRow.querySelector(`a[href="${fromIssue.origin?.issue?.url}"]`)?.textContent).toBe(`issue #${fromIssue.origin?.issue?.number}`);
 	});
 
 	it("filters by repository and by where an item came from, in the address", async () => {

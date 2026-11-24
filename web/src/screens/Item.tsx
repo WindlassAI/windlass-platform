@@ -25,6 +25,7 @@
  * leave it out. Once its machine was removed, the item can only be handed over or given up: the page
  * offers neither Retry nor Send back, and no note to an agent that cannot work any more.
  */
+import { originIssue } from "../lib/origin";
 import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemSummary, type ItemView, type SessionSummary, type StepKind, type Verdict } from "@contract";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
@@ -840,20 +841,20 @@ function Log({ view, now }: { view: ItemView; now: number }) {
 // ---- where it came from, and what it asks the agent to do ---------------------------------------
 
 /** A draft from an issue someone else wrote: its task is that person's text, which its person reads before starting it. */
-const readFirst = (item: Pick<ItemView, "state" | "origin">) => item.state === "draft" && item.origin?.issue.trusted === false;
+const readFirst = (item: Pick<ItemView, "state" | "origin">) => item.state === "draft" && item.origin !== null && item.origin !== undefined && !originIssue(item.origin).trusted;
 
 /** The issue an item was filed from, under its title: its link, who filed it, and who wrote it where that is someone else. */
 function IssueOrigin({ origin }: { origin: NonNullable<ItemView["origin"]> }) {
-	const { issue, sender } = origin;
+	const { url, label, trusted, author, sender } = originIssue(origin);
 	return (
 		<p className="home-account item-origin">
 			<span>
 				From{" "}
-				<a className="item-link" href={issue.url} target="_blank" rel="noreferrer">
-					issue #{issue.number}
+				<a className="item-link" href={url} target="_blank" rel="noreferrer">
+					{label}
 					<ExternalIcon size={10} />
 				</a>
-				, {issue.trusted ? `filed by @${sender}.` : `written by @${issue.author} and filed by @${sender}.`}
+				, {trusted ? `filed by ${sender}.` : `written by ${author} and filed by ${sender}.`}
 			</span>
 		</p>
 	);
@@ -887,7 +888,8 @@ function TaskText({ task, codeSpans = false }: { task: ItemView["task"]; codeSpa
 
 /** A draft's task in someone else's words: whose they are, the text itself, and Start under it. */
 function ReadFirst({ view, acting }: { view: ItemView; acting: Acting }) {
-	const author = view.origin?.issue.author ?? "";
+	const origin = view.origin ? originIssue(view.origin) : null;
+	const author = origin?.author ?? "";
 	return (
 		<section className="usage-section" aria-labelledby="item-task">
 			<h2 className="usage-title" id="item-task">
@@ -896,7 +898,7 @@ function ReadFirst({ view, acting }: { view: ItemView; acting: Acting }) {
 			<div className="item-read">
 				<p className="callout callout-info">
 					<InfoIcon />
-					<span>The text below was written by @{author} on GitHub, not by you. Starting the item gives the agent this text, as it is shown here.</span>
+					<span>The text below was written by {author} on {origin?.tracker ?? "GitHub"}, not by you. Starting the item gives the agent this text, as it is shown here.</span>
 				</p>
 				<div className="item-snapshot">
 					<TaskText task={view.task} />
