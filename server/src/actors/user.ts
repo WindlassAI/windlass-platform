@@ -168,7 +168,7 @@ import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
 import { getSignIns } from "../signin/index.js";
 import { serverSealer } from "../signin/seal.js";
 import { ownerOfAccount } from "./account-email.js";
-import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, type UsageLimits, USAGE_KEPT_DAYS, UsageBook, type UsageChange, DAY_MS, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
+import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, type HoldReport, type UsageLimits, USAGE_KEPT_DAYS, UsageBook, type UsageChange, DAY_MS, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/e2b/network.js";
 import { readE2bSettings } from "../sandbox/e2b/config.js";
@@ -3121,7 +3121,7 @@ export const user = actor({
 			const id = approvalText(input?.id, 64);
 			const session = approvalText(input?.sessionId, 200);
 			if (id === "" || session === "") throw new UserError("A hold needs an id and a session.", { code: "bad_input" });
-			const settle = typeof input.settle?.hold === "string" && typeof input.settle.seconds === "number" ? { hold: input.settle.hold, seconds: input.settle.seconds } : undefined;
+			const settle = typeof input.settle?.hold === "string" && typeof input.settle.seconds === "number" ? { hold: input.settle.hold, seconds: input.settle.seconds, observedUntil: input.settle.observedUntil } : undefined;
 			const keep = input.keep === true;
 			const renewal = input.fresh !== true && settle !== undefined;
 			if (reserveFault) {
@@ -3174,11 +3174,11 @@ export const user = actor({
 			return { ok: done.ok, ...(clampedSize && { clampedSize }), numbers };
 		},
 
-		internalSettle: async (c, input: { sessionId: string; hold: string; seconds: number }): Promise<{ known: boolean }> => {
+		internalSettle: async (c, input: HoldReport & { sessionId: string }): Promise<{ known: boolean }> => {
 			requireService(c);
 			const session = approvalText(input?.sessionId, 200);
 			const hold = approvalText(input?.hold, 64);
-			const done = await changeUsage(c, (book) => book.settle(Date.now(), { session, hold, seconds: typeof input?.seconds === "number" ? input.seconds : Number.NaN }));
+			const done = await changeUsage(c, (book) => book.settle(Date.now(), { session, hold, observedUntil: input?.observedUntil, seconds: typeof input?.seconds === "number" ? input.seconds : Number.NaN }));
 			return { known: done.known };
 		},
 

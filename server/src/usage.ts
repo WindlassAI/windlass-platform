@@ -31,7 +31,7 @@
  * the sandbox ran for some part of it that nobody measured, and the whole hold is the most this book
  * can know. A session that did measure, and only could not say so in time (it stopped its sandbox as
  * its server shut down), keeps its report and sends it when it is next awake: the difference is then
- * given back in an entry of its own, "corrected", and the first entry stays as it was.
+ * recorded in a "corrected" entry. A provider observation can also confirm an overrun. The original entry stays as it was.
  *
  * What a session reports is checked against the hold: never less than nothing, and never more than
  * the time since the hold was taken. A report above the hold's own length is counted (the sandbox ran
@@ -190,8 +190,7 @@ export interface UsageEntry {
 	/**
 	 * "used": the session reported what ran. "unreported": nobody did before the hold ran out, or the
 	 * session took another hold without settling this one, and the hold is counted in full.
-	 * "corrected": the report for an unreported hold came after all; `seconds` is what that gives back,
-	 * below zero, and `hold` is the hold's id with LATE after it.
+	 * "corrected": the report for an unreported hold came after all; `seconds` is the adjustment to the estimate (positive for a measured overrun), and `hold` is the hold's id with LATE after it.
 	 */
 	kind: "used" | "unreported" | "corrected";
 	seconds: number;
@@ -252,6 +251,13 @@ export type ReserveRefusal =
 
 export type ReserveResult = { ok: true; hold: UsageHold; change: UsageChange } | { ok: false; reason: ReserveRefusal; change: UsageChange };
 
+export interface HoldReport {
+	hold: string;
+	seconds: number;
+	/** When the provider observed this VM running or paused. Bounds a measured correction to an expired hold. */
+	observedUntil?: number;
+}
+
 export interface ReserveInput {
 	/** The session's own sandbox weight, when supplied by the session opening this hold. */
 	weight?: number;
@@ -263,7 +269,7 @@ export interface ReserveInput {
 	/** True when something is about to start (a turn, a paused sandbox): MIN_START_SECONDS must be left. Otherwise a sandbox that runs is given whatever is left. */
 	fresh?: boolean;
 	/** The session's open hold and what its sandbox ran of it: closed in the same step the new one is taken in. */
-	settle?: { hold: string; seconds: number };
+	settle?: HoldReport;
 }
 
 function openingTime(row: UsageEntry | UsageHold): number {
@@ -442,6 +448,12 @@ weightOf: (session: string) => number = () => 1;
 		// The same request again, after an answer that was lost on its way.
 		if (own !== null && own.id === input.id) return { ok: true, hold: own, change };
 
+		// A long restart may outlast both the hold and its grace. Reconcile a measured trade even
+		// when sweep already booked it in full, before testing the remaining allowance.
+		if (!own && input.settle?.observedUntil !== undefined) {
+			const late = this.settle(now, { session: input.session, ...input.settle });
+			if (late.entry) change.entries.push(late.entry);
+		}
 		const day = this.holdDay(now);
 		const settled = own !== null && input.settle?.hold === own.id ? this.close(own, input.settle.seconds, now) : null;
 		// A hold of its own that the session does not settle was lost with a server: it is counted in full.
@@ -485,17 +497,29 @@ weightOf: (session: string) => number = () => 1;
 
 	/**
 	 * The sandbox stopped: counts what it ran of the hold. A report for a hold that was counted in full
-	 * because it came too late gives the difference back, once. `known` is false for a hold this book
+	 * because it came too late corrects the estimate once. `known` is false for a hold this book
 	 * has neither open nor counted as unreported, and for a second report: nothing is counted then.
 	 */
-	settle(now: number, input: { session: string; hold: string; seconds: number }): { known: boolean; entry: UsageEntry | null; change: UsageChange } {
+	settle(now: number, input: HoldReport & { session: string }): { known: boolean; entry: UsageEntry | null; change: UsageChange } {
 		const change = this.sweep(now);
 		const own = this.holds.get(input.session);
 		if (own === undefined || own.id !== input.hold) {
 			const full = this.entries.find((entry) => entry.kind === "unreported" && entry.hold === input.hold && entry.session === input.session);
 			if (full === undefined || this.entries.some((entry) => entry.hold === `${input.hold}${LATE}`)) return { known: false, entry: null, change };
-			// Never more than was counted, and never less than nothing: a late report only ever gives back.
-			const ran = Number.isFinite(input.seconds) ? Math.min(full.seconds, Math.max(0, Math.round(input.seconds))) : full.seconds;
+			// An estimate only gives time back. With a provider observation and the original opening
+			// time, the VM may have measurably run beyond the reservation while its server was down.
+			let most = full.seconds;
+			if (full.startedAt !== undefined && input.observedUntil !== undefined && Number.isFinite(input.observedUntil)) {
+				let end = Math.min(input.observedUntil, now);
+				// A renewal whose reply was lost may itself already be settled or still open.
+				// Any time in that later hold belongs to it.
+				for (const row of this.entries) {
+					if (row.session === full.session && row.startedAt !== undefined && row.startedAt > full.startedAt) end = Math.min(end, row.startedAt);
+				}
+				if (own && own.startedAt >= full.startedAt) end = Math.min(end, own.startedAt);
+				most = Math.max(0, Math.round((end - full.startedAt) / 1000));
+			}
+			const ran = Number.isFinite(input.seconds) ? Math.min(most, Math.max(0, Math.round(input.seconds))) : full.seconds;
 			const entry: UsageEntry = { day: full.day, startedAt: openingTime(full), session: full.session, hold: `${full.hold}${LATE}`, weight: this.storedWeight(full), kind: "corrected", seconds: ran - full.seconds, at: now, note: `its session reported afterwards that the sandbox ran ${ran} s of the ${full.seconds} s that were counted in full` };
 			this.add(entry);
 			change.entries.push(entry);
@@ -676,9 +700,10 @@ export interface PendingAsk {
  * and the report for the other counts nothing there. Either way every second from `open.since` to
  * `until` is counted once.
  */
-export function closingReports(open: OpenStretch, asked: PendingAsk | null, until: number): Array<{ hold: string; seconds: number }> {
-	const reports = [{ hold: open.hold, seconds: stretchSeconds(open, until) }];
-	if (asked) reports.push({ hold: asked.id, seconds: Math.max(0, until - asked.at) / 1000 });
+export function closingReports(open: OpenStretch, asked: PendingAsk | null, until: number, observedUntil?: number): HoldReport[] {
+	const measured = observedUntil === undefined ? {} : { observedUntil };
+	const reports = [{ hold: open.hold, seconds: stretchSeconds(open, until), ...measured }];
+	if (asked) reports.push({ hold: asked.id, seconds: Math.max(0, until - asked.at) / 1000, ...measured });
 	return reports;
 }
 
@@ -706,9 +731,17 @@ export function stretchSeconds(stretch: OpenStretch, until: number): number {
  * stopped it. A provider that stops an unused sandbox by itself (`idleStopMs`) did so that long after
  * the sandbox was last used; where there is no such timeout, nothing is known but now.
  */
-export function stoppedBy(stretch: OpenStretch, lastUsedAt: number, idleStopMs: number | null, now: number): number {
+export function stoppedBy(stretch: OpenStretch, lastUsedAt: number, idleStopMs: number | null, now: number, pausedAt?: number): number {
+	if (pausedAt !== undefined && Number.isFinite(pausedAt)) return Math.min(now, pausedAt);
 	if (idleStopMs === null) return now;
 	return Math.min(now, Math.max(stretch.seen ?? 0, Math.max(stretch.since, lastUsedAt) + idleStopMs));
+}
+
+/** Close a carried hold at the provider's last pause, even if it ran beyond the hold. Without that
+ * measurement, bound the estimate by the provider timeout and the hold we had before the restart. */
+export function foundStoppedAt(stretch: OpenStretch, lastUsedAt: number, idleStopMs: number | null, now: number, pausedAt?: number): number {
+	const until = stoppedBy(stretch, lastUsedAt, idleStopMs, now, pausedAt);
+	return Number.isFinite(pausedAt) ? until : Math.min(until, stretch.since + stretch.seconds * 1000);
 }
 
 // ---------------------------------------------------------------------------------------------

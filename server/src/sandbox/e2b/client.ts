@@ -19,7 +19,7 @@ export interface E2bSandboxInfo {
 	metadata: Record<string, string>;
 	/** When the sandbox started. Whether a resume moves it is one of the things scripts/e2b-check.ts reports. */
 	startedAt: number;
-	/** When its timeout runs out. */
+	/** The timeout deadline while running, or the last pause time while paused. */
 	endAt: number;
 	cpuCount: number;
 	memoryMB: number;
