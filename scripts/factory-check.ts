@@ -2952,6 +2952,24 @@ const granted = { ...standin.appPermissions, checks: "read" as const, statuses: 
 
 const checkRun = (id: number | bigint, name: string, conclusion: string | null) => ({ id, name, status: conclusion === null ? "in_progress" : "completed", conclusion, html_url: `https://github.invalid/ada/harbor/runs/${id}`, app: { slug: "github-actions" }, output: { title: conclusion === "failure" ? "Process completed with exit code 1." : null, summary: null } });
 
+{
+	const warnings: string[] = [];
+	const warn = console.warn;
+	let refusal = new GithubError(403, "Resource not accessible by integration", "react");
+	const denied = new (class extends GithubApp {
+		override async react() { throw refusal; }
+	})(app.settings, secrets);
+	const ack = () => denied.acknowledgeFeedback(installation.id, repo, "review_comment:1");
+	try {
+		console.warn = message => warnings.push(String(message));
+		await ack();
+		assert.deepEqual(warnings, ["github.feedback.ack_skipped entry=review_comment:1 status=403"]);
+		refusal = new GithubError(403, "rate limit exceeded", "react");
+		await assert.rejects(ack, error => error === refusal);
+	} finally { console.warn = warn; }
+	expect("a denied feedback reaction logs once and settles, while rate limits remain retryable", true);
+}
+
 try {
 	standin.appPermissions = granted;
 	const { featureBranch, advanceFeatureRef } = await import("../server/src/github/feature.js");

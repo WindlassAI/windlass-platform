@@ -1506,9 +1506,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return "deferred";
 		case "feedback_ack": {
 			const hub = await github(c, meta);
-			await hub.app.acknowledgeFeedback(hub.installationId, { id: meta.repository.id, owner: hub.owner, name: hub.name }, effect.key).catch(error => {
-				if (!(error instanceof GithubError && [404, 410].includes(error.status))) throw error;
-			});
+			await hub.app.acknowledgeFeedback(hub.installationId, { id: meta.repository.id, owner: hub.owner, name: hub.name }, effect.key);
 			return true;
 		}
 		case "feedback_comment": {

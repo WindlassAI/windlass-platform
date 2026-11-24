@@ -909,6 +909,9 @@ export class GithubApp {
 			const { body } = await this.call({ method: "POST", path, auth: { bearer: token }, body: { query, variables: { id: reviewNodeId } }, what: "acknowledge a review" });
 			const result = record(record(body).data).addReaction;
 			if (record(record(result).reaction).content !== "EYES") throw new Error("GitHub did not acknowledge the review.");
+		}).catch(error => {
+			if (!(error instanceof GithubError) || error.rateLimited || ![403, 404, 410].includes(error.status)) throw error;
+			console.warn(`github.feedback.ack_skipped entry=${key} status=${error.status}`);
 		});
 	}
 
