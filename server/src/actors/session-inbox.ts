@@ -70,6 +70,7 @@ export const OUTBOX_ACTION = "internalOutbox";
 
 /** What the item's `deliver` effect hands the session. */
 export interface ReviewDelivery extends ReviewerInput {
+	requested?: Pick<import("../contract.js").FeatureRepository, "repositoryId" | "installationId">;
 	baseSha: string;
 	report: ReviewerTaskReport | null;
 }
@@ -403,6 +404,6 @@ export function endedFactOf(key: string, at: number, outcome: TurnOutcome, verif
 
 export type EndedFact = Extract<Fact, { kind: "turn_ended" | "review_ended" }>;
 
-export function reviewEndedFactOf(key: string, outcome: TurnOutcome, review: ItemReview | undefined, said: string | null, refused: string | null, usage: TurnUsage | null): Extract<Fact, { kind: "review_ended" }> {
-	return { kind: "review_ended", key, at: Date.now(), outcome, review: review?.id === key ? review : null, said, refused, spend: turnSpend(usage) };
+export function reviewEndedFactOf(key: string, outcome: TurnOutcome, review: ItemReview | undefined, said: string | null, refused: string | null, usage: TurnUsage | null, agent?: AgentTurn): Extract<Fact, { kind: "review_ended" }> {
+	return { kind: "review_ended", key, at: Date.now(), outcome, review: review?.id === key ? review : null, said, refused, spend: turnSpend(usage, agent) };
 }

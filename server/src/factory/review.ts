@@ -11,18 +11,14 @@ import { data, fence } from "./reviewer-task.js";
 import type { EarlierFinding } from "./types.js";
 
 
-export const REVIEW_PROFILE_REASON = "in this sandbox the reviewer's commands would run with the network";
+export function criticAllowed(place: SandboxPlace, profile: SandboxProfile): boolean {
+	return place.kind === "hosted" && commandSandbox(profile) === "windlass";
+}
 
 export const REVIEW_OFF_REASON = {
 	deployment: "turned off for this deployment",
-	profile: REVIEW_PROFILE_REASON,
-	machine: "second reviews run only on hosted sandboxes",
 	feature: "the feature’s combined change is reviewed once its parts are done",
 };
-
-export function reviewerAllowed(place: SandboxPlace, profile: SandboxProfile): boolean {
-	return place.kind === "hosted" && commandSandbox(profile) === "windlass";
-}
 
 export interface ReviewContext {
 	records: ReviewRecord[];
@@ -460,13 +456,13 @@ function reviewParagraphs(item: string, review: CommentReview): string[] {
 	if (!r?.recommendation) return review.reason ? [`No second review: ${commentText(review.reason.replace(/\.$/, ""), 500)}.`] : [];
 	const words = { approve: "approves", changes_requested: "asks for changes", needs_person: "needs you" };
 	const summary = r.blocks.find(block => block.kind === "summary");
-	const paragraphs = [`Second review at ${r.head.slice(0, 7)}: ${words[r.recommendation]}.`];
+	const paragraphs = [`${r.requestedPull ? "Requested review" : "Second review"} at ${r.head.slice(0, 7)}: ${words[r.recommendation]}.`];
 	if (summary?.text) paragraphs.push(agentMarkdown(summary.text, limit.summaryChars));
 	const rank = { blocking: 0, should_fix: 1, note: 2 };
 	const labels = { blocking: "Blocking", should_fix: "Should fix", note: "Note" };
 	const findings = r.blocks.filter(block => block.kind === "finding").sort((a,b) => rank[a.severity] - rank[b.severity]);
 	const component = (s: string) => encodeURIComponent(s).replace(/[!'()*]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
-	const lines = findings.slice(0, 15).map(f => {
+	const lines = (r.requestedPull ? findings : findings.slice(0, 15)).map(f => {
 		const at = f.at[0];
 		let location = "";
 		if (at) {
@@ -475,13 +471,27 @@ function reviewParagraphs(item: string, review: CommentReview): string[] {
 			const anchor = at.lines ? `#L${at.lines.start}-L${at.lines.end}` : "";
 			location = `[${commentText(at.path, 300)}${at.lines ? ":" + at.lines.start : ""}](https://github.com/${component(review.owner)}/${component(review.name)}/blob/${sha}/${path}${anchor}) · `;
 		}
-		return `- ${labels[f.severity]} · ${location}${agentMarkdown(f.title, limit.findingTitleChars).replaceAll("\n", "\n  ")}`;
+		const detail = r.requestedPull ? "\n  " + agentMarkdown(f.text, limit.findingChars).replaceAll("\n", "\n  ") : "";
+		return `- ${labels[f.severity]} · ${location}${agentMarkdown(f.title, limit.findingTitleChars).replaceAll("\n", "\n  ")}${detail}`;
 	});
 	if (findings.length > lines.length) lines.push(`and ${findings.length - lines.length} more on the item's page`);
 	if (lines.length) paragraphs.push(lines.join("\n"));
 	const n = r.screenshots.length;
 	paragraphs.push(`The whole review${n ? ` and ${n} screenshot${n === 1 ? "" : "s"}` : ""}: ${config.origins[0]}/items/${item} (opens for the item's owner only)`);
 	return paragraphs;
+}
+
+/** Requested reviews are comments on the pinned commit. GitHub approval and change-request events
+ * would affect branch protection and feed back into the item. */
+export function requestedReviewBody(item: string, review: ItemReview, repo: { owner: string; name: string }) {
+	const paragraphs = reviewParagraphs(item, { filed: review, reason: null, ...repo });
+	const link = paragraphs.pop();
+	const body = boundedComment(paragraphs, link ? "\n\n" + link : "");
+	const comments = review.blocks.flatMap(block => block.kind === "finding" ? block.at.flatMap(at => at.lines ? [{
+		path: at.path, line: at.lines.end, side: at.side === "base" ? "LEFT" : "RIGHT",
+		body: agentMarkdown(block.title, limit.findingTitleChars) + "\n\n" + agentMarkdown(block.text, limit.findingChars),
+	}] : []) : []);
+	return { body, comments };
 }
 
 export function feedbackComment(who: string, run: number) {
@@ -508,9 +518,13 @@ export function itemComment(verdict: Verdict, words: string, report: ItemReport 
 		}
 	}
 	const count = report?.blocks.filter(block => block.kind === "screenshot").length ?? 0;
-	const maxBytes = 60_000;
-	let link = count ? `\n\n${count} screenshot${count === 1 ? "" : "s"} on the item's page: ${config.origins[0]}/items/${verdict.item} (opens for the item's owner only)` : "";
+	const link = count ? `\n\n${count} screenshot${count === 1 ? "" : "s"} on the item's page: ${config.origins[0]}/items/${verdict.item} (opens for the item's owner only)` : "";
+	return boundedComment(paragraphs, link);
+}
+
+function boundedComment(paragraphs: string[], link: string): string {
 	const body = paragraphs.join("\n\n");
+	const maxBytes = 60_000;
 	// Even an oversized configured origin must leave room for the item marker.
 	if (Buffer.byteLength(paragraphs[0] + "\n…" + link) > maxBytes) link = "";
 	const budget = maxBytes - Buffer.byteLength(link);

@@ -61,6 +61,20 @@ const KEEP_MARGIN_MS = 10 * 60 * 1000;
 /** At most this many read-only tokens are kept at once, the oldest dropped first. */
 const MAX_KEPT_TOKENS = 2000;
 
+/** GitHub accepts inline reviews only on lines displayed in the PR diff. Context is on the right. */
+function reviewLineInPatch(patch: string, side: string, line: number): boolean {
+	let left = 0, right = 0;
+	for (const row of patch.split("\n")) {
+		const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);
+		if (hunk) { left = Number(hunk[1]); right = Number(hunk[2]); continue; }
+		if (row.startsWith("-") && side === "LEFT" && left === line) return true;
+		if ((row.startsWith("+") || row.startsWith(" ")) && side === "RIGHT" && right === line) return true;
+		if (row.startsWith("-") || row.startsWith(" ")) left++;
+		if (row.startsWith("+") || row.startsWith(" ")) right++;
+	}
+	return false;
+}
+
 const readsOnly = (scope: TokenScope) => Object.values(scope.permissions).every((level) => level === "read");
 
 export interface GithubAppSettings {
@@ -843,6 +857,28 @@ export class GithubApp {
 		return page.body.map(r => this.feedbackSubject(repo, pr, r, "review")).filter(r => r !== null);
 	}
 
+	async postRequestedReview(token: string, repo: Repository, pr: number, base: string, head: string, key: string, review: { body: string; comments: { path: string; line: number; side: string; body: string }[] }) {
+		const path = `/repos/${repo.owner}/${repo.name}/pulls/${pr}/reviews`, auth = { bearer: token };
+		const marker = `<!-- windlass-review:${key} -->`;
+		const { items, truncated } = await this.pages({ path, auth, what: "find the requested review" }, body => {
+			if (!Array.isArray(body)) throw new Error("GitHub returned no reviews list");
+			return body.filter(r => record(r.user).login === this.settings.slug + "[bot]" && text(r.body).startsWith(marker));
+		});
+		if (items.length) return;
+		if (truncated) throw new Error("The PR review list is incomplete.");
+		let comments = review.comments;
+		if (comments.length) {
+			const diff = await this.call({ path: `/repos/${repo.owner}/${repo.name}/compare/${base}...${head}`, query: { per_page: 1 }, auth, what: "read the reviewed diff" });
+			const files = record(diff.body).files;
+			if (!Array.isArray(files)) throw new Error("GitHub returned no files for the reviewed diff.");
+			comments = comments.flatMap(comment => {
+				const file = files.find(f => (comment.side === "LEFT" ? f.previous_filename ?? f.filename : f.filename) === comment.path);
+				return file && reviewLineInPatch(text(file.patch), comment.side, comment.line) ? [{ ...comment, path: file.filename }] : [];
+			});
+		}
+		await this.call({ method: "POST", path, auth, what: "post the requested review", body: { comments, body: marker + "\n\n" + review.body, event: "COMMENT", commit_id: head } });
+	}
+
 	async reviewComments(token: string, repo: Repository, pr: number, id: string) {
 		if (decimalId(id) !== id) return [];
 		const { items, truncated } = await this.pages({ path: `/repos/${repo.owner}/${repo.name}/pulls/${pr}/reviews/${id}/comments`, auth: { bearer: token }, what: "read the review’s line comments" }, raw => {
@@ -873,6 +909,9 @@ export class GithubApp {
 			const { body } = await this.call({ method: "POST", path, auth: { bearer: token }, body: { query, variables: { id: reviewNodeId } }, what: "acknowledge a review" });
 			const result = record(record(body).data).addReaction;
 			if (record(record(result).reaction).content !== "EYES") throw new Error("GitHub did not acknowledge the review.");
+		}).catch(error => {
+			if (!(error instanceof GithubError) || error.rateLimited || ![403, 404, 410].includes(error.status)) throw error;
+			console.warn(`github.feedback.ack_skipped entry=${key} status=${error.status}`);
 		});
 	}
 

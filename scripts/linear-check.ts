@@ -414,7 +414,7 @@ async function run() {
 			assert.equal(fast.mode, "single");
 			const quickKept = (await probe(fast.id).checkProvenance()).linear!;
 			assert.match(String(quickKept.modeReason), /Quick was requested/);
-			assert.deepEqual(quickKept.defaultPlace, saved);
+			assert.deepEqual(quickKept.defaultPlace, { ...saved, machineModel: null, machineEffort: null });
 			const quickView = await owner.item(fast.id);
 			assert.deepEqual(quickView.place, { kind: "machine", machineId: mac });
 			assert.equal(quickView.agent?.harness, "claude");
@@ -429,7 +429,7 @@ async function run() {
 				assert.equal(plan.mode, "orchestrate");
 				const kept = (await probe(plan.id).checkProvenance()).linear!;
 				assert.match(String(kept.modeReason), /Plan first/);
-				assert.deepEqual(kept.defaultPlace, saved);
+				assert.deepEqual(kept.defaultPlace, { ...saved, machineModel: null, machineEffort: null });
 				assert.equal((await owner.item(plan.id)).agent?.harness ?? "windlass", "windlass");
 			}
 			await owner.saveAccountDefaults({ place: "hosted" });

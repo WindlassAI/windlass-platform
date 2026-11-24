@@ -39,9 +39,10 @@ import { AgentGlyph, Pill } from "../components/ui/Pill";
 import { machineLabel } from "../lib/machines";
 import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placementFit, placementProblem, placementWait, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
 import { plural } from "../lib/format";
-import { useApp, useAuth } from "../state/app";
-import { useModels } from "../state/hooks";
-import { effortChoices, effortsOf, modelLabel, type ReportedOptions } from "../lib/models";
+import { subscriptionSpend } from "../lib/item-agent";
+import { useApp } from "../state/app";
+import { useCatalogs, useModels } from "../state/hooks";
+import { effortChoices, effortsOf, modelLabel } from "../lib/models";
 import type { AgentModels } from "../../../server/src/factory/placement.js";
 import { agentChanged, agentChoices, agentModelsOf, agentParts, cleanAgent, machineModels, preferredMachine, UNATTENDED_MEANS, UNATTENDED_WORDS, withAgent, worksWithoutAsking, type Catalogs } from "../lib/subtask-agents";
 import { useMachines } from "./Machines";
@@ -74,36 +75,6 @@ const placesOf = (plan: FeaturePlan): Record<string, PlaceDraft> => Object.fromE
 /** Each subtask's agent as the owner edits it: null runs Windlass on the feature's model. */
 const agentsOf = (plan: FeaturePlan): Record<string, SubtaskAgent | null> => Object.fromEntries(plan.subtasks.map((task) => [task.key, cleanAgent(task.agent) ?? null]));
 
-/**
- * The catalogs of every agent the user's machines report, fetched once per digest: the models and
- * efforts a subtask's agent may choose there, as the server checks a child's session against them.
- */
-function useCatalogs(machines: MachineSummary[] | null): Catalogs {
-	const { client } = useApp();
-	const auth = useAuth();
-	const [catalogs, setCatalogs] = useState<Record<string, ReportedOptions>>({});
-	const wanted = (machines ?? []).flatMap((machine) => (machine.harnesses ?? []).filter((entry) => entry.optionsDigest && entry.id !== "codex").map((entry) => ({ machineId: machine.machineId, id: entry.id as "claude" | "opencode", digest: entry.optionsDigest! })));
-	const keys = wanted.map((one) => `${one.machineId}/${one.id}/${one.digest}`).join(" ");
-	useEffect(() => {
-		let current = true;
-		for (const one of wanted) {
-			const key = `${one.machineId}/${one.id}/${one.digest}`;
-			if (catalogs[key]) continue;
-			client.user(auth).machineCatalog(one).then((options) => current && options && setCatalogs((now) => ({ ...now, [key]: options })), () => undefined);
-		}
-		return () => {
-			current = false;
-		};
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [client, auth, keys]);
-	const out: Catalogs = {};
-	for (const one of wanted) {
-		const options = catalogs[`${one.machineId}/${one.id}/${one.digest}`];
-		if (options) (out[one.machineId] ??= {})[one.id] = options;
-	}
-	return out;
-}
-
 const draftsOf = (plan: FeaturePlan): Drafts => Object.fromEntries(plan.subtasks.map((task) => [task.key, Object.fromEntries(PLAN_FIELDS.map((field) => [field.key, field.toInput(task.budget[field.key])])) as Record<keyof SubtaskBudget, string>]));
 
 /** The plan's budgets, questions and the actions on them, kept together so that its question card and its section agree. */
@@ -123,7 +94,7 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 	const machines = useMachines(platform.info?.machines != null && view?.mode === "orchestrate" && plan !== null && plan.status !== "superseded").list;
 	// What each place's agents offer: the account's models for Windlass, each machine agent's catalog.
 	const accountModels = useModels().list;
-	const catalogs = useCatalogs(open ? machines : null);
+	const catalogs = useCatalogs(open || plan?.status === "approved" ? machines : null);
 	const models: AgentModels = useMemo(() => agentModelsOf(machines, catalogs, accountModels), [machines, catalogs, accountModels]);
 	// Another version is another plan: what was typed for the one before is not this one's.
 	useEffect(() => {
@@ -273,7 +244,8 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 		if (fallback) return acting.act({ kind: "answer", question: view.question!.id, choice: fallback.id });
 		return acting.act({ kind: "run_single" });
 	};
-	const tasks = plan.subtasks.length;
+	const finished = view.completedSubtasks?.length ?? 0;
+	const tasks = plan.subtasks.length - finished;
 	const totalTokens = sumBudgets(Object.values(review.parsed)).tokens;
 	const refused = acting.failed?.kind === "approve_plan" && acting.failed.reason === "bad_input" ? acting.error : null;
 	const unplaceable = single ? [] : unplaceableOf(view, plan, review.machines, review.models);
@@ -291,7 +263,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 				<span className="item-question-when">{when}</span>
 			</p>
 			<p className="item-question-text">
-				{single ? view.question.text : <>{replan ? "A subtask stopped. Review the revised plan" : "Review the plan"}: {tasks} subtasks, {PLAN_FIELDS[0]!.spelled(totalTokens)} tokens of the {PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} the feature may spend.</>}
+				{single ? view.question.text : <>{replan ? `${view.replanWhy ? view.replanWhy + ". " : ""}Review the revised plan` : "Review the plan"}: {tasks} subtasks{finished ? " to run" : ""}, {PLAN_FIELDS[0]!.spelled(totalTokens)} tokens of the {PLAN_FIELDS[0]!.spelled(plan.budget.tokens)} the feature may spend.</>}
 				{" "}<span className="plan-version">Version {plan.version}</span>
 			</p>
 
@@ -542,6 +514,10 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 	const numbers = new Map(plan.subtasks.map((task, index) => [task.key, index + 1]));
 	const setAside = plan.status === "superseded";
 	const machines = review.machines;
+	// A re-plan keeps finished subtasks as they ran: only the rest can change.
+	const done = new Set(view.completedSubtasks ?? []);
+	// After approval, a subtask that has not started may still change its agent.
+	const running = plan.status === "approved" && !["done", "cancelled", "failed"].includes(view.state);
 	const placing = plan.subtasks.some((task) => task.place || task.needs) || plan.overflow === true || (view.children ?? []).some((child) => child.placement);
 	const refusal = acting.failed?.kind === "approve_plan" && acting.failed.reason === "bad_input" ? acting.error : null;
 	// The subtask the feature waits to place: a machine wait is about the next one to start.
@@ -560,14 +536,16 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 	});
 	const agentRow = (task: PlanSubtask): AgentRow => {
 		const draft = editing && task.key in review.agents ? review.agents[task.key] ?? undefined : task.agent;
+		const later = running && !children.has(task.key);
 		const machine = preferredMachine(editing ? review.edited(task) : task, parentPlaceName(view.place, machines), machines);
 		const harness = draft?.harness ?? "windlass";
 		return {
 			draft,
 			changed: editing && agentChanged(task, review.agents[task.key]),
+			editable: (editing && !done.has(task.key)) || later,
 			machine,
 			list: harness === "windlass" ? review.accountModels : machineModels(machine, harness, review.catalogs),
-			onAgent: (agent) => review.setAgent(task.key, agent),
+			onAgent: (agent) => (later ? void acting.act({ kind: "set_subtask_agent", key: task.key, agent }) : review.setAgent(task.key, agent)),
 		};
 	};
 	return (
@@ -599,7 +577,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 					{placing || editing ? <FeaturePlacement parent={parentPlaceName(view.place, machines)} editing={editing} overflow={editing ? review.overflow : plan.overflow === true} disabled={acting.busy !== null} onOverflow={review.setOverflow} /> : null}
 					<ol className="plan-tasks" aria-label="Subtasks">
 						{plan.subtasks.map((task) => (
-							<SubtaskRow key={task.key} task={task} place={placing || editing ? place(task) : null} agent={agentRow(task)} n={numbers.get(task.key)!} numbers={numbers} child={children.get(task.key) ?? null} setAside={setAside} fields={fields} editing={editing} drafts={review.drafts[task.key]} problems={review.problems.fields[task.key] ?? {}} floor={floor} single={single} disabled={acting.busy !== null} onChange={(field, text) => review.setDraft(task.key, field, text)} />
+							<SubtaskRow key={task.key} task={task} place={placing || editing ? place(task) : null} agent={agentRow(task)} n={numbers.get(task.key)!} numbers={numbers} child={children.get(task.key) ?? null} setAside={setAside} fields={fields} editing={editing && !done.has(task.key)} finished={editing && done.has(task.key)} drafts={review.drafts[task.key]} problems={review.problems.fields[task.key] ?? {}} floor={floor} single={single} disabled={acting.busy !== null} onChange={(field, text) => review.setDraft(task.key, field, text)} />
 						))}
 					</ol>
 
@@ -673,10 +651,10 @@ export function Inline({ text }: { text: string }) {
 	);
 }
 
-function SubtaskRow({ task, place, agent, n, numbers, child, setAside, fields, editing, drafts, problems, floor, single, disabled, onChange }: { task: PlanSubtask; place: PlaceRow | null; agent: AgentRow; n: number; numbers: Map<string, number>; child: ItemSummary | null; setAside: boolean; fields: PlanField[]; editing: boolean; drafts: Record<keyof SubtaskBudget, string> | undefined; problems: Partial<Record<keyof SubtaskBudget, string>>; floor: SubtaskBudget; single: Pick<ItemBudget, "tokens">; disabled: boolean; onChange(field: keyof SubtaskBudget, text: string): void }) {
+function SubtaskRow({ task, place, agent, n, numbers, child, setAside, fields, editing, finished, drafts, problems, floor, single, disabled, onChange }: { task: PlanSubtask; place: PlaceRow | null; agent: AgentRow; n: number; numbers: Map<string, number>; child: ItemSummary | null; setAside: boolean; fields: PlanField[]; editing: boolean; finished: boolean; drafts: Record<keyof SubtaskBudget, string> | undefined; problems: Partial<Record<keyof SubtaskBudget, string>>; floor: SubtaskBudget; single: Pick<ItemBudget, "tokens">; disabled: boolean; onChange(field: keyof SubtaskBudget, text: string): void }) {
 	const base = useId();
 	return (
-		<li className={`plan-task${child ? ` plan-task-is-${child.state}` : ""}`}>
+		<li className={`plan-task${child ? ` plan-task-is-${child.state}` : ""}${finished ? " plan-task-finished" : ""}`}>
 			<span className="plan-task-n" aria-hidden="true">
 				{child ? <ItemGlyph item={child} /> : n}
 			</span>
@@ -701,7 +679,7 @@ function SubtaskRow({ task, place, agent, n, numbers, child, setAside, fields, e
 				<p className="plan-task-brief plan-task-brief-short">{task.brief}</p>
 				<dl className="plan-task-facts">
 					{place ? <SubtaskPlace task={task} child={child} row={place} editing={editing} disabled={disabled} /> : null}
-					<SubtaskAgentFact title={task.title} child={child} row={agent} editing={editing && !child} disabled={disabled} />
+					<SubtaskAgentFact title={task.title} child={child} row={agent} editing={agent.editable && !child} disabled={disabled} />
 				</dl>
 				<details className="plan-task-more">
 					<summary>
@@ -757,7 +735,11 @@ function SubtaskRow({ task, place, agent, n, numbers, child, setAside, fields, e
 					</div>
 				) : (
 					<p className="plan-budget-read">
-						{fields.map((field) => (
+						{child?.agent?.tokens === "subscription" ? (
+							<span>
+								{subscriptionSpend(child.spent)} <span className="tone-faint">not counted: your subscription</span>
+							</span>
+						) : fields.map((field) => (
 							<span key={field.key}>
 								{child ? (
 									<>
@@ -780,7 +762,7 @@ function SubtaskRow({ task, place, agent, n, numbers, child, setAside, fields, e
 						<span className="plan-task-word">{STATE_WORD[child.state].toLowerCase()}</span>
 					)
 				) : (
-					<span className={`plan-task-word${place?.wait ? "" : " tone-faint"}`}>{editing ? "planned" : setAside ? "not run" : place?.wait ? "waits for a machine" : "not started"}</span>
+					<span className={`plan-task-word${place?.wait ? "" : " tone-faint"}`}>{finished ? "done" : editing ? "planned" : setAside ? "not run" : place?.wait ? "waits for a machine" : "not started"}</span>
 				)}
 			</div>
 		</li>
@@ -996,6 +978,8 @@ interface AgentRow {
 	/** The agent as saved, or as edited while the plan is open; undefined runs Windlass on the feature's model. */
 	draft: SubtaskAgent | undefined;
 	changed: boolean;
+	/** Its agent can be chosen: in the open plan, or after approval until the subtask starts. */
+	editable: boolean;
 	/** The machine the subtask prefers, whose agents it may choose; null for this platform. */
 	machine: MachineSummary | null;
 	/** The models its agent offers there; null where none were read. */
@@ -1187,6 +1171,7 @@ function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, ref
 	const parent = parentPlaceName(view.place, machines);
 	const overflow = plan.overflow === true;
 	const secrets = (name: string) => secretsFor(name, view.placementReview, machines);
+	const done = new Set(view.completedSubtasks ?? []);
 	return (
 		<div className="plan-routes" role="group" aria-labelledby={heading}>
 			<p className="plan-routes-head">
@@ -1197,6 +1182,18 @@ function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, ref
 			</p>
 			<ol className="plan-routes-list">
 				{plan.subtasks.map((task, index) => {
+					if (done.has(task.key))
+						return (
+							<li key={task.key} className="plan-route plan-task-finished">
+								<span className="plan-route-n" aria-hidden="true">
+									{index + 1}
+								</span>
+								<div className="plan-route-main">
+									<p className="plan-route-title">{task.title}</p>
+									<p className="plan-route-agent tone-dim">Done</p>
+								</div>
+							</li>
+						);
 					const route = routeWords(task, parent, overflow);
 					const fit = machines ? placementFit(task, view.place, overflow, machines, models) : null;
 					const problem = refusalFor(task, refusal) ?? (fit && "refused" in fit ? fit.refused : null);

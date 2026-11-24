@@ -365,7 +365,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 				assert(q.choices.some(c => c.id === "run_single" && c.label === "Run as a single item") && !q.choices.some(c => c.id === "approve"), "Wrong choices for a blocked plan.");
 				const githubReads = () => standin.requests.length;
 				const before = githubReads();
-				standin.commit(repo, "main", { [workflow]: restricted.replace("[main]", "[main, 'windlass/**']") }, "Enable branch builds");
+				standin.commit(repo, "main", { [workflow]: restricted.replace("[main]", `[main, 'windlass/feature-${feature.id}']`) }, "Enable the feature branch build");
 				const pages = await Promise.all(Array.from({ length: 4 }, () => user.item(feature.id)));
 				assert(pages.every(v => v.question?.approvalBlock === q.approvalBlock) && githubReads() === before, "Repeated previews read GitHub within a minute.");
 				const refreshed = await untilItem(user, feature.id, "the expired preview to read the new head", v => !v.question?.approvalBlock && !!v.question?.choices.some(c => c.id === "approve"), 80_000);
@@ -483,6 +483,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const { user, client } = await world(updateServer, standin, { WLP_FEATURE_TEST_GIT: join(updateServer.storage, "git") });
 			let release = () => {};
 			try {
+				await user.saveRepositoryDefaults({ repositoryId: repo.id, waitForCiOnEachPart: true });
 				await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
 				const feature = await user.createItem({ repository: { id: repo.id }, title: "Search documents", body: "Index and search documents.", mode: "orchestrate", start: true });
 				const proposal = await untilItem(user, feature.id, "the plan approval", v => v.question?.kind === "plan_approval");
@@ -522,19 +523,18 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 				await untilItem(user, search.id, "the part’s next CI question offering its new base",
 					v => !!v.question?.choices.some(c => c.id === "update_from_base"), CI_WAIT_MS);
 
-				standin.commit(repo, "main", { "index/setup.sh": "echo conflicting-target\n" }, "Change setup on main");
+				const newTarget = standin.commit(repo, "main", { "index/setup.sh": "echo conflicting-target\n" }, "Change setup on main");
 				await user.actOnItem({ id: feature.id, action: { kind: "update_feature" } });
-				const conflict = await untilItem(user, feature.id, "the target merge conflict", v => v.question?.kind === "feature_update");
-				assert(conflict.head === updated.head && standin.branchHead(repo, branch) === updated.head &&
-					conflict.question!.text.includes("in index/setup.sh") && conflict.question!.text.includes("Resolve it on GitHub") && conflict.question!.choices.some(c => c.id === "give_up"),
-					"The conflict moved the branch or did not ask the owner");
-				// The person resolves on GitHub, keeping the feature’s copy of the one conflicting file.
-				const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Owner", "-c", "user.email=owner@example.com", ...args], { cwd: repo.path, encoding: "utf8" }).trim();
-				const resolved = git("commit-tree", updated.head + "^{tree}", "-p", updated.head!, "-p", "main", "-m", "Resolve setup conflict");
-				git("update-ref", "refs/heads/" + branch, resolved, updated.head!);
-				await user.actOnItem({ id: feature.id, action: { kind: "answer", question: conflict.question!.id, choice: "update_feature" } });
-				await untilItem(user, feature.id, "the recorded GitHub resolution", v => v.head === resolved && !v.question);
-				return "serialized both writers, refreshed the part’s CI choices, named the conflict and resumed at the resolved tip";
+				const repairing = await untilItem(user, feature.id, "the conflict part's push", v =>
+					!!v.children?.some(ch => ch.parent?.key.startsWith("conflict-fix-") && ch.step?.kind === "ci"), CI_WAIT_MS);
+				const repair = repairing.children!.find(ch => ch.parent?.key.startsWith("conflict-fix-"))!;
+				const resolved = headOf(repair);
+				assert(!repairing.question && repairing.head === updated.head, "The feature moved before the repair passed CI");
+				assert(execFileSync("git", ["log", "--merges", "--format=%P", updated.head + ".." + resolved], { cwd: repo.path, encoding: "utf8" }).trim().includes(newTarget),
+					"The repair did not merge the new main");
+				setCi(repo, resolved, "success");
+				await untilItem(user, feature.id, "the checked resolution to integrate", v => v.head === resolved && !v.question, CI_WAIT_MS);
+				return "serialized both writers, refreshed the waiting part and integrated the conflict resolution after CI";
 			} finally {
 				release();
 				delete standin.beforeFastForward;
@@ -554,14 +554,18 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const proposed = await untilItem(user, feature.id, "the feature plan", v => !!v.question);
 			assert(proposed.plan && proposed.question?.kind === "plan_approval", stateOf(proposed));
 			await user.actOnItem({ id: feature.id, action: { kind: "approve_plan", version: proposed.plan.version } });
+			let failedHead: string | null = null;
 			const done = await untilItem(user, feature.id, "the final summary and handoff", v => {
-				for (const child of v.children ?? []) {
-					const head = standin.branchHead(repo, subtaskBranch(feature.id, child.parent!.key, child.id));
-					if (head && !repo.ci.has(head)) setCi(repo, head, "success");
-				}
+				const head = standin.branchHead(repo, "windlass/feature-" + feature.id);
+				if (!failedHead && head && v.children?.length === proposed.plan!.subtasks.length && v.children.every(c => c.state === "done")) {
+					failedHead = head;
+					setCi(repo, head, "failure");
+				} else if (failedHead && head && head !== failedHead && !repo.ci.has(head)) setCi(repo, head, "success");
 				return v.state === "review" || !!v.question || !!v.children?.some(child => child.question);
 			}, 320_000);
 			assert(done.state === "review" && done.report && done.pullRequest, stateOf(done));
+			assert(failedHead && done.head !== failedHead && done.children?.length === proposed.plan.subtasks.length + 1 &&
+				done.children.every(c => c.state === "done" && c.verdict?.ci === "unread"), "Expected one locally verified CI fix before handover.");
 			const { timeline } = await client.agentSession.get([auth.profile.uid, feature.sessionId], { params: { token: auth.token } }).snapshot();
 			const called = timeline.find(e => e.kind === "windlass" && e.event.type === "tool.called" && e.event.data?.name === "report");
 			assert(called && called.turn > 1, "The feature summary did not call report.");
@@ -570,13 +574,14 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const pr = await waitFor("the ready feature PR", () => standin.pulls.find(p => p.repository === repo.id && p.number === done.pullRequest!.number && !p.draft), 30_000);
 			assert(pr.body.includes("What the fake agent did."), "The ready PR omitted the filed summary.");
 			await client.dispose();
-			return "the summary called report and reached handoff";
+			return "the parts joined without CI, one fix repaired the feature and the summary reached handoff";
 		});
 	} finally { await summaryServer.stop(); summaryServer.remove(); }
 	const server = new Server();
 	try {
 		await check("orchestrator: Orchestrate anyway replans, integrates two checked children and hands over one reviewed PR", async () => {
 			const { user, client, auth } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_GITHUB_WEBHOOK_SECRET: server.secret, WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
+			await user.saveRepositoryDefaults({ repositoryId: harbor.id, waitForCiOnEachPart: true });
 			await user.saveRepositoryChecks({ repositoryId: harbor.id, checks: [{name:"build",command:"true"}] });
 			const single = (await user.factoryLimits()).item;
 			const token = (await user.createApiToken({ name: "feature", scopes: ["items:create", "items:read"] })).secret;
@@ -689,6 +694,7 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 				".github/workflows/windlass-integration.yml": readFileSync(join(root, ".github/workflows/windlass-integration.yml"), "utf8"), "README.md": "# platform\n" } });
 			// The Windlass CLI's actual CI: pushes to main and pull requests only.
 			const cli = standin.addRepository({ owner: "ada", name: "xcli", installation, files: { ".github/workflows/ci.yml": readFileSync(join(root, "fixtures/windlass-ci/main.yml"), "utf8"), "CROSS.md": "only the CLI has this line\n" } });
+			await user.saveRepositoryDefaults({ repositoryId: cli.id, waitForCiOnEachPart: true });
 			for (const repo of [platform, cli]) await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
 			await refused(() => user.createItem({ repository: { id: platform.id }, repositories: [{ alias: "platform", id: platform.id }, { alias: "cli", id: cli.id }, { alias: "docs", id: harbor.id }], title: "Three", body: "x", mode: "orchestrate" }), "bad_input");
 			await refused(() => user.createItem({ repository: { id: platform.id }, repositories: [{ alias: "platform", id: platform.id }, { alias: "cli", id: cli.id }], title: "Quick", body: "x", mode: "single" }), "bad_input");
@@ -736,12 +742,15 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 				for (const child of v.children ?? []) {
 					const repo = child.repository.id === cli.id ? cli : platform;
 					children.add(child.id + ":" + child.repository.id);
-					const pushed = standin.branchHead(repo, subtaskBranch(child.parent!.itemId, child.parent!.key, child.id));
+					const branch = repo === cli ? subtaskBranch(id, child.parent!.key, child.id) : "windlass/feature-" + id;
+					const pushed = standin.branchHead(repo, branch);
 					if (pushed && !repo.ci.has(pushed)) setCi(repo, pushed, "success");
 				}
 				return v.run?.step.kind === "integration" || !!v.question || !!v.children?.some(c => c.question);
 			}, 320_000);
 			assert(integrating.run?.step.kind === "integration", integrating.question?.text ?? integrating.children?.find(c => c.question)?.question?.text ?? stateOf(integrating));
+			assert(integrating.children?.every(child => child.verdict?.ci === (child.repository.id === cli.id ? "passed" : "unread")),
+				"Each child must follow its own repository’s CI setting.");
 			const pulls = [platform, cli].map(repo => standin.pulls.filter(p => p.repository === repo.id));
 			assert(pulls.every(list => list.length === 1 && list[0].number === 1 && list[0].draft), "Expected exactly one draft PR #1 per repository: " + JSON.stringify(pulls.map(l => l.map(p => [p.number, p.draft]))));
 			assert(pulls.every(list => countsOnly(list[0].body)), "A cross-repository draft did not show just the refusal count");
@@ -944,11 +953,13 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			assert(builderMarks.prompts.join() === (await import("../server/src/factory/untrusted.js")).untrustedWords.review(first.head), `builder marks ${JSON.stringify(builderMarks)}`);
 			return `2 reviews, 1 fix turn, round 2 answered r1.f1; check ${view.verifiedCheck?.conclusion}`;
 		});
-		await check("reviewer: networked commands hand over with the profile reason", async () => {
+		await check("reviewer: the reviewer uses the builder’s networked profile", async () => {
 			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, profile: "docker-hardened", title: "Networked profile", body: "Change the homepage.", start: true });
-			const view = await untilItem(user, item.id, "the handoff without a reviewer", v => v.state === "review", CI_WAIT_MS);
-			assert(view.reviewerSessionId === null && !view.reviews.length && view.review?.state === "off" && view.reviewNone?.includes("commands would run with the network"), "networked commands admitted a reviewer");
-			return view.reviewNone ?? undefined;
+			const view = await untilItem(user, item.id, "the networked review", v => v.state === "review", CI_WAIT_MS);
+			assert(view.reviewerSessionId && view.review?.state === "filed", "the networked review did not file");
+			const { summary } = await client.agentSession.get([auth.profile.uid, view.reviewerSessionId!], { params: { token: auth.token } }).snapshot();
+			assert(summary.profile === "docker-hardened", "the reviewer used a different profile");
+			return summary.profile;
 		});
 		await check("reviewer: repository screenshot opt-out reaches both agents", async () => {
 			await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: false });
@@ -1656,7 +1667,8 @@ async function memoryChecks(): Promise<void> {
 		Object.assign(app, {
 			pages: async ({ path }: { path: string }) => {
 				ciPaths.push(path);
-				return { items: [], truncated: false };
+				const items = path.endsWith("/commits/" + moved + "/status") ? [{ context: "owner-build", state: "failure" }] : [];
+				return { items, truncated: false };
 			},
 			pull: async () => ({ number: 1, url: "local", state: "open", mergeable: true, title: "T", body: "", head: "work", headSha: moved, base: "main", requestedReviewers: ["u"] }),
 		});
@@ -1671,8 +1683,9 @@ async function memoryChecks(): Promise<void> {
 		const stored = (actor.c.vars as { stored: { item: Item; meta: { verdict: { result: string } | null } } }).stored;
 		const verdicts = actor.raw.prepare("SELECT json_extract(data, '$.result') AS result, json_extract(data, '$.moved') AS moved FROM verdicts").all() as Array<{ result: string; moved: string | null }>;
 		assert(ciPaths.filter((path) => path.endsWith(`/commits/${HEAD}/check-runs`)).length === 1, "the replacement verdict did not read CI once for the pushed commit");
-		assert(stored.item.state === "review" && stored.meta.verdict?.result === "unverified" && verdicts.length === 1 && verdicts[0]?.result === "unverified" && verdicts[0].moved === moved, `the item is ${stored.item.state}, its summary ${stored.meta.verdict?.result}; verdicts ${JSON.stringify(verdicts)}`);
-		return "the verdict became not verified when the pull request moved, in place of the pass";
+		assert(stored.item.question?.kind === "push_ci" && stored.item.run?.n === 1, "The failed push did not ask before rework");
+		assert(stored.item.state === "waiting" && stored.meta.verdict?.result === "unverified" && verdicts.length === 1 && verdicts[0]?.result === "unverified" && verdicts[0].moved === moved, `the item is ${stored.item.state}, its summary ${stored.meta.verdict?.result}; verdicts ${JSON.stringify(verdicts)}`);
+		return "the original verdict became unverified and CI on the newer head offered a hand-back";
 	});
 
 	/** The user actor's turn queue over a database in memory, with sessions a, b and c of items, and one of the person's own. */

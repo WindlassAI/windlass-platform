@@ -68,7 +68,7 @@ export interface ReviewerTaskReport {
  * person's: someone else's feedback is not a decision of theirs.
  */
 export interface PersonDecision {
-	kind: "send_back" | "answer" | "feedback";
+	kind: "send_back" | "answer" | "feedback" | "note";
 	/** The run the words started or were given in. */
 	run: number;
 	text: string;
@@ -79,6 +79,8 @@ export interface PersonDecision {
 }
 
 export interface ReviewerTaskInput {
+	mcp?: boolean;
+	reviewDirectory?: string;
 	/** 1 for a run's first review; from 2, a review of the builder's answer to the round before. */
 	round: number;
 	task: ItemTask;
@@ -283,7 +285,7 @@ function changedPart(changed: ReviewerTaskInput["changed"], room: number): strin
 	].join("\n");
 }
 
-function blockLimits(input: ReviewerTaskInput): string {
+function blockLimits(input: ReviewerTaskInput, filing: string): string {
 	const n = number;
 	return [
 		"## The review you file",
@@ -309,7 +311,7 @@ function blockLimits(input: ReviewerTaskInput): string {
 		`- In all: at most ${n(limit.blocks)} blocks, ${n(limit.totalChars)} characters of text, ${n(limit.paths)} distinct paths, ${n(limit.refs)} distinct refs, and ${n(limit.inputBytes / 1024)} KiB of input.`,
 		`- Text is plain: paragraphs, lines starting "- " as bullets, \`code\` spans, and fenced code of at most ${n(limit.fenceLines)} lines. Links, images, HTML, headings and emphasis are shown as typed, not rendered.`,
 		"",
-		`If a filing is refused, the answer names what to fix: fix it and call \`file_review\` again. A turn takes at most ${plural(input.filings, "call")}, and the platform keeps the last review it accepted. When one is accepted, end your turn.`,
+		filing,
 	].join("\n");
 }
 
@@ -358,6 +360,8 @@ function decisionHead(one: PersonDecision): string {
 	switch (one.kind) {
 		case "send_back":
 			return `${run}: the person sent the work back, saying:`;
+		case "note":
+			return `${run}: the person added a note for the agent:`;
 		case "feedback":
 			return `${run}: the person's own review or comments on the pull request on GitHub:`;
 		case "answer":
@@ -417,6 +421,27 @@ function share(room: number, a: number, b: number): [number, number] {
 // The text
 // ---------------------------------------------------------------------------------------------
 
+const reviewWording = {
+	requested: {
+		opening: "Review the current pull request head for the person who requested a read-only review. Your findings go on GitHub and the item page. The commit can include work the owner pushed.",
+		sandbox: "- This checkout is read-only. Do not edit, run setup, build, or push. For Git reads use git -c safe.directory=\"$PWD\" since the platform owns this directory.",
+		inspect: "3. Inspect the diff and source. Report what you could verify by inspection, and attach line findings to lines in the diff.",
+	},
+	second: {
+		opening: "You are the second reviewer of a pull request. Another agent made the change, and you had no part in it. Review it on your own evidence, for the person who asked for the work. The person sees your review beside the platform's own records. It advises them: it does not merge, push, or change the platform's verdict.",
+		sandbox: "- The repository's setup command ran at the base, before this commit was checked out. The dependencies installed are the base's.",
+		inspect: "3. Run what you need to know whether it works: the tests that cover it, a build, a type check, the app. Prefer the repository's own scripts. A command that fails for want of the network, or of a dependency the base does not have, says nothing about the change: say so, and do not count it against the change.",
+	},
+	mcp: {
+		filing: () => "File once, then end your turn. You have one call over MCP.",
+		commands: "- Describe checks you ran in a text block. Command references are unavailable over MCP.",
+	},
+	host: {
+		filing: (filings: number) => `If a filing is refused, the answer names what to fix: fix it and call \`file_review\` again. A turn takes at most ${plural(filings, "call")}, and the platform keeps the last review it accepted. When one is accepted, end your turn.`,
+		commands: "- Cite a command you ran in this turn as `command/<id>`, using an id from `file_review({commands:true})`. That lookup lists completed shell calls in order and uses no filing.",
+	},
+};
+
 const SHA = /^[0-9a-f]{40}$/;
 
 export function reviewerTask(input: ReviewerTaskInput, listed?: ReviewRecord[], continuation = ""): string {
@@ -429,8 +454,10 @@ export function reviewerTask(input: ReviewerTaskInput, listed?: ReviewRecord[], 
 	const { head, baseSha: base } = input;
 	const later = input.round > 1;
 
+	const checkout = input.reviewDirectory ? reviewWording.requested : reviewWording.second;
+	const transport = input.mcp ? reviewWording.mcp : reviewWording.host;
 	const opening = [
-		"You are the second reviewer of a pull request. Another agent made the change, and you had no part in it. Review it on your own evidence, for the person who asked for the work. The person sees your review beside the platform's own records. It advises them: it does not merge, push, or change the platform's verdict.",
+		checkout.opening,
 		"",
 		`This is round ${number(input.round)}: ${later ? "a review of the agent's answer to your last review" : "the first review"} of pull request #${input.pr}, at commit ${head}.`,
 	].join("\n");
@@ -438,8 +465,8 @@ export function reviewerTask(input: ReviewerTaskInput, listed?: ReviewRecord[], 
 	const sandbox = [
 		"## Your sandbox",
 		`- The workspace is a clone of the repository with commit ${head} checked out, detached. The base is commit ${base}.`,
-		"- The repository's setup command ran at the base, before this commit was checked out. The dependencies installed are the base's.",
-		"- Your commands run in Windlass's sandbox and have no network. Nothing can be downloaded or installed, and a server started by one command cannot be reached from another command.",
+		checkout.sandbox,
+		"- Your commands use the builder’s sandbox profile and network policy.",
 		"- You cannot push and you have no GitHub access. What you change in the workspace stays in this sandbox, and the platform checks the commit out again before each review.",
 		`- Your one tool from the platform is \`${REVIEW_TOOL}\`. Nobody answers questions during this turn: put questions for the person in your review.`,
 	].join("\n");
@@ -454,14 +481,14 @@ export function reviewerTask(input: ReviewerTaskInput, listed?: ReviewRecord[], 
 		"## How to review",
 		`1. Read the task${(input.decisions ?? []).length ? ", and the person's decisions after it, which stand over it" : ""}. Before you look at the diff or the author's report, write down for yourself what a correct change would do: what it would change, how you would tell that it works, and how you would check each acceptance criterion here. Compare the change with that, not with the author's account of it.`,
 		`2. Read the change with \`git diff ${base}...HEAD\` and \`git log --oneline ${base}..HEAD\`, and read the code around what it touches. Read all of it, not only where the author points.`,
-		"3. Run what you need to know whether it works: the tests that cover it, a build, a type check, the app. Prefer the repository's own scripts. A command that fails for want of the network, or of a dependency the base does not have, says nothing about the change: say so, and do not count it against the change.",
+		checkout.inspect,
 		"4. Do not run install, test or git hooks that the change adds or modifies, or scripts it adds to an install or setup step. Say so where that stops you from checking something.",
 		"5. Only then read the author's report. Check each thing it claims. Where it and what you saw disagree, what you saw counts, and the disagreement is a finding when it matters.",
 		`6. File your review with \`${REVIEW_TOOL}\` once, then end your turn.`,
 	].join("\n");
 
 	const notes: string[] = [];
-	if (input.manifestsChanged) notes.push("- Dependency manifests or lockfiles changed in this commit. Your sandbox has the base's dependencies and cannot install others. Where that stops you from checking something, such as a test that imports a new package, say so in a `text` or `risk` block, and do not count it against the change.");
+	if (!input.reviewDirectory && input.manifestsChanged) notes.push("- Dependency manifests or lockfiles changed in this commit. Your sandbox has the base's dependencies and cannot install others. Where that stops you from checking something, such as a test that imports a new package, say so in a `text` or `risk` block, and do not count it against the change.");
 	if (input.uiChanged) notes.push(input.screenshots
 		? "- UI files changed in this commit. Take screenshots of what the change shows (see below). If you take none, say why in a `text` block."
 		: "- UI files changed in this commit. Screenshots are unavailable for this item: check the UI by other means, and say in a `text` block what you could not see.");
@@ -478,7 +505,7 @@ export function reviewerTask(input: ReviewerTaskInput, listed?: ReviewRecord[], 
 	const evidence = [
 		"## Citing evidence",
 		'- Cite the platform\'s records, listed below, in `refs` by their ids: `{ "ref": "<id>", "says": "passed" }`, with `says` one of `passed`, `failed`, `ran`, `not_run`. Do not state what a record shows without its ref; the page shows the platform\'s record beside your claim.',
-		"- Cite a command you ran in this turn as `command/<id>`, using an id from `file_review({commands:true})`. That lookup lists completed shell calls in order and uses no filing.",
+		transport.commands,
 		"- Point at code with locations, not by quoting it. A ref, a path or a line that does not exist refuses the filing.",
 	].join("\n");
 
@@ -489,7 +516,8 @@ export function reviewerTask(input: ReviewerTaskInput, listed?: ReviewRecord[], 
 
 	const earlier = later && input.earlier.length ? earlierPart(input) : null;
 	const followUp = continuation ? cut(continuation, REVIEWER_TASK_LIMITS.continuationChars).text : null;
-	const bounded = [followUp, opening, sandbox, untrusted, steps, notesPart, shots, evidence, blockLimits(input), later ? laterRound(input) : null, verdictPart, earlier];
+	const filingRules = blockLimits(input, transport.filing(input.filings));
+	const bounded = [followUp, opening, sandbox, untrusted, steps, notesPart, shots, evidence, filingRules, later ? laterRound(input) : null, verdictPart, earlier];
 	// What the parts below add besides their data: headings, fence lines, cut notes, the changed files' count line.
 	const overhead = 1_400;
 	let left = REVIEWER_TASK_LIMITS.chars - 1 - overhead - bounded.reduce((sum, part) => sum + (part === null ? 0 : part.length + 2), 0);
@@ -517,6 +545,6 @@ export function reviewerTask(input: ReviewerTaskInput, listed?: ReviewRecord[], 
 	left -= task.text.length + (decisions?.length ?? 0) + (input.report === null ? 0 : Math.min(reportRoom, reportChars));
 	const changed = changedPart(input.changed, left);
 
-	const parts = [opening, sandbox, untrusted, steps, notesPart, shots, evidence, blockLimits(input), later ? laterRound(input) : null, taskPart, decisions, changed, records, verdictPart, earlier, report, followUp];
+	const parts = [opening, sandbox, untrusted, steps, notesPart, shots, evidence, filingRules, later ? laterRound(input) : null, taskPart, decisions, changed, records, verdictPart, earlier, report, followUp];
 	return `${parts.filter((part): part is string => part !== null).join("\n\n")}\n`;
 }

@@ -1,5 +1,5 @@
 import { changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
-import type { ItemPlaceDefaults } from "../contract.js";
+import type { ItemPlaceDefaults, RepositoryAutonomy } from "../contract.js";
 import { snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
 import type { AgentModels } from "../factory/placement.js";
@@ -160,9 +160,9 @@ import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManyS
 import { publishAsksEveryTime, publishUnaskedProblem } from "../agent-publish.js";
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
 import { refreshSecretRows } from "../signin/secret-rows.js";
+import { criticAllowed } from "../factory/review.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, unavailableSecretName, validRequestedSecretName, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
 import { criticSessionId } from "../factory/feature-ids.js";
-import { reviewerAllowed } from "../factory/review.js";
 import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, repositoryDefaultsLog, migrateDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
 import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
@@ -1168,7 +1168,6 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	const harness = input.harness === undefined ? "windlass" : input.harness;
 	if (knownHarness(harness) === null) throw new UserError("Choose an available harness.", { code: "bad_input" });
 	if (harness !== "windlass") {
-		if (item?.role === "reviewer") throw new UserError("A work item's reviewer runs only with Windlass.", { code: "bad_input" });
 		const notForItems = item ? itemHarnessProblem(harness) : null;
 		if (notForItems) throw new UserError(notForItems, { code: "bad_input" });
 		if (place.kind !== "machine") throw new UserError(`${machineHarnesses[harness].name} runs only on a machine of yours.`, { code: "bad_input" });
@@ -2353,7 +2352,7 @@ export const user = actor({
 			requireServiceFor(c, "call");
 			const builder = c.vars.sessions.get(builderId), profile = c.vars.profile;
 			if (!profile || !builder?.item || builder.item.role === "reviewer" || !builder.repository ||
-				!reviewerAllowed(builder.place, (await getLayer()).sandboxes.profile(builder.profile))) throw new Error("A restricted critic session is unavailable.");
+				!criticAllowed(builder.place, (await getLayer()).sandboxes.profile(builder.profile))) throw new Error("A restricted critic session is unavailable.");
 			const sessionId = criticSessionId(builder.item.id);
 			if (c.vars.sessions.has(sessionId)) return;
 			const { id, branch } = builder.repository;
@@ -2366,8 +2365,8 @@ export const user = actor({
 
 		internalRepositoryAutonomy: async (c, repositoryId: GithubId) => {
 			requireService(c);
-			const { autoApprovePlans, autoMergeSingles } = await readDefaults(c.db, setupKeyOf(repositoryId));
-			return { autoApprovePlans: !!autoApprovePlans, autoMergeSingles: !!autoMergeSingles };
+			const { autoApprovePlans, autoMergeSingles, waitForCiOnEachPart } = await readDefaults(c.db, setupKeyOf(repositoryId));
+			return { autoApprovePlans: !!autoApprovePlans, autoMergeSingles: !!autoMergeSingles, waitForCiOnEachPart: !!waitForCiOnEachPart };
 		},
 
 		repositoryChecks: async (c, repositoryId: GithubId): Promise<RepositoryChecks> => {
@@ -2692,7 +2691,7 @@ export const user = actor({
 			const send = session.place.kind === "hosted" || await machineSecrets(c.db, session.place.machineId) === true;
 			const requestedNames = send && session.harness && session.harness !== "windlass"
 				? (await c.db.execute<{ name: string }>("SELECT name FROM session_secret_grant WHERE session_id = ?", id)).map(row => row.name) : undefined;
-			const redactOnly = !send && !!session.harness && session.harness !== "windlass";
+			const redactOnly = !send && (session.item?.role === "reviewer" || (!!session.harness && session.harness !== "windlass"));
 			const kept = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name") : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], ACCOUNT_SECRET_PROJECT, kept);
 			const account = {
@@ -2703,7 +2702,7 @@ export const user = actor({
 			if (project === null) return { project: null, secrets: [], checks: [], account, requestedNames, ...(redactOnly && { redactOnly }) };
 			// The hosts its repository's list allows, for a hosted sandbox. A cross-repo feature's own session reads every
 			// repository of the feature, and is given the hosts of each one's list (`unionHosts`).
-			const feature = session.item?.role === "builder" ? c.vars.items.items.get(session.item.id) : undefined;
+			const feature = session.item && !session.item.planCritic ? c.vars.items.items.get(session.item.id) : undefined;
 			const others = (feature?.repositories ?? []).filter(r => String(r.repositoryId) !== String(session.repository?.id));
 			const lists = session.place.kind === "hosted" ? [await readNetwork(c.db, project), ...await Promise.all(others.map(r => readNetwork(c.db, setupProjectKey(r.repositoryId)!)))] : [];
 			// The others fill only the room the deployment's own hosts leave: the primary's list comes first.
@@ -2753,7 +2752,7 @@ export const user = actor({
 			return found;
 		},
 
-		saveRepositoryDefaults: async (c, input: ItemPlaceDefaults & { repositoryId: GithubId; autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: string | null; model?: string | null; hostedSize?: string | null }): Promise<RepositoryDefaults> => {
+		saveRepositoryDefaults: async (c, input: ItemPlaceDefaults & RepositoryAutonomy & { repositoryId: GithubId; screenshots?: boolean; profile?: string | null; model?: string | null; hostedSize?: string | null }): Promise<RepositoryDefaults> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			let change: DefaultsChange;

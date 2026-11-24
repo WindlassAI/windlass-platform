@@ -1110,6 +1110,7 @@ export interface RepositorySecrets {
 export interface RepositoryAutonomy {
 	autoApprovePlans?: boolean;
 	autoMergeSingles?: boolean;
+	waitForCiOnEachPart?: boolean;
 }
 
 export type DefaultPlace = "hosted" | "any-machine" | { machine: string };
@@ -1120,6 +1121,9 @@ export interface ItemPlaceDefaults {
 	placeFallback?: "wait" | "hosted" | null;
 	harness?: HarnessId | null;
 	machineProfile?: SandboxProfileId | null;
+	/** The machine agent's model and effort, by id; null runs its default. Plan-first subtasks on that agent start with them. */
+	machineModel?: string | null;
+	machineEffort?: string | null;
 }
 
 export interface RepositoryDefaults extends RepositoryAutonomy, ItemPlaceDefaults {
@@ -1883,7 +1887,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
-export type QuestionKind = "feature_update" | "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
+export type QuestionKind = "push_ci" | "feature_update" | "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
 
 /**
  *   approve     the plan is approved: implement it
@@ -1898,7 +1902,7 @@ export type QuestionKind = "feature_update" | "sandboxes" | "integration" | "fee
  *   fresh_sandbox  a `sandbox_failed` question: the session's sandbox is removed and the step runs in a new one
  *   larger_sandbox an `out_of_memory` question: the same, in a sandbox of the next hosted size
  */
-export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base" | "update_feature";
+export type ChoiceId = "send_back" | "dismiss" | "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base" | "update_feature";
 
 /** Render the reason as quoted plain text, separately from the platform's own notice. */
 export interface SecretRequest {
@@ -2129,6 +2133,8 @@ export interface ItemReport {
 
 /** A review of one pushed head. Its id is the review step attempt's key. */
 export interface ItemReview {
+	/** Advisory review requested on this GitHub pull request. */
+	requestedPull?: { owner: string; name: string; pr: number };
 	screenshots: ItemAttachment[];
 	id: string;
 	run: number;
@@ -2136,7 +2142,7 @@ export interface ItemReview {
 	head: string;
 	base: string;
 	verdictId: string;
-	by: { sessionId: string; model: string };
+	by: { sessionId: string; model: string; via?: "host" | "mcp"; commandSandbox?: "windlass" | "none" | "unknown" };
 	at: number;
 	state: "filed" | "none";
 	said: string | null;
@@ -2352,6 +2358,8 @@ export interface ItemView extends ItemSummary {
 	unattended?: string[];
 	/** With a plan: the keys of its subtasks whose work is integrated, which approval neither places nor confirms again. */
 	completedSubtasks?: string[];
+	/** After a re-plan: why the feature was planned again, in a short sentence ("A pull request comment asked for changes"). */
+	replanWhy?: string;
 	children?: ItemSummary[];
 	/** Dispatched subtasks including placement waits. The start time is null for older jobs. */
 	subtasks?: { id: string; key: string; state: ItemState; dispatchedAt: number | null; startedAt: number | null; wait: string | null }[];
@@ -2571,7 +2579,7 @@ export interface CreateItemInput {
 	/**
 	 * The builder's agent: "windlass" (the default), or a harness the chosen machine reports and is signed
 	 * into (`MachineSummary.harnesses`), which runs in its hardened container. Not on hosted, not with Plan
-	 * first. The reviewer, hosted only, stays Windlass.
+	 * first. The second reviewer uses the same agent and place.
 	 */
 	harness?: HarnessId;
 	/** Left out: hosted. On a paired machine, use the requested profile if available, otherwise its first available profile. */
@@ -2597,6 +2605,8 @@ export type ItemAction =
 	 */
 	| { kind: "approve_plan"; version: number; agents?: string[]; bases?: Record<string, string> }
 	| { kind: "run_single" }
+	/** After approval: the agent a subtask that has not started runs; null runs Windlass on the feature's model. */
+	| { kind: "set_subtask_agent"; key: string; agent: SubtaskAgent | null }
 	/** A draft: start it. */
 	| { kind: "start" }
 	| { kind: "cancel" }
@@ -2604,6 +2614,8 @@ export type ItemAction =
 	| { kind: "retry" }
 	/** An item in review: a new run, with the person's note to the agent. */
 	| { kind: "send_back"; note: string }
+	/** A note to the builder: into its running turn, or with its next turn. */
+	| { kind: "note"; note: string }
 	/** The open question: one of its choices, with a note to the agent, and for "raise" on a budget question the new budget. */
 	| { kind: "answer"; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] };
 
@@ -2744,7 +2756,7 @@ export interface UserActions {
 	 * null saves none for it. Throws a UserError with code `bad_input` for a sandbox this deployment
 	 * does not offer or cannot run, and `bad_model` for a model that is not among the user's.
 	 */
-	saveRepositoryDefaults(input: ItemPlaceDefaults & { repositoryId: GithubId; autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(input: ItemPlaceDefaults & RepositoryAutonomy & { repositoryId: GithubId; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
 	/**
 	 * Forgets the user's remembered approvals of that MCP server for a repository, whatever its
 	 * definition was (`RepositoryView.forgetting` says what stays). Resolves when nothing was remembered, too.

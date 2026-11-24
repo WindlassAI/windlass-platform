@@ -4,7 +4,7 @@ A work item is a task on one of your GitHub repositories that an agent carries t
 
 Work items need a repository from your GitHub connection. They run with Windlass unless you choose another agent on one of your machines: see [Choose the agent](#choose-the-agent). The Factory is offered where the platform turns work items on. Then **Agents · Factory** appears in the bar.
 
-GitHub issues and the Factory composer use the repository’s **Where work items run** setting, then the account setting, then Hosted. You can override the selection in the composer. Any of my machines takes the first compatible online machine with a free slot. If none is ready, the timeline explains the wait or hosted fallback. Plan first uses Windlass to plan and passes the placement preference to the planner for parts that fit.
+GitHub issues and the Factory composer use the repository’s **Where work items run** setting, then the account setting, then Hosted. You can override the selection in the composer. Any of my machines takes the first compatible online machine with a free slot. If none is ready, the timeline explains the wait or hosted fallback. Plan first uses Windlass to plan and passes the placement preference to the planner for parts that fit. A part on the saved agent starts on its saved model and effort unless the planner chose one.
 
 A work item runs in one of two ways:
 
@@ -100,7 +100,7 @@ What changes with Claude Code or OpenCode:
 - **Asking.** An item has nobody watching it, so the agent works without asking. Like a Windlass builder, a Claude Code or OpenCode builder can stop and ask you a question (see [When the agent asks you](#when-the-agent-asks-you)), and files its report the same way; otherwise it decides for itself. It can push its branch during its turn, as Windlass can, and the platform pushes what is left when the turn ends. Claude Code runs in **Bypass permissions**. OpenCode runs in **Build**, and the platform allows once each edit or command it asks about, as Windlass runs commands in that container. The turn does not start if the agent does not offer that mode.
 - **Checks.** The platform runs your repository's saved checks for these agents, as Windlass runs them for itself. When the agent ends its turn, the checks that cover what the turn changed run in the same container, with the same time limits and none of your saved secrets. If one fails, the platform sends the agent back in the same turn with the failing output, marked as text from the workspace and not as instructions, up to 2 times. A check still failing after that ends the turn with checks failing, and the item's next steps treat it as they treat a Windlass turn's. The timeline notes each run, and the verdict and the check on GitHub read them.
 - **Step limit.** A builder turn may make 400 tool calls (40 for a reviewer). When the agent starts one more, the platform records the limit on the timeline and the item can continue in a new turn within its budget.
-- **Review.** Items on a machine have no second reviewer, whatever the agent.
+- **Review.** The second reviewer runs in its own sandbox on the builder’s machine with the same agent, model and profile. Its setup receives the same setup-scope secrets as the builder’s setup. Its commands have the same network access as the builder’s commands.
 - **Publishing.** The platform commits what the agent left, pushes and opens the pull request, as it does for Windlass. The agent's own `git push` fails, because the sandbox holds no GitHub credential. The pull request's description is the item's.
 - **Tokens and cost.** OpenCode's reported tokens count against the item's token budget, and the cost it reports is shown on the item's page. Claude Code runs on your Claude subscription. The tokens it reports are shown but not counted, and its 5-hour window is shown at the first turn and the latest. Claude Code sends that window only when it warns that the window is nearly used, so until then the page says the window is **Not reported**. Its turns are bounded only by the factory's backstop on an item's turns. Where an agent reports no tokens, the page says **Not reported**, never 0. An OpenCode turn that reports no tokens stops the item, because its token budget can't be enforced: the item asks you, and you can give up or hand over a pull request CI has read. The cost OpenCode reports is shown, not capped.
 
@@ -164,6 +164,8 @@ Sometimes the commit handed over has no review of its own after a review asked f
 If someone pushes to the pull request while the second agent reviews, its agent is not sent back: a fix of the reviewed commit could not be pushed over theirs. The item is handed over as it is, saying the pull request moved.
 
 On a feature, the second review does nothing by itself: the feature is handed to you whatever it recommends.
+
+Windlass files through its host tool. Other agents can call `file_review` once per turn over MCP. A process in the sandbox can make that call. Findings and requests for changes take the same path for every agent. An MCP approval leaves the merge decision with you. Auto-merge requires a host-filed Windlass approval from a reviewer whose commands ran in the Windlass command sandbox. An issue written by someone else or feedback taken from another writer keeps the merge with you.
 
 The second review is off unless the platform turns it on. The Factory page says when there is none.
 
@@ -241,7 +243,7 @@ Each automatic action appears in the timeline and counts against that run’s al
 | The agent changes nothing | Ask it once to finish the task or explain in its report why no change is needed. |
 | The sandbox runs out of memory | Try the next allowed hosted size once, or retry the same size once. Resizing also starts from GitHub. |
 | Checks cannot run in the environment | Retry the step once. |
-| Local checks did not verify a subtask | Run the saved checks once. If they still give no local evidence and CI passes on that exact commit, integrate and record the missing evidence in the verdict. |
+| Local checks did not verify a subtask | Run the saved checks once. By default, the part waits for passing local checks. With per-part CI enabled, the factory can accept passing CI on the exact commit and record the missing local evidence in the verdict. |
 | CI is cancelled or times out | Request one eligible infrastructure rerun, update from an ahead base once, then wait once. |
 | A blocked part’s feature is behind its target | Update the feature from the target once, between integrations. |
 | No sandbox or approved place is free, or a machine is away | Show the reason and wait up to six hours. Work resumes when the place becomes available. |
@@ -301,12 +303,15 @@ For a missing environment variable, the builder can request a secret by name and
 
 - **Start** a draft.
 - **Retry** a failed top-level item if it has not started dispatching subtasks. A retry starts a new run.
-- **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. You can also ask for changes on the pull request itself (see below).
+- **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. If CI fails on a newer push after handover, choose **Hand it back** to start a run with the failing checks, or **Dismiss** to keep it in review. You can also ask for changes on the pull request itself (see below).
+- **Send note** to a working item's agent, or on a feature's page to a running part. While its builder's turn runs, the note goes into that turn, as a message you send to a running agent does. Otherwise it goes with the builder's next turn. The note is your own words, shown as yours in **What happened**, and the second review is held to it as it is to a send-back.
 - **Cancel…** an item.
 
 ### Feedback from GitHub
 
 You can ask for changes on the item's pull request at GitHub instead of on its page.
+
+**Request a review.** On an item or feature PR, you or another person with write access can comment `/windlass review` on its own. The reviewer inspects a read-only checkout of the current head, including commits you pushed. It posts a comment-only GitHub review with its summary and inline findings on lines GitHub can display in the diff, and the full review appears on the item. The item stays on its current step. The reviewer runs once per head, within the item’s budget. Further requests are skipped while a review is pending or after the item ends. Requests from another writer and heads containing changes the platform did not verify use the untrusted-input policy.
 
 **What is read.** A review that requests changes is read whole, with its line comments. A conversation comment, a line comment on its own or a comment-only review is read only when it starts with the App's mention or `/windlass`. An approval adds a line to the item's log and starts nothing.
 
@@ -322,7 +327,7 @@ You can ask for changes on the item's pull request at GitHub instead of on its p
 
 **Not taken.** Feedback is not taken on a failed, done or cancelled item, on a subtask's own work, or after its machine was removed.
 
-**On GitHub**, a taken comment gets a 👀 reaction. Reviews cannot take reactions. The item's comment on the pull request says which run works on the changes. At the next handoff, Windlass asks each writer whose change request it took to review again. Windlass never replies to people who do not count.
+**On GitHub**, a taken comment gets a 👀 reaction. Reviews cannot take reactions. The item's comment on the pull request says which run works on the changes. At the next handoff, Windlass asks each writer whose change request it took to review again. Windlass never replies to people who do not count. If GitHub refuses the 👀 reaction for lack of permission, the factory logs the refusal once and continues.
 
 **On the item's page**, the Checks panel lists the open comments, and **Show all batches** under them lists each batch: who wrote it and when, the file and line, a link to it on GitHub, and what happened to it. A batch is **Taken** into a run, **Held** while a run works, **Waiting** while comments collect, **Needs you** when it asks first, or **Not taken** with the reason. Feedback from people without write access shows as **Counted only**.
 
@@ -380,7 +385,7 @@ Plan first starts with a plan whether the feature needs one implementer or sever
 Approving a split into subtasks needs two things on the repository:
 
 - saved [checks](/docs/settings#checks);
-- CI that reports on pushes to the feature's branches, `windlass/feature-<id>` and its subtasks' branches. An enabled GitHub Actions workflow with `on: push` will do, as long as its branch filters do not leave those branches out. CI of another kind counts once it has passed on an earlier `windlass/` branch pushed without a pull request. A workflow that runs only on pull requests is not enough.
+- CI that reports on pushes to the feature branch, `windlass/feature-<id>`. If **Wait for CI on each part** is enabled, CI must also report on subtask branches. An enabled GitHub Actions workflow with `on: push` will do, as long as its branch filters do not leave those branches out. CI of another kind counts once it has passed on an earlier `windlass/` branch pushed without a pull request. A workflow that runs only on pull requests is not enough.
 
 If these checks are missing, you can still run the plan with one implementer. The composer flags repositories with no saved checks.
 
@@ -435,7 +440,7 @@ A subtask on Claude Code or OpenCode runs in the machine's hardened container, o
 
 **Works without asking.** Claude Code and OpenCode work without asking: they run every command and edit in their sandbox without asking you. Wherever such a subtask is shown, it says **works without asking**. The planner reads the item's text, which may come from an issue anyone could file. So its choice of such an agent never runs on approval alone: the approval card lists each such subtask under **Agents that work without asking**, and **Approve version N** stays unavailable until you tick every one. An approval sent any other way that does not name each one is refused. To run one on Windlass instead, choose **Windlass** for it and save.
 
-**Budgets per agent.** A subtask's budget counts the way its agent's does. OpenCode's tokens count against the subtask's token budget, and an OpenCode turn that reports no tokens stops the subtask, because its budget can't be enforced. Claude Code runs on your Claude subscription: its tokens are shown, not counted. Only counted tokens reach the feature's budget.
+**Budgets per agent.** A subtask's budget counts the way its agent's does. OpenCode's tokens count against the subtask's token budget, and an OpenCode turn that reports no tokens stops the subtask, because its budget can't be enforced. Claude Code runs on your Claude subscription: its tokens are shown, not counted. Only counted tokens reach the feature's budget. Such a subtask shows its turns and working time instead of a token meter, and the feature's cost lists them under **on a subscription**.
 
 **Usage limits.** A subtask waits only for its own agent's usage limits. When Claude Code is at its limit on the preferred machine and overflow is allowed, the subtask can run on an approved alternative whose Claude Code account is not.
 
@@ -451,11 +456,11 @@ When the feature's own turns use its own budget, for example a long planning, it
 
 Each subtask is a work item with its own page, which says **subtask of** the feature. It starts from the feature's branch, runs at its approved placement with its own agent, model and effort (the feature's Windlass model where it chose none), and has the subtask's budget. It is given its brief, its paths and the reports of the subtasks it waits for.
 
-Up to three subtasks can run together when their dependencies are done and their owned paths are disjoint. A subtask with no owned paths runs alone. Each gets its own branch, place and reserved budget. If a place or budget share is unavailable, it waits while the others work.
+Up to three subtasks can run together when their dependencies are done and their owned paths are disjoint. A subtask with no owned paths runs alone. The planner sees how many parts can run at once on the default machine given its free slots, or the three-part limit for hosted work. Each gets its own branch, place and reserved budget. If a place or budget share is unavailable, it waits while the others work.
 
-After local checks and push CI pass, the platform integrates one branch at a time by fast-forward or merge commit. A conflict goes back to that subtask to merge the feature branch and pass its checks again. The final summary and review wait for every subtask.
+By default, each part can join the feature as soon as its local checks pass. Dependent parts can then start. To require passing GitHub CI on each part as well, turn on **Wait for CI on each part** in the repository’s settings before the feature branch opens. The platform integrates one branch at a time by fast-forward or merge commit. A conflict goes back to that subtask to merge the feature branch and pass its checks again. The final summary and review wait for every subtask.
 
-When the target branch moves during a single-repository feature, choose **Update the feature from main** (or the name of your target) on the feature page or a CI question. The platform merges the target into the feature branch between subtask integrations. New parts start from the updated tip. A running part whose CI needs attention can then choose **Update from the base branch and run CI again**. If the target conflicts with the feature, resolve it on GitHub and check the branch again, or choose **Give up**.
+When the target branch moves during a single-repository feature, choose **Update the feature from main** (or the name of your target) on the feature page or a CI question. The platform merges the target into the feature branch between subtask integrations. New parts start from the updated tip. A running part whose CI needs attention can then choose **Update from the base branch and run CI again**. If the target conflicts with the feature, a new part merges the target, resolves the conflicts and goes through the usual checks and integration. If that part fails twice, the feature asks you to check the branch again or give up.
 
 **Following them as they run.** Once the plan is approved, the feature's page shows a **Subtasks** block where it showed where the item is. Its first line counts them, for example "2 running · 1 asks you · 1 of 6 done", with a bar of one segment per subtask. Under it each subtask has one row, in the plan's order: what it is doing now (its step and fix round, for example "implementing · turn 2" or "fixing · your checks failed, fix 1"), where it runs (with "overflow from nas" when it went to an alternative), what it has spent of its token budget, and a **Session** link to its agent. A subtask that asks you shows the start of its question and **Answer**, which opens its page. A subtask not started says what it waits for, for example "after 2 and 3". The approved plan folds under the block to its goal; **Show all** opens it.
 
@@ -463,21 +468,25 @@ A subtask's page shows the feature in the bar (repository / feature / subtask) a
 
 On the Factory page, a feature in progress counts its subtasks that are running and asking, and lists the active ones, each with its step and where it runs. The lane's count adds how many subtasks run, for example "2 work items · 3 subtasks running". A subtask that asks you is also listed under **Needs you**, with the first line of its question.
 
-If a subtask fails or is cancelled, the planner revises the plan for the work left. Done subtasks stay as they are, and remaining ones keep their approved agent. You review and approve the revised plan again, and its budgets with it. When the same subtask stops a second time, or two subtasks stop with the same failure, the feature asks you instead: **Revise the plan** or **Give up**.
+If a subtask fails or is cancelled, the planner revises the plan for the work left. Done subtasks stay as they are, and remaining ones keep their approved agent. You review and approve the revised plan again, and its budgets with it. The card says why the feature was planned again, and shows done subtasks greyed, with nothing to change.
+
+After approval, a subtask that has not started yet can still change its agent, model and effort: open **The plan** on the feature's page and choose them on its row. The change applies at once. A subtask that has started keeps the agent it runs. When the same subtask stops a second time, or two subtasks stop with the same failure, the feature asks you instead: **Revise the plan** or **Give up**.
 
 ### The pull request
 
 When you approve a split plan, the platform opens a draft pull request from `windlass/feature-<id>` into the base branch. Each subtask's work lands on that branch. When the feature is handed over, the pull request is marked ready for review. Merging a feature stays yours.
 
-A feature gets no turns of its own to fix CI or merge its base. If CI fails on the whole feature, or the pull request conflicts with its base, the feature asks you, with **Check the feature PR again**, **Hand it over as it is** and **Give up**.
+By default, the factory watches CI on the current feature head as parts join. A failure queues one fix part with the failing checks, their logs and the feature diff. The fix passes the local gate and joins through the same integration queue. Each new head supersedes the previous CI result. Handover waits until all parts have finished and CI passes on the current head. If the same failure comes back after a fix, the feature stops and asks you.
+
+With **Wait for CI on each part** enabled, a failure on the assembled feature asks you to check the PR again, hand it over as it is, or give up.
 
 ### When orchestration stops
 
 These stop the feature and ask you:
 
-- a subtask has no passing checks or no CI on its push: "Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up.";
+- with per-part CI enabled, a subtask has no passing checks or no CI on its push: "Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up.";
 - two subtasks stopped with the same failure, or one subtask stopped a second time;
-- the whole feature has no CI or every check was skipped or neutral: "No passing CI reported on the complete feature. Wait for a check or hand over the PR."
+- with per-part CI enabled, the whole feature has no CI or every check was skipped or neutral: "No passing CI reported on the complete feature. Wait for a check or hand over the PR."
 
 Cancelling a feature cancels its subtasks too.
 
@@ -503,7 +512,7 @@ A GitHub issue files a feature in its own repository only. A second repository n
 
 Changing any of these after approval counts as a change of scope. The combined run runs on GitHub Actions: its time counts as the feature's working time, not its hosted time.
 
-**Approval** checks each repository through its own installation before any branch is made, and names every problem at once. Each needs saved checks and CI on pushes to its `windlass/**` branches; the Windlass CLI's CI on `main` and pull requests only is refused. The repository the combined run starts from needs `.github/workflows/windlass-integration.yml`, enabled, on its base (this repository has one). That workflow must run on `workflow_dispatch` only (no `pull_request_target`, push or other trigger), set top-level permissions of at most `contents: read`, give no job more, and reference no secret. Approval names the rule it breaks. The other repository must be public, as GitHub says it at approval, since the run checks it out without a token. If a base moved since the planner read it, approval names the move. Revise the plan, or approve with `bases: {"<alias>": "<new commit>"}` to reconfirm it. Approval takes that commit only if it is where the base is when approval reads it.
+**Approval** checks each repository through its own installation before any branch is made, and names every problem at once. Each repository needs saved checks and push CI on its feature branch. Repositories with **Wait for CI on each part** enabled also need push CI on their subtask branches. The repository the combined run starts from needs `.github/workflows/windlass-integration.yml`, enabled, on its base (this repository has one). That workflow must run on `workflow_dispatch` only (no `pull_request_target`, push or other trigger), set top-level permissions of at most `contents: read`, give no job more, and reference no secret. Approval names the rule it breaks. The other repository must be public, as GitHub says it at approval, since the run checks it out without a token. If a base moved since the planner read it, approval names the move. Revise the plan, or approve with `bases: {"<alias>": "<new commit>"}` to reconfirm it. Approval takes that commit only if it is where the base is when approval reads it.
 
 **Pull requests.** Each repository gets its own branch, `windlass/feature-<id>`, and a draft pull request. Both can be #1. A repository without draft pull requests stops the feature before any subtask runs; the pull request already opened in the other one is kept, and **Try the remaining repository again** retries only the one that failed. Each pull request carries a section, kept up to date, that links the other by its full address, says which is primary, the merge order and the combined result. Anything you write around it is kept. Neither says `Closes #n`, so the issue is not closed by the first of the two merges.
 

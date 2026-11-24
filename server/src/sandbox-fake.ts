@@ -681,7 +681,7 @@ const TERMINAL = new Map([
 	["execution.interrupted", "interrupted"],
 ]);
 
-class FakeWindlass implements Windlass {
+export class FakeWindlass implements Windlass {
 	constructor(
 		private readonly sandboxes: FakeSandboxes,
 		private readonly eventDelayMs: number,
@@ -1203,7 +1203,10 @@ class FakeWindlass implements Windlass {
 							emit({ type: "fake.review_reply", data: { refusal }, seq: 0 });
 						}
 						const excerpts = text.includes("(review-files)") ? ["README.md", "notes.txt"].map(path => ({ kind: "excerpt", at: { path, side: "base", lines: { start: 1, end: 1 } } })) : [];
-						if (text.includes("(review-loop)")) {
+						if (input.reviewDirectory) {
+							await ask({ recommendation: "changes_requested", blocks: [{ kind: "summary", text: "The README needs a correction." },
+								{ kind: "finding", severity: "blocking", title: "Incorrect heading", text: "Correct the heading.", at: [{ path: "README.md", lines: { start: 1, end: 1 } }] }] });
+						} else if (text.includes("(review-loop)")) {
 							// R4: the first round asks for changes; the next tries to approve without answering it, then answers it.
 							if (text.includes("this is round 1:")) {
 								const answer = await ask({ recommendation: "changes_requested", blocks: [...blocks, { kind: "finding", severity: "blocking", title: "No check for the empty page", text: "Add a check that the empty page renders." }] });

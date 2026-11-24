@@ -294,7 +294,8 @@ function Review({ view, links, when }: { view: ItemView; links: ScreenshotLinks;
 	const rest = current?.state === "filed" ? current.blocks.filter((block) => block.kind === "finding" && block.severity !== "blocking").length : 0;
 	const session = view.reviewerSessionId;
 	const word = current?.state === "filed" ? (current.recommendation ? RECOMMENDATION_WORD[current.recommendation] : "no recommendation") : null;
-	const shown = current?.state === "filed" || before.length > 0;
+	const requested = view.reviews.filter(review => review.requestedPull).length;
+	const shown = current?.state === "filed" || before.length > 0 || requested > 0;
 	return (
 		<div>
 			<dt>Review</dt>
@@ -340,7 +341,7 @@ function Review({ view, links, when }: { view: ItemView; links: ScreenshotLinks;
 				{shown ? (
 					<>
 						<p className="checks-more">
-							<FoldToggle open={open} controls={id} label={current?.state === "filed" ? (rest > 0 ? `Show the full review (${plural(rest, "more finding")})` : "Show the full review") : FOLD_WORDS.more(before.length, before.length === 1 ? "earlier review" : "earlier reviews")} onToggle={() => setOpen((value) => !value)} />
+							<FoldToggle open={open} controls={id} label={requested ? `Show reviews (${plural(requested, "requested PR review")})` : current?.state === "filed" ? (rest > 0 ? `Show the full review (${plural(rest, "more finding")})` : "Show the full review") : FOLD_WORDS.more(before.length, before.length === 1 ? "earlier review" : "earlier reviews")} onToggle={() => setOpen((value) => !value)} />
 						</p>
 						<div id={id} hidden={!open} className="checks-fold">
 							{open ? <SecondReview view={view} links={links} when={when} bare /> : null}

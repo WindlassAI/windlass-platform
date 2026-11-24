@@ -33,7 +33,7 @@ process.env.RIVETKIT_STORAGE_PATH = join(scratch, "storage");
 for (const name of Object.keys(process.env)) if (name.startsWith("WLP_GITHUB_")) delete process.env[name];
 mkdirSync(process.env.RIVETKIT_STORAGE_PATH, { recursive: true });
 
-const { advance, createItem, currentKey, singlePlanAlternative, upgradeSubtaskQuestion } = await import("../server/src/factory/blueprint.js");
+const { advance, createItem, currentKey, plannerCapacityText, RULES, singlePlanAlternative, upgradeSubtaskQuestion } = await import("../server/src/factory/blueprint.js");
 const { admit, budgetStop, FACTORY_DEFAULTS, retryAt } = await import("../server/src/factory/budget.js");
 const { gateResult, verdictOf, verdictWords, verdictCi } = await import("../server/src/factory/verdict.js");
 const { CI_POLLING, readCi, rerunJobs, ciState, LOG_TAIL_CHARS, LOG_TAIL_LINES } = await import("../server/src/github/ci.js");
@@ -118,15 +118,18 @@ const published = (head: string, pr: { number: number; url: string } | null = { 
 const ci = (head: string, reading: CiReading, mergeable: boolean | null = true): Row["fact"] => (k) => ({ kind: "ci_read", webhooks: false, prHead: null, key: k.key, head, reading: reading.kind === "read" ? { ...reading, head } : reading, mergeable, openItems: 1 });
 const answer = (choice: Extract<Fact, { kind: "answer" }>["choice"], more: { note?: string; budget?: Partial<FactoryItem["budget"]> } = {}): Row["fact"] => (k) => ({ kind: "answer", by: "person:u1", question: k.question, choice, ...more });
 
-const { reviewerAllowed } = await import("../server/src/factory/review.js");
-const { e2bProfile, e2bOpenProfile, PROFILES } = await import("../server/src/sandbox/profiles.js");
-for (const [label, place, profile, allowed] of [
-	["hosted e2b", { kind: "hosted" }, e2bProfile({ windlassSandbox: true }), true],
-	["unconfirmed e2b", { kind: "hosted" }, e2bProfile({ windlassSandbox: false }), false],
-	["e2b-open", { kind: "hosted" }, e2bOpenProfile({ offered: true }), false],
-	["docker-hardened", { kind: "hosted" }, PROFILES.find(p => p.id === "docker-hardened")!, false],
-	["personal machine", { kind: "machine", machineId: "machine" }, e2bProfile({ windlassSandbox: true }), false],
-] as const) expect(`reviewer profile: ${label}`, reviewerAllowed(place, profile) === allowed);
+{
+	const { PlatformMcpServer, PLATFORM_MCP_SERVER_ID, MCP_PROTOCOL_VERSION, platformToolDeclarations, turnPlatformTools } = await import("../server/src/platform-tools.js");
+	const seen: string[] = [];
+	const offered = turnPlatformTools({ prompt: "", onReview: async request => { seen.push(request.via!); return "filed"; } }, "sandbox");
+	assert.deepEqual([...offered.keys()], ["file_review"]);
+	const server = new PlatformMcpServer(offered, platformToolDeclarations(offered, { mcp: true }), () => true);
+	const call = (requestId: string) => server.handle({ serverId: PLATFORM_MCP_SERVER_ID, method: "tools/call", requestId,
+		params: { name: "file_review", arguments: {}, _meta: { "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL_VERSION } } }, new AbortController().signal);
+	await call("1");
+	await call("2");
+	assert.deepEqual(seen, ["mcp"]);
+}
 
 function newItem(more: { reviewer?: FactoryItem["reviewer"]; mode?: FactoryItem["mode"]; budget?: Partial<FactoryItem["budget"]> } = {}): FactoryItem {
 	return createItem({
@@ -469,13 +472,12 @@ function handoverWithout(fact: Row["fact"], reason: string): Row {
 for (const [name, reviewer, reason] of [
 	["deployment off", { off: "deployment" }, "turned off for this deployment"],
 	["feature part", { off: "feature" }, "the feature’s combined change is reviewed once its parts are done"],
-	["profile off", { off: "profile" }, "in this sandbox the reviewer's commands would run with the network"],
 ] as const) {
 	drive(`review: ${name}`, newItem({ reviewer }), [...toCi, handoverWithout(ci(reviewHead, ciPassed), reason)]);
 }
 const movedReading: Row["fact"] = ({ key }) => ({ kind: "ci_read", webhooks: false, key, head: reviewHead, reading: { ...emptyCi, head: reviewHead }, mergeable: true, openItems: 1, prHead: H(2) });
-drive("review: a machine item hands over after CI without a reviewer turn", { ...reviewerOn(), place: { kind: "machine", machineId: "local" } }, [
-	...toCi, handoverWithout(freshCi, "second reviews run only on hosted sandboxes"),
+drive("review: a machine item starts its reviewer after CI", { ...reviewerOn(), place: { kind: "machine", machineId: "local" } }, [
+	...toCi, { ...reviewStarts(ciPassed), state: "queued" },
 ]);
 drive("review: a rerun that fails during review changes the platform verdict", reviewerOn(), [...reviewing,
 	refresh(endReview({ review: filing("approve") })),
@@ -1525,7 +1527,7 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 	const { checkSummary: summaryOf } = await import("../server/src/factory/verified-check.js");
 	const agentItem = (harness: "claude" | "opencode" | "windlass", budget: Partial<FactoryItem["budget"]> = {}) => createItem({
 		id: "i_00000000000000aa", task: { title: "Fix add()", body: "add(1, 2) returns -1.", acceptance: ["add(1, 2) is 3"], base: "main" },
-		reviewer: { off: "profile" }, place: { kind: "machine", machineId: "m1" }, budget: { ...FACTORY_DEFAULTS.item, ...budget }, agent: { harness, model: harness === "claude" ? "sonnet" : "default" },
+		reviewer: { off: "deployment" }, place: { kind: "machine", machineId: "m1" }, budget: { ...FACTORY_DEFAULTS.item, ...budget }, agent: { harness, model: harness === "claude" ? "sonnet" : "default" },
 	});
 	const usage = { inputTokens: 33_000, cachedInputTokens: 30_000, outputTokens: 500, reasoningTokens: 100 };
 	const claudeTurn = agentTurn("claude", usage, { cost: null, fiveHourUsedPct: 41 }, 38);
@@ -1636,7 +1638,7 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 	// A Codex item counts by the sign-in it was filed with: ChatGPT is a subscription; an API key bills by token.
 	const codexItem = (signIn: "chatgpt" | "api-key", budget: Partial<FactoryItem["budget"]> = {}) => createItem({
 		id: "i_00000000000000ab", task: { title: "Fix add()", body: "add(1, 2) returns -1.", acceptance: ["add(1, 2) is 3"], base: "main" },
-		reviewer: { off: "profile" }, place: { kind: "machine", machineId: "m1" }, budget: { ...FACTORY_DEFAULTS.item, ...budget }, agent: { harness: "codex", model: "default", signIn },
+		reviewer: { off: "deployment" }, place: { kind: "machine", machineId: "m1" }, budget: { ...FACTORY_DEFAULTS.item, ...budget }, agent: { harness: "codex", model: "default", signIn },
 	});
 	expect("a Codex item keeps the sign-in it was filed with", itemAgent(codexItem("chatgpt")).signIn === "chatgpt");
 	const chatgpt = afterTurn(codexItem("chatgpt", { tokens: 1000 }), turnSpend(usage, agentTurn("codex", usage, null, undefined, "chatgpt")));
@@ -1756,18 +1758,60 @@ function walk(item: FactoryItem, facts: Array<Record<string, unknown>>, from = T
 	}
 	return { item, last };
 }
+{
+	const place = { kind: "machine" as const, machineId: "local" };
+	const mac = { machineId: "local", name: "mac", online: true, turns: { max: 4, running: 2, queued: 0 } };
+	const line = (max: number, busy: number, online = true) => plannerCapacityText(place,
+		[{ ...mac, online, slots: { max, busy, queued: 0, unit: { cpus: 1, memoryBytes: 1000 } } }] as Parameters<typeof plannerCapacityText>[1]);
+	assert.match(line(4, 2), /'mac' can run 2 parts/);
+	assert.match(line(8, 0), new RegExp("run " + RULES.parallelChildren + " parts"));
+	assert.match(line(2, 3), /run 0 parts/);
+	assert.match(line(2, 0, false), /run 0 parts/);
+	assert.match(plannerCapacityText({ kind: "hosted" }, []), new RegExp("up to " + RULES.parallelChildren));
+	expect("planner capacity uses free machine slots and the hosted parallel limit", true);
+}
+
 const turnEnded = (outcome: "succeeded" | "unresolved", evidence: Verified | null) => ({ kind: "turn_ended", outcome, verified: evidence, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
 const ciFact = (reading: CiReading, head = H(1), prHead: string | null = head) => ({ kind: "ci_read", webhooks: false, head, reading, mergeable: true, prHead, openItems: 1 });
 const passedCi = ciRead([{ name: "build", state: "passed" }]);
 const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", PASSED), { kind: "published", webhooks: false, head, pr: { number: 7, url: "" }, openItems: 1 }];
 
 {
+	const original = walk(newItem(), [...pushedRun(H(1)), ciFact(passedCi)]).item;
+	const poll = (prHead: string, pushCi?: CiReading) => ({ kind: "pr_read", prHead, state: "open", webhooks: false, pushCi });
+	const red = { ...ciRead([{ name: "web tests", state: "failed" }]), head: H(2) };
+	const refresh = ciFact(passedCi, H(1), H(2));
+	const moved = walk(original, [poll(H(2), red), refresh]);
+	const asked = moved.item.question!;
+	assert.equal(asked.text, "CI failed after your push to 2222222. Hand it back to fix?");
+	assert.deepEqual(asked.choices.map(c => c.id), ["send_back", "dismiss"]);
+	assert.equal(moved.item.run!.n, 1);
+	assert.equal(effect(moved.last, "handoff")?.verdict.head, H(1));
+	assert.equal(walk(moved.item, [poll(H(2), red)]).item.question?.id, asked.id);
+	const dismissed = walk(moved.item, [{ kind: "answer", choice: "dismiss" }, poll(H(2), red)]).item;
+	assert.equal(dismissed.state, "review");
+	assert.equal(dismissed.question, null);
+	const sent = walk(moved.item, [{ kind: "answer", choice: "send_back" }]);
+	assert.equal(sent.item.run!.n, 2);
+	assert.equal(sent.item.decisions?.at(-1)?.kind, "send_back");
+	assert.match(effect(sent.last, "deliver")!.text, /web tests/);
+	assert.equal(effect(sent.last, "verified_check")?.key, H(2));
+	const late = walk(original, [poll(H(2), { ...red, head: H(1) }), refresh]).item;
+	assert.equal(late.question, null);
+	assert.equal(walk(late, [poll(H(2), red)]).item.question?.kind, "push_ci");
+	assert.equal(walk(moved.item, [poll(H(3)), { kind: "answer", choice: "send_back", question: asked.id }]).item.run!.n, 1);
+	assert.equal(walk(moved.item, [{ ...poll(H(2)), state: "merged" }]).item.question, null);
+	expect("a failed newer review head offers one hand-back, preserves its CI note and retires stale questions", true);
+}
+
+{
 	const published = walk(reviewerOn(), pushedRun(reviewHead)).item;
 	const feature: FactoryItem = { ...published, mode: "orchestrate" };
 	drive("feature hands over when second reviews are off", { ...feature, reviewer: { off: "deployment" } },
 		[handoverWithout(freshCi, "turned off for this deployment")]);
-	drive("feature on a machine hands over with the skipped review reason", { ...feature, place: { kind: "machine", machineId: "local" } },
-		[handoverWithout(freshCi, "second reviews run only on hosted sandboxes")]);
+	drive("feature on a machine starts the whole-feature review", { ...feature, place: { kind: "machine", machineId: "local" } },
+		[{ fact: freshCi, state: "queued", effects: ["verdict", "verified_check", "deliver", "check_turn", "poll_pr"],
+			also: o => holds(effect(o, "deliver")?.to === "review", "the feature did not reach its reviewer") }]);
 }
 
 // Exercise the actual plan filing, reviewer receipt and handoff transitions, including stale receipts.
@@ -1845,9 +1889,17 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 {
 	const reviewed = walk(reviewerOn(), [...pushedRun(H(1)), ciFact(passedCi)]);
 	const end = { kind: "review_ended", outcome: "succeeded", review: filing("approve", currentKey(reviewed.item)!), said: null, spend: { tokens: 19, hostedSeconds: 7 } };
+	end.review.by.via = "host";
+	end.review.by.commandSandbox = "windlass";
 	end.review.verdictId = reviewed.item.run!.review!.verdictId;
 	const waiting = walk(reviewed.item, [end]).item;
 	const handoff = { ...ciFact(passedCi), baseAhead: 0, baseTip: H(3), autoMergeSingles: true };
+	for (const [via, commandSandbox] of [["mcp", "windlass"], ["host", "none"], ["host", "unknown"]] as const) {
+		const review = { ...end.review, by: { ...end.review.by, via, commandSandbox } };
+		const fallback = walk(reviewed.item, [{ ...end, review }, handoff]);
+		assert.ok(effect(fallback.last, "handoff") && !effect(fallback.last, "auto_merge"));
+		expect(`${via} approval with ${commandSandbox} command sandbox hands over to the person`, true);
+	}
 	const accepted = walk(waiting, [handoff]), merge = effect(accepted.last, "auto_merge");
 	assert.equal(merge?.head, H(1));
 	assert.equal(merge?.baseTip, H(3));
@@ -1886,6 +1938,37 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 }
 
 {
+	const { live } = await import("../server/src/actors/work-item.js");
+	const { requestedDelivery } = await import("../server/src/factory/blueprint.js");
+	const item = walk(newItem(), [...pushedRun(H(1)), ciFact(passedCi)]).item;
+	item.reviewer = { on: true };
+	const request = { key: `${item.id}:1:pr-review:1:7:${H(1)}`, head: H(1), base: H(2), repositoryId: 1,
+		installationId: 2, owner: "windlass", name: "project", pr: 7, sender: "alex", untrusted: false };
+	const start = { kind: "request_review" as const, subject: "issue_comment:1", request, at: T0 };
+	const first = advance(item, start), delivery = effect(first, "requested_review");
+	assert.ok(delivery && live(first.item, delivery));
+	assert.equal(advance(first.item, { ...start, subject: "issue_comment:2" }).item, first.item);
+	assert.equal(advance(first.item, { ...start, request: { ...request, head: H(3) } }).effects.length, 0);
+	assert.deepEqual(requestedDelivery({ ...item, foreignPush: true }, request).untrusted, ["GitHub feedback from @alex"]);
+	assert.deepEqual(requestedDelivery(item, { ...request, untrusted: true }).untrusted, ["GitHub feedback from @alex"]);
+	assert.deepEqual(requestedDelivery(item, { ...request, head: H(3) }).untrusted, ["GitHub feedback from @alex"]);
+	const end = { kind: "review_ended" as const, at: T0, key: request.key, outcome: "succeeded" as const, review: filing("approve", request.key),
+		said: null, spend: { tokens: 8, hostedSeconds: 0 } };
+	const finished = advance(first.item, end);
+	assert.ok(effect(finished, "post_requested_review"));
+	assert.deepEqual(finished.item.run, item.run);
+	assert.equal(finished.item.spent.tokens, item.spent.tokens + 8);
+	assert.equal(advance(finished.item, end).item, finished.item);
+	for (const state of ["done", "failed", "cancelled"] as const) {
+		const ended = { ...item, state };
+		assert.equal(advance(ended, start).item, ended);
+		assert.ok(!live({ ...first.item, state }, delivery));
+	}
+	assert.equal(advance({ ...item, budget: { ...item.budget, tokens: item.spent.tokens } }, start).effects.length, 0);
+	expect("repeated requests for a head admit one turn and one receipt; ended and over-budget items skip the review", true);
+}
+
+{
 	const { repositoryDefaultsLog } = await import("../server/src/repository-defaults.js");
 	const prefix = "[wlp] defaults.saved uid=u1 project=github:7101";
 	const log = (change: Parameters<typeof repositoryDefaultsLog>[2]) => repositoryDefaultsLog("u1", "github:7101", change);
@@ -1893,6 +1976,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	assert.equal(log({ autoApprovePlans: true, autoMergeSingles: false }), prefix + " auto_approve_plans=true auto_merge_singles=false");
 	assert.equal(log({ autoApprovePlans: false }), prefix + " auto_approve_plans=false");
 	assert.equal(log({ screenshots: true }), prefix);
+	assert.equal(log({ waitForCiOnEachPart: true }), prefix + " wait_for_ci_on_each_part=true");
 	expect("the defaults audit records each supplied autonomy switch with its true or false value", true);
 }
 
@@ -2009,6 +2093,77 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		return walk(item, [{ kind: "child_update", key: job.dispatchKey, child: job.id, state, spent: { ...zero, tokens, hostedSeconds }, head: H(2), report: state }]).item;
 	}
 	const keys = (item: FactoryItem) => item.jobs!.map(j => j.task.key);
+	{
+		const parts = [task("one"), task("two", ["two"], ["one"])];
+		let feature = start(parts);
+		feature.seed = H(1);
+		const read = (item: FactoryItem, reading: CiReading) => ({ ...ciFact(reading, item.head!), key: item.featureCi!.key, paths: ["one"] });
+		const failed = ciRead([{ name: "build", state: "failed", log: "Unexpected result" }]);
+		function join(item: FactoryItem, key: string, head: string) {
+			const job = item.jobs!.find(j => j.task.key === key)!;
+			const child = { ...newItem(), id: job.id, joinOnGate: true, parent: { itemId: item.id, title: "Feature", key } };
+			const pushed = walk(child, [...pushedRun(head).slice(0, -1), { kind: "published", webhooks: false, head, pr: null, openItems: 1 }]);
+			const grant = effect(pushed.last, "integrate")!;
+			assert.equal(grant.head, head);
+			assert.equal(effect(pushed.last, "poll_ci"), undefined);
+			assert.equal(pushed.last.storeVerdict?.verdict.ci.state, "unread");
+			const claimed = walk(item, [{ kind: "claim_join", child: job.id, key: grant.key }]).item;
+			assert.equal(claimed.joining?.child, job.id);
+			assert.equal(walk(pushed.item, [{ kind: "integrated", head }]).item.state, "done");
+			return walk(claimed, [{ kind: "finish_join", child: job.id, result: { key: grant.key, head } },
+				{ kind: "child_update", child: job.id, key: job.dispatchKey, state: "done", spent: zero, head, report: "Joined" }]).item;
+		}
+		assert.deepEqual(keys(feature), ["one"]);
+		const stale = read(feature, failed);
+		feature = join(feature, "one", H(2));
+		assert.deepEqual(keys(feature), ["one", "two"]);
+		assert.equal(walk(feature, [stale]).item, feature);
+		feature = update(feature, "two", "working");
+		const red = read(feature, failed);
+		const queued = walk(feature, [{ ...red, paths: ["two"] }]).item;
+		assert.equal(queued.jobs!.at(-1)?.task.key, `ci-fix-${feature.revision + 1}`);
+		assert.equal(queued.jobs!.at(-1)?.dispatchKey, undefined, "overlapping work keeps the fix queued");
+		assert.equal(walk(queued, [read(queued, failed)]).item.jobs!.length, 3);
+		assert.equal(walk(queued, [read(queued, passedCi)]).item.jobs!.length, 2, "a green rerun retires the queued fix");
+		feature = walk(feature, [red]).item;
+		const fix = feature.jobs!.find(j => j.ciFix)!;
+		assert.equal(fix.start, H(2));
+		assert.ok(fix.dispatchKey);
+		for (const text of ["build", "Unexpected result", `git diff ${H(1)}...${H(2)}`]) assert.ok(fix.task.brief.includes(text));
+		assert.equal(walk(feature, [red]).item, feature);
+		assert.equal(walk(feature, [read(feature, failed)]).item.jobs!.length, 3);
+		feature = join(feature, "two", H(3));
+		feature = walk(feature, [read(feature, passedCi)]).item;
+		assert.equal(feature.run?.step.kind, "subtasks");
+		feature = join(feature, fix.task.key, H(4));
+		assert.equal(feature.wait?.reason, "ci");
+		const repeated = walk(feature, [read(feature, failed)]).item;
+		assert.equal(repeated.question?.cause, "repeated");
+		assert.equal(repeated.jobs!.length, 3);
+		const green = walk(feature, [read(feature, passedCi)]).item;
+		assert.equal(green.run?.step.kind, "summary");
+		const summary = walk(green, [{ ...turnEnded("succeeded", null), report: "Summary" },
+			{ kind: "published", webhooks: false, head: H(4), pr: green.pr, openItems: 1 }]).item;
+		assert.equal(walk(summary, [ciFact(passedCi, H(4), H(5))]).item.state, "waiting");
+		const moved = walk(summary, [{ ...ciFact(failed, H(4), H(5)), featureHead: H(5) }]);
+		assert.equal(moved.item.head, H(5));
+		assert.equal(effect(moved.last, "poll_ci")?.head, H(5));
+		assert.equal(moved.item.jobs!.length, 3);
+		const handed = walk(summary, [ciFact(passedCi, H(4))]);
+		assert.equal(effect(handed.last, "handoff")?.verdict.head, H(4));
+		expect("local gates release dependent parts; one feature CI fix joins, then only the current green head hands over", true);
+
+		const strict = { ...newItem(), joinOnGate: false, parent: { itemId: feature.id, title: "Feature", key: "one" } };
+		const pushed = walk(strict, pushedRun(H(1)));
+		assert.ok(effect(pushed.last, "poll_ci"));
+		assert.equal(effect(pushed.last, "integrate"), undefined);
+		assert.ok(effect(walk(pushed.item, [ciFact(passedCi)]).last, "integrate"));
+		const unchecked = walk({ ...strict, joinOnGate: true }, [{ kind: "start" }, turnEnded("succeeded", null),
+			{ kind: "published", webhooks: false, head: H(1), pr: null, openItems: 1 }]);
+		assert.equal(effect(unchecked.last, "integrate"), undefined);
+		assert.equal(unchecked.item.run?.step.kind, "run_checks");
+		expect("strict parts still require CI and gate-only parts require a verified local gate", true);
+	}
 	const opening = start([task("one"), task("two")]);
 	opening.repos = ["one", "two"].map((alias, i) => ({ alias, repositoryId: String(i + 1), installationId: "42", owner: "org", name: alias, url: "", private: false, baseRef: "main", planningBaseSha: H(1) }));
 	const openingProblem = (reason: string) => ({ kind: "feature_problem", reason });
@@ -2053,6 +2208,13 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const limited = start(hostedTasks, undefined, seconds);
 	assert.deepEqual(keys(limited), ["first", "second"]);
 	assert.deepEqual(keys(update(limited, "first", "done")), ["first", "second", "third"]);
+	// After approval, a subtask not started yet takes a new agent; a started one keeps its own.
+	const inventory = { machines: [], hostedProfiles: ["daytona"], models: { windlass: { source: "account", defaultModel: "m1", models: [{ id: "m1", efforts: [] }, { id: "m2", efforts: [] }] } } };
+	const chosen = walk(limited, [{ kind: "set_subtask_agent", key: "third", agent: { harness: "windlass", model: "m2" }, inventory }]).item;
+	assert.deepEqual([chosen.featurePlan!.subtasks[2]!.agent, chosen.approvedPlan!.subtasks[2]!.agent], [{ harness: "windlass", model: "m2" }, { harness: "windlass", model: "m2" }]);
+	assert.equal(walk(limited, [{ kind: "set_subtask_agent", key: "first", agent: { harness: "windlass", model: "m2" }, inventory }]).item.featurePlan!.subtasks[0]!.agent, undefined);
+	assert.throws(() => walk(limited, [{ kind: "set_subtask_agent", key: "third", agent: { harness: "windlass", model: "m9" }, inventory }]), /not among/);
+	expect("an approved feature changes the agent of a subtask that has not started only", true);
 
 	const done = update(hosted, "first", "done", 0, seconds / 2);
 	const failed = update(done, "second", "failed", 0, seconds);
@@ -2126,7 +2288,36 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	assert.equal(merged.head, H(4));
 	assert.equal(update(merged, "a", "done").jobs!.find(job => job.task.key === "c")?.start, H(4));
 	assert.equal(walk(merged, [claim(b.id)]).item.joining?.child, b.id);
-	const problem = { kind: "feature_updated", result: { problem: "main conflicts with the feature branch. Resolve it on GitHub or give up." } };
+	const updating = walk(start([task("one"), task("two", ["two"], ["one"])]), [{ kind: "update_feature", target: H(3) }]).item;
+	const failedMerge = { kind: "feature_updated", key: updating.joining!.key, result: { conflicts: ["src/setup.ts"] } };
+	const fixing = walk(updating, [failedMerge]).item;
+	const repair = fixing.jobs!.at(-1)!;
+	assert.ok(repair.dispatchKey);
+	assert.equal(repair.conflictFix?.target, H(3));
+	assert.deepEqual(repair.task.owns, ["src/setup.ts"]);
+	assert.match(repair.task.brief, /git merge origin\/main; do not rebase/);
+	assert.equal(walk(fixing, [failedMerge]).item, fixing);
+	assert.equal(walk(fixing, [{ kind: "update_feature", target: H(3) }]).item, fixing);
+	const paused = start([task("waiting"), task("next", [], ["waiting"])]);
+	const requester = paused.jobs![0]!;
+	const requestedFix = (item: FactoryItem) => {
+		const next = walk(item, [{ kind: "update_feature", target: H(3), child: requester.id, request: "update" }]).item;
+		return walk(next, [{ ...failedMerge, key: "update", result: { conflicts: [] } }]).item;
+	};
+	assert.ok(requestedFix(paused).jobs!.at(-1)?.dispatchKey, "the requester must not block its own repair when GitHub lists no paths");
+	paused.budget.hostedSeconds = requester.budget!.hostedSeconds;
+	assert.equal(requestedFix(paused).question?.kind, "budget");
+	const childFix = { ...newItem(), childBase: "main", mergeTarget: H(3), parent: { key: repair.task.key, itemId: fixing.id, title: "Feature" } };
+	assert.equal(effect(walk(childFix, [{ kind: "start" }]).last, "deliver")?.fetchBase, "main");
+	const second = update(fixing, repair.task.key, "failed");
+	assert.equal(second.question, null);
+	assert.equal(second.jobs!.at(-1)?.conflictFix?.retry, true);
+	const stoppedRepair = update(second, second.jobs!.at(-1)!.task.key, "failed");
+	assert.equal(stoppedRepair.question?.kind, "feature_update");
+	assert.match(stoppedRepair.question!.text, /twice/);
+	assert.ok(effect(walk(stoppedRepair, [{ kind: "answer", choice: "update_feature", target: H(3) }]).last, "merge_feature_target"));
+	expect("feature conflicts queue a checked merge part and ask after its second failure", true);
+	const problem = { kind: "feature_updated", result: { problem: "Temporary access refusal." } };
 	const recheck = walk(granted.item, [{ ...problem, key: merge.key }]);
 	assert.ok(effect(recheck.last, "merge_feature_target"));
 	const changedProblem = walk(recheck.item, [{ ...problem, key: recheck.item.joining!.key, result: { problem: "Access temporarily refused" } }]);
@@ -2419,6 +2610,22 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		expect(`${label} question: CI alone cannot integrate a moved head or failed CI`, !effect(moved.last, "integrate") && !effect(failed.last, "integrate") && !failed.last.storeVerdict);
 		expect(`${label} question: give up stops the subtask`, walk(item, [{ kind: "answer", choice: "give_up" }]).item.state === "failed");
 	}
+}
+
+{
+	// The person's note: steered into the running turn, or kept for the builder's next turn as their own words.
+	const running = walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }]).item;
+	const steered = walk(running, [{ kind: "note", note: "Use the helper.", steered: true }]);
+	const kept = walk(running, [{ kind: "note", note: "Use the helper." }, { kind: "note", note: "Keep the API." }]);
+	const next = walk(kept.item, [turnEnded("unresolved", FAILING)]);
+	const text = effect(next.last, "deliver")?.text ?? "";
+	expect("a steered note is logged of the item and kept as a decision, not for the next turn",
+		steered.last.events[0]?.said === "Note to the running turn: Use the helper." && steered.item.ownerNote === undefined && steered.item.decisions?.[0]?.kind === "note",
+		JSON.stringify(steered.last.events));
+	expect("a kept note goes with the builder's next turn as the person's words, once",
+		kept.last.events[0]?.said === "Note for the next turn: Keep the API." && text.includes("The person adds: Use the helper.\n\nKeep the API.") && next.item.ownerNote === undefined && !effect(next.last, "deliver")?.untrusted?.length,
+		text.slice(-120));
+	expect("a feature's planner takes no note", walk({ ...running, mode: "orchestrate" }, [{ kind: "note", note: "x" }]).last.events.length === 0);
 }
 
 {
@@ -2822,7 +3029,7 @@ const { checkConclusion, checkSummary } = await import("../server/src/factory/ve
 		!["@someone", "private.invalid", "<!--", "private -->"].some(text => summary.includes(text)));
 	expect("public output fits 4000 characters and keeps the evidence link", summary.length <= 4000 && summary.includes(url));
 }
-const ciData = { runs: [] as unknown[], statuses: [] as unknown[], workflows: [] as { status: string; updated_at?: string; run_started_at?: string }[] };
+const ciData = { runs: [] as unknown[], statuses: [] as unknown[], workflows: [] as { status: string; updated_at?: string; run_started_at?: string; head_branch?: string; check_suite_id?: number }[] };
 repo.ci.set(HEAD, ciData);
 const secrets = { clientSecret: () => standin.clientSecret, privateKey: () => standin.privateKeyPem };
 const app = new GithubApp({ appId: standin.appId, slug: standin.slug, clientId: standin.clientId, apiUrl: standin.apiUrl, webUrl: standin.url }, secrets);
@@ -2830,6 +3037,24 @@ const target = { installationId: installation.id, repositoryId: repo.id, owner: 
 const granted = { ...standin.appPermissions, checks: "read" as const, statuses: "read" as const, actions: "read" as const };
 
 const checkRun = (id: number | bigint, name: string, conclusion: string | null) => ({ id, name, status: conclusion === null ? "in_progress" : "completed", conclusion, html_url: `https://github.invalid/ada/harbor/runs/${id}`, app: { slug: "github-actions" }, output: { title: conclusion === "failure" ? "Process completed with exit code 1." : null, summary: null } });
+
+{
+	const warnings: string[] = [];
+	const warn = console.warn;
+	let refusal = new GithubError(403, "Resource not accessible by integration", "react");
+	const denied = new (class extends GithubApp {
+		override async react() { throw refusal; }
+	})(app.settings, secrets);
+	const ack = () => denied.acknowledgeFeedback(installation.id, repo, "review_comment:1");
+	try {
+		console.warn = message => warnings.push(String(message));
+		await ack();
+		assert.deepEqual(warnings, ["github.feedback.ack_skipped entry=review_comment:1 status=403"]);
+		refusal = new GithubError(403, "rate limit exceeded", "react");
+		await assert.rejects(ack, error => error === refusal);
+	} finally { console.warn = warn; }
+	expect("a denied feedback reaction logs once and settles, while rate limits remain retryable", true);
+}
 
 try {
 	standin.appPermissions = granted;
@@ -2937,6 +3162,12 @@ try {
 	ciData.workflows = [{ status: "completed" }];
 	assert.equal(ciState(await readCi(app, target)), "incomplete");
 	ciData.workflows = [];
+	ciData.runs = [{ ...checkRun(411, "build", "failure"), check_suite: { id: 51 } }, { ...checkRun(412, "build", "success"), check_suite: { id: 52 } }];
+	ciData.workflows = [{ head_branch: "part", check_suite_id: 51, status: "in_progress" }, { head_branch: "feature", check_suite_id: 52, status: "completed" }];
+	expect("a feature fast-forward reads only its branch’s workflow and checks on the shared commit", ciState(await readCi(app, target, { branch: "feature" })) === "passed");
+	ciData.workflows = [];
+	ciData.runs = [];
+
 	expect("active workflows keep a subtask pending and only an in-progress workflow can exceed six hours", true);
 
 	standin.commit(repo, repo.defaultBranch, {}, "Default-branch tip without CI");

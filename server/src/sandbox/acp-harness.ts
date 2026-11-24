@@ -18,7 +18,7 @@ function unsupported(input: RunTurnInput): string | undefined {
 	if (input.secrets && (input.secrets.withholdEnv.length || input.secrets.passEnv.length)) return "saved environment variables";
 	if (input.reportScreenshots) return "report screenshots";
 	// A tool that must not be served from inside the sandbox is refused, not left out: the turn would run without what its caller counts on.
-	return (["script", "onEvent", "onUnasked", "onServerQuestion", "onServerApproved", "onServers", "onPlan", "onReview"] as const)
+	return (["script", "onEvent", "onUnasked", "onServerQuestion", "onServerApproved", "onServers", "onPlan", "onPlanReview"] as const)
 		.find(key => input[key] !== undefined);
 }
 
@@ -397,7 +397,7 @@ export class AcpHarness implements Harness {
 			const lines = new LineSplitter(line => { lastHeard = Date.now(); rpc.receive(line); });
 			mark("process");
 			const secretEnv = input.secrets?.env;
-			run = handle.start(profile.command, { cwd: handle.cwd, env: turnEnv(profile, input), ...(secretEnv && Object.keys(secretEnv).length > 0 && { secretEnv }), onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
+			run = handle.start(profile.command, { cwd: input.reviewDirectory ?? handle.cwd, env: turnEnv(profile, input), ...(secretEnv && Object.keys(secretEnv).length > 0 && { secretEnv }), onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
 			void run.ended.then(end => {
 				lines.flush();
 				rpc.end(end.error?.message || `${profile.name} exited before answering (exit ${end.code ?? end.signal}).`);
@@ -413,8 +413,9 @@ export class AcpHarness implements Harness {
 			// on a random port Codex's requirements.toml cannot allow: only the image's wlp-acp-mcp in front of it serves one Codex starts.
 			const bridged = profile.id !== "codex" || object(init._meta)["windlass-platform/acpMcp"] === 1;
 			const served = mcp !== null && bridged && object(caps.mcpCapabilities).acp === true;
+			if (input.onReview && !served) throw new Error(`${profile.name} needs a harness image with MCP support to file a review.`);
 			if (mcp && !served) input.onAcpNote?.(`${profile.name} here cannot take the platform's tools, so this turn has no ${[...tools.keys()].join(" or ")}. A newer harness image on the machine has them.`);
-			const settings = { cwd: handle.cwd, mcpServers: served ? [PLATFORM_MCP_SERVER] : [] };
+			const settings = { cwd: input.reviewDirectory ?? handle.cwd, mcpServers: served ? [PLATFORM_MCP_SERVER] : [] };
 			const prior = input.windlassSessionId;
 			// Enable updates synchronously at the open reply. Replay preceding a load reply is
 			// ignored, while updates in the very same stdout read after that reply are live.

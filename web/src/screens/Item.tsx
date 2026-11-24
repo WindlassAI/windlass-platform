@@ -32,7 +32,7 @@ import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 import { Inline, PlacementQuestion, PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
 import { ItemSpend } from "../components/ItemSpend";
-import { agentFacts, agentLine } from "../lib/item-agent";
+import { agentFacts, agentLine, subscriptionSpend } from "../lib/item-agent";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown, Output } from "../components/Blocks";
 import { LongText } from "../components/Fold";
@@ -323,6 +323,36 @@ function SendBackDialog({ view, acting, onClose }: { view: ItemView; acting: Act
 	);
 }
 
+/** The person's note to a running builder: into the turn that runs, or with its next turn. Logged as theirs. */
+function NoteBox({ id, label, onDone }: { id: string; label: string; onDone(view: ItemView): void }) {
+	const [note, setNote] = useState("");
+	const ids = { note: useId() };
+	const acting = useActing(id, onDone);
+	const busy = acting.busy === "note";
+	const send = (event: FormEvent) => {
+		event.preventDefault();
+		if (note.trim() === "" || busy) return;
+		acting.act({ kind: "note", note: note.trim() }).then((done) => done && setNote(""));
+	};
+	return (
+		<form className="item-form item-steer" onSubmit={send}>
+			<label className="label" htmlFor={ids.note}>
+				{label}
+			</label>
+			<textarea id={ids.note} className="input textarea" rows={2} value={note} maxLength={MAX_NOTE_CHARS} onChange={(event) => setNote(event.target.value)} readOnly={busy} />
+			<div className="item-steer-foot">
+				<p className="field-note">Goes into the turn that runs now; with none running, it goes with the next turn.</p>
+				<button type="submit" className="button button-outline" disabled={note.trim() === "" || busy}>
+					{busy ? "Sending…" : "Send note"}
+				</button>
+			</div>
+			<Failure error={acting.error} />
+		</form>
+	);
+}
+
+const TAKES_NOTES = new Set<ItemSummary["state"]>(["queued", "working", "waiting"]);
+
 // ---- where it is --------------------------------------------------------------------------------
 
 /** Where the item is now, in a sentence or two: the server's while it waits, and the log's last line once it ended. */
@@ -350,9 +380,9 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 						<span>
 							since <When at={view.wait.since} now={now} />
 						</span>
-						{view.wait.retryAt === null ? null : (
+						{view.wait.retryAt === null || view.wait.retryAt <= now ? null : (
 							<span>
-								tried again at <When at={view.wait.retryAt} now={now} />
+								looks again at <When at={view.wait.retryAt} now={now} />
 							</span>
 						)}
 					</>
@@ -493,7 +523,7 @@ function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: bo
 /** The open question: its text, its answers, and a note to the agent with any of them. */
 function Question({ view, question, acting, now }: { view: ItemView; question: ItemQuestion; acting: Acting; now: number }) {
 	// No agent is left to read a note once its machine was removed.
-	const noted = !["machine_removed", "feedback_feature", "feedback_more"].includes(question.kind);
+	const noted = !["machine_removed", "feedback_feature", "feedback_more", "push_ci"].includes(question.kind);
 	const [note, setNote] = useState("");
 	const [raising, setRaising] = useState(false);
 	const ids = { title: useId(), note: useId(), asked: useId() };
@@ -716,22 +746,32 @@ function Cost({ view, now }: { view: ItemView; now: number }) {
 	const step = view.run?.step;
 	const rows = budgetFields(view);
 	const hosted = view.place.kind === "hosted";
+	const children = view.children ?? [];
+	const partAgents = [...new Set(children.flatMap((child) => (child.agent ? [agentLine(child.agent)] : [])))];
+	// A part on a subscription agent spends no counted token: its turns and time are what it cost.
+	const subscribed = children.filter((child) => child.agent?.tokens === "subscription");
+	const facts = [
+		...spendFacts(view),
+		...agentFacts(view.agent),
+		...(subscribed.length ? [{ label: `${plural(subscribed.length, "part")} on a subscription`, value: `${subscriptionSpend({ turns: subscribed.reduce((n, child) => n + child.spent.turns, 0), activeSeconds: subscribed.reduce((n, child) => n + child.spent.activeSeconds, 0) })}, not counted: your subscription` }] : []),
+	];
 	return (
 		<section className="usage-section" aria-labelledby="item-cost">
 			<h2 className="usage-title" id="item-cost">
 				Cost so far
 			</h2>
 			<p className="usage-note">
-				Built by <AgentGlyph harness={view.agent?.harness ?? "windlass"} size={11} inline />
-				{agentLine(view.agent)}.
+				{partAgents.length > 0 ? "Planned by" : "Built by"} <AgentGlyph harness={view.agent?.harness ?? "windlass"} size={11} inline />
+				{agentLine(view.agent)}
+				{partAgents.length > 0 ? `; parts built by ${partAgents.join(" and ")}` : ""}.
 			</p>
 			{view.state === "working" && view.spent.turns === 0 && step?.turn === "started" && (
 				<p className="usage-note">Spend is counted when the running turn ends. This step started {sandboxTime((now - step.startedAt) / 1000)} ago.</p>
 			)}
 			<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
-			{[...spendFacts(view), ...agentFacts(view.agent)].length > 0 ? (
+			{facts.length > 0 ? (
 				<dl className="usage-facts item-facts">
-					{[...spendFacts(view), ...agentFacts(view.agent)].map((fact) => (
+					{facts.map((fact) => (
 						<div key={fact.label}>
 							<dt>{fact.label}</dt>
 							<dd className="usage-number">{fact.value}</dd>
@@ -1158,6 +1198,13 @@ export function Item({ page }: { page: ItemPage }) {
 					<Now view={view} now={now} />
 				)}
 				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
+				{view.mode !== "orchestrate" && TAKES_NOTES.has(view.state) ? <NoteBox id={view.id} label={view.parent ? "Note to this part" : "Note to the agent"} onDone={page.replace} /> : null}
+				{view.mode === "orchestrate"
+					? view.children?.filter((child) => TAKES_NOTES.has(child.state)).map((child) => {
+							const n = view.plan && child.parent ? partOf(view.plan, child.parent.key)?.n : undefined;
+							return <NoteBox key={child.id} id={child.id} label={`Note to ${n ? `part ${n}` : "the part"}: ${child.title}`} onDone={() => void page.reload()} />;
+						})
+					: null}
 			</section>
 
 			{view.plan ? (

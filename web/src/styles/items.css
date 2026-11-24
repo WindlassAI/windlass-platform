@@ -231,6 +231,23 @@
 .item-body {
 	min-height: 140px;
 }
+/* A note to a running builder, under where the item is. */
+.item-steer {
+	gap: 8px;
+}
+.item-steer .textarea {
+	min-height: 64px;
+}
+.item-steer-foot {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px 16px;
+}
+.item-steer-foot .field-note {
+	margin: 0;
+}
 /* "Where it runs" in the narrower dialog: one fact a line, as on a phone, so no line begins with the dot between facts. */
 .item-form .sandbox-chosen-facts {
 	flex-direction: column;
@@ -1631,6 +1648,13 @@
 }
 .plan-task[class*="plan-task-is-"] .plan-task-n {
 	box-shadow: none;
+}
+/* A finished subtask in a revised plan: shown as it ran, with nothing to choose. */
+.plan-task-finished {
+	opacity: 0.6;
+}
+.plan-task-finished .plan-unattended {
+	display: none;
 }
 .plan-task-main {
 	min-width: 0;

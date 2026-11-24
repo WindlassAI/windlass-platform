@@ -83,7 +83,7 @@ import { createItem } from "../factory/blueprint.js";
 import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
 import { admit, retryAt } from "../factory/budget.js";
 import { getLayer } from "../layer.js";
-import { REVIEW_OFF_REASON, reviewerAllowed } from "../factory/review.js";
+import { REVIEW_OFF_REASON } from "../factory/review.js";
 import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { hostedSizesForPlan } from "../billing/plans.js";
@@ -409,6 +409,7 @@ export interface DefaultBuilder {
 	hostedProfile: SandboxProfileId | null;
 	hostedSize?: HostedSize;
 	machineModel?: string;
+	machineEffort?: string;
 	issue?: { number: number; installationId: GithubId };
 }
 
@@ -422,10 +423,11 @@ async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, j
 		const hosted = destination.place.kind === "hosted";
 		const agent = hosted ? "windlass" : destination.harness;
 		const model = agent === "windlass" ? job.model : job.machineModel;
+		const effort = agent === "windlass" ? job.effort : job.machineEffort;
 		const profile = hosted ? await itemProfile(c, job.repository.id, job.hostedProfile, destination.place) : destination.profile!;
 		return makeSession(c, owner, { title: job.title, repository: job.repository, place: destination.place, profile, harness: agent,
 			...(model && { model }), ...(hosted && job.hostedSize && { hostedSize: job.hostedSize }) }, null,
-			{ sessionId, itemId, role: "builder", issue: job.issue, ...(job.effort && (!hosted || !job.machineModel) && { effort: job.effort }) });
+			{ sessionId, itemId, role: "builder", issue: job.issue, ...(effort && { effort }) });
 	};
 	try { return { session: await open(), destination }; }
 	catch (error) {
@@ -447,12 +449,10 @@ async function bindReviewer(c: ItemsCtx, owner: UserProfile, session: SessionSum
 	const off = (reason: keyof typeof REVIEW_OFF_REASON) => ({ reviewer: { off: reason }, reviewerSessionId: null });
 	if (child) return off("feature");
 	if (!config.factory.reviewer) return off("deployment");
-	if (session.place.kind === "machine") return off("machine");
-	if (!reviewerAllowed(session.place, (await getLayer()).sandboxes.profile(session.profile))) return off("profile");
 	const reviewerSessionId = `s_${hex16(`review\n${itemId}`)}`;
 	if (!c.vars.sessions.has(reviewerSessionId)) {
 		const { id, branch } = session.repository!;
-		await makeSession(c, owner, { title: session.title, profile: session.profile, model: session.model, repository: { id, branch } }, null,
+		await makeSession(c, owner, { title: session.title, place: session.place, profile: session.profile, harness: session.harness, model: session.model, repository: { id, branch } }, null,
 			{ sessionId: reviewerSessionId, itemId, role: "reviewer", issue, ...(session.hostedSize && { hostedSize: session.hostedSize }) });
 	}
 	return { reviewer: { on: true } as const, reviewerSessionId };
@@ -474,7 +474,7 @@ async function waitingRepository(c: ItemsCtx, job: DefaultBuilder): Promise<Sess
  * before anything is asked of the engine, and one that exists already is taken as made: a creation
  * that is tried again after a lost answer, or after the server stopped half way, finishes the first.
  */
-async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, intake?: Intake, child?: { featureBody: string; placement: ChildPlacement; id: string; base: string; start?: string | null; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
+async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, intake?: Intake, child?: { mergeTarget?: string; joinOnGate: boolean; featureBody: string; placement: ChildPlacement; id: string; base: string; start?: string | null; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
 	const asked = raw as CreateItemInput;
 	const { github, linear } = intake ?? {};
@@ -489,9 +489,12 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	const sessionId = itemSessionId(itemId);
 	const issue = github && { number: github.origin.issue.number, installationId: github.installationId };
 	const externalModel = source === "web" && policy?.harness && policy.harness !== "windlass" && input.mode === "single";
+	// The machine agent runs the model filed with a Quick item, else the one saved with the place.
+	const machine = externalModel ? { model: input.model, effort: input.effort } : { model: policy?.machineModel, effort: policy?.machineEffort };
 	const job: DefaultBuilder | undefined = policy && { policy, repository: input.repository, mode: input.mode, title: input.title,
-		model: externalModel ? null : input.model, ...(externalModel && input.model && { machineModel: input.model }),
-		hostedProfile: input.profile, hostedSize: input.hostedSize, effort: input.effort, issue };
+		model: externalModel ? null : input.model, effort: externalModel ? null : input.effort,
+		...(machine.model && { machineModel: machine.model }), ...(machine.effort && { machineEffort: machine.effort }),
+		hostedProfile: input.profile, hostedSize: input.hostedSize, issue };
 	let summary: ItemSummary;
 	// Set just before the session is made: a refusal before that made nothing, and leaves the key unused.
 	let begun = false;
@@ -511,7 +514,6 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		// Bound before anything is made: a repository the connection cannot read refuses the filing with nothing left behind.
 		const repos = input.repositories && !child ? await bindRepositories(c, input.repositories, input.repository.branch) : undefined;
 		begun = true;
-		// The builder runs the item's harness; the reviewer (hosted only) stays Windlass.
 		const placed = job ? await defaultBuilder(c, profile, itemId, job, makeSession) : null;
 		const session = placed ? placed.session : existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child?.start && { childBranch: { name: subtaskBranch(child.parent.itemId, child.parent.key, itemId), start: child.start } }), ...(child && { size: child.placement.units }), ...((child?.placement.hostedSize ?? input.hostedSize) && { hostedSize: child?.placement.hostedSize ?? input.hostedSize! }), ...(input.effort && { effort: input.effort }) }));
 		const repository = session?.repository ?? (job ? await waitingRepository(c, job) : null);
@@ -525,7 +527,9 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		if (child) {
 			item.task.featureBody = child.featureBody;
 			item.parent = child.parent;
+			item.joinOnGate = child.joinOnGate;
 			item.childBase = child.base;
+			item.mergeTarget = child.mergeTarget;
 			item.placement = child.placement;
 		}
 		// An issue someone else wrote is not the person's own text: every turn that hands the agent the task says where it came from.
@@ -1056,7 +1060,7 @@ export const itemActions = {
 				try {
 					existing = await makeItem(c, owner, { mode: "single", repository: { id: target.id, branch: featureBranch(input.parent) }, place: placement.place,
 						profile: placement.profile, ...agent, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
-						{ id: input.child, featureBody: request.featureBody, placement, base: target.base, start: job.start, owns: job.task.owns ?? [], budget: job.budget ?? { tokens: job.task.budget.tokens, hostedSeconds: accountLimits(c.vars.items.limits).factory.item.hostedSeconds }, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
+						{ id: input.child, mergeTarget: job.conflictFix?.target, joinOnGate: request.joinOnGate, featureBody: request.featureBody, placement, base: target.base, start: job.start, owns: job.task.owns ?? [], budget: job.budget ?? { tokens: job.task.budget.tokens, hostedSeconds: accountLimits(c.vars.items.limits).factory.item.hostedSeconds }, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
 				} catch (error) {
 					// Refused before its session was made (a model or effort the place no longer offers, an agent signed out
 					// since approval): the subtask can't be placed, and the feature asks the person. Nothing stays pinned.

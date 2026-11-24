@@ -2,6 +2,7 @@ import type { ItemPlaceDefaults } from "@contract";
 import { type DefaultDestination, defaultPlaceRetryAt, resolveDefaultPlace } from "../../../server/src/factory/default-place";
 import { approvalText, planTokens, singleAfterPlanning, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
 import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
+import { withAgent } from "../lib/subtask-agents";
 import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses.js";
 import { checkItemEffort } from "../../../server/src/account-models.js";
 import { approveRoutes, bindRoute, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
@@ -138,6 +139,7 @@ const DOCS = { repository: repository(7103, "acme", "lighthouse-docs", false) };
 
 /** The choices' labels (blueprint.ts, `CHOICES`). */
 const CHOICES: Record<ChoiceId, string> = {
+	send_back: "Hand it back", dismiss: "Dismiss",
 	send: "Send it to the agent", leave: "Leave it",
 	run_single: "Approve for one implementer", orchestrate_anyway: "Ask for subtasks",
 	approve: "Approve the plan",
@@ -1232,7 +1234,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		question,
 		pullRequest: seed.pr === undefined ? null : { number: seed.pr, url: `${repository.url}/pull/${seed.pr}` },
 		verdict: last ? { result: last.result, flags: last.flags, ci: last.ci.state } : null,
-		review: place.kind === "machine" ? { state: "off", recommendation: null } : seed.review ?? null,
+		review: seed.review ?? null,
 		budget,
 		spent,
 		// Made with the seeded items (`keptOf`), once there is a user to make it for.
@@ -1250,7 +1252,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		verifiedCheck: seed.n === 24 && last ? { sha: last.head, state: "completed", conclusion: "success", said: "Ready for review" } : null,
 		reviews: [],
 		reviewerSessionId: seed.review ? reviewerSessionOf(id) : null,
-		reviewNone: place.kind === "machine" ? MACHINE_REVIEW : null,
+		reviewNone: null,
 		report: seed.n === 24 ? {
 			by: "builder", sessionId: "", run: 1, key: `${id}:1:1:1`, head: null, at: ago(50),
 			title: "Log the SHA-256 after each upload", records: [], screenshots: [],
@@ -1707,6 +1709,9 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 	const parser = importChild("parser", { n: 96, state: "done", filed: 63, run: { n: 1, started: 63, ended: 22, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 22 } }, spent: { tokens: 690_000, turns: 2, activeSeconds: 38 * 60, hostedSeconds: 38 * 60 } });
 	const units = importChild("units", { n: 97, state: "working", filed: 21, run: { n: 1, started: 21, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 20, turn: "started" } }, spent: { tokens: 310_000, turns: 2, activeSeconds: 14 * 60, hostedSeconds: 14 * 60 } });
 	const cache = importChild("cache", { n: 98, state: "working", filed: 21, place: { kind: "machine", machineId: "m_studio" }, run: { n: 1, started: 19, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 2, kind: "run_checks", started: 2 } }, spent: { tokens: 480_000, turns: 1, activeSeconds: 17 * 60, hostedSeconds: 0 } });
+	// On studio's Claude Code subscription: its tokens are reported, not counted.
+	cache.agent = { ...newAgent("claude", "opus", "high"), tokens: "subscription", reportedTokens: 480_000 };
+	cache.spent.tokens = 0;
 	cache.placement = { place: { kind: "machine", machineId: "m_studio" }, name: "studio", reason: importPlan.subtasks[2]!.place!.reason, units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
 	importing.children = [parser, units, cache].map(summaryOf);
 	importing.subtasks = [
@@ -1721,7 +1726,6 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 
 /** Match the server’s reasons when an item has no reviewer session. */
 const FEATURE_REVIEW = "the feature’s combined change is reviewed once its parts are done";
-const MACHINE_REVIEW = "second reviews run only on hosted sandboxes";
 const DEPLOYMENT_OFF = "turned off for this deployment";
 
 /** A seeded item as a deployment without the second review keeps it: none, and that reason. */
@@ -1895,7 +1899,6 @@ export function createMockItems(deps: MockItemsDeps) {
 	function reviewAt(place?: SandboxPlace) {
 		let reviewNone = null;
 		if (place && deps.reviewer === false) reviewNone = DEPLOYMENT_OFF;
-		else if (place?.kind === "machine") reviewNone = MACHINE_REVIEW;
 		return { review: reviewNone ? { state: "off" as const, recommendation: null } : null, reviewNone };
 	}
 
@@ -1981,6 +1984,11 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (!child) throw conflict("This subtask is no longer running.");
 				return act(auth, child, {kind:"cancel"});
 			}
+			case "set_subtask_agent": {
+				const task = plan?.status === "approved" && !keptOf(auth).items.some(c => c.parent?.itemId === item.id && c.parent.key === action.key) ? plan.subtasks.find(s => s.key === action.key) : undefined;
+				if (!task) throw conflict("That subtask has started or the plan changed.");
+				return change(auth, item, { plan: { ...plan!, subtasks: plan!.subtasks.map(s => s === task ? withAgent(s, action.agent) : s) } }, [`‘${task.title}’ will run ${harnessName(action.agent?.harness ?? "windlass")}${action.agent?.model ? " on " + action.agent.model : ""}.`], "person");
+			}
 			case "run_single":
 				if (!current) throw conflict("The feature no longer has an open plan.");
 				if (plan.questions.some(q => !q.answer)) throw conflict("Answer and save the plan’s questions before approving one implementer.");
@@ -2038,6 +2046,12 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (note === "") throw new PlatformError("user", "Say what to change: the note is what the agent is given.", { reason: "bad_input" });
 				return beginRun(auth, item, `Sent back: ${note}`);
 			}
+			case "note": {
+				if (item.mode === "orchestrate" || ["done", "cancelled", "failed"].includes(item.state)) throw conflict(`This item is ${now}: it takes no note.`);
+				const note = action.note.trim();
+				if (note === "") throw new PlatformError("user", "Write a note for the agent.", { reason: "bad_input" });
+				return change(auth, item, {}, [item.state === "working" && item.run?.step.turn === "started" ? `Note to the running turn: ${note}` : `Note for the next turn: ${note}`], "person");
+			}
 			case "cancel":
 				for (const child of keptOf(auth).items.filter(s => s.parent?.itemId === item.id && !["done","cancelled","failed"].includes(s.state))) await act(auth, child, {kind:"cancel"});
 				if (item.children?.length) item.children = keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf);
@@ -2050,7 +2064,7 @@ export function createMockItems(deps: MockItemsDeps) {
 						const children = keptOf(auth).items.filter(s => s.parent?.itemId === parent.id).map(summaryOf);
 						const exhausted = children.filter(s => s.state === "cancelled").length > 2;
 						const text = exhausted ? "Two re-plans have been used." : "Review the revised plan after the stopped subtask.";
-						change(auth, parent, {children, plan:{...parent.plan,version,status:exhausted ? "superseded" : "proposed"},
+						change(auth, parent, {children, replanWhy: `‘${item.title}’ stopped`, plan:{...parent.plan,version,status:exhausted ? "superseded" : "proposed"},
 							wait:{reason:"person",sentence:text,retryAt:null,since:at}, question:{kind:exhausted ? "rounds" : "replan_approval",id:parent.id+":plan"+version,askedAt:at,text,choices:exhausted ? choices("give_up") : choices("approve","revise","give_up")}},[text],"platform");
 					}
 				}
@@ -2771,7 +2785,7 @@ const SEEDED_REVIEWS: Record<number, { state: "filed" | "none" | "off" | null; r
 	// Each reason there was none.
 	26: { state: "none", none: "handed over as it is, as you asked" },
 	28: { state: "off", none: "turned off for this deployment" },
-	29: { state: "off", none: "in this sandbox the reviewer's commands would run with the network" },
+	29: { state: "none", none: "the reviewer could not reach the repository" },
 	39: { state: "none", none: "the pull request moved after the agent pushed" },
 	40: { state: "none", reviews: [{ recommendation: null, said: "The reviewer did not file a review the platform could read." }] },
 	43: { state: "none", reviews: [{ recommendation: null, said: `The reviewer's checkout of ${short(hex(43))} failed: GitHub no longer has that commit.` }] },

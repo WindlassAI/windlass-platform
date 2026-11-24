@@ -1,7 +1,20 @@
 import type { FeaturePlan, ItemBudget } from "../contract.js";
+import { featureBranch, subtaskBranch } from "../github/feature.js";
+import { childItemId } from "./feature-ids.js";
 import { sharedPaths, validatePlan } from "./feature-plan.js";
 import type { FactoryItem, HandoffReview } from "./types.js";
 import { thirdParty } from "./untrusted.js";
+
+export function requiredCiBranches(item: FactoryItem, waitForCiOnEachPart: boolean, repo?: string): string[] {
+	const plan = item.featurePlan!;
+	const branches = [featureBranch(item.id)];
+	if (waitForCiOnEachPart) for (const task of plan.subtasks) {
+		if (repo && (task.repo ?? item.repos?.[0]?.alias) !== repo) continue;
+		if (!item.jobs?.some(j => j.task.key === task.key && j.state === "done"))
+			branches.push(subtaskBranch(item.id, task.key, childItemId(item.id, plan.version, task.key)));
+	}
+	return branches;
+}
 
 // Three ordinary item allowances bound both the number of work packages and the total exposure,
 // including the feature's own planning, summary and review allowance.
@@ -42,5 +55,5 @@ export function mergeCandidate(item: FactoryItem, handoff: HandoffReview): boole
 	return (item.mode ?? "single") === "single" && !item.parent && !item.question && !item.foreignPush &&
 		!thirdParty(item.untrusted).length && !item.feedback?.othersRuns && !item.feedback?.held && !item.feedback?.awaiting &&
 		!!ci && ci.moved === null && ci.head === item.head && ci.last?.state === "passed" && ci.mergeable === true &&
-		!!review && review.head === ci.head && !!filed && filed.id === handoff.review && filed.recommendation === "approve" && filed.blocking === 0;
+		!!review && review.head === ci.head && filed?.trustedApproval === true && filed.id === handoff.review && filed.recommendation === "approve" && filed.blocking === 0;
 }

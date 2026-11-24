@@ -547,7 +547,7 @@ async function clientCheck(state: string) {
 		{ secrets: { ...secrets, withholdEnv: ["FIXTURE"] } }, { secrets: { ...secrets, passEnv: ["FIXTURE"] } },
 		{ script: { responses: [] } }, { reportScreenshots: true },
 		{ onEvent() {} }, { onUnasked() {} }, { onServerApproved() {} }, { onServers() {} },
-		{ onServerQuestion: async () => false }, { onPlan: () => "" }, { onReview: async () => "" },
+		{ onServerQuestion: async () => false }, { onPlan: () => "" }, { onPlanReview: async () => "" },
 	];
 	for (const guard of guards) {
 		const result = await harness.runTurn({} as SandboxHandle, { ...input, ...guard });
@@ -939,11 +939,11 @@ async function platformToolsCheck(state: string) {
 	const { ASK_AGAIN, ASK_TAKEN, REPORT_TAKEN, askPerson } = await import("../server/src/agent-publish.js");
 	const { fileReport } = await import("../server/src/factory/review.js");
 	const harness = harnessOf({ machine: { name: "Bench" } } as SandboxLayer, "claude");
-	assert.deepEqual([...tools.MCP_TOOLS], ["report", "ask_person", "request_secret", "publish", "push", "fetch_base"], "all but the planner's and the reviewer's tools may be served over MCP");
-	for (const tool of ["report", "ask_person", "request_secret", "push", "fetch_base"] as const) assert.equal(tools.TOOL_REACH[tool], "sandbox", `${tool} may be called by any process`);
+	assert.deepEqual([...tools.MCP_TOOLS], ["report", "ask_person", "request_secret", "publish", "push", "fetch_base", "file_review"], "item reviewers may file over MCP");
+	for (const tool of ["report", "ask_person", "request_secret", "push", "fetch_base", "file_review"] as const) assert.equal(tools.TOOL_REACH[tool], "sandbox", `${tool} may be called by any process`);
 	assert.equal(tools.TOOL_REACH.publish, "asked", "publish is served over MCP only because it asks every time");
-	for (const tool of ["file_plan", "file_review"] as const) assert.equal(tools.TOOL_REACH[tool], "host", `${tool} stays a host tool`);
-	assert.deepEqual({ ...tools.MCP_LIMITS }, { push: 5, fetch_base: 3 });
+	for (const tool of ["file_plan", "file_plan_review"] as const) assert.equal(tools.TOOL_REACH[tool], "host", `${tool} stays a host tool`);
+	assert.deepEqual({ ...tools.MCP_LIMITS }, { push: 5, fetch_base: 3, file_review: 1 });
 
 	// The Claude image's managed policy allows exactly the endpoint its adapter makes for this server, and OpenCode's runs the bridge.
 	const route = `mcp-${Buffer.from(tools.PLATFORM_MCP_SERVER_ID, "utf8").toString("base64url")}`;
@@ -1058,12 +1058,12 @@ async function platformToolsCheck(state: string) {
 	assert.equal((await harness.runTurn(handle, { prompt: "plain", ...builder, onAcpNote: n => older.push(n) })).failure, null);
 	assert.deepEqual(opened.at(-1), []);
 	assert.match(older.join(""), /cannot take the platform's tools, so this turn has no report or ask_person/);
-	// The planner's and the reviewer's filing tools are never served from the sandbox: such a turn is refused.
-	for (const guard of [{ onPlan: () => "" }, { onReview: async () => "" }]) {
+	// The planner's and the plan critic's filing tools are never served from the sandbox: such a turn is refused.
+	for (const guard of [{ onPlan: () => "" }, { onPlanReview: async () => "" }]) {
 		const refused = await harness.runTurn(handle, { prompt: "plain", ...builder, ...guard });
 		assert.match(refused.failure?.message ?? "", /which it does not take here/);
 	}
-	ok("plain sessions, planner and reviewer get no server; an older adapter is noted");
+	ok("plain sessions, planner and plan critic get no server; an older adapter is noted");
 
 	variant = { acp: true, late: false };
 	await mcpPushCheck(harness, handle, opened, said);

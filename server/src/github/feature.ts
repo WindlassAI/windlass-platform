@@ -46,7 +46,7 @@ export async function compareBranches(app: GithubApp, token: string, owner: stri
 	const { body } = await app.call({ path, query: { per_page: 1 }, auth: { bearer: token }, what: "compare the item with its base branch" });
 	const behind = obj(body).behind_by;
 	if (typeof behind !== "number" || !Number.isSafeInteger(behind) || behind < 0) throw new Error("GitHub did not report how far the base branch is ahead.");
-	return { behind, base: sha(obj(obj(body).base_commit).sha) };
+	return { behind, base: sha(obj(obj(body).base_commit).sha), files: obj(body).files as { filename: string }[] | undefined };
 }
 
 export async function advanceFeatureRef(app: GithubApp, token: string, owner: string, repo: string, id: string, base: string, head: string) {

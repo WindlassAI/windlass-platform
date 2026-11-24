@@ -139,7 +139,7 @@ const MAX_AGENT_ID = 200;
  * effort of plain id text. Whether its place offers them is placement's (`placement.ts`, `agentFit`).
  * Windlass with nothing chosen is no choice: the subtask inherits the feature's model.
  */
-function agentOf(value: unknown): SubtaskAgent | undefined {
+export function agentOf(value: unknown): SubtaskAgent | undefined {
 	const a = record(value);
 	for (const key of Object.keys(a)) requirePlan(["harness", "model", "effort"].includes(key), "Unknown agent field: " + key);
 	const harness = a.harness === undefined ? "windlass" : knownHarness(a.harness);
@@ -300,6 +300,8 @@ export function validatePlan(value: unknown, single: Pick<ItemBudget, "tokens">,
 	const minimum = subtaskMinimum(single);
 	const subtasks: PlanSubtask[] = p.subtasks.map(raw => {
 		const s = record(raw), asked = record(s.budget);
+		const key = keyOf(s.key);
+		requirePlan(!key.startsWith("ci-fix-"), "Subtask keys starting with ci-fix- are reserved for feature CI fixes.");
 		// One cost-weighted token figure. A plan from before names more figures; only its tokens are read.
 		const n = asked.tokens;
 		requirePlan(typeof n === "number" && Number.isSafeInteger(n) && n >= minimum.tokens && n <= single.tokens, `Subtask tokens must be a whole number between ${minimum.tokens} and ${single.tokens}.`);
@@ -311,7 +313,7 @@ export function validatePlan(value: unknown, single: Pick<ItemBudget, "tokens">,
 		const acceptance = lines(s.acceptance, 1);
 		requirePlan(acceptance.some(line => /screenshot|`[^`]+`|(?:^|\s)(?:run|use|execute|npm|pnpm|yarn|bun|make|go test|cargo|pytest|python|docker|curl|gradle|mvn|dotnet|bash|sh)\s+\S/i.test(line)), "Name a check command or screenshot in each subtask’s acceptance.");
 		const repo = cross ? aliasIn(s.repo, repos, "each subtask's repository") : undefined;
-		return { key: keyOf(s.key), title: text(s.title, MAX_TITLE_CHARS), brief: text(s.brief, MAX_ITEM_BODY_CHARS), acceptance, owns, dependsOn, budget, ...placementFields(s), ...(repo && { repo }) };
+		return { key, title: text(s.title, MAX_TITLE_CHARS), brief: text(s.brief, MAX_ITEM_BODY_CHARS), acceptance, owns, dependsOn, budget, ...placementFields(s), ...(repo && { repo }) };
 	});
 	unique(subtasks.map(s => s.key));
 	const done = new Set<string>();

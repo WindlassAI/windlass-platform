@@ -315,7 +315,7 @@ export function ItemStages({ item, reviewer = true, step = null }: { item: Pick<
 export function questionLine(item: ItemSummary): string | null {
 	if (!item.question) return null;
 	if (item.question.kind === "plan_approval") return "Its plan waits for your approval.";
-	if (item.question.kind === "replan_approval") return "A subtask stopped: its revised plan waits for your approval.";
+	if (item.question.kind === "replan_approval") return "Its revised plan waits for your approval.";
 	// The agent's own question says more than "The agent stopped to ask you…": its first line.
 	const asked = item.question.kind === "agent_ask" ? item.question.asked?.text.trim().split("\n")[0] : undefined;
 	return asked || item.question.text;

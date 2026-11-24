@@ -66,6 +66,7 @@ export interface CiProgress {
 	 * other than the agent, and verified by nothing. Null while the pull request holds `head`, or GitHub did not say.
 	 */
 	moved: string | null;
+	reviewPush?: { head: string; failure?: string; asked?: true };
 	/** The id of the verdict handed over for `head`, made again when the pull request moves after it. */
 	handed: string | null;
 	/** Original handoff, restored if the PR returns to the reviewed head. */
@@ -74,6 +75,8 @@ export interface CiProgress {
 
 /** One attempt of the blueprint (§1.2 `runs`): what the contract shows (`ItemRun`), and what the gate and CI read. */
 export interface Run extends ItemRun {
+	/** The PR summaries were published in this run. A retry can inherit a passing integration on the same heads. */
+	confirmFeatureCi?: true;
 	/** All planning deliveries in this run were checked for third-party input. Absent on older runs. */
 	planInputsTrusted?: boolean;
 	/** Ordered policy positions taken and the evidence that prompted each one. */
@@ -135,7 +138,7 @@ export interface RunReview {
 	/** The fingerprint of the blocking roots a fix was last started for. */
 	lastOpen?: string | null;
 	/** This round's filing, once filed: what "Hand it over as it is" keeps. */
-	filed?: { id: string } & CheckReview;
+	filed?: { id: string; trustedApproval?: boolean } & CheckReview;
 	/** The run's last filing before this round, which this round's head has none of until it files. */
 	before?: { id: string } & CheckReview;
 }
@@ -150,6 +153,7 @@ export type Task = ItemTask & { featureBody?: string };
  * item's own (`seed`, `pr`, `head`).
  */
 export interface FeatureRepoState extends FeatureRepository {
+	featureCi?: FeatureCi;
 	seed?: string;
 	marker?: string;
 	head?: string | null;
@@ -173,9 +177,20 @@ export interface IntegrationRun extends IntegrationView {
 	charged: boolean;
 }
 
-export type JoinResult = { key: string } & ({ head: string } | { reason: string; conflict: boolean });
+export type JoinResult = { key: string } & ({ head: string } | { reason: string; conflict: boolean; missingTarget?: boolean });
+
+/** The independent CI poll on one feature branch, pinned to its current head. */
+export interface FeatureCi {
+	head: string;
+	since: number;
+	key?: string;
+	passed?: boolean;
+	repeated?: boolean;
+}
 
 export interface FeatureJob {
+	ciFix?: { head: string; fingerprint: string };
+	conflictFix?: { target: string; child?: string; retry?: true };
 	/** Immutable tip from which this child branches, after repository setup at the original seed. */
 	start?: string | null;
 	/** Current attempt attached to a creation request by the parent actor. */
@@ -222,6 +237,7 @@ export interface FeedbackDecision {
 }
 
 export interface FactoryItem {
+	requestedReview?: RequestedReview;
 	/** Waiting for the builder to bind to a machine before its first run. */
 	awaitingPlace?: string;
 	placeAttempts?: number;
@@ -237,6 +253,8 @@ export interface FactoryItem {
 	 * decisions (reviewer-task.ts), so that it does not ask for one to be undone.
 	 */
 	decisions?: PersonDecision[];
+	/** The person's notes for the builder's next turn, sent while no builder turn ran (`note`); taken by the next one. */
+	ownerNote?: string;
 	/** A cross-repo feature's repositories, the primary first. Absent: the one repository of `task`. */
 	repos?: FeatureRepoState[];
 	integration?: IntegrationRun;
@@ -268,6 +286,8 @@ export interface FactoryItem {
 	routes?: Record<string, PlacementRoute>;
 	placement?: ChildPlacement;
 	jobs?: FeatureJob[];
+	featureCi?: FeatureCi;
+	joinOnGate?: boolean;
 	joining?: { child: string; key: string };
 	/** Target commit pinned when requested. Waits behind a part already holding the join grant. */
 	featureUpdate?: { key: string; target: string; child?: string };
@@ -276,6 +296,7 @@ export interface FactoryItem {
 	forceSplit?: boolean;
 	seed?: string;
 	childBase?: string;
+	mergeTarget?: string;
 	/** The feature commit after this child's successful join. Its own pushed head stays on the child. */
 	integratedHead?: string;
 	cancelAfterIntegration?: boolean;
@@ -284,6 +305,8 @@ export interface FactoryItem {
 	singleBudget?: ItemBudget;
 	filedTurn?: string;
 	replans?: number;
+	/** Why the feature was last planned again, as its revised plan's card says it. */
+	replanWhy?: string;
 	featurePlan?: import("../contract.js").FeaturePlan;
 	parent?: NonNullable<import("../contract.js").ItemSummary["parent"]>;
 	id: string;
@@ -307,7 +330,7 @@ export interface FactoryItem {
 	 */
 	unsandboxed?: string[];
 	/** Decided when the builder binds to its place. */
-	reviewer?: { on: true } | { off: "deployment" | "profile" | "machine" | "feature" };
+	reviewer?: { on: true } | { off: "deployment" | "feature" };
 	place: SandboxPlace;
 	machineRemoved: boolean;
 	budget: ItemBudget;
@@ -420,14 +443,19 @@ export interface AgentTurn {
 	fiveHour: { start: number; end: number } | null;
 }
 
+export type RequestedReview = Pick<FeatureRepository, "repositoryId" | "installationId" | "owner" | "name"> & {
+	key: string; pr: number; head: string; base: string; sender: string; untrusted: boolean;
+};
+
 export type Fact =
+	| { kind: "request_review"; at: number; subject: string; request: RequestedReview }
 	| { kind: "default_place_ready"; reviewer: NonNullable<FactoryItem["reviewer"]>; reviewerSessionId: string | null; at: number; place: SandboxPlace; agent: NonNullable<FactoryItem["agent"]> }
 	| { kind: "default_place_wait"; at: number; sentence: string }
 	| ({ kind: "github_feedback"; at: number } & FeedbackInput)
 	| { kind: "reverify"; at: number; head: string }
 	/** `repo`: a cross-repo feature's repository, by alias; absent: the one repository. */
 	| { kind: "feature_seed"; at: number; key: string; sha: string; repo?: string }
-	| { kind: "feature_ready"; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]>; repo?: string }
+	| { kind: "feature_ready"; waitForCiOnEachPart?: boolean; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]>; repo?: string }
 	/** A cross-repo feature's combined run was asked of GitHub (`runId` once GitHub named it). */
 	| { kind: "integration_started"; at: number; key: string; attempt: number; runId: string | null; url: string | null }
 	/** What the combined run came to, or that it could not be started or read (`unavailable`). `seconds`: how long it ran. */
@@ -438,7 +466,7 @@ export type Fact =
 	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null; /** `merged_at` (ms), null when GitHub did not say. */ mergedAt?: number | null }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
 	| { kind: "update_feature"; automatic?: true; at: number; by: Cause; target?: string; child?: string; request?: string }
-	| { kind: "feature_updated"; at: number; key: string; result: { head: string } | { problem: string } }
+	| { kind: "feature_updated"; at: number; key: string; result: { head: string } | { problem: string } | { conflicts: string[] } }
 	| { kind: "parent_update_finished"; at: number; key: string }
 	| { kind: "claim_join"; at: number; child: string; key: string }
 	| { kind: "finish_join"; at: number; child: string; result: JoinResult }
@@ -447,12 +475,13 @@ export type Fact =
 	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
 	| { kind: "child_update"; startedAt?: number; wait?: string; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; head?: string; at: number; key: string }
-	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
+	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean; missingTarget?: boolean }
 	| { kind: "file_plan"; at: number; key: string; plan: unknown }
 	| { kind: "edit_plan"; at: number; by: string; version: number; plan: unknown }
 	/** `agents`: the subtasks whose agent works without asking that the person confirmed (`ItemAction`). */
 	| { kind: "approve_plan"; inventory?: PlacementInventory; at: number; by: string; version: number; agents?: string[]; bases?: Record<string, string> }
 	| { kind: "run_single"; at: number; by: string }
+	| { kind: "set_subtask_agent"; inventory?: PlacementInventory; at: number; by: string; key: string; agent: unknown }
 	| { kind: "start"; at: number; by: Cause }
 	| { kind: "machine_removed"; at: number }
 	| { kind: "cancel"; at: number; by: Cause }
@@ -460,6 +489,8 @@ export type Fact =
 	| { kind: "retry"; at: number; by: Cause }
 	/** "Send back" with a note, from review. */
 	| { kind: "send_back"; at: number; by: Cause; note: string }
+	/** The person's note to the builder: `steered` into its running turn, or kept for its next one. */
+	| { kind: "note"; at: number; by: Cause; note: string; steered?: boolean }
 	| { kind: "claim_secret"; at: number; by: Cause; question: string; name: string }
 	| { kind: "settle_secret"; at: number; by: Cause; question: string; error: string | null }
 	| { kind: "answer"; target?: string; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] }
@@ -539,9 +570,9 @@ export type Fact =
 	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
 	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
-	| { kind: "ci_read"; autoMergeSingles?: boolean; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
+	| { kind: "ci_read"; featureHead?: string; repo?: string; paths?: string[]; autoMergeSingles?: boolean; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
 	| { kind: "auto_merge_result"; behind?: boolean; at: number; key: string; head: string; reason: string | null }
-	| { kind: "pr_read"; mergedByApp?: boolean; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
+	| { kind: "pr_read"; pushCi?: CiReading; mergedByApp?: boolean; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
 	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
 	| { kind: "spent"; at: number; hostedSeconds: number };
 
@@ -564,6 +595,8 @@ export type VerifiedCheckEffect = {
 } & ({ state: "in_progress"; conclusion: null } | { state: "completed"; conclusion: CheckConclusion });
 
 export type Effect =
+	| ({ kind: "requested_review"; to: "review" } & RequestedReview)
+	| ({ kind: "post_requested_review" } & RequestedReview)
 	| { kind: "discard_placement"; key: string }
 	| { kind: "resolve_default_place"; key: string; at: number }
 	| { kind: "auto_merge"; key: string; head: string; baseTip?: string; pr: number }
@@ -596,7 +629,7 @@ export type Effect =
 	/** Commit and push the session's branch, then open or update its pull request with the agent's report and the verified section. */
 	| { kind: "publish"; key: string; at?: number }
 	| { kind: "rerun_ci"; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
-	| { kind: "poll_ci"; key: string; head: string; at: number; notBefore?: number }
+	| { kind: "poll_ci"; repo?: string; key: string; head: string; at: number; notBefore?: number }
 	| { kind: "poll_pr"; key: string; pr: number; at: number }
 	/** Record the question and show it ("Needs you"). */
 	| { kind: "ask"; question: Question }
