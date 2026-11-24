@@ -1,18 +1,25 @@
 import { randomBytes } from "node:crypto";
-import { digest } from "../../server/src/sandbox/snapshot-key.js";
 import { validArgs, type Args } from "../../server/src/runner/protocol.js";
 import { spareProfile, spareRecipe, type SpareRecipe, type SpareSetup } from "../../server/src/runner/spare-recipe.js";
 
 export const SPARE_SESSION = "@ready"; // Outside the session id grammar, including on older runners.
 export const SPARE_TTL = 6 * 60 * 60_000;
 
+// The runner supplies these fields locally. Only their names can reach the service log.
+const contextFields = ["uid", "machineId", "version", "image", "shotsImage", "claudePin", "codexPin", "opencodePin",
+	"egress", "domains", "slots", "screenshotsEnabled", "allowedProfiles", "sessionVolumes"] as const;
+type SpareContext = Record<typeof contextFields[number], string | boolean | undefined>;
+
 export interface SpareSpec {
-	context: string;
+	context: SpareContext;
 	args: Args<"create"> & { spare: SpareRecipe };
 }
 
 export function validSpec(value: unknown): value is SpareSpec {
-	if (!value || typeof value !== "object" || !("context" in value) || typeof value.context !== "string" || !("args" in value)) return false;
+	if (!value || typeof value !== "object" || !("context" in value) || !("args" in value)) return false;
+	const context = value.context;
+	if (!context || typeof context !== "object" || Object.keys(context).length !== contextFields.length ||
+		!contextFields.every(field => Object.hasOwn(context, field))) return false;
 	return validArgs("create", value.args) && spareProfile(value.args.profile, value.args.harness) &&
 		!(value.args.harness && (value.args.prepared || value.args.screenshots)) &&
 		!value.args.prepared?.privateData && !value.args.prepared?.writer && spareRecipe(value.args.spare) &&
@@ -21,11 +28,18 @@ export function validSpec(value: unknown): value is SpareSpec {
 
 // The commit may advance and the snapshot attempt belongs to the requesting session.
 // Both are checked separately when claiming. Include every other create input.
-function key(s: SpareSpec) {
+export function spareKeyFields(s: SpareSpec) {
 	const { spare, prepared, profile, harness, size, screenshots, mirrorRepo } = s.args;
 	const c = spare.connected;
-	return digest([s.context, profile, harness, size ?? 1, !!screenshots, mirrorRepo, spare.url,
-		c && [c.repo, c.branch, c.generation, c.command, c.timeoutMs], prepared && [prepared.repo, prepared.inputs, prepared.generation]]);
+	return { ...s.context, profile, harness, size: size ?? 1, screenshots: !!screenshots, mirrorRepo, url: spare.url,
+		"connected.repo": c?.repo, "connected.branch": c?.branch, "connected.generation": c?.generation,
+		"connected.command": c?.command, "connected.timeoutMs": c?.timeoutMs,
+		"prepared.repo": prepared?.repo, "prepared.inputs": prepared?.inputs, "prepared.generation": prepared?.generation };
+}
+
+export function spareMismatches(a: SpareSpec, b: SpareSpec) {
+	const built = spareKeyFields(a), requested = spareKeyFields(b);
+	return (Object.keys(built) as (keyof typeof built)[]).filter(field => built[field] !== requested[field]);
 }
 
 interface Entry {
@@ -65,39 +79,45 @@ export class WarmSpares {
 		return this.recent?.spec;
 	}
 
-	private discard(e: Entry, reason: string) {
+	/** A miss after maintenance can still be compared with the last successful create. */
+	comparison(spec?: SpareSpec) {
+		const ready = [...this.entries].find(e => e.ready && !e.abort.signal.aborted && this.now() - e.started < SPARE_TTL);
+		const previous = ready?.spec ?? this.recipe;
+		const mismatch = spec && previous ? spareMismatches(spec, previous).join(",") || "none" : "unknown";
+		return { compared: ready ? "ready" : previous ? "recent" : "none", mismatch };
+	}
+
+	private discard(e: Entry, reason: string, detail = "") {
 		if (!e.removal) {
-			console.info(`spare.skip id=${e.raw} reason=${reason}`);
+			console.info(`spare.skip id=${e.raw} reason=${reason}${detail}`);
 			e.abort.abort();
 			// A cancelled docker run may still create its container. Remove it after the build settles.
 			e.removal = Promise.resolve(e.build).then(() => this.drop(e.raw)).finally(() => this.entries.delete(e));
 		}
 		return e.removal;
 	}
-	async trim(limit = 0, spec?: SpareSpec) {
+	async trim(limit = 0, spec?: SpareSpec, cause = "maintenance") {
 		const removals = [];
 		for (const e of this.entries) {
 			const expired = this.now() - e.started >= SPARE_TTL;
-			const changed = spec && key(spec) !== key(e.spec);
-			if (e.removal || expired || changed || limit === 0)
-				removals.push(this.discard(e, expired ? "expired" : changed ? "recipe-changed" : "capacity"));
-			else limit--;
+			const fields = spec && spareMismatches(spec, e.spec);
+			if (e.removal || expired || fields?.length || limit === 0) {
+				const reason = expired ? "expired" : fields?.length && limit > 0 ? "recipe-changed" : "capacity";
+				removals.push(this.discard(e, reason, ` cause=${cause} mismatch=${fields ? fields.join(",") || "none" : "unknown"}`));
+			} else limit--;
 		}
 		await Promise.all(removals);
 	}
-	async foreground(spec?: SpareSpec) {
-		await Promise.all([...this.entries].filter(e => e.removal || !spec || !e.ready || key(spec) !== key(e.spec)).map(e => this.discard(e, "foreground")));
-	}
 	async take(spec: SpareSpec, verify: (raw: string, built: SpareSpec) => Promise<boolean>, waitForRemoval = true) {
-		const retiring = this.trim(2, spec);
-		if (waitForRemoval) await retiring;
-		const e = [...this.entries].find(e => e.ready && !e.abort.signal.aborted);
-		if (!e) return;
-		this.entries.delete(e); // A claim consumes the sandbox even when verification fails.
-		if (await verify(e.raw, e.spec).catch(() => false)) return { raw: e.raw, setup: e.setup };
-		this.entries.add(e);
-		const rejected = this.discard(e, "verification");
-		if (waitForRemoval) await rejected;
+		for (const e of [...this.entries]) {
+			if (!e.ready || e.abort.signal.aborted || this.now() - e.started >= SPARE_TTL || spareMismatches(spec, e.spec).length) continue;
+			if (!this.entries.delete(e)) continue; // Reserve before verification yields to maintenance or another claim.
+			if (await verify(e.raw, e.spec).catch(() => false)) return { raw: e.raw, setup: e.setup };
+			this.entries.add(e);
+			const changedHead = spec.args.spare.connected?.commit !== e.spec.args.spare.connected?.commit;
+			const rejected = this.discard(e, "verification", ` mismatch=${changedHead ? "connected.commit" : "none"}`);
+			if (waitForRemoval) await rejected;
+		}
 	}
 	fill(limit: number) {
 		const spec = this.recipe, demand = this.recent;

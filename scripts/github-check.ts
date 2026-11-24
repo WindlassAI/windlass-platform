@@ -2237,6 +2237,40 @@ async function verifyReviewCheckout(box: SandboxHandle) {
 
 await section("review checkout: pinned setup, exact pull ref, detached clean workspace and read-only remote", () => verifyReviewCheckout(localSandbox("review-checkout")));
 
+await section("spare recipe: consecutive single work items on the same base", async () => {
+	const { readyRecipe } = await import("../server/src/actors/agent-session.js");
+	const { sessionSandboxInput } = await import("../server/src/actors/internal.js");
+	const { digest } = await import("../server/src/sandbox/snapshot-key.js");
+	const { machineLayer } = await import("../server/src/sandbox/runner-layer.js");
+	const repo = stored(open, acme), uid = "u_bo", machineId = "m_0123456789abcdef";
+	const c = { client: () => ({
+		user: { get: () => ({ internalGithubConnection: async () => boConnection,
+			internalSetupCommand: async () => ({ command: "make deps", updatedAt: 123 }) }) },
+		workItem: { get: () => ({ internalSetupSeed: async () => null }) },
+	}) };
+	const keys: string[] = [];
+	for (const item of ["a", "b"]) {
+		const sessionId = "s_" + item;
+		const meta = { uid, sessionId, repo, repoUrl: repo.url, harness: "windlass", profile: "docker-windlass-sandbox",
+			origin: { kind: "item", role: "builder", itemId: "i_" + item }, publishBranch: "windlass/item-" + item } as const;
+		const sandboxes = machineLayer({ who: { uid, sessionId, machineId }, facts: async () => ({
+			report: { gitMirrors: true, warmSpares: { ready: keys.length } } }),
+			again: async (name: string, args: import("../server/src/runner/protocol.js").Args<"create">) => {
+				assert.equal(name, "create");
+				assert.equal(args.mirrorRepo, String(repo.id));
+				assert.ok(args.spare?.connected);
+				assert.equal(args.spare.connected.commit, standin.branchHead(open, repo.branch));
+				keys.push(digest([args.spare]));
+				return sessionId;
+			},
+		} as never, {} as import("../server/src/sandbox/api.js").SandboxLayer).sandboxes;
+		await sandboxes.create({ ...sessionSandboxInput(meta), mirrorRepo: String(repo.id),
+			spareRecipe: ready => readyRecipe(c as never, meta as never, { opened: [], unopened: [] } as never, null, ready ? "claim" : "seed", () => app) });
+	}
+	assert.equal(keys.length, 2);
+	expect("both authorized create requests carry the same ready key", keys[0] === keys[1]);
+});
+
 await section("secrets: nothing that was printed or thrown holds one", async () => {
 	const tokens = [...standin.tokens.keys()];
 	const secrets = [standin.clientSecret, process.env.WLP_SECRET as string, ...tokens];
