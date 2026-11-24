@@ -157,6 +157,7 @@ import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManyS
 import { publishAsksEveryTime, publishUnaskedProblem } from "../agent-publish.js";
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
 import { refreshSecretRows } from "../signin/secret-rows.js";
+import { criticAllowed } from "../factory/review.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, unavailableSecretName, validRequestedSecretName, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
 import { criticSessionId } from "../factory/feature-ids.js";
 import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, repositoryDefaultsLog, migrateDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
@@ -2306,7 +2307,7 @@ export const user = actor({
 			requireServiceFor(c, "call");
 			const builder = c.vars.sessions.get(builderId), profile = c.vars.profile;
 			if (!profile || !builder?.item || builder.item.role === "reviewer" || !builder.repository ||
-				builder.place.kind !== "hosted" || commandSandbox((await getLayer()).sandboxes.profile(builder.profile)) !== "windlass") throw new Error("A restricted critic session is unavailable.");
+				!criticAllowed(builder.place, (await getLayer()).sandboxes.profile(builder.profile))) throw new Error("A restricted critic session is unavailable.");
 			const sessionId = criticSessionId(builder.item.id);
 			if (c.vars.sessions.has(sessionId)) return;
 			const { id, branch } = builder.repository;

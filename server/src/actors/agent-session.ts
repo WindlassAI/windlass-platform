@@ -3996,6 +3996,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	const mode = meta.origin ? itemModeOf(meta.harness, meta.profile) : meta.mode;
 	const reviewer = meta.origin?.role === "reviewer";
 	const checkout = active.item?.row.checkout;
+	const requested = checkout?.requested;
 	const critic = reviewer && active.item?.row.agent === "critic";
 	// Where the outside text of an item's turn came from, and the one rule for every agent of how it goes (factory/untrusted.ts):
 	// marked for Windlass where it can contain commands once told, labelled only otherwise, and on "Docker, hardened" someone
@@ -4138,7 +4139,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		active.secrets ??= await readSecrets(c, meta, turn);
 		for (const text of active.secrets.unopened.splice(0)) note(c, turn, "warn", text);
 		opening = true;
-		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets, !checkout?.requested);
+		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets, !requested);
 		opening = false;
 		clock.opened();
 		// A build's turn ends here: it starts no agent (`buildEnvironment` ran in the setup).
@@ -4166,6 +4167,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		});
 		const harness = harnessOf(layer, meta.harness ?? "windlass");
 		const caps = await harness.capabilities(sandbox);
+		const profile = layer.sandboxes.profile(meta.profile);
 		const platformTool = (tool: (typeof caps.platformTools)[number]) => caps.platformTools.includes(tool);
 		// The plan critic needs the restricted Windlass profile. Every reviewer needs its filing tool.
 		if (reviewer && ((critic && !caps.restrictedReview) || (!critic && !checkout) || !platformTool(critic ? "file_plan_review" : "file_review"))) {
@@ -4184,7 +4186,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			meta.summaryConversation = summary || undefined;
 		}
 		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
-		resumed = critic || checkout?.requested ? null : meta.windlassSessionId;
+		resumed = critic || requested ? null : meta.windlassSessionId;
 		// A turn that resumes after a pause: its agent goes on with a short "carry on" when it has its conversation of the turn,
 		// and is given the whole task when it has not (a new sandbox, a memory that was lost); also when the saved session turns
 		// out to be gone only once the agent is asked for it (`fresh`). The whole task's sources go by the same rule as any turn's.
@@ -4255,7 +4257,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const notes = platformNotes(meta, reviewer);
 		const store = item ? attachmentStore() : null;
 		// A builder can reconnect to a sandbox created before a setting changed.
-		const browser = !!item && !checkout?.requested && caps.reportScreenshots && held.screenshots
+		const browser = !!item && !requested && caps.reportScreenshots && held.screenshots
 			&& (meta.place.kind !== "machine" || sandbox.runnerScreenshots === true)
 			&& (await sandbox.run("test -x /usr/local/bin/wlp-shot", { signal, timeoutMs: 5000 })).exitCode === 0;
 		const unavailable = held.screenshots ? "Screenshots are unavailable in this sandbox. File without screenshots." : NO_REPO_SHOTS;
@@ -4349,18 +4351,15 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		let uiChanged = false;
 		let filingFiles: (() => { read(path: string, sha: string): Promise<string>; close(): Promise<void> }) | null = null;
 		let storedBrief: string | null = null;
-		let requestedPull: ItemReview["requestedPull"];
 		if (reviewer && (checkout || critic) && item) {
 			const repo = meta.repo;
 			const app = githubApp();
-			if (!repo || !app || (!meta.cloned && !checkout?.requested)) throw new ReviewRefused("the base clone is unavailable");
+			if (!repo || !app || (!meta.cloned && !requested)) throw new ReviewRefused("the base clone is unavailable");
 			const connection = await githubConnection(c, meta);
 			if (!connection) throw new ReviewRefused("the repository connection is unavailable");
-			const requested = checkout?.requested;
 			const resolved = requested ? await resolveBoundRepository(app, connection, requested.repositoryId, requested.installationId, "read") : await sessionRepository(app, connection, repo, "read");
 			const scope = { repositoryId: resolved.repository.id, permissions: { contents: "read", metadata: "read" } } as const;
 			const { owner, name } = resolved.repository;
-			if (requested && checkout) requestedPull = { owner, name, pr: checkout.pr };
 			let directory = meta.cloneDirectory ?? ".";
 			if (checkout && requested) {
 				directory = await app.withToken(resolved.installation.id, scope, token => readOnlyReview(sandbox, app.cloneUrl(owner, name), token, checkout.head, checkout.baseSha, signal), { revokeAfter: true });
@@ -4401,7 +4400,7 @@ fi`, { signal, timeoutMs: 5000 });
 				};
 				uiChanged = paths.some(path => /\.(tsx|jsx|vue|svelte|css|scss|html)$|^(web|app|pages|components|src\/ui)\//i.test(path));
 				const manifestsChanged = paths.some(path => /(?:^|\/)(?:package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lock[^/]*|requirements[^/]*\.txt|pyproject\.toml|uv\.lock|poetry\.lock|Cargo\.(?:toml|lock)|go\.(?:mod|sum)|Gemfile[^/]*)$/.test(path));
-				const brief = reviewerTask(held.redactor.deep({ ...checkout, mcp: caps.events === "acp", readOnly: !!requested, changed: groupReviewPaths(paths), uiChanged, manifestsChanged, screenshots }), listed, held.redactor.text(text));
+				const brief = reviewerTask(held.redactor.deep({ ...checkout, mcp: caps.events === "acp", reviewDirectory: common.reviewDirectory, changed: groupReviewPaths(paths), uiChanged, manifestsChanged, screenshots }), listed, held.redactor.text(text));
 				storedBrief = held.redactor.text(itemPrompt(item.row));
 				text = brief;
 			}
@@ -4427,7 +4426,12 @@ fi`, { signal, timeoutMs: 5000 });
 				if (!open || withdrawn.aborted) return "The review call ended.";
 				if (result.filing) {
 					if (uiChanged && !result.filing.screenshots.length) result.filing.notes.push("UI files changed; no screenshots.");
-					meta.review = { ...result.filing, ...(requestedPull && { requestedPull }), id: item.row.key, run: Number(item.row.key.split(":")[1]), round: checkout.round, head: checkout.head, base: checkout.baseSha, verdictId: checkout.verdictId, by: { sessionId: meta.sessionId, model: meta.model, via: request.via ?? "host" }, at: Date.now(), state: "filed", said: null };
+					meta.review = {
+						...result.filing, id: item.row.key, run: Number(item.row.key.split(":")[1]), round: checkout.round,
+						head: checkout.head, base: checkout.baseSha, verdictId: checkout.verdictId,
+						by: { sessionId: meta.sessionId, model: meta.model, via: request.via ?? (caps.events === "windlass" ? "host" : "mcp"), commandSandbox: commandSandbox(profile) },
+						at: Date.now(), state: "filed", said: null,
+					};
 					await persist(c);
 				}
 				item.said = result.answer;
@@ -4484,8 +4488,6 @@ fi`, { signal, timeoutMs: 5000 });
 			// The agent took the prompt once it answered it.
 			if (result.acp?.stopReason) notes.told();
 		} else if (!signal.aborted) {
-			// What the question about a project's server has to say depends on where this session runs.
-			const profile = layer.sandboxes.profile(meta.profile);
 			// Resume keeps a named agent until explicitly switched. The inbox also records planners from before this handoff was supported.
 			const clearPlanner = !!(resumed && active.item && !planner && !reviewer &&
 				(await c.db.execute("SELECT 1 FROM inbox WHERE agent IN ('planner', 'summary') AND turn IS NOT NULL LIMIT 1")).length);
@@ -4810,7 +4812,7 @@ fi`, { signal, timeoutMs: 5000 });
 		});
 		if (reviewer && layer && meta.sandboxId) {
 			try {
-				if (active.item && (critic || checkout?.requested || active.item.withdrawn || active.item.refused || meta.review?.id === active.item.row.key)) {
+				if (active.item && (critic || requested || active.item.withdrawn || active.item.refused || meta.review?.id === active.item.row.key)) {
 					await removeSandbox(c, meta, meta.sandboxId, "Removed the reviewer’s checkout at the end of its turn.");
 				} else if (meta.sandbox === "running") {
 					await layer.sandboxes.suspend(meta.sandboxId);
@@ -4860,6 +4862,11 @@ fi`, { signal, timeoutMs: 5000 });
 	await meterAfterTurn(c, meta, active, meterUse);
 	// The idle times count from here.
 	await armIdle(c, meta);
+	// A requested review and a second review share this session. Re-admit a delivery that found it busy.
+	if (reviewer && !c.vars.turn) {
+		const next = (await waitingRows(c.db)).find(row => row.key !== active.item?.row.key);
+		if (next) void c.keepAwake(askForSlot(c, meta, next));
+	}
 }
 
 /**

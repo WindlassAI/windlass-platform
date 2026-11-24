@@ -1848,10 +1848,17 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 {
 	const reviewed = walk(reviewerOn(), [...pushedRun(H(1)), ciFact(passedCi)]);
 	const end = { kind: "review_ended", outcome: "succeeded", review: filing("approve", currentKey(reviewed.item)!), said: null, spend: { tokens: 19, hostedSeconds: 7 } };
-	end.review.by.via = "mcp";
+	end.review.by.via = "host";
+	end.review.by.commandSandbox = "windlass";
 	end.review.verdictId = reviewed.item.run!.review!.verdictId;
 	const waiting = walk(reviewed.item, [end]).item;
 	const handoff = { ...ciFact(passedCi), baseAhead: 0, baseTip: H(3), autoMergeSingles: true };
+	for (const [via, commandSandbox] of [["mcp", "windlass"], ["host", "none"], ["host", "unknown"]] as const) {
+		const review = { ...end.review, by: { ...end.review.by, via, commandSandbox } };
+		const fallback = walk(reviewed.item, [{ ...end, review }, handoff]);
+		assert.ok(effect(fallback.last, "handoff") && !effect(fallback.last, "auto_merge"));
+		expect(`${via} approval with ${commandSandbox} command sandbox hands over to the person`, true);
+	}
 	const accepted = walk(waiting, [handoff]), merge = effect(accepted.last, "auto_merge");
 	assert.equal(merge?.head, H(1));
 	assert.equal(merge?.baseTip, H(3));
@@ -1887,6 +1894,37 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		assert.ok(effect(fallback.last, "handoff") && !effect(fallback.last, "auto_merge"), change.toString());
 	}
 	expect("automatic squash merge requires every handoff condition; update, refusal and merged receipts use their normal paths", true);
+}
+
+{
+	const { live } = await import("../server/src/actors/work-item.js");
+	const { requestedDelivery } = await import("../server/src/factory/blueprint.js");
+	const item = walk(newItem(), [...pushedRun(H(1)), ciFact(passedCi)]).item;
+	item.reviewer = { on: true };
+	const request = { key: `${item.id}:1:pr-review:1:7:${H(1)}`, head: H(1), base: H(2), repositoryId: 1,
+		installationId: 2, owner: "windlass", name: "project", pr: 7, sender: "alex", untrusted: false };
+	const start = { kind: "request_review" as const, subject: "issue_comment:1", request, at: T0 };
+	const first = advance(item, start), delivery = effect(first, "requested_review");
+	assert.ok(delivery && live(first.item, delivery));
+	assert.equal(advance(first.item, { ...start, subject: "issue_comment:2" }).item, first.item);
+	assert.equal(advance(first.item, { ...start, request: { ...request, head: H(3) } }).effects.length, 0);
+	assert.deepEqual(requestedDelivery({ ...item, foreignPush: true }, request).untrusted, ["GitHub feedback from @alex"]);
+	assert.deepEqual(requestedDelivery(item, { ...request, untrusted: true }).untrusted, ["GitHub feedback from @alex"]);
+	assert.deepEqual(requestedDelivery(item, { ...request, head: H(3) }).untrusted, ["GitHub feedback from @alex"]);
+	const end = { kind: "review_ended" as const, at: T0, key: request.key, outcome: "succeeded" as const, review: filing("approve", request.key),
+		said: null, spend: { tokens: 8, hostedSeconds: 0 } };
+	const finished = advance(first.item, end);
+	assert.ok(effect(finished, "post_requested_review"));
+	assert.deepEqual(finished.item.run, item.run);
+	assert.equal(finished.item.spent.tokens, item.spent.tokens + 8);
+	assert.equal(advance(finished.item, end).item, finished.item);
+	for (const state of ["done", "failed", "cancelled"] as const) {
+		const ended = { ...item, state };
+		assert.equal(advance(ended, start).item, ended);
+		assert.ok(!live({ ...first.item, state }, delivery));
+	}
+	assert.equal(advance({ ...item, budget: { ...item.budget, tokens: item.spent.tokens } }, start).effects.length, 0);
+	expect("repeated requests for a head admit one turn and one receipt; ended and over-budget items skip the review", true);
 }
 
 {

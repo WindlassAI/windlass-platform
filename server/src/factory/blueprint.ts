@@ -63,7 +63,7 @@ import { PLATFORM_TOOLS, refusalMessage } from "../provider-refusal.js";
 import { budgetStop, itemAgent, newAgent, noSpend, noteAgentTurn, retryAt, spellTokens, unmeasuredTurn } from "./budget.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import { environmentFailure, outputExcerpt, type EnvironmentFailure } from "./check-environment.js";
-import type { ChoiceId, CiProgress, EarlierFinding, Fact, FeatureJob, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemSpend, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
+import type { ChoiceId, CiProgress, EarlierFinding, Fact, FeatureJob, HandoffReview, RequestedReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemSpend, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { ASK_WHEN_BLOCKED, BUILDER_ASSUMPTIONS, PUBLISH_SERVER, REPORT_TOOL } from "../agent-publish.js";
 import { REVIEW_TOOL, type PersonDecision } from "./reviewer-task.js";
 import { runAnywayWords, sources, thirdParty, untrustedWords } from "./untrusted.js";
@@ -233,6 +233,10 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 	if (receipt) spendTurn(change, fact.spend);
 	else if (!apply(change, fact)) return unchanged;
 	if (change.item.run?.ci?.moved) change.item.foreignPush = true;
+	if (change.item.requestedReview && (FINAL.has(change.item.state) || change.item.state === "failed")) {
+		change.effects.push({ kind: "withdraw", key: change.item.requestedReview.key, to: "review" });
+		delete change.item.requestedReview;
+	}
 	if (change.item.feedback && (FINAL.has(change.item.state) || change.item.state === "failed" || change.item.machineRemoved)) {
 		const f = change.item.feedback;
 		for (const batch of [f.awaiting, popHeld(f)]) if (batch)
@@ -317,7 +321,24 @@ function waitForDefaultPlace(c: Change, sentence: string): boolean {
 
 function apply(c: Change, fact: Fact): boolean {
 	const { item } = c;
+	if (fact.kind === "review_ended" && item.requestedReview?.key === fact.key) {
+		const request = item.requestedReview;
+		delete item.requestedReview;
+		chargeTurn(item, fact.spend);
+		const review = fact.review;
+		if (fact.outcome === "succeeded" && review?.state === "filed" && review.id === fact.key && review.head === request.head && review.base === request.base) {
+			c.tookReview = review.id;
+			c.effects.push({ ...request, kind: "post_requested_review" });
+		} else c.sayOfItem(`Requested review of PR #${request.pr} at ${shortSha(request.head)}: ${fact.refused || fact.said || "The reviewer did not file a review."}`);
+		return true;
+	}
 	switch (fact.kind) {
+		case "request_review":
+			if (!item.run || item.state === "failed" || item.machineRemoved || item.requestedReview || (item.run.step.kind === "review" && item.run.step.turn)) return false;
+			if (turnBudgetStop(c) || backstopTurns(item) >= RULES.turnBackstop) return false;
+			item.requestedReview = fact.request;
+			c.effects.push({ ...fact.request, kind: "requested_review", to: "review" });
+			return true;
 		case "github_feedback": {
 			const f = feedbackState(item);
 			if (fact.ids.every(id => f.lastIds.includes(id) || f.taken.includes(id))) return false;
@@ -597,7 +618,7 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "default_place_ready" | "default_place_wait" | "update_feature" | "feature_updated" | "parent_update_finished" | "claim_join" | "finish_join" | "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "set_subtask_agent" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "claim_secret" | "settle_secret" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "request_review" | "default_place_ready" | "default_place_wait" | "update_feature" | "feature_updated" | "parent_update_finished" | "claim_join" | "finish_join" | "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "set_subtask_agent" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "claim_secret" | "settle_secret" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
 	const run = c.item.run;
 	if (run === null || c.item.featureUpdate) return false;
 	const step = run.step;
@@ -1219,12 +1240,16 @@ const OUTCOME_WORDS: Partial<Record<TurnOutcome, string>> = { stopped: "was stop
 function spendTurn(c: Change, spend: TurnSpend, providerRefusal?: ItemProviderRefusal): void {
 	if (!providerRefusal || !usageRefusal(providerRefusal.kind)) delete c.run.step.providerRetries;
 	c.run.step.turn = null;
+	chargeTurn(c.item, spend);
+}
+
+function chargeTurn(item: FactoryItem, spend: TurnSpend): void {
 	// An item stored before raw tokens were kept counted them raw: they start from what it counted.
-	c.item.spent.rawTokens = (c.item.spent.rawTokens ?? c.item.spent.tokens) + (spend.rawTokens ?? spend.tokens);
-	c.item.spent.tokens += spend.tokens;
-	if (spend.agent) noteAgentTurn(c.item, spend.agent);
-	c.item.spent.turns += 1;
-	if (c.item.place.kind === "hosted") c.item.spent.hostedSeconds = Math.max(c.item.spent.hostedSeconds, spend.hostedSeconds);
+	item.spent.rawTokens = (item.spent.rawTokens ?? item.spent.tokens) + (spend.rawTokens ?? spend.tokens);
+	item.spent.tokens += spend.tokens;
+	if (spend.agent) noteAgentTurn(item, spend.agent);
+	item.spent.turns += 1;
+	if (item.place.kind === "hosted") item.spent.hostedSeconds = Math.max(item.spent.hostedSeconds, spend.hostedSeconds);
 }
 
 function askProviderRefusal(c: Change, refusal: ItemProviderRefusal, plan: TurnPlan): void {
@@ -1847,6 +1872,19 @@ function reviewPlan(c: Change): TurnPlan {
 	return { ...IMPLEMENT, kind: "review", to: "review", checkout: { head: run.review.head, base: item.task.base, pr: item.pr.number } };
 }
 
+export function requestedDelivery(item: FactoryItem, effect: RequestedReview) {
+	const { repositoryId, installationId, pr, head, base, sender } = effect;
+	const untrusted = marked(item.untrusted, effect.untrusted || item.foreignPush || item.head !== head || item.run?.ci?.head !== head || item.run.ci.moved
+		? [untrustedWords.feedback("@" + sender)] : []);
+	return {
+		key: effect.key, itemId: item.id, title: item.task.title, text: "", agent: null, maxSteps: RULES.reviewMaxSteps,
+		fetchBase: null, startsRun: false, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted),
+		checkout: { requested: { repositoryId, installationId }, pr, head, baseSha: base, round: 1, task: item.task,
+			previousHead: null, earlier: [], records: [], report: null, decisions: item.decisions, filings: RULES.reviewFilings,
+			verdictId: effect.key, verdictWords: "This is a requested review of the current PR head. No platform verdict is attached." },
+	};
+}
+
 function reviewerInput(c: Change, ci: CiProgress, pr: number): ReviewerInput {
 	// A refile gets the verdict originally pinned to the checkout, even if a PR read since observed a move.
 	const { verdict, words } = c.storeVerdict ?? verdictAt(c, { ...ci, moved: null });
@@ -1895,7 +1933,7 @@ function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): 
 	c.say(`The second review of ${shortSha(pending.head)}: ${words[filed.recommendation]}.`);
 	const assessment = { recommendation: filed.recommendation, blocking };
 	c.tookReview = filed.id;
-	pending.filed = { id: filed.id, ...assessment };
+	pending.filed = { id: filed.id, trustedApproval: filed.by.via === "host" && filed.by.commandSandbox === "windlass", ...assessment };
 	pending.open = open;
 	// A feature's review stays advisory: its findings go to the person with the handover.
 	if (filed.recommendation === "approve" || c.item.mode === "orchestrate") return readForHandoff(c, ci, { review: filed.id, reviewNone: null, assessment });

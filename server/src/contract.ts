@@ -2101,7 +2101,7 @@ export interface ItemReview {
 	head: string;
 	base: string;
 	verdictId: string;
-	by: { sessionId: string; model: string; via?: "host" | "mcp" };
+	by: { sessionId: string; model: string; via?: "host" | "mcp"; commandSandbox?: "windlass" | "none" | "unknown" };
 	at: number;
 	state: "filed" | "none";
 	said: string | null;

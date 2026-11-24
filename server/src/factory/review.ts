@@ -1,14 +1,19 @@
 import { feedbackWords } from "./feedback.js";
 /** The report tool's trust boundary. The page reads these strings as text. Only platform records supply facts and links. */
-import { MAX_ACCEPTANCE_CRITERIA, MAX_NOTE_CHARS, MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS as limit, type WindlassEvent, type ItemReview, type ItemReport, type ReviewBlock, type ReviewLocation, type ReviewRecommendation, type ReviewRecord, type ReviewRef, type Verdict } from "../contract.js";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_NOTE_CHARS, MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS as limit, type SandboxPlace, type SandboxProfile, type WindlassEvent, type ItemReview, type ItemReport, type ReviewBlock, type ReviewLocation, type ReviewRecommendation, type ReviewRecord, type ReviewRef, type Verdict } from "../contract.js";
 import { type AgentReport, CONTROL, REPORT_TAKEN } from "../agent-publish.js";
 import { shotRequest, textOf, type TextRedactor, type ShotRequest } from "./attachments.js";
+import { commandSandbox } from "../repo-secrets.js";
 import { config } from "../config.js";
 import { createHash } from "node:crypto";
 import { verdictWords } from "./verdict.js";
 import { data, fence } from "./reviewer-task.js";
 import type { EarlierFinding } from "./types.js";
 
+
+export function criticAllowed(place: SandboxPlace, profile: SandboxProfile): boolean {
+	return place.kind === "hosted" && commandSandbox(profile) === "windlass";
+}
 
 export const REVIEW_OFF_REASON = {
 	deployment: "turned off for this deployment",

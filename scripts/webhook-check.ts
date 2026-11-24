@@ -854,7 +854,9 @@ async function run() {
 					const before = await item.view();
 					const head = item.pull.headSha!;
 					const author = feature ? peer : writer;
-					const commentId = 66160 + item.pr * 2;
+					const commentId = 66160 + item.pr * 4;
+					const reviewer = client.agentSession.get([uid, before.reviewerSessionId!], { params: { token: ownerToken } });
+					const initialTurns = (await reviewer.snapshot()).summary.turns;
 					await prComment(item.pull, commentId, reader, "/windlass review");
 					await prComment(item.pull, commentId + 1, author, "/windlass review");
 					item.pull.headSha = standin.commit(projectG2, item.pull.head, { "README.md": "# A later commit\n" }, "Another update", item.pull.head);
@@ -865,6 +867,9 @@ async function run() {
 					assert.match(posted.review.body, /The README needs a correction/);
 					assert.match(posted.review.body, /Correct the heading/);
 					assert.deepEqual(posted.lines.map(line => [line.path, line.line]), [["README.md", 1]]);
+					item.pull.headSha = head;
+					await prComment(item.pull, commentId + 2, author, "/windlass review");
+					assert.equal((await reviewer.snapshot()).summary.turns, initialTurns + 1);
 					const after = await item.view();
 					assert.equal(after.state, before.state);
 					assert.deepEqual(after.run, before.run);
