@@ -4,7 +4,7 @@ name: CI heavy
 # docs/testing.md). Main, the nightly run and a dispatch with `full` run every group.
 on:
   push:
-    branches: [main, 'wip/**']
+    branches: [main]
   pull_request:
   schedule:
     - cron: '23 3 * * *'

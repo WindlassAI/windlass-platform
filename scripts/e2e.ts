@@ -14,6 +14,7 @@
  * The server's state and log go to a new directory under WLP_E2E_DIR (default: the system's temporary
  * directory), removed when everything passed unless WLP_E2E_KEEP=1.
  *
+ * --section=core|usage|resume partitions the full run across CI jobs with separate local servers.
  * --idle-only runs the platform and sign-in checks, then only the idle sandbox checks (`IDLE_CHECKS`).
  *
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
@@ -71,6 +72,10 @@ if (idleOnly && !OWN_SERVER) throw new Error("--idle-only requires a server of i
 /** Only the checks of a turn that pauses and resumes across a restart (WLP_TURN_RESUME). */
 const resumeOnly = args.includes("--resume-only");
 if (resumeOnly && !OWN_SERVER) throw new Error("--resume-only requires a server of its own");
+const section = args.find(arg => arg.startsWith("--section="))?.slice("--section=".length);
+if (section !== undefined && (!["core", "usage", "resume"].includes(section) || !OWN_SERVER || args.length !== 1)) {
+	throw new Error("Use --section=core, --section=usage or --section=resume on its own");
+}
 const sandboxImage = OWN_SERVER && MODE === "docker" ? await imageId() : undefined;
 /** How long one turn may take. A Docker turn creates a container and runs real commands. */
 const TURN_MS = FAKE ? 30_000 : 240_000;
@@ -727,23 +732,33 @@ async function identityChecks(client: Client, server: Server) {
 	});
 }
 
+/** A prompt whose turn asks before it runs a command: both layers choose that scenario by these words. */
+const ASK = "Fetch the response headers of example.com";
+/** A prompt whose turn runs one command for a while: the turn to steer, and to stop one call of. */
+const LONG = "Run the long build and report its progress (slow)";
+
 async function main(server: Server | null): Promise<void> {
 	const client = newClient();
 	const attempt = () => `e2e-${randomBytes(8).toString("hex")}`;
-	/** A prompt whose turn asks before it runs a command: both layers choose that scenario by these words. */
-	const ASK = "Fetch the response headers of example.com";
-	/** A prompt whose turn runs one command for a while: the turn to steer, and to stop one call of. */
-	const LONG = "Run the long build and report its progress (slow)";
 	const demoSignIn = async (id = attempt()): Promise<AuthResult> => {
 		const result = await client.login.getOrCreate([id]).demo();
 		demoUids.push(result.profile.uid);
 		return result;
 	};
 
-	if (githubOnly && server) {
+	if (server && (githubOnly || section === "usage" || section === "resume")) {
 		try {
 			const info = await (await platformInfo()).json() as import("../server/src/contract.js").PlatformInfo;
-			await githubChecks(server, client, demoSignIn, info.profiles.find(p => p.available)!.id);
+			const profile = info.profiles.find(p => p.available)!.id;
+			if (githubOnly) {
+				await githubChecks(server, client, demoSignIn, profile);
+			} else {
+				// The full run reaches these restarts after switching to the short sign-in TTL.
+				loginTtlMs = SHORT_LOGIN_TTL_MS;
+				const user = await demoSignIn();
+				if (section === "usage") await usageAndIdleChecks(server, client, user, profile, demoSignIn);
+				else await resumeChecks(server, client, user.profile.uid, user.token, profile, LONG);
+			}
 		} finally { await client.dispose(); }
 		return;
 	}
@@ -2713,6 +2728,17 @@ async function main(server: Server | null): Promise<void> {
 		for (const name of OWNER_CHECKS) skip(name, "needs its own server with the fake layer");
 	}
 
+	if (section !== "core") {
+		await usageAndIdleChecks(server, client, userA, availableProfile, demoSignIn);
+		if (server) await resumeChecks(server, client, uid, token, availableProfile, LONG);
+		else for (const name of RESUME_CHECKS) skip(name, "needs its own server, restarted with WLP_TURN_RESUME");
+	}
+	await integrationChecks(server, client, userA, availableProfile, demoSignIn);
+	await client.dispose().catch(() => undefined);
+}
+
+async function usageAndIdleChecks(server: Server | null, client: Client, user: AuthResult, availableProfile: string, demoSignIn: () => Promise<AuthResult>) {
+	const { profile: { uid }, token } = user;
 	// --- the reply between a session and its user's actor lost (WLP_FAKE_RESERVE_FAULT, user.ts) -----------
 
 	const FAULT_CHECKS = [
@@ -2859,15 +2885,10 @@ async function main(server: Server | null): Promise<void> {
 	} else {
 		for (const name of IDLE_CHECKS) skip(name, "needs its own server, restarted with short idle times");
 	}
+}
 
-	// --- a turn that pauses and resumes across a restart (WLP_TURN_RESUME) -------------------------
-
-	if (server) {
-		await resumeChecks(server, client, uid, token, availableProfile, LONG);
-	} else {
-		for (const name of RESUME_CHECKS) skip(name, "needs its own server, restarted with WLP_TURN_RESUME");
-	}
-
+async function integrationChecks(server: Server | null, client: Client, user: AuthResult, availableProfile: string, demoSignIn: () => Promise<AuthResult>) {
+	const { profile: { uid }, token } = user;
 	// --- the agent's memory outlives its sandbox: a server whose sandboxes hold Windlass's sessions, and a bucket ---
 
 	if (server && FAKE) {
@@ -2936,8 +2957,6 @@ async function main(server: Server | null): Promise<void> {
 	} else {
 		skip("with an admin token and no address for browsers the server refuses to start, in one sentence", "needs to start a server");
 	}
-
-	await client.dispose().catch(() => undefined);
 }
 
 /**
@@ -4885,7 +4904,7 @@ try {
 	if (OWN_SERVER) {
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
-		if (FAKE && !idleOnly && !githubOnly && !resumeOnly) {
+		if (FAKE && (!section || section === "core") && !idleOnly && !githubOnly && !resumeOnly) {
 			await server.start({ WLP_ITEMS: "1", WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
 			const identityClient = newClient();
 			try {

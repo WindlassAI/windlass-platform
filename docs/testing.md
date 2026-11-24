@@ -1,13 +1,23 @@
 # Testing
 
-Two workflows run the checks on GitHub Actions.
+Both GitHub Actions workflows run on pushes to `main`, on pull requests, and on demand.
+Open a PR (a draft works) to get automatic checks on a branch.
 
-- **CI** (`.github/workflows/ci.yml`) runs on every push and pull request: the typecheck and the web
-  build, `pnpm test` (the fake suite, `WLP_SANDBOX=fake`) and the secret scan. These are the required
-  checks on `main`.
-- **CI heavy** (`.github/workflows/ci-heavy.yml`) runs everything else that can run on a GitHub runner,
-  in groups chosen by the files a change touches. It runs on pushes to `main` and `wip/**`, on pull
-  requests, every night, and on demand.
+- **CI** (`.github/workflows/ci.yml`) runs the typecheck, web build and secret scan. On `main`,
+  PRs into `main`, and manual runs, it also runs the fake suite (`WLP_SANDBOX=fake`) in four
+  parallel jobs. PRs from `wip/**` and `windlass/**` skip those four jobs. The required `test`
+  check reports their combined result.
+- **CI heavy** (`.github/workflows/ci-heavy.yml`) selects groups by the files changed in the PR,
+  including PRs from agent branches. It also runs nightly.
+
+`pnpm test` runs the four shards in sequence locally. Each script can also run on its own.
+
+| Script | Suites |
+| --- | --- |
+| `pnpm test:factory` | Release, snapshots and logs, credentials, relays and setup, runner adapters and egress, factory, orchestrator, G3 webhook and factory orchestration E2E |
+| `pnpm test:core` | Server E2E identity, platform and sessions, backups, GitHub, approvals and browser connection |
+| `pnpm test:usage` | Fairness, timeline writes, runner fairness, server E2E usage faults and idle sandboxes |
+| `pnpm test:resume` | Web staging, item feed, web unit tests and server E2E turn resumption |
 
 ## What a change runs
 
@@ -22,7 +32,7 @@ In the Actions UI each job shows a readable title (for example "Factory 1 of 3" 
 - documentation (`docs/**`, any `*.md`) runs nothing, and neither does a file no group lists;
 - a push to `main`, the nightly run and a dispatch with `full` run every group.
 
-So while a branch changes a core file, every push to it runs everything.
+While a PR changes a core file, each update runs every heavy group.
 
 The Docker groups load the sandbox images from the Actions cache. The `images` job builds each image
 once per run, with `docker buildx` and the GHA cache, so an unchanged Dockerfile builds nothing. The
@@ -37,7 +47,7 @@ minutes, most of it the outage cases' wall time); a change to one area runs a fe
 To see what a change would run, before you push:
 
 ```sh
-node scripts/ci-heavy.mjs select --base origin/main             # what a push of HEAD would run
+node scripts/ci-heavy.mjs select --base origin/main             # what a PR into main would run
 node scripts/ci-heavy.mjs select --files server/src/usage.ts    # what a change to these files would run
 ```
 
@@ -65,9 +75,10 @@ checkout; on CI that comparison is skipped and the rest runs.
    covers what you changed (`cd server && npx tsx ../scripts/<name>.ts`), nothing more. Leave the
    Docker checks, the e2e runs and the full suite to CI.
 2. **Push a `wip/<name>` branch** to `git@github.com:WindlassAI/windlass-platform.git`
-   over SSH (`git push git@github.com:WindlassAI/windlass-platform.git HEAD:wip/<name>`). Both workflows run on it; on `wip/*` the CI workflow runs only typecheck and the secret scan, and CI heavy runs the tests. The plan job's summary says which
-   groups ran and which changed file chose each one; each job's summary has a table of its checks with
-   their times.
+   over SSH (`git push git@github.com:WindlassAI/windlass-platform.git HEAD:wip/<name>`). Open or
+   update a PR to run both workflows. On PRs from `wip/**` and `windlass/**`, CI runs the typecheck,
+   web build and secret scan, and CI heavy runs the path-selected tests. The plan job's summary names
+   the groups and the files that selected them. Each job's summary lists its checks and their times.
 3. **Read the result** with one call per look, no more than once a minute:
    `gh run list -b wip/<name> -L 2 --json databaseId,name,status,conclusion`, then
    `gh run view <id> --json jobs` and `gh run view <id> --log-failed` for a failure. Do not use
