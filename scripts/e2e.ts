@@ -2544,9 +2544,10 @@ async function main(server: Server | null): Promise<void> {
 	if (server && FAKE) {
 		// Removing a sandbox takes PROVIDER_MS here, so that a prompt sent during a free arrives while the session removes it.
 		const PROVIDER_MS = 1_500;
+		const holdRemovals = join(server.storage, "hold-sandbox-removals");
 		await server.stop();
 		await waitFor(`ports ${ENGINE_PORT} and ${HTTP_PORT} to be free`, portsFree, 20_000, 200);
-		await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_MAX_KEPT_SANDBOXES: "1", WLP_FAKE_CREATE_FAILS: "1", WLP_FAKE_PROVIDER_DELAY_MS: String(PROVIDER_MS) });
+		await server.start({ WLP_LOGIN_TTL_MS: String(loginTtlMs), WLP_MAX_KEPT_SANDBOXES: "1", WLP_FAKE_HOLD_REMOVALS: holdRemovals, WLP_FAKE_CREATE_FAILS: "1", WLP_FAKE_PROVIDER_DELAY_MS: String(PROVIDER_MS) });
 		const someone = await demoSignIn();
 		const theirs = client.user.getOrCreate([someone.profile.uid], { params: { token: someone.token } });
 		const turnOf = async (id: string, text: string) => {
@@ -2684,18 +2685,22 @@ async function main(server: Server | null): Promise<void> {
 		});
 
 		await check(OWNER_CHECKS[4], async () => {
-			// Its removal at the delete is lost (the fake's "(outlive-delete)"), as an orphan's was: the session is gone, the sandbox is not.
+			// Keep the marked sandbox through every removal attempt made while deleting its session.
 			const orphaned = await theirs.createSession({ profile: availableProfile as never, title: "Outlives its delete" });
 			assert((await turnOf(orphaned.id, "Write a short program (outlive-delete)")).outcome === "succeeded", "the turn failed");
+			writeFileSync(holdRemovals, "");
 			await theirs.deleteSession(orphaned.id);
-			assert(lines(`\\[wlp\\] fake sandbox removal lost id=`).length >= 1, "the delete's removal was not lost");
+			await waitFor("the provider to refuse the removal", () => server.output.includes("fake sandbox removal held id="), 5_000);
 			// With the cap at 1, the orphan would hold the one place: another agent starts all the same.
 			const next = await theirs.createSession({ profile: availableProfile as never, title: "After the orphan" });
 			try {
 				const ended = await turnOf(next.id, "Write a short program");
 				assert(ended.outcome === "succeeded", `the next agent's turn ended ${ended.outcome}: ${ended.message}`);
+				rmSync(holdRemovals);
 				await (await serviceUser(server, someone.profile.uid)).internalSweepSandboxes();
-				const removed = lines(`\\[wlp\\] sandbox\\.orphan_removed uid=\\S+ id=\\S+ session=${orphaned.id}`);
+				const removals = () => lines(`\\[wlp\\] sandbox\\.orphan_removed uid=\\S+ id=\\S+ session=${orphaned.id}`);
+				await waitFor("the orphan removal to be logged", () => removals().length > 0, 5_000);
+				const removed = removals();
 				assert(removed.length === 1, `${removed.length} orphan removals logged`);
 				const usage = await theirs.usage();
 				assert(usage.sandboxes.kept === 1 && usage.kept.every((kept) => kept.sessionId !== orphaned.id), `kept: ${plain(usage.kept.map((k) => k.sessionId))}`);
@@ -3951,7 +3956,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			const offered = (await user.models()).models.map((candidate) => candidate.id);
 			const [model, other] = [offered[0], offered[1] ?? offered[0]];
 			const unavailable = info.profiles.find((candidate) => !candidate.available);
-			const NONE = { screenshots: false, profile: null, model: null, updatedAt: null };
+			const NONE = { screenshots: false, profile: null, model: null, hostedSize: null, updatedAt: null };
 
 			// Nothing is kept until something is saved: the page is there all the same, named after the agent on it.
 			const empty = await user.repository(harbor.id);
