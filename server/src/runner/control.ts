@@ -170,7 +170,7 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *                    restarted server resumes, so a graceful stop need not end a machine turn
  *                    (runner/journal.ts)
  */
-export const SERVER_CAPABILITIES = ["warm-spares", "git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
+export const SERVER_CAPABILITIES = ["warm-spares", "spare-setup-times", "git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a

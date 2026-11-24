@@ -548,6 +548,7 @@ class RunnerHandle implements TurnSandbox {
 	readonly ownData: boolean;
 	readonly runnerStart?: RunnerStartTimes;
 	readonly readyKey?: string;
+	readonly readySetup?: TurnSandbox["readySetup"];
 	readonly image?: string;
 	readonly memoryEvents?: TurnSandbox["memoryEvents"];
 
@@ -559,6 +560,7 @@ class RunnerHandle implements TurnSandbox {
 		this.ownData = found.ownData === true;
 		this.runnerStart = found.startTimes;
 		this.readyKey = found.readyKey;
+		this.readySetup = found.readySetup;
 		this.image = found.image;
 		this.approval = findProfile(found.profile).approval;
 		markTurnSandbox(this);
@@ -724,7 +726,7 @@ class RunnerSandboxes implements Sandboxes {
 		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
 			throw new SandboxUserError(`This machine's runner does not offer ${harnessName(input.harness)}. Update it and start it with --harness ${input.harness}.`);
 		const screenshots = !!(input.screenshots && !input.harness && report?.screenshots);
-		const spare = report?.warmSpares && input.spareRecipe ? await input.spareRecipe().catch(() => undefined) : undefined;
+		const spare = report?.warmSpares && input.spareRecipe ? await input.spareRecipe(report.warmSpares.ready).catch(() => undefined) : undefined;
 		const args = { profile: input.profile, ...(spare && { spare }), ...(report?.gitMirrors && input.mirrorRepo && { mirrorRepo: input.mirrorRepo }), ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
 		if (input.fromSnapshot && !input.harness && config.machines?.identity) {
 			await link.ready();

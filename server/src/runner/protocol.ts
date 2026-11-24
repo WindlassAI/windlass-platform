@@ -11,7 +11,7 @@
  * Validation is here and nowhere else. A type and its check are one definition, so they cannot drift
  * apart, and the `Same` assertions at the end tie the operations to the provider interfaces they carry.
  */
-import { spareRecipe } from "./spare-recipe.js";
+import { spareRecipe, spareSetup } from "./spare-recipe.js";
 import { isIP } from "node:net";
 import { DEFERRED_INPUTS } from "../sandbox/snapshot-key.js";
 import { helloFields, welcomeFields } from "./frame-auth.js";
@@ -86,7 +86,7 @@ const operations = {
 		blockedNetwork: optional(oneOf(true)),
 		memoryEvents: optional(oneOf(true)),
 		/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */
-		readyKey: optional(fingerprint),
+		readyKey: optional(fingerprint), readySetup: optional(spareSetup),
 		startTimes: optional(object({ spare: optional(oneOf(true)), image: count, pulled: optional(oneOf(true)), create: count })),
 		/** The Docker image id it was made from (SandboxHandle.image), said only to a server that named `environment-image`. */
 		image: optional(is<string>(v => typeof v === "string" && /^sha256:[a-f0-9]{64}$/.test(v))) }))],

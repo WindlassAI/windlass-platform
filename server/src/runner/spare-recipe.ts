@@ -16,3 +16,7 @@ export const spareRecipe = object({ url: spareUrl, connected: optional(object({
 	generation: is<string>(v => typeof v === "string" && /^[0-9a-f]{64}$/.test(v)),
 })) });
 export type SpareRecipe = Of<typeof spareRecipe>;
+
+// The command is already part of the verified recipe. Only its actual execution times cross back.
+export const spareSetup = object({ startedAt: count, durationMs: count });
+export type SpareSetup = Of<typeof spareSetup>;

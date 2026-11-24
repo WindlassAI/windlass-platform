@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { digest } from "../../server/src/sandbox/snapshot-key.js";
 import { validArgs, type Args } from "../../server/src/runner/protocol.js";
-import { spareRecipe, type SpareRecipe } from "../../server/src/runner/spare-recipe.js";
+import { spareRecipe, type SpareRecipe, type SpareSetup } from "../../server/src/runner/spare-recipe.js";
 
 export const SPARE_SESSION = "@ready"; // Outside the session id grammar, including on older runners.
 export const SPARE_TTL = 6 * 60 * 60_000;
@@ -34,59 +34,79 @@ interface Entry {
 	started: number;
 	abort: AbortController;
 	ready: boolean;
+	build?: Promise<void>;
+	removal?: Promise<void>;
+	setup?: SpareSetup;
 }
+
+const RECIPE_TTL = 24 * 60 * 60_000;
 
 export class WarmSpares {
 	private entries = new Set<Entry>();
-	private nextBuild = 0;
-	constructor(private build: (raw: string, spec: SpareSpec, signal: AbortSignal) => Promise<void>,
+	private recent?: { spec: SpareSpec; usedAt: number; failures: number; retryAt: number };
+	constructor(private build: (raw: string, spec: SpareSpec, signal: AbortSignal) => Promise<SpareSetup | void>,
 		private drop: (raw: string) => Promise<void>, private now = Date.now, private changed: () => void = () => {}) {}
 
 	get ready() { return [...this.entries].filter(e => e.ready && !e.abort.signal.aborted).length; }
 	get raws() { return [...this.entries].map(e => e.raw); }
 	owns(raw: string) { return this.raws.includes(raw); }
 
-	private discard(e: Entry) {
-		if (e.abort.signal.aborted) return;
-		e.abort.abort();
-		// Keep the reservation until removal finishes. The foreground never waits.
-		// A build still in docker run removes its container again when it returns.
-		void this.drop(e.raw).catch(() => {}).finally(() => { if (e.ready) this.entries.delete(e); });
+	/** Only a successfully started session renews demand or resets the failure budget. */
+	used(spec?: SpareSpec) {
+		this.recent = spec && { spec, usedAt: this.now(), failures: 0, retryAt: 0 };
 	}
-	trim(limit = 0, spec?: SpareSpec) {
+	get recipe() {
+		if (this.recent && this.now() - this.recent.usedAt >= RECIPE_TTL) this.recent = undefined;
+		return this.recent?.spec;
+	}
+
+	private discard(e: Entry) {
+		if (!e.removal) {
+			e.abort.abort();
+			// A cancelled docker run may still create its container. Remove it after the build settles.
+			e.removal = Promise.resolve(e.build).then(() => this.drop(e.raw)).finally(() => this.entries.delete(e));
+		}
+		return e.removal;
+	}
+	async trim(limit = 0, spec?: SpareSpec) {
+		const removals = [];
 		for (const e of this.entries) {
-			if (e.abort.signal.aborted) continue;
-			if (this.now() - e.started >= SPARE_TTL || (spec && key(spec) !== key(e.spec)) || limit === 0) this.discard(e);
+			if (e.removal || this.now() - e.started >= SPARE_TTL || (spec && key(spec) !== key(e.spec)) || limit === 0)
+				removals.push(this.discard(e));
 			else limit--;
 		}
+		await Promise.all(removals);
 	}
-	foreground(spec?: SpareSpec) {
-		for (const e of this.entries) if (!spec || !e.ready || key(spec) !== key(e.spec)) this.discard(e);
+	async foreground(spec?: SpareSpec) {
+		await Promise.all([...this.entries].filter(e => e.removal || !spec || !e.ready || key(spec) !== key(e.spec)).map(e => this.discard(e)));
 	}
 	async take(spec: SpareSpec, verify: (raw: string, built: SpareSpec) => Promise<boolean>) {
-		this.trim(2, spec);
+		await this.trim(2, spec);
 		const e = [...this.entries].find(e => e.ready && !e.abort.signal.aborted);
 		if (!e) return;
 		this.entries.delete(e); // A claim consumes the sandbox even when verification fails.
-		if (await verify(e.raw, e.spec).catch(() => false)) return e.raw;
+		if (await verify(e.raw, e.spec).catch(() => false)) return { raw: e.raw, setup: e.setup };
 		this.entries.add(e);
-		this.discard(e);
+		await this.discard(e);
 	}
-	fill(spec: SpareSpec, limit: number) {
-		this.trim(limit, spec);
-		if (this.entries.size >= limit || this.now() < this.nextBuild || [...this.entries].some(e => !e.ready)) return;
+	fill(limit: number) {
+		const spec = this.recipe, demand = this.recent;
+		void this.trim(spec ? limit : 0, spec);
+		if (!spec || !demand || demand.failures >= 2 || this.now() < demand.retryAt ||
+			this.entries.size >= limit || [...this.entries].some(e => !e.ready)) return;
 		const e: Entry = { raw: (spec.args.harness ? spec.args.harness + "-" : "") + randomBytes(6).toString("hex"), spec, started: this.now(), abort: new AbortController(), ready: false };
 		this.entries.add(e);
-		void this.build(e.raw, spec, e.abort.signal).then(() => {
-			if (!e.abort.signal.aborted) { e.ready = true; this.changed(); }
+		e.build = this.build(e.raw, spec, e.abort.signal).then(setup => {
+			if (e.abort.signal.aborted) return;
+			e.setup = setup || undefined;
+			e.ready = true;
+			demand.failures = 0;
+			this.changed();
 		}).catch(() => {
-			if (!e.abort.signal.aborted) this.nextBuild = this.now() + 60_000;
-			e.abort.abort();
-		}).finally(async () => {
-			if (e.abort.signal.aborted) {
-				await this.drop(e.raw).catch(() => {});
-				this.entries.delete(e);
-			}
+			if (e.abort.signal.aborted) return;
+			demand.failures++;
+			demand.retryAt = this.now() + 60_000;
+			void this.discard(e);
 		});
 	}
 }

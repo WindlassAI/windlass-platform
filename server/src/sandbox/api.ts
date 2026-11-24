@@ -151,6 +151,7 @@ export interface SandboxHandle {
 	readonly runnerStart?: RunnerStartTimes;
 	/** Recipe this workspace was prepared for, until the session records its clone. */
 	readonly readyKey?: string;
+	readonly readySetup?: import("../runner/spare-recipe.js").SpareSetup;
 	run(command: string, options?: ExecOptions): Promise<ExecResult>;
 	readTextFile(path: string): Promise<string>;
 	writeTextFile(path: string, content: string): Promise<void>;
@@ -184,7 +185,7 @@ export interface ConnectOptions {
 
 export interface CreateSandboxInput {
 	/** Evaluated only for a machine advertising ready sandboxes. */
-	spareRecipe?: () => Promise<import("../runner/spare-recipe.js").SpareRecipe | undefined>;
+	spareRecipe?: (ready: number) => Promise<import("../runner/spare-recipe.js").SpareRecipe | undefined>;
 	/** As `ConnectOptions.network`, from the first command in the sandbox. */
 	network?: readonly string[];
 	/** Machine slot units requested by an approved subtask. Omitted for a standard sandbox. */
