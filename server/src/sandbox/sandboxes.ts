@@ -233,7 +233,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 	async ask(argv: string[], options: { env?: Record<string, string>; timeoutMs?: number } = {}): Promise<Answer | null> {
 		const env = Object.entries(options.env ?? {}).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
 		const result = await docker(["exec", ...env, this.container, ...argv], { timeoutMs: options.timeoutMs }).catch(() => null);
-		return result === null ? null : { code: result.code, stdout: result.stdout, stderr: result.stderr };
+		return result === null ? null : { code: result.timedOut ? null : result.code, stdout: result.stdout, stderr: result.stderr };
 	}
 
 	/** A container runs until it is stopped: there is nothing to keep alive for a turn. */

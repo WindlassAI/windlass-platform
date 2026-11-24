@@ -16,7 +16,8 @@ import { setTimeout as wait } from "node:timers/promises";
 import { mock } from "node:test";
 import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { machineProfiles } from "../server/src/machines/profiles.js";
-import { validArgs, validValue } from "../server/src/runner/protocol.js";
+import type { Answer } from "../server/src/sandbox/provider.js";
+import { validArgs, validValue, type Frame, type Body } from "../server/src/runner/protocol.js";
 import { privateSessionData } from "../server/src/sandbox/session-data.js";
 import type { Executor } from "../runner/src/docker-executor.js";
 import {
@@ -141,12 +142,12 @@ expect("another process after the first went quiet replaces it", secondHello({ e
 const sockets: CheckSocket[] = [];
 class CheckSocket extends EventTarget {
 	readyState = 1;
-	sent: { kind: string; name?: string; sandbox?: string; egress?: string; claudeRelay?: boolean }[] = [];
+	sent: { kind: string; name?: string; sandbox?: string; egress?: string; claudeRelay?: boolean; body?: Body }[] = [];
 	constructor() { super(); sockets.push(this); }
 	send(text: string) {
 		this.sent.push(JSON.parse(text));
 	}
-	frame(frame: ServerFrame) {
+	frame(frame: ServerFrame | Frame) {
 		assert.equal(this.readyState, 1);
 		this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(frame) }));
 	}
@@ -313,6 +314,77 @@ try {
 	};
 	for (const [name, attempt] of Object.entries(attempts))
 		await checkControl(name, () => assert.rejects(attempt, error => error instanceof Refusal && error.message.includes("--allow-profile " + profile)));
+	const success = { code: 0, stderr: "", stdout: "" };
+	const timeout = { code: null, stderr: "", stdout: "" };
+	const execFailure = { code: 1, stderr: "Error response from daemon: container is restarting", stdout: "" };
+	const denied = { code: 1, stderr: "bwrap: Creating new namespace failed: Operation not permitted", stdout: "" };
+	async function probeCreate(answers: (Answer | null)[], failure?: "bubblewrap" | "exec") {
+		const machine = new LocalExecutor({ uid: "u_fixture", machineId }, {}, false, false, [profile]);
+		Object.assign(machine, { dockerHealth: { ok: true }, commandSandbox: { ok: true }, disk: async () => 100e9 });
+		machine.network.prepare = machine.network.attach = async () => {};
+		machine.provider.create = async () => raw;
+		const removed: string[] = [];
+		machine.provider.destroy = async raw => { removed.push(raw); };
+		const timeouts: number[] = [];
+		const probe = mock.method(DockerSandboxHandle.prototype, "ask", async (_argv: string[], options: { timeoutMs: number }) => {
+			assert.deepEqual(machine.report().commandSandbox, { ok: true });
+			timeouts.push(options.timeoutMs);
+			return answers[timeouts.length - 1];
+		});
+		try {
+			const created = machine.create(session, profile);
+			if (failure) {
+				const message = failure === "bubblewrap" ? "Bubblewrap could not start in the new sandbox. " + denied.stderr
+					: "Docker could not complete the Bubblewrap probe after 3 attempts. " + execFailure.stderr;
+				await assert.rejects(created, error => error instanceof RunnerError && (error instanceof Refusal) === (failure === "bubblewrap") && error.message === message);
+				assert.deepEqual(machine.report().commandSandbox, failure === "bubblewrap" ? { ok: false, reason: message } : { ok: true });
+				assert.deepEqual(removed, [raw]);
+				assert.equal(machine.boxes.size, 0);
+			} else {
+				assert.equal(await created, id);
+				assert.equal(machine.running(id, session).state, "running");
+				assert.deepEqual(machine.report().commandSandbox, { ok: true });
+				assert.deepEqual(removed, []);
+			}
+			assert.deepEqual(timeouts, [20_000, 30_000, 45_000].slice(0, answers.length));
+		} finally { probe.mock.restore(); }
+	}
+	await checkControl("a timed-out Bubblewrap probe retries in the same sandbox and the session starts", () => probeCreate([timeout, success]));
+	await checkControl("Docker exec failures retry without changing machine capability", () => probeCreate([null, execFailure, execFailure], "exec"));
+	await checkControl("Bubblewrap's own error refuses the sandbox immediately and reports its stderr", () => probeCreate([denied], "bubblewrap"));
+
+	await checkControl("three simultaneous creates on a two-slot runner queue behind the in-progress container create", async () => {
+		const { Session } = await import("../runner/src/session.js");
+		const machine = new LocalExecutor({ uid: "u_fixture", machineId }, { slots: { ...slots, max: 2 } });
+		machine.existing = async () => undefined;
+		machine.ensureImage = async () => false;
+		const creating: string[] = [], release: (() => void)[] = [];
+		machine.create = async id => {
+			creating.push(id);
+			await new Promise<void>(resolve => release.push(resolve));
+			return raw;
+		};
+		const clients = ["first", "second", "third"].map(id => {
+			const session = new Session(id, machine, () => {});
+			const socket = new CheckSocket();
+			session.attach(socket as unknown as WebSocket, { runnerVersion: "0.3.4", machineId, ticket: "ticket", signature: "fixture" });
+			socket.frame({ kind: "welcome", protocol: 1, conversation: id, received: 0, resumed: false });
+			socket.frame({ kind: "msg", seq: 1, ack: 0, body: { kind: "op", name: "create", id, args: { profile: "docker-hardened" } } });
+			return { session, socket };
+		});
+		try {
+			for (const [index, id] of ["first", "second", "third"].entries()) {
+				await until(() => release.length > index);
+				assert.equal(creating.length, index + 1);
+				assert.equal(creating[index], id);
+				release[index]!();
+			}
+			await until(() => clients.every(({ socket }) => socket.sent.some(f => f.body?.kind === "res" && f.body.ok)));
+		} finally {
+			for (const { session } of clients) session.channel.close();
+			for (const resume of release) resume();
+		}
+	});
 	await checkControl("spares match the complete create, expire, yield to turns and are consumed exactly once", async () => {
 		const { WarmSpares, validSpec, SPARE_TTL } = await import("../runner/src/warm-spares.js");
 		const base = { context: "pairing, image and egress", args: { profile: "docker-hardened" as const, spare: { url: "https://example.org/r.git" } } };

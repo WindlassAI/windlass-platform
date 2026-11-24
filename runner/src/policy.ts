@@ -1,11 +1,14 @@
 import type { StoreLimits } from "../../server/src/sandbox/store-limits.js";
+import { setTimeout as delay } from "node:timers/promises";
 import { spawn } from "node:child_process";
 import type { MachineSlotCapacity } from "../../server/src/contract.js";
 import type { Args } from "../../server/src/runner/protocol.js";
 import { LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, createVolume, docker, removeVolume, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
 import { DOCKER_BWRAP_PROBE, PROFILE_RUN_FLAGS } from "../../server/src/sandbox/docker-flags.js";
 import { COMMON_RUN_FLAGS } from "../../server/src/sandbox/profiles.js";
-import { DATA_DIR } from "../../server/src/sandbox/provider.js";
+import { safeSentence } from "./audit.js";
+import type { Report } from "../../server/src/runner/control.js";
+import { DATA_DIR, type Answer } from "../../server/src/sandbox/provider.js";
 import { Refusal, RunnerError, type Identity } from "./state.js";
 
 declare const SANDBOX_IMAGE: string;
@@ -31,6 +34,25 @@ export function rawId(machine: string, id: string) {
 	const raw = id.slice(prefix.length);
 	if (!id.startsWith(prefix) || !/^[a-f0-9]{12}$/.test(raw)) throw new Refusal("This sandbox id does not belong to this machine.");
 	return raw;
+}
+
+/** Docker exec also exits non-zero when it never started the command in the container. */
+export async function checkBubblewrap(exec: (timeoutMs: number) => Promise<Answer | null>, signal?: AbortSignal): Promise<Report["commandSandbox"]> {
+	let detail = "";
+	for (const [attempt, timeoutMs] of [20_000, 30_000, 45_000].entries()) {
+		if (attempt) await delay(attempt * 500, undefined, { signal });
+		signal?.throwIfAborted();
+		const result = await exec(timeoutMs).catch(() => null);
+		if (result?.code === 0) return { ok: true };
+		const stderr = result?.stderr.trim() ?? "";
+		if (result && result.code !== null && /^bwrap:\s*\S/m.test(stderr)) {
+			return { ok: false, reason: safeSentence("Bubblewrap could not start in the new sandbox. " + stderr).slice(0, 500) };
+		}
+		detail = !result ? "Docker exec could not be started."
+			: result.code === null ? "Docker exec timed out or was interrupted."
+			: stderr || result.stdout.trim() || `Docker exec exited with code ${result.code} without a diagnostic.`;
+	}
+	throw new RunnerError(safeSentence("Docker could not complete the Bubblewrap probe after 3 attempts. " + detail).slice(0, 500));
 }
 
 function imageRole(pin: string) {
@@ -166,8 +188,11 @@ export class MachineDocker {
 		await this.ownedVolume(true, probeVolume);
 		try {
 			const started = await docker(["run", "-d", ...this.flags(name, bubblewrap), "-v", `${probeVolume}:${DATA_DIR}`, image, "sleep", "infinity"], { timeoutMs: 30_000 });
-			if (started.code !== 0) return false;
-			return (await docker(["exec", name, ...DOCKER_BWRAP_PROBE], { timeoutMs: 20_000 })).code === 0;
+			if (started.code !== 0) throw new RunnerError("Docker could not start the Bubblewrap probe container.");
+			return await checkBubblewrap(async timeoutMs => {
+				const result = await docker(["exec", name, ...DOCKER_BWRAP_PROBE], { timeoutMs });
+				return result.timedOut ? { ...result, code: null } : result;
+			});
 		} finally {
 			await docker(["rm", "-f", name]);
 			await this.dropVolume(probeVolume);

@@ -30,7 +30,7 @@ import { DockerModelRelay } from "../../server/src/sandbox/model-relay.js";
 import { readsModelRelay } from "../../server/src/model-relay-url.js";
 import { probeImage } from "../../server/src/sandbox/tokens.js";
 import { audit, safeSentence } from "./audit.js";
-import { bubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker, rawId, type Limits, type Profile, type MachineHarness } from "./policy.js";
+import { bubblewrap, checkBubblewrap, externalId, harnessImage, image, shotsImage, MachineDocker, rawId, type Limits, type Profile, type MachineHarness } from "./policy.js";
 import { localSizing } from "./sizing.js";
 const legacyLoginLabel = LABEL + ".claude-login=1";
 import { cleanClaudeOutput } from "./claude-output.js";
@@ -132,7 +132,10 @@ export class Executor extends MachineDocker {
 		const box = await provider.connect(raw, { ownData: true });
 		if (!box || (!harness && !box.ownData)) throw new Error("Missing private workspace");
 		signal.throwIfAborted();
-		if (profile === bubblewrap && (await box.ask(DOCKER_BWRAP_PROBE, { timeoutMs: 20_000 }))?.code !== 0) throw new Error("Command sandbox unavailable");
+		if (profile === bubblewrap) {
+			const probe = await checkBubblewrap(timeoutMs => box.ask(DOCKER_BWRAP_PROBE, { timeoutMs }), signal);
+			if (!probe.ok) throw new Refusal(probe.reason);
+		}
 		if (prepared) {
 			if (!box.snapshot || box.snapshot.inputs !== prepared.inputs || box.snapshot.generation !== prepared.generation) throw new Error("Prepared image missing");
 			// The platform refreshes and validates this image through restorePrepared after claim.
@@ -648,12 +651,12 @@ private signInRetries = 0;
 				// Keep the result of a real sandbox create after this initial bubblewrap check.
 				const first = this.freeDiskBytes === null;
 				this.freeDiskBytes = await this.disk();
-				if (first) this.commandSandbox = this.allowedProfiles.includes(bubblewrap) ? await this.probeAvailable() : { ok: false, reason: PROFILE_DENIED };
+				if (first) this.commandSandbox = this.allowedProfiles.includes(bubblewrap) ? await this.probe() : { ok: false, reason: PROFILE_DENIED };
 			});
 		} catch (error) {
 			if (signal.aborted) return;
 			this.freeDiskBytes = null;
-			this.commandSandbox = { ok: false, reason: error instanceof RunnerError ? error.message : "The sandbox image could not be checked." };
+			if (!this.commandSandbox.ok) this.commandSandbox = { ok: false, reason: error instanceof RunnerError ? error.message : "The sandbox image could not be checked." };
 		}
 	}
 	/** Whether this machine's Windlass sandboxes can use its model relay: the pinned image's Windlass is 0.6.0 or later. */
@@ -690,9 +693,6 @@ private signInRetries = 0;
 		}
 	}
 
-	private async probeAvailable(): Promise<Report["commandSandbox"]> {
-		return await this.probe() ? { ok: true } : { ok: false, reason: "Bubblewrap could not start in a sandbox on this machine." };
-	}
 	report(): Report {
 		const harnesses: NonNullable<Report["harnesses"]> = [];
 		if (this.claudePin) harnesses.push({
@@ -808,15 +808,14 @@ private signInRetries = 0;
 			throw error;
 		}
 		if (profile === bubblewrap && !claimed) {
-			const result = await new DockerSandboxHandle(raw, profile, this.identity.uid).ask(DOCKER_BWRAP_PROBE, { timeoutMs: 20_000 });
-			if (result?.code !== 0) {
-				const why = result?.stderr.trim();
-				const message = "Bubblewrap could not start in the new sandbox." + (why ? " " + why : "");
-				this.commandSandbox = { ok: false, reason: safeSentence(message).slice(0, 500) };
+			const box = new DockerSandboxHandle(raw, profile, this.identity.uid);
+			try {
+				this.commandSandbox = await checkBubblewrap(timeoutMs => box.ask(DOCKER_BWRAP_PROBE, { timeoutMs }));
+				if (!this.commandSandbox.ok) throw new Refusal(this.commandSandbox.reason);
+			} catch (error) {
 				await this.remove(id);
-				throw new Refusal(message);
+				throw error;
 			}
-			this.commandSandbox = { ok: true };
 		}
 		this.spares.used(spec);
 		this.waitForTurn = spec ? id : undefined;
