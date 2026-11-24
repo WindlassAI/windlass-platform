@@ -315,6 +315,27 @@
 	min-width: 76px;
 }
 
+/* A model provider's row: three actions where other rows have one. */
+.provider-last4 {
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
+}
+.provider-row .machine-used.tone-good {
+	color: var(--accent);
+}
+.provider-row .machine-used.tone-bad {
+	color: var(--bad);
+}
+.provider-row .field-note {
+	margin: 4px 0 0;
+}
+.provider-actions {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: flex-end;
+	gap: 6px;
+}
+
 /* What goes and what stays, in the dialog that frees a sandbox. */
 .usage-ledger {
 	display: grid;
@@ -425,6 +446,22 @@
 	.usage-kept-row .button {
 		grid-area: free;
 		align-self: center;
+	}
+	.provider-row {
+		grid-template-areas:
+			"main state"
+			"actions actions";
+	}
+	.provider-row .machine-used {
+		grid-area: state;
+		align-self: start;
+	}
+	.provider-row .provider-actions {
+		grid-area: actions;
+		justify-content: flex-start;
+	}
+	.provider-row .button {
+		grid-area: auto;
 	}
 }
 
