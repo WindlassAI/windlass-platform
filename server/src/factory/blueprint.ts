@@ -1679,6 +1679,8 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			if (workflowOverdue(reading, c.at)) return question("A GitHub Actions workflow has been in progress for more than six hours.", null, true);
 			break;
 		case "retry":
+			// GitHub itself out of reach (not a queued run): the person is asked once that lasts.
+			if (since >= CI_POLLING.unreachableMs) return question(`CI could not be read for ${spellSeconds(since / 1000)} after the push.`);
 			break;
 	}
 	pollCi(c, fact.openItems, reading.kind === "rate_limited" ? reading.retryAt : null, ciWaitSentence(ci.head, reading));

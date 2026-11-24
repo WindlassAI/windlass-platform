@@ -2425,7 +2425,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 {
 	const early = walk(newItem(), [...pushedRun(H(1)), ciFact(ciRead([]))]);
 	const unread = walk(early.item, [{ ...ciFact({ kind: "failed", said: "GitHub answered 503" }), at: T0 + 8 * 60 * MINUTE }]);
-	expect("unread CI after an early empty poll keeps waiting", unread.item.run?.ci?.last === null && !!effect(unread.last, "poll_ci") && !unread.item.question);
+	expect("CI GitHub could not be read for hours ends in the person's question", unread.item.question?.kind === "ci_timeout");
 
 	// CI ran, and every check was skipped. Not a pass; waited for as "no CI" is, then said as itself.
 	const skipped = ciRead([{ name: "deploy", state: "neutral" }, { name: "release", state: "neutral" }]);
