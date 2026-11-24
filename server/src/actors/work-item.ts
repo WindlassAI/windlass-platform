@@ -182,6 +182,7 @@ function startsRun(key: string): boolean {
 // ---------------------------------------------------------------------------------------------
 
 function secondReview(item: FactoryItem, meta: ItemMeta): ItemSummary["review"] {
+	if (item.awaitingPlace) return null;
 	if (!item.reviewer || "off" in item.reviewer) return { state: "off", recommendation: null };
 	if (meta.handoffReview) return { state: meta.handoffReview.reason ? "none" : "filed", recommendation: meta.handoffReview.reason ? null : meta.handoffReview.recommendation };
 	if (item.run?.step.kind !== "review") return null;
@@ -325,7 +326,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		...(plan && { unattended: unattendedKeys(plan, completed), completedSubtasks: [...completed] }),
 		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
-		reviewNone: stored.meta.handoffReview?.reason ?? (!stored.item.reviewer ? "this item was created before second reviews were available" : "off" in stored.item.reviewer ? REVIEW_OFF_REASON[stored.item.reviewer.off] : null),
+		reviewNone: stored.meta.handoffReview?.reason ?? (stored.item.reviewer && "off" in stored.item.reviewer ? REVIEW_OFF_REASON[stored.item.reviewer.off] : null),
 		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),
 		task: stored.item.task,
 		// What the gate and CI read stays here: the page shows the run as the contract has it.
@@ -424,7 +425,10 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	if (issue?.said) outcome.events.push({ at: fact.at, by: issue.by, step: null, said: issue.said });
 	stored.item = outcome.item;
 	if (outcome.item.run?.step.kind === "plan_review") stored.meta.criticSessionId = criticSessionId(outcome.item.id);
-	if (fact.kind === "default_place_ready") delete stored.meta.pendingBuilder;
+	if (fact.kind === "default_place_ready") {
+		delete stored.meta.pendingBuilder;
+		stored.meta.reviewerSessionId = fact.reviewerSessionId;
+	}
 	if (fact.kind === "claim_secret") stored.meta.pendingSecret = secret;
 	if (fact.kind === "settle_secret") delete stored.meta.pendingSecret;
 	stored.meta.updatedAt = fact.at;
@@ -575,7 +579,7 @@ async function load(db: RawAccess): Promise<Stored | null> {
 	upgradeSubtaskQuestion(stored.item);
 	if (stored.item.parent && (!stored.item.reviewer || ("off" in stored.item.reviewer && stored.item.reviewer.off === "deployment"))) {
 		stored.item.reviewer = { off: "feature" };
-	} else stored.item.reviewer ??= { off: "deployment" };
+	} else if (!stored.item.awaitingPlace) stored.item.reviewer ??= { off: "deployment" };
 	return stored;
 }
 
@@ -1160,6 +1164,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
  * it. A withdrawal is always wanted: it is what a cancel leaves.
  */
 export function live(item: FactoryItem, effect: Effect): boolean {
+	if (effect.kind === "discard_placement") return item.state === "cancelled";
 	if (effect.kind === "resolve_default_place") return !!item.awaitingPlace && item.state === "waiting" && item.wait?.retryAt === effect.at;
 	if (effect.kind === "feedback_ready" || effect.kind === "feedback_ack") return true;
 	if (effect.kind === "feedback_comment") return item.run?.n === effect.run && item.state !== "review" && !ENDED.has(item.state);
@@ -1388,14 +1393,17 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		return gone;
 	};
 	switch (effect.kind) {
+		case "discard_placement":
+			await userActor(c, meta.uid).internalDiscardPlacement(item.id);
+			return true;
 		case "resolve_default_place": {
 			if (!meta.pendingBuilder) return false;
 			const result = await userActor(c, meta.uid).internalDefaultBuilder({ id: item.id, job: meta.pendingBuilder });
-			if (!c.vars.stored || !live(c.vars.stored.item, effect)) return false;
-			if ("wait" in result) await take(c, { kind: "default_place_wait", at: Date.now(), sentence: result.wait });
+			if (!result || !c.vars.stored || !live(c.vars.stored.item, effect)) return false;
+			if (!("session" in result)) await take(c, { kind: "default_place_wait", at: Date.now(), sentence: result.wait });
 			else {
 				const session = result.session;
-				await take(c, { kind: "default_place_ready", at: Date.now(), place: session.place,
+				await take(c, { kind: "default_place_ready", at: Date.now(), place: session.place, reviewer: result.reviewer, reviewerSessionId: result.reviewerSessionId,
 					agent: newAgent(session.harness ?? "windlass", session.model, meta.pendingBuilder.effort, session.item?.signIn) });
 			}
 			return true;
@@ -2192,6 +2200,16 @@ export const workItem = actor({
 			requireServiceFor(c, "call");
 			if (input.repositoryId !== c.vars.stored?.meta.repository.id || input.installationId !== await binding(c)) return false;
 			return take(c, { kind: "reverify", head: input.head, at: Date.now() });
+		},
+
+		internalMachineAvailable: async c => {
+			requireServiceFor(c, "call");
+			await queued(c, async () => {
+				const item = c.vars.stored?.item;
+				if (!item?.awaitingPlace || item.state !== "waiting") return;
+				await c.db.execute("UPDATE effects SET due_at=0 WHERE id=?", "resolve_default_place:" + item.wait?.retryAt);
+				await armDueInQueue(c);
+			});
 		},
 
 		internalProviderChanged: async (c, revision: number): Promise<void> => {

@@ -54,7 +54,7 @@ describe("the mock's repository page", () => {
 		expect(await user.saveRepositoryDefaults(7103, { profile: "docker-hardened" })).toMatchObject({ profile: "docker-hardened", model: "gpt-6-luna" });
 		expect(await user.saveRepositoryDefaults(7103, {})).toMatchObject({ profile: "docker-hardened", model: "gpt-6-luna" });
 		expect(await user.saveRepositoryDefaults(7103, { model: null })).toMatchObject({ profile: "docker-hardened", model: null });
-		expect(await user.saveRepositoryDefaults(7103, { profile: null })).toEqual({ screenshots: false, profile: null, model: null, hostedSize: null, updatedAt: null });
+		expect(await user.saveRepositoryDefaults(7103, { profile: null })).toEqual({ place: null, harness: null, machineProfile: null, placeFallback: null, screenshots: false, profile: null, model: null, hostedSize: null, updatedAt: null });
 		expect((await user.savedRepositories()).some((repository) => repository.id === 7103)).toBe(false);
 		// Something saved for a repository no agent is on is listed under the name GitHub has for it.
 		await user.saveRepositoryDefaults(7110, { model: "gpt-6-luna" });

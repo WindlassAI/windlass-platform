@@ -16,6 +16,7 @@ export const REVIEW_PROFILE_REASON = "in this sandbox the reviewer's commands wo
 export const REVIEW_OFF_REASON = {
 	deployment: "turned off for this deployment",
 	profile: REVIEW_PROFILE_REASON,
+	machine: "second reviews run only on hosted sandboxes",
 	feature: "the feature’s combined change is reviewed once its parts are done",
 };
 

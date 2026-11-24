@@ -43,6 +43,7 @@
  * that fires after the item moved on. No clock is read: every time is a fact's `at`.
  */
 
+import { defaultPlaceRetryAt } from "./default-place.js";
 import { criticPrompt, mergeCandidate, smallPlan } from "./autonomy.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
@@ -178,7 +179,7 @@ export interface NewItem {
 	repos?: FeatureRepository[];
 	id: string;
 	task: Task;
-	reviewer: NonNullable<FactoryItem["reviewer"]>;
+	reviewer: FactoryItem["reviewer"];
 	place: FactoryItem["place"];
 	budget: ItemBudget;
 	agent?: { harness: HarnessId; model: string; effort?: string | null; signIn?: ItemAgent["signIn"] };
@@ -304,7 +305,9 @@ class Change {
 }
 
 function waitForDefaultPlace(c: Change, sentence: string): boolean {
-	const at = retryAt(c.at, 0);
+	const attempt = c.item.placeAttempts ?? 0;
+	const at = defaultPlaceRetryAt(c.at, attempt);
+	c.item.placeAttempts = attempt + 1;
 	if (c.item.wait?.sentence !== sentence) c.say(sentence);
 	c.item.awaitingPlace = sentence;
 	c.state("waiting", { reason: "machine", sentence, retryAt: at });
@@ -495,6 +498,8 @@ function apply(c: Change, fact: Fact): boolean {
 		case "default_place_ready":
 			if (!item.awaitingPlace || item.state !== "waiting") return false;
 			delete item.awaitingPlace;
+			delete item.placeAttempts;
+			item.reviewer = fact.reviewer;
 			item.place = fact.place;
 			item.agent = fact.agent;
 			c.say("A compatible machine has a free slot.");
@@ -1782,7 +1787,7 @@ function afterCi(c: Change, ci: CiProgress): void {
 		return ask(c, "ci_timeout", "No passing CI reported on the complete feature. Wait for a check or hand over the PR.", [choice("wait"), ...handOver(item), choice("give_up")], null, null);
 	if (!item.reviewer) return handoff(c, skippedReview("this item was created before second reviews were available"));
 	if (item.place.kind === "machine" || "off" in item.reviewer) {
-		const why = "off" in item.reviewer ? REVIEW_OFF_REASON[item.reviewer.off] : REVIEW_OFF_REASON.profile;
+		const why = "off" in item.reviewer ? REVIEW_OFF_REASON[item.reviewer.off] : REVIEW_OFF_REASON.machine;
 		if (item.mode === "orchestrate") return ask(c, "turn_refused", "The whole-feature reviewer is unavailable: " + why + ".", [...handOver(item), choice("give_up")], null, null);
 		return handoff(c, skippedReview(why));
 	}
@@ -2048,6 +2053,7 @@ function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
 }
 
 function cancel(c: Change): void {
+	if (c.item.awaitingPlace && c.item.state === "waiting") c.effects.push({ kind: "discard_placement", key: c.item.id });
 	stopPendingChecks(c);
 	const { item } = c;
 	const run = item.run;

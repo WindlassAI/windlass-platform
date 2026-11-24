@@ -381,7 +381,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const started = startedOn(account.settings?.lastStart ?? null);
 	const lastMachineId = !item && started.place?.kind === "machine" ? started.place.machineId : null;
 	const policy = item && placeChoice === undefined ? savedPlace(saved.defaults, account.settings?.defaults) : undefined;
-	const destination = policy && resolveDefaultPlace(policy, mine);
+	const usePolicy = !!policy && harnessChoice === null && profileChoice === null;
+	const destination = policy && resolveDefaultPlace(policy, mine, usePolicy && info?.items?.orchestrate ? itemMode : "single");
 	const wantedMachine = placeChoice !== undefined ? placeChoice : destination?.place.kind === "machine" ? destination.place.machineId : lastMachineId;
 	// A machine that was removed or can no longer be chosen leaves the agent on this platform, which its chip says.
 	const chosenMachine = mine.find((machine) => machine.machineId === wantedMachine && why(machine) === null) ?? null;
@@ -528,9 +529,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		if (!canFile || !chosen || !filing) return;
 		setOpen(null);
 		setError(null);
-		const usePolicy = !!policy && harnessChoice === null && profileChoice === null;
 		const mode = info?.items?.orchestrate && (!other || usePolicy) ? itemMode : "single";
-		const prefersMachineAgentForParts = mode === "orchestrate" && !!other;
 		const input: Omit<CreateItemInput, "idempotencyKey"> = {
 			repository: { id: chosen.repository.id, branch: chosen.branch },
 			title: filing.title,
@@ -543,9 +542,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			...(!usePolicy && other ? { harness } : {}),
 			// Codex runs items in either of its profiles; the other agents only in their hardened container.
 			...(!usePolicy && profile && (chosenMachine || profileChoice) ? { profile } : {}),
-			...(!prefersMachineAgentForParts && model && (other || modelChoice !== "") ? { model } : {}),
+			...(model && (other || modelChoice !== "") ? { model } : {}),
 			// Every turn of the item runs at it; left out, at the agent's default.
-			...(!prefersMachineAgentForParts && effort && effort !== "default" ? { effort } : {}),
+			...(effort && effort !== "default" ? { effort } : {}),
 			...(hostedSize ? { hostedSize } : {}),
 		};
 		// Filing the same again after an answer that never came, with nothing changed, makes no second item.
@@ -861,7 +860,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			</button>
 		) : undefined,
 	};
-	const placeName = destination?.wait && !chosenMachine ? policy?.place === "any-machine" ? "Any of my machines" : "Saved machine" : chosenMachine ? machineLabel(chosenMachine) : "Hosted";
+	let placeName = "Hosted";
+	if (chosenMachine) placeName = machineLabel(chosenMachine);
+	else if (destination?.wait) placeName = policy?.place === "any-machine" ? "Any of my machines" : "Saved machine";
 
 	const whereWarn = placeProblem !== null || chosenMachine?.status === "offline" || (!item && sandboxWarn);
 
@@ -1025,7 +1026,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 
 	// ---- how a work item runs: plan first or quick ------------------------------------
 	const orchestrateOffered = item && Boolean(info?.items?.orchestrate);
-	const quickOnly = !!other && (!policy || harnessChoice !== null || profileChoice !== null);
+	const quickOnly = !!other && !usePolicy;
 	const orchestrating = orchestrateOffered && itemMode === "orchestrate" && !quickOnly;
 	const orchestrateWarn = orchestrating ? orchestrateProblem(saved.checks) : null;
 	const shownItemMode: ItemMode = quickOnly ? "single" : itemMode;

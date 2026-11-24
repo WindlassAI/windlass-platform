@@ -22,7 +22,7 @@ import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
 import { PlaceChoice, itemAgentLine, itemHarnesses, itemProfilesHere, machineUnusable } from "../components/PlaceChoice";
 import { itemProfiles } from "../../../server/src/sandbox/harnesses.js";
-import { HARNESS_NAMES } from "../lib/acp";
+import { HARNESS_NAMES, type ReportedHarness } from "../lib/acp";
 import { AskIcon, ChevronIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRequestIcon, RingIcon, StopIcon, WarnIcon } from "../components/Icons";
 import { absoluteTime, count, plural, relativeTime } from "../lib/format";
 import { feedCounts, type FeedFilters } from "../lib/repositories";
@@ -702,18 +702,23 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const saved = useDefaults(repositoryId);
 	const account = useAccount();
 	const policy = placeChoice === undefined ? savedPlace(saved.defaults, account.settings?.defaults) : undefined;
-	const destination = policy && resolveDefaultPlace(policy, mine);
+	const [modeChoice, setMode] = useState<ItemMode>("orchestrate");
+	const [agentChoice, setAgent] = useState<HarnessId | null>(null);
+	const usePolicy = !!policy && agentChoice === null;
+	const destination = policy && resolveDefaultPlace(policy, mine, usePolicy && platform.info?.items?.orchestrate ? modeChoice : "single");
 	const machineId = placeChoice ?? (destination?.place.kind === "machine" ? destination.place.machineId : null);
 	// A machine that was removed or can no longer be chosen while the form is open leaves the item on this platform, which the line then says.
 	const chosenMachine = mine.find((machine) => machine.machineId === machineId && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
-	const [modeChoice, setMode] = useState<ItemMode>("orchestrate");
 	// The builder's agent: Windlass, or one the chosen machine reports signed in, in its default item profile (Codex: Docker + Windlass
 	// sandbox, the others their hardened container). The start composer picks another profile.
-	const [agentChoice, setAgent] = useState<HarnessId | null>(null);
-	const agents = itemHarnesses(chosenMachine).filter((offered) => (destination?.harness === offered.id && destination.profile ? itemProfilesHere(chosenMachine, offered.id).includes(destination.profile) : itemProfilesHere(chosenMachine, offered.id)[0] === itemProfiles(offered.id)[0]));
+	function fitsDestination(offered: ReportedHarness) {
+		const profiles = itemProfilesHere(chosenMachine, offered.id);
+		if (destination?.harness === offered.id && destination.profile) return profiles.includes(destination.profile);
+		return profiles[0] === itemProfiles(offered.id)[0];
+	}
+	const agents = itemHarnesses(chosenMachine).filter(fitsDestination);
 	const preferredAgent = agentChoice ?? destination?.harness ?? "windlass";
 	const agent: HarnessId = agents.some(offered => offered.id === preferredAgent) ? preferredAgent : "windlass";
-	const usePolicy = !!policy && agentChoice === null;
 	// Plan first is Windlass's: its planner files the plan with a tool only Windlass has.
 	const mode: ItemMode = agent === "windlass" || usePolicy ? modeChoice : "single";
 	// The model and effort: the account's models for Windlass, what the machine reported for another agent. "" is the agent's default.
@@ -740,7 +745,9 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 		.filter((line) => line !== "");
 	const tooMany = acceptance.length > MAX_ACCEPTANCE_CRITERIA;
 	const tooLong = acceptance.some((line) => line.length > MAX_NOTE_CHARS);
-	const ready = !saved.reading && !(account.reading && !account.settings) && !(policy && machinesInfo && !machines.list && !machines.error) && title.trim() !== "" && !tooMany && !tooLong && body.length <= MAX_ITEM_BODY_CHARS;
+	const defaultsLoading = saved.reading || (account.reading && !account.settings);
+	const machinesLoading = policy && machinesInfo && !machines.list && !machines.error;
+	const ready = !defaultsLoading && !machinesLoading && title.trim() !== "" && !tooMany && !tooLong && body.length <= MAX_ITEM_BODY_CHARS;
 
 	const file = async (event: FormEvent) => {
 		event.preventDefault();

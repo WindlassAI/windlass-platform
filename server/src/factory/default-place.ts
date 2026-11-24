@@ -1,4 +1,4 @@
-import { machineLabel, type HarnessId, type ItemPlaceDefaults, type MachineSummary, type SandboxPlace, type SandboxProfileId } from "../contract.js";
+import { machineLabel, type HarnessId, type ItemMode, type ItemPlaceDefaults, type MachineSummary, type SandboxPlace, type SandboxProfileId } from "../contract.js";
 import { harnessName, itemModeOf, itemProfiles, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarness } from "../sandbox/harnesses.js";
 import { machineSlots } from "./placement.js";
 
@@ -45,7 +45,12 @@ export function placeProblem(policy: ItemPlaceDefaults, machines: readonly Machi
 	return null;
 }
 
-function hasRoom(machine: MachineSummary) {
+export function defaultPlaceRetryAt(at: number, attempt: number) {
+	const minutes = [1, 2, 5][attempt] ?? 10;
+	return at + minutes * 60_000;
+}
+
+export function hasRoom(machine: MachineSummary) {
 	const slots = machineSlots(machine);
 	return machine.status === "online" && (slots.max === null || slots.busy < slots.max)
 		&& machine.sandboxes.filter(b => b.state === "running").length < (machine.maxRunning ?? Infinity)
@@ -60,7 +65,9 @@ export interface DefaultDestination {
 	note?: string;
 }
 
-export function resolveDefaultPlace(policy: ItemPlaceDefaults, machines: readonly MachineSummary[]): DefaultDestination {
+export function resolveDefaultPlace(defaults: ItemPlaceDefaults, machines: readonly MachineSummary[], mode: ItemMode): DefaultDestination {
+	// Plan first uses the owner’s machine selection. The saved agent and profile are for its subtasks.
+	const policy: ItemPlaceDefaults = mode === "orchestrate" ? { ...defaults, harness: "windlass", machineProfile: null } : defaults;
 	const hosted: DefaultDestination = { place: { kind: "hosted" }, harness: "windlass" };
 	if (!policy.place || policy.place === "hosted") return hosted;
 	const candidates = compatible(policy, machines);
