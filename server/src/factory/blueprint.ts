@@ -1442,13 +1442,11 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 					jobs: eligible.map(({ name, jobId, retryRunId }) => ({ name, jobId, retryRunId })) });
 				return;
 			}
-			if (canUpdate) return question(sentence);
 			if (since < CI_POLLING.timeoutMs && rerun?.some(job => !reading.runs.some(check => check.name === job.name) ||
 				(job.jobId && cancelled.some(check => check.jobId === job.jobId)))) {
 				return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the rerun of the cancelled checks.");
 			}
-			c.say(sentence);
-			return afterCi(c, ci);
+			return question(sentence);
 		}
 		case "not_permitted":
 			c.say("CI could not be read: GitHub does not let the platform see it.");
