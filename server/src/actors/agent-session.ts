@@ -380,6 +380,8 @@ interface SessionMeta {
 	harnessModels?: ModelList | null;
 	/** The harness's own conversation id, kept across turns. */
 	windlassSessionId: string | null;
+	/** True for a conversation opened with the feature summary's tool list. */
+	summaryConversation?: true;
 	turnStartedAt: number | null;
 	/** When this session was created, last ran a turn, or last used its workspace. */
 	lastUsedAt: number;
@@ -4104,6 +4106,14 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}
 		if (meta.demo && !caps.demo) throw new TurnProblem("This agent's harness has no demo mode.");
 		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn);
+		// Windlass freezes model-visible tools at the first prompt. Resuming the planner does not
+		// add report to that baseline. Switch conversations at the summary boundary, retaining the workspace
+		// and the platform timeline. A retry or paused segment of that summary can resume its own.
+		const summary = active.item?.row.agent === "summary";
+		if (summary !== !!meta.summaryConversation) {
+			meta.windlassSessionId = null;
+			meta.summaryConversation = summary || undefined;
+		}
 		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
 		resumed = meta.windlassSessionId;
 		// A turn that resumes after a pause: its agent goes on with a short "carry on" when it has its conversation of the turn,
