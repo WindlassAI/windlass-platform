@@ -65,10 +65,14 @@ export interface EnvironmentRow {
 	session: string | null;
 }
 
+export function sameInputs(build: EnvironmentInputs | null, inputs: EnvironmentInputs): boolean {
+	return build?.setupHash === inputs.setupHash && build.checksHash === inputs.checksHash;
+}
+
 /** Whether a session at the record's place may start from its ready image. */
 export function usable(row: Pick<EnvironmentRow, "ready" | "stale"> | undefined, inputs: EnvironmentInputs): boolean {
 	const ready = row?.ready;
-	return !!ready && ready.snapshot && row.stale === null && ready.setupHash === inputs.setupHash && ready.checksHash === inputs.checksHash;
+	return !!ready && ready.snapshot && row.stale === null && sameInputs(ready, inputs);
 }
 
 export function stateOf(row: EnvironmentRow, inputs: EnvironmentInputs): EnvironmentState {
@@ -175,7 +179,12 @@ export function nextBuild(rows: readonly EnvironmentRow[], scheduled: readonly D
 	if (rows.some(r => r.session !== null && r.attempt && r.attempt.finishedAt === null && now - r.attempt.startedAt < BUILD_LOST_MS)) return null;
 	const asked = rows.filter(r => r.dueAt !== null && r.dueAt <= now && r.dueTrigger !== null)
 		.sort((a, b) => Number(b.dueTrigger === "rebuild") - Number(a.dueTrigger === "rebuild") || a.dueAt! - b.dueAt!);
-	if (asked[0]) return { project: asked[0].project, place: asked[0].place, trigger: asked[0].dueTrigger! };
+	if (asked[0]) {
+		const { project, place, dueTrigger } = asked[0];
+		// A code-only push can be skipped, but a scheduled refresh at that place still runs.
+		const refresh = dueTrigger === "push" && scheduled.find(d => d.project === project && d.place === place);
+		return refresh || { project, place, trigger: dueTrigger! };
+	}
 	return scheduled[0] ?? null;
 }
 

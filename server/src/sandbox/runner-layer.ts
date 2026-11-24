@@ -38,7 +38,7 @@ import { type ChannelSocket, type ConversationRecord, ConversationLost, ServerCh
 import { machineProfiles } from "../machines/profiles.js";
 import { PROFILE_DENIED, type Args, type Name, type Value } from "../runner/protocol.js";
 import { AttachTickets } from "../machines/ticket.js";
-import { type ConnectOptions, type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type RunnerStartTimes, type SandboxLayer, type Sandboxes, SandboxUserError } from "./api.js";
+import { type ConnectOptions, type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type RunnerStartTimes, type SandboxLayer, type Sandboxes, ENVIRONMENT_SLOT_WAIT, SandboxUserError } from "./api.js";
 import { SESSION_VOLUME_PROFILES, findProfile } from "./profiles.js";
 import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnModelRelay, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
 import { SandboxWindlass } from "./turn.js";
@@ -720,14 +720,15 @@ class RunnerSandboxes implements Sandboxes {
 		// Request the screenshots image only when this runner offers it.
 		const agent = input.harness ? machineHarness(input.harness) : null;
 		if (agent && !agent.profiles.includes(input.profile)) throw new SandboxUserError(`${agent.name} requires the ${agent.profiles.join(" or ")} profile.`);
-		const report = input.profile === "docker-windlass-sandbox" || input.spareRecipe || input.mirrorRepo || input.harness || input.screenshots || (input.size ?? 1) > 1 ? (await link.facts()).report : null;
+		const report = input.profile === "docker-windlass-sandbox" || input.environmentBuild || input.spareRecipe || input.mirrorRepo || input.harness || input.screenshots || (input.size ?? 1) > 1 ? (await link.facts()).report : null;
 		if ((input.size ?? 1) > 1 && !report?.slots) throw new SandboxUserError("This runner does not support sizing beyond one slot.");
 		if (report?.allowedProfiles && !report.allowedProfiles.includes(input.profile)) throw new SandboxUserError(PROFILE_DENIED);
 		if (input.harness && !report?.harnesses?.some(h => h.id === input.harness))
 			throw new SandboxUserError(`This machine's runner does not offer ${harnessName(input.harness)}. Update it and start it with --harness ${input.harness}.`);
 		const screenshots = !!(input.screenshots && !input.harness && report?.screenshots);
 		const spare = report?.warmSpares && input.spareRecipe ? await input.spareRecipe(report.warmSpares.ready).catch(() => undefined) : undefined;
-		const args = { profile: input.profile, ...(spare && { spare }), ...(report?.gitMirrors && input.mirrorRepo && { mirrorRepo: input.mirrorRepo }), ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
+		if (input.environmentBuild && !report?.environmentBuild && report?.warmSpares?.ready) throw new SandboxUserError(ENVIRONMENT_SLOT_WAIT);
+		const args = { profile: input.profile, ...(input.environmentBuild && report?.environmentBuild && { environmentBuild: true as const }), ...(spare && { spare }), ...(report?.gitMirrors && input.mirrorRepo && { mirrorRepo: input.mirrorRepo }), ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
 		if (input.fromSnapshot && !input.harness && config.machines?.identity) {
 			await link.ready();
 			if (link.channel.authenticated) {

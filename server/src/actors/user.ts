@@ -179,7 +179,7 @@ import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/e2b/network.js";
 import { readE2bSettings } from "../sandbox/e2b/config.js";
 import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, type EnvironmentHost } from "./user-environments.js";
-import type { EnvironmentBuildOrigin, EnvironmentBuildResult } from "./internal.js";
+import type { EnvironmentBuildOrigin, EnvironmentBuildReport } from "./internal.js";
 import { customerDirectory } from "../billing/customer-index.js";
 import { AccountCheckout, CheckoutBlocked, CheckoutEmailRequired, applyBillingEvent, billingTables, billingView, readBilling, setCapCents, reportOverage } from "../billing/account.js";
 import { billing } from "../billing/config.js";
@@ -1396,6 +1396,15 @@ function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 			const [label] = await c.db.execute<{ label: string }>("SELECT label FROM setup_command WHERE project = ?", project);
 			return { command: setup?.command ?? "", checks: (await readChecks(c.db, project)).checks, secrets: n, defaults: await readDefaults(c.db, project), label: label?.label ?? project };
 		},
+		dependenciesChanged: async (repositoryId, since) => {
+			const app = requireGithub();
+			const { installation, repository } = await resolveRepository(app, requireConnection(c), githubId(repositoryId)!, "read");
+			return app.withToken(installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read" } }, async token => {
+				const inputs = (revision: string) => app.setupInputs(token, repository.owner, repository.name, revision, false);
+				const [previous, current] = await Promise.all([inputs(since), inputs(repository.defaultBranch)]);
+				return previous.dependencies !== current.dependencies;
+			}, { revokeAfter: true });
+		},
 		snapshots: { hosted: snapshotsFor({ kind: "hosted" }), machines: snapshotsFor({ kind: "machine" }) },
 		hostedUserMax: config.sandbox === "e2b" ? readE2bSettings().snapshots?.maxPerUser ?? null : null,
 		startBuild: async (request) => {
@@ -2511,9 +2520,10 @@ export const user = actor({
 			if (!c.vars.profile) return;
 			await environmentTick(environmentHost(c)).catch((error: unknown) => c.log.warn({ msg: "environment builds could not be started", error: String(error) }));
 		},
-		internalEnvironmentResult: async (c, sessionId: string, result: EnvironmentBuildResult): Promise<void> => {
+		internalEnvironmentResult: async (c, sessionId: string, result: EnvironmentBuildReport): Promise<void> => {
 			requireService(c);
 			const passed = await buildResult(environmentHost(c), approvalText(sessionId, 200), result);
+			if ("waiting" in result) return;
 			console.log(`[wlp] environment.built uid=${c.key[0]} session=${sessionId} passed=${passed} failure=${result.failure?.kind ?? "none"}`);
 		},
 		internalEnvironmentNudge: async (c, sessionId: string, kind: "missed" | "cold"): Promise<void> => {
