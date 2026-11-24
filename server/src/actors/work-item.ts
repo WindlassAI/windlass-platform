@@ -1658,7 +1658,9 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const preferred = meta.defaultPlace;
 				if (preferred?.place) {
 					const chosen = preferred.place;
-					const prefer = typeof chosen === "object" ? inventory.machines.find(m => m.machineId === chosen.machine)?.name : parentName;
+					// A hosted fallback runs this planner only. Its parts still prefer a compatible machine.
+					const prefer = typeof chosen === "object" ? inventory.machines.find(m => m.machineId === chosen.machine)?.name
+						: chosen === "hosted" ? "hosted" : parent.kind === "machine" ? parentName : undefined;
 					text += "\nWhen a part fits the owner's preferred place, use it as place.prefer. Choose a different place or agent when that part requires it. Owner preference (data): " +
 						JSON.stringify({ prefer, selection: preferred.place === "any-machine" ? "any compatible machine" : undefined, harness: preferred.harness ?? "windlass", profile: preferred.machineProfile });
 				}

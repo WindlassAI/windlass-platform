@@ -1006,7 +1006,7 @@ async function run() {
 		});
 		await check("G3 feature placement defaults bind GitHub filings, wait and fall back", async () => {
 			const writer = standin.addUser("default-places"); projectG2.access.set(writer.login, "write");
-			const { user: account, uid } = await connectUser(writer.login);
+			const { user: account, uid, token } = await connectUser(writer.login);
 			const machine = client.user.get([uid], service()) as unknown as { checkPlaceMachine(id: string, state: string): Promise<void> };
 			const mac = "m_0000000000000001", next = "m_0000000000000002";
 			const repo = (change: import("../server/src/contract.js").ItemPlaceDefaults) => account.saveRepositoryDefaults({ repositoryId: projectG2.id, ...change });
@@ -1056,6 +1056,19 @@ async function run() {
 			await assert.rejects(repo(policy), /sign-in|supports/i);
 			await machine.checkPlaceMachine(mac, "removed");
 			assert.ok((await file()).events.some(e => /no longer.*hosted fallback/.test(e.said)));
+			await machine.checkPlaceMachine(next, "full");
+			await repo({ ...policy, place: "any-machine", placeFallback: "hosted" });
+			const feature = make(++number, writer);
+			await applyLabel(feature, "windlass:orchestrate", writer);
+			const [plan] = await items(feature, account);
+			assert.equal(plan.place.kind, "hosted");
+			const planner = client.agentSession.get([uid, plan.sessionId], { params: { token } });
+			const prompt = await until("planner received the preferred place for parts", async () =>
+				(await planner.snapshot()).timeline.find(e => e.kind === "user" && e.text.includes("place.prefer")));
+			assert.ok(prompt.kind === "user");
+			const preference = prompt.text.split("Owner preference (data): ")[1].split("\n")[0];
+			assert.deepEqual(JSON.parse(preference), { selection: "any compatible machine", harness: "claude", profile: "docker-hardened" });
+			await account.actOnItem({ id: plan.id, action: { kind: "cancel" } });
 		});
 		await check("G3 feature filing binds the fetched command and label, and explains bug overrides", async () => {
 			const author = await newWriter("g3-feature-owner");
