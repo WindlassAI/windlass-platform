@@ -790,6 +790,48 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 }
 
 if (!only.length || only.some(name => name.startsWith("reviewer"))) {
+	await check("reviewer: autonomy uses a restricted critic and merges the reviewed single item", async () => {
+		const server = new Server();
+		try {
+			const repo = standin.addRepository({ owner: "ada", name: "autonomy", installation });
+			const head = standin.commit(repo, "reviewed", { "change.txt": "change" }, "Item change", "main");
+			const { user, auth, client } = await world(server, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FAKE_REVIEW_HEAD: head });
+			const id = repo.id;
+			const defaults = (await user.repository(id)).defaults;
+			assert(!defaults.autoApprovePlans && !defaults.autoMergeSingles, "Both settings should start off.");
+			await user.saveRepositoryDefaults({ repositoryId: id, autoApprovePlans: true, autoMergeSingles: true });
+			await user.saveRepositoryChecks({ repositoryId: id, checks: [{ name: "test", command: "true" }] });
+			const feature = await user.createItem({ mode: "orchestrate", repository: { id }, profile: "docker-windlass-sandbox", model: "gpt-6-luna",
+				title: "Update the guide", body: "Update one paragraph. (suggest-single) (report)", start: true });
+			const single = await untilItem(user, feature.id, "the critic decision", v => v.mode === "single" || !!v.question);
+			assert(single.plan?.approvedBy === "critic" && single.events.some(e => e.by === "critic" && e.said.startsWith("Approved automatically:")), JSON.stringify(single.events));
+			const { criticSessionId } = await import("../server/src/factory/feature-ids.js");
+			const critic = await client.agentSession.get([auth.profile.uid, criticSessionId(feature.id)], { params: { token: auth.token } }).snapshot();
+			assert(critic.summary.model !== "gpt-6-luna" && critic.summary.turns === 1 && critic.summary.sandbox === "none", "Critic did not use a fresh standard-model turn and release its checkout.");
+			const pull = await waitFor("the stand-in pull request", () => standin.pulls.find(p => p.repository === id), 60_000);
+			pull.headSha = head;
+			pull.mergeable = true;
+			pull.title = "The final PR title";
+			setCi(repo, head, "success");
+			const done = await untilItem(user, feature.id, "the automatic squash merge", v => v.state === "done" || !!v.question, CI_WAIT_MS);
+			assert(done.state === "done" && done.events.some(e => e.said === "Merged automatically: verdict pass, CI green, review approved."), JSON.stringify(done.events));
+			const writes = standin.requests.filter(r => r.method === "PUT" && r.path.endsWith("/autonomy/pulls/1/merge"));
+			assert(writes.length === 1 && writes[0].auth === "installation" && writes[0].status === 200, JSON.stringify(writes));
+			const next = await user.createItem({ mode: "single", repository: { id }, profile: "docker-windlass-sandbox",
+				title: "Protected change", body: "Update the guide. (report)", start: true });
+			const protectedPull = await waitFor("protected pull request", () => standin.pulls.find(p => p.repository === id && p.number === 2), 60_000);
+			protectedPull.headSha = head;
+			protectedPull.mergeable = true;
+			protectedPull.mergeRefusal = "Branch protection requires a human approval.";
+			const refused = await untilItem(user, next.id, "GitHub's merge refusal", v => v.events.some(e => e.said.includes(protectedPull.mergeRefusal!)), CI_WAIT_MS);
+			assert(refused.state === "review" && !protectedPull.merged, "GitHub refusal did not leave the item for its owner.");
+			return "one charged critic turn, a head-pinned squash with the PR title, and protected-branch refusal handed over";
+		} finally { await server.stop(); server.remove(); }
+	});
+}
+if (only.length === 1 && only[0] === "reviewer: autonomy") { await standin.stop(); process.exit(failed ? 1 : 0); }
+
+if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 	const server = new Server();
 	try {
 		const head = "a".repeat(40);

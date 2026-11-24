@@ -296,7 +296,7 @@ export type TurnOutcome =
 export type HarnessId = "windlass" | "claude" | "opencode" | "codex";
 
 /** One of the platform's tools, by the name the agent calls it (server/src/platform-tools.ts, `PlatformTool`). */
-export type PlatformToolName = "publish" | "report" | "request_secret" | "ask_person" | "push" | "fetch_base" | "file_review" | "file_plan";
+export type PlatformToolName = "publish" | "report" | "request_secret" | "ask_person" | "push" | "fetch_base" | "file_review" | "file_plan" | "file_plan_review";
 
 /**
  * What a session's agent can do, as the screens need it: a read-only part of its agent's capability record
@@ -451,7 +451,7 @@ export interface SessionSummary {
 	 * Set for the session of a work item: the item it works for (`ItemSummary`). Its prompts come from the item; a person may still read it.
 	 * `signIn`: how its machine agent was signed in when the item was filed, where that decides how the item counts its tokens (Codex).
 	 */
-	item?: { id: string; role?: "builder" | "reviewer"; reviewer?: { id: string; status: SessionStatus }; signIn?: "api-key" | "chatgpt" };
+	item?: { id: string; role?: "builder" | "reviewer"; planCritic?: true; reviewer?: { id: string; status: SessionStatus }; signIn?: "api-key" | "chatgpt" };
 	/** Set for a session that only builds a prepared environment (environments.ts): it is not listed, and is deleted when done. */
 	environmentBuild?: true;
 	/** Set when the session's sandbox started from a validated environment: the commit setup and the checks ran at, and when they passed. */
@@ -460,7 +460,7 @@ export interface SessionSummary {
 
 /** The user index keeps one builder per item. Its reviewer is reachable from the item and counts toward its usage. */
 export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
-	const reviewers = new Map(sessions.flatMap(s => s.item?.role === "reviewer" ? [[s.item.id, { id: s.id, status: s.status }] as const] : []));
+	const reviewers = new Map(sessions.flatMap(s => s.item?.role === "reviewer" && !s.item.planCritic ? [[s.item.id, { id: s.id, status: s.status }] as const] : []));
 	return sessions.filter(s => s.item?.role !== "reviewer" && !s.environmentBuild).map(session => {
 		const reviewer = session.item && reviewers.get(session.item.id);
 		return session.item && reviewer ? { ...session, item: { ...session.item, reviewer } } : session;
@@ -1067,7 +1067,12 @@ export interface RepositorySecrets {
  * this deployment no longer offers or a model its user's account no longer does, and such a one is
  * not used.
  */
-export interface RepositoryDefaults {
+export interface RepositoryAutonomy {
+	autoApprovePlans?: boolean;
+	autoMergeSingles?: boolean;
+}
+
+export interface RepositoryDefaults extends RepositoryAutonomy {
 	/** Allow item agents to file screenshots for this repository. Defaults to false. */
 	screenshots: boolean;
 	/** The sandbox profile, by its id; null when none is saved. */
@@ -1129,7 +1134,7 @@ export interface SavedRepository {
  * deployment no longer offers, or a model the account no longer does, is not used, and whoever reads
  * it says so.
  */
-export type AccountDefaults = Omit<RepositoryDefaults, "screenshots" | "hostedSize">;
+export type AccountDefaults = Omit<RepositoryDefaults, keyof RepositoryAutonomy | "screenshots" | "hostedSize">;
 
 /**
  * Where the user's newest agent was started, with which agent and in which mode, as the server
@@ -1736,7 +1741,7 @@ export interface Waiting extends Wait {
  * are builder turns; "review" is a turn of the second agent; "gate" and "handoff" are the platform's decisions; "publish" is the
  * platform pushing; "ci" and "merged" are waits on GitHub.
  */
-export type StepKind = "subtasks" | "integration" | "summary" | "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "run_checks" | "conflict" | "review" | "review_fix" | "handoff" | "merged";
+export type StepKind = "plan_review" | "subtasks" | "integration" | "summary" | "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "run_checks" | "conflict" | "review" | "review_fix" | "handoff" | "merged";
 
 /** The step a run is at. */
 export interface ItemStep {
@@ -1867,6 +1872,7 @@ export interface ItemQuestion {
 	kind: QuestionKind;
 	/** Current repository requirement blocking approval of this plan. */
 	approvalBlock?: string;
+	criticFindings?: string[];
 	text: string;
 	choices: Array<{ id: ChoiceId; label: string }>;
 	/** Suggested answer. Older clients and stored questions may omit it. */
@@ -2638,7 +2644,7 @@ export interface UserActions {
 	 * null saves none for it. Throws a UserError with code `bad_input` for a sandbox this deployment
 	 * does not offer or cannot run, and `bad_model` for a model that is not among the user's.
 	 */
-	saveRepositoryDefaults(input: { repositoryId: GithubId; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(input: { repositoryId: GithubId; autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
 	/**
 	 * Forgets the user's remembered approvals of that MCP server for a repository, whatever its
 	 * definition was (`RepositoryView.forgetting` says what stays). Resolves when nothing was remembered, too.

@@ -106,7 +106,7 @@ Each item goes through these steps, in order. Its page shows where it is.
 9. **Handed over**: the item is **In review**, and waits under **Ready for you**.
 10. **Waiting for the merge**: when you merge the pull request on GitHub, the item is **Done**. If you close it, the item is **Cancelled**.
 
-The platform never merges the pull request.
+By default, you merge the pull request. Repository owners can enable automatic merges for eligible single items.
 
 ### Your checks
 
@@ -143,6 +143,16 @@ The second review is off unless the platform turns it on. The Factory page says 
 ### Screenshots
 
 Turn on **Take screenshots for work items** in the repository's settings, under **Screenshots**, to let builders and reviewers attach pictures of the app to their reports. It is off by default. A deployment can turn screenshots off for every repository; the setting then says so and cannot be turned on. A screenshot is a PNG of up to 2 MiB. An item can have 40. They are kept for 180 days after the item ends.
+
+## Automatic approvals and merges
+
+Both settings start off. The repository owner can change them under **Work item approvals**.
+
+**Auto-approve small plans** gives a structurally valid plan one independent, read-only critic turn on the account's standard default model. The plan can suggest a single item or contain up to three parts. Its total token budget, including the feature's own allowance, must fit within three single-item budgets. Plans based on another person’s issue or feedback go to you for approval. Open questions, unordered parts with overlapping files, or an agent needing explicit confirmation send the plan to you. For a feature spanning repositories, each repository must enable automatic approval. The feature pays for the critic. A revision recommendation shows you the findings. An unavailable critic or a failed approval check also leaves the decision with you.
+
+**Auto-merge single items** squash-merges a PR using its title when the platform verdict passes, CI passes on the exact head, and the second reviewer approves that head with zero blocking findings. The branch must be current with its base and GitHub must allow the merge. A behind branch goes through the usual base update and verification. Features, their parts, foreign pushes, pending feedback and work based on third-party text still need handover. GitHub's refusal appears on the item timeline.
+
+Windlass checks CI and the base again immediately before requesting the merge. To close the seconds-wide window before GitHub accepts it, configure branch protection on the target branch with required status checks and **Require branches to be up to date before merging**. The rule must apply to the GitHub App.
 
 ## The verdict
 
@@ -430,7 +440,7 @@ If a subtask fails or is cancelled, the planner revises the plan for the work le
 
 ### The pull request
 
-When you approve a split plan, the platform opens a draft pull request from `windlass/feature-<id>` into the base branch. Each subtask's work lands on that branch. When the feature is handed over, the pull request is marked ready for review. As with every item, merging stays yours.
+When you approve a split plan, the platform opens a draft pull request from `windlass/feature-<id>` into the base branch. Each subtask's work lands on that branch. When the feature is handed over, the pull request is marked ready for review. Merging a feature stays yours.
 
 A feature gets no turns of its own to fix CI or merge its base. If CI fails on the whole feature, or the pull request conflicts with its base, the feature asks you, with **Check the feature PR again**, **Hand it over as it is** and **Give up**.
 

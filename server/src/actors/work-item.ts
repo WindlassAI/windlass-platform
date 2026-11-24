@@ -38,13 +38,14 @@ import { isAddressed } from "../github/events.js";
 import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
 import { GithubProblem } from "../github/repos.js";
 import { verdictWords } from "../factory/verdict.js";
+import { mergeCandidate } from "../factory/autonomy.js";
 import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
-import { childItemId } from "../factory/feature-ids.js";
+import { childItemId, criticSessionId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf } from "../github/publish.js";
-import { subtaskBranch, featureBranch, openFeature, refHead, advanceFeatureRef, compareBranches, mergeIntoFeature, readyFeature } from "../github/feature.js";
+import { subtaskBranch, featureBranch, openFeature, refHead, advanceFeatureRef, compareBranches, mergeIntoFeature, readyFeature, mergeReviewedPull } from "../github/feature.js";
 import { crossRepo, integrationView, issueReference, linkSection, nextOpening, readyRefusal, repoOf, repoViews, withSection, INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { ForeignRun, dispatchIntegration, findIntegrationRun, integrationWorkflowProblem, readIntegrationRun } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
@@ -80,6 +81,7 @@ export interface ItemMeta {
 	/** Latest cumulative receipt for each session. A retry or an older receipt adds nothing. */
 	blockedSessions?: Record<string, NetworkReceipt>;
 	github?: IssueBinding;
+	criticSessionId?: string;
 	reviewerSessionId: string | null;
 	reviewBase: { head: string; sha: string } | null;
 	handoffReview: { recommendation: ItemReview["recommendation"]; reason: string | null } | null;
@@ -197,7 +199,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		origin: meta.github?.origin ?? null,
 		state: item.state,
 		wait: item.wait,
-		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, recommended: item.question.recommended ?? item.question.choices[0]?.id, askedAt: item.question.askedAt, ...(item.question.secret && { secret: item.question.secret }), ...(item.question.asked && { asked: item.question.asked }), ...(item.question.check && { check: item.question.check }) },
+		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, recommended: item.question.recommended ?? item.question.choices[0]?.id, askedAt: item.question.askedAt, ...(item.question.secret && { secret: item.question.secret }), ...(item.question.asked && { asked: item.question.asked }), ...(item.question.criticFindings && { criticFindings: item.question.criticFindings }), ...(item.question.check && { check: item.question.check }) },
 		pullRequest: item.pr,
 		verdict: meta.verdict,
 		review: secondReview(item, meta),
@@ -363,9 +365,32 @@ function queued<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 	return run;
 }
 
+async function repositoryAutonomy(c: Ctx, meta: ItemMeta, repositoryId = meta.repository.id) {
+	try { return await userActor(c, meta.uid).internalRepositoryAutonomy(repositoryId); }
+	catch { return { autoApprovePlans: false, autoMergeSingles: false }; }
+}
+
 /** Both receipt paths charge the same settled holds, including a replay after a restart. */
 async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void> {
 	if (fact.kind === "turn_ended" || fact.kind === "review_ended") {
+		const { item, meta } = stored;
+		if (currentKey(item) === fact.key && (item.run?.step.kind === "refine" || item.run?.step.kind === "plan_review")) {
+			const repositories = item.repos?.map(r => r.repositoryId) ?? [meta.repository.id];
+			const settings = await Promise.all(repositories.map(id => repositoryAutonomy(c, meta, id)));
+			const enabled = settings.length > 0 && settings.every(s => s.autoApprovePlans);
+			if (fact.kind === "turn_ended") fact = { ...fact, autoApprovePlans: enabled };
+			else if (fact.planReview?.decision === "approve") {
+				try {
+					if (!enabled) throw new Error("Automatic approval is off.");
+					if (!item.featurePlan?.singleSuggested) {
+						fact.inventory = await placementInventory(c, meta.uid, item.agent?.model);
+						await checkFeatureCi(c, stored);
+					}
+					fact = { ...fact, by: "critic" };
+					advance(item, fact); // Placement and every existing approval guard must succeed.
+				} catch { fact = { ...fact, by: undefined, planReview: undefined }; }
+			}
+		}
 		const hostedSeconds = stored.item.place.kind === "hosted"
 			? lifetimeSeconds(stored.meta, await userActor(c, stored.meta.uid).internalItemFacts(sessionsOf(stored.meta))) + childSeconds(stored.item)
 			: 0;
@@ -393,6 +418,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	if (outcome.item === before) return false;
 	if (issue?.said) outcome.events.push({ at: fact.at, by: issue.by, step: null, said: issue.said });
 	stored.item = outcome.item;
+	if (outcome.item.run?.step.kind === "plan_review") stored.meta.criticSessionId = criticSessionId(outcome.item.id);
 	if (fact.kind === "claim_secret") stored.meta.pendingSecret = secret;
 	if (fact.kind === "settle_secret") delete stored.meta.pendingSecret;
 	stored.meta.updatedAt = fact.at;
@@ -1093,7 +1119,7 @@ function itemNetwork(meta: Pick<ItemMeta, "blockedSessions">) {
  * the stored meta, which the next write of the item stores.
  */
 function sessionsOf(meta: ItemMeta): string[] {
-	return meta.reviewerSessionId ? [meta.sessionId, meta.reviewerSessionId] : [meta.sessionId];
+	return [meta.sessionId, meta.reviewerSessionId, meta.criticSessionId].filter((id): id is string => !!id);
 }
 
 const childSeconds = (item: FactoryItem) => (item.jobs ?? []).reduce((sum, j) => sum + j.spent.hostedSeconds, 0);
@@ -1146,6 +1172,7 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 	const key = currentKey(item);
 	if (item.featureUpdate && ["dispatch", "poll_ci"].includes(effect.kind)) return false;
 	switch (effect.kind) {
+		case "auto_merge": return item.state === "review" && run.ci?.autoMergeKey === effect.key && item.head === effect.head && item.pr?.number === effect.pr;
 		case "update_parent_feature": return effect.key === key && run.step.kind === "ci" && !!item.parent && !item.question;
 		case "sandbox_retry": return effect.key === key && item.wait?.reason === "capacity" && item.wait.retryAt === effect.at && !item.question && run.step.turn === null;
 		case "provider_retry": return effect.key === key && item.wait?.reason === "provider" && !item.question;
@@ -1340,7 +1367,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	// Checked in the step that sends it: a cancel stored since the row was read leaves it undone.
 	if (!stored || !live(stored.item, effect)) return false;
 	const { item, meta } = stored;
-	const sessionId = "to" in effect && effect.to === "review" ? meta.reviewerSessionId : meta.sessionId;
+	const sessionId = "to" in effect && effect.to === "critic" ? meta.criticSessionId : "to" in effect && effect.to === "review" ? meta.reviewerSessionId : meta.sessionId;
 	if (!sessionId) throw new Error("Review delivery has no reviewer session.");
 	const session = sessionActor(c, meta.uid, sessionId);
 	// Catch only the session RPC. A failure from GitHub or another actor still belongs to the retry queue.
@@ -1567,6 +1594,19 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "forget":
 			return updateDirectory(c, meta, effect);
 		case "deliver": {
+			if (effect.to === "critic") {
+				try {
+					await userActor(c, meta.uid).internalPlanCritic(meta.sessionId);
+				} catch {
+					await take(c, { kind: "review_ended", key: effect.key, at: Date.now(), outcome: "error", said: null,
+						review: null, spend: { tokens: 0, hostedSeconds: item.spent.hostedSeconds } });
+					return true;
+				}
+				if (!c.vars.stored || !live(c.vars.stored.item, effect)) return false;
+				await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text: effect.text,
+					agent: "critic", maxSteps: effect.maxSteps, fetchBase: null, startsRun: false, untrusted: effect.untrusted }).catch(onGone);
+				return true;
+			}
 			let checkout: ReviewDelivery | null = null;
 			if (effect.to === "review") {
 				if (!effect.checkout || !effect.reviewerInput || !meta.reviewBase || meta.reviewBase.head !== effect.checkout.head) {
@@ -1640,6 +1680,39 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			await take(c, answer.kind === "published" ? { ...answer, ...receipt, openItems, webhooks: githubConfig().pollFallback } : { ...answer, ...receipt });
 			return true;
 		}
+		case "auto_merge": {
+			// Give our own completed check a chance to reach branch protection before requesting the merge.
+			const posting = await c.db.execute("SELECT 1 FROM effects WHERE id=? AND attempts=0", "verified_check:" + effect.head);
+			if (posting.length && !row.attempts) {
+				await queued(c, () => c.db.execute("UPDATE effects SET due_at=?, attempts=1 WHERE id=? AND effect=?", Date.now() + EFFECT_RETRY_FIRST_MS, row.id, row.effect));
+				return "deferred";
+			}
+			let behind = false;
+			let reason: string | null = null;
+			try {
+				const hub = await github(c, meta, "write");
+				await reconcileFeedback(c, meta, hub, effect.pr);
+				await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "write" } }, async token => {
+					const pull = await hub.pull(effect.pr);
+					if (pull.mergedByApp && pull.headSha === effect.head && pull.base === item.task.base) return; // Replayed after GitHub accepted the merge.
+					if (pull.state !== "open" || !pull.mergeable || pull.base !== item.task.base || pull.headSha !== effect.head || !pull.title)
+						throw new Error("The pull request is no longer open and mergeable at the reviewed head and base.");
+					await queued(c, async () => {
+						const pending = await c.db.execute("SELECT 1 FROM feedback WHERE state IN ('pending','held','question') LIMIT 1");
+						const latest = c.vars.stored!.item, review = latest.run?.ci?.secondReview;
+						if (pending.length || !live(latest, effect) || !review || !mergeCandidate(latest, review))
+							throw new Error("Feedback or a change to this item requires handover.");
+						const settings = await userActor(c, meta.uid).internalRepositoryAutonomy(meta.repository.id);
+						if (!settings.autoMergeSingles) throw new Error("Automatic merge is off.");
+						const target = { installationId: hub.installationId, repositoryId: meta.repository.id, owner: hub.owner, name: hub.name, head: effect.head };
+						behind = await mergeReviewedPull(hub.app, token, target, pull, effect.baseTip) === "behind";
+						if (behind) reason = "The base branch advanced before merge.";
+					});
+				});
+			} catch (error) { reason = describeError(error); }
+			await take(c, { kind: "auto_merge_result", key: effect.key, head: effect.head, at: Date.now(), reason, behind });
+			return true;
+		}
 		case "rerun_ci": {
 			if (!await take(c, { ...effect, kind: "ci_rerun_started", at: Date.now() })) return false;
 			let result;
@@ -1654,6 +1727,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		}
 		case "poll_ci": {
 			const number = item.pr?.number ?? 0;
+			const autoMergeSingles = item.run?.step.kind === "handoff" && item.mode !== "orchestrate" && !item.parent &&
+				(await repositoryAutonomy(c, meta)).autoMergeSingles;
 			// Not reaching GitHub at all (the connection gone, the repository out of reach) is a reading that failed:
 			// it waits as any other, and CI's time limit still ends in the person's question.
 			const read = async () => {
@@ -1672,7 +1747,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					((state === "none" || state === "skipped") && elapsed >= CI_POLLING.noneAfterMs));
 				const head = reading.kind === "read" && !/^[0-9a-f]{40}$/.test(effect.head) ? reading.head : effect.head;
 				const itemCi = item.run?.step.kind === "ci" && item.mode !== "orchestrate" && (!pull?.headSha || pull.headSha === head);
-				const compare = itemCi && /^[0-9a-f]{40}$/.test(head) && (state === "failed" || state === "cancelled" || timedOut || noChildCi);
+				const mergeCheck = autoMergeSingles && pull?.state === "open" && pull.base === item.task.base && pull.headSha === effect.head;
+				const compare = mergeCheck || itemCi && /^[0-9a-f]{40}$/.test(head) && (state === "failed" || state === "cancelled" || timedOut || noChildCi);
 				const comparison = compare ? await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "read" } },
 					token => compareBranches(hub.app, token, hub.owner, hub.name, item.task.base, head), { reuse: true }).catch(() => null) : null;
 				if (itemCi && state === "failed" && reading.kind === "read" && reading.head === head) {
@@ -1681,14 +1757,14 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 						session.internalBaseTests({ head, base, tests }).catch(() => "unknown"));
 					else for (const check of reading.runs) if (check.state === "failed" && !check.environment) check.baseResult = "pending";
 				}
-				return { reading, baseAhead: comparison?.behind ?? 0, baseTip: comparison?.base, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
+				return { reading, baseAhead: comparison?.behind, baseTip: comparison?.base, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
 			};
 			const { reading, baseAhead, baseTip, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, baseAhead: 0, baseTip: undefined, mergeable: null, prHead: null, baseSha: null }));
 			const target = item.run?.step.kind === "ci" && (item.parent || item.mode === "orchestrate") && (ciState(reading) !== "passed" || mergeable === false)
 				? await targetStatus(c, stored).catch(() => null) : null;
 			const featureTarget = target?.available && target.value > 0 ? target.branch : undefined;
 			const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
-			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
+			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, autoMergeSingles, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
 			return true;
 		}
 		case "poll_pr": {
@@ -1696,7 +1772,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			await factsOf(c, meta);
 			const hub = await github(c, meta);
 			const pull = await hub.pull(effect.pr);
-			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, state: pull.state, prHead: pull.headSha || null, webhooks: githubConfig().pollFallback });
+			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, state: pull.state, mergedByApp: pull.mergedByApp, prHead: pull.headSha || null, webhooks: githubConfig().pollFallback });
 			if ((pull.state === "open" || pull.state === "draft") && item.state === "review") await reconcileFeedback(c, meta, hub, effect.pr);
 			return true;
 		}
@@ -1949,7 +2025,7 @@ export const workItem = actor({
 		internalPlanningInputs: (c, key: string): { directory: string; inputs: { alias: string; repositoryId: GithubId; installationId: GithubId; owner: string; name: string; baseRef: string; sha: string | null }[] } | null => {
 			requireService(c);
 			const item = c.vars.stored?.item;
-			if (!item || !crossRepo(item) || item.run?.step.kind !== "refine" || currentKey(item) !== key) return null;
+			if (!item || !crossRepo(item) || !["refine", "plan_review"].includes(item.run?.step.kind ?? "") || currentKey(item) !== key) return null;
 			return { directory: INPUTS_DIRECTORY, inputs: item.repos!.slice(1).map(r => ({ alias: r.alias, repositoryId: r.repositoryId, installationId: r.installationId, owner: r.owner, name: r.name, baseRef: r.baseRef, sha: r.planningBaseSha })) };
 		},
 		internalChildRequest: (c, id: string) => {

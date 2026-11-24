@@ -52,7 +52,7 @@ export interface SessionCreateInput {
 	 * Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's.
 	 * `signIn`: how the machine's agent signed in when the item was filed, where that counts its tokens (harnesses.ts, `itemTokensOf`).
 	 */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; owns?: string[]; childBranch?: { name: string; start: string }; size?: number; effort?: string; signIn?: SignInMethod };
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; planCritic?: true; owns?: string[]; childBranch?: { name: string; start: string }; size?: number; effort?: string; signIn?: SignInMethod };
 	/** Set for a session that only builds the repository's prepared environment at its place (user-environments.ts). */
 	environmentBuild?: EnvironmentBuildOrigin;
 }
@@ -102,6 +102,8 @@ export interface UserInternal {
 	internalProviderGeneration(location: import("./provider-accounts.js").AccountLocation): Promise<string | null>;
 	internalObserveUsage(location: import("./provider-accounts.js").AccountLocation, generation: string, observation: import("../provider-usage.js").UsageObservation): Promise<void>;
 	internalLimitedAccounts(): Promise<ReturnType<typeof import("./provider-accounts.js").limitedAccounts>>;
+	internalRepositoryAutonomy(repositoryId: GithubId): Promise<{ autoApprovePlans: boolean; autoMergeSingles: boolean }>;
+	internalPlanCritic(builderId: string): Promise<void>;
 	internalPlannerMachines(): Promise<ReturnType<typeof import("../machines/details.js").plannerMachines>>;
 	internalAgentModels(): Promise<import("../factory/placement.js").AgentModels>;
 	internalSessionChanged(summary: SessionSummary): Promise<void>;

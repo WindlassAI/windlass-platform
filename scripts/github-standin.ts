@@ -79,6 +79,8 @@ export interface StandinCheck {
 }
 
 export interface StandinPull {
+	mergeRefusal?: string;
+	mergedByApp?: boolean;
 	headSha?: string;
 	number: number;
 	repository: number;
@@ -589,6 +591,7 @@ export class GithubStandin {
 			draft: pull.draft,
 			requested_reviewers: pull.requestedReviewers.map((login) => ({ login })),
 			merged: pull.merged,
+			...(pull.mergedByApp && { merged_by: { login: this.slug + "[bot]" } }),
 			mergeable: pull.mergeable,
 			merged_at: pull.merged ? (pull.mergedAt ??= new Date().toISOString()) : null,
 			merge_commit_sha: pull.merged ? pull.mergeCommit ?? null : null,
@@ -1003,6 +1006,21 @@ export class GithubStandin {
 				return answer(200, list.map((pull) => this.pullJson(pull)));
 			}
 
+			const mergeRoute = /^\/pulls\/(\d+)\/merge$/.exec(rest);
+			if (mergeRoute && method === "PUT") {
+				if (!this.allows(token, repository, "contents", "write")) return denied();
+				const pull = this.pulls.find(p => p.repository === repository.id && p.number === Number(mergeRoute[1]));
+				if (!pull) return answer(404, { message: "Pull request not found" });
+				const fields = body as { sha: string; merge_method: string; commit_title: string };
+				if (fields.sha !== (pull.headSha ?? this.branchHead(repository, pull.head))) return answer(409, { message: "Head branch was modified" });
+				if (pull.mergeRefusal) return answer(405, { message: pull.mergeRefusal });
+				if (pull.state !== "open" || !pull.mergeable || pull.draft) return answer(405, { message: "Pull request is not mergeable" });
+				if (fields.merge_method !== "squash" || fields.commit_title !== pull.title) return answer(422, { message: "Expected a squash with the pull request title" });
+				pull.mergedByApp = true;
+				pull.merged = true;
+				pull.state = "closed";
+				return answer(200, { merged: true, message: "Pull Request successfully merged" });
+			}
 			const reviewRoute = /^\/pulls\/(\d+)\/reviews(?:\/(\d+)(\/comments)?)?$/.exec(rest);
 			if (reviewRoute && !reviewRoute[2] && method === "POST") {
 				if (!this.allows(token, repository, "pull_requests", "write")) return denied();

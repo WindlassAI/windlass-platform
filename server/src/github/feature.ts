@@ -1,4 +1,18 @@
-import { GithubError, type GithubApp } from "./app.js";
+import { GithubError, type GithubApp, type Pull } from "./app.js";
+import { ciState, readCi, type CiTarget } from "./ci.js";
+
+/** Called under the item write queue, after checking its review, feedback and repository setting. */
+export async function mergeReviewedPull(app: GithubApp, token: string, target: CiTarget,
+	pull: Pick<Pull, "number" | "title" | "base" | "baseSha">, reviewedBase?: string) {
+	const ci = await readCi(app, target);
+	if (ci.kind !== "read" || ci.head !== target.head || ciState(ci) !== "passed")
+		throw new Error("CI no longer passes on the reviewed head.");
+	const compared = await compareBranches(app, token, target.owner, target.name, pull.base, target.head);
+	if (compared.behind > 0) return "behind";
+	if (compared.base !== reviewedBase || compared.base !== pull.baseSha) throw new Error("The base branch changed before merge.");
+	await app.squashMerge(token, target.owner, target.name, pull.number, target.head, pull.title);
+	return "merged";
+}
 
 export function featureBranch(item: string) {
 	if (!/^i_[a-z0-9]+$/.test(item)) throw new Error("Invalid feature identity.");

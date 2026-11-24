@@ -1318,6 +1318,7 @@ interface World {
 	/** What new agents on a repository start with, where the user said so, by GitHub's id for it. */
 	defaults: Map<GithubId, { profile: SandboxProfileId | null; model: string | null; updatedAt: number }>;
 	/** The repositories whose work items' agents can take screenshots, with when that was saved (`RepositoryDefaults.screenshots`). */
+	autonomy: Map<GithubId, { autoApprovePlans?: boolean; autoMergeSingles?: boolean; updatedAt: number }>;
 	screenshotsEnabled: Map<GithubId, number>;
 	/** What a repository was called when something was last saved for it or GitHub was last asked: what names one that has no session. */
 	names: Map<GithubId, string>;
@@ -1476,7 +1477,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -3156,7 +3157,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const enabled = world.screenshotsEnabled.get(repositoryId);
 		const updatedAt = saved || enabled !== undefined ? Math.max(saved?.updatedAt ?? 0, enabled ?? 0) : null;
 		const size = hostedSizes.get(repositoryId) ?? null;
-		return { screenshots: enabled !== undefined, profile: saved?.profile ?? null, model: saved?.model ?? null, hostedSize: size, updatedAt: updatedAt ?? (size ? now() : null) };
+		return { ...world.autonomy.get(repositoryId), screenshots: enabled !== undefined, profile: saved?.profile ?? null, model: saved?.model ?? null, hostedSize: size, updatedAt: Math.max(updatedAt ?? 0, world.autonomy.get(repositoryId)?.updatedAt ?? 0) || (size ? now() : null) };
 	}
 
 	function repositoryViewOf(world: World, repositoryId: GithubId): RepositoryView {
@@ -3207,7 +3208,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** Saves as the server does (server/src/repository-defaults.ts): the same refusals in the same words, and only the fields that are named. */
 	/** Each repository's saved hosted size. */
 	const hostedSizes = new Map<GithubId, HostedSize>();
-	function saveDefaults(world: World, repositoryId: GithubId, { screenshots, hostedSize, ...change }: { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): RepositoryDefaults {
+	function saveDefaults(world: World, repositoryId: GithubId, { screenshots, hostedSize, autoApprovePlans, autoMergeSingles, ...change }: { autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): RepositoryDefaults {
 		if (screenshots !== undefined && typeof screenshots !== "boolean") throw new PlatformError("user", "Screenshots must be true or false.", { reason: "bad_input" });
 		if (hostedSize !== undefined && hostedSize !== null && !isHostedSize(hostedSize)) throw new PlatformError("user", "Choose one of the hosted sizes: small, standard, large.", { reason: "bad_input" });
 		if (hostedSize === null) hostedSizes.delete(repositoryId);
@@ -3215,6 +3216,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change, modelsFor(world.profile));
 		if (next === null) world.defaults.delete(repositoryId);
 		else world.defaults.set(repositoryId, next);
+		const flags = { ...world.autonomy.get(repositoryId), updatedAt: now() };
+		for (const [key, value] of Object.entries({ autoApprovePlans, autoMergeSingles }) as Array<["autoApprovePlans" | "autoMergeSingles", boolean | undefined]>) {
+			if (value === true) flags[key] = true;
+			else if (value === false) delete flags[key];
+		}
+		if (flags.autoApprovePlans || flags.autoMergeSingles) world.autonomy.set(repositoryId, flags);
+		else world.autonomy.delete(repositoryId);
 		if (screenshots === false) world.screenshotsEnabled.delete(repositoryId);
 		if (screenshots === true) world.screenshotsEnabled.set(repositoryId, now());
 		return defaultsOf(world, repositoryId);
@@ -3879,7 +3887,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				world().names.set(repositoryId, `${found.owner}/${found.name}`);
 				return describeRepository(found);
 			},
-			async saveRepositoryDefaults(repositoryId: GithubId, change: { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults> {
+			async saveRepositoryDefaults(repositoryId: GithubId, change: { autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults> {
 				await latency(300);
 				nameAtSave(world(), repositoryId);
 				return saveDefaults(world(), repositoryId, change);
@@ -3902,6 +3910,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				current.checks.delete(repositoryId);
 				current.network.delete(repositoryId);
 				current.defaults.delete(repositoryId);
+				current.autonomy.delete(repositoryId);
 				current.screenshotsEnabled.delete(repositoryId);
 				current.approvals = current.approvals.filter((approval) => approval.project !== `github:${repositoryId}`);
 				current.names.delete(repositoryId);

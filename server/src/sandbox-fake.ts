@@ -327,6 +327,7 @@ export class FakeHandle implements SandboxHandle {
 			this.sandbox.reviewCloneFailed = true;
 			return { ...ok(), exitCode: 128, stderr: "fatal: unable to access repository: The requested URL returned error: 503" };
 		}
+		if (command.includes("ls-tree -r --name-only -z HEAD")) return ok("README.md\0");
 		if (head && command.includes('base64 -w0 "$patch"')) return ok(`0 ${createHash("sha256").digest("hex")}\n`);
 		if (head && command.includes('echo "wlp:committed $committed"')) return ok(`wlp:committed 1\nwlp:head ${head}\n`);
 		if (head && command.includes('echo "wlp:pushed $sha"')) return ok(`wlp:pushed ${head}\n`);
@@ -1174,7 +1175,12 @@ class FakeWindlass implements Windlass {
 						emit({type:"fake.plan_reply",data:{reply},seq:0});
 						}
 					}
-					if (input.onPlan || input.onReview || input.onReport) emit({ type: "fake.session_open", data: { method: continued ? "session/resume" : "session/new", params }, seq: 0 });
+					if (input.onPlanReview) {
+						if (!input.planner || offered.size !== 1 || !offered.has("file_plan_review") || input.servers?.length || input.checks?.length ||
+							input.onPush || input.onReport || input.onPublish || input.onFetchBase || !text.includes("tracked repository tree:")) throw new Error("Invalid critic tools or missing repository tree.");
+						await input.onPlanReview({ messageId: "critic", callId: "file", arguments: { decision: "approve", findings: ["The plan covers the task within budget."] } }, signal ?? new AbortController().signal);
+					}
+					if (input.onPlanReview || input.onPlan || input.onReview || input.onReport) emit({ type: "fake.session_open", data: { method: continued ? "session/resume" : "session/new", params }, seq: 0 });
 					if (input.onReview) {
 						if (!this.sandboxes.all.get(sandbox.id)?.privateData || input.onPublish || input.onPush || input.onReport || input.onFetchBase || input.servers?.length || input.checks?.length || Object.keys(input.secrets?.env ?? {}).length || input.onQuestion || input.maxSteps !== 40) throw new Error("Reviewer received builder privileges.");
 						const ids = { messageId: "review_step", callId: "shell_1" };

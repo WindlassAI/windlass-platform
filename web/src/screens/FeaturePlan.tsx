@@ -295,6 +295,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 				{" "}<span className="plan-version">Version {plan.version}</span>
 			</p>
 
+			{view.question.criticFindings && <div className="callout callout-warn"><div>Critic recommends revision<ul>{view.question.criticFindings.map((finding, i) => <li key={i}>{finding}</li>)}</ul></div></div>}
 			{plan.subtasks.length > 0 ? <PlanRoutes view={view} plan={plan} machines={review.machines} models={review.models} catalogs={review.catalogs} accountModels={review.accountModels} refusal={refused} /> : null}
 
 			{!single && review.unattended.length > 0 ? <UnattendedConfirm plan={plan} review={review} disabled={busy || review.edits} /> : null}
@@ -356,7 +357,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 				) : null}
 				{revise && !review.edits ? (
 					<button type="button" className="button button-outline" disabled={busy} onClick={() => void acting.act({ kind: "answer", question: view.question!.id, choice: "revise" })}>
-						{acting.busy === "revise" ? "Sending…" : "Ask for a new plan"}
+						{acting.busy === "revise" ? "Sending…" : view.question.recommended === "revise" ? "Ask for a new plan (recommended)" : "Ask for a new plan"}
 					</button>
 				) : null}
 				{giveUp && !review.edits ? (
