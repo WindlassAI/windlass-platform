@@ -51,7 +51,7 @@ import { crossRepo, integrationView, issueReference, linkSection, nextOpening, r
 import { ForeignRun, dispatchIntegration, findIntegrationRun, integrationWorkflowProblem, readIntegrationRun } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
 import { observeIssue, writeIssueComment, type IssueChanges, type IssueNotice, type ObservedIssue } from "./github-item.js";
-import { filedFromIssue, recentSubject, type IssueBinding } from "../factory/intake.js";
+import { filedFromIssue, filedFromLinear, recentSubject, type IssueBinding, type LinearBinding } from "../factory/intake.js";
 import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine } from "../factory/verified-check.js";
 import type { CheckRunUpdate } from "../github/checks.js";
 import type { GithubUser } from "../github/app.js";
@@ -83,7 +83,10 @@ export interface ItemMeta {
 	pendingSecret?: RequestedSecretSave;
 	/** Latest cumulative receipt for each session. A retry or an older receipt adds nothing. */
 	blockedSessions?: Record<string, NetworkReceipt>;
+	/** The GitHub issue the item was filed from: what its polling, issue comment and "Closes #n" are made from. Never set for a Linear item. */
 	github?: IssueBinding;
+	/** The Linear issue it was filed from: provenance only, nothing polled or written back. */
+	linear?: LinearBinding;
 	criticSessionId?: string;
 	reviewerSessionId: string | null;
 	reviewBase: { head: string; sha: string } | null;
@@ -202,7 +205,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		...(item.awaitingPlace && { awaitingPlace: true }),
 		...(item.placement && { placement: item.placement }),
 		source: meta.source,
-		origin: meta.github?.origin ?? null,
+		origin: meta.github?.origin ?? meta.linear?.origin ?? null,
 		state: item.state,
 		wait: item.wait,
 		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, recommended: item.question.recommended ?? item.question.choices[0]?.id, askedAt: item.question.askedAt, ...(item.question.secret && { secret: item.question.secret }), ...(item.question.asked && { asked: item.question.asked }), ...(item.question.criticFindings && { criticFindings: item.question.criticFindings }), ...(item.question.check && { check: item.question.check }) },
@@ -2085,7 +2088,7 @@ export const workItem = actor({
 					effects.push({ kind: "issue_comment", key: "link", revision: item.revision });
 				}
 				await tx.execute("INSERT INTO item (id, revision, data) VALUES (1, ?, ?)", item.revision, JSON.stringify({ item, meta: input.meta }));
-				await tx.execute("INSERT INTO events (at, data) VALUES (?, ?)", input.meta.createdAt, JSON.stringify({ at: input.meta.createdAt, by: input.startedBy ?? "platform", step: null, said: input.meta.github ? filedFromIssue(input.meta.github.origin) : `Filed from ${input.meta.source === "api" ? "the API" : "the web app"}.` } satisfies ItemEvent));
+				await tx.execute("INSERT INTO events (at, data) VALUES (?, ?)", input.meta.createdAt, JSON.stringify({ at: input.meta.createdAt, by: input.startedBy ?? "platform", step: null, said: input.meta.github ? filedFromIssue(input.meta.github.origin) : input.meta.linear ? filedFromLinear(input.meta.linear.origin) : `Filed from ${input.meta.source === "api" ? "the API" : "the web app"}.` } satisfies ItemEvent));
 				for (const event of events) await tx.execute("INSERT INTO events (at, data) VALUES (?, ?)", event.at, JSON.stringify(event));
 				for (const effect of effects) await tx.execute("INSERT INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)", rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 			}, { name: "item.create" });

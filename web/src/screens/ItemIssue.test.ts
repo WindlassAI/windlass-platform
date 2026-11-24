@@ -59,7 +59,7 @@ async function render(screen: () => ReturnType<typeof createElement>, change: (v
 	await wait();
 }
 
-const fromIssue = (trusted: boolean) => items.find((item) => item.origin?.issue.trusted === trusted) as ItemSummary;
+const fromIssue = (trusted: boolean) => items.find((item) => item.origin?.issue?.trusted === trusted) as ItemSummary;
 const itemPage = (pick: () => ItemSummary) => () => createElement(Item, { page: useItem(pick().id, true) });
 const buttons = (scope: ParentNode, label: string) => [...scope.querySelectorAll("button")].filter((button) => button.textContent === label);
 
@@ -110,7 +110,7 @@ describe("an item from a GitHub issue", () => {
 		const section = host.querySelector("section[aria-labelledby='repo-items']") as HTMLElement;
 		const rowOf = (item: ItemSummary) => [...section.querySelectorAll("li.item-row")].find((row) => row.querySelector(".agent-title")?.textContent?.startsWith(item.title)) as HTMLElement;
 		for (const item of [fromIssue(false), fromIssue(true)]) {
-			const issue = item.origin?.issue as NonNullable<ItemSummary["origin"]>["issue"];
+			const issue = item.origin?.issue as NonNullable<NonNullable<ItemSummary["origin"]>["issue"]>;
 			const links = [...rowOf(item).querySelectorAll("a")].filter((link) => link.getAttribute("href") === issue.url);
 			expect(links.map((link) => link.textContent)).toEqual([`issue #${issue.number}`]);
 			expect(links[0]?.getAttribute("aria-label")).toBe(`Issue #${issue.number} on GitHub`);
@@ -160,11 +160,36 @@ describe("an item from a GitHub issue", () => {
 	});
 
 	it("as a draft from the web, or from the person's own issue, keeps Start in the header and its task where it was", async () => {
-		await render(itemPage(() => fromIssue(false)), (view) => ({ ...view, origin: view.origin && { ...view.origin, issue: { ...view.origin.issue, trusted: true } } }));
+		await render(itemPage(() => fromIssue(false)), (view) => ({ ...view, origin: view.origin?.issue ? { ...view.origin, issue: { ...view.origin.issue, trusted: true } } : view.origin }));
 		expect(buttons(host.querySelector(".item-actions") as HTMLElement, "Start")).toHaveLength(1);
 		expect(buttons(host, "Start")).toHaveLength(1);
 		expect(host.querySelector(".item-snapshot")).toBeNull();
 		expect(host.querySelector(".item-now-text")?.textContent).toBe("A draft: nothing runs until you start it.");
 		expect(host.querySelector("section[aria-labelledby='item-task'] .callout")).toBeNull();
+	});
+});
+
+describe("an item from a Linear issue", () => {
+	const fromLinear = () => items.find((item) => item.source === "linear") as ItemSummary;
+
+	it("links ENG-123 to its Linear URL, names the source, and warns of the outside author", async () => {
+		await render(itemPage(fromLinear));
+		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toBe("Quick · from Linear");
+		const line = host.querySelector(".item-origin") as HTMLElement;
+		expect(line.textContent).toBe("From ENG-123, written by Grace Hopper and filed by Ada Lovelace.");
+		const link = line.querySelector("a") as HTMLAnchorElement;
+		expect(link.textContent).toBe("ENG-123");
+		expect(link.getAttribute("href")).toBe("https://linear.app/acme/issue/ENG-123/show-the-release-channel");
+		expect(link.target).toBe("_blank");
+		const note = host.querySelector("section[aria-labelledby='item-task'] .callout") as HTMLElement;
+		expect(note.textContent).toBe("The text below was written by Grace Hopper on Linear, not by you. Starting the item gives the agent this text, as it is shown here.");
+		expect(buttons(host, "Start")).toHaveLength(1);
+	});
+
+	it("links its row in the work list to the issue", async () => {
+		await render(() => createElement(RepositoryPane, { page: useRepository(7101), view: "items", items: useItems(true), filters: NO_FILTERS, onFilters: () => undefined, machines: [] }));
+		const link = [...host.querySelectorAll("li.item-row a")].find((one) => one.textContent === "ENG-123") as HTMLAnchorElement;
+		expect(link.getAttribute("href")).toBe("https://linear.app/acme/issue/ENG-123/show-the-release-channel");
+		expect(link.getAttribute("aria-label")).toBe("Issue ENG-123 on Linear");
 	});
 });

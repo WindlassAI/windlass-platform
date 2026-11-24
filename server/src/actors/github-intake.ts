@@ -1,18 +1,14 @@
 /** The user decides intake on their own budget. Only lookup keys cross the webhook boundary. */
 import { contentDigest, readIssue, subjectRead } from "../github/issues.js";
 import { mayUse } from "../access.js";
-import { readAccountDefaults } from "../account-defaults.js";
 import { serviceParams } from "../auth.js";
-import { accountLimits } from "../user-limits.js";
 import { config } from "../config.js";
 import type { ItemSummary, UserProfile } from "../contract.js";
-import { savedPlace } from "../factory/default-place.js";
 import { issueMode, recentSubject, refusals, taskOfIssue, type IntakeTrigger, type IssueFiling } from "../factory/intake.js";
 import type { GithubApp, Repository } from "../github/app.js";
 import { isAddressed } from "../github/events.js";
-import { readDefaults } from "../repository-defaults.js";
 import type { IssueClaim, IssueDecision } from "./github-repository.js";
-import { isActorGone, itemActor } from "./internal.js";
+import { existingItem, intakeInput, intakePolicy, quotaRefusal } from "./issue-intake.js";
 import type { ItemsCtx } from "./user-items.js";
 
 async function command(app: GithubApp, token: string, repo: Repository, trigger: IntakeTrigger) {
@@ -33,24 +29,6 @@ async function refusal(app: GithubApp, repo: Repository, t: IntakeTrigger, gener
 		if (!comments.some(c => c.author.toLowerCase() === app.settings.slug.toLowerCase() + "[bot]" && c.body.startsWith(marker + "\n")))
 			await app.createIssueComment(token, repo.owner, repo.name, t.issue, marker + "\n" + reason, "post the intake refusal");
 	});
-}
-
-async function existingItem(c: ItemsCtx, uid: string, id: string) {
-	try { return await itemActor(c, uid, id).internalSummary(); }
-	catch (error) { if (!isActorGone(error) && (error as { code?: string })?.code !== "item_not_found") throw error; }
-}
-
-/** The one cap on items filed from GitHub: how many a day, drafts among them. A flood of labelled issues stops here. */
-async function quotaRefusal(c: ItemsCtx, resuming?: string) {
-	const filed = [...c.vars.items.items.values()].filter(i => i.source === "github" && !i.parent);
-	const midnight = Math.floor(Date.now() / 86_400_000) * 86_400_000;
-	const { githubItemsPerDay } = accountLimits(c.vars.items.limits).factory;
-	const unindexed = "FROM github_item_keys k WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.id=k.id)";
-	const [pending] = await c.db.execute<{ count: number; reserved: number }>(
-		`SELECT count(*) AS count, count(CASE WHEN id=? THEN 1 END) AS reserved ${unindexed} AND created_at >= ? AND created_at < ?`,
-		resuming ?? null, midnight, midnight + 86_400_000);
-	if (!pending.reserved && filed.filter(i => i.createdAt >= midnight && i.createdAt < midnight + 86_400_000).length + pending.count >= githubItemsPerDay) return refusals.daily(githubItemsPerDay);
-	return null;
 }
 
 export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: string) => string,
@@ -102,13 +80,11 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 		reason = refusal ?? await quotaRefusal(c);
 		if (!reason) {
 			const key = `github:${repo.id}#${issue.number}:${generation}`;
-			const defaults = await readDefaults(c.db, "github:" + repo.id);
-			const account = await readAccountDefaults(c.db);
-			const defaultPlace = savedPlace(defaults, account);
+			const policy = await intakePolicy(c, repo.id);
+			const { defaultPlace } = policy;
 			const binding = { ...(defaultPlace && { defaultPlace }), modeReason, triggerLabel: t.via === "label" ? t.label : undefined, installationId: t.installationId, generation, triggeredAt: subject.at, senderId: subject.author.id, issueId: issue.id, contentDigest: contentDigest(issue),
 				origin: { issue: { number: issue.number, url: issue.url, author: issue.author.login, trusted }, sender: subject.author.login } };
-			decision = { kind: "file", itemId: itemId(key), filing: { binding, input: { ...task, mode, repository: { id: repo.id, branch: repo.defaultBranch },
-				profile: defaults.profile ?? account.profile ?? undefined, model: defaults.model ?? account.model ?? undefined, start: trusted, idempotencyKey: key } } };
+			decision = { kind: "file", itemId: itemId(key), filing: { binding, input: intakeInput(task, mode, { id: repo.id, branch: repo.defaultBranch }, policy, trusted, key) } };
 		}
 	}
 	if (reason) decision = { kind: "refuse", reason, generation: create ? generation : claim?.generation ?? 1 };

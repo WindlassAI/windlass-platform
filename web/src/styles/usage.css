@@ -497,3 +497,16 @@
 	font-size: var(--size-mono-small);
 	color: var(--ink-faint);
 }
+
+/* Settings → Linear: a team and a repository chosen side by side, as narrow as the lede. */
+.usage-section .linear-map {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	width: min(100%, 650px);
+	margin-top: 12px;
+}
+.usage-section .linear-map .select {
+	flex: 1 1 200px;
+	min-width: 0;
+}

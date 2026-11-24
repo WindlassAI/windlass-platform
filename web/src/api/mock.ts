@@ -170,6 +170,9 @@ import {
 	type HostedMonth,
 	type PlanId,
 	type PlanInfo,
+	type LinearConnection,
+	type LinearStatus,
+	type LinearTeamList,
 } from "@contract";
 import { PlatformError, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
 import { acpOutcome, acpRecorder, isDurable, isLive, isPermission, schedule, splitRuns, turnEnded, withSummary, type AcpPermission } from "./feed";
@@ -192,6 +195,8 @@ export interface MockOptions {
 	questionTimeoutMs?: number;
 	/** False plays a deployment with no GitHub App: nothing of GitHub is offered. */
 	github?: boolean;
+	/** Whether the deployment has a Linear OAuth client and signing secret. On unless false. */
+	linear?: boolean;
 	/** "e2b" plays a deployment on E2B that offers both of its profiles (`MOCK_E2B_PROFILES`). */
 	sandbox?: "docker" | "e2b";
 	/** How the user's day stands when the page loads (`MockUsageState`). Default "plenty". */
@@ -1516,6 +1521,52 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		} catch {
 			// Storage is unavailable: the connection lasts until the page is reloaded.
 		}
+	}
+
+	// ---- Linear ---------------------------------------------------------------------------------
+
+	const LINEAR_TEAMS = [
+		{ id: "team-eng", key: "ENG", name: "Engineering" },
+		{ id: "team-des", key: "DES", name: "Design" },
+		{ id: "team-ops", key: "OPS", name: "Operations" },
+	];
+	interface LinearKept {
+		connectedAt: number;
+		mappings: Record<string, { repositoryId: GithubId; savedAt: number }>;
+	}
+	const linearMemory = new Map<string, LinearKept>();
+	function linearKept(uid: string): LinearKept | null {
+		const held = linearMemory.get(uid);
+		if (held) return held;
+		const stored = recall(`wlp.mock.linear.${uid}`);
+		if (!stored) return null;
+		try {
+			const parsed = JSON.parse(stored) as LinearKept;
+			linearMemory.set(uid, parsed);
+			return parsed;
+		} catch {
+			return null;
+		}
+	}
+	function keepLinear(uid: string, value: LinearKept): void {
+		linearMemory.set(uid, value);
+		keep(`wlp.mock.linear.${uid}`, JSON.stringify(value));
+	}
+	const linearConnection = (connectedAt: number): LinearConnection => ({
+		workspace: { id: "ws-acme", name: "Acme", urlKey: "acme" },
+		user: { id: "lin-user", name: "Ada Lovelace" },
+		appUser: { id: "lin-app", name: "Windlass" },
+		connectedAt,
+	});
+	function linearTeams(uid: string): LinearTeamList {
+		const kept = linearKept(uid);
+		return {
+			teams: LINEAR_TEAMS.map((team) => {
+				const mapped = kept?.mappings[team.id];
+				const repository = mapped ? GITHUB_REPOSITORIES.find((candidate) => candidate.id === mapped.repositoryId) : undefined;
+				return { ...team, mapping: mapped && repository ? { teamId: team.id, repository: { id: repository.id, owner: repository.owner, name: repository.name }, savedAt: mapped.savedAt } : null };
+			}),
+		};
 	}
 
 	function connectionFor(profile: UserProfile): GithubConnection {
@@ -3805,6 +3856,67 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				session.feeds.clear();
 				const list = listOf(world());
 				for (const feed of world().feeds) feed.onSessions(list);
+			},
+			async linear(): Promise<LinearStatus> {
+				await latency(200);
+				if (options.linear === false) return { state: "off" };
+				const kept = linearKept(world().profile.uid);
+				return kept ? { state: "connected", connection: linearConnection(kept.connectedAt) } : { state: "disconnected" };
+			},
+			async linearConnect({ origin }) {
+				await latency(260);
+				if (options.linear === false) throw new PlatformError("user", "This deployment has no Linear client, so Linear cannot be connected here.", { reason: "linear_off" });
+				// The mock's Linear approves at once and sends the browser straight back.
+				const ticket = `mock.${now() + 5 * 60_000}.${crypto.randomUUID()}`;
+				keep(`wlp.mock.linear.ticket.${world().profile.uid}`, ticket);
+				const search = typeof location === "undefined" ? "" : location.search;
+				return { url: `${origin.replace(/\/$/, "")}/settings${search}#linear=${ticket}` };
+			},
+			async linearComplete(ticket) {
+				await latency(240);
+				const uid = world().profile.uid;
+				const key = `wlp.mock.linear.ticket.${uid}`;
+				if (recall(key) !== ticket || !(Number(ticket.split(".")[1]) > now())) throw new PlatformError("user", "This link to connect Linear is not valid for this account any more. Connect Linear again.", { reason: "linear_ticket" });
+				keep(key, "");
+				const connectedAt = now();
+				keepLinear(uid, { connectedAt, mappings: linearKept(uid)?.mappings ?? {} });
+				return { state: "connected", connection: linearConnection(connectedAt) };
+			},
+			async linearTeams() {
+				await latency(240);
+				return linearTeams(world().profile.uid);
+			},
+			async saveLinearMapping({ teamId, repositoryId }) {
+				await latency(300);
+				const uid = world().profile.uid;
+				const kept = linearKept(uid);
+				if (!kept) throw new PlatformError("user", "Connect Linear first.", { reason: "linear_not_connected" });
+				if (!LINEAR_TEAMS.some((team) => team.id === teamId)) throw new PlatformError("user", "That team is not in the connected workspace.", { reason: "linear_team" });
+				requireGithub(world());
+				if (!GITHUB_REPOSITORIES.some((repository) => repository.id === repositoryId)) throw new PlatformError("user", "That repository is not among the ones your GitHub connection covers.", { reason: "bad_input" });
+				keepLinear(uid, { ...kept, mappings: { ...kept.mappings, [teamId]: { repositoryId, savedAt: now() } } });
+				return linearTeams(uid);
+			},
+			async removeLinearMapping(teamId) {
+				await latency(260);
+				const uid = world().profile.uid;
+				const kept = linearKept(uid);
+				if (!kept) throw new PlatformError("user", "Connect Linear first.", { reason: "linear_not_connected" });
+				const { [teamId]: _gone, ...mappings } = kept.mappings;
+				keepLinear(uid, { ...kept, mappings });
+				return linearTeams(uid);
+			},
+			async disconnectLinear() {
+				await latency(260);
+				const uid = world().profile.uid;
+				linearMemory.delete(uid);
+				keep(`wlp.mock.linear.ticket.${uid}`, "");
+				try {
+					localStorage.removeItem(`wlp.mock.linear.${uid}`);
+				} catch {
+					// Private windows may refuse storage; the memory copy is gone either way.
+				}
+				return { state: "disconnected" };
 			},
 			async github(): Promise<GithubStatus> {
 				await latency(200);
