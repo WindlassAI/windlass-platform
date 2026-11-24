@@ -415,10 +415,10 @@ test("the whole-feature review uses child evidence and needs the pinned head and
 	}
 	item = advance(item, {kind:"turn_ended",key:currentKey(item)!,at:7,outcome:"succeeded",spend:{tokens:1,hostedSeconds:0},report:"Summary",changes:false,verified:null,flags:[]}).item;
 	item = advance(item, {kind:"published",key:currentKey(item)!,at:8,head,pr,openItems:1,webhooks:false}).item;
-	const ci = {kind:"ci_read" as const,key:currentKey(item)!, at:9, head, reading:{kind:"read" as const,head,runs:[{name:"build",app:"status",state:"passed" as const,conclusion:"success",url:null,summary:null}],logs:[],truncated:false},prHead:head,mergeable:true,openItems:1,webhooks:false};
+	const ci = {kind:"ci_read" as const,key:currentKey(item)!, at:9, head, reading:{kind:"read" as const,head,runs:[{name:"build",app:"status",state:"passed" as const,conclusion:"success",url:"",summary:"",jobId:null}],logs:[],truncated:false},prHead:head,mergeable:true,openItems:1,webhooks:false};
 	const missing = advance(item, { ...ci, at:3_600_000, reading:{...ci.reading, runs:[]} }).item;
 	assert.deepEqual(missing.question?.choices.map(c => c.id), ["wait", "hand_over", "give_up"]);
-	const review = advance(item, ci as never).effects.find(e=>e.kind === "deliver");
+	const review = advance(item, ci).effects.find(e=>e.kind === "deliver");
 	assert.ok(review?.to === "review" && review.reviewerInput?.task.body.includes("page evidence") && review.reviewerInput.task.body.includes("index evidence"));
 	for (const reading of [
 		{...ci, prHead:"b".repeat(40)}, {...ci, mergeable:false},
@@ -433,10 +433,9 @@ test("the whole-feature review uses child evidence and needs the pinned head and
 			assert.ok(retry.effects.some(e => e.kind === "poll_ci"));
 		}
 	}
-	for (const blocked of [advance({...item,reviewer:{off:"deployment"}},ci as never)]) {
-		assert.ok(blocked.item.question);
-		assert.equal(blocked.effects.some(e => e.kind === "handoff"),false);
-	}
+	const skipped = advance({ ...item, reviewer: { off: "deployment" } }, ci);
+	assert.equal(skipped.item.question, null);
+	assert.equal(skipped.effects.find(e => e.kind === "handoff")?.reviewNone, "turned off for this deployment");
 });
 
 test("the child verdict flags both sides of a rename outside its declared ownership", async () => {
@@ -915,7 +914,7 @@ async function childCreation(t: import("node:test").TestContext, overflow = fals
 	t.after(() => raw.close());
 	for (const sql of ITEM_TABLES) raw.exec(sql);
 	const owner = "u_fixture", sessionId = "s_feature", repository = { id: 42, branch: "main" };
-	const request = { job: { ...job, dispatchKey: currentKey(selected)! }, sessionId, feature: { ...feature, title: "Feature", repository, source: "web" }, context: "{}", previous: { place: { kind: "machine", machineId: macId }, head, report: "Prior subtask report" } };
+	const request = { job: { ...job, dispatchKey: currentKey(selected)! }, sessionId, feature: { ...feature, title: "Feature", repository, source: "web" }, featureBody: feature.task.body, context: "{}", previous: { place: { kind: "machine", machineId: macId }, head, report: "Prior subtask report" } };
 	const machines = new Map([[macId, mac], ...(overflow ? [[linuxId, linux] as const] : [])]);
 	const itemIndex = new Map();
 	let child: typeof feature | undefined;
@@ -951,6 +950,7 @@ test("child creation sends the chosen machine and size to its session and preser
 	await create();
 	assert.deepEqual(delivered, [{ place: { kind: "machine", machineId: macId }, size: 2, profile: "docker-hardened" }]);
 	assert.deepEqual(child()?.place, delivered[0].place);
+	assert.equal(child()?.task.featureBody, task.body);
 	assert.equal(child()?.placement?.reason, "Build on the owner's machine");
 	machines.set(macId, { ...mac, status: "offline" });
 	await create();

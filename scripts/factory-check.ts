@@ -1761,6 +1761,15 @@ const ciFact = (reading: CiReading, head = H(1), prHead: string | null = head) =
 const passedCi = ciRead([{ name: "build", state: "passed" }]);
 const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", PASSED), { kind: "published", webhooks: false, head, pr: { number: 7, url: "" }, openItems: 1 }];
 
+{
+	const published = walk(reviewerOn(), pushedRun(reviewHead)).item;
+	const feature: FactoryItem = { ...published, mode: "orchestrate" };
+	drive("feature hands over when second reviews are off", { ...feature, reviewer: { off: "deployment" } },
+		[handoverWithout(freshCi, "turned off for this deployment")]);
+	drive("feature on a machine hands over with the skipped review reason", { ...feature, place: { kind: "machine", machineId: "local" } },
+		[handoverWithout(freshCi, "second reviews run only on hosted sandboxes")]);
+}
+
 // Exercise the actual plan filing, reviewer receipt and handoff transitions, including stale receipts.
 {
 	const feature = newItem({ mode: "orchestrate", budget: { tokens: 10_000 } });
@@ -2190,6 +2199,11 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const task = (key: string) => ({ key, title: key, brief: "Build " + key, owns: [key], dependsOn: [], acceptance: ["Run pnpm test"], budget: { tokens: 2000 } });
 	feature.featurePlan = { version: 1, status:"approved", compare:{singleBudget:allowance}, budget:allowance, singleSuggested:null,
 		spec:{goal:"Build a feature",requirements:[],acceptance:["Run pnpm test"],outOfScope:[]}, questions:[], subtasks:[task("a"), task("b")] };
+	feature.featurePlan.questions = [
+		{ id: "format", text: "Which format?", answer: "CSV" },
+		{ id: "limit", text: "How many rows?", answer: "Ten" },
+		{ id: "scope-change", text: "The revised plan changes the approved scope or subtasks. Do you accept these changes?", answer: "Yes" },
+	];
 	feature.approvedPlan = structuredClone(feature.featurePlan);
 	feature.jobs = feature.featurePlan.subtasks.map(t => ({ task:t, id:t.key, spent:zero, state:"done", head:H(1), report:"Done." }));
 	const replan: Row = { ...started, also: o => holds(effect(o, "deliver")?.agent === "planner" && /^The feature was handed over[^]*Keep every completed subtask in the plan exactly as approved[^]*Cover the empty result\./.test(effect(o, "deliver")?.text ?? "") && o.item.replans === 1 && o.item.feedbackReplans === 1 && effect(o, "verified_check")?.state === "in_progress", "missing feedback re-plan") };
@@ -2222,10 +2236,19 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 			const key = currentKey(item)!;
 			const plan = structuredClone(feature.featurePlan!);
 			plan.subtasks.push(task("fix"));
+			plan.questions = [
+				{ id: "output", text: "Which format?", answer: "Planner guess" },
+				{ id: "limit", text: "How many columns?", answer: "Ten" },
+				{ id: "headers", text: "Include headers?", answer: "Yes" },
+				...plan.questions.filter(q => q.id === "scope-change"),
+			];
 			const bad = structuredClone(plan);
 			bad.subtasks[0].title = "Changed";
 			assert.throws(() => advance(item,{kind:"file_plan",key,at:T0,plan:bad}), /Completed subtasks cannot be changed/);
 			send({kind:"file_plan",key,at:T0,plan});
+			assert.deepEqual(item.featurePlan!.questions.map(q => [q.id, q.answer]), [
+				["output", "CSV"], ["limit", undefined], ["headers", undefined], ["scope-change", undefined],
+			]);
 			send({...turnEnded("succeeded",null),key,kind:"turn_ended",outcome:"succeeded",at:T0} as Fact);
 			assert.equal(item.question?.kind,"replan_approval");
 			const edited = structuredClone(item.featurePlan!);
@@ -2631,6 +2654,21 @@ print("\n== untrusted text: each turn says where its outside text came from");
 	const same = (o: Outcome, want: string[]) => isDeepStrictEqual(sourcesOf(o), want);
 	const ISSUE = untrustedWords.issue(42, "someone");
 	const fromIssue = (more: Parameters<typeof newItem>[0] = {}) => ({ ...newItem(more), untrusted: [ISSUE] });
+
+	const { taskOfIssue } = await import("../server/src/factory/intake.js");
+	const owner = { id: 1, login: "owner" };
+	const limits = "Limits\nKeep it lean: the smallest change, no code for old data, no extra fallbacks, readable code.";
+	for (const author of [owner, { id: 2, login: "someone" }]) {
+		const issue = taskOfIssue({ number: 42, url: "https://github.invalid/o/r/issues/42", title: "Build search",
+			body: limits, author, sender: owner, note: "" });
+		const child = issue.trusted ? newItem() : fromIssue();
+		child.task.body = "Build the index.".padEnd(20_000, ".");
+		child.task.featureBody = issue.task.body;
+		const turn = walk(child, [{ kind: "start" }]).last;
+		const prompt = effect(turn, "deliver")!.text;
+		expect(`the part receives its brief and @${author.login}'s original feature text with its source`,
+			prompt.includes(child.task.body) && prompt.includes(issue.task.body) && same(turn, issue.trusted ? [] : [ISSUE]));
+	}
 
 	const trusted = walk(newItem(), [{ kind: "start" }]);
 	const cancelled = walk(newItem(), [{ kind: "start" }, { kind: "cancel", by: "person:u1" }]);
