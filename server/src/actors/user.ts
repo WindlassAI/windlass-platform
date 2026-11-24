@@ -119,6 +119,7 @@ import {
 	MAX_SERVER_DEFINITION_BYTES,
 	MAX_TITLE_CHARS,
 	type ModelList,
+	type ModelProvider,
 	MAX_SECRETS_PER_REPOSITORY,
 	type RepositoryApproval,
 	type RepositoryCheck,
@@ -156,6 +157,7 @@ import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
 import { harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
+import { MODEL_PROVIDER_TABLES, modelProviderActions } from "../model-providers.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishAsksEveryTime, publishUnaskedProblem } from "../agent-publish.js";
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
@@ -1632,6 +1634,7 @@ export const user = actor({
 			await db.execute(MODELS_TABLE);
 			await db.execute(PERSONAL_SERVERS_TABLE);
 			await db.execute(ACCOUNT_SECRETS_TABLE);
+			for (const table of MODEL_PROVIDER_TABLES) await db.execute(table);
 			await db.execute("CREATE TABLE IF NOT EXISTS requested_secret_receipt (session_id TEXT PRIMARY KEY, request_id TEXT NOT NULL)");
 			await db.execute("CREATE TABLE IF NOT EXISTS session_secret_grant (session_id TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(session_id, name))");
 			// Before the column checks below: the API token table is one of them.
@@ -2921,6 +2924,12 @@ export const user = actor({
 				throw clientError(c.log, error, "The server could not be deleted. Try again.");
 			}
 		},
+
+		modelProviders: c => modelProviderActions.modelProviders(c),
+		saveModelProvider: (c, input: { provider: ModelProvider; key: string }) => modelProviderActions.saveModelProvider(c, input),
+		checkModelProvider: (c, provider: ModelProvider) => modelProviderActions.checkModelProvider(c, provider),
+		removeModelProvider: (c, provider: ModelProvider) => modelProviderActions.removeModelProvider(c, provider),
+		internalModelKey: (c, provider: ModelProvider, nonce: string) => modelProviderActions.internalModelKey(c, provider, nonce),
 
 		accountSecrets: async (c, input: { profile: string }): Promise<AccountSecrets> => {
 			requireUser(c);

@@ -11,7 +11,7 @@
 import type { HoldReport } from "../usage.js";
 import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
-import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, RepositoryAutonomy, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, ModelProvider, RepositoryAutonomy, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { SignInMethod } from "../sandbox/harnesses.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -323,6 +323,12 @@ export function sessionActor(c: HasClient, uid: string, sessionId: string): Sess
 
 export function userActor(c: HasClient, uid: string): UserInternal {
 	return c.client().user.get([uid], { params: serviceParams() }) as UserInternal;
+}
+
+export const modelKeyCaller = (uid: string) => `model-key/${uid}`;
+
+export function modelKeyActor(c: HasClient, uid: string): { internalModelKey(provider: ModelProvider, nonce: string): Promise<string | null> } {
+	return c.client().user.get([uid], { params: { token: issueServiceToken(modelKeyCaller(uid)) } });
 }
 
 /** What the service token of a session that asks for its repository's secrets is made for. */

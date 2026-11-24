@@ -13,6 +13,7 @@
  *   user      a user's sign-in, in that user's `user` actor
  *   attempt   a sign-in attempt between its start and its finish, in its `login` actor
  *   transit   an access token on its way from the `user` actor to the server that asked for it
+ *   model-key a model provider API key, bound to its user and provider
  *   secret    the value of a repository's secret, in its user's `user` actor (repo-secrets.ts)
  *
  * What a blob is for and whose it is are authenticated with it (GCM's additional data: the purpose
@@ -33,7 +34,8 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:cr
 import type { Keyring } from "../keyring.js";
 import { signInKeys } from "../config.js";
 
-export type SealPurpose = "user" | "attempt" | "transit" | "secret";
+const PURPOSES = ["user", "attempt", "transit", "secret", "model-key"] as const;
+export type SealPurpose = typeof PURPOSES[number];
 
 const VERSION = "wlps1";
 const LABEL = "windlass-platform sign-in v1";
@@ -72,7 +74,7 @@ export function createSealer(source: Buffer | string | Keyring): Sealer {
 	for (const { id, secret } of roots) {
 		if (secret.length < 16) throw new Error("the secret a sign-in key is derived from must be at least 16 bytes long");
 		const keys = new Map<SealPurpose, Buffer>();
-		for (const purpose of ["user", "attempt", "transit", "secret"] as const) keys.set(purpose, derive(secret, `key ${purpose}`, 32));
+		for (const purpose of PURPOSES) keys.set(purpose, derive(secret, `key ${purpose}`, 32));
 		// A pre-keyring blob names its root by this fingerprint. Keep reading it until that root retires.
 		for (const alias of new Set([id, legacyId(secret)])) {
 			if (byId.has(alias)) throw new Error("the sealing keyring contains colliding key ids");

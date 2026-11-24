@@ -82,7 +82,7 @@ const RESTART_RETRY_MS = 2_000;
 const READS = new Set([
 	"me", "chatgpt", "models", "listSessions", "github", "githubRepositories", "githubBranches", "repositorySetup", "repositoryChecks",
 	"repositoryEnvironments", "repositoryNetwork", "repositorySecrets", "repository", "githubRepository", "savedRepositories", "account",
-	"accountSecrets", "allowance", "usage", "billing", "machines", "machineCatalog", "listItems", "itemFeed", "item", "factoryLimits",
+	"accountSecrets", "modelProviders", "allowance", "usage", "billing", "machines", "machineCatalog", "listItems", "itemFeed", "item", "factoryLimits",
 	"apiTokens", "linear", "linearTeams", "snapshot", "changes", "diff", "publishState", "servers",
 ]);
 
@@ -407,6 +407,10 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			forgetLastStart: () => act("forgetLastStart"),
 			savePersonalServer: (server) => act("savePersonalServer", server),
 			deletePersonalServer: (name) => act("deletePersonalServer", name),
+			modelProviders: () => act("modelProviders"),
+			saveModelProvider: input => act("saveModelProvider", input),
+			checkModelProvider: provider => act("checkModelProvider", provider),
+			removeModelProvider: provider => act("removeModelProvider", provider),
 			accountSecrets: (profile) => act("accountSecrets", { profile }),
 			saveAccountSecret: (profile, secret) => act("saveAccountSecret", { profile, ...secret }),
 			deleteAccountSecret: (profile, name) => act("deleteAccountSecret", { profile, name }),
