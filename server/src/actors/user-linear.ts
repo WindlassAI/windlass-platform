@@ -327,10 +327,6 @@ async function unmap(c: LinearCtx, workspaceId: string, teamId: string): Promise
 	await c.db.execute("DELETE FROM linear_mapping WHERE team_id = ?", teamId);
 }
 
-export async function listLinearTeams(c: LinearCtx): Promise<LinearTeamList> {
-	return (await linearTeams(c)).list;
-}
-
 export async function saveLinearMapping(c: LinearCtx, input: { teamId: string; repositoryId: GithubId }): Promise<LinearTeamList> {
 	requireLinear();
 	const teamId = typeof input?.teamId === "string" ? lower(input.teamId) : "";
@@ -376,6 +372,21 @@ export async function removeLinearMapping(c: LinearCtx, teamId: string): Promise
 	await unmap(c, stored.workspace.id, id);
 	console.log(`[wlp] linear.mapping.removed uid=${c.key[0]} team=${id}`);
 	return teamList(stored.teams, await readMappings(c.db));
+}
+
+/** Forgets the connection: every team's claim is given up first, then the token and the mappings go. Items already filed stay. */
+export async function disconnectLinear(c: LinearCtx): Promise<LinearStatus> {
+	await inLinearQueue(c, async () => {
+		const stored = await readConnection(c.db);
+		if (!stored) return;
+		for (const mapping of await readMappings(c.db)) await releaseTeam(c, stored.workspace.id, mapping.teamId);
+		await c.db.transaction(async tx => {
+			await tx.execute("DELETE FROM linear_mapping");
+			await tx.execute("DELETE FROM linear_connection");
+		});
+		console.log(`[wlp] linear.disconnected uid=${c.key[0]} workspace=${stored.workspace.id}`);
+	});
+	return linearStatus(c);
 }
 
 // ---------------------------------------------------------------------------------------------

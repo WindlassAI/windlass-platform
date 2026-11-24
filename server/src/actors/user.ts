@@ -143,7 +143,7 @@ import {
 	type UsageView,
 	type UserProfile,
 } from "../contract.js";
-import { LINEAR_TABLES, beginLinearConnect, claimLinearState, completeLinearConnection, fileLinearDelivery, linearStatus, listLinearTeams, removeLinearMapping, saveLinearMapping } from "./user-linear.js";
+import { LINEAR_TABLES, beginLinearConnect, claimLinearState, completeLinearConnection, fileLinearDelivery, linearStatus, linearTeams, removeLinearMapping, disconnectLinear, saveLinearMapping } from "./user-linear.js";
 import { GITHUB_SYNC, GITHUB_SYNC_TABLE, retryGithubSync, syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
 import { githubApp, type GithubApp } from "../github/app.js";
 import { isBranchName } from "../github/git.js";
@@ -1922,7 +1922,7 @@ export const user = actor({
 		},
 		linearTeams: async (c): Promise<LinearTeamList> => {
 			requireUser(c);
-			return listLinearTeams(c);
+			return (await linearTeams(c)).list;
 		},
 		saveLinearMapping: async (c, input: { teamId: string; repositoryId: GithubId }): Promise<LinearTeamList> => {
 			requireUser(c);
@@ -1931,6 +1931,10 @@ export const user = actor({
 		removeLinearMapping: async (c, teamId: string): Promise<LinearTeamList> => {
 			requireUser(c);
 			return removeLinearMapping(c, teamId);
+		},
+		disconnectLinear: async (c): Promise<LinearStatus> => {
+			requireUser(c);
+			return disconnectLinear(c);
 		},
 		/** Takes a state's number out of the list (linear/connect.ts): it is there once. */
 		internalLinearClaim: async (c, nonce: string) => {

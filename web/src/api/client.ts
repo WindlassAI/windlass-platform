@@ -291,6 +291,8 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	saveLinearMapping(input: { teamId: string; repositoryId: GithubId }): Promise<LinearTeamList>;
 	/** Removes a team's mapping: its issues are ignored again. Items already filed stay. */
 	removeLinearMapping(teamId: string): Promise<LinearTeamList>;
+	/** Forgets the Linear connection and every mapping. Items already filed stay. */
+	disconnectLinear(): Promise<LinearStatus>;
 	/** The user's API tokens, the newest first, without their values. */
 	apiTokens(): Promise<ApiToken[]>;
 	/** Makes one: `secret` is its value, which is never sent again. Throws with reason `bad_input` or `too_many_tokens`. */

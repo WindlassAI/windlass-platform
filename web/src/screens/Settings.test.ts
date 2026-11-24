@@ -180,6 +180,12 @@ describe("Linear in Settings", () => {
 		await press(section(third.host), "Remove the mapping of Engineering");
 		await third.settle();
 		expect(section(third.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("not mapped");
+		const confirmed = window.confirm;
+		window.confirm = () => true;
+		await press(section(third.host), "Disconnect…");
+		window.confirm = confirmed;
+		await third.settle();
+		expect(section(third.host).textContent).toContain("Connect Linear…");
 		third.close();
 	}, 15_000);
 

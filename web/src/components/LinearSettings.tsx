@@ -92,6 +92,13 @@ export function LinearSettings() {
 			setTeamId("");
 			setRepositoryId("");
 		});
+	const disconnect = () => {
+		if (!confirm("Disconnect Linear? Its team mappings are removed and nothing more is filed from Linear. Items already filed stay.")) return;
+		void run(async () => {
+			setStatus(await client.user(auth).disconnectLinear());
+			setTeams(null);
+		});
+	};
 	const remove = (team: LinearTeam) => run(async () => setTeams((await client.user(auth).removeLinearMapping(team.id)).teams));
 
 	if (status?.state === "off") return null;
@@ -104,6 +111,10 @@ export function LinearSettings() {
 				{status?.state === "disconnected" ? (
 					<button type="button" className="link secret-add" onClick={() => void connect()} disabled={busy}>
 						{busy ? "Connecting…" : "Connect Linear…"}
+					</button>
+				) : status?.state === "connected" ? (
+					<button type="button" className="link secret-add" onClick={disconnect} disabled={busy}>
+						Disconnect…
 					</button>
 				) : null}
 			</h2>

@@ -3893,6 +3893,17 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				keepLinear(uid, { ...kept, mappings });
 				return linearTeams(uid);
 			},
+			async disconnectLinear() {
+				await latency(260);
+				const uid = world().profile.uid;
+				linearMemory.delete(uid);
+				try {
+					localStorage.removeItem(`wlp.mock.linear.${uid}`);
+				} catch {
+					// Private windows may refuse storage; the memory copy is gone either way.
+				}
+				return { state: "disconnected" };
+			},
 			async github(): Promise<GithubStatus> {
 				await latency(200);
 				if (!githubOn) throw new PlatformError("user", "This deployment has no GitHub App, so GitHub cannot be connected here.", { reason: "github_off" });

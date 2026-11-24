@@ -2669,6 +2669,8 @@ export interface UserActions {
 	saveLinearMapping(input: { teamId: string; repositoryId: GithubId }): Promise<LinearTeamList>;
 	/** Stops filing a team's issues. Items already filed stay as they are. Answers with the teams. */
 	removeLinearMapping(teamId: string): Promise<LinearTeamList>;
+	/** Forgets the Linear connection and every mapping; nothing is filed from Linear after it. Items already filed stay. */
+	disconnectLinear(): Promise<LinearStatus>;
 	/**
 	 * Repositories of the connection whose `owner/name` contains `query`, the most recently pushed first.
 	 * With `fresh`, GitHub is asked anew: for a repository that was added to an installation a moment ago.
