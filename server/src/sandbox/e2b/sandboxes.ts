@@ -53,7 +53,7 @@
 import { INIT_WORKSPACE } from "../../github/git-flags.js";
 import { machineHarnesses } from "../harnesses.js";
 import type { SandboxProfile, SandboxProfileId } from "../../contract.js";
-import { type ConnectOptions, type CreateSandboxInput, DeploymentFull, type ExecOptions, type ExecResult, type ListedSandbox, type OutOfMemory, type SandboxHandle, type SandboxPrice, SandboxUserError, type Sandboxes } from "../api.js";
+import { type ConnectOptions, type CreateSandboxInput, DeploymentFull, type ExecOptions, type ExecResult, type ListedSandbox, type OutOfMemory, type SandboxHandle, type SandboxPrice, type SandboxObservation, SandboxUserError, type Sandboxes } from "../api.js";
 import { profilesFor } from "../profiles.js";
 import {
 	BWRAP_PROBE,
@@ -1011,8 +1011,14 @@ export class E2bSandboxes implements Sandboxes {
 	}
 
 	async state(id: string): Promise<"none" | "running" | "paused"> {
+		return (await this.observe(id)).state;
+	}
+
+	async observe(id: string): Promise<SandboxObservation> {
 		const info = await this.ours(id);
-		return info === undefined ? "none" : info.state;
+		if (!info) return { state: "none" };
+		// For a paused VM getInfo returns the last pause time. For a running VM endAt is a future deadline.
+		return info.state === "paused" ? { state: "paused", pausedAt: info.endAt } : { state: "running" };
 	}
 
 	async suspend(id: string): Promise<void> {

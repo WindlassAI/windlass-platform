@@ -219,7 +219,7 @@ import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } 
 import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { agentTurn, turnTokens } from "../factory/budget.js";
-import { cutTurnUsage, cutTurnUsageNote, reportedModelUsage, usesPlatformModel, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
+import { cutTurnUsage, cutTurnUsageNote, reportedModelUsage, usesPlatformModel, type HoldReport, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, foundStoppedAt, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { judgeChecks } from "../environments.js";
 import { outputExcerpt } from "../factory/check-environment.js";
 import { PlatformChecks } from "../sandbox/platform-checks.js";
@@ -235,7 +235,7 @@ import { type ProviderRefusal, limitObservation, publicUsageEvent, refusalMessag
 import { untrustedTurn, unmarkedNote } from "../factory/untrusted.js";
 import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact, ItemProviderRefusal, UntrustedRefusal } from "../factory/types.js";
-import { DeploymentFull } from "../sandbox/api.js";
+import { DeploymentFull, PLATFORM_RESTART, observeSandbox } from "../sandbox/api.js";
 import { leaseState } from "../sandbox/relay-leases.js";
 import { StartClock, keepStartTimes, startTimesLog } from "../start-times.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
@@ -248,7 +248,7 @@ import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js
 import { privateSessionData } from "../sandbox/session-data.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase, sessionRepository } from "../github/publish.js";
-import { CRASHES_ALLOWED, type PauseReason, type TurnRun, addUsage, crashCount, pausedLine, resumePrompt, resumedLine, segmentLimit, sessionWholeTask } from "./turn-resume.js";
+import { CRASHES_ALLOWED, type PauseReason, type TurnRun, addUsage, crashCount, pausedLine, resumePrompt, restartShellResult, resumedLine, segmentLimit, sessionWholeTask } from "./turn-resume.js";
 import { ConversationLost } from "../runner/channel.js";
 import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, itemTurnText, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, settleTokenReceipts, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
 
@@ -478,7 +478,7 @@ interface SessionMeta {
 	 */
 	meter?: OpenStretch | null;
 	/** What the sandbox ran of holds that the user's actor has not been told yet: told again when the session is next awake. */
-	unsettled?: Array<{ hold: string; seconds: number }>;
+	unsettled?: HoldReport[];
 	/**
 	 * The hold asked for last, stored before it was asked for, until its answer comes (usage.ts,
 	 * `PendingAsk`): an answer that was lost, before a sleep or not, does not leave a hold nobody settles.
@@ -1123,12 +1123,12 @@ function publish(c: Ctx): void {
 	void report(c);
 }
 
-function noteSandbox(c: Ctx, meta: SessionMeta, state: SessionMeta["sandbox"], use: string | null = useOf(meta)): void {
-	if (meta.sandbox === state) return;
-	meta.sandbox = state;
+function noteSandbox(c: Ctx, meta: SessionMeta, state: SessionMeta["sandbox"], use: string | null = useOf(meta), pausedAt?: number): void {
 	// Found stopped without the session having stopped it: the stretch being counted ended with it. A turn settles when it closes.
 	// `use` is the meter's when the state was asked for: a hold taken while the answer came is not the one found stopped.
-	if (state !== "running" && meta.meter && !c.vars.turn && !c.vars.accepting) void closeMeter(c, meta, "found", use);
+	if (state !== "running" && meta.meter && !c.vars.turn && !c.vars.accepting) void closeMeter(c, meta, "found", use, pausedAt);
+	if (meta.sandbox === state) return;
+	meta.sandbox = state;
 	publish(c);
 	void persist(c);
 }
@@ -2083,7 +2083,7 @@ function sandboxChanged(c: Ctx): void {
 }
 
 /** Asks the sandbox layer what state the sandbox is really in. */
-async function refreshSandbox(c: Ctx, meta: SessionMeta): Promise<void> {
+async function refreshSandbox(c: Ctx, meta: SessionMeta, required = false): Promise<number | undefined> {
 	const id = meta.sandboxId;
 	if (!id) return;
 	const gen = c.vars.sandboxGen;
@@ -2091,11 +2091,18 @@ async function refreshSandbox(c: Ctx, meta: SessionMeta): Promise<void> {
 	const use = useOf(meta);
 	try {
 		const { sandboxes } = await layerOf(c, meta);
-		const state = await sandboxes.state(id);
+		const observed = await observeSandbox(sandboxes, id);
 		// A prompt that woke the actor may have resumed the sandbox while this was asked: "paused" is then the sandbox it was, not the one that runs.
-		if (c.vars.sandboxGen === gen) noteSandbox(c, meta, state, use);
+		if (c.vars.sandboxGen === gen) {
+			noteSandbox(c, meta, observed.state, use, observed.pausedAt);
+			if (useOf(meta) === use) {
+				c.vars.carried = null;
+				if (sandboxes.observe && observed.state === "running") return Date.now();
+			}
+		}
 	} catch (error) {
 		c.log.warn({ msg: "could not read the sandbox's state", error: describeError(error) });
+		if (required) throw error;
 	}
 }
 
@@ -3268,7 +3275,8 @@ function abortTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): void {
 		publish(c);
 		void persist(c);
 	}
-	active.controller.abort();
+	const shutdown = active.pausing === "restart" && meta.place.kind === "hosted" && (meta.harness ?? "windlass") === "windlass";
+	active.controller.abort(shutdown ? PLATFORM_RESTART : undefined);
 }
 
 /** Closes the turn to steering, stopping one call and answering, and leaves no question behind. Never throws. */
@@ -3335,7 +3343,7 @@ function carriedOver(c: Ctx, meta: SessionMeta): boolean {
  * the sandbox ran of that. On a yes the stretch goes on in the new hold from this moment. Null when
  * the meter did not answer. Only ever called from inside the meter's queue.
  */
-async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<ReserveAnswer | null> {
+async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean, observedUntil?: number): Promise<ReserveAnswer | null> {
 	// Reports the book has not had go first: one for a hold it still has open would be counted in full once another is taken.
 	if (meta.unsettled?.length) await sendUnsettled(c, meta);
 	const open = meta.meter ?? null;
@@ -3356,7 +3364,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
 	let answer: ReserveAnswer;
 	try {
 		answer = await inTime(
-			userActor(c, meta.uid).internalReserve({ id: asked.id, sessionId: meta.sessionId, hostedSize: meta.hostedSize ?? "small", keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, until) } : undefined }),
+			userActor(c, meta.uid).internalReserve({ id: asked.id, sessionId: meta.sessionId, hostedSize: meta.hostedSize ?? "small", keep: !meta.sandboxId, fresh, settle: open ? { hold: open.hold, seconds: stretchSeconds(open, until), observedUntil } : undefined }),
 			METER_WAIT_MS,
 		);
 	} catch (error) {
@@ -3388,11 +3396,11 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<Rese
  * user's actor does not answer: nothing is started on a count nobody could check. A sandbox that runs
  * then goes on to the end of the hold it has.
  */
-function holdSandbox(c: Ctx, meta: SessionMeta, fresh: boolean): Promise<void> {
+function holdSandbox(c: Ctx, meta: SessionMeta, fresh: boolean, observedUntil?: number): Promise<void> {
 	if (!hostedLimitsApply(meta.place)) return Promise.resolve();
 	return metered(c, async () => {
 		c.vars.idleStopMs = (await layerOf(c, meta)).sandboxes.idleStopMs;
-		const answer = await takeHold(c, meta, fresh);
+		const answer = await takeHold(c, meta, fresh, observedUntil);
 		armMeter(c, meta);
 		if (answer === null) throw new UserError(USAGE_UNAVAILABLE, { code: "usage_unavailable" });
 		if (answer.ok) return;
@@ -3449,14 +3457,15 @@ function meterTick(c: Ctx, meta: SessionMeta): Promise<void> {
 		if (id && unused && idleStopMs !== null && Date.now() >= Math.max(open.since, meta.lastUsedAt) + idleStopMs) {
 			const gen = c.vars.sandboxGen;
 			const read = await layerOf(c, meta)
-				.then(({ sandboxes }) => sandboxes.state(id))
+				.then(({ sandboxes }) => observeSandbox(sandboxes, id))
 				.catch(() => null);
 			// A sandbox resumed or suspended while it was asked about is not the one the answer describes.
-			const state = c.vars.sandboxGen === gen ? read : null;
-			if (state === "running") open.seen = Date.now();
-			else if (state !== null && !busy(c)) {
-				await settleStretch(c, meta, stoppedBy(open, meta.lastUsedAt, idleStopMs, Date.now()), useOf(meta));
-				noteSandbox(c, meta, state);
+			const observed = c.vars.sandboxGen === gen ? read : null;
+			if (observed?.state === "running") open.seen = Date.now();
+			else if (observed !== null && !busy(c)) {
+				const until = stoppedBy(open, meta.lastUsedAt, idleStopMs, Date.now(), observed.pausedAt);
+				await settleStretch(c, meta, until, useOf(meta), observed.pausedAt);
+				noteSandbox(c, meta, observed.state);
 				void armIdle(c, meta);
 				return;
 			}
@@ -3539,14 +3548,14 @@ async function suspendOutOfTime(c: Ctx, meta: SessionMeta, text: string | null):
  * kept with the session first and sent then, so a report that does not get through is sent again
  * when the session is next awake. Only ever called from inside the meter's queue.
  */
-async function settleStretch(c: Ctx, meta: SessionMeta, until: number, use: string | null): Promise<void> {
+async function settleStretch(c: Ctx, meta: SessionMeta, until: number, use: string | null, observedUntil?: number): Promise<void> {
 	const open = meta.meter;
 	if (!open || useOf(meta) !== use) return;
 	meta.meter = null;
 	if (c.vars.meterTimer) clearTimeout(c.vars.meterTimer);
 	c.vars.meterTimer = null;
 	// A renewal whose answer never came ends with the stretch it was to continue.
-	meta.unsettled = [...(meta.unsettled ?? []), ...closingReports(open, meta.meterAsked ?? null, until)].slice(-MAX_UNSETTLED);
+	meta.unsettled = [...(meta.unsettled ?? []), ...closingReports(open, meta.meterAsked ?? null, until, observedUntil)].slice(-MAX_UNSETTLED);
 	meta.meterAsked = null;
 	void persist(c);
 	await sendUnsettled(c, meta);
@@ -3556,7 +3565,7 @@ async function settleStretch(c: Ctx, meta: SessionMeta, until: number, use: stri
 async function sendUnsettled(c: Ctx, meta: SessionMeta): Promise<void> {
 	for (const report of [...(meta.unsettled ?? [])]) {
 		try {
-			await inTime(userActor(c, meta.uid).internalSettle({ sessionId: meta.sessionId, hold: report.hold, seconds: report.seconds }), METER_WAIT_MS);
+			await inTime(userActor(c, meta.uid).internalSettle({ sessionId: meta.sessionId, ...report }), METER_WAIT_MS);
 		} catch (error) {
 			c.log.warn({ msg: "could not report the sandbox's time to its user; it is reported again when the session is next awake", session: meta.sessionId, hold: report.hold, error: describeError(error) });
 			return;
@@ -3573,15 +3582,15 @@ async function sendUnsettled(c: Ctx, meta: SessionMeta): Promise<void> {
  * caller decided about (`useOf`), read when it decided: a turn that ended without a sandbox, or a state
  * read from before a wake, must not settle the hold of a prompt that came meanwhile. Never throws.
  */
-function closeMeter(c: Ctx, meta: SessionMeta, how: "now" | "found", use: string | null): Promise<void> {
+function closeMeter(c: Ctx, meta: SessionMeta, how: "now" | "found", use: string | null, pausedAt?: number): Promise<void> {
 	const at = Date.now();
 	if (use === null) return Promise.resolve();
 	return metered(c, async () => {
 		const open = meta.meter;
 		if (!open || useOf(meta) !== use) return;
 		// The provider's timeout is asked of this session's layer every time: a server that has not asked yet must not count to now.
-		const until = how === "now" ? at : Math.min(stoppedBy(open, meta.lastUsedAt, (await layerOf(c, meta)).sandboxes.idleStopMs, at), open.since + open.seconds * 1000);
-		await settleStretch(c, meta, until, use);
+		const until = how === "now" ? at : foundStoppedAt(open, meta.lastUsedAt, (await layerOf(c, meta)).sandboxes.idleStopMs, at, pausedAt);
+		await settleStretch(c, meta, until, use, pausedAt);
 	}).catch((error) => {
 		c.log.warn({ msg: "could not settle the sandbox's time", session: meta.sessionId, error: describeError(error) });
 	});
@@ -4452,6 +4461,11 @@ fi`, { signal, timeoutMs: 5000 });
 							event = { ...event, data: { ...event.data, content: [{ type: "text", text: storedBrief }] } };
 							storedBrief = null;
 						}
+						if (signal.reason === PLATFORM_RESTART && run) {
+							const result = restartShellResult(event);
+							if (result !== event) run.stoppedCommand = true;
+							event = result;
+						}
 						event = publicUsageEvent(event, lastStepRefusal);
 						lastStepRefusal = stepRefusal(lastStepRefusal, event);
 						if (event.type === "step.failed" && lastStepRefusal?.retryAfterMs !== undefined)
@@ -4666,6 +4680,12 @@ fi`, { signal, timeoutMs: 5000 });
 		let verified = caps.checks === "none" ? null : active.checks.verified(turn, saved, result?.checks, meta.verified ?? null);
 		if (outcome === "error" && verified?.state === "stopped") verified = { ...verified, state: "failed" };
 		meta.verified = verified;
+
+		// Report the resumed segment before publishing turn.ended. A warm sandbox still needs a hold for its idle time.
+		if (active.resume && used && !reviewer && meta.sandbox === "running" && meta.meter && !active.outOfTime) {
+			const answer = await metered(c, () => takeHold(c, meta, false));
+			if (answer && !answer.ok && answer.reason === "allowance") active.outOfTime = true;
+		}
 
 		c.vars.pending = [];
 		append(c, {
@@ -4906,6 +4926,7 @@ async function pauseTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, reason: 
 	note(c, turn, "info", pausedLine(reason, meta.machineName), { code: "turn_paused" });
 	c.vars.pending = [];
 	meta.status = "paused";
+	meta.lastUsedAt = now;
 	meta.updatedAt = now;
 	c.vars.turn = null;
 	publish(c);
@@ -4949,8 +4970,8 @@ async function machinePaused(c: Ctx, meta: SessionMeta, run: TurnRun): Promise<v
 }
 
 /** The words of the turn that is resumed: its own prompt when the agent never had it, with what was held for it. */
-async function resumeText(c: Ctx, meta: SessionMeta, run: TurnRun, row: InboxRow | null, reason: PauseReason, held: string[]): Promise<string> {
-	if (run.prompted) return resumePrompt(reason, held);
+async function resumeText(c: Ctx, meta: SessionMeta, run: TurnRun, row: InboxRow | null, reason: PauseReason, held: string[], stoppedCommand: boolean): Promise<string> {
+	if (run.prompted) return resumePrompt(reason, held, stoppedCommand);
 	if (row) return row.text;
 	const [first] = await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE turn = ? AND kind = 'user' ORDER BY seq LIMIT 1", run.turn);
 	const item = first ? (JSON.parse(first.item) as TimelineItem) : null;
@@ -5026,13 +5047,20 @@ async function resumePaused(c: Ctx, meta: SessionMeta, granted: string | null = 
 			}
 			slot = granted;
 		}
-		if (hostedLimitsApply(meta.place)) await holdSandbox(c, meta, true);
+		if (hostedLimitsApply(meta.place)) {
+			// A scheduled resume may beat the wake's inspection, or come long after it. Settle a VM that
+			// actually paused at its provider timestamp before taking the new hold. A warm VM counts through the gap.
+			const runningAt = await refreshSandbox(c, meta, true);
+			await holdSandbox(c, meta, true, runningAt);
+		}
 		// Nothing awaited from here: the turn is taken up again in this step.
 		const paused = run.paused;
 		if (meta.run !== run || !paused || meta.status !== "paused" || c.vars.turn || c.vars.destroying) return false;
 		const now = Date.now();
 		const pausedMs = Math.max(0, now - paused.at);
 		const held = run.held ?? [];
+		const stoppedCommand = run.stoppedCommand === true;
+		delete run.stoppedCommand;
 		run.resumes += 1;
 		run.fromSeq = c.vars.nextSeq;
 		run.segmentAt = now;
@@ -5058,7 +5086,7 @@ async function resumePaused(c: Ctx, meta: SessionMeta, granted: string | null = 
 		console.log(`[wlp] turn.resumed session=${meta.sessionId} turn=${run.turn} reason=${paused.reason} paused_ms=${pausedMs} resumes=${run.resumes} prompted=${run.prompted === true}`);
 		if (row && paused.told) await flushOutbox(c, meta.uid);
 		if (paused.reason === "machine" && meta.place.kind === "machine") void machineActor(() => c.client(), meta.uid, meta.place.machineId).pausedSession(meta.sessionId, false).catch(() => undefined);
-		const text = await resumeText(c, meta, run, row, paused.reason, held);
+		const text = await resumeText(c, meta, run, row, paused.reason, held, stoppedCommand);
 		active.done = c.keepAwake(runTurn(c, meta, active, text, release));
 		release = null;
 		return true;
@@ -5946,7 +5974,7 @@ export const agentSession = actor({
 			await stopTurn(c);
 			await persist(c);
 			if (meta.sandboxId && meta.sandbox === "running" && meta.status === "paused") {
-				// Kept running for the turn that resumes in a moment: an E2B sandbox's own timeout (its turn lease, three minutes)
+				// Kept running for the turn that resumes in a moment: an E2B sandbox's own timeout
 				// pauses it should no server take the turn up, and a warm one resumes without a pause and resume of its own.
 				console.log(`[wlp] sandbox.kept_for_resume id=${meta.sandboxId} session=${meta.sessionId}`);
 			} else if (meta.sandboxId && meta.sandbox === "running" && meta.place.kind === "machine") {

@@ -231,6 +231,16 @@ export interface SandboxPrice {
 	basis: string;
 }
 
+export interface SandboxObservation {
+	state: "none" | "running" | "paused";
+	/** Provider timestamp of the last pause, in ms since the epoch. */
+	pausedAt?: number;
+}
+
+export async function observeSandbox(sandboxes: Sandboxes, id: string): Promise<SandboxObservation> {
+	return sandboxes.observe ? sandboxes.observe(id) : { state: await sandboxes.state(id) };
+}
+
 export interface Sandboxes {
 	/**
 	 * How long a sandbox goes on running by itself after it was last connected to, while no turn and no
@@ -331,6 +341,8 @@ export interface Sandboxes {
 	connect(id: string, options?: ConnectOptions): Promise<SandboxHandle | undefined>;
 	/** "none" when it does not exist. */
 	state(id: string): Promise<"none" | "running" | "paused">;
+	/** State and pause time from one provider observation, where available. This never starts the sandbox. */
+	observe?(id: string): Promise<SandboxObservation>;
 	/**
 	 * Pauses it: nothing runs, files stay. A no-op when already paused or gone. A turn still running is
 	 * cut off, and the access token file it was handed is removed: stop the turn first.
@@ -520,6 +532,9 @@ export interface TurnCheckpoint {
 	tag: string;
 	state: Record<string, unknown>;
 }
+
+/** Abort reason for a hosted turn winding down for restart. An ordinary Stop interrupts as the user. */
+export const PLATFORM_RESTART = Symbol("platform restart");
 
 export interface RunTurnInput {
 	/**

@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TimelineItem, WindlassEvent } from "../server/src/contract.js";
-import { type AccessTokens, type ChatgptLogins, type OutOfMemory, DeploymentFull, type RunTurnResult, SandboxUserError, type ScriptedModel, type TurnQuestion } from "../server/src/sandbox/api.js";
+import { type AccessTokens, type ChatgptLogins, type OutOfMemory, DeploymentFull, PLATFORM_RESTART, type RunTurnResult, SandboxUserError, type ScriptedModel, type TurnQuestion } from "../server/src/sandbox/api.js";
 import { IMAGE, LABEL_ARG, docker } from "../server/src/sandbox/docker.js";
 import { cleanupDeployment } from "../server/src/sandbox/e2b/cleanup.js";
 import type { E2bClient, E2bCommand, E2bCommandOptions } from "../server/src/sandbox/e2b/client.js";
@@ -39,6 +39,7 @@ import { FakeE2b, type FakeMachine, ScriptedMachine } from "../server/src/sandbo
 import { createE2bSandboxLayer } from "../server/src/sandbox/e2b/index.js";
 import { describeUsage, estimatedCostUsd } from "../server/src/sandbox/e2b/pricing.js";
 import { ACCOUNT_LIMIT, E2bSandboxHandle, E2bSandboxes, META, RESTARTED_NOTICE, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
+import { RESTARTED_COMMAND, restartShellResult, resumePrompt } from "../server/src/actors/turn-resume.js";
 import { sessionSandboxInput } from "../server/src/actors/internal.js";
 import { describeTemplate } from "../server/src/sandbox/e2b/template.js";
 import { PROFILE_RUN_FLAGS } from "../server/src/sandbox/docker-flags.js";
@@ -365,6 +366,8 @@ await section("the dead-man switch", async () => {
 		info?.state === "paused" && crashed.fake.ranMs(lost) === 3 * MINUTE && crashed.fake.ranMs(lost) <= crashed.clock.now - startedAt,
 		`${info?.state}, ran ${crashed.fake.ranMs(lost) / 1000} s`,
 	);
+	expect("the server that wakes after expiry can read the actual pause time without resuming the VM",
+		(await crashed.sandboxes.observe(lost)).pausedAt === startedAt + 3 * MINUTE && (await crashed.fake.info(lost))?.state === "paused");
 	const idle = world();
 	const quiet = await idle.make();
 	idle.clock.now += 2 * MINUTE + 1;
@@ -461,6 +464,8 @@ await section("suspend, resume, destroy", async () => {
 	const paused = w.lines.find((line) => line.includes(`e2b.sandbox.paused id=${id}`));
 	expect("a line says how long it ran and what that costs by estimate", paused !== undefined && paused.includes("uid=u1 session=s1: it ran 90 s at 1 vCPU and 1024 MiB, $0.0017 (estimated)"), paused);
 	expect("E2B counted the same running time", w.fake.ranMs(id) === 90_000);
+	expect("an explicit pause reports the time it happened even with idle lease time remaining",
+		(await w.sandboxes.observe(id)).pausedAt === w.clock.now);
 	const pausesBefore = callsOf(w.fake, "pause").length;
 	await w.sandboxes.suspend(id);
 	expect("suspending a paused sandbox does nothing", callsOf(w.fake, "pause").length === pausesBefore);
@@ -1209,6 +1214,29 @@ if (withDocker) {
 			const session = first.result.windlassSessionId;
 			const second = await turn(handle, "And again", { responses: [shell("c", "cat hello.sh"), say("Still there.")] }, { windlassSessionId: session ?? undefined });
 			expect("the next turn continues the same Windlass session: its data directory is on the sandbox's disk", session !== null && second.outcome === "succeeded" && second.result.windlassSessionId === session, `${session} -> ${second.result.windlassSessionId}, ${second.result.failure?.message ?? ""}`);
+
+			for (const restart of [true, false]) {
+				const controller = new AbortController();
+				const events: WindlassEvent[] = [];
+				const end = await layer.windlass.runTurn(handle, {
+					prompt: "Print ready and wait.", signal: controller.signal,
+					script: { responses: [shell("wait", "echo ready; sleep 20; echo finished"), say("Done.")] },
+					onEvent(event) {
+						events.push(event);
+						if (event.type === "tool.progress" && String(event.text).includes("ready")) controller.abort(restart ? PLATFORM_RESTART : undefined);
+					},
+				});
+				const settled = events.find(e => e.type === "tool.settled");
+				const reason = (settled?.data?.display as { interrupted?: string } | undefined)?.interrupted;
+				expect(restart ? "restart closes Windlass as a shutdown and preserves partial shell output" : "an explicit Stop still records a user interruption",
+					end.aborted && reason === (restart ? "shutdown" : "user") && !!settled && (restart
+						? String(restartShellResult(settled).data?.output).includes("ready\n" + RESTARTED_COMMAND)
+						: String(settled.data?.output).includes("Interrupted by the user")), JSON.stringify(settled?.data));
+				if (restart && end.windlassSessionId) {
+					const next = await turn(handle, resumePrompt("restart", [], true), { responses: [say("Resumed.")] }, { windlassSessionId: end.windlassSessionId });
+					expect("the suspended execution accepts the next prompt in the same session", next.outcome === "succeeded" && next.result.windlassSessionId === end.windlassSessionId, next.result.stderrTail);
+				}
+			}
 
 			// A turn that is not scripted is handed its user's token in a file. A stand-in for the engine says what it found and exits.
 			const standIn = new (layer.windlass.constructor as new (tokens: AccessTokens, options: { engineCommand: string[]; tokenFile: { log: (line: string) => void } }) => typeof layer.windlass)(tokens, {

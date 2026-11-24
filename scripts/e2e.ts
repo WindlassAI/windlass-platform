@@ -3420,7 +3420,16 @@ async function resumeChecks(server: Server, client: Client, uid: string, token: 
 		assert(paused[0]!.text === "The server is restarting; this turn will resume by itself.", `the pause says: ${paused[0]!.text}`);
 		assert(resumed[0]!.text.startsWith("Resumed after a server restart (the turn was paused "), `the resume says: ${resumed[0]!.text}`);
 		assert(snap.summary.turns === turn && snap.summary.lastOutcome === "succeeded", `summary: ${plain(snap.summary)}`);
+		const row = (await userHandle.usage()).today.find(entry => entry.sessionId === id);
+		const resumeTime = resumed[0]!.at;
+		const segmentSeconds = (ended.at - resumeTime) / 1000;
+		assert(row && row.seconds >= Math.floor(ended.durationMs / 1000) - 1 && row.unreportedSeconds === 0,
+			`the counted sandbox time does not cover the completed turn: ${plain(row)}, active ${ended.durationMs} ms`);
+		const resumeLog = server.output.slice(server.output.indexOf(`turn.resumed session=${id} turn=${turn}`, from));
+		const reports = [...resumeLog.matchAll(/usage\.counted uid=\S+ session=(\S+) hold=\S+ kind=used seconds=(\d+)/g)];
+		assert(reports.some(m => m[1] === id && Number(m[2]) >= Math.floor(segmentSeconds) - 1), "the resumed segment was not settled before the turn ended");
 		if (FAKE) {
+			assert(snap.timeline.some(item => item.kind === "windlass" && item.turn === turn && item.event.type === "execution.interrupted" && item.event.data?.reason === "shutdown"), "the restart was not reported as a shutdown");
 			const given = promptsAfter(snap.timeline, turn, resumed[0]!.seq);
 			assert(given.some((text) => text.includes("The platform restarted while you were working on this turn")), `the agent was given: ${given.join(" | ").slice(0, 300)}`);
 		}

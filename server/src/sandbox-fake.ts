@@ -134,6 +134,7 @@ import {
 	type SandboxHandle,
 	type SandboxLayer,
 	type Sandboxes,
+	PLATFORM_RESTART,
 	SandboxUserError,
 	type ScriptedModel,
 	type TurnAnswer,
@@ -1265,8 +1266,9 @@ class FakeWindlass implements Windlass {
 			// A stop that arrives after Windlass's last event has nothing left to interrupt.
 			if (signal?.aborted && finished() === null) {
 				if (text.includes("(slow-stop)")) await delay(SLOW_STOP_MS);
-				emit({ type: "execution.interrupt_requested", v: 1, data: { reason: "user" }, seq: 0, time: 0 });
-				emit({ type: "execution.interrupted", v: 1, data: { reason: "user" }, seq: 0, time: 0 });
+				const reason = signal.reason === PLATFORM_RESTART ? "shutdown" : "user";
+				emit({ type: "execution.interrupt_requested", v: 1, data: { reason }, seq: 0, time: 0 });
+				emit({ type: "execution.interrupted", v: 1, data: { reason }, seq: 0, time: 0 });
 				summarize();
 				return { exitCode: 130, aborted: true, timedOut: false, windlassSessionId: sessionId, summary, stderrTail: "", failure: null };
 			}

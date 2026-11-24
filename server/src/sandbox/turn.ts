@@ -114,6 +114,7 @@ import { NO_REDACTION, type Redactor } from "../repo-secrets.js";
 import { windlassChecks } from "../repository-checks.js";
 import { type ConfigServer, type PlatformConfig, PLATFORM_SERVERS_FILE, TURN_DEADLINE_FILE, WINDLASS_CONFIG_FILE, platformConfig, projectChecks } from "../windlass-config.js";
 import type { AccessTokens, RunTurnInput, RunTurnResult, SandboxHandle, ScriptedModel, StartMark, TurnAnswer, TurnCheckpoint, TurnChecks, TurnControl, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerOutcome, TurnServerQuestion, TurnUnaskedCall, Windlass } from "./api.js";
+import { PLATFORM_RESTART } from "./api.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { demoScript } from "./demo.js";
 import { ACCESS_TOKEN_FILE_ENV, type Failure, RELAY_REFUSED, handedInFailure, handedInProblem, relayRefused, tokenRanOut, tokenSourceFailure } from "./handoff.js";
@@ -1548,8 +1549,11 @@ class Turn {
 		this.resolveAborted();
 		// A question about a server is the platform's own to withdraw: Windlass waits for nothing there.
 		for (const question of this.serverQuestions) question.abort();
-		// With the prompt sent there is a turn to cancel; before that, `converse` gives up where it is.
-		if (this.promptSent) this.cancel();
+		if (this.input.signal?.reason === PLATFORM_RESTART) {
+			// Windlass records a shutdown in the shell result and suspends its execution until the next prompt.
+			// Wait for its final events even if the pending prompt is answered before session/close.
+			void this.closeSession().then(() => this.finish());
+		} else if (this.promptSent) this.cancel();
 	}
 
 	/** `session/cancel`: the turn is interrupted, a pending question is withdrawn, and the prompt is answered `cancelled`. */
@@ -1614,13 +1618,16 @@ class Turn {
 		}
 	}
 
-	private closed = false;
+	private closingSession?: Promise<void>;
 	private async closeSession(): Promise<void> {
-		if (this.closed || this.session === null || this.peer.closed || this.process === null || this.process.hasEnded) return;
-		this.closed = true;
-		// It cancels what still runs, waits for it, and frees the session: the next turn's process can open it at once.
-		// An engine that did not answer the cancel is not given long to answer this either.
-		await this.peer.request("session/close", { sessionId: this.session }, { timeoutMs: this.forced ? FORCED_WAIT_MS : CLOSE_TIMEOUT_MS }).catch(() => undefined);
+		if (this.closingSession) return this.closingSession;
+		if (this.session === null || this.peer.closed || this.process === null || this.process.hasEnded) return;
+		const shutdown = this.input.signal?.reason === PLATFORM_RESTART;
+		this.closingSession = this.peer.request<void>("session/close", {
+			sessionId: this.session,
+			...(shutdown && { _meta: { [NS]: { shutdown: true } } }),
+		}, { timeoutMs: this.forced ? FORCED_WAIT_MS : CLOSE_TIMEOUT_MS }).catch(() => undefined);
+		return this.closingSession;
 	}
 
 	/**

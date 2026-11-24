@@ -12,7 +12,7 @@
  * claimed in one step, given back, and held against what the provider lists.
  */
 
-import { CLAIM_SETTLING_MS, DAY_MS, HOLD_GRACE_SECONDS, REPORT_SLACK_SECONDS, UsageBook, type UsageLimits, allowanceRefusal, closingReports, cutTurnUsage, cutTurnUsageNote, dayOf, holdDeadline, sandboxRefusal, spellSeconds, stoppedBy, stretchSeconds, turnStoppedNote } from "../server/src/usage.js";
+import { CLAIM_SETTLING_MS, DAY_MS, HOLD_GRACE_SECONDS, REPORT_SLACK_SECONDS, UsageBook, type UsageLimits, allowanceRefusal, closingReports, cutTurnUsage, cutTurnUsageNote, dayOf, foundStoppedAt, holdDeadline, sandboxRefusal, spellSeconds, stoppedBy, stretchSeconds, turnStoppedNote } from "../server/src/usage.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
@@ -39,6 +39,45 @@ const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? resul
 	const again = book.reserve(at(300), { id: "a2", session: "a" });
 	const repeat = book.reserve(at(301), { id: "a2", session: "a" });
 	expect("the same request again is the same hold, not a second one", again.ok && repeat.ok && repeat.hold === again.hold && book.openHolds().length === 1);
+}
+
+// A turn pauses at 64 s and resumes at 85 s. The provider can have kept running or actually paused.
+for (const pausedAt of [undefined, at(70)]) {
+	const book = new UsageBook({ ...LIMITS, holdSeconds: 300 });
+	const session = "restart";
+	book.reserve(at(0), { id: "before", session, fresh: true });
+	const open = { hold: "before", use: "before", since: at(0), seconds: 300 };
+	if (pausedAt !== undefined) {
+		const end = foundStoppedAt(open, at(64), 120_000, at(85), pausedAt);
+		book.settle(at(85), { session, hold: open.hold, seconds: stretchSeconds(open, end) });
+	}
+	const resumed = book.reserve(at(85), { id: "resumed", session, fresh: true,
+		settle: pausedAt === undefined ? { hold: open.hold, seconds: stretchSeconds(open, at(85)) } : undefined });
+	const idle = { id: "idle", session, settle: { hold: "resumed", seconds: stretchSeconds({ ...open, since: at(85) }, at(227)) } };
+	book.reserve(at(227), idle);
+	book.reserve(at(228), idle); // Lost reply to the trade at the end of the turn.
+	const row = book.today(at(228))[0];
+	const ran = pausedAt === undefined ? 227 : 212;
+	expect(`a restart with the VM ${pausedAt === undefined ? "kept running" : "paused for 15 s"} reports ${ran} s at turn end and holds idle time separately`,
+		resumed.ok && row?.seconds === ran && row.heldSeconds === 300 && row.unreportedSeconds === 0, JSON.stringify(row));
+	book.settle(at(237), { session, hold: "idle", seconds: 10 });
+	expect("the final settlement adds only the subsequent idle running time", book.usedOn(TODAY) === ran + 10);
+}
+
+// A delayed restart can outlast the grace. A provider timestamp still measures the original hold.
+for (const stayedWarm of [false, true]) {
+	const book = new UsageBook({ ...LIMITS, holdSeconds: 300 });
+	const session = "late-restart";
+	book.reserve(at(0), { id: "old", session, fresh: true });
+	book.sweep(at(540));
+	const seconds = stayedWarm ? 560 : 350;
+	const report = { hold: "old", seconds, observedUntil: at(seconds) };
+	if (!stayedWarm) book.settle(at(560), { session, ...report });
+	const request = { id: "next", session, fresh: true, settle: stayedWarm ? report : undefined };
+	book.reserve(at(560), request);
+	book.reserve(at(561), request);
+	expect(`a measured ${seconds}-second stretch corrects the expired 300-second hold exactly once`,
+		book.usedOn(TODAY) === seconds && book.today(at(561))[0]?.unreportedSeconds === 0 && book.holdOf(session)?.id === "next");
 }
 
 // Two at once, with one hold's worth left.

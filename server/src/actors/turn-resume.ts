@@ -11,7 +11,7 @@
  */
 
 import { untrustedWords } from "../factory/untrusted.js";
-import type { TimelineItem, TurnUsage } from "../contract.js";
+import type { TimelineItem, TurnUsage, WindlassEvent } from "../contract.js";
 
 export type PauseReason = "restart" | "machine";
 
@@ -30,6 +30,8 @@ export interface TurnRun {
 	usage: TurnUsage | null;
 	/** The agent said something in this turn: it has its prompt, and a resume continues from there. Not yet, and a resume gives the prompt again. */
 	prompted?: boolean;
+	/** The last segment received a shell result confirming that shutdown stopped the command. */
+	stoppedCommand?: boolean;
 	/** How many times the turn was resumed. */
 	resumes: number;
 	/** Crashes of the server in a row while the turn ran, the last ones with no progress (`crashCount`). */
@@ -86,10 +88,23 @@ function heldPart(held: readonly string[]): string {
 	return held.length === 0 ? "" : `\n\nWhile the turn was paused, the person sent ${held.length === 1 ? "this message" : "these messages"}:\n\n${held.map(quoted).join("\n\n")}`;
 }
 
+export const RESTARTED_COMMAND = "The platform restarted while this command ran; it was stopped. Run it again if you still need it.";
+
+/** Keep the command's output. Only replace the shell's own trailing shutdown status. */
+export function restartShellResult(event: WindlassEvent): WindlassEvent {
+	const data = event.data;
+	if (event.type !== "tool.settled" || (data?.display as { interrupted?: unknown } | null)?.interrupted !== "shutdown" || typeof data?.output !== "string") return event;
+	const status = data.output.lastIndexOf("\n") + 1;
+	if (!data.output.startsWith("[Interrupted because the harness is shutting down.", status)) return event;
+	return { ...event, data: { ...data, output: data.output.slice(0, status) + RESTARTED_COMMAND } };
+}
+
 /** What the agent is told when its turn resumes with its memory: the step that was under way may not have finished. */
-export function resumePrompt(reason: PauseReason, held: readonly string[] = []): string {
+export function resumePrompt(reason: PauseReason, held: readonly string[] = [], stoppedCommand = false): string {
 	const what = reason === "restart" ? "The platform restarted while you were working on this turn" : "Your machine was switched off, or lost its connection, while you were working on this turn";
-	return `${what}, so your last step may not have finished: a command may have been cut off or its output may be missing. Check the state of the workspace, then carry on with the task.${heldPart(held)}`;
+	const step = reason === "restart" && stoppedCommand ? RESTARTED_COMMAND
+		: `${what}, so your last step may not have finished: a command may have been cut off or its output may be missing.`;
+	return `${step} Check the state of the workspace, then carry on with the task.${heldPart(held)}`;
 }
 
 /** The timeline's line when a turn pauses. */

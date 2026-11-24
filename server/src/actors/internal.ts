@@ -8,6 +8,7 @@
  * signin/directory.ts makes them with a client of its own.
  */
 
+import type { HoldReport } from "../usage.js";
 import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
 import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
@@ -81,7 +82,7 @@ export interface ReserveRequest {
 	/** True when a turn, or a paused sandbox, is about to start. */
 	fresh?: boolean;
 	/** The hold the session has, and the seconds its sandbox ran of it. */
-	settle?: { hold: string; seconds: number };
+	settle?: HoldReport;
 }
 
 /**
@@ -138,7 +139,7 @@ export interface UserInternal {
 	/** Takes a hold of the user's sandbox time for the session, and a place among the kept sandboxes when it needs one: both, or neither. */
 	internalReserve(input: ReserveRequest): Promise<ReserveAnswer>;
 	/** The session's sandbox stopped: counts the seconds it ran of its hold. `known` is false when that hold is not open any more. */
-	internalSettle(input: { sessionId: string; hold: string; seconds: number }): Promise<{ known: boolean }>;
+	internalSettle(input: HoldReport & { sessionId: string }): Promise<{ known: boolean }>;
 	/** The session has no sandbox any more: its place among the kept ones is free. */
 	internalRelease(sessionId: string): Promise<void>;
 	/** The session's place among the kept sandboxes, claimed right before its sandbox is made (`UsageBook.claim`). */

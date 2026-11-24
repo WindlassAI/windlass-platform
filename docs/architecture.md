@@ -580,7 +580,11 @@ against your daily sandbox time, running agents or kept sandboxes."
   full (an entry of the kind `unreported`): the server its session was on died, the sandbox ran for some
   part of the hold, and nobody measured which. A session whose server shut down in order stops its sandbox
   and reports; when the report does not get through in the two seconds a shutdown leaves, the session
-  keeps it and sends it when it is next awake, and the difference is given back (`corrected`).
+  keeps it and sends it when it is next awake, and the difference is given back (`corrected`). After a
+  restart, a provider observation can also confirm that the VM ran beyond the expired hold. The ledger
+  records that overrun once. E2B reports the last pause time, so time spent paused is excluded. A warm
+  VM counts through the server restart. When the resumed turn ends, its final segment is settled and
+  the running sandbox takes a hold for idle time.
 - **At the allowance.** A new turn is refused before a sandbox is created or started, with the code
   `allowance_used` and a sentence that says what was used, what the allowance is and when it is whole
   again: "Today's 2 h of sandbox time is used up, so nothing was started. The allowance is whole again at

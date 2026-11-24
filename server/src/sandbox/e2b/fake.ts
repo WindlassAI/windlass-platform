@@ -344,6 +344,7 @@ export class FakeE2b implements E2bClient {
 		if (sandbox.runningSince !== null) sandbox.ranMs += Math.max(0, at - sandbox.runningSince);
 		sandbox.runningSince = null;
 		sandbox.state = "paused";
+		sandbox.endAt = at;
 		await sandbox.machine.paused?.();
 	}
 
