@@ -3086,9 +3086,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	// ---- secrets of repositories ------------------------------------------------------------------
 
 	/** A name the agent asked for that is saved now, for the repository or the account, in the server's words (user.ts `requestedSecretConflict`). */
-	function requestedSecretConflict(world: World, repositoryId: GithubId | null, name: string): string | null {
+	function requestedSecretConflict(world: World, repositoryId: GithubId | null, name: string, reader: "agent" | "person" = "agent"): string | null {
 		const source = repositoryId !== null && world.secrets.get(repositoryId)?.has(name) ? "repository" : world.account.secrets.has(name) ? "account" : null;
-		return source ? `${name} already exists for this ${source}; it is not offered to agents in this scope. Ask your person to change it under Secrets if you need it.` : null;
+		if (!source) return null;
+		return reader === "agent"
+			? `${name} already exists for this ${source}; it is not offered to agents in this scope. Ask your person to change it under Secrets if you need it.`
+			: `${name} already exists for this ${source}, so nothing was saved. To let agents use it, change its scope under Secrets.`;
 	}
 
 	function secretsOf(world: World, repositoryId: GithubId, profileId: SandboxProfileId): RepositorySecrets {
@@ -4364,7 +4367,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				// An item's builder: the item's question is answered, as work-item.ts does, or asked again under a new id when the save is refused.
 				if (session.summary.item) {
 					if (tooShort()) throw new PlatformError("user", shortWords, { reason: "bad_secret" });
-					const saved = items.setRequestedSecret(auth, id, input.requestId, input.name, (repositoryId) => requestedSecretConflict(world, repositoryId, input.name));
+					const saved = items.setRequestedSecret(auth, id, input.requestId, input.name, (repositoryId) => requestedSecretConflict(world, repositoryId, input.name, "person"));
 					if (!saved) throw new PlatformError("user", "That secret request is no longer open.", { reason: "item_conflict" });
 					save(saved.id, input.name);
 					return;

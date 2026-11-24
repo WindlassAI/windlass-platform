@@ -586,12 +586,15 @@ async function secretProfile(id: unknown): Promise<SandboxProfile> {
 }
 
 /** Check both stores by name alone, including secrets withheld from this session. */
-async function requestedSecretConflict(db: Pick<RawAccess, "execute">, project: string | null, name: string): Promise<string | null> {
+async function requestedSecretConflict(db: Pick<RawAccess, "execute">, project: string | null, name: string, reader: "agent" | "person" = "agent"): Promise<string | null> {
 	const [row] = await db.execute<{ source: string }>(
 		"SELECT 'repository' AS source FROM repo_secret WHERE project = ? AND name = ? UNION ALL SELECT 'account' FROM account_secret WHERE name = ? LIMIT 1",
 		project, name, name,
 	);
-	return row ? `${name} already exists for this ${row.source}; it is not offered to agents in this scope. Ask your person to change it under Secrets if you need it.` : null;
+	if (!row) return null;
+	return reader === "agent"
+		? `${name} already exists for this ${row.source}; it is not offered to agents in this scope. Ask your person to change it under Secrets if you need it.`
+		: `${name} already exists for this ${row.source}, so nothing was saved. To let agents use it, change its scope under Secrets.`;
 }
 
 /**
@@ -2534,7 +2537,7 @@ export const user = actor({
 						if (same.length) return;
 						throw new UserError("The saved secret was changed under Secrets.", { code: "bad_secret" });
 					}
-					const conflict = await requestedSecretConflict(tx, project, name);
+					const conflict = await requestedSecretConflict(tx, project, name, "person");
 					if (conflict) throw new UserError(conflict, { code: "secret_exists" });
 					if (project === ACCOUNT_SECRET_PROJECT) await saveAccountSecret(tx, name, "agent", sealed, Date.now());
 					else {
