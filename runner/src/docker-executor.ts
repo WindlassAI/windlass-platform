@@ -40,7 +40,8 @@ import { EgressNetwork } from "./egress-network.js";
 import { forget, loadPair, read, Refusal, RunnerError, save, VERSION, type Identity } from "./state.js";
 
 type Lifecycle = Extract<Operation, { name: "connect" | "state" | "suspend" | "destroy" }>;
-export interface Box { turnIdle?: boolean; size?: number; claim?: Claim; startTimes?: { spare?: true; image: number; pulled?: true; create: number }; resizePending?: true; snapshotCandidate?: boolean; savingSnapshot?: boolean; egress?: string; legacyClaude?: boolean; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: MachineHarness; usedAt: number; busy: number; workspaceChecked: boolean }
+// A newly created or rediscovered box holds its slot until its first observed turn ends.
+export interface Box { activeTurns?: number; size?: number; claim?: Claim; startTimes?: { spare?: true; image: number; pulled?: true; create: number }; resizePending?: true; snapshotCandidate?: boolean; savingSnapshot?: boolean; egress?: string; legacyClaude?: boolean; raw: string; sessionId: string; state: "running" | "paused"; profile: Profile; harness?: MachineHarness; usedAt: number; busy: number; workspaceChecked: boolean }
 
 // Docker's archive HEAD stats just the path, even in a stopped or paused container.
 // Use the CLI's daemon connection so this also respects the owner's Docker context.
@@ -104,7 +105,6 @@ export class Executor extends MachineDocker {
 	private readonly spares = new WarmSpares((raw, spec, signal) => this.buildSpare(raw, spec, signal), raw => this.removeUnbound(raw), Date.now, () => this.publishReport?.());
 	private waitForTurn?: string;
 	private lastSpareSkip?: string;
-	private readonly hostMemory = totalmem();
 	private readonly availableMemory = process.availableMemory;
 	private nextSpareDisk = 0;
 	private spareDisk = 0;
@@ -197,26 +197,29 @@ export class Executor extends MachineDocker {
 		});
 	}
 
+	private get spareMemoryMargin() { return Math.max(2 ** 30, this.slots?.reserve.memoryBytes ?? 0); }
 	private spareRoom(size = 1, incoming = 0) {
 		const running = [...this.boxes.values()].filter(b => b.state === "running");
 		const max = this.maxTurns ?? 1;
-		const units = running.reduce((n, box) => n + (box.size ?? 1), incoming * size);
-		const idle = running.reduce((n, box) => n + (box.turnIdle && !box.busy && !box.savingSnapshot ? box.size ?? 1 : 0), 0);
-		// A completed turn releases its CPU slot. Its kept container still counts at its
-		// full memory limit and against both of the owner's container limits.
-		const memory = this.slots ? Math.floor(Math.min(this.limits.sandboxMemory ?? Infinity,
-			this.hostMemory - this.slots.reserve.memoryBytes) / this.slots.unit.memoryBytes) : max;
+		const runningUnits = running.reduce((n, box) => n + (box.size ?? 1), 0);
+		const units = runningUnits + incoming * size;
+		const idle = this.slots ? running.reduce((n, box) => n + (box.activeTurns === 0 && !box.savingSnapshot ? box.size ?? 1 : 0), 0) : 0;
 		const capacity = Math.min(this.limits.spares ?? 1, (this.limits.maxRunning ?? Infinity) - running.length - incoming,
 			(this.limits.maxSandboxes ?? Infinity) - this.boxes.size - incoming);
 		if (capacity <= 0) return "container-limit";
-		if (max - units + idle < size) return "turn-slots";
-		if (memory - units < size) return "memory";
-		const ordinary = Math.max(0, Math.floor((max - units) / size));
-		const limit = Math.min(capacity, Math.floor((max - units + idle) / size), Math.floor((memory - units) / size));
-		if (limit <= ordinary || !this.slots) return limit;
-		// Borrow only with room for the new container now. An existing spare has already consumed memory.
-		const available = this.spares.raws.length + Math.floor(this.availableMemory() / (size * this.slots.unit.memoryBytes));
-		return Math.min(limit, Math.max(ordinary, available)) || "memory";
+		const turnRoom = Math.floor((max - units + idle) / size);
+		if (turnRoom <= 0) return "turn-slots";
+		if (!this.slots) return Math.min(capacity, turnRoom);
+
+		const unit = this.slots.unit.memoryBytes;
+		const budget = Math.floor(((this.limits.sandboxMemory ?? Infinity) / unit - units) / size);
+		// Running boxes are already reflected in available memory. Leave room for foreground
+		// slots without a container (including a pending create) and for the OS on explicitly sized small hosts.
+		const reserved = Math.max(incoming * size, max - runningUnits) * unit;
+		const free = this.availableMemory() - reserved - this.spareMemoryMargin;
+		const memoryRoom = this.spares.raws.length + Math.floor(free / (size * unit));
+		const limit = Math.min(capacity, turnRoom, budget, memoryRoom);
+		return limit > 0 ? limit : "memory";
 	}
 	private skipSpare(reason: string) {
 		if (this.lastSpareSkip !== reason) console.info(`spare.skip reason=${reason}`);
@@ -226,7 +229,7 @@ export class Executor extends MachineDocker {
 	private waitForSpareRemoval(size: number) {
 		return this.freeDiskBytes === null || this.freeDiskBytes <= this.storeLimits().free ||
 			this.limits.maxRunning !== undefined || this.limits.maxSandboxes !== undefined || this.limits.sandboxMemory !== undefined ||
-			!!this.slots && this.availableMemory() < size * this.slots.unit.memoryBytes;
+			!!this.slots && this.availableMemory() < size * this.slots.unit.memoryBytes + this.spareMemoryMargin;
 	}
 	private async removeUnbound(raw: string) {
 		try {
@@ -268,16 +271,17 @@ export class Executor extends MachineDocker {
 		});
 	}
 	stopSpares() { void this.spares.trim(); }
-	yieldSpareSlot(box: Box) {
+	turnStarted(box: Box) {
+		box.activeTurns = (box.activeTurns ?? 0) + 1;
+		if (!this.spares.raws.length) return;
 		const spec = this.spares.recipe;
-		if (!box.turnIdle || !spec || !this.spares.raws.length) return;
-		const room = this.spareRoom(spec.args.size);
-		// A resumed turn on a kept running container proceeds while speculative work is cancelled.
-		void this.spares.trim(typeof room === "number" ? room : 0, spec);
+		const room = spec && this.spareRoom(spec.args.size);
+		const retiring = this.spares.trim(typeof room === "number" ? room : 0, spec);
+		if (this.waitForSpareRemoval(box.size ?? 1)) return retiring;
 	}
 	turnEnded(box: Box) {
-		box.turnIdle = true;
-		if (this.waitForTurn === externalId(this.identity.machineId, box.raw)) this.waitForTurn = undefined;
+		box.activeTurns = Math.max(0, (box.activeTurns ?? 0) - 1);
+		if (!box.activeTurns && this.waitForTurn === externalId(this.identity.machineId, box.raw)) this.waitForTurn = undefined;
 	}
 
 	private readonly codexPin?: string;
@@ -895,7 +899,7 @@ private signInRetries = 0;
 		if (!validSpec(spec)) return false;
 		this.spares.used(spec);
 		this.needsSpareSeed = false;
-		this.waitForTurn = box.state === "running" && !box.turnIdle ? id : undefined;
+		this.waitForTurn = box.state === "running" && box.activeTurns !== 0 ? id : undefined;
 		return true;
 	}
 	async saveMirror(session: string, id: string, stage: string, partial: boolean) {
@@ -1018,7 +1022,8 @@ private signInRetries = 0;
 			this.noteState(id, box, state);
 			if (state === "running") throw new RunnerError("Docker could not stop the sandbox.");
 		}
-		this.turnEnded(box);
+		// A tracked ACP process releases its own slot when its exit arrives.
+		if (!box.activeTurns) this.turnEnded(box);
 		return null;
 	}
 	async requestedRemoval(id: string) {

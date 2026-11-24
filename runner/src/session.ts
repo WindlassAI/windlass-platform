@@ -130,12 +130,25 @@ class Conversation {
 		});
 		const streams = { onStdout: (s: string) => this.output(op.id, 1, s), onStderr: (s: string) => this.output(op.id, 2, s) };
 		box.busy++;
-		if (box.turnIdle) o.yieldSpareSlot(box);
 		try {
 			switch (op.name) {
 				case "start": {
-					const p = h.start(op.args.argv, { ...op.args.options, ...streams }, op.args.tag);
 					const acp = (box.harness && basename(op.args.argv[0] ?? "") === `wlp-${box.harness}-acp`) || basename(op.args.argv[0] ?? "") === "windlass" && op.args.argv.includes("acp");
+					let p: DockerProcess;
+					try {
+						if (acp) {
+							const retiring = o.turnStarted(box);
+							if (retiring) {
+								await retiring;
+								this.requireActive();
+								o.running(id, this.session);
+							}
+						}
+						p = h.start(op.args.argv, { ...op.args.options, ...streams }, op.args.tag);
+					} catch (error) {
+						if (acp) o.turnEnded(box);
+						throw error;
+					}
 					this.processes.set(op.id, { p, acp, handle: h, id });
 					box.busy++;
 					// start() returns synchronously. Answer in this stack, before any pipe event can run.

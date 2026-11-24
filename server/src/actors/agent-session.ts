@@ -1559,6 +1559,12 @@ async function readyRecipe(c: Ctx, meta: SessionMeta, secrets: HeldSecrets | nul
 	return spareRecipe(recipe) ? recipe : undefined;
 }
 
+// Restart seeds describe a base checkout. A repository with a usable environment will
+// supply its prepared image selection on the next create.
+export function canSeedOnResume(meta: Pick<SessionMeta, "place" | "repoUrl">, environment: HeldSecrets["environment"]) {
+	return meta.place.kind === "machine" && !!meta.repoUrl && !environment?.usable;
+}
+
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
 async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer, secrets: HeldSecrets | null, allowSnapshot = true): Promise<SandboxHandle> {
 	let plan: SnapshotPlan | null = null;
@@ -1575,7 +1581,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	const connecting = Date.now();
 	let handle = meta.sandboxId ? await layer.sandboxes.connect(meta.sandboxId, {
 		...connectOptions(meta),
-		...(allowSnapshot && meta.place.kind === "machine" && meta.repoUrl && {
+		...(allowSnapshot && canSeedOnResume(meta, secrets?.environment) && {
 			spareSeed: () => readyRecipe(c, meta, secrets, null, "resume"),
 			screenshots: sessionSandboxInput(meta, secrets?.screenshots).screenshots,
 		}),

@@ -17,9 +17,10 @@ import { mock } from "node:test";
 import { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { machineProfiles } from "../server/src/machines/profiles.js";
 import type { Answer } from "../server/src/sandbox/provider.js";
-import { validArgs, validValue, type Args, type Frame, type Body } from "../server/src/runner/protocol.js";
+import { validArgs, validValue, type Args, type Frame, type Body, type Name } from "../server/src/runner/protocol.js";
 import { privateSessionData } from "../server/src/sandbox/session-data.js";
-import type { Executor } from "../runner/src/docker-executor.js";
+import type { Limits } from "../runner/src/policy.js";
+import type { Box, Executor } from "../runner/src/docker-executor.js";
 import {
 	CAPABILITIES_RUNNER_VERSION, STORE_LIMITS_RUNNER_VERSION, REFUSED_RETRY_MS, type ServerFrame, LIVE_MS, MAX_CONTROL_FRAME_BYTES, MIN_RUNNER_VERSION, parseConnectionRefusal, parsePairStatus, parseRunnerFrame, parseServerFrame, refuse, reportFor, secondHello, versionAtLeast, welcomeCapabilities, type Report,
 } from "../server/src/runner/control.js";
@@ -834,13 +835,46 @@ try {
 		} finally { warn.mock.restore(); }
 	});
 
-	await checkControl("a one-slot runner keeps item A and gives item B a fresh Windlass spare, including after a runner restart", async () => {
+	await checkControl("a restart skips the base checkout seed when the repository has a usable environment", async () => {
+		const { canSeedOnResume } = await import("../server/src/actors/agent-session.js");
+		const meta = { place: { kind: "machine" as const, machineId }, repoUrl: "https://example.org/r.git" };
+		const environment = { usable: true, commit: "c".repeat(40), validatedAt: 123, checks: 1 };
+		assert.equal(canSeedOnResume(meta, environment), false);
+		assert.equal(canSeedOnResume(meta, { ...environment, usable: false }), true);
+		assert.equal(canSeedOnResume(meta, undefined), true);
+	});
+
+	await checkControl("spare admission reserves memory for unfilled real slots and for the OS on explicitly sized small machines", async () => {
+		const { sizeMachine } = await import("../runner/src/sizing.js");
+		const GiB = 2 ** 30;
+		const slots = sizeMachine({ cores: 10, memoryBytes: 12 * GiB });
+		const machine = new LocalExecutor({ uid: "u_fixture", machineId }, { slots });
+		const kept: Box = { raw, sessionId: session, state: "running", profile, usedAt: 0, busy: 0, workspaceChecked: true, activeTurns: 0 };
+		machine.boxes.set(id, kept);
+		Object.assign(machine, { availableMemory: () => 7 * GiB });
+		assert.equal(machine["spareRoom"](), "memory", "keep another real slot's 5 GiB available");
+		machine.boxes.set("other", { ...kept, activeTurns: 1 });
+		assert.equal(machine["spareRoom"](), 1, "both real slots have containers and 7 GiB is still free");
+
+		const explicit = sizeMachine({ cores: 2, memoryBytes: 4 * GiB }, { slots: 1 });
+		const small = new LocalExecutor({ uid: "u_fixture", machineId }, { slots: explicit });
+		small.boxes.set(id, kept);
+		let free = explicit.unit.memoryBytes;
+		Object.assign(small, { availableMemory: () => free });
+		assert.equal(small["spareRoom"](), "memory");
+		free += GiB;
+		assert.equal(small["spareRoom"](), 1);
+	});
+
+	await checkControl("the changes view reads kept item A on a default two-core 12 GiB runner and item B claims its spare, including after restart", async () => {
+		const { STATUS_COMMAND } = await import("../server/src/actors/agent-session.js");
+		const { Session } = await import("../runner/src/session.js");
 		const { sizeMachine } = await import("../runner/src/sizing.js");
 		const { machineLayer } = await import("../server/src/sandbox/runner-layer.js");
 		const { sessionSandboxInput } = await import("../server/src/actors/internal.js");
 		const GiB = 2 ** 30, hostMemory = 12 * GiB;
 		const slots = sizeMachine({ cores: 2, memoryBytes: hostMemory });
-		assert.deepEqual([slots.max, slots.unit.memoryBytes], [1, 4 * GiB]);
+		assert.deepEqual([slots.max, slots.unit.cpus, slots.unit.memoryBytes], [1, 2, 4 * GiB]);
 		const uid = "u_fixture";
 		const recipe = { url: "https://example.org/r.git", connected: { repo: "42", branch: "main", commit: "c".repeat(40),
 			generation: "a".repeat(64), command: "make deps", timeoutMs: 3000 } };
@@ -849,15 +883,18 @@ try {
 		try {
 			for (const restart of [false, true]) {
 				const kept = restart ? "222222222222" : "111111111111";
-				let cold = 0, setups = 0, free = hostMemory;
+				let cold = 0, setups = 0, free = 8 * GiB;
+				const dropped: string[] = [];
 				const built: string[] = [];
 				const attachments: [string, boolean | undefined][] = [];
-				const limits = { slots, maxRunning: 1, maxSandboxes: 2, sandboxMemory: hostMemory };
+				const limits: Limits = { slots };
 				function executor() {
 					const runner = new LocalExecutor({ uid, machineId }, limits, false, false, [profile], { mode: "restricted", allow: [] });
 					Object.assign(runner, { warmSpares: true, spareReseed: true, spareSetupTimes: true, sessionVolumes: true,
-						inventoryStarted: true, dockerHealth: { ok: true }, hostMemory, availableMemory: () => free, disk: async () => 100e9 });
+						inventoryStarted: true, dockerHealth: { ok: true }, availableMemory: () => free, disk: async () => 100e9,
+						dropSpare: async (raw: string) => { dropped.push(raw); }, blockedNetwork: true, memoryEvents: true });
 					runner.network.prepare = async () => {};
+					runner.network.blocked = async () => ({ broker: "a".repeat(64), hosts: [], overflow: 0 });
 					runner.network.attach = async (raw, _name, relay) => { attachments.push([raw, relay]); };
 					runner.provider.create = async input => {
 						if (!input.reservedId) { cold++; return kept; }
@@ -907,52 +944,99 @@ try {
 					assert.equal(runner.seedSpare("s_first", first, recipe), false);
 				}
 				const box = runner.boxes.get(first)!;
-				await runner.maintainSpares();
-				assert.equal(built.length, 0);
-				runner.turnEnded(box);
-				await runner.maintainSpares();
-				assert.equal(built.length, 0, "an idle container still counts against --max-running");
-				limits.maxRunning = 2;
-				limits.sandboxMemory = 6 * GiB;
-				await runner.maintainSpares();
-				assert.equal(built.length, 0, "the idle container still has its full memory limit");
-				limits.sandboxMemory = hostMemory;
-				free = GiB;
-				await runner.maintainSpares();
-				assert.equal(built.length, 0, "too little memory available for a second container");
-				free = hostMemory;
-				box.busy++;
-				await runner.maintainSpares();
-				assert.equal(built.length, 0, "an outstanding real operation owns the slot");
-				box.busy--;
-				await runner.maintainSpares();
-				await until(() => runner.report().warmSpares?.ready === 1);
-				assert.deepEqual(attachments.at(-1), [built[0], false]);
+				const client = new Session("s_first", runner, () => {});
+				const socket = new CheckSocket();
+				client.attach(socket as unknown as WebSocket, { runnerVersion: "0.3.4", machineId, ticket: "ticket", signature: "fixture" });
+				socket.frame({ kind: "welcome", protocol: 1, conversation: "s_first", received: 0, resumed: false });
+				let seq = 0;
+				async function request<N extends Name>(name: N, args: Args<N>) {
+					const id = "op" + ++seq;
+					socket.frame({ kind: "msg", seq, ack: 0, body: { kind: "op", id, name, args } });
+					await until(() => socket.sent.some(f => f.body?.kind === "res" && f.body.id === id));
+					const response = socket.sent.find(f => f.body?.kind === "res" && f.body.id === id)!.body;
+					assert.ok(response?.kind === "res" && response.ok, JSON.stringify(response));
+					return response.value;
+				}
+				let endTurn!: () => void, finishStatus!: () => void;
+				const start = mock.method(DockerSandboxHandle.prototype, "start", () => ({
+					ended: new Promise(resolve => { endTurn = () => resolve({ code: 0, signal: null, error: null }); }),
+				}));
+				const file = mock.method(DockerSandboxHandle.prototype, "readTextFile", async () => "changed");
+				const status = mock.method(DockerSandboxHandle.prototype, "run", async (command: string) => {
+					assert.equal(command, STATUS_COMMAND);
+					await new Promise<void>(resolve => { finishStatus = resolve; });
+					return { exitCode: 0, timedOut: false, aborted: false, stdout: " M README.md\0", stderr: "" };
+				});
+				try {
+					const turn = () => request("start", { id: first, tag: "r123456789abc", argv: ["windlass", "acp"] });
+					await turn();
+					await runner.maintainSpares();
+					assert.equal(built.length, 0);
+					endTurn();
+					await until(() => box.busy === 0);
+					limits.maxRunning = 1;
+					await runner.maintainSpares();
+					assert.equal(built.length, 0, "a kept box still counts against --max-running");
+					delete limits.maxRunning;
+					limits.sandboxMemory = 6 * GiB;
+					await runner.maintainSpares();
+					assert.equal(built.length, 0, "a kept box still counts against --sandbox-memory");
+					delete limits.sandboxMemory;
+					free = slots.unit.memoryBytes;
+					await runner.maintainSpares();
+					assert.equal(built.length, 0, "leave the OS its reserve");
+					free = 8 * GiB;
+					await runner.maintainSpares();
+					await until(() => runner.report().warmSpares?.ready === 1);
+					if (restart) {
+						await turn();
+						await until(() => dropped.length === 1);
+						await runner.maintainSpares();
+						assert.deepEqual(dropped, built, "the resumed ACP turn reclaimed the borrowed slot");
+						endTurn();
+						await until(() => box.busy === 0);
+						await runner.maintainSpares();
+						await until(() => runner.report().warmSpares?.ready === 1);
+					}
+					assert.equal(await request("readTextFile", { id: first, path: "README.md" }), "changed");
+					assert.equal(await request("memoryEvents", { id: first }), null);
+					await request("blockedNetwork", { id: first, turn: 1, retained: [] });
+					const reading = request("run", { id: first, command: STATUS_COMMAND });
+					await until(() => !!finishStatus);
+					await runner.maintainSpares();
+					assert.equal(runner.report().warmSpares?.ready, 1, "the spare survives maintenance during git status");
+					finishStatus();
+					assert.deepEqual(await reading, { exitCode: 0, timedOut: false, aborted: false, stdout: " M README.md\0", stderr: "" });
+				} finally {
+					finishStatus?.(); endTurn?.(); start.mock.restore(); file.mock.restore(); status.mock.restore(); client.channel.close();
+				}
+				const ready = built.at(-1)!;
+				assert.deepEqual(attachments.at(-1), [ready, false]);
 				assert.equal(runner.report().sandboxes.length, 1);
 				assert.equal(box.state, "running");
 				const second = await createItem("s_second");
 				assert.notEqual(second, first);
-				assert.ok(second.endsWith(built[0]!));
+				assert.ok(second.endsWith(ready));
 				assert.equal(cold, 1);
-				assert.equal(setups, 1);
+				assert.equal(setups, restart ? 2 : 1);
 				assert.throws(() => runner.running(second, "s_first"));
 				assert.equal(runner.running(first, "s_first"), box);
 				const claimed = await runner.lifecycle("connect", second, "s_second");
 				assert.ok(validValue("connect", claimed) && claimed?.readyKey && claimed.readySetup && claimed.ownData);
 				assert.equal(runner.report().warmSpares?.ready, 0);
-				assert.ok(log.mock.calls.some(call => call.arguments[0] === `spare.build id=${built[0]} reason=ready`));
-				assert.ok(log.mock.calls.some(call => call.arguments[0] === `spare.claim id=${built[0]} reason=recipe-match`));
+				assert.ok(log.mock.calls.some(call => call.arguments[0] === `spare.build id=${ready} reason=ready`));
+				assert.ok(log.mock.calls.some(call => call.arguments[0] === `spare.claim id=${ready} reason=recipe-match`));
 			}
 		} finally { probe.mock.restore(); log.mock.restore(); }
 	});
 
 	await checkControl("an unfinished spare yields a cold create without waiting for setup to exit", async () => {
-		const runner = new LocalExecutor({ uid: "u_fixture", machineId }, { maxTurns: 1 });
+		const runner = new LocalExecutor({ uid: "u_fixture", machineId }, { slots: { ...slots, max: 1 } });
 		const recipe = { url: "https://example.org/repo.git" };
 		let finish!: () => void, signal: AbortSignal | undefined, dropped = false;
 		let cold = 0;
 		Object.assign(runner, { warmSpares: true, sessionVolumes: true, inventoryStarted: true, dockerHealth: { ok: true },
-			availableMemory: () => 12 * 2 ** 30, disk: async () => 100e9, dropSpare: async () => { dropped = true; },
+			availableMemory: () => 32 * 2 ** 30, disk: async () => 100e9, dropSpare: async () => { dropped = true; },
 			buildSpare: async (_raw: string, _spec: unknown, abort: AbortSignal) => {
 				signal = abort;
 				await new Promise<void>(resolve => { finish = resolve; });
@@ -985,14 +1069,14 @@ try {
 	});
 
 	await checkControl("the executor admits on free disk, claims once, binds the new session and falls back cold under pressure", async () => {
-		const owner = new LocalExecutor({ uid: "u_fixture", machineId: "m_0123456789abcdef" }, { maxTurns: 1 });
+		const owner = new LocalExecutor({ uid: "u_fixture", machineId: "m_0123456789abcdef" }, { slots: { ...slots, max: 1 } });
 		const built: string[] = [], removed: string[] = [];
 		const recipe = { url: "https://example.org/fixture.git", connected: { repo: "42", branch: "main", commit: "c".repeat(40),
 			generation: "a".repeat(64), command: "make deps", timeoutMs: 3000 } };
 		let setupRuns = 0;
 		const oldRecipe = join(dir, `recent-${machineId}.json`);
 		let cold = 0, disk = 100e9;
-		Object.assign(owner, { warmSpares: true, spareSetupTimes: true, sessionVolumes: true, inventoryStarted: true, dockerHealth: { ok: true }, disk: async () => disk,
+		Object.assign(owner, { warmSpares: true, spareSetupTimes: true, sessionVolumes: true, inventoryStarted: true, dockerHealth: { ok: true }, availableMemory: () => 32 * 2 ** 30, disk: async () => disk,
 			dropSpare: async (raw: string) => { removed.push(raw); } });
 		owner.network.prepare = owner.network.attach = async () => {};
 		owner.provider.create = async input => {
