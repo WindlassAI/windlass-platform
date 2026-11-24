@@ -589,14 +589,15 @@ async function identityChecks(client: Client, server: Server) {
 			sessionSocket.onError(() => {});
 			userSocket.on("sessions", () => {});
 			sessionSocket.on("summary", () => {});
-			await Promise.all([userSocket.me(), sessionSocket.snapshot()]);
-			let userClosed = false, sessionClosed = false;
-			userSocket.onStatusChange(status => { if (status === "disconnected") userClosed = true; });
-			sessionSocket.onStatusChange(status => { if (status === "disconnected") sessionClosed = true; });
-			await userOf(second).signOutEverywhere();
-			await waitFor("both subscriptions to disconnect", () => userClosed && sessionClosed, 8_000, 40);
-		} finally {
-			await Promise.all([userSocket.dispose(), sessionSocket.dispose()]);
+			await withTimeout("open the user and session subscriptions", Promise.all([userSocket.me(), sessionSocket.snapshot()]), 10_000);
+			// Stop each subscription on its first server disconnect, before the client reconnects with the revoked token.
+			const closed = [userSocket, sessionSocket].map(socket => new Promise<void>((resolve, reject) => {
+				socket.onClose(() => socket.dispose().then(resolve, reject));
+			}));
+			await withTimeout("sign out and close both subscriptions", Promise.all([userOf(second).signOutEverywhere(), ...closed]), 15_000);
+		} catch (error) {
+			await withTimeout("dispose the user and session subscriptions", Promise.all([userSocket.dispose(), sessionSocket.dispose()]), 10_000);
+			throw error;
 		}
 		await refused(() => userOf(first).me(), "invalid_token");
 		await refused(() => userOf(second).me(), "invalid_token");
