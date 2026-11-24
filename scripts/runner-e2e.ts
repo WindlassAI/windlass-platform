@@ -10,13 +10,13 @@
  *
  *   cd server && npx tsx ../scripts/runner-e2e.ts
  *
- * The engine and HTTP server use OS-assigned ports. Nothing runs in
+ * The engine and HTTP server use ports reserved for this check. Nothing runs in
  * Docker. Prints one PASS/FAIL line per check and exits 1 if any failed.
  */
 import { localListeners } from "./check-listeners.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
-import { createWriteStream, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -82,23 +82,28 @@ class Server {
 
 	async start(extra: Record<string, string> = {}): Promise<void> {
 		const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(WLP_|RIVET|E2B_)/.test(key)));
-		const log = createWriteStream(join(this.storage, "server.log"), { flags: "a" });
+		const log = openSync(join(this.storage, "server.log"), "a");
 		// The server is this file in its "node" role (`serverNode` below): the real server, with one hook.
-		const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "node"], {
-			cwd: SERVER_DIR,
-			stdio: ["ignore", "pipe", "pipe"],
-			env: { ...env, ...extra, WLP_SECRET: this.secret, WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_MACHINES: "1", WLP_FACTORY_HOSTED_RUNNING: String(CEILING), WLP_PUBLIC_URL: ORIGIN, WLP_HTTP_PORT: String(HTTP), RIVET_RUN_ENGINE_PORT: String(PORT), RIVETKIT_STORAGE_PATH: this.storage, RIVET_LOG_LEVEL: "warn" },
-		});
-		child.stdout?.pipe(log);
-		child.stderr?.pipe(log);
+		let child: ChildProcess;
+		try {
+			child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "node"], {
+				cwd: SERVER_DIR,
+				stdio: ["ignore", log, log],
+				env: { ...env, ...extra, WLP_SECRET: this.secret, WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_MACHINES: "1", WLP_FACTORY_HOSTED_RUNNING: String(CEILING), WLP_PUBLIC_URL: ORIGIN, WLP_HTTP_PORT: String(HTTP), RIVET_RUN_ENGINE_PORT: String(PORT), RIVETKIT_STORAGE_PATH: this.storage, RIVET_LOG_LEVEL: "warn" },
+			});
+		} finally {
+			closeSync(log);
+		}
 		this.child = child;
 		child.on("exit", () => {
 			if (this.child === child) this.child = null;
 		});
 		await until("the server to answer", async () => {
-			if (!this.child) throw new Error(`the server exited; see ${this.storage}/server.log`);
+			if (!this.child) throw new Error(`the server exited (code ${child.exitCode}, signal ${child.signalCode})`);
 			return (await fetch(`${ORIGIN}/health`).catch(() => null))?.ok === true;
-		}, 120_000);
+		}, 120_000).catch(error => {
+			throw new Error(`${error.message}\nLast lines of ${this.storage}/server.log:\n${this.log().trimEnd().split("\n").slice(-80).join("\n")}`, { cause: error });
+		});
 	}
 
 	/** As a node being replaced: SIGTERM, so every actor goes to sleep. */

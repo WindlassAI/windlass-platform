@@ -48,6 +48,8 @@ export const HOSTED_RELAY_USER_REQUESTS = 16;
 export { MODEL_RELAY_WINDLASS } from "../model-relay-url.js";
 /** The relay container's memory; scripts/model-relay-docker-check.ts runs 64 streams in it. */
 export const RELAY_MEMORY = "192m";
+/** The TCP-to-Unix forwarder also buffers data in its sockets during simultaneous uploads. */
+const FORWARDER_MEMORY = "128m";
 
 const root = () => join(import.meta.dirname, "..", "..", "..");
 /** The relay program, with the shared relay it requires, as one script for `node -e`. The runner's bundle has it built. */
@@ -237,7 +239,7 @@ export class DockerModelRelay {
 		const started = await docker([
 			"run", "-d", "--pull", "never", "--name", name, ...this.labels("forward"), "--label", `${NONCE_LABEL}=${nonce}`,
 			"--network", `container:${container}`, "--user", "agent", "--cap-drop", "ALL", "--read-only",
-			"--security-opt", "no-new-privileges", "--pids-limit", "32", "--memory", "64m", "--cpus", "0.25", "--restart", "no", ...NO_LOGS,
+			"--security-opt", "no-new-privileges", "--pids-limit", "32", "--memory", FORWARDER_MEMORY, "--cpus", "0.25", "--restart", "no", ...NO_LOGS,
 			"--mount", `type=volume,src=${this.socketVolume},dst=/run/wlp-model/socket,readonly,volume-nocopy`,
 			"--tmpfs", `${FORWARD_READY_DIR}:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000,size=16k`,
 			this.options.image, "node", "--input-type=module", "-e", forwarderScript(), "--", "wlp-model-forward", nonce,
