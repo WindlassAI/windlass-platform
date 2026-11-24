@@ -110,6 +110,8 @@ import {
 	type GithubRepository,
 	type GithubRepositoryList,
 	type GithubStatus,
+	type LinearStatus,
+	type LinearTeamList,
 	listedSessions,
 	type KeptSandbox,
 	MAX_ACCOUNT_SECRETS,
@@ -141,6 +143,7 @@ import {
 	type UsageView,
 	type UserProfile,
 } from "../contract.js";
+import { LINEAR_TABLES, beginLinearConnect, claimLinearState, completeLinearConnection, fileLinearDelivery, linearStatus, listLinearTeams, releaseLinearWorkspace, removeLinearMapping, saveLinearMapping } from "./user-linear.js";
 import { GITHUB_SYNC, GITHUB_SYNC_TABLE, retryGithubSync, syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
 import { githubApp, type GithubApp } from "../github/app.js";
 import { isBranchName } from "../github/git.js";
@@ -1561,6 +1564,8 @@ export const user = actor({
 					updated_at INTEGER NOT NULL
 				)
 			`);
+			// The Linear connection, its team mappings and the states of connections that were begun (user-linear.ts).
+			for (const table of LINEAR_TABLES) await db.execute(table);
 			await db.execute("DROP TABLE IF EXISTS github_grant");
 			// A retry series for the webhook directories after a failed update (user-github.ts).
 			await db.execute(GITHUB_SYNC_TABLE);
@@ -1905,6 +1910,48 @@ export const user = actor({
 			return null;
 		},
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) => itemActions.internalGithubIntake(c, input, itemSession(c)),
+		// --- Linear: the owner's Settings, and the services behind the routes (user-linear.ts) ---------
+
+		linear: async (c): Promise<LinearStatus> => {
+			requireUser(c);
+			return linearStatus(c);
+		},
+		linearConnect: async (c, input: { origin: string }): Promise<{ url: string }> => {
+			requireUser(c);
+			return beginLinearConnect(c, input);
+		},
+		linearTeams: async (c): Promise<LinearTeamList> => {
+			requireUser(c);
+			return listLinearTeams(c);
+		},
+		saveLinearMapping: async (c, input: { teamId: string; repositoryId: GithubId }): Promise<LinearTeamList> => {
+			requireUser(c);
+			return saveLinearMapping(c, input);
+		},
+		removeLinearMapping: async (c, teamId: string): Promise<LinearTeamList> => {
+			requireUser(c);
+			return removeLinearMapping(c, teamId);
+		},
+		/** Takes a state's number out of the list (linear/connect.ts): it is there once. */
+		internalLinearClaim: async (c, nonce: string) => {
+			requireService(c);
+			return claimLinearState(c, nonce);
+		},
+		/** Records the connection the callback confirmed, handed over sealed (user-linear.ts `sealConnection`). */
+		internalLinearComplete: async (c, blob: string): Promise<void> => {
+			requireService(c);
+			await completeLinearConnection(c, blob);
+		},
+		/** Another owner connected this workspace. */
+		internalLinearReleased: async (c, workspaceId: string): Promise<void> => {
+			requireService(c);
+			await releaseLinearWorkspace(c, workspaceId);
+		},
+		/** One verified delivery of the workspace's actor: filed on the team's repository, or why not. Throws when it should be tried again. */
+		internalLinearDelivery: (c, delivery: import("../linear/webhook.js").LinearDelivery) => {
+			requireServiceFor(c, "call");
+			return fileLinearDelivery(c, delivery, filing => itemActions.internalLinearIntake(c, filing, itemSession(c)));
+		},
 		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),
 		actOnItem: (c, input: { id: string; action: ItemAction }): Promise<ItemView> => itemActions.actOnItem(c, input),
 		factoryLimits: (c): FactoryLimits => itemActions.factoryLimits(c),
