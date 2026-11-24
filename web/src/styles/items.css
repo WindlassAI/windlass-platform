@@ -2674,16 +2674,51 @@ a.plan-task-title:hover {
 .subtasks-head .subtask-segments {
 	margin-left: auto;
 }
+/* The three groups: a quiet label row each, then compact rows. */
+.subtask-group + .subtask-group {
+	border-top: 1px solid var(--line);
+}
+.subtask-group-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 2px 8px;
+	padding: 10px 16px 2px;
+	font-size: 12.5px;
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+}
+.subtask-group-count {
+	font-family: var(--font-mono);
+	font-size: 11px;
+	font-weight: 400;
+	font-variant-numeric: tabular-nums;
+	color: var(--ink-faint);
+}
+.subtask-group-done .subtask-group-head {
+	padding-bottom: 10px;
+}
+.subtask-group-done .subtask-group-count {
+	font-family: inherit;
+	font-size: 12.5px;
+}
+.subtask-group-toggle.fold-toggle {
+	margin-top: 0;
+	font-size: 12.5px;
+}
+.subtask-group-done .subtask-runs:not([hidden]) {
+	margin-top: -4px;
+	padding-bottom: 4px;
+}
 .subtask-runs > li + li {
 	border-top: 1px solid var(--line);
 }
 .subtask-run {
 	display: grid;
-	grid-template-columns: 20px minmax(0, 1fr) minmax(90px, 130px) 150px 64px;
-	column-gap: 14px;
+	grid-template-columns: 20px minmax(0, 1fr) auto;
+	column-gap: 12px;
 	align-items: start;
-	min-height: 56px;
-	padding: 10px 16px;
+	padding: 9px 16px;
 }
 /* A subtask that asks: a rule in the needs hue at its edge, never a fill. */
 .subtask-run-asks-row,
@@ -2724,20 +2759,48 @@ a.plan-task-title:hover {
 	text-decoration: underline;
 	text-underline-offset: 3px;
 }
+/* Inline text, so that a long reason wraps as a sentence does. */
 .subtask-run-doing {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 0 8px;
-	margin-top: 2px;
+	margin-top: 1px;
 	font-size: var(--text-13);
 	color: var(--ink-dim);
 }
 .subtask-run-word {
+	margin-right: 8px;
 	font-weight: var(--weight-medium);
 	color: var(--ink);
 }
-.subtask-run-asks .subtask-run-word {
+.subtask-run-asks .subtask-run-word,
+.subtask-phase-conflict .subtask-run-word {
 	color: var(--needs);
+}
+.subtask-phase-failed .subtask-run-word {
+	color: var(--bad);
+}
+/* Not started yet: its word as quiet as its glyph. */
+.subtask-phase-after .subtask-run-word,
+.subtask-phase-files .subtask-run-word,
+.subtask-phase-slot .subtask-run-word,
+.subtask-phase-integrated .subtask-run-word,
+.subtask-phase-cancelled .subtask-run-word {
+	font-weight: 400;
+	color: var(--ink-dim);
+}
+.subtask-run-fact {
+	overflow-wrap: anywhere;
+}
+/* A subtask named inside a sentence: its number in the mono face, its title cut to fit. */
+.subtask-named .subtask-run-n {
+	margin-right: 4px;
+	line-height: inherit;
+}
+.subtask-named-link {
+	color: var(--ink);
+	text-decoration: none;
+}
+.subtask-named-link:hover {
+	text-decoration: underline;
+	text-underline-offset: 3px;
 }
 .subtask-run-asks {
 	margin-top: 8px;
@@ -2749,34 +2812,27 @@ a.plan-task-title:hover {
 	gap: 10px;
 	margin-top: 8px;
 }
-.subtask-run-place,
-.subtask-run-spend {
-	display: grid;
-	gap: 2px;
-	min-width: 0;
+/* Where it runs · for how long · its session, on the right; under the title on a phone. */
+.subtask-run-facts {
+	display: flex;
+	align-items: baseline;
+	gap: 14px;
 	font-size: var(--text-13);
+	white-space: nowrap;
 }
-.subtask-run-place-name {
+.subtask-run-place {
+	max-width: 16ch;
 	overflow: hidden;
 	text-overflow: ellipsis;
-	white-space: nowrap;
-	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
 }
-.subtask-run-place-note {
-	font-size: var(--text-12);
-	color: var(--ink-faint);
-}
-.subtask-run-meter {
-	height: 4px;
-	margin-top: 7px;
-}
-.subtask-run-spent {
+.subtask-run-time {
+	min-width: 5ch;
+	text-align: right;
 	font-family: var(--font-mono);
 	font-size: var(--size-mono-small);
-}
-.subtask-run-session {
-	text-align: right;
-	font-size: var(--text-13);
+	font-variant-numeric: tabular-nums;
+	color: var(--ink-dim);
 }
 .subtasks-foot {
 	display: flex;
@@ -2789,18 +2845,19 @@ a.plan-task-title:hover {
 	color: var(--ink-dim);
 }
 @media (max-width: 760px) {
-	/* On a phone: title and step on top, then place · spend · session on one line. */
+	/* On a phone: title and what it does on top, then place · time · session on one line under them. */
 	.subtask-run {
-		grid-template-columns: 20px minmax(0, 1fr) auto;
-		grid-template-areas: "glyph main main" ". place session" ". spend spend";
-		row-gap: 6px;
+		grid-template-columns: 20px minmax(0, 1fr);
+		row-gap: 4px;
 	}
-	.subtask-run-glyph { grid-area: glyph; }
-	.subtask-run-main { grid-area: main; }
-	.subtask-run-place { grid-area: place; display: flex; gap: 6px; align-items: baseline; }
-	.subtask-run-spend { grid-area: spend; grid-template-columns: 80px auto; align-items: center; column-gap: 10px; }
-	.subtask-run-meter { margin-top: 0; }
-	.subtask-run-session { grid-area: session; }
+	.subtask-run-facts {
+		grid-column: 2;
+		gap: 12px;
+	}
+	.subtask-run-time {
+		min-width: 0;
+		text-align: left;
+	}
 }
 
 /* A subtask's place among its siblings, under its title. */
@@ -2814,9 +2871,6 @@ a.plan-task-title:hover {
 	gap: 8px 12px;
 	margin-top: 10px;
 	font-size: var(--text-13);
-}
-.subtask-strip-at {
-	color: var(--ink-dim);
 }
 .subtask-chips {
 	display: inline-flex;
@@ -2861,35 +2915,9 @@ a.subtask-chip:hover {
 	color: var(--ink);
 	font-weight: var(--weight-strong);
 }
-.subtask-strip-steps {
-	display: inline-flex;
-	gap: 14px;
-	margin-left: auto;
+.subtask-strip-alongside {
 	min-width: 0;
-}
-.subtask-strip-previous,
-.subtask-strip-next {
-	display: inline-flex;
-	min-width: 0;
-	max-width: 22ch;
-	white-space: nowrap;
-}
-.subtask-strip-name {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	margin-left: 4px;
-}
-@media (max-width: 760px) {
-	.subtask-strip-steps {
-		margin-left: 0;
-		width: 100%;
-		justify-content: space-between;
-		gap: 12px;
-	}
-	.subtask-strip-previous,
-	.subtask-strip-next {
-		max-width: calc(50% - 6px);
-	}
+	color: var(--ink-dim);
 }
 
 /* Under a feature's row in the Factory: its tally, and its active subtasks. */

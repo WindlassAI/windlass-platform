@@ -1635,7 +1635,47 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 		null,
 	);
 
-	return [search, exporting, writer, flag, ...longOnes, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail, sessionFeedback];
+	// 11. Subtasks in parallel: one integrated, two running at once (one hosted, one on "studio" at its checks), one whose
+	// dependency is done but whose files overlap a running one's, and one waiting on a dependency still running.
+	const importPlan = featurePlan(
+		1,
+		"approved",
+		{ goal: "Import a station file in one pass: parse it, convert its units, cache it, and import it from the command line.", requirements: ["A streaming parser.", "Units converted on import.", "A cache keyed by the file's checksum.", "`harbor import <file>`."], outOfScope: ["Importing from a URL."], acceptance: ["`harbor import stations.csv` imports 12,000 stations in under a second.", "`pnpm test` passes."] },
+		[
+			{ key: "parser", title: "Parse the station file in one pass", brief: "A streaming parser in src/import/parse/.", acceptance: ["Run `pnpm test src/import/parse`."], dependsOn: [], owns: ["src/import/parse/**"], budget: { tokens: 600_000 } },
+			{ key: "units", title: "Convert units on import", brief: "Convert feet to metres and local times to UTC as rows are parsed.", acceptance: ["Run `pnpm test src/import/units`."], dependsOn: ["parser"], owns: ["src/import/units/**"], budget: { tokens: 500_000 } },
+			{ key: "cache", title: "Cache parsed stations by checksum", brief: "Keep the parsed stations keyed by the file's checksum; export the cache from src/import/index.ts.", acceptance: ["Run `pnpm test src/import/cache`."], dependsOn: ["parser"], owns: ["src/import/cache/**", "src/import/index.ts"], budget: { tokens: 700_000 }, place: { prefer: "studio", reason: "The station fixtures are cached there." } },
+			{ key: "command", title: "Add the import command", brief: "`harbor import <file>` through the parser, the units and the cache; re-export from src/import/index.ts.", acceptance: ["Run `pnpm test src/cli`."], dependsOn: ["parser"], owns: ["src/cli/import.ts", "src/import/index.ts"], budget: { tokens: 500_000 } },
+			{ key: "docs", title: "Document the import", brief: "A page in docs/ with an example run.", acceptance: ["Run `pnpm lint:docs`."], dependsOn: ["units", "command"], owns: ["docs/import.md"], budget: { tokens: 200_000 } },
+		],
+	);
+	importPlan.approvedAt = ago(64);
+	importPlan.approvedBy = `person:${uid}`;
+	const importing = feature(
+		{ n: 95, title: "Import a station file in one pass", on: TIDES, state: "waiting", filed: 90, pr: 71, body: "Importing a station file reads it three times. Read it once.", acceptance: importPlan.spec.acceptance,
+			run: { n: 1, started: 88, stopReason: null, rounds: { plan: 1, gate: 0, ci: 0, conflict: 0 }, step: { n: 2, kind: "subtasks", started: 64 } },
+			events: [[88, "Started.", undefined, true], [70, "The planner filed a proposal.", [1, 1, "refine"]], [64, "Approved the plan.", [1, 1, "refine"], true], [63, "Opened draft pull request #71 for the feature branch.", [1, 2, "subtasks"]], [22, "Integrated “Parse the station file in one pass” at 8c41d9e.", [1, 2, "subtasks"]], [21, "Started “Convert units on import” and “Cache parsed stations by checksum”.", [1, 2, "subtasks"]]],
+			spent: { tokens: 1_480_000, turns: 4, activeSeconds: 48 * 60, hostedSeconds: 30 * 60 } },
+		importPlan,
+		{ reason: "children", sentence: "Running “Convert units on import” and “Cache parsed stations by checksum” on ‘studio’; “Add the import command” waits for src/import/index.ts.", since: ago(21), retryAt: null },
+	);
+	const importChild = (key: string, seed: Omit<Seed, "title" | "on">) => {
+		const made = child(importing, key, { ...seed, title: "", on: TIDES });
+		return { ...made, repository: importing.repository };
+	};
+	const parser = importChild("parser", { n: 96, state: "done", filed: 63, run: { n: 1, started: 63, ended: 22, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 22 } }, spent: { tokens: 690_000, turns: 2, activeSeconds: 38 * 60, hostedSeconds: 38 * 60 } });
+	const units = importChild("units", { n: 97, state: "working", filed: 21, run: { n: 1, started: 21, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 20, turn: "started" } }, spent: { tokens: 310_000, turns: 2, activeSeconds: 14 * 60, hostedSeconds: 14 * 60 } });
+	const cache = importChild("cache", { n: 98, state: "working", filed: 21, place: { kind: "machine", machineId: "m_studio" }, run: { n: 1, started: 19, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 2, kind: "run_checks", started: 2 } }, spent: { tokens: 480_000, turns: 1, activeSeconds: 17 * 60, hostedSeconds: 0 } });
+	cache.placement = { place: { kind: "machine", machineId: "m_studio" }, name: "studio", reason: importPlan.subtasks[2]!.place!.reason, units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
+	importing.children = [parser, units, cache].map(summaryOf);
+	importing.subtasks = [
+		{ id: parser.id, key: "parser", state: "done", dispatchedAt: ago(63), startedAt: ago(62), wait: null },
+		{ id: units.id, key: "units", state: "working", dispatchedAt: ago(21), startedAt: ago(20), wait: null },
+		{ id: cache.id, key: "cache", state: "working", dispatchedAt: ago(21), startedAt: ago(19), wait: null },
+	];
+	importing.completedSubtasks = ["parser"];
+
+	return [search, exporting, writer, flag, ...longOnes, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail, sessionFeedback, importing, parser, units, cache];
 }
 
 /** Match the server’s reasons when an item has no reviewer session. */

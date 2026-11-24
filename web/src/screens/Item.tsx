@@ -51,7 +51,7 @@ import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
 import { AgentGlyph } from "../components/ui/Pill";
 import { childrenBehind } from "../lib/subtasks";
-import { showsSubtasks, SubtasksBlock, SubtaskStrip } from "./Subtasks";
+import { partOf, showsSubtasks, SubtasksBlock, SubtaskStrip } from "./Subtasks";
 
 /** The steps in words. Planning is not offered yet; the rest are every step a run goes through. */
 const STEP_WORD: Record<StepKind, string> = {
@@ -947,6 +947,8 @@ export function Item({ page }: { page: ItemPage }) {
 	const reviewer = platform.info?.items?.reviewer !== false;
 	const { repository } = view;
 	const reading = readFirst(view);
+	// A subtask's place in its feature's plan, once the feature is read: "Part 2 of 5 of <feature>".
+	const part = view.parent && feature.view?.plan ? partOf(feature.view.plan, view.parent.key) : null;
 
 	return (
 		<main className="home usage repo item">
@@ -955,7 +957,7 @@ export function Item({ page }: { page: ItemPage }) {
 					<p className="eyebrow">
 						{view.parent ? (
 							<>
-								subtask of{" "}
+								{part ? `Part ${part.n} of ${part.of} of` : "subtask of"}{" "}
 								<a className="eyebrow-link" {...linkProps({ name: "item", id: view.parent.itemId })}>
 									{view.parent.title}
 								</a>
@@ -967,7 +969,7 @@ export function Item({ page }: { page: ItemPage }) {
 						)}
 					</p>
 					<h1 className="display display-small item-title">{view.title}</h1>
-					{view.parent && feature.view?.plan ? <SubtaskStrip plan={feature.view.plan} children={feature.view.children ?? []} current={view.parent.key} /> : null}
+					{view.parent && feature.view?.plan ? <SubtaskStrip plan={feature.view.plan} children={feature.view.children ?? []} jobs={feature.view.subtasks} current={view.parent.key} /> : null}
 					<p className="home-account repo-facts">
 						<a className="repo-link" {...linkProps({ name: "repository", id: repository.id })}>
 							{repository.owner}/{repository.name}
@@ -1049,7 +1051,7 @@ export function Item({ page }: { page: ItemPage }) {
 				) : view.question ? (
 					<Question key={view.question.id} view={view} question={view.question} acting={acting} now={now} />
 				) : showsSubtasks(view) ? (
-					<SubtasksBlock plan={view.plan!} children={view.children ?? []} now={now} />
+					<SubtasksBlock plan={view.plan!} children={view.children ?? []} jobs={view.subtasks} now={now} />
 				) : (
 					<Now view={view} now={now} />
 				)}
