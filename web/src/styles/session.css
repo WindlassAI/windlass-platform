@@ -1244,22 +1244,41 @@ button.output-more:hover {
 	min-width: 0;
 	overflow-wrap: anywhere;
 }
-/* Under the line of the agent's request for a secret: the name, its reason quoted, and where it is answered. */
-.system-secret {
+/*
+ * The agent's request for a secret: one quiet line. Open, it points to the card above the field; answered, it records
+ * how, and folds the agent's quoted reason and the platform's notice under "Show the request".
+ */
+.timeline > .turn > .block > .system-secret > .system > .system-rule {
+	display: none;
+}
+.system-secret > .system {
+	flex-wrap: wrap;
+	column-gap: 8px;
+	row-gap: 0;
+}
+.system-secret .system-text {
+	color: var(--ink-dim);
+}
+.system-secret-mark {
+	margin-right: 5px;
+	vertical-align: -1px;
+}
+.system-secret-toggle.fold-toggle {
+	margin-top: 0;
+	font-size: var(--size-small);
+}
+.system-secret-body {
 	display: grid;
 	gap: 6px;
-	margin: 4px 0 10px 24px;
+	margin: 6px 0 10px;
 	max-width: 74ch;
 	font-size: var(--size-small);
 }
-.system-secret-name {
-	overflow-wrap: anywhere;
+.system-secret-body[hidden] {
+	display: none;
 }
-.system-secret .item-asked-text {
+.system-secret-body .item-asked-text {
 	font-size: var(--size-small);
-}
-.system-secret-where {
-	color: var(--ink-dim);
 }
 /* The request above the field: the dock's frame, room for the form inside. */
 .secret-dock {
