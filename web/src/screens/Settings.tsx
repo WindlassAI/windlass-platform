@@ -21,6 +21,7 @@ import { AccountSecretsBlock } from "../components/Secrets";
 import { DefaultsSection } from "../components/Defaults";
 import { ArrowLeftIcon, WarnIcon } from "../components/Icons";
 import { LinearSettings } from "../components/LinearSettings";
+import { ModelProviders } from "../components/ModelProviders";
 import { PersonalServers } from "../components/PersonalServers";
 import { PlanSection } from "../components/Plan";
 import { HARNESS_NAMES } from "../lib/acp";
@@ -192,6 +193,8 @@ export function Settings() {
 					</section>
 				</>
 			)}
+
+			<ModelProviders />
 
 			{info?.machines ? (
 				<section className="usage-section" aria-labelledby="settings-machines">

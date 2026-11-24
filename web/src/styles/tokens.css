@@ -148,6 +148,9 @@
 	--avatar: linear-gradient(140deg, #3a3d2a, #20221a);
 	--avatar-ink: #cfdb6e;
 	--grain: 0;
+	/* The two-ink vendor marks (AgentLogos.tsx): each vendor's file for dark backgrounds. */
+	--logo-anthropic: #faf9f5;
+	--logo-openrouter: #fcfcfe;
 }
 
 :root[data-theme="light"] {
@@ -201,4 +204,7 @@
 	--avatar: #eef2c9;
 	--avatar-ink: #3e4708;
 	--grain: 0;
+	/* The two-ink vendor marks (AgentLogos.tsx): each vendor's file for light backgrounds. */
+	--logo-anthropic: #141413;
+	--logo-openrouter: #03080a;
 }

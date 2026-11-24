@@ -6,7 +6,7 @@ import { useEffect, useId, useRef, type ReactNode } from "react";
 import { CrossIcon } from "./Icons";
 
 interface DialogProps {
-	title: string;
+	title: ReactNode;
 	/** A line under the title. */
 	lede?: ReactNode;
 	onClose(): void;
