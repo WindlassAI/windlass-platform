@@ -143,7 +143,7 @@ import {
 	type UsageView,
 	type UserProfile,
 } from "../contract.js";
-import { LINEAR_TABLES, beginLinearConnect, claimLinearState, completeLinearConnection, fileLinearDelivery, linearStatus, listLinearTeams, releaseLinearWorkspace, removeLinearMapping, saveLinearMapping } from "./user-linear.js";
+import { LINEAR_TABLES, beginLinearConnect, claimLinearState, completeLinearConnection, fileLinearDelivery, linearStatus, listLinearTeams, removeLinearMapping, saveLinearMapping } from "./user-linear.js";
 import { GITHUB_SYNC, GITHUB_SYNC_TABLE, retryGithubSync, syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
 import { githubApp, type GithubApp } from "../github/app.js";
 import { isBranchName } from "../github/git.js";
@@ -1942,12 +1942,7 @@ export const user = actor({
 			requireService(c);
 			await completeLinearConnection(c, blob);
 		},
-		/** Another owner connected this workspace. */
-		internalLinearReleased: async (c, workspaceId: string): Promise<void> => {
-			requireService(c);
-			await releaseLinearWorkspace(c, workspaceId);
-		},
-		/** One verified delivery of the workspace's actor: filed on the team's repository, or why not. Throws when it should be tried again. */
+		/** One verified delivery of the webhook route, for the user its team was claimed by (user-linear.ts). Throws when Linear should redeliver it. */
 		internalLinearDelivery: (c, delivery: import("../linear/webhook.js").LinearDelivery) => {
 			requireServiceFor(c, "call");
 			return fileLinearDelivery(c, delivery, filing => itemActions.internalLinearIntake(c, filing, itemSession(c)));

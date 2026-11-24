@@ -1,31 +1,21 @@
 /**
  * Linear's webhook route, `POST /linear/webhook`, and the reading of a delivery.
  *
- * What is trusted, and when. The body is read as raw bytes, at most 1 MiB, and nothing in it is looked at
- * until its HMAC-SHA256 under the app's signing secret equals `Linear-Signature` (compared in constant
- * time). Then the JSON is parsed and its `webhookTimestamp`, which the signature covers, must be within
- * a minute of now: a captured delivery cannot be replayed later. Only after both are the delivery id,
- * workspace, team and issue ids taken out, as UUIDs and nothing else. What Linear says an issue
- * contains (its title, its description) is not taken from a delivery at all: filing reads the issue.
- * https://linear.app/developers/webhooks ("Securing webhooks": `Linear-Signature`, `webhookTimestamp`,
- * `Linear-Delivery`, `Linear-Event`)
+ * The body is read as raw bytes, at most 1 MiB, and nothing in it is looked at until its HMAC-SHA256 under the app's signing secret
+ * equals `Linear-Signature`. Then the JSON is parsed and its signed `webhookTimestamp` must be within a minute of now. Only after both
+ * are ids taken out, as UUIDs and nothing else. What an issue says (title, description, labels) is never taken from a delivery:
+ * filing reads the issue from Linear.
+ * https://linear.app/developers/webhooks ("Securing webhooks": `Linear-Signature`, `webhookTimestamp`, `Linear-Delivery`)
  *
- * What counts as a trigger. Linear sends the whole issue in `data` and, for an update, the previous
- * value of every field that changed in `updatedFrom`. A delivery triggers filing only by a transition:
+ * What counts as a trigger. Linear sends the whole issue in `data` and, for an update, the previous value of every field that changed
+ * in `updatedFrom`. A delivery qualifies only by a transition:
  *
- *   assignment   the issue is created assigned to the app user, or an update changed `assigneeId` (it is
- *                a key of `updatedFrom`) to the app user from someone or no one else. Assigned to
- *                another person, or to the app user already, is not a trigger
- *   label        the issue is created with, or an update changed `labelIds` (a key of `updatedFrom`) so
- *                that it has, a label named `windlass` or `windlass:quick` that it did not have
+ *   label        the issue is created with, or an update changed `labelIds` so that it has, a label named `windlass` or
+ *                `windlass:quick` that it did not have
+ *   assignment   the issue is created assigned, or an update changed `assigneeId`, to someone. Whether that is the app user is the
+ *                owner's to say: this route does not know the workspace's connection.
  *
- * An edit that changes neither (a title, a state, a comment) is not a trigger, however the issue
- * stands; neither is a removed label, an unassignment, or the `remove` action. `windlass:quick` among
- * the labels the issue has at that moment selects Quick mode.
- *
- * The route knows nothing of actors: `LinearWebhookStore` is all it needs of them. The store says which
- * app user a workspace has, whether the team is mapped, and takes in what is worth filing; dedupe by
- * delivery id and by issue is the store's.
+ * An edit that changes neither, a removed label, an unassignment and the `remove` action are not triggers.
  */
 
 import { createHmac, timingSafeEqual } from "node:crypto";
@@ -42,43 +32,25 @@ export const MAX_TIMESTAMP_SKEW_MS = 60_000;
 export const TRIGGER_LABEL = "windlass";
 export const QUICK_LABEL = "windlass:quick";
 
-/** What a qualifying delivery comes to, once authenticated: only ids, the transition, and what places it. */
+/** What a qualifying delivery comes to once authenticated: lookup ids and the transition, nothing of the issue's content. */
 export interface LinearDelivery {
 	/** `Linear-Delivery`: the unit of redelivery. */
 	deliveryId: string;
 	workspaceId: string;
 	teamId: string;
 	issueId: string;
-	/** `ENG-12`. */
-	identifier: string;
-	/** The issue's address at Linear, http(s) only; "" when the delivery had none that fits. */
-	url: string;
-	/** Which transitions this delivery is: gaining the label, being assigned to the app user. */
-	reasons: Array<"label" | "assignment">;
-	/** `windlass:quick` is among the issue's labels. */
-	quick: boolean;
-	/** Who made the change, as Linear says. Not a person Windlass knows: a hint, never an authorization. */
-	actor: { id: string | null; type: string };
-	/** The issue's creator, when the delivery says. Authorship stays untrusted. */
-	creatorId: string | null;
+	/** A trigger label was gained. */
+	label: boolean;
+	/** The one the issue was assigned to by this delivery. */
+	assignedTo: string | null;
+	/** Who made the change, as Linear says. A hint, never an authorization. */
+	actorId: string | null;
 	/** The delivery's signed timestamp, ms since the epoch. */
 	sentAt: number;
 }
 
-export interface LinearWorkspaceLink {
-	/** The app user of the connected workspace: what an issue is assigned to. */
-	appUserId: string;
-	/** The team is mapped to a repository. */
-	mapped: boolean;
-}
-
-/** What the route needs of the actors. */
-export interface LinearWebhookStore {
-	/** The connection of a workspace; null when none is connected. Called only with authenticated ids. */
-	lookup(workspaceId: string, teamId: string): Promise<LinearWorkspaceLink | null>;
-	/** Takes in a qualifying delivery. `duplicate` when its delivery id was seen; `busy` when it cannot now (Linear retries). */
-	receive(delivery: LinearDelivery): Promise<"taken" | "duplicate" | "busy">;
-}
+/** What became of a delivery. `ignored` takes nothing in; `duplicate` is a redelivery of one that was taken in. */
+export type LinearDispatch = "taken" | "duplicate" | "ignored";
 
 const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -118,7 +90,7 @@ function labelsOf(data: Record<string, unknown>): Array<{ id: string; name: stri
 	return labels;
 }
 
-/** The ids a delivery names, once authenticated; null when it is not an issue event that names all of them. */
+/** The ids a delivery names; null when it is not an issue event that names all of them. */
 export function readIds(payload: unknown): { workspaceId: string; teamId: string; issueId: string } | null {
 	const body = record(payload), data = record(body.data);
 	if (body.type !== "Issue") return null;
@@ -128,11 +100,8 @@ export function readIds(payload: unknown): { workspaceId: string; teamId: string
 	return workspaceId && teamId && issueId ? { workspaceId, teamId, issueId } : null;
 }
 
-/**
- * Whether an authenticated issue event is a transition that files, and which. Null when it is not.
- * `appUserId` is the workspace's app user; any other assignee, including a person, is not the app.
- */
-export function classify(payload: unknown, appUserId: string): { reasons: Array<"label" | "assignment">; quick: boolean } | null {
+/** The transition an authenticated issue event is, or null when it is neither a gained trigger label nor a new assignee. */
+export function classify(payload: unknown): { label: boolean; assignedTo: string | null } | null {
 	const body = record(payload), data = record(body.data);
 	const action = body.action;
 	if (body.type !== "Issue" || (action !== "create" && action !== "update")) return null;
@@ -140,58 +109,31 @@ export function classify(payload: unknown, appUserId: string): { reasons: Array<
 	const before = record(body.updatedFrom);
 	// An update that does not say what changed is not a transition we can see.
 	if (!created && Object.keys(before).length === 0) return null;
-	const app = appUserId.toLowerCase();
-	const reasons: Array<"label" | "assignment"> = [];
 
-	if (idOrNull(data.assigneeId) === app) {
-		const was = "assigneeId" in before ? idOrNull(before.assigneeId) : app;
-		if (created || ("assigneeId" in before && was !== app)) reasons.push("assignment");
-	}
+	const assignee = idOrNull(data.assigneeId);
+	const assignedTo = assignee !== null && (created || ("assigneeId" in before && idOrNull(before.assigneeId) !== assignee)) ? assignee : null;
 
-	const labels = labelsOf(data);
 	const wasLabelIds = Array.isArray(before.labelIds) ? new Set(before.labelIds.map(idOrNull)) : null;
-	if (created || wasLabelIds !== null) {
-		const gained = labels.filter((label) => (label.name === TRIGGER_LABEL || label.name === QUICK_LABEL) && (created || !wasLabelIds!.has(label.id)));
-		if (gained.length > 0) reasons.push("label");
-	}
-	if (reasons.length === 0) return null;
-	return { reasons, quick: labels.some((label) => label.name === QUICK_LABEL) };
-}
+	const label = (created || wasLabelIds !== null)
+		&& labelsOf(data).some(l => (l.name === TRIGGER_LABEL || l.name === QUICK_LABEL) && (created || !wasLabelIds!.has(l.id)));
 
-/** The delivery a classified, authenticated payload comes to. */
-function deliveryOf(deliveryId: string, payload: unknown, ids: { workspaceId: string; teamId: string; issueId: string }, transition: { reasons: Array<"label" | "assignment">; quick: boolean }): LinearDelivery {
-	const body = record(payload), data = record(body.data), actor = record(body.actor);
-	const identifier = text(data.identifier);
-	const address = text(body.url) || text(data.url);
-	let url = "";
-	try {
-		const parsed = new URL(address);
-		if ((parsed.protocol === "https:" || parsed.protocol === "http:") && parsed.username === "" && parsed.password === "" && address.length <= 500) url = parsed.toString();
-	} catch {
-		url = "";
-	}
-	return {
-		deliveryId,
-		...ids,
-		identifier: /^[A-Za-z0-9]{1,20}-[0-9]{1,9}$/.test(identifier) ? identifier : "",
-		url,
-		...transition,
-		actor: { id: idOrNull(actor.id), type: text(actor.type).slice(0, 30) },
-		creatorId: idOrNull(data.creatorId) ?? idOrNull(record(data.creator).id),
-		sentAt: record(payload).webhookTimestamp as number,
-	};
+	return label || assignedTo !== null ? { label, assignedTo } : null;
 }
 
 const json = (status: number, body: unknown) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 const error = (status: number, code: string, message: string) => json(status, { code, message });
 
 export interface LinearWebhookDeps {
-	store: LinearWebhookStore;
+	/**
+	 * Finds the owner of the delivery's team and hands it over. Throws when it cannot be taken in now: Linear then redelivers
+	 * under the same delivery id, which is the only retry.
+	 */
+	dispatch(delivery: LinearDelivery): Promise<LinearDispatch>;
 	/** Defaults to the environment's, read per request. */
 	settings?: () => Pick<LinearConfig, "app" | "webhook">;
 	now?: () => number;
-	/** How long the store may take before Linear is told to try again. */
-	storeTimeoutMs?: number;
+	/** How long a dispatch may take before Linear is told to try again. */
+	dispatchTimeoutMs?: number;
 }
 
 /** The route's handler. Answers null for any other path. */
@@ -260,23 +202,17 @@ export function linearWebhookRoute(deps: LinearWebhookDeps): (request: Request) 
 		if (stale) return refuse(request, 401, stale, stale === "stale_timestamp" ? "The delivery's timestamp is too far from now." : "The delivery has no usable timestamp.");
 
 		// Authenticated and fresh. Only now are ids taken out.
-		const ids = readIds(payload);
-		if (!ids) return json(202, { taken: false });
-		const limit = deps.storeTimeoutMs ?? 8_000;
+		const ids = readIds(payload), transition = classify(payload);
+		if (!ids || !transition) return json(202, { taken: false });
+		const delivery: LinearDelivery = { deliveryId, ...ids, ...transition, actorId: idOrNull(record(record(payload).actor).id), sentAt: record(payload).webhookTimestamp as number };
+		const limit = deps.dispatchTimeoutMs ?? 8_000;
 		try {
 			const outcome = await Promise.race([
-				(async () => {
-					const link = await deps.store.lookup(ids.workspaceId, ids.teamId);
-					if (!link || !link.mapped) return "ignored" as const;
-					const transition = classify(payload, link.appUserId);
-					if (!transition) return "ignored" as const;
-					return deps.store.receive(deliveryOf(deliveryId, payload, ids, transition));
-				})(),
-				new Promise<never>((_, reject) => setTimeout(() => reject(new Error("store timeout")), limit).unref()),
+				deps.dispatch(delivery),
+				new Promise<never>((_, reject) => setTimeout(() => reject(new Error("dispatch timeout")), limit).unref()),
 			]);
-			if (outcome === "ignored") return json(202, { taken: false });
-			if (outcome !== "busy") return json(202, { taken: outcome === "duplicate" ? "duplicate" : true });
-		} catch { /* A lost reply can be retried under the same delivery id. */ }
-		return error(503, "store_unavailable", "The delivery could not be taken in. Try again.");
+			return json(202, { taken: outcome === "ignored" ? false : outcome === "duplicate" ? "duplicate" : true });
+		} catch { /* Linear redelivers under the same delivery id. */ }
+		return error(503, "unavailable", "The delivery could not be taken in. Try again.");
 	};
 }

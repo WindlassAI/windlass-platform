@@ -93,7 +93,7 @@ export const linearKey = (issueId: string, generation: number) => `linear:${issu
  *
  * Call it inside `inIntakeQueue`.
  */
-export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling, itemId: (key: string) => string,
+export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling,
 	file: (profile: UserProfile, filing: { input: CreateItemInput; binding: LinearBinding }) => Promise<ItemSummary>): Promise<LinearFiled> {
 	const { profile } = c.vars;
 	const { issue, trigger, team } = f;
@@ -115,6 +115,7 @@ export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling, itemId: (key
 	const held = last && c.vars.items.items.get(last.id);
 	if (last && held && !isEnded(held)) return { kind: "exists", itemId: last.id };
 	const resuming = last && !held ? last : undefined;
+	if (trigger.lapsed && !resuming) return { kind: "ignored", why: "The issue no longer has what qualified it." };
 	const generation = resuming?.generation ?? (last?.generation ?? 0) + 1;
 
 	if (!config.items) return { kind: "refused", reason: refusals.off };
@@ -123,7 +124,8 @@ export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling, itemId: (key
 	let repository;
 	try { repository = (await resolveRepository(app, connection, f.repository.id, "write")).repository; }
 	catch (error) {
-		if (error instanceof GithubProblem) return { kind: "refused", reason: "Not taken: " + error.message };
+		// A GitHub that cannot answer is no refusal: the delivery fails and Linear redelivers it.
+		if (error instanceof GithubProblem && error.code !== "github_unreachable" && error.code !== "github_failed") return { kind: "refused", reason: "Not taken: " + error.message };
 		throw error;
 	}
 

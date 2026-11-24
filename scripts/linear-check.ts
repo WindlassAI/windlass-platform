@@ -4,12 +4,12 @@
  * Nothing outside this machine is used: Linear is scripts/linear-standin.ts (consent page, token endpoint, GraphQL API, signed
  * webhooks), GitHub is scripts/github-standin.ts, the sandbox is the fake one, and no browser runs (the owner's click is the
  * stand-in's `authorize()`). The platform is the real one: a child process runs the server's own index.ts, so the Linear callback
- * and webhook routes, the `linearWorkspace` actor, the owner's `user` actor and the items' actors are the ones a deployment runs.
- * The child attaches only read-only probes before the registry is built (`--node`: the rows of the workspace's deliveries, what
- * an item kept of its issue, and a paired machine for the saved placement), as webhook-check.ts does; no filing helper is replaced.
+ * and webhook routes, the `linearWorkspace` team claims, the owner's `user` actor and the items' actors are the ones a deployment runs.
+ * The child attaches only read-only probes before the registry is built (`--node`: the owner's delivery rows, what an item kept
+ * of its issue, and a paired machine for the saved placement), as webhook-check.ts does; no filing helper is replaced.
  *
  * The owner is set up through the supported actions only: sign in, connect GitHub, `linearConnect` and the callback,
- * `saveLinearMapping`. Everything is then read back from the platform: the owner's items, an item's page, the workspace's
+ * `saveLinearMapping`. Everything is then read back from the platform: the owner's items, an item's page, the owner's
  * delivery rows, what the stand-ins were asked.
  *
  * What it shows: the OAuth connection (a replayed, forged or foreign-origin state refused) and the mapping (a team outside the
@@ -17,7 +17,8 @@
  * app assignment each file one item, a redelivery and another qualifying event for the same issue file nothing more, and an edit
  * that is not a transition, a removed label, an unassignment and a removal change nothing; the stored issue id, identifier, link
  * and repository; Plan first against `windlass:quick`; the saved placement; the issue's author as third-party text (a draft, quoted)
- * whoever wrote it; GitHub and Linear competing for the one daily cap; a removed mapping filing nothing; nothing written to Linear
+ * whoever wrote it; GitHub and Linear competing for the one daily cap; a removed mapping filing nothing; a second owner of the
+ * workspace unable to take a mapped team, and given it once it is removed; nothing written to Linear
  * and no credential in the platform's output.
  */
 import assert from "node:assert/strict";
@@ -40,11 +41,14 @@ async function testNode() {
 	const { requireServiceFor } = await import("../server/src/auth.js");
 	const { user } = await import("../server/src/actors/user.js");
 	const { workItem } = await import("../server/src/actors/work-item.js");
-	const { linearWorkspace } = await import("../server/src/actors/linear-workspace.js");
 	type UserCtx = Parameters<NonNullable<typeof user.config.actions>["internalMachineChanged"]>[0];
 	type ItemCtx = Parameters<NonNullable<typeof workItem.config.actions>["internalView"]>[0];
-	type WorkspaceCtx = Parameters<NonNullable<typeof linearWorkspace.config.actions>["internalLink"]>[0];
 	Object.assign(user.config.actions!, {
+		// The owner's delivery rows: what was decided for each delivery that was taken in.
+		checkRows: async (c: UserCtx) => {
+			requireServiceFor(c, "call");
+			return c.db.execute<{ id: string; decision: string }>("SELECT id, decision FROM linear_delivery ORDER BY received_at, rowid");
+		},
 		// A paired machine that is online, for the saved placement to name.
 		checkPlaceMachine: async (c: UserCtx, id: string) => {
 			requireServiceFor(c, "call");
@@ -64,13 +68,6 @@ async function testNode() {
 			const { meta, item } = c.vars.stored!;
 			const [binding] = await c.db.execute<{ n: number }>("SELECT count(*) AS n FROM github_binding");
 			return { github: meta.github ?? null, linear: meta.linear ?? null, untrusted: item.untrusted ?? null, bindingRows: binding?.n ?? 0, issueEffects: (await c.db.execute("SELECT 1 FROM effects WHERE id LIKE '%issue%'")).length };
-		},
-	});
-	Object.assign(linearWorkspace.config.actions!, {
-		// The workspace's delivery rows: what was taken in, and what the owner's actor answered.
-		checkRows: async (c: WorkspaceCtx) => {
-			requireServiceFor(c, "call");
-			return c.db.execute<{ id: string; state: string; attempts: number; decision: string }>("SELECT id, state, attempts, decision FROM deliveries ORDER BY received_at, rowid");
 		},
 	});
 	await import("../server/src/index.js");
@@ -158,11 +155,11 @@ async function run() {
 			const answer = await linear.deliver(hook, payload, options);
 			return { ...answer, json: answer.body.startsWith("{") ? JSON.parse(answer.body) as Record<string, unknown> : {} };
 		};
-		const rows = () => (client.linearWorkspace.get([linear.workspace.id], service()) as unknown as { checkRows(): Promise<Array<{ id: string; state: string; attempts: number; decision: string }>> }).checkRows();
-		/** The answer the owner's actor gave a delivery that was taken in, once it has given it. */
+		const rows = () => (client.user.get([uid], service()) as unknown as { checkRows(): Promise<Array<{ id: string; decision: string }>> }).checkRows();
+		/** What the owner's actor decided for a delivery it took in: kept before the route answered. */
 		const decided = async (deliveryId: string) => {
-			const row = await until("a decision on delivery " + deliveryId, async () => (await rows()).find(r => r.id === deliveryId.toLowerCase() && r.state !== "received"));
-			assert.equal(row.state, "done", row.decision);
+			const row = (await rows()).find(r => r.id === deliveryId.toLowerCase());
+			assert.ok(row, "no decision was kept for delivery " + deliveryId);
 			return JSON.parse(row.decision) as { kind: string; why?: string; itemId?: string };
 		};
 		/** Taken in, and decided: what a qualifying delivery comes to. */
@@ -540,11 +537,51 @@ async function run() {
 			assert.equal((await linearItems()).length, before + 1);
 		});
 
+		await check("a second owner of the workspace cannot take a mapped team; once it is removed the next to save it gets it, and is charged", async () => {
+			const login2 = "linear-second";
+			github.addUser(login2);
+			const second = github.addRepository({ owner: login2, name: "other-factory", installation: github.addInstallation(login2, "User") });
+			const auth2 = await client.login.getOrCreate([randomUUID()]).demo();
+			const other = client.user.getOrCreate([auth2.profile.uid], { params: { token: auth2.token } });
+			const gh = await other.githubConnect({ origin: ORIGIN });
+			await other.githubComplete((await fetch(github.authorize(login2, gh.url), { redirect: "manual" })).headers.get("location")!.split("#github=")[1]);
+			const consent = new URL(await linear.authorize((await other.linearConnect({ origin: ORIGIN })).url));
+			assert.equal((await fetch(`${api}/linear/callback?${consent.searchParams}`, { redirect: "manual" })).headers.get("location"), `${ORIGIN}/#linear=connected`);
+
+			// ENG is the first owner's while it is mapped; OPS is free.
+			assert.equal(await code(other.saveLinearMapping({ teamId: eng.id, repositoryId: second.id })), "linear_team_taken");
+			assert.equal((await other.linearTeams()).teams.find(t => t.id === eng.id)!.mapping, null);
+			const ownItems = (await linearItems()).length;
+			assert.equal((await qualifying(created(eng, { labels: ["windlass"] }).payload)).kind, "filed");
+			assert.equal((await linearItems()).length, ownItems + 1);
+			assert.equal((await other.listItems({ source: "linear" })).length, 0);
+			await other.saveLinearMapping({ teamId: ops.id, repositoryId: second.id });
+			assert.deepEqual((await send(created(ops, { labels: ["windlass"] }).payload)).json, { taken: true });
+			assert.equal((await other.listItems({ source: "linear" })).length, 1);
+			assert.equal((await linearItems()).length, ownItems + 1, "a team of the second owner charged the first");
+
+			// Given up, ENG goes to whoever saves it next, and a delivery is no longer the first owner's.
+			await owner.removeLinearMapping(eng.id);
+			await other.saveLinearMapping({ teamId: eng.id, repositoryId: second.id });
+			assert.equal(await code(owner.saveLinearMapping({ teamId: eng.id, repositoryId: repo.id })), "linear_team_taken");
+			assert.deepEqual((await send(created(eng, { labels: ["windlass"] }).payload)).json, { taken: true });
+			assert.equal((await other.listItems({ source: "linear" })).length, 2);
+			assert.equal((await linearItems()).length, ownItems + 1, "a team given up charged its former owner");
+
+			// A claim that outlived its mapping routes a delivery to the owner, who finds no mapping and files nothing.
+			const stale = linear.addTeam("LEG", "Legacy");
+			assert.equal(await (client.linearWorkspace.getOrCreate([linear.workspace.id], service()) as unknown as { internalClaim(i: { teamId: string; uid: string }): Promise<boolean> }).internalClaim({ teamId: stale.id, uid }), true);
+			const reads = linear.calls.filter(call => call === "POST /graphql issue").length;
+			await ignored(created(stale, { labels: ["windlass"] }).payload);
+			assert.equal((await linearItems()).length, ownItems + 1);
+			assert.equal(linear.calls.filter(call => call === "POST /graphql issue").length, reads, "a stale route read an issue for the former owner");
+		});
+
 		await check("the platform wrote nothing to Linear, and logged no credential", async () => {
 			assert.deepEqual(linear.writes, []);
 			assert.ok(linear.calls.every(call => ["POST /oauth/token", "POST /graphql viewer", "POST /graphql teams", "POST /graphql issue"].includes(call)), linear.calls.join("\n"));
 			assert.ok(logs.includes("linear.connected"), "the connection was logged");
-			assert.ok(logs.includes("linear.delivery.stored"));
+			assert.ok(logs.includes("linear.delivery.filed"));
 			for (const secret of [linear.clientSecret, linear.signingSecret, githubSecret, "lin_oauth_", "lin_refresh_", "code-"]) assert.ok(!logs.includes(secret), "a credential appeared in the platform's output");
 		});
 	} finally {

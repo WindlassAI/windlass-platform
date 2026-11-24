@@ -1,24 +1,20 @@
 /**
- * The owner's side of the Linear integration, inside the user's actor: the workspace the owner connected, the teams they
- * mapped to repositories, and what one verified delivery comes to. The HTTP routes (linear/connect.ts, linear/webhook.ts)
- * and the per-workspace actor (linear-workspace.ts) reach it only through service actions.
+ * The owner's side of the Linear integration, inside the user's actor: the workspace the owner connected, the teams mapped to
+ * repositories, and what one verified delivery comes to. The routes (linear/connect.ts, linear/webhook.ts) reach it through
+ * service actions.
  *
- * What is kept, and where.
- *   linear_connection  one row: the workspace, its app user, the teams Linear listed when it was read, and the OAuth token,
- *                      sealed for this user and this workspace (signin/seal.ts, purpose "secret") like a repository's secret.
- *                      The token never leaves the actor in the clear: it is not in any answer, any log, or the directory.
- *   linear_mapping     one row per mapped team: the repository of the owner's GitHub connection it files to. The source of
- *                      truth. The workspace actor holds a copy only to answer the webhook route quickly, and filing
- *                      reads this table again, so a mapping that was removed, or a team that left the workspace, cannot file.
- *   linear_state       the numbers of the connections that were begun, each good once (a replay finds nothing) and bound
- *                      to the web origin that began it.
+ *   linear_connection  one row: the workspace, its app user, the teams Linear listed when it was read, and the OAuth token, sealed
+ *                      for this user and this workspace (signin/seal.ts) like a repository's secret. The token is in no answer
+ *                      and no log.
+ *   linear_mapping     one row per mapped team: the repository of the owner's GitHub connection it files to. The only copy of
+ *                      the mapping: filing reads it again, so a removed mapping or a team that left the workspace files nothing.
+ *   linear_state       the connections that were begun, each good once and bound to the web origin that began it.
+ *   linear_delivery    the deliveries that were taken in, for redelivery.
  *
- * Connecting. `linearConnect` (the owner, signed in) makes a signed state naming this user and the web app's own address, and a
- * PKCE verifier kept here. The server's callback claims the state once (`internalLinearClaim`), exchanges the code, and hands
- * the result back sealed in transit (`internalLinearComplete`): the engine between the server and this actor never carries a token.
+ * Which user a delivery goes to is `linearWorkspace`'s claim of the team, made when a mapping is saved and given up when it ends.
  *
- * Authorship. An app token cannot say which person authorized it (linear/app.ts), so no Linear person is the owner's own:
- * every issue is filed as third-party text (a draft, quoted), as GitHub's issues of other people are.
+ * An app token cannot say which person authorized it (linear/app.ts), so no Linear person is the owner's own: every issue is filed
+ * as third-party text (a draft, quoted), as GitHub's issues of other people are.
  */
 
 import { UserError } from "rivetkit";
@@ -27,19 +23,17 @@ import { clientError, serviceParams } from "../auth.js";
 import { config, linearConfig, ownEngineEndpoint } from "../config.js";
 import type { GithubId, LinearMapping, LinearStatus, LinearTeam, LinearTeamList } from "../contract.js";
 import type { LinearFiled, LinearFiling } from "../factory/intake.js";
-import { linearId } from "../factory/intake.js";
 import { githubApp } from "../github/app.js";
 import { githubId, isGithubId } from "../github/ids.js";
 import { GithubProblem, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { LinearError, isLinearId, linearApp, newVerifier, challengeOf, redactLinear, type LinearApp, type LinearIdentity, type LinearToken, type LinearTeam as ProtocolTeam } from "../linear/app.js";
 import { type LinearClaim, type LinearConnectStore, type LinearConnection as ProtocolConnection } from "../linear/connect.js";
-import type { LinearDelivery } from "../linear/webhook.js";
+import { QUICK_LABEL, TRIGGER_LABEL, type LinearDelivery, type LinearDispatch } from "../linear/webhook.js";
 import { openSecret, sealSecret } from "../repo-secrets.js";
 import { readSignedPayload, signedPayload } from "../signatures.js";
 import { serverSealer } from "../signin/seal.js";
 import { createClient } from "rivetkit/client";
 import { isActorGone } from "./internal.js";
-import { intakeScope } from "./issue-intake.js";
 import type { ItemsState } from "./user-items.js";
 
 export const LINEAR_TABLES = [
@@ -64,11 +58,18 @@ export const LINEAR_TABLES = [
 		origin TEXT NOT NULL,
 		expires_at INTEGER NOT NULL
 	)`,
+	`CREATE TABLE IF NOT EXISTS linear_delivery (
+		id TEXT PRIMARY KEY,
+		received_at INTEGER NOT NULL,
+		decision TEXT NOT NULL
+	)`,
 ];
 
 export const LINEAR_STATE_TTL_MS = 10 * 60_000;
 /** How many connections may be begun and left unfinished. */
 const MAX_PENDING = 20;
+/** How long a delivery id is remembered: Linear redelivers within hours. */
+const DELIVERIES_KEPT_MS = 7 * 86_400_000;
 /** A token this close to its end is refreshed before it is used. */
 const REFRESH_MARGIN_MS = 60_000;
 /** What no Linear person's id can be: nobody is the owner's own author (see the top of this file). */
@@ -154,6 +155,10 @@ const reconnect = () => new UserError("Linear no longer accepts this connection.
 
 function workspaceActor(c: LinearCtx, workspaceId: string) {
 	return c.client().linearWorkspace.getOrCreate([workspaceId], { params: serviceParams() });
+}
+
+function releaseTeam(c: LinearCtx, workspaceId: string, teamId: string): Promise<void> {
+	return workspaceActor(c, workspaceId).internalRelease({ teamId, uid: c.key[0] });
 }
 
 /** What the owner is told of a failure at Linear; anything else is logged and answered in general words. */
@@ -264,9 +269,9 @@ function readConnectionBlob(uid: string, blob: string): { token: LinearToken; id
 }
 
 /**
- * Records the connection that Linear confirmed for the state this user began. The workspace's directory learns its owner first
- * (the newest connection of a workspace is its owner's: only an administrator of the workspace can authorize the app), then the
- * connection is written. Mappings of teams the workspace still has are kept; the rest are dropped.
+ * Records the connection that Linear confirmed for the state this user began. Mappings of teams the workspace still has are kept;
+ * the rest are dropped, and their claims given up first, so that a failure leaves a mapping nobody is routed to and not a claim
+ * that blocks everyone else.
  */
 export async function completeLinearConnection(c: LinearCtx, blob: string): Promise<void> {
 	const uid = c.key[0]!;
@@ -277,31 +282,16 @@ export async function completeLinearConnection(c: LinearCtx, blob: string): Prom
 	await inLinearQueue(c, async () => {
 		const previous = await readConnection(c.db);
 		const present = new Set(known.map(team => team.id));
-		const kept = (previous?.workspace.id === workspace.id ? await readMappings(c.db) : []).filter(mapping => present.has(mapping.teamId));
-		await workspaceActor(c, workspace.id).internalAttach({ uid, appUserId: appUser.id, mapped: kept.map(mapping => mapping.teamId) });
-		const connectedAt = Date.now();
+		const sameWorkspace = previous?.workspace.id === workspace.id;
+		const mappings = await readMappings(c.db);
+		const kept = mappings.filter(mapping => sameWorkspace && present.has(mapping.teamId));
+		for (const mapping of mappings) if (!kept.includes(mapping)) await releaseTeam(c, previous!.workspace.id, mapping.teamId);
 		await c.db.transaction(async tx => {
 			await tx.execute("INSERT OR REPLACE INTO linear_connection (id, workspace, app_user, teams, sealed, connected_at) VALUES (1, ?, ?, ?, ?, ?)",
-				JSON.stringify(workspace), JSON.stringify(appUser), JSON.stringify(known), sealToken(uid, workspace.id, token), connectedAt);
+				JSON.stringify(workspace), JSON.stringify(appUser), JSON.stringify(known), sealToken(uid, workspace.id, token), Date.now());
 			await tx.execute("DELETE FROM linear_mapping WHERE team_id NOT IN (SELECT value FROM json_each(?))", JSON.stringify(kept.map(mapping => mapping.teamId)));
 		});
-		if (previous && previous.workspace.id !== workspace.id) {
-			await workspaceActor(c, previous.workspace.id).internalRelease(uid).catch(() => console.warn(`linear.workspace.release_failed uid=${uid}`));
-		}
 		console.log(`[wlp] linear.connected uid=${uid} workspace=${workspace.id} teams=${known.length} mapped=${kept.length}`);
-	});
-}
-
-/** Another owner took this workspace: this connection no longer receives its deliveries, and its mappings go. */
-export async function releaseLinearWorkspace(c: LinearCtx, workspaceId: string): Promise<void> {
-	await inLinearQueue(c, async () => {
-		const stored = await readConnection(c.db);
-		if (!stored || stored.workspace.id !== lower(workspaceId)) return;
-		await c.db.transaction(async tx => {
-			await tx.execute("DELETE FROM linear_connection WHERE id = 1");
-			await tx.execute("DELETE FROM linear_mapping");
-		});
-		console.log(`[wlp] linear.released uid=${c.key[0]} workspace=${stored.workspace.id}`);
 	});
 }
 
@@ -331,11 +321,10 @@ export async function linearTeams(c: LinearCtx, fresh = false): Promise<{ list: 
 	return { list: teamList(teams, mappings.filter(mapping => present.has(mapping.teamId))), stored };
 }
 
-/** Removes a mapping here first, then from the directory: a team the directory still routes is turned away by the filing. */
+/** Gives the team's claim up, then removes the mapping: a mapping whose claim is gone is routed nothing, and is removed by the next call. */
 async function unmap(c: LinearCtx, workspaceId: string, teamId: string): Promise<void> {
+	await releaseTeam(c, workspaceId, teamId);
 	await c.db.execute("DELETE FROM linear_mapping WHERE team_id = ?", teamId);
-	try { await workspaceActor(c, workspaceId).internalMap({ uid: c.key[0], teamId, mapped: false }); }
-	catch { console.warn(`linear.mapping.unroute_failed uid=${c.key[0]} team=${teamId}`); }
 }
 
 export async function listLinearTeams(c: LinearCtx): Promise<LinearTeamList> {
@@ -362,12 +351,18 @@ export async function saveLinearMapping(c: LinearCtx, input: { teamId: string; r
 		if (error instanceof GithubProblem) throw new UserError(error.message, { code: error.code === "github_gone" || error.code === "github_denied" ? "bad_input" : error.code });
 		throw clientError(c.log, error, "The repository could not be checked at GitHub. Try again.");
 	}
-	const savedAt = Date.now();
-	// Routed first, then recorded: a route without a mapping files nothing, a mapping without a route only waits.
-	try { await workspaceActor(c, stored.workspace.id).internalMap({ uid: c.key[0], teamId, mapped: true }); }
+	// The team is this user's alone while it is mapped.
+	let claimed;
+	try { claimed = await workspaceActor(c, stored.workspace.id).internalClaim({ teamId, uid: c.key[0] }); }
 	catch (error) { throw clientError(c.log, error, "The mapping could not be saved. Try again."); }
-	await c.db.execute("INSERT INTO linear_mapping (team_id, repository_id, owner, name, saved_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (team_id) DO UPDATE SET repository_id = excluded.repository_id, owner = excluded.owner, name = excluded.name, saved_at = excluded.saved_at",
-		teamId, String(repository.id), repository.owner, repository.name, savedAt);
+	if (!claimed) throw new UserError("Another Windlass user has already mapped that team.", { code: "linear_team_taken" });
+	try {
+		await c.db.execute("INSERT INTO linear_mapping (team_id, repository_id, owner, name, saved_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (team_id) DO UPDATE SET repository_id = excluded.repository_id, owner = excluded.owner, name = excluded.name, saved_at = excluded.saved_at",
+			teamId, String(repository.id), repository.owner, repository.name, Date.now());
+	} catch (error) {
+		await releaseTeam(c, stored.workspace.id, teamId).catch(() => undefined);
+		throw error;
+	}
 	console.log(`[wlp] linear.mapping.saved uid=${c.key[0]} team=${teamId} repository=${repository.id}`);
 	return teamList(list.teams.map(({ id, key, name }) => ({ id, key, name })), await readMappings(c.db));
 }
@@ -387,41 +382,52 @@ export async function removeLinearMapping(c: LinearCtx, teamId: string): Promise
 // One verified delivery
 // ---------------------------------------------------------------------------------------------
 
-const TRIGGER_LABELS = new Set(["windlass", "windlass:quick"]);
-
-/** The issue was reserved a key and not filed yet (an interrupted filing): it is finished whatever the issue says by now. */
-function interrupted(c: LinearCtx, issueId: string): boolean {
-	const prefix = intakeScope(`linear:${issueId}:`);
-	for (const [key, entry] of c.vars.items.created) if (key.startsWith(prefix) && !c.vars.items.items.has(entry.id)) return true;
-	return false;
-}
-
 /** A link to the issue: Linear's own when it is https, otherwise the one Linear's addresses have. */
 function issueUrl(reported: string, urlKey: string, identifier: string): string {
 	if (/^https:\/\/[^\s/]+\/\S*$/.test(reported) && reported.length <= 500) return reported;
 	return `https://linear.app/${encodeURIComponent(urlKey || "issue")}/issue/${identifier}`;
 }
 
-export type LinearDeliveryResult = LinearFiled | { kind: "ignored"; why: string };
-
 /**
- * What one verified delivery comes to for the owner. The delivery says only which issue and why; the issue itself is read from
- * Linear with the connection's token, and the mapping is read from here. It is filed only while the workspace is still this
- * connection's, the team still mapped, and the reason it qualified still holds (a label removed since is not filed), apart from
- * an interrupted filing, which is finished. Throws when it must be tried again: Linear unreachable, the filing interrupted.
+ * What one verified delivery comes to for the owner. The delivery names the issue and what changed; the issue itself is read from
+ * Linear now with the connection's token, and the connection and the mapping are read from here: the route's claim is only where
+ * the delivery was sent. Nothing is filed unless the workspace is still this connection's, the team still mapped, and what
+ * qualified the issue still holds (an interrupted filing is finished anyway, in `fileLinearIssue`).
  *
- * Filing is idempotent: the key of an issue's active item is the issue's, so a redelivery or a second event files nothing.
+ * Answers `duplicate` for a delivery id that was already decided. Throws when it must be redelivered: Linear or GitHub
+ * unreachable. The decision is kept only then, so a redelivery after a lost reply finds it, and one after a failure files. A filing
+ * the lost reply hid is not filed twice either way: the issue's active item has one key.
  */
-export async function fileLinearDelivery(c: LinearCtx, delivery: LinearDelivery, file: (filing: LinearFiling) => Promise<LinearFiled>): Promise<LinearDeliveryResult> {
+export async function fileLinearDelivery(c: LinearCtx, delivery: LinearDelivery, file: (filing: LinearFiling) => Promise<LinearFiled>): Promise<LinearDispatch> {
 	const app = linearApp();
-	if (!app) return { kind: "ignored", why: "Linear is off on this deployment." };
 	const stored = await readConnection(c.db);
-	if (!stored || stored.workspace.id !== lower(delivery.workspaceId)) return { kind: "ignored", why: "The workspace is not this owner's connection." };
+	if (!app || !stored || stored.workspace.id !== lower(delivery.workspaceId)) return "ignored";
+	const reasons: Array<"label" | "assignment"> = [];
+	if (delivery.assignedTo !== null && lower(delivery.assignedTo) === stored.appUser.id) reasons.push("assignment");
+	if (delivery.label) reasons.push("label");
 	const teamId = lower(delivery.teamId);
 	const [mapping] = await c.db.execute<{ repository_id: string }>("SELECT repository_id FROM linear_mapping WHERE team_id = ?", teamId);
 	const repositoryId = mapping && githubId(mapping.repository_id);
-	if (!repositoryId) return { kind: "ignored", why: "The team is not mapped." };
+	if (reasons.length === 0 || !repositoryId) return "ignored";
 
+	await c.db.execute("DELETE FROM linear_delivery WHERE received_at <= ?", Date.now() - DELIVERIES_KEPT_MS);
+	const id = lower(delivery.deliveryId);
+	if ((await c.db.execute("SELECT 1 FROM linear_delivery WHERE id = ?", id)).length > 0) return "duplicate";
+
+	const decision = summary(await decide(c, app, stored, delivery, reasons, teamId, repositoryId, file));
+	await c.db.execute("INSERT OR IGNORE INTO linear_delivery VALUES (?, ?, ?)", id, Date.now(), JSON.stringify(decision));
+	console.log(`linear.delivery.${decision.kind} workspace=${stored.workspace.id} delivery=${id}${decision.itemId ? ` item=${decision.itemId}` : ` (${decision.why})`}`);
+	return "taken";
+}
+
+/** What is kept and logged of a decision: its kind and its item or reason, nothing of the issue's text. */
+function summary(result: LinearFiled): { kind: string; itemId?: string; why?: string } {
+	if (result.kind === "filed" || result.kind === "exists") return { kind: result.kind, itemId: result.itemId };
+	return { kind: result.kind, why: result.kind === "ignored" ? result.why : result.reason };
+}
+
+async function decide(c: LinearCtx, app: LinearApp, stored: Stored, delivery: LinearDelivery, reasons: Array<"label" | "assignment">,
+	teamId: string, repositoryId: GithubId, file: (filing: LinearFiling) => Promise<LinearFiled>): Promise<LinearFiled> {
 	let issue;
 	try {
 		const { token } = await accessToken(c, app);
@@ -433,16 +439,12 @@ export async function fileLinearDelivery(c: LinearCtx, delivery: LinearDelivery,
 	if (!issue || lower(issue.id) !== lower(delivery.issueId)) return { kind: "ignored", why: "Linear has no such issue." };
 	if (lower(issue.teamId) !== teamId) return { kind: "ignored", why: "The issue is not in the mapped team." };
 
-	const labels = issue.labels.map(label => label.name.trim().toLowerCase());
 	const holds = {
-		label: labels.some(label => TRIGGER_LABELS.has(label)),
+		label: issue.labels.some(label => [TRIGGER_LABEL, QUICK_LABEL].includes(label.name.trim().toLowerCase())),
 		assignment: issue.assigneeId !== null && lower(issue.assigneeId) === stored.appUser.id,
 	};
-	const via = delivery.reasons.find(reason => holds[reason]);
-	if (!via && !interrupted(c, issue.id)) return { kind: "ignored", why: "The issue no longer has what qualified it." };
-
-	const actor = delivery.actor.id ?? NOBODY;
-	const filing: LinearFiling = {
+	const via = reasons.find(reason => holds[reason]);
+	return file({
 		issue: {
 			id: lower(issue.id),
 			identifier: issue.identifier,
@@ -456,31 +458,45 @@ export async function fileLinearDelivery(c: LinearCtx, delivery: LinearDelivery,
 		team: { id: teamId, workspaceId: stored.workspace.id },
 		repository: { id: repositoryId },
 		owner: { linearUserId: NOBODY },
-		trigger: { via: via ?? delivery.reasons[0] ?? "label", at: delivery.sentAt, sender: { id: linearId(actor) ? actor : NOBODY, name: "a Linear user" } },
-	};
-	// A GitHub that cannot answer now is no refusal: the delivery is tried again. Whether the owner may write there is `file`'s to decide.
-	const github = githubApp();
-	if (github && c.vars.github) {
-		try { await resolveRepository(github, c.vars.github, repositoryId, "write"); }
-		catch (error) { if (error instanceof GithubProblem && (error.code === "github_unreachable" || error.code === "github_failed")) throw error; }
-	}
-	return file(filing);
+		trigger: { via: via ?? reasons[0]!, at: delivery.sentAt, sender: { id: delivery.actorId ?? NOBODY, name: "a Linear user" }, ...(via ? {} : { lapsed: true as const }) },
+	});
 }
 
 // ---------------------------------------------------------------------------------------------
-// The callback route's store
+// What the routes need of the actors
 // ---------------------------------------------------------------------------------------------
 
 interface UserLinearActions {
 	internalLinearClaim(nonce: string): Promise<{ ok: boolean; verifier: string | null; origin: string | null }>;
 	internalLinearComplete(blob: string): Promise<void>;
+	internalLinearDelivery(delivery: LinearDelivery): Promise<LinearDispatch>;
 }
 
-let client: { user: { get(key: string[], options: { params: unknown }): unknown } } | null = null;
+let client: {
+	user: { get(key: string[], options: { params: unknown }): unknown };
+	linearWorkspace: { get(key: string[], options: { params: unknown }): unknown };
+} | null = null;
 
-function userActor(uid: string): UserLinearActions {
+function actors() {
 	client ??= createClient({ endpoint: ownEngineEndpoint() }) as unknown as NonNullable<typeof client>;
-	return client.user.get([uid], { params: serviceParams() }) as UserLinearActions;
+	const options = { params: serviceParams() };
+	return {
+		user: (uid: string) => client!.user.get([uid], options) as UserLinearActions,
+		owner: (workspaceId: string) => client!.linearWorkspace.get([workspaceId], options) as { internalOwner(teamId: string): Promise<string | null> },
+	};
+}
+
+/** `POST /linear/webhook`'s hand-over: the team's claimant, if there is one, files the delivery or says it already has. */
+export async function dispatchLinearDelivery(delivery: LinearDelivery): Promise<LinearDispatch> {
+	const { user, owner } = actors();
+	try {
+		const uid = await owner(delivery.workspaceId).internalOwner(delivery.teamId);
+		return uid === null ? "ignored" : await user(uid).internalLinearDelivery(delivery);
+	} catch (error) {
+		// A workspace nobody mapped a team of has no actor, and a user who is gone has no connection.
+		if (isActorGone(error)) return "ignored";
+		throw error;
+	}
 }
 
 /**
@@ -494,7 +510,7 @@ export const actorLinearConnectStore: LinearConnectStore = {
 		if (payload.exp <= Date.now()) return { ok: false, reason: "state", origin: config.origins.includes(payload.origin) ? payload.origin : null };
 		let claimed;
 		try {
-			claimed = await userActor(payload.uid).internalLinearClaim(payload.nonce);
+			claimed = await actors().user(payload.uid).internalLinearClaim(payload.nonce);
 		} catch (error) {
 			// A user whose actor is gone started nothing.
 			if (isActorGone(error)) return { ok: false, reason: "state", origin: null };
@@ -505,6 +521,6 @@ export const actorLinearConnectStore: LinearConnectStore = {
 		return { ok: true, uid: payload.uid, origin: claimed.origin, verifier: claimed.verifier };
 	},
 	async complete(uid, connection) {
-		await userActor(uid).internalLinearComplete(sealConnection(uid, connection));
+		await actors().user(uid).internalLinearComplete(sealConnection(uid, connection));
 	},
 };

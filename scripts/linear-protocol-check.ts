@@ -7,13 +7,13 @@
  * Linear is played by scripts/linear-standin.ts: its authorization page, token endpoint, GraphQL API and
  * the signed deliveries of its webhooks, over real HTTP. No server and no actor runs here: what the
  * actors keep (the states that were issued, the connection, the deliveries taken in) is played by
- * `LinearConnectStore` and `LinearWebhookStore` in memory; the actors themselves are checked elsewhere.
+ * `LinearConnectStore` and the route's `dispatch` in memory; the actors themselves are checked by linear-check.ts.
  *
  * What it shows: the configuration, and that without it the integration is off; the OAuth exchange as
  * the app's own user, with PKCE, a reused, forged and declined state, a person's token and a missing
  * scope refused; the identity, team (paged) and issue reads, and that nothing is ever written to Linear;
  * signed deliveries parsed by Linear's own transition fields (label gained, app assigned) and not by the
- * issue's current state; the app told from another assignee; unrelated edits, removals and unassignment
+ * issue's current state; the assignee passed on as an id, for the owner to tell the app from a person; unrelated edits, removals and unassignment
  * ignored; unmapped teams and unknown workspaces ignored; and malformed, wrong, altered, stale, oversized
  * and unsigned deliveries refused before anything is dispatched. Nothing logged or answered to a browser
  * holds a credential.
@@ -45,7 +45,7 @@ type LinearConnection = import("../server/src/linear/connect.js").LinearConnecti
 type LinearClaim = import("../server/src/linear/connect.js").LinearClaim;
 type LinearConnectStore = import("../server/src/linear/connect.js").LinearConnectStore;
 type LinearDelivery = import("../server/src/linear/webhook.js").LinearDelivery;
-type LinearWebhookStore = import("../server/src/linear/webhook.js").LinearWebhookStore;
+type LinearDispatch = import("../server/src/linear/webhook.js").LinearDispatch;
 
 // What was logged: nothing in it may be a credential.
 const logged: string[] = [];
@@ -90,33 +90,32 @@ class MemoryConnectStore implements LinearConnectStore {
 	}
 }
 
-class MemoryWebhookStore implements LinearWebhookStore {
+/** The owner's side in memory: what `dispatchLinearDelivery` and `fileLinearDelivery` decide before an issue is read. */
+class MemoryOwner {
 	readonly workspaces = new Map<string, { appUserId: string; mapped: Set<string> }>();
 	readonly received: LinearDelivery[] = [];
-	lookups = 0;
-	busy = false;
+	dispatches = 0;
+	unavailable = false;
 	private readonly seen = new Set<string>();
 
-	async lookup(workspaceId: string, teamId: string) {
-		this.lookups += 1;
-		const workspace = this.workspaces.get(workspaceId);
-		return workspace ? { appUserId: workspace.appUserId, mapped: workspace.mapped.has(teamId) } : null;
-	}
-
-	async receive(delivery: LinearDelivery) {
-		if (this.busy) return "busy" as const;
-		if (this.seen.has(delivery.deliveryId)) return "duplicate" as const;
+	dispatch = async (delivery: LinearDelivery): Promise<LinearDispatch> => {
+		this.dispatches += 1;
+		if (this.unavailable) throw new Error("the owner's actor cannot be reached");
+		const workspace = this.workspaces.get(delivery.workspaceId);
+		if (!workspace?.mapped.has(delivery.teamId)) return "ignored";
+		if (!delivery.label && delivery.assignedTo !== workspace.appUserId) return "ignored";
+		if (this.seen.has(delivery.deliveryId)) return "duplicate";
 		this.seen.add(delivery.deliveryId);
 		this.received.push(delivery);
-		return "taken" as const;
-	}
+		return "taken";
+	};
 }
 
 // ---- the platform's HTTP, for the deliveries ----------------------------------------------------
 
-const hooks = new MemoryWebhookStore();
+const hooks = new MemoryOwner();
 const settings = { current: undefined as ReturnType<typeof linearConfig> | undefined };
-const route = webhook.linearWebhookRoute({ store: hooks, settings: () => settings.current ?? linearConfig() });
+const route = webhook.linearWebhookRoute({ dispatch: hooks.dispatch, settings: () => settings.current ?? linearConfig() });
 const platform = createServer((request: IncomingMessage, response) => {
 	void (async () => {
 		const chunks: Buffer[] = [];
@@ -178,7 +177,7 @@ await section("without configuration the routes do not exist and nothing is disp
 	const answer = await standin.deliver(hookUrl, signed.payload);
 	assert.equal(answer.status, 404);
 	assert.equal(hooks.received.length, 0);
-	assert.equal(hooks.lookups, 0);
+	assert.equal(hooks.dispatches, 0);
 	settings.current = undefined;
 });
 
@@ -355,54 +354,52 @@ await section("a signed trigger: a label on a new issue, the label gained later,
 	assert.equal(delivery.workspaceId, standin.workspace.id);
 	assert.equal(delivery.teamId, alpha.id);
 	assert.equal(delivery.issueId, created.issue.id);
-	assert.equal(delivery.identifier, created.issue.identifier);
-	assert.equal(delivery.url, standin.issueUrl(created.issue));
-	assert.deepEqual(delivery.reasons, ["label"]);
-	assert.equal(delivery.quick, false);
-	assert.equal(delivery.creatorId, standin.stranger.id, "the creator is the author, who is not the one who labelled it");
-	assert.equal(delivery.actor.id, standin.human.id);
-	assert.equal(delivery.actor.type, "user");
+	assert.equal(delivery.label, true);
+	assert.equal(delivery.assignedTo, null);
+	assert.equal(delivery.actorId, standin.human.id);
+	// Ids and the transition only: nothing of what the issue says goes on from a delivery.
+	assert.deepEqual(Object.keys(delivery).sort(), ["actorId", "assignedTo", "deliveryId", "issueId", "label", "sentAt", "teamId", "workspaceId"]);
 
 	// Gained by an update, with `windlass:quick`: Quick.
 	const plain = standin.createIssue({ team: alpha });
 	assert.equal((await fire(plain.payload)).dispatched, 0, "an issue with neither label is not a trigger");
 	const gained = await fire(standin.updateIssue(plain.issue, { addLabels: ["windlass", "windlass:quick"] }));
 	assert.equal(gained.dispatched, 1);
-	assert.equal(hooks.received.at(-1)!.quick, true);
-	assert.deepEqual(hooks.received.at(-1)!.reasons, ["label"]);
+	assert.equal(hooks.received.at(-1)!.label, true);
+	assert.equal(hooks.received.at(-1)!.assignedTo, null);
 
 	// Assigned to the app user later, and at birth.
 	const later = standin.createIssue({ team: beta });
 	await fire(later.payload);
 	const assigned = await fire(standin.updateIssue(later.issue, { assignee: standin.appUser }));
 	assert.equal(assigned.dispatched, 1);
-	assert.deepEqual(hooks.received.at(-1)!.reasons, ["assignment"]);
-	assert.equal(hooks.received.at(-1)!.quick, false);
+	assert.equal(hooks.received.at(-1)!.label, false);
+	assert.equal(hooks.received.at(-1)!.assignedTo, standin.appUser.id);
 	const born = standin.createIssue({ team: beta, assignee: standin.appUser });
 	assert.equal((await fire(born.payload)).dispatched, 1);
 	// Reassigned from someone else to the app: a transition too.
 	const reassigned = standin.createIssue({ team: beta, assignee: standin.stranger });
 	await fire(reassigned.payload);
 	assert.equal((await fire(standin.updateIssue(reassigned.issue, { assignee: standin.appUser }))).dispatched, 1);
-	// Both at once are one delivery with both reasons.
+	// Both at once are one delivery with both transitions.
 	const both = standin.createIssue({ team: beta, labels: ["windlass"], assignee: standin.appUser });
 	await fire(both.payload);
-	assert.deepEqual(hooks.received.at(-1)!.reasons, ["assignment", "label"]);
+	assert.deepEqual([hooks.received.at(-1)!.label, hooks.received.at(-1)!.assignedTo], [true, standin.appUser.id]);
 	assert.equal(standin.deliveries.length > 0, true);
 });
 
 await section("the app is told from another assignee, a person included", async () => {
 	const issue = standin.createIssue({ team: alpha });
 	await fire(issue.payload);
+	// The route does not know the workspace's app user: the assignee goes on as an id, and the owner turns a person away.
 	for (const other of [standin.human, standin.stranger]) {
 		const answer = await fire(standin.updateIssue(issue.issue, { assignee: other }));
 		assert.equal(answer.dispatched, 0, `${other.name} is not the app`);
+		assert.equal(answer.json.taken, false);
 	}
-	// The same payload read for a workspace whose app user is somebody else's: nothing.
-	const payload = standin.updateIssue(issue.issue, { assignee: standin.appUser });
-	assert.ok(webhook.classify(payload, standin.appUser.id));
-	assert.equal(webhook.classify(payload, standin.human.id), null);
-	assert.equal(webhook.classify(payload, randomUUID()), null);
+	assert.equal(webhook.classify(standin.updateIssue(issue.issue, { assignee: standin.appUser }))?.assignedTo, standin.appUser.id);
+	assert.equal(webhook.classify(standin.updateIssue(issue.issue, { assignee: standin.human }))?.assignedTo, standin.human.id);
+	assert.equal(webhook.classify(standin.updateIssue(issue.issue, { assignee: null })), null);
 	// Born assigned to a person.
 	assert.equal((await fire(standin.createIssue({ team: alpha, assignee: standin.stranger }).payload)).dispatched, 0);
 });
@@ -445,7 +442,7 @@ await section("unrelated edits, removals and unassignment are not triggers; an u
 	assert.equal((await fire({ ...stranger, data: { ...(stranger.data as object), teamId: "nope", team: undefined } })).dispatched, 0);
 });
 
-await section("redelivery: the same delivery is taken once, and a busy store has Linear try again", async () => {
+await section("redelivery: the same delivery is taken once, and a delivery that cannot be taken in has Linear try again", async () => {
 	const issue = standin.createIssue({ team: alpha, labels: ["windlass"] });
 	const first = await fire(issue.payload, { deliveryId: randomUUID() });
 	assert.equal(first.json.taken, true);
@@ -454,15 +451,15 @@ await section("redelivery: the same delivery is taken once, and a busy store has
 	assert.equal(again.status, 202);
 	assert.equal(again.json.taken, "duplicate");
 	assert.equal(again.dispatched, 0);
-	hooks.busy = true;
-	const busy = await fire(standin.createIssue({ team: alpha, labels: ["windlass"] }).payload);
-	assert.equal(busy.status, 503);
-	hooks.busy = false;
+	hooks.unavailable = true;
+	const unavailable = await fire(standin.createIssue({ team: alpha, labels: ["windlass"] }).payload);
+	assert.equal(unavailable.status, 503);
+	hooks.unavailable = false;
 });
 
 await section("refused before dispatch: bad, wrong, altered, stale and oversized deliveries", async () => {
 	const payload = standin.createIssue({ team: alpha, labels: ["windlass"] }).payload;
-	const lookups = hooks.lookups;
+	const lookups = hooks.dispatches;
 	const received = hooks.received.length;
 	const refused = async (what: string, status: number, code: string, answer: Promise<Awaited<ReturnType<typeof fire>>>) => {
 		const result = await answer;
@@ -510,7 +507,7 @@ await section("refused before dispatch: bad, wrong, altered, stale and oversized
 	assert.equal((await fire(standin.createIssue({ team: alpha, labels: ["windlass"] }).payload, { timestamp: Date.now() + 30_000 })).dispatched, 1);
 	assert.equal(hooks.received.length, received + 2, "a refused delivery was dispatched");
 	// Nothing was looked up, either, for the refused: ids are taken out only after the signature and the timestamp.
-	assert.equal(hooks.lookups, lookups + 2);
+	assert.equal(hooks.dispatches, lookups + 2);
 });
 
 await section("rotated signing secret and the parse of ids: only UUIDs are taken out", async () => {

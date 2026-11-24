@@ -1085,7 +1085,6 @@ export const itemActions = {
 	internalLinearIntake(c: ItemsCtx, filing: LinearFiling, makeSession: MakeSession): Promise<LinearFiled> {
 		requireServiceFor(c, "call");
 		return inIntakeQueue(c, () => fileLinearIssue(c, filing,
-			key => githubItemId(c.key[0]!, key),
 			(profile, made) => fileItem(c, profile, made.input, "linear", makeSession, { linear: made.binding })));
 	},
 	internalReserveAttachment(c: ItemsCtx, input: Reservation) {

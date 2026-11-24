@@ -29,8 +29,7 @@ import { DEFAULT_ENDPOINT, PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH } from "
 import { webhookRoute } from "./github/webhook.js";
 import { githubApp } from "./github/app.js";
 import { GITHUB_CALLBACK_PATH, githubCallbackResponse } from "./github/connect.js";
-import { actorLinearConnectStore } from "./actors/user-linear.js";
-import { actorLinearWebhookStore } from "./actors/linear-workspace.js";
+import { actorLinearConnectStore, dispatchLinearDelivery } from "./actors/user-linear.js";
 import { LINEAR_CALLBACK_PATH, linearCallbackResponse } from "./linear/connect.js";
 import { LINEAR_WEBHOOK_PATH, linearWebhookRoute } from "./linear/webhook.js";
 import { getLayer } from "./layer.js";
@@ -168,7 +167,7 @@ const web = config.webDir ? webFiles(config.webDir, {
 }) : null;
 if (config.webDir) console.log(`[wlp] web app: served from ${config.webDir}`);
 
-const linearWebhooks = linearWebhookRoute({ store: actorLinearWebhookStore });
+const linearWebhooks = linearWebhookRoute({ dispatch: dispatchLinearDelivery });
 
 async function route(request: Request): Promise<Response> {
 	const { pathname } = new URL(request.url);

@@ -145,8 +145,11 @@ export interface LinearFiling {
 	repository: { id: GithubId };
 	/** The Linear user who connected the workspace. Their own issues are the owner's own text. */
 	owner: { linearUserId: string };
-	/** What qualified it: the label added or the assignment to the Windlass app user, by whom and when. */
-	trigger: { via: "label" | "assignment"; at: number; sender: { id: string; name: string } };
+	/**
+	 * What qualified it: the label added or the assignment to the Windlass app user, by whom and when. `lapsed`: the issue, as
+	 * read now, no longer has it. Only a filing that was interrupted is finished then.
+	 */
+	trigger: { via: "label" | "assignment"; at: number; sender: { id: string; name: string }; lapsed?: true };
 }
 
 /** What `fileLinearIssue` did. A refusal is the platform's reason, for the log: Linear is told nothing. */
