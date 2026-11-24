@@ -54,6 +54,7 @@ export class WarmSpares {
 
 	get ready() { return [...this.entries].filter(e => this.usable(e)).length; }
 	private usable(e: Entry) { return e.ready && !e.abort.signal.aborted && this.now() - e.started < SPARE_TTL; }
+	get units() { return [...this.entries].reduce((sum, e) => sum + (e.spec.args.size ?? 1), 0); }
 	get raws() { return [...this.entries].map(e => e.raw); }
 	owns(raw: string) { return this.raws.includes(raw); }
 

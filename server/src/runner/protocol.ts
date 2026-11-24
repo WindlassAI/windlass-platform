@@ -75,7 +75,7 @@ const operations = {
 	memoryEvents: [object(sandbox), nullable(object({ oomKills: count, totalMiB: positiveLimit }))],
 	/** The proxy's cumulative snapshot for this turn. A new turn starts its counters before setup. */
 	blockedNetwork: [object({ ...sandbox, turn: positiveLimit, retained: list(object(endpoint), 50) }), object({ broker: fingerprint, hosts: list(refusalEntry, 50), overflow: count })],
-	create: [object({ spare: optional(spareRecipe), profile: machineProfile, mirrorRepo: optional(snapshotKey.repo), size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
+	create: [object({ environmentBuild: optional(oneOf(true)), spare: optional(spareRecipe), profile: machineProfile, mirrorRepo: optional(snapshotKey.repo), size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
 	seedSpare: [object({ ...sandbox, spare: spareRecipe, screenshots: optional(boolean) }), boolean],
 	hasSnapshot: [object({ repo: snapshotKey.repo }), boolean],
 	saveMirror: [object({ ...sandbox, stage: is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v)), partial: boolean }), boolean],

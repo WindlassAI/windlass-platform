@@ -679,7 +679,7 @@ export class GithubApp {
 	}
 
 	/** Resolve a branch (or pinned review base) once. Every dependency read uses immutable objects. */
-	async setupInputs(token: string, owner: string, name: string, revision: string) {
+	async setupInputs(token: string, owner: string, name: string, revision: string, requireLock = true) {
 		const prefix = `/repos/${owner}/${name}`;
 		const auth = { bearer: token };
 		const { body } = await this.call({ path: prefix + "/commits/" + encodeURIComponent(revision), auth, what: "resolve the setup revision" });
@@ -692,7 +692,7 @@ export class GithubApp {
 			if (!text(e.path) || !SHA.test(text(e.sha))) throw new Error("Incomplete tree entry");
 			return { path: text(e.path), sha: text(e.sha), mode: text(e.mode), type: text(e.type) };
 		});
-		return { commit, dependencies: dependencyHash(files) };
+		return { commit, dependencies: dependencyHash(files, requireLock) };
 	}
 
 	/**
@@ -862,7 +862,7 @@ export class GithubApp {
 	}
 
 	async acknowledgeFeedback(installationId: GithubId, repo: Pick<Repository, "id" | "owner" | "name">, key: string, reviewNodeId?: string) {
-		const [kind, id] = key.split(":");
+		const [kind, id = ""] = key.split(":");
 		const permission = kind === "issue_comment" ? "issues" : "pull_requests";
 		await this.withToken(installationId, { repositoryId: repo.id, permissions: { metadata: "read", [permission]: "write" } }, async token => {
 			if (kind === "issue_comment" || kind === "review_comment") return this.react(token, repo, { kind, id }, "eyes");

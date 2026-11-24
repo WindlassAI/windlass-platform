@@ -142,6 +142,7 @@ function stand(): Stand {
 		db, uid: "u_1", now: () => clock.now,
 		sessions: () => sessions,
 		machines: async () => s.machines,
+		dependenciesChanged: async () => false,
 		saved: async () => ({ ...saved, defaults: { screenshots: true, profile: null, model: null, updatedAt: null }, label: "acme/harbor" }),
 		snapshots: { hosted: true, machines: true },
 		hostedUserMax: null,
@@ -194,6 +195,40 @@ async function run(): Promise<void> {
 		const changed = (await readEnvironments(s.host.db, PROJECT)).find(r => r.place === HOSTED)!;
 		expect("and builds again after the debounce", changed.dueTrigger === "change" && changed.dueAt === s.clock.now + CHANGE_DEBOUNCE_MS);
 		expect("the view says why it is stale", (await environmentsView(s.host, PROJECT)).environments.find(e => e.place === HOSTED)?.note?.includes("setup command") === true);
+	}
+
+	// A quick setup validates once. Cold items, identical settings and code-only merges leave it alone.
+	{
+		const s = stand();
+		s.host.snapshots.hosted = false;
+		const machineRow = async () => (await readEnvironments(s.host.db, PROJECT)).find(r => r.place === "m_box")!;
+		await rebuild(s.host, PROJECT, "m_box");
+		await buildResult(s.host, "s_env_1", passed({ snapshot: false }));
+		await nudge(s.host, PROJECT, "m_box", "cold");
+		await settingsChanged(s.host, PROJECT);
+		expect("unchanged validated inputs with no image do not queue another build", (await machineRow()).dueAt === null);
+		await pushed(s.host, PROJECT);
+		s.clock.now += PUSH_DEBOUNCE_MS;
+		await tick(s.host);
+		expect("a code-only push needs no build", s.started.length === 1 && (await machineRow()).dueAt === null);
+		s.host.dependenciesChanged = async (repo, since) => repo === "7101" && since === COMMIT;
+		await pushed(s.host, PROJECT);
+		s.clock.now += PUSH_DEBOUNCE_MS;
+		await tick(s.host);
+		expect("changed dependency inputs start a build", s.started.length === 2 && s.started[1].trigger === "push");
+		await buildResult(s.host, "s_env_2", { waiting: "Waiting for a free slot." });
+		const waiting = await machineRow();
+		expect("waiting releases the session and keeps the ready environment", waiting.session === null && waiting.ready?.commit === COMMIT && waiting.dueAt === s.clock.now + RETRY_MS && s.removed.includes("s_env_2"));
+		s.clock.now += RETRY_MS;
+		await tick(s.host);
+		expect("the deferred build retries", s.started.length === 3 && s.started[2].trigger === "push");
+		await buildResult(s.host, "s_env_3", passed());
+		await saveSchedule(s.host, PROJECT, 6);
+		s.host.dependenciesChanged = async () => false;
+		await pushed(s.host, PROJECT);
+		s.clock.now += 6 * HOUR;
+		await tick(s.host);
+		expect("a code-only push still allows a due scheduled refresh", s.started.length === 4 && s.started[3].trigger === "schedule");
 	}
 
 	// Hosted sizes: an image starts only sandboxes of its own size, so the record keeps the size its build was made in.
