@@ -60,7 +60,7 @@ export interface StandinRepository {
 	access: Map<string, Level>;
 	/** Branch name patterns (`*` matches anything) a push to which is refused. */
 	protectedBranches: string[];
-	ci: Map<string, { runs: unknown[]; statuses: unknown[] }>;
+	ci: Map<string, { runs: unknown[]; statuses: unknown[]; workflows?: { status: string; updated_at?: string; run_started_at?: string }[] }>;
 	jobs: Map<string, { steps: unknown[]; runner_id: number | null; runner_name: string }>;
 	jobLogs: Map<string, string>;
 }
@@ -834,6 +834,16 @@ export class GithubStandin {
 				return answer(201, check);
 			}
 
+			if (rest === "/commits" && method === "GET") {
+				if (!this.allows(token, repository, "contents", "read")) return denied();
+				const shas = git(["rev-list", "--max-count=" + (url.searchParams.get("per_page") ?? 30), repository.defaultBranch], repository.path);
+				return answer(200, shas.trim().split("\n").map(sha => ({ sha })));
+			}
+			if (rest === "/actions/runs" && method === "GET") {
+				if (!this.allows(token, repository, "actions", "read")) return denied();
+				const head = url.searchParams.get("head_sha") ?? "";
+				return pageOf("workflow_runs", repository.ci.get(head)?.workflows ?? [], run => ({ ...run, head_sha: head }));
+			}
 			const revision = /^\/commits\/([^/]+)$/.exec(rest);
 			const tree = /^\/git\/trees\/([a-f0-9]{40})$/.exec(rest);
 			if (method === "GET" && (revision || tree)) {

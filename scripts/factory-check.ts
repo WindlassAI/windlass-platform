@@ -62,7 +62,7 @@ const PASSED = verified("passed", [check("test", "passed"), check("lint", "passe
 const FAILING = verified("unresolved", [check("test", "failed", "FAIL src/add.test.ts\nError: expected 3, got -1"), check("lint", "passed")], { unresolved: { reason: "max_rounds", said: null } });
 
 type Run = { name: string; state: "pending" | "passed" | "failed" | "neutral"; log?: string };
-const ciRead = (runs: Run[]): CiReading => ({
+const ciRead = (runs: Run[]): Extract<CiReading, { kind: "read" }> => ({
 	kind: "read",
 	head: "",
 	runs: runs.map((run, index) => ({ name: run.name, app: "github-actions", state: run.state, conclusion: run.state === "passed" ? "success" : run.state === "failed" ? "failure" : run.state === "neutral" ? "skipped" : "in_progress", url: `https://github.invalid/run/${index}`, summary: "", jobId: String(index + 1) })),
@@ -77,6 +77,7 @@ const ciRead = (runs: Run[]): CiReading => ({
 const MINUTE = 60_000;
 /** 20:00 UTC: the day's allowance starts again four hours later. */
 const T0 = Date.UTC(2026, 10, 19, 20, 0);
+const runningWorkflow = { ...ciRead([]), state: "pending" as const, inProgressSince: T0 };
 const MIDNIGHT = Date.UTC(2026, 10, 20, 0, 0);
 
 interface Keys {
@@ -571,8 +572,8 @@ drive("review: watchdog and cancellation reach the reviewer", reviewerOn(), [...
 	]);
 }
 drive("review: CI timeout can hand over directly", reviewerOn(), [...toCi,
-	{ fact: ci(reviewHead, ciRead([{ name: "build", state: "pending" }])), after: CI_POLLING.timeoutMs, state: "waiting", wait: "ci", effects: ["poll_ci"] },
-	{ fact: ci(reviewHead, ciRead([{ name: "build", state: "pending" }])), after: CI_POLLING.timeoutMs, state: "waiting", wait: "person", effects: ["ask"] },
+	{ fact: ci(reviewHead, runningWorkflow), after: CI_POLLING.inProgressLimitMs, state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: ci(reviewHead, runningWorkflow), after: CI_POLLING.inProgressLimitMs, state: "waiting", wait: "person", effects: ["ask"] },
 	...personHandover(),
 ]);
 drive("review: a rounds question can hand over failing CI", reviewerOn(), [...begun,
@@ -627,8 +628,8 @@ drive("subtask publication never opens a check", { ...newItem(), parent: { itemI
 	...begun, { fact: published(reviewHead, null), state: "waiting", wait: "ci", effects: ["poll_ci"] },
 ]);
 drive("giving up completes the pending check", newItem(), [...toCi,
-	{ fact: ci(reviewHead, ciRead([{ name: "build", state: "pending" }])), after: CI_POLLING.timeoutMs, state: "waiting", wait: "ci", effects: ["poll_ci"] },
-	{ fact: ci(reviewHead, ciRead([{ name: "build", state: "pending" }])), after: CI_POLLING.timeoutMs, state: "waiting", wait: "person", effects: ["ask"] },
+	{ fact: ci(reviewHead, runningWorkflow), after: CI_POLLING.inProgressLimitMs, state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: ci(reviewHead, runningWorkflow), after: CI_POLLING.inProgressLimitMs, state: "waiting", wait: "person", effects: ["ask"] },
 	{ fact: answer("give_up"), state: "failed", effects: ["verified_check"], also: o => holds(effect(o, "verified_check")?.conclusion === "cancelled", "missing cancelled conclusion") },
 ]);
 
@@ -1368,8 +1369,7 @@ drive("working time is counted, waiting time is not, and neither stops an item",
 	...begun,
 	{ fact: published(H(1)), after: 0, state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
 	{ fact: ci(H(1), pendingBuild), after: fourHours, state: "waiting", wait: "ci", effects: ["poll_ci"] },
-	{ fact: ci(H(1), pendingBuild), after: fourHours, state: "waiting", wait: "person", effects: ["ask"] },
-	{ fact: answer("wait"), after: fourHours, state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: ci(H(1), pendingBuild), after: fourHours, state: "waiting", wait: "ci", effects: ["poll_ci"] },
 	{ fact: ci(H(1), failingCi("Error: login timed out")), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.spent.activeSeconds === 60, "only the first minute of work counts") },
 	{ fact: started(), after: 0, state: "working", effects: ["check_turn"] },
 	{ fact: failedGate("lint", "Unused import"), after: fourHours - MINUTE, state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.question === null && o.item.workingSince !== null, "four hours of work stops nothing") },
@@ -1414,8 +1414,8 @@ drive("no CI on the repository, CI that does not finish, a conflict, send back a
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
 	{ fact: published(H(3)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"] },
-	{ fact: ci(H(3), ciRead([{ name: "build", state: "pending" }])), after: 91 * MINUTE, state: "waiting", wait: "ci", effects: ["poll_ci"] },
-	{ fact: ci(H(3), ciRead([{ name: "build", state: "pending" }])), after: 91 * MINUTE, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "ci_timeout", "CI still running after 90 minutes: a person is asked") },
+	{ fact: ci(H(3), runningWorkflow), after: CI_POLLING.inProgressLimitMs, state: "waiting", wait: "ci", effects: ["poll_ci"] },
+	{ fact: ci(H(3), runningWorkflow), after: CI_POLLING.inProgressLimitMs, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "ci_timeout", "a workflow running for over six hours asks the owner") },
 	{ fact: answer("wait"), state: "waiting", wait: "ci", effects: ["poll_ci"] },
 	{ fact: () => ({ kind: "cancel", by: "person:u1" }), state: "cancelled", effects: ["verified_check", "verified_check", "verified_check"] },
 	{ fact: ci(H(3), ciRead([{ name: "build", state: "passed" }])), state: "cancelled", effects: [] },
@@ -1946,7 +1946,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	assert.equal(effect(walk(pushed.item, [ciFact(passedCi, H(2), null)]).last, "integrate")?.head, H(2));
 	const done = walk(pushed.item, [ciFact(passedCi, H(2), null), { kind: "integrated", head: H(2) }]).item;
 	assert.equal(done.state, "done");
-	const timeout = { ...ciFact(pendingBuild), at: T0 + 100 * MINUTE, baseAhead: 1 };
+	const timeout = { ...ciFact(runningWorkflow), at: T0 + 7 * 60 * MINUTE, baseAhead: 1 };
 	const single = walk(newItem(), pushedRun(H(1))).item;
 	assert.ok(effect(walk(single, [timeout]).last, "publish"));
 	for (const fact of [{ ...ciFact(failingCi("build failed")), baseAhead: 1 }]) {
@@ -1972,7 +1972,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const previouslyUpdated = structuredClone(pushed.item);
 	previouslyUpdated.run!.updatedBaseTip = H(1);
 	const waited = walk(previouslyUpdated, [{ ...timeout, head: H(2), prHead: null, baseTip: H(3) }]).item;
-	assert.ok(choices(walk(waited, [{ ...timeout, at: T0 + 200 * MINUTE, head: H(2), prHead: null, baseTip: H(3) }]).item).includes("update_from_base"));
+	assert.ok(choices(walk(waited, [{ ...timeout, at: T0 + 8 * 60 * MINUTE, head: H(2), prHead: null, baseTip: H(3) }]).item).includes("update_from_base"));
 	expect("base updates cover cancelled subtasks, failed or timed-out single items, clean and conflicting merges, stale CI and conflict rounds", true);
 }
 
@@ -2164,7 +2164,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const handAndStart: Row = { ...started, fact: movedReading, effects: ["handoff", "verified_check", "poll_pr", "verified_check", "deliver", "check_turn"],
 		also: o => holds(effect(o, "handoff")?.verdict.moved === H(2) && effect(o, "deliver")?.feedbackQuote?.head === H(2) && o.item.run?.n === 2, "missing moved verdict or feedback for the current head") };
 	drive("G4 held feedback on a moved head", reviewerOn(), [...toCi, hold, handAndStart]);
-	drive("G4 held feedback after owner handover", reviewerOn(), [...toCi, hold, { fact: ci(reviewHead,pendingBuild), after: CI_POLLING.timeoutMs, state: "waiting", wait: "ci", effects: ["poll_ci"] }, { fact: ci(reviewHead,pendingBuild), after: CI_POLLING.timeoutMs,
+	drive("G4 held feedback after owner handover", reviewerOn(), [...toCi, hold, { fact: ci(reviewHead,runningWorkflow), after: CI_POLLING.inProgressLimitMs, state: "waiting", wait: "ci", effects: ["poll_ci"] }, { fact: ci(reviewHead,runningWorkflow), after: CI_POLLING.inProgressLimitMs,
 		state: "waiting", wait:"person", effects:["ask"] }, refresh(answer("hand_over")), {
 		...handAndStart, fact: freshCi, also: o => holds(effect(o,"handoff")?.reviewNone?.includes("as you asked") === true && o.item.run?.n === 2, "owner handoff lost"),
 	}]);
@@ -2296,7 +2296,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 {
 	const child = newItem();
 	child.parent = { itemId: "i_feature", title: "Feature", key: "first" };
-	const waiting = walk(child, [...pushedRun(H(1)), { ...ciFact(pendingBuild), at: T0 + 96 * MINUTE }, { ...ciFact(pendingBuild), at: T0 + 190 * MINUTE }]);
+	const waiting = walk(child, [...pushedRun(H(1)), { ...ciFact(runningWorkflow), at: T0 + 7 * 60 * MINUTE }, { ...ciFact(runningWorkflow), at: T0 + 8 * 60 * MINUTE }]);
 	expect("a subtask waiting on CI offers only wait or give up", waiting.item.question?.kind === "ci_timeout" &&
 		waiting.item.question.choices.map(choice => choice.id).join() === "wait,give_up");
 }
@@ -2423,22 +2423,9 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 }
 
 {
-	// GitHub never answered a reading: 91 minutes on, the person has it handed over. That is not "no CI".
-	const waited = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: { kind: "failed", said: "GitHub answered 503" }, mergeable: null, openItems: 1, at: T0 + 95 * MINUTE }]);
-	const handed = walk(waited.item, [{ kind: "answer", choice: "hand_over" }, ciFact({ kind: "failed", said: "GitHub answered 503" })], T0 + 96 * MINUTE);
-	const ci = effect(handed.last, "handoff")?.verdict;
-	expect("CI that was never read, handed over, is said to be unread, not absent", waited.item.question?.kind === "ci_timeout" && ci?.ci.state === "unread" && /could not be read/.test(ci.said.ci), `${ci?.ci.state}: ${ci?.said.ci}`);
-}
-
-{
-	// One empty reading a minute after the push, then GitHub not answering until the wait ran out. CI may well
-	// have run since: handed over, that is "could not be read", never "no CI ran".
-	const empty: CiReading = { kind: "read", head: "", runs: [], truncated: false, logs: [] };
-	const early = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: empty, mergeable: null, openItems: 1 }]);
-	const waited = walk(early.item, [{ kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: { kind: "failed", said: "GitHub answered 503" }, mergeable: null, openItems: 1, at: T0 + 95 * MINUTE }], T0 + 94 * MINUTE);
-	const handed = walk(waited.item, [{ kind: "answer", choice: "hand_over" }, ciFact({ kind: "failed", said: "GitHub answered 503" })], T0 + 96 * MINUTE);
-	const verdict = effect(handed.last, "handoff")?.verdict;
-	expect("an early empty reading followed by readings that failed is handed over as unread, not as no CI", early.item.run?.ci?.last === null && verdict?.ci.state === "unread", `kept ${JSON.stringify(early.item.run?.ci?.last)}; handed over as ${verdict?.ci.state}`);
+	const early = walk(newItem(), [...pushedRun(H(1)), ciFact(ciRead([]))]);
+	const unread = walk(early.item, [{ ...ciFact({ kind: "failed", said: "GitHub answered 503" }), at: T0 + 8 * 60 * MINUTE }]);
+	expect("unread CI after an early empty poll keeps waiting", unread.item.run?.ci?.last === null && !!effect(unread.last, "poll_ci") && !unread.item.question);
 
 	// CI ran, and every check was skipped. Not a pass; waited for as "no CI" is, then said as itself.
 	const skipped = ciRead([{ name: "deploy", state: "neutral" }, { name: "release", state: "neutral" }]);
@@ -2797,7 +2784,7 @@ const { checkConclusion, checkSummary } = await import("../server/src/factory/ve
 		!["@someone", "private.invalid", "<!--", "private -->"].some(text => summary.includes(text)));
 	expect("public output fits 4000 characters and keeps the evidence link", summary.length <= 4000 && summary.includes(url));
 }
-const ciData = { runs: [] as unknown[], statuses: [] as unknown[] };
+const ciData = { runs: [] as unknown[], statuses: [] as unknown[], workflows: [] as { status: string; updated_at?: string; run_started_at?: string }[] };
 repo.ci.set(HEAD, ciData);
 const secrets = { clientSecret: () => standin.clientSecret, privateKey: () => standin.privateKeyPem };
 const app = new GithubApp({ appId: standin.appId, slug: standin.slug, clientId: standin.clientId, apiUrl: standin.apiUrl, webUrl: standin.url }, secrets);
@@ -2875,14 +2862,15 @@ try {
 	const hugeLog = huge.kind === "read" ? huge.logs[0] : undefined;
 	expect("a log larger than the most that is read is not read to its end, and says so", hugeLog !== undefined && hugeLog.text === null && "why" in hugeLog && /larger than 16 MiB/.test(hugeLog.why), hugeLog && "why" in hugeLog ? hugeLog.why : "");
 
+	const afterGrace = { since: Date.now() - CI_POLLING.noneAfterMs };
 	const own = { ...checkRun(4, "windlass/verified", "failure"), app: { id: standin.appId, slug: "old-slug" } };
 	ciData.runs = [own, checkRun(5, "build", "success")];
 	ciData.statuses = [];
 	expect("our failing check beside passing CI is excluded by App id", ciState(await readCi(app, target)) === "passed");
 	ciData.runs = [own];
-	expect("our check alone is no CI", ciState(await readCi(app, target)) === "none");
+	expect("our check alone is no CI", ciState(await readCi(app, target, afterGrace)) === "none");
 	ciData.runs = [{ ...own, name: "another App check", app: { slug: standin.slug } }];
-	expect("older check records fall back to the App slug", ciState(await readCi(app, target)) === "none");
+	expect("older check records fall back to the App slug", ciState(await readCi(app, target, afterGrace)) === "none");
 	ciData.runs = [{ ...own, app: { id: "123", slug: standin.slug } }];
 	expect("a foreign App id takes precedence over a matching name and slug", ciState(await readCi(app, target)) === "failed");
 
@@ -2890,8 +2878,40 @@ try {
 	ciData.statuses = [];
 	expect("a job still running: pending", ciState(await readCi(app, target)) === "pending");
 	ciData.runs = [];
-	expect("nothing reported yet: none", ciState(await readCi(app, target)) === "none");
-	const named = await readCi({ withToken: async (_i: number, _s: unknown, step: (token: string) => Promise<unknown>) => step(""), pages: async ({ path }: { path: string }, pick: (body: unknown) => unknown[]) => ({ items: pick(path.endsWith("/status") ? { sha: H(7), statuses: [] } : { check_runs: [] }), truncated: false }) } as unknown as InstanceType<typeof GithubApp>, target);
+	expect("nothing reported yet: none", ciState(await readCi(app, target, afterGrace)) === "none");
+	const subtask = { ...newItem(), parent: { itemId: "i_feature", title: "Feature", key: "first" } };
+	const pushed = walk(subtask, pushedRun(HEAD)).item;
+	for (const status of ["queued", "pending", "waiting", "requested", "in_progress"]) {
+		ciData.workflows = [{ status, updated_at: new Date(T0).toISOString(), run_started_at: new Date(T0 - 8 * 60 * MINUTE).toISOString() }];
+		const reading = await readCi(app, target, afterGrace);
+		const sixHours = T0 + CI_POLLING.inProgressLimitMs;
+		const poll = (at: number) => walk(pushed, [{ ...ciFact(reading, HEAD), at }]);
+		assert.equal(ciState(reading), "pending");
+		assert.ok(effect(poll(T0 + 25 * MINUTE).last, "poll_ci"));
+		assert.equal(poll(sixHours).item.run?.autoSteps ?? 0, 0);
+		const later = poll(sixHours + 1);
+		assert.equal(later.item.run?.autoSteps ?? 0, status === "in_progress" ? 1 : 0);
+		assert.ok(effect(later.last, "poll_ci"));
+	}
+	ciData.runs = [checkRun(5, "build", "failure")];
+	assert.equal(ciState(await readCi(app, target)), "pending");
+	ciData.runs = [];
+	ciData.workflows = [{ status: "completed" }];
+	assert.equal(ciState(await readCi(app, target)), "incomplete");
+	ciData.workflows = [];
+	expect("active workflows keep a subtask pending and only an in-progress workflow can exceed six hours", true);
+
+	standin.commit(repo, repo.defaultBranch, {}, "Default-branch tip without CI");
+	const emptyPush = { ...target, head: H(6) };
+	for (const evidence of [{ workflows: [{ status: "completed" }] }, { runs: [checkRun(5, "build", "success")] }, { statuses: [{ context: "ci", state: "success" }] }]) {
+		repo.ci.set(HEAD, { runs: [], statuses: [], ...evidence });
+		assert.equal(ciState(await readCi(app, emptyPush, afterGrace)), "pending");
+	}
+	repo.ci.set(HEAD, ciData);
+	assert.equal(ciState(await readCi(app, emptyPush, { since: Date.now() })), "pending");
+	assert.equal(ciState(await readCi(app, emptyPush, afterGrace)), "none");
+	expect("an empty push needs an elapsed grace period and no recent default-branch CI", true);
+	const named = await readCi({ withToken: async (_i: number, _s: unknown, step: (token: string) => Promise<unknown>) => step(""), pages: async ({ path }: { path: string }, pick: (body: unknown) => unknown[]) => ({ items: pick(path.endsWith("/status") ? { sha: H(7), statuses: [{ context: "build", state: "success" }] } : { check_runs: [], workflow_runs: [] }), truncated: false }) } as unknown as InstanceType<typeof GithubApp>, target);
 	expect("a reading is of the commit GitHub's combined status names, not only the one asked", named.kind === "read" && named.head === H(7), named.kind === "read" ? named.head : named.kind);
 	ciData.runs = [checkRun(5301, "deploy", "skipped")];
 	expect("every job skipped: skipped", ciState(await readCi(app, target)) === "skipped");
@@ -3132,13 +3152,9 @@ try {
 			const only = await readCi(app, target);
 			const item = walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", verified("none_set", [])), { kind: "published", webhooks: false, head: HEAD, pr: { number: 7, url: "" }, openItems: 1 }]).item;
 			const waiting = walk(item, [ciFact(only, HEAD)]);
-			const timeout = walk(waiting.item, [{ ...ciFact(only, HEAD), at: T0 + 96 * MINUTE }]);
-			const ask = timeout.item.question;
-			const requested = walk(timeout.item, [{ kind: "answer", choice: "hand_over" }], T0 + 96 * MINUTE);
-			const handed = walk(requested.item, [ciFact(only, HEAD)], T0 + 97 * MINUTE);
-			const result = effect(handed.last, "handoff")?.verdict;
+			const later = walk(waiting.item, [{ ...ciFact(only, HEAD), at: T0 + 8 * 60 * MINUTE }]);
 			const reason = `GitHub did not start the CI jobs: ${billing}`;
-			expect("two blocked jobs: one annotation lookup, no logs, wait and ask with GitHub's words, then hand over unverified", ciState(only) === "not_run" && lookups === 1 && only.kind === "read" && !only.logs.length && waiting.item.wait?.sentence === reason && waiting.item.run?.rounds.ci === 0 && ask?.kind === "ci_timeout" && ask.text.includes(reason) && result?.result === "unverified" && result.said.ci === reason, `${ciState(only)}; ${waiting.item.wait?.sentence}; ${result?.result}`);
+			expect("two blocked jobs: one annotation lookup, no logs, keep waiting with GitHub's words", ciState(only) === "not_run" && lookups === 1 && only.kind === "read" && !only.logs.length && later.item.wait?.sentence === reason && later.item.run?.rounds.ci === 0 && !!effect(later.last, "poll_ci"));
 
 			ciData.runs = [...blocked.map((one) => one.check), checkRun(104, "lint", "success"), fast.check, fastAgain.check];
 			const mixed = await readCi(app, target);
@@ -3194,9 +3210,9 @@ try {
 			expect("hand_over after a failed reading requests one fresh poll and uses the same-head rerun", refresh.last.effects.length === 1 && effect(refresh.last, "poll_ci")?.head === HEAD && rerun?.result === "pass" && rerun.said.ci === "CI passed (2 checks).", rerun?.said.ci ?? "no fresh verdict");
 			const unavailable = hand({ kind: "failed", said: "GitHub answered 503" });
 			expect("unread CI on the handover poll clears a previously failing verdict", unavailable?.ci.state === "unread" && !unavailable.ci.runs.length && unavailable.result === "unverified", unavailable?.ci.state ?? "no fresh verdict");
-			const timedOut = walk(item, [{ ...ciFact(pendingBuild, HEAD), at: T0 + 96 * MINUTE }, { ...ciFact(pendingBuild, HEAD), at: T0 + 190 * MINUTE }]);
-			const answer = walk(timedOut.item, [{ kind: "answer", choice: "hand_over" }], T0 + 97 * MINUTE);
-			const afterTimeout = (effect(walk(answer.item, [ciFact(passing, HEAD)], T0 + 98 * MINUTE).last, "handoff") ?? effect(answer.last, "handoff"))?.verdict;
+			const timedOut = walk(item, [{ ...ciFact(runningWorkflow, HEAD), at: T0 + 7 * 60 * MINUTE }, { ...ciFact(runningWorkflow, HEAD), at: T0 + 8 * 60 * MINUTE }]);
+			const answer = walk(timedOut.item, [{ kind: "answer", choice: "hand_over" }], T0 + 8 * 60 * MINUTE + MINUTE);
+			const afterTimeout = (effect(walk(answer.item, [ciFact(passing, HEAD)], T0 + 8 * 60 * MINUTE + 2 * MINUTE).last, "handoff") ?? effect(answer.last, "handoff"))?.verdict;
 			expect("hand_over after the CI timeout uses the successful rerun", effect(answer.last, "poll_ci")?.head === HEAD && afterTimeout?.result === "pass" && afterTimeout.said.ci === "CI passed (2 checks).", afterTimeout?.said.ci);
 			const pending = walk(item, [ciFact(pendingBuild, HEAD)]);
 			const moved = walk(pending.item, [ciFact({ kind: "failed", said: "GitHub answered 503" }, HEAD, H(7))]);

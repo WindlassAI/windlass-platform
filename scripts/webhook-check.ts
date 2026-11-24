@@ -237,10 +237,6 @@ async function testNode() {
 			requireServiceFor(c, "call");
 			process.env.WLP_FACTORY_ORCHESTRATE = enabled ? "1" : "0";
 		},
-		checkCiTimeout: (c: Ctx, timeout: number) => {
-			requireServiceFor(c, "call");
-			Object.assign(CI_POLLING, { timeoutMs: timeout });
-		},
 		checkFallback: (c: Ctx, ms: number | null) => {
 			requireServiceFor(c, "call");
 			if (ms === null) delete process.env.WLP_GITHUB_POLL_FALLBACK;
@@ -692,12 +688,10 @@ async function run() {
 			} finally { standin.checkTokenFault = null; standin.checkFault = null; standin.appPermissions.checks = "read"; }
 		});
 		await check("verified Re-run reads finished CI after a pending handover", async () => {
-			const settings = client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkCiTimeout(ms: number): Promise<void> };
-			await settings.checkCiTimeout(0);
 			standin.appPermissions.checks = "write";
 			const item = await push();
 			try {
-				ci(item.head, "pending");
+				projectG2.ci.set(item.head, { runs: [], statuses: [], workflows: [{ status: "in_progress", updated_at: new Date(Date.now() - 7 * 3_600_000).toISOString() }] });
 				await delivered("status", { sha: item.head, state: "success" });
 				await until("automatic wait on pending CI", async () => (await item.view()).run?.autoSteps === 1, 25_000);
 				await delivered("status", { sha: item.head, state: "success" });
@@ -711,7 +705,7 @@ async function run() {
 				await until("Re-run observed finished CI", async () => (await item.view()).verifiedCheck?.conclusion === "success");
 				assert.equal(run.external_id, external);
 				assert.equal(standin.checks.filter(r => r.head_sha === item.head).length, 1);
-			} finally { await stop(item.id); await settings.checkCiTimeout(90 * 60_000); standin.appPermissions.checks = "read"; }
+			} finally { await stop(item.id); standin.appPermissions.checks = "read"; }
 		});
 		await check("G2 signed CI and PR nudges, coalescing, installation isolation and live readings", async () => {
 			const item = await push();

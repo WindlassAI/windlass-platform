@@ -4,7 +4,7 @@ name: CI heavy
 # docs/testing.md). Main, the nightly run and a dispatch with `full` run every group.
 on:
   push:
-    branches: [main, 'wip/**']
+    branches: [main, 'wip/**', 'windlass/**']
   pull_request:
   schedule:
     - cron: '23 3 * * *'
@@ -34,7 +34,8 @@ jobs:
   plan:
     name: Choose the checks
     # Dependency bump PRs get the plain CI only; heavy runs would hold the runners for hours.
-    if: github.actor != 'dependabot[bot]'
+    # The push of an agent branch already ran this commit.
+    if: ${{ github.actor != 'dependabot[bot]' && !(github.event_name == 'pull_request' && (startsWith(github.head_ref, 'wip/') || startsWith(github.head_ref, 'windlass/'))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:

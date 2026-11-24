@@ -141,7 +141,7 @@ Set checks in the repository's settings, under **Checks**. Windlass runs them be
 
 ### CI
 
-If no CI starts within 10 minutes of a push, the item is handed over without it. If CI is still running after 90 minutes, the item asks you what to do.
+Windlass waits as long as a workflow is queued. If GitHub reports a workflow in progress for more than six hours, the item asks you what to do. If GitHub reports no workflows, checks or statuses for the push after 10 minutes, Windlass looks at the last three commits on the default branch. It keeps waiting if any show CI. Otherwise, it treats the push as having no CI.
 
 When CI fails, stays cancelled or times out and the base branch has new commits, choose **Update from the base branch and run CI again** to merge the target branch (the feature branch for a subtask) and check the new commit.
 
@@ -477,7 +477,7 @@ These stop the feature and ask you:
 
 - a subtask has no passing checks or no CI on its push: "Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up.";
 - two subtasks stopped with the same failure, or one subtask stopped a second time;
-- no CI passed on the whole feature within 10 minutes: "No passing CI reported on the complete feature. Wait for a check or hand over the PR."
+- the whole feature has no CI or every check was skipped or neutral: "No passing CI reported on the complete feature. Wait for a check or hand over the PR."
 
 Cancelling a feature cancels its subtasks too.
 
