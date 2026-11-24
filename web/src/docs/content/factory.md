@@ -430,7 +430,7 @@ When the feature's own turns use its own budget, for example a long planning, it
 
 Each subtask is a work item with its own page, which says **subtask of** the feature. It starts from the feature's branch, runs at its approved placement with its own agent, model and effort (the feature's Windlass model where it chose none), and has the subtask's budget. It is given its brief, its paths and the reports of the subtasks it waits for.
 
-Up to three subtasks can run together when their dependencies are done and their owned paths are disjoint. A subtask with no owned paths runs alone. Each gets its own branch, place and reserved budget. If a place or budget share is unavailable, it waits while the others work.
+Up to three subtasks can run together when their dependencies are done and their owned paths are disjoint. A subtask with no owned paths runs alone. The planner sees how many parts can run at once on the default machine given its free slots, or the three-part limit for hosted work. Each gets its own branch, place and reserved budget. If a place or budget share is unavailable, it waits while the others work.
 
 By default, each part can join the feature as soon as its local checks pass. Dependent parts can then start. To require passing GitHub CI on each part as well, turn on **Wait for CI on each part** in the repository’s settings before the feature branch opens. The platform integrates one branch at a time by fast-forward or merge commit. A conflict goes back to that subtask to merge the feature branch and pass its checks again. The final summary and review wait for every subtask.
 

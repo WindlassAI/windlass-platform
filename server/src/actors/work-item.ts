@@ -65,7 +65,7 @@ import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
-import { RULES, activeJob, advance, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
+import { RULES, activeJob, advance, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, plannerCapacityText, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, requestedReviewBody, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, RequestedReview, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -1747,6 +1747,10 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const parent = item.place;
 				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
 				const preferred = meta.defaultPlace;
+				const selected = preferred?.place;
+				const defaultPlace = selected && typeof selected === "object" ? { kind: "machine" as const, machineId: selected.machine }
+					: selected === "hosted" ? { kind: "hosted" as const } : parent;
+				text += "\n" + plannerCapacityText(defaultPlace, inventory.machines);
 				if (preferred?.place) {
 					const chosen = preferred.place;
 					// A hosted fallback runs this planner only. Its parts still prefer a compatible machine.

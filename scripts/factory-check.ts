@@ -33,7 +33,7 @@ process.env.RIVETKIT_STORAGE_PATH = join(scratch, "storage");
 for (const name of Object.keys(process.env)) if (name.startsWith("WLP_GITHUB_")) delete process.env[name];
 mkdirSync(process.env.RIVETKIT_STORAGE_PATH, { recursive: true });
 
-const { advance, createItem, currentKey, singlePlanAlternative, upgradeSubtaskQuestion } = await import("../server/src/factory/blueprint.js");
+const { advance, createItem, currentKey, plannerCapacityText, RULES, singlePlanAlternative, upgradeSubtaskQuestion } = await import("../server/src/factory/blueprint.js");
 const { admit, budgetStop, FACTORY_DEFAULTS, retryAt } = await import("../server/src/factory/budget.js");
 const { gateResult, verdictOf, verdictWords, verdictCi } = await import("../server/src/factory/verdict.js");
 const { CI_POLLING, readCi, rerunJobs, ciState, LOG_TAIL_CHARS, LOG_TAIL_LINES } = await import("../server/src/github/ci.js");
@@ -1758,6 +1758,19 @@ function walk(item: FactoryItem, facts: Array<Record<string, unknown>>, from = T
 	}
 	return { item, last };
 }
+{
+	const place = { kind: "machine" as const, machineId: "local" };
+	const mac = { machineId: "local", name: "mac", online: true, turns: { max: 4, running: 2, queued: 0 } };
+	const line = (max: number, busy: number, online = true) => plannerCapacityText(place,
+		[{ ...mac, online, slots: { max, busy, queued: 0, unit: { cpus: 1, memoryBytes: 1000 } } }] as Parameters<typeof plannerCapacityText>[1]);
+	assert.match(line(4, 2), /'mac' can run 2 parts/);
+	assert.match(line(8, 0), new RegExp("run " + RULES.parallelChildren + " parts"));
+	assert.match(line(2, 3), /run 0 parts/);
+	assert.match(line(2, 0, false), /run 0 parts/);
+	assert.match(plannerCapacityText({ kind: "hosted" }, []), new RegExp("up to " + RULES.parallelChildren));
+	expect("planner capacity uses free machine slots and the hosted parallel limit", true);
+}
+
 const turnEnded = (outcome: "succeeded" | "unresolved", evidence: Verified | null) => ({ kind: "turn_ended", outcome, verified: evidence, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
 const ciFact = (reading: CiReading, head = H(1), prHead: string | null = head) => ({ kind: "ci_read", webhooks: false, head, reading, mergeable: true, prHead, openItems: 1 });
 const passedCi = ciRead([{ name: "build", state: "passed" }]);

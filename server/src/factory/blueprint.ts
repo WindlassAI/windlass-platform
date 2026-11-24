@@ -51,7 +51,7 @@ import type { OutOfMemory } from "../sandbox/api.js";
 import { MAX_ITEM_BODY_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState, workflowOverdue } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
-import { approveRoutes, bindRoute, choosePlacement, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
+import { approveRoutes, bindRoute, choosePlacement, freeMachineSlots, machineSlots, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
 import { answeredWords } from "./answered.js";
 import { feedbackWords, fixText, replanText } from "./feedback.js";
@@ -1132,6 +1132,13 @@ export function plannerBudgetText(item: FactoryItem): string {
 		"Independent subtasks run in parallel. Split work by file, list accurate owned paths in owns, and use dependsOn only for real prerequisites.",
 		"- The feature's budget is its subtasks' budgets together and that allowance. A subtask that uses its budget asks the owner for more.",
 	].join("\n");
+}
+
+export function plannerCapacityText(place: FactoryItem["place"], machines: PlacementInventory["machines"]): string {
+	if (place.kind === "hosted") return `Hosted parts run up to ${RULES.parallelChildren} at once.`;
+	const machine = machines.find(m => m.machineId === place.machineId);
+	const parts = machine?.online ? Math.min(RULES.parallelChildren, freeMachineSlots(machineSlots(machine))) : 0;
+	return `Your machine '${machine?.name ?? place.machineId}' can run ${parts} part${parts === 1 ? "" : "s"} at once. Additional parts wait for a slot.`;
 }
 
 /** The turns an item has taken toward the backstop: a feature's own, not its subtasks'. */
