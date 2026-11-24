@@ -15,18 +15,21 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { modelBasePath } from "../model-relay-url.js";
 import type { AccessToken } from "./api.js";
-import type { TurnModelRelay } from "./provider.js";
+import { config } from "../config.js";
+import { serverSealer } from "../signin/seal.js";
+import type { ForwardedKeyLease, KeyTurnRelay, ModelKeyLease, TurnModelRelay } from "./provider.js";
 import { readSignedPayload, signedPayload } from "../signatures.js";
 
-/** Where the route is, under WLP_PUBLIC_URL. Windlass appends `/models` and `/responses`. */
-export const RELAY_BASE_PATH = "/model-relay/v1";
+/** All model routes live under this prefix on the dedicated relay host. */
+export const RELAY_PREFIX = "/model-relay";
 const PREFIX = "wlpm1";
 
 interface Lease {
 	uid: string;
 	sessionId: string;
-	token: AccessToken | null;
+	token: AccessToken | ModelKeyLease | null;
 	/** When its placeholder's signature stops counting. */
 	expiresAt: number;
 	/** Its requests running in this process: `close` aborts them. */
@@ -81,22 +84,29 @@ export function readPlaceholder(bearer: string, now = Date.now()): Placeholder |
 	return { uid: u, sessionId: s, nonce: n, expiresAt: exp };
 }
 
-/**
- * The token of a live lease of this process, when `uid` and `sessionId` are its own; null when there is no
- * such lease here (another process may have it), and "ended" never: an ended lease is not kept.
- */
-export function leaseToken(nonce: string, uid: string, sessionId: string, now = Date.now()): AccessToken | null {
-	return leaseState(nonce, uid, sessionId, now).token;
+export function leaseToken(nonce: string, uid: string, sessionId: string, now = Date.now()): AccessToken | ModelKeyLease | null {
+	const lease = leases.get(nonce);
+	if (!lease || lease.uid !== uid || lease.sessionId !== sessionId || lease.expiresAt <= now) return null;
+	const token = lease.token;
+	return token && ("provider" in token || token.expiresAt > now) ? token : null;
 }
 
-/**
- * What the session's actor answers another process (`internalModelRelay`): whether this process holds the
- * lease for that user and session, and its token when it has a good one. Not held: the turn has ended.
- */
-export function leaseState(nonce: string, uid: string, sessionId: string, now = Date.now()): { held: boolean; token: AccessToken | null } {
+export interface RemoteLease {
+	held: boolean;
+	token: string | ModelKeyLease | null;
+}
+
+export const relayTransitSubject = (uid: string, session: string, lease: string, request: string) =>
+	JSON.stringify(["model-relay", uid, session, lease, request]);
+
+export function remoteLease(nonce: string, uid: string, sessionId: string, request: string): RemoteLease {
+	if (!/^[a-f0-9]{32}$/.test(request)) throw new Error("Invalid relay request nonce");
 	const lease = leases.get(nonce);
 	if (!lease || lease.uid !== uid || lease.sessionId !== sessionId) return { held: false, token: null };
-	return { held: true, token: lease.token === null || lease.token.expiresAt <= now ? null : { ...lease.token } };
+	const token = leaseToken(nonce, uid, sessionId);
+	return { held: true, token: token && "accessToken" in token
+		? serverSealer().seal("transit", relayTransitSubject(uid, sessionId, nonce, request), JSON.stringify({ ...token, exp: Date.now() + 60_000 }))
+		: token };
 }
 
 /** Whether this process has the lease at all (live or not yet handed a token). */
@@ -119,17 +129,17 @@ export function trackRequest(nonce: string, controller: AbortController): (() =>
  * A turn's lease. `origin`: WLP_PUBLIC_URL, the address the sandbox reaches the route at. `ttlMs`: how long
  * the placeholder's signature counts, at most; the lease itself ends with the turn, before that.
  */
-export function openRelayLease(input: { uid: string; sessionId: string; origin: string; ttlMs: number }): TurnModelRelay {
+export function openRelayLease(input: { uid: string; sessionId: string; origin: string; ttlMs: number; key?: ModelKeyLease }): TurnModelRelay {
 	const nonce = randomBytes(16).toString("hex");
 	const expiresAt = Date.now() + input.ttlMs;
-	leases.set(nonce, { uid: input.uid, sessionId: input.sessionId, token: null, expiresAt, requests: new Set() });
+	leases.set(nonce, { uid: input.uid, sessionId: input.sessionId, token: input.key ? { ...input.key } : null, expiresAt, requests: new Set() });
 	const placeholder = signedPayload(PREFIX, "model-relay", { k: "m", u: input.uid, s: input.sessionId, n: nonce, exp: expiresAt });
 	return {
 		placeholder,
-		env: { WINDLASS_MODEL_BASE_URL: input.origin + RELAY_BASE_PATH, WINDLASS_MODEL_ALLOWED_ORIGIN: input.origin },
+		env: { WINDLASS_MODEL_BASE_URL: input.origin + RELAY_PREFIX + modelBasePath(input.key?.provider), WINDLASS_MODEL_ALLOWED_ORIGIN: input.origin },
 		hand: async (token) => {
 			const lease = leases.get(nonce);
-			if (!lease) throw new Error("the turn's model relay lease has ended");
+			if (!lease || input.key) throw new Error("This lease cannot receive an access token");
 			lease.token = { accessToken: token.accessToken, expiresAt: token.expiresAt };
 		},
 		close: async () => {
@@ -140,6 +150,23 @@ export function openRelayLease(input: { uid: string; sessionId: string; origin: 
 			for (const controller of lease?.requests ?? []) controller.abort(new Error("the turn's model relay lease has ended"));
 		},
 	};
+}
+
+/** Keep the Settings key on the platform. The Docker relay forwards with a second, turn-scoped placeholder. */
+export async function forwardKeyLease(uid: string, sessionId: string, key: ModelKeyLease,
+	open: (forward: ForwardedKeyLease) => Promise<KeyTurnRelay>): Promise<KeyTurnRelay> {
+	const url = config.modelRelay.url;
+	if (!config.modelRelay.on || !url || !sessionId) throw new Error("A saved provider key requires a platform model relay.");
+	const ttlMs = config.turnTimeoutMs + 15 * 60_000;
+	const expiresAt = Date.now() + ttlMs;
+	const platform = openRelayLease({ uid, sessionId, key, origin: url.origin, ttlMs });
+	try {
+		const local = await open({ provider: key.provider, host: url.host, placeholder: platform.placeholder, expiresAt });
+		return { env: local.env, placeholder: local.placeholder, close: async () => { await platform.close(); await local.close(); } };
+	} catch (error) {
+		await platform.close();
+		throw error;
+	}
 }
 
 /** The limits of the relay route in one server process (docs/model-relay.md, "Limits"). */

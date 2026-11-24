@@ -191,7 +191,7 @@ import { type PublishEvidence, BaseMergeConflict, updateBranchFromBase, PullProb
 import { GithubProblem, problemOf, resolveBoundRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
-import type { AccessToken, OutOfMemory, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnCheckpoint, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
+import type { OutOfMemory, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnCheckpoint, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
 import { RUNNER_SOCKET, MachineUnreachable, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
 import type { ConversationRecord } from "../runner/channel.js";
 import { OutgoingJournal, forgetConversation, migrateJournal, readCheckpoint, readConversation, saveCheckpoint, saveReceived } from "../runner/journal.js";
@@ -242,7 +242,7 @@ import { untrustedTurn, unmarkedNote, untrustedWords } from "../factory/untruste
 import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, ReviewCommands } from "../factory/review.js";
 import type { Fact, ItemProviderRefusal, UntrustedRefusal } from "../factory/types.js";
 import { DeploymentFull, ENVIRONMENT_SLOT_WAIT, PLATFORM_RESTART, observeSandbox } from "../sandbox/api.js";
-import { leaseState } from "../sandbox/relay-leases.js";
+import { remoteLease, type RemoteLease } from "../sandbox/relay-leases.js";
 import { StartClock, keepStartTimes, startTimesLog } from "../start-times.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
@@ -6825,10 +6825,10 @@ export const agentSession = actor({
 		// --- Windlass's model relay route (model-relay-route.ts), from another server process -----------
 
 		/** Whether this actor's process holds a turn's relay lease, and its current token: not held, the turn has ended. */
-		internalModelRelay: (c, input: { nonce: string }): { held: boolean; token: AccessToken | null } => {
+		internalModelRelay: (c, input: { nonce: string; request: string }): RemoteLease => {
 			requireService(c);
 			const nonce = typeof input?.nonce === "string" ? input.nonce : "";
-			return leaseState(nonce, c.key[0], c.key[1]);
+			return remoteLease(nonce, c.key[0], c.key[1], input.request);
 		},
 
 		internalGrant: (c, input: { key: string; slot: string }): void => {

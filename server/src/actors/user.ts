@@ -2929,6 +2929,7 @@ export const user = actor({
 		saveModelProvider: (c, input: { provider: ModelProvider; key: string }) => modelProviderActions.saveModelProvider(c, input),
 		checkModelProvider: (c, provider: ModelProvider) => modelProviderActions.checkModelProvider(c, provider),
 		removeModelProvider: (c, provider: ModelProvider) => modelProviderActions.removeModelProvider(c, provider),
+		internalModelKeyGeneration: (c, provider: ModelProvider) => modelProviderActions.internalModelKeyGeneration(c, provider),
 		internalModelKey: (c, provider: ModelProvider, nonce: string) => modelProviderActions.internalModelKey(c, provider, nonce),
 
 		accountSecrets: async (c, input: { profile: string }): Promise<AccountSecrets> => {

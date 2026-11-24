@@ -327,7 +327,10 @@ export function userActor(c: HasClient, uid: string): UserInternal {
 
 export const modelKeyCaller = (uid: string) => `model-key/${uid}`;
 
-export function modelKeyActor(c: HasClient, uid: string): { internalModelKey(provider: ModelProvider, nonce: string): Promise<string | null> } {
+export function modelKeyActor(c: HasClient, uid: string): {
+	internalModelKeyGeneration(provider: ModelProvider): Promise<string | null>;
+	internalModelKey(provider: ModelProvider, nonce: string): Promise<string | null>;
+} {
 	return c.client().user.get([uid], { params: { token: issueServiceToken(modelKeyCaller(uid)) } });
 }
 

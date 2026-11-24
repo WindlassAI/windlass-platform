@@ -14,7 +14,7 @@ Choose a default **Sandbox** and **Model**, or **No default**. They save as soon
 
 Your account can hold one API key each for OpenAI, Anthropic, Google (Gemini), and OpenRouter. The platform checks a key with the provider when you save it and keeps a short list of model IDs. You can check it again, replace it, or remove it.
 
-These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and never sends them into a sandbox.
+These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and uses a per-turn relay to keep the key outside the sandbox. Removing or replacing a key stops new requests through leases for the old key.
 
 ### MCP servers
 

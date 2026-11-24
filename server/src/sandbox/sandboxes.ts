@@ -124,11 +124,15 @@ export class DockerSandboxHandle implements TurnSandbox {
 	) {
 		markTurnSandbox(this);
 		// The user names the lease in the relay, whose ceiling per user counts by it.
-		if (relay) this.modelRelay = () => relay.open(this.container, this.id, this.uid);
+		if (relay) {
+			this.modelRelay = () => relay.open(this.container, this.id, this.uid);
+			this.modelKeyRelay = (sessionId, key) => relay.openKey(this.container, this.id, this.uid, sessionId, key);
+		}
 	}
 
 	/** `TurnSandbox.modelRelay`, where the provider has a relay. */
 	readonly modelRelay?: () => Promise<DockerTurnRelay>;
+	readonly modelKeyRelay?: TurnSandbox["modelKeyRelay"];
 
 	get approval(): "auto" | "full" {
 		return findProfile(this.profile).approval;

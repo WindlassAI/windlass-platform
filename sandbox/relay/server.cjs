@@ -26,7 +26,7 @@ const requestHeaders = new Set(['accept', 'content-type', 'anthropic-beta', 'ant
 // Filter at the credential boundary, before any result can enter an agent file, log or ACP stream.
 function matcher(secrets) {
 	let pending = '';
-	return function consume(text, final) {
+	function consume(text, final) {
 		const input = pending + text;
 		pending = '';
 		let result = '', start = 0;
@@ -53,7 +53,9 @@ function matcher(secrets) {
 			start = at + size;
 		}
 		return result;
-	};
+	}
+	consume.pending = () => pending.length > 0;
+	return consume;
 }
 
 function scrubStream(secrets, type, responses = false) {
@@ -70,8 +72,7 @@ function scrubStream(secrets, type, responses = false) {
 function structuredStream(secrets, type, responses) {
 	const decoder = new StringDecoder('utf8');
 	const scalar = matcher(secrets);
-	const blocks = new Map();
-	const deltas = new Map();
+	const pieces = new Map();
 	const limit = 16 * 1024 * 1024;
 	let buffer = '', data = [], frameSize = 0, fields = [], skipLF = false;
 	const clean = value => {
@@ -82,49 +83,76 @@ function structuredStream(secrets, type, responses) {
 		}
 		return value;
 	};
-	function endBlock(index, output) {
-		const block = blocks.get(index);
-		if (!block) return;
-		blocks.delete(index);
-		const text = block('', true);
-		if (text) output('event: content_block_delta\ndata: ' + JSON.stringify({
-			type:'content_block_delta', index, delta:{type:'text_delta', text},
-		}) + '\n\n');
+	// Keep only a possible secret suffix per logical output, including interleaved choices or tool calls.
+	function piece(key, object, field, final, envelope) {
+		if (typeof object?.[field] !== 'string') return;
+		const consume = pieces.get(key)?.consume ?? matcher(secrets);
+		object[field] = consume(object[field], final);
+		if (consume.pending()) {
+			if (pieces.size >= 256 && !pieces.has(key)) throw Error('Too many open model deltas');
+			pieces.set(key, { consume, envelope });
+		} else pieces.delete(key);
 	}
-	// A Responses stream can split one string over several delta events. Keep
-	// each text/tool stream independent, including interleaved output items.
-	function endDelta(key, output) {
-		const {event, consume} = deltas.get(key);
-		deltas.delete(key);
-		const delta = consume('', true);
-		if (delta) output('event: ' + event.type + '\ndata: ' + JSON.stringify(clean({...event, delta})) + '\n\n');
+	function flushPieces(emit, prefix = '') {
+		for (const [key, entry] of pieces) if (key.startsWith(prefix)) {
+			emit(entry.envelope(entry.consume('', true)));
+			pieces.delete(key);
+		}
 	}
-	function responseDelta(event, output) {
-		const key = JSON.stringify([event.type.replace(/\.(?:done|delta)$/, ''), event.item_id, event.output_index, event.content_index, event.summary_index]);
-		if (event.type.endsWith('.delta') && typeof event.delta === 'string') {
-			if (!deltas.has(key)) {
-				if (deltas.size >= 256) throw Error('Too many open response deltas');
-				deltas.set(key, {event:{...event, delta:''}, consume:matcher(secrets)});
+	function modelPieces(event, emit) {
+		const type = event?.type;
+		if (type === 'content_block_delta') {
+			const index = event.index;
+			if (!Number.isSafeInteger(index)) throw Error('Invalid content block');
+			const kind = event.delta?.type;
+			const field = {text_delta:'text', input_json_delta:'partial_json', thinking_delta:'thinking', signature_delta:'signature'}[kind];
+			if (typeof field === 'string') piece('block/' + index + '/' + field, event.delta, field, false,
+				text => ({type, index, delta:{type:kind, [field]:text}}));
+		} else if (type === 'content_block_stop') flushPieces(emit, 'block/' + event.index + '/');
+		else if (type === 'message_stop') flushPieces(emit, 'block/');
+		if (!responses) return;
+		if (typeof type === 'string' && type.startsWith('response.')) {
+			const key = 'responses/' + JSON.stringify([type.replace(/\.(?:done|delta)$/, ''), event.item_id, event.output_index, event.content_index, event.summary_index]);
+			if (type.endsWith('.delta')) piece(key, event, 'delta', false, delta => ({...event, delta}));
+			else if (type.endsWith('.done')) flushPieces(emit, key);
+			else if (type === 'response.completed') flushPieces(emit, 'responses/');
+		}
+		for (const choice of event?.choices ?? []) {
+			const index = choice.index ?? 0;
+			const prefix = 'chat/' + index + '/';
+			// Keep chunk metadata for SDKs that validate the envelope.
+			const {id, object, created, model} = event;
+			const wrap = delta => ({id, object, created, model, choices:[{index, delta, finish_reason:null}]});
+			for (const field of ['content', 'reasoning', 'reasoning_content'])
+				piece(prefix + field, choice.delta, field, !!choice.finish_reason, text => wrap({[field]:text}));
+			for (const tool of choice.delta?.tool_calls ?? []) {
+				const i = tool.index ?? 0;
+				piece(prefix + 'tool/' + i, tool.function, 'arguments', !!choice.finish_reason, text => wrap({tool_calls:[{index:i, function:{arguments:text}}]}));
 			}
-			event.delta = deltas.get(key).consume(event.delta, false);
-		} else if (event.type.endsWith('.done') && deltas.has(key)) endDelta(key, output);
-		else if (event.type === 'response.completed') for (const key of deltas.keys()) endDelta(key, output);
+			if (choice.finish_reason) flushPieces(emit, prefix);
+		}
+		for (const candidate of event?.candidates ?? []) {
+			const index = candidate.index ?? 0;
+			const prefix = 'gemini/' + index + '/';
+			for (const part of candidate.content?.parts ?? []) {
+				const thought = part.thought === true;
+				piece(prefix + (thought ? 'thought' : 'text'), part, 'text', !!candidate.finishReason, text =>
+					({candidates:[{index, content:{role:'model', parts:[{text, ...(thought && {thought})}]}}]}));
+			}
+			if (candidate.finishReason) flushPieces(emit, prefix);
+		}
+	}
+	function deltaFrame(event) {
+		const safe = clean(event);
+		return (typeof safe.type === 'string' && /^[a-z._0-9]+$/.test(safe.type) ? 'event: ' + safe.type + '\n' : '') + 'data: ' + JSON.stringify(safe) + '\n\n';
 	}
 	function frame(output) {
 		let body = data.join('\n');
-		if (body.trim() && body.trim() !== '[DONE]') {
+		const emit = event => output(deltaFrame(event));
+		if (body.trim() === '[DONE]') flushPieces(emit);
+		else if (body.trim()) {
 			const event = JSON.parse(body);
-			if (responses && typeof event?.type === 'string') responseDelta(event, output);
-			if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta' && typeof event.delta.text === 'string') {
-				if (!Number.isSafeInteger(event.index)) throw Error('Invalid content block');
-				if (!blocks.has(event.index)) {
-					if (blocks.size >= 256) throw Error('Too many open content blocks');
-					blocks.set(event.index, matcher(secrets));
-				}
-				event.delta.text = blocks.get(event.index)(event.delta.text, false);
-			}
-			if (event?.type === 'content_block_stop') endBlock(event.index, output);
-			if (event?.type === 'message_stop') for (const index of blocks.keys()) endBlock(index, output);
+			modelPieces(event, emit);
 			body = JSON.stringify(clean(event));
 		}
 		for (const field of fields) output(scalar(field, true) + '\n');
@@ -145,7 +173,17 @@ function structuredStream(secrets, type, responses) {
 		if (type === 'application/json') {
 			buffer += text;
 			if (buffer.length > limit) throw Error('Provider response too large');
-			if (final) output(JSON.stringify(clean(JSON.parse(buffer))));
+			if (final) {
+				let value = JSON.parse(buffer);
+				// Without alt=sse Gemini streams a JSON array of generation chunks.
+				if (responses && Array.isArray(value)) {
+					const events = [];
+					for (const event of value) { modelPieces(event, item => events.push(item)); events.push(event); }
+					flushPieces(item => events.push(item));
+					value = events;
+				}
+				output(JSON.stringify(clean(value)));
+			}
 			return;
 		}
 		if (skipLF && text.startsWith('\n')) text = text.slice(1);
@@ -164,16 +202,16 @@ function structuredStream(secrets, type, responses) {
 				else line(buffer, output);
 			}
 			if (data.length || fields.length) frame(output);
-			for (const key of deltas.keys()) endDelta(key, output);
-			for (const index of blocks.keys()) endBlock(index, output);
+			flushPieces(event => output(deltaFrame(event)));
 		}
 	}
 	return new Transform({
+		destroy(error, done) { done(error && Error('Invalid model response')); },
 		transform(chunk, encoding, done) {
-			try { receive(decoder.write(chunk), false, s => this.push(s)); done(); } catch (e) { done(e); }
+			try { receive(decoder.write(chunk), false, s => this.push(s)); done(); } catch { done(Error('Invalid model response')); }
 		},
 		flush(done) {
-			try { receive(decoder.end(), true, s => this.push(s)); done(); } catch (e) { done(e); }
+			try { receive(decoder.end(), true, s => this.push(s)); done(); } catch { done(Error('Invalid model response')); }
 		},
 	});
 }
@@ -210,7 +248,7 @@ function limitHeaders(headers, secrets = []) {
 		if (count >= 24) break;
 		// Real values are numbers, timestamps, durations and status words.
 		if (name.length > 64 || !limitHeader.test(name) || typeof value !== 'string' || !/^[A-Za-z0-9 .,:_+-]{0,64}$/.test(value)) continue;
-		if ([...secrets].some(secret => secret && value.includes(secret))) continue;
+		if ([...secrets].some(secret => secret && (name.includes(secret) || value.includes(secret)))) continue;
 		result[name] = value;
 		count++;
 	}
@@ -387,6 +425,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			if (provider) {
 				target = await provider.target(req.url, req.headers, nonce);
 				if (!target) return unauthorized(res);
+				if (target.refused) return reject(res, 403);
 				({ secrets: own, ...target } = target);
 			} else {
 				const token = await readToken().catch(() => undefined);

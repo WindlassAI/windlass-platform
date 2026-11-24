@@ -72,6 +72,7 @@ export interface Unsaved {
  */
 export function carriesSecret(body: Body): boolean {
 	if (body.kind !== "op") return false;
+	if (body.name === "modelRelay" && body.args.forward) return true;
 	if (body.name === "writeSecretFile" || body.name === "modelRelayToken") return true;
 	const options = (body.args as { options?: { secretEnv?: unknown } }).options;
 	return !!options && typeof options.secretEnv === "object" && options.secretEnv !== null && Object.keys(options.secretEnv).length > 0;

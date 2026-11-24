@@ -184,7 +184,7 @@ class Conversation {
 				case "sweep": return await h.sweep(op.args.tag, op.args.options);
 				case "modelRelay": {
 					if (box.harness || !o.modelRelays || !o.modelRelayReady) throw new Refusal("This sandbox's turns cannot use the model relay.");
-					const relay = await o.modelRelay.open(containerName(box.raw), box.raw);
+					const relay = await o.modelRelay.open(containerName(box.raw), box.raw, undefined, op.args.forward);
 					if (!this.active) { await relay.close(); throw new Refusal("The session conversation ended."); }
 					const lease = randomBytes(16).toString("hex");
 					// A suspend or removal of the sandbox ends it too, and takes it out of this conversation.

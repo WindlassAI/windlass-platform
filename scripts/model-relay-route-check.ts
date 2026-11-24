@@ -9,8 +9,21 @@
  * there, and `restricted` would not let the sandbox reach the platform.
  */
 
-import { TokenFile, TokenFileError } from "../server/src/sandbox/token-file.js";
-import { BodyBudget, RelayLimiter, UserRate, leaseToken, openRelayLease, readPlaceholder } from "../server/src/sandbox/relay-leases.js";
+import "./check-secret.js";
+import assert from "node:assert/strict";
+import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { config } from "../server/src/config.js";
+import { validArgs } from "../server/src/runner/protocol.js";
+import { carriesSecret } from "../server/src/runner/channel.js";
+import type { ForwardedKeyLease } from "../server/src/sandbox/provider.js";
+import { createRequire } from "node:module";
+import { MODEL_PROVIDERS } from "../server/src/contract.js";
+import { modelKeyCaller } from "../server/src/actors/internal.js";
+import { MODEL_PROVIDER_TABLES, modelProviderActions } from "../server/src/model-providers.js";
+import { issueServiceToken, issueUserToken } from "../server/src/tokens.js";
+import { serverSealer } from "../server/src/signin/seal.js";
+import { TokenFile, TokenFileError, openModelKeyRelay } from "../server/src/sandbox/token-file.js";
+import { BodyBudget, RelayLimiter, UserRate, forwardKeyLease, leaseToken, remoteLease, relayTransitSubject, openRelayLease, readPlaceholder } from "../server/src/sandbox/relay-leases.js";
 import { type RelayRouteDeps, type RemoteLease, modelRelayResponse, modelRelayRoute, upstreamFetch } from "../server/src/model-relay-route.js";
 import { createServer } from "node:http";
 import { brotliCompressSync, gzipSync } from "node:zlib";
@@ -104,11 +117,14 @@ const call = (placeholder: string, path = "/model-relay/v1/responses", init: Req
 	new Request(`https://wlp.example.com${path}`, { method: path.endsWith("/models") ? "GET" : "POST", body: path.endsWith("/models") ? undefined : "{}", ...init,
 		headers: { authorization: `Bearer ${placeholder}`, "content-type": "application/json", accept: "text/event-stream", "session-id": "s1", cookie: "c=1", ...(init.headers as object) } });
 function deps(fetch: typeof globalThis.fetch, extra: Partial<RelayRouteDeps> = {}): RelayRouteDeps {
-	return { remote: async () => null, fetch, limiter: new RelayLimiter(), rate: new UserRate(), bodies: new BodyBudget(), now: () => Date.now(), ...extra };
+	return { key: async () => null, remote: async () => null, fetch, limiter: new RelayLimiter(), rate: new UserRate(), bodies: new BodyBudget(), now: () => Date.now(), ...extra };
 }
 /** A placeholder of a lease another server process of the deployment opened: signed as theirs are, unknown to this process. */
 function foreignPlaceholder(uid: string, sessionId: string, ttlMs = 60_000): string {
 	return signedPayload("wlpm1", "model-relay", { k: "m", u: uid, s: sessionId, n: randomBytes(16).toString("hex"), exp: Date.now() + ttlMs });
+}
+function sealedRemote(uid: string, session: string, lease: string, request: string, access: AccessToken, exp = Date.now() + 60_000): RemoteLease {
+	return { held: true, token: serverSealer().seal("transit", relayTransitSubject(uid, session, lease, request), JSON.stringify({ ...access, exp })) };
 }
 /** Reads on until the stream ends or fails; "still running" when it does neither within `ms`. */
 async function untilEnd(reader: ReadableStreamDefaultReader<Uint8Array>, ms: number): Promise<"ended" | "aborted" | "still running"> {
@@ -131,6 +147,9 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	const early = await modelRelayResponse(call(lease.placeholder), deps(up.fetch));
 	expect("before the token is handed the lease is refused, with the relay's own code", early.status === 401 && up.seen.length === 0 && (await code(early)) === "relay_lease_ended");
 	await lease.hand({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 });
+	const { nonce } = readPlaceholder(lease.placeholder)!;
+	const envelope = remoteLease(nonce, "u1", "sess-1", randomBytes(16).toString("hex"));
+	expect("the session actor returns the ChatGPT token sealed for transit", typeof envelope.token === "string" && envelope.token.startsWith("wlps1.") && !JSON.stringify(envelope).includes(REAL_A));
 	const streamed = await modelRelayResponse(call(lease.placeholder), deps(up.fetch));
 	const text = await streamed.text();
 	expect("a Responses call reaches api.openai.com with the turn's token in place of the placeholder", streamed.status === 200 && up.seen[0]?.url === "https://api.openai.com/v1/responses"
@@ -181,7 +200,7 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	const placeholder = foreignPlaceholder("u3", "sess-3");
 	const asked: string[] = [];
 	let answer: AccessToken | null = { accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 };
-	const remote = async (uid: string, sessionId: string, nonce: string): Promise<RemoteLease> => { asked.push(`${uid}/${sessionId}/${nonce.length}`); return answer === null ? { held: false, token: null } : { held: true, token: answer }; };
+	const remote = async (uid: string, sessionId: string, nonce: string, request: string): Promise<RemoteLease> => { asked.push(`${uid}/${sessionId}/${nonce.length}`); return answer === null ? { held: false, token: null } : sealedRemote(uid, sessionId, nonce, request, answer); };
 	const d = deps(up.fetch, { remote });
 	const first = await modelRelayResponse(call(placeholder), d);
 	await first.text();
@@ -314,7 +333,7 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	let held = true;
 	const up = upstream((seen) => new Response(new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode("event: response.created\ndata: {}\n\n")); seen.signal?.addEventListener("abort", () => c.error(new Error("aborted"))); } }), { headers: { "content-type": "text/event-stream" } }));
 	const placeholder = foreignPlaceholder("u7", "far");
-	const d = deps(up.fetch, { remote: async (): Promise<RemoteLease> => held ? { held: true, token: { accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 } } : { held: false, token: null } });
+	const d = deps(up.fetch, { remote: async (...args): Promise<RemoteLease> => held ? sealedRemote(...args, { accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 }) : { held: false, token: null } });
 	const res = await modelRelayResponse(call(placeholder), d);
 	const reader = res.body!.getReader();
 	await reader.read();
@@ -413,6 +432,170 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	expect("a 200 that is a page, not a model's answer, is a 502 that says so", page.status === 502 && /not a model's answer/.test(await page.text()));
 	await a.close();
 	recorder.close();
+}
+
+// ---- Settings-key wires, including the machine's forwarding hop --------------------------------
+
+{
+	const sandbox = { id: "without-relay", uid: "u1", writeSecretFile: () => assert.fail("unexpected credential file") };
+	await assert.rejects(openModelKeyRelay(sandbox as never, "s", { provider: "openai", generation: "g" }), TokenFileError);
+	const expired = await modelRelayResponse(call(foreignPlaceholder("u1", "expired-transit")), deps(async () => assert.fail("expired token forwarded"), {
+		remote: async (...args) => sealedRemote(...args, { accessToken: REAL_A, expiresAt: Date.now() + 60_000 }, Date.now() - 1),
+	}));
+	assert.equal(expired.status, 401);
+}
+const hosts = { openai: "api.openai.com", anthropic: "api.anthropic.com", google: "generativelanguage.googleapis.com", openrouter: "openrouter.ai" };
+const paths = { openai: ["/v1/models", "/v1/responses", "/v1/chat/completions"], anthropic: ["/v1/models", "/v1/messages"],
+	google: ["/v1beta/models", "/v1beta/models/gemini-test:generateContent", "/v1beta/models/gemini-test:streamGenerateContent?alt=sse"],
+	openrouter: ["/api/v1/models", "/api/v1/chat/completions"] };
+const { windlassProvider } = createRequire(import.meta.url)("../sandbox/relay/windlass.cjs");
+for (const provider of MODEL_PROVIDERS) {
+	const uid = "relay-wire", sessionId = "session";
+	const key = randomBytes(24).toString("hex");
+	const halves = [key.slice(0, 24), key.slice(24)];
+	const generation = randomBytes(16).toString("hex");
+	const keyLease = { provider, generation };
+	const origin = "https://relay.example.com";
+	const e2b = new E2bSandboxHandle({modelRelayOrigin: origin, relayLeaseMs:60_000} as never, {} as never, "box", uid, "e2b", "auto", undefined, sessionId);
+	const lease = await openModelKeyRelay(e2b, sessionId, keyLease);
+	const auth = provider === "anthropic" ? "x-api-key" : provider === "google" ? "x-goog-api-key" : "authorization";
+	const credential = (value: string) => auth === "authorization" ? "Bearer " + value : value;
+	const sql = new DatabaseSync(":memory:");
+	for (const statement of MODEL_PROVIDER_TABLES) sql.exec(statement);
+	sql.prepare("INSERT INTO model_provider(provider, sealed, generation, last4, added_at) VALUES (?, ?, ?, ?, ?)").run(provider,
+		serverSealer().seal("model-key", JSON.stringify([uid, provider]), key), generation, key.slice(-4), Date.now());
+	const internal = { key: [uid], vars: { tokenGen: 0 }, conn: { params: { token: issueServiceToken(modelKeyCaller(uid)) } },
+		db: { async execute<Row>(query: string, ...args: unknown[]) { return sql.prepare(query).all(...args as SQLInputValue[]) as Row[]; } } };
+	assert.equal(await modelProviderActions.internalModelKeyGeneration(internal, provider), generation);
+	await assert.rejects(modelProviderActions.internalModelKeyGeneration({ ...internal, conn:{params:{token:issueServiceToken()}} }, provider));
+	let mode: "ok" | "error" | "redirect" = "ok";
+	let sent = 0;
+	const seen: string[] = [];
+	const logs: unknown[][] = [];
+	const warn = console.warn;
+	const recorder = createServer((req, res) => {
+		sent++;
+		const path = req.url!;
+		assert.equal(req.headers[auth] === credential(key), true, "upstream auth must use saved key");
+		assert.equal(["authorization", "x-api-key", "x-goog-api-key"].filter(name => req.headers[name]).length, 1);
+		assert.equal(req.headers["x-unknown"], undefined);
+		assert.equal(req.method, path.endsWith("/models") ? "GET" : "POST");
+		seen.push(path);
+		res.setHeader("x-request-id", key);
+		if (mode === "redirect") return res.writeHead(307, {location: "/redirected"}).end();
+		if (mode === "error") return res.writeHead(429, {"retry-after": key}).end(JSON.stringify({error:{code:key, type:key, param:key, message:key}}));
+		if (provider === "anthropic") {
+			assert.equal(req.headers["anthropic-version"], "2023-06-01");
+			if (req.method === "POST") assert.equal(req.headers["anthropic-beta"], "interleaved-thinking-2025-05-14");
+		}
+		if (path.endsWith("/models") || path.endsWith(":generateContent")) {
+			res.writeHead(200, {"content-type":"application/json"});
+			res.write('{"echo":"' + halves[0]);
+			setImmediate(() => res.end(halves[1] + '"}'));
+			return;
+		}
+		const delta = (text: string) => path.endsWith("/responses") ? { type:"response.output_text.delta", delta:text }
+			: provider === "anthropic" ? {type:"content_block_delta", index:0, delta:{type:"text_delta", text}}
+			: provider === "google" ? {candidates:[{content:{parts:[{text}]}}]}
+			: {choices:[{index:0, delta:{content:text}}]};
+		res.writeHead(200, {"content-type":"text/event-stream"});
+		res.write("data: " + JSON.stringify(delta(halves[0]!)) + "\n\n");
+		setImmediate(() => res.end("data: " + JSON.stringify(delta(halves[1]!)) + "\n\n"));
+	});
+	await new Promise<void>(r => recorder.listen(0, "127.0.0.1", r));
+	const base = "http://127.0.0.1:" + (recorder.address() as {port:number}).port;
+	const d = deps(async (input, init) => {
+		const url = new URL(String(input));
+		assert.equal(url.origin, "https://" + hosts[provider]);
+		return upstreamFetch(base + url.pathname + url.search, init!);
+	}, { key: async (user, p, nonce) => {
+		assert.equal(user, uid);
+		assert.equal(p, provider);
+		return modelProviderActions.internalModelKey(internal, p, nonce);
+	} });
+	const endpoint = (path: string, headers: Record<string,string> = {}) => new Request(origin + "/model-relay" + path, {
+		method: path.split("?")[0]!.endsWith("/models") ? "GET" : "POST", headers: { [auth]: credential(lease.placeholder),
+			...(path === "/v1/messages" && { "anthropic-beta": "interleaved-thinking-2025-05-14" }), ...headers },
+	});
+	const localPlaceholder = "wlp-model." + randomBytes(16).toString("hex");
+	const previousUrl = config.modelRelay.url;
+	config.modelRelay.url = {origin, host:"relay.example.com"};
+	let forward!: ForwardedKeyLease;
+	let localClosed = false;
+	const forwarded = await forwardKeyLease(uid, sessionId, keyLease, async value => {
+		forward = value;
+		return { placeholder:localPlaceholder, env:{}, close:async () => { localClosed = true; } };
+	});
+	config.modelRelay.url = previousUrl;
+	assert.equal(forwarded.placeholder, localPlaceholder);
+	assert.ok(!JSON.stringify(forward).includes(key));
+	const args = {id:"box", forward};
+	assert.ok(validArgs("modelRelay", args) && carriesSecret({kind:"op", id:"test", name:"modelRelay", args}));
+	const nonce = randomBytes(16).toString("hex");
+	const machine = windlassProvider({ load:async () => ({lease:localPlaceholder, forward, expiresAt:Date.now()+60_000}) });
+	try {
+		console.warn = (...args) => { logs.push(args); };
+		for (const path of paths[provider]) {
+			const request = endpoint(path);
+			const local = { ...Object.fromEntries(request.headers), [auth]:credential(localPlaceholder) };
+			assert.ok(await machine.authorize(machine.bearer(local), nonce));
+			const target = await machine.target(path, local, nonce);
+			assert.equal(target.hostname, forward.host);
+			assert.equal(target.headers[auth] === credential(forward.placeholder), true);
+			assert.equal(target.path, "/model-relay" + path);
+			const response = await modelRelayResponse(new Request(origin + target.path, { method:request.method, headers:target.headers }), d);
+			const body = await response.text();
+			assert.equal(response.status, 200);
+			assert.ok(body.includes("[redacted]") && !halves.some(piece => body.includes(piece)), "key fragments in model response");
+			assert.equal(seen.at(-1), path);
+			assert.equal(response.headers.get("x-request-id"), null);
+		}
+		const models = paths[provider][0]!;
+		const failure = await modelRelayResponse(endpoint(models), {...d, fetch:async () => { throw Error(key); }});
+		assert.equal(failure.status, 502);
+		assert.ok(!(await failure.text()).includes(key));
+		const broken = await modelRelayResponse(endpoint(models), {...d, fetch:async () => new Response(new ReadableStream({
+			start(c) { c.error(Error(key)); }
+		}), {headers:{"content-type":"application/json"}})});
+		await assert.rejects(broken.text(), err => err instanceof Error && !err.message.includes(key));
+		const before = sent;
+		for (const req of [endpoint(models, {"x-unknown":"override"}), endpoint(models + "?key=bad"), endpoint("/v1/files"),
+			endpoint(provider === "google" ? "/v1/messages" : "/v1beta/models"), endpoint(models, {"anthropic-beta":"unlisted"})]) {
+			assert.equal((await modelRelayResponse(req, d)).status, 403);
+		}
+		assert.equal(sent, before);
+		mode = "redirect";
+		assert.equal((await modelRelayResponse(endpoint(models), d)).status, 502);
+		assert.equal(sent, before + 1);
+		mode = "error";
+		const error = await modelRelayResponse(endpoint(models), d);
+		assert.equal(error.status, 429);
+		assert.ok(!halves.some(piece => JSON.stringify([...error.headers]).includes(piece)));
+		const text = await error.text();
+		assert.ok(!halves.some(piece => text.includes(piece)));
+		const expired = await modelRelayResponse(endpoint(models), { ...d, key:async (user,p,n) =>
+			serverSealer().seal("transit", JSON.stringify(["model-key",user,p,n]), JSON.stringify({key,generation,exp:Date.now()-1})) });
+		assert.equal(expired.status, 503);
+		sql.prepare("UPDATE model_provider SET generation = ? WHERE provider = ?").run("replacement", provider);
+		assert.equal((await modelRelayResponse(endpoint(models), d)).status, 401);
+		const owner = { ...internal, conn:{params:{token:issueUserToken({uid, email:null, demo:false}, 0)}} };
+		await modelProviderActions.removeModelProvider(owner, provider);
+		assert.equal(await modelProviderActions.internalModelKeyGeneration(internal, provider), null);
+		assert.equal((await modelRelayResponse(endpoint(models), d)).status, 401);
+		assert.equal(sent, before + 2);
+		assert.ok(!halves.some(piece => JSON.stringify(logs).includes(piece)), "key fragments in relay log");
+	} finally {
+		console.warn = warn;
+		sql.close();
+		recorder.closeAllConnections();
+		recorder.close();
+		await lease.close();
+		await forwarded.close();
+		assert.ok(localClosed);
+		const signed = readPlaceholder(forward.placeholder)!;
+		assert.equal(leaseToken(signed.nonce, uid, sessionId), null);
+	}
+	console.log("ok    " + provider + " hosted and machine key lease, routes, redaction and revocation");
 }
 
 // ---- the E2B network ----------------------------------------------------------------------------

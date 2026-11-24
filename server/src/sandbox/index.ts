@@ -16,6 +16,7 @@ import { DockerSandboxes } from "./sandboxes.js";
 import { dropSessionVolume, ensureSessionVolume, ensureUserVolume, removeTokenFiles, sessionVolume, userVolume } from "./volumes.js";
 import { DockerWindlass } from "./windlass.js";
 import { IMAGE } from "./docker.js";
+import { forwardKeyLease } from "./relay-leases.js";
 import { DockerModelRelay, type DockerModelRelayOptions, HOSTED_RELAY_USER_REQUESTS } from "./model-relay.js";
 
 export interface DockerSandboxLayer extends SandboxLayer {
@@ -67,7 +68,7 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 			: { ...actorSignIns({ ensureUserData }), directory: null };
 	const relayOptions = options.modelRelay ?? (options.signIns !== "memory" && config.modelRelay.on ? {} : "off");
 	const modelRelay = relayOptions === "off" ? undefined
-		: new DockerModelRelay({ machine: "", image: image ?? IMAGE, requests: config.modelRelay.requests, userRequests: HOSTED_RELAY_USER_REQUESTS, ...relayOptions });
+		: new DockerModelRelay({ machine: "", forwardKeyLease, image: image ?? IMAGE, requests: config.modelRelay.requests, userRequests: HOSTED_RELAY_USER_REQUESTS, ...relayOptions });
 	return {
 		// The hosted provider: its containers carry no machine, and mount the user's volume of this machine.
 		sandboxes: new DockerSandboxes({

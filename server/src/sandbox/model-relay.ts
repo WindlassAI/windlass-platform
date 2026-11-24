@@ -26,7 +26,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AccessToken } from "./api.js";
 import { LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, RELAY_LOGS, docker } from "./docker.js";
-import { SECRET_FILE_SCRIPT, type TurnModelRelay } from "./provider.js";
+import { modelBasePath } from "../model-relay-url.js";
+import { SECRET_FILE_SCRIPT, type ForwardedKeyLease, type ModelKeyLease, type TurnModelRelay } from "./provider.js";
 
 declare const WINDLASS_RELAY_SCRIPT: string;
 declare const EGRESS_SOURCE: string;
@@ -87,6 +88,7 @@ async function waitForListener(id: string, address: string, marker?: string): Pr
 }
 
 export interface DockerModelRelayOptions {
+	forwardKeyLease?: typeof import("./relay-leases.js").forwardKeyLease;
 	/** The machine id of a runner's relay; "" for the hosted server's. Every container and volume carries it as MACHINE_LABEL. */
 	machine: string;
 	/** The pinned base image: it has node, and the agent user. */
@@ -226,11 +228,16 @@ export class DockerModelRelay {
 			throw new Error(`could not create the model relay's socket volume: ${made.stderr.trim()}`);
 	}
 
+	openKey(container: string, sandbox: string, uid: string, sessionId: string, key: ModelKeyLease) {
+		if (!this.options.forwardKeyLease) throw new Error("A saved provider key requires a platform model relay.");
+		return this.options.forwardKeyLease(uid, sessionId, key, forward => this.open(container, sandbox, uid, forward));
+	}
+
 	/**
 	 * A lease for one turn of `sandbox`, whose container is `container` and running: the relay is there,
 	 * the turn's forwarder listens in the container's namespace, and nothing is in the relay for it yet.
 	 */
-	async open(container: string, sandbox: string, user?: string): Promise<DockerTurnRelay> {
+	async open(container: string, sandbox: string, user?: string, forward?: ForwardedKeyLease): Promise<DockerTurnRelay> {
 		const relay = await this.ensure();
 		const nonce = randomBytes(16).toString("hex");
 		const placeholder = `wlp-model.${randomBytes(16).toString("hex")}`;
@@ -260,16 +267,18 @@ export class DockerModelRelay {
 		}
 		const file = `${TOKENS}/${nonce}.json`;
 		let closed = false;
+		const write = async (record: object) => {
+			const content = JSON.stringify({ ...record, lease: placeholder, user });
+			const result = await docker(["exec", "-i", "-u", "1000:1000", relay, "sh", "-c", SECRET_FILE_SCRIPT, "sh", file], { stdin: content, timeoutMs: 30_000 });
+			if (result.code !== 0) throw new Error("Could not write the turn's model relay lease.");
+		};
 		const lease: DockerTurnRelay = {
 			nonce,
 			placeholder,
-			env: { WINDLASS_MODEL_BASE_URL: MODEL_RELAY_URL },
+			env: { WINDLASS_MODEL_BASE_URL: new URL(MODEL_RELAY_URL).origin + modelBasePath(forward?.provider) },
 			hand: async (token: AccessToken) => {
-				if (closed) throw new Error("the turn's model relay lease has ended");
-				const content = JSON.stringify({ accessToken: token.accessToken, expiresAt: token.expiresAt, lease: placeholder, ...(user !== undefined && { user }) });
-				const result = await docker(["exec", "-i", "-u", "1000:1000", relay, "sh", "-c", SECRET_FILE_SCRIPT, "sh", file], { stdin: content, timeoutMs: 30_000 });
-				// What `sh` says names the path, never the content.
-				if (result.code !== 0) throw new Error(`could not hand the model relay the turn's token: ${result.timedOut ? "timed out" : result.stderr.trim() || `exit ${result.code}`}`);
+				if (closed || forward) throw new Error("This lease cannot receive an access token");
+				await write({ accessToken: token.accessToken, expiresAt: token.expiresAt });
 			},
 			// The file first: the relay then stops the turn's requests still running, and the forwarder's removal ends its connections.
 			close: async () => {
@@ -279,6 +288,10 @@ export class DockerModelRelay {
 				await docker(["rm", "-f", id], { timeoutMs: 30_000 }).catch(() => undefined);
 			},
 		};
+		if (forward) {
+			try { await write({ forward, expiresAt: forward.expiresAt }); }
+			catch (error) { await lease.close(); throw error; }
+		}
 		this.open_.set(sandbox, lease);
 		return lease;
 	}
