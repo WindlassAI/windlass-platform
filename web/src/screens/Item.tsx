@@ -58,6 +58,7 @@ import { partOf, showsSubtasks, SubtasksBlock, SubtaskStrip } from "./Subtasks";
 const STEP_WORD: Record<StepKind, string> = {
 	subtasks: "Subtasks", integration: "Testing the repositories together", summary: "Feature summary",
 	refine: "Planning",
+	plan_review: "Reviewing plan",
 	implement: "Implementing",
 	gate: "Checks",
 	publish: "Pushing",

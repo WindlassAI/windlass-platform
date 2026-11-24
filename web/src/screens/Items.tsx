@@ -240,6 +240,7 @@ function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number 
 	switch (step) {
 		case "subtasks":
 		case "refine":
+		case "plan_review":
 		case "implement":
 		case "run_checks":
 		case "gate":

@@ -141,6 +141,7 @@ export interface Repository {
 }
 
 export interface Pull {
+	mergedByApp?: true;
 	number: number;
 	url: string;
 	state: "open" | "draft" | "merged" | "closed";
@@ -160,7 +161,7 @@ export interface Pull {
 type Auth = { bearer: string } | { basic: string } | null;
 
 interface Call {
-	method?: "GET" | "POST" | "PATCH" | "DELETE";
+	method?: "PUT" | "GET" | "POST" | "PATCH" | "DELETE";
 	path: string;
 	query?: Record<string, string | number>;
 	body?: unknown;
@@ -653,7 +654,8 @@ export class GithubApp {
 		const merged = fields.merged === true || (fields.merged_at !== null && fields.merged_at !== undefined);
 		const state = merged ? "merged" : text(fields.state) === "closed" ? "closed" : fields.draft === true ? "draft" : "open";
 		const requestedReviewers = Array.isArray(fields.requested_reviewers) ? fields.requested_reviewers.map((user) => text(record(user).login)) : [];
-		return { number, requestedReviewers, url: text(fields.html_url), state, mergeable: typeof fields.mergeable === "boolean" ? fields.mergeable : null, title: text(fields.title), body: text(fields.body), head: text(record(fields.head).ref), headSha: text(record(fields.head).sha), baseSha: text(record(fields.base).sha), base: text(record(fields.base).ref) };
+		const mergedByApp = merged && text(record(fields.merged_by).login).toLowerCase() === this.settings.slug.toLowerCase() + "[bot]";
+		return { number, requestedReviewers, ...(mergedByApp && { mergedByApp: true }), url: text(fields.html_url), state, mergeable: typeof fields.mergeable === "boolean" ? fields.mergeable : null, title: text(fields.title), body: text(fields.body), head: text(record(fields.head).ref), headSha: text(record(fields.head).sha), baseSha: text(record(fields.base).sha), base: text(record(fields.base).ref) };
 	}
 
 	async createPull(token: string, owner: string, name: string, input: { title: string; body: string; head: string; base: string; draft?: boolean }): Promise<Pull> {
@@ -661,6 +663,12 @@ export class GithubApp {
 		const pull = this.pullOf(answer.body);
 		if (!pull) throw new GithubError(answer.status, "the answer describes no pull request", `could not open a pull request in ${owner}/${name}`);
 		return pull;
+	}
+
+	async squashMerge(token: string, owner: string, name: string, number: number, head: string, title: string): Promise<void> {
+		const { body } = await this.call({ method: "PUT", path: `/repos/${owner}/${name}/pulls/${number}/merge`, auth: { bearer: token },
+			body: { sha: head, merge_method: "squash", commit_title: title }, what: "merge the reviewed pull request" });
+		if (record(body).merged !== true) throw new Error(text(record(body).message) || "GitHub did not confirm the merge.");
 	}
 
 	async pull(token: string, owner: string, name: string, number: number): Promise<Pull> {

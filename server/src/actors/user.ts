@@ -155,6 +155,8 @@ import { publishAsksEveryTime, publishUnaskedProblem } from "../agent-publish.js
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
 import { refreshSecretRows } from "../signin/secret-rows.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, unavailableSecretName, validRequestedSecretName, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
+import { criticSessionId } from "../factory/feature-ids.js";
+import { reviewerAllowed } from "../factory/review.js";
 import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, migrateDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
 import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
@@ -1273,11 +1275,11 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			turns: 0,
 			lastOutcome: null,
 			sandbox: "none",
-			...(item ? { item: { id: item.itemId, role: item.role, ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
+			...(item ? { item: { id: item.itemId, role: item.role, ...(item.planCritic && { planCritic: true as const }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(build && { environmentBuild: true as const }),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
-			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.planCritic && { planCritic: true as const }), ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(!item && size > 1 && { size }),
 			...(build && { environmentBuild: build }),
 			...(hostedSize && { hostedSize }),
@@ -2250,6 +2252,27 @@ export const user = actor({
 
 		// --- checks of repositories (repository-checks.ts) -------------------------------------------
 
+		internalPlanCritic: async (c, builderId: string): Promise<void> => {
+			requireServiceFor(c, "call");
+			const builder = c.vars.sessions.get(builderId), profile = c.vars.profile;
+			if (!profile || !builder?.item || builder.item.role === "reviewer" || !builder.repository ||
+				!reviewerAllowed(builder.place, (await getLayer()).sandboxes.profile(builder.profile))) throw new Error("A restricted critic session is unavailable.");
+			const sessionId = criticSessionId(builder.item.id);
+			if (c.vars.sessions.has(sessionId)) return;
+			const { id, branch } = builder.repository;
+			const accountModel = (await readAccountDefaults(c.db)).model;
+			const model = accountModel && !/luna/i.test(accountModel) ? accountModel : (await modelsOf(c, profile.demo)).defaultModel;
+			if (/luna/i.test(model)) throw new Error("The default model is a light model.");
+			await makeSession(c, profile, { title: builder.title, profile: builder.profile, model, repository: { id, branch } },
+				null, { sessionId, itemId: builder.item.id, role: "reviewer", planCritic: true, hostedSize: builder.hostedSize });
+		},
+
+		internalRepositoryAutonomy: async (c, repositoryId: GithubId) => {
+			requireService(c);
+			const { autoApprovePlans, autoMergeSingles } = await readDefaults(c.db, setupKeyOf(repositoryId));
+			return { autoApprovePlans: !!autoApprovePlans, autoMergeSingles: !!autoMergeSingles };
+		},
+
 		repositoryChecks: async (c, repositoryId: GithubId): Promise<RepositoryChecks> => {
 			requireUser(c);
 			const project = setupKeyOf(repositoryId);
@@ -2632,7 +2655,7 @@ export const user = actor({
 			return found;
 		},
 
-		saveRepositoryDefaults: async (c, input: { repositoryId: GithubId; screenshots?: boolean; profile?: string | null; model?: string | null; hostedSize?: string | null }): Promise<RepositoryDefaults> => {
+		saveRepositoryDefaults: async (c, input: { repositoryId: GithubId; autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: string | null; model?: string | null; hostedSize?: string | null }): Promise<RepositoryDefaults> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			let change: DefaultsChange;

@@ -53,6 +53,7 @@ expect("a sandbox this deployment can run and one of the user's models are taken
 expect("a field that is left out is not part of the change", plain(cleanDefaults({ model: "gpt-6-luna" }, PROFILES, MODELS)) === plain({ model: "gpt-6-luna" }) && plain(cleanDefaults({}, PROFILES, MODELS)) === "{}");
 expect("null saves none for a field", plain(cleanDefaults({ profile: null, model: null }, PROFILES, MODELS)) === plain({ profile: null, model: null }));
 expect("screenshots must be a boolean", [null, 0, "false"].every(screenshots => refused({ screenshots })?.code === "bad_input"));
+expect("both automation settings require booleans", ["autoApprovePlans", "autoMergeSingles"].every(key => [null, 1, "false"].every(value => refused({ [key]: value })?.code === "bad_input")));
 expect("nothing else a client sends is kept", plain(cleanDefaults({ repositoryId: 7, model: "gpt-6-luna", publishUnasked: true, setupCommand: "rm -rf /" }, PROFILES, MODELS)) === plain({ model: "gpt-6-luna" }));
 expect("a sandbox this deployment does not have is refused", refused({ profile: "firecracker" })?.code === "bad_input" && refused({ profile: 7 })?.code === "bad_input" && refused({ profile: "" })?.code === "bad_input");
 expect("a sandbox it cannot run is refused, and the sentence says why", refused({ profile: "e2b" })?.code === "bad_input" && (refused({ profile: "e2b" })?.message ?? "").includes("It needs an E2B key."), refused({ profile: "e2b" })?.message);
@@ -122,6 +123,10 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 	await migrateDefaults(oldDb);
 	await migrateDefaults(oldDb);
 	const read = await readDefaults(oldDb, HARBOR);
+	expect("existing rows start with both automation settings off", !read.autoApprovePlans && !read.autoMergeSingles);
+	await saveDefaults(oldDb, HARBOR, "", { autoApprovePlans: true, autoMergeSingles: true }, 6);
+	const changed = await saveDefaults(oldDb, HARBOR, "", { autoApprovePlans: false }, 7);
+	expect("turning off plan approval preserves merge opt-in and other settings", !changed.autoApprovePlans && changed.autoMergeSingles === true && changed.profile === read.profile);
 	expect("an older table gets the column once, and its rows have no size", read.profile === "docker-hardened" && read.hostedSize === null && (await saveDefaults(oldDb, HARBOR, "", { hostedSize: "large" }, 6)).hostedSize === "large");
 }
 

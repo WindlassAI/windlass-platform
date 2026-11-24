@@ -79,6 +79,36 @@ export function ScreenshotsSetting({ page, view }: { page: Pick<RepositoryPage, 
 	);
 }
 
+function AutonomySettings({ page, view }: { page: RepositoryPage; view: RepositoryView }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState("");
+	async function save(field: "autoApprovePlans" | "autoMergeSingles", on: boolean) {
+		setBusy(true);
+		setError("");
+		try {
+			const defaults = await client.user(auth).saveRepositoryDefaults(page.id, { [field]: on });
+			page.replace({ ...view, defaults });
+		} catch (failure) { setError(explain(failure)); }
+		finally { setBusy(false); }
+	}
+	return <section className="usage-section repo-saved" aria-labelledby="repo-autonomy">
+		<h2 className="usage-title" id="repo-autonomy">Work item approvals</h2>
+		<div className="usage-card repo-form">
+			<Check checked={!!view.defaults.autoApprovePlans} disabled={busy} onChange={on => save("autoApprovePlans", on)}>
+				<span className="check-name">Auto-approve small plans</span>
+				<span className="check-means">Let an independent critic approve plans with up to three parts and no open questions.</span>
+			</Check>
+			<Check checked={!!view.defaults.autoMergeSingles} disabled={busy} onChange={on => save("autoMergeSingles", on)}>
+				<span className="check-name">Auto-merge single items</span>
+				<span className="check-means">Squash-merge a current single-item PR when its verdict, CI and second review all pass.</span>
+			</Check>
+			{error && <p className="field-note tone-bad" role="alert">{error}</p>}
+		</div>
+	</section>;
+}
+
 /** What deleting everything saved takes with it, and what it leaves. */
 /** `agents`: the user's own agents on it; `items`: the sessions of its work items, which stay with their items. */
 function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { page: RepositoryPage; view: RepositoryView; name: string; agents: number; items: number; onClose(): void; onDone(): void }) {
@@ -92,6 +122,7 @@ function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { pa
 		view.saved.secrets > 0 ? (view.saved.secrets === 1 ? "its one secret" : `its ${view.saved.secrets} secrets`) : null,
 		view.saved.network > 0 ? "its network list" : null,
 		view.defaults.profile !== null || view.defaults.model !== null ? "the defaults for new agents" : null,
+		view.defaults.autoApprovePlans || view.defaults.autoMergeSingles ? "automatic work item approvals" : null,
 		view.defaults.screenshots ? "the choice to take screenshots" : null,
 		view.approvals.length > 0 ? (view.approvals.length === 1 ? "the remembered approval of one MCP server" : `the remembered approvals of ${view.approvals.length} MCP servers`) : null,
 	].filter((part): part is string => part !== null);
@@ -167,7 +198,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 	const accountChoices = startingChoices(account.settings?.defaults ?? null, info, models.list, "account");
 	const choices = layerChoices(startingChoices(view?.defaults ?? null, info, models.list), accountChoices);
 	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
-	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.saved.network > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.defaults.screenshots || view.approvals.length > 0);
+	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.saved.network > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.defaults.screenshots || view.defaults.autoApprovePlans || view.defaults.autoMergeSingles || view.approvals.length > 0);
 
 	// Opened at a section: it is gone to once the sections stand, which is when what is saved was read. The sections
 	// above it read their own lists after that and grow: it is kept in view while they do, until its person scrolls.
@@ -236,6 +267,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 					/>
 
 					<ScreenshotsSetting page={page} view={view} />
+					<AutonomySettings page={page} view={view} />
 
 					<section className="usage-section repo-saved" aria-labelledby={ids.setup}>
 						<h2 className="usage-title" id={ids.setup}>

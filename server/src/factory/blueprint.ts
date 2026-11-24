@@ -43,6 +43,7 @@
  * that fires after the item moved on. No clock is read: every time is a fact's `at`.
  */
 
+import { criticPrompt, mergeCandidate, smallPlan } from "./autonomy.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
 import type { OutOfMemory } from "../sandbox/api.js";
@@ -226,9 +227,11 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 		&& (item.parent || item.mode === "orchestrate") && item.run?.step.turn && fact.key === currentKey(item);
 	if (item.claimedSecret && fact.kind !== "settle_secret") return unchanged;
 	if (FINAL.has(item.state) && fact.kind !== "child_notice" && fact.kind !== "finish_join" && fact.kind !== "feature_updated" && !receipt) return unchanged;
-	const change = new Change(structuredClone(item), fact.at, "by" in fact ? fact.by : "platform");
+	const change = new Change(structuredClone(item), fact.at, "by" in fact ? fact.by ?? "platform" : "platform");
+	if (item.run?.ci?.moved) change.item.foreignPush = true; // Includes moves stored before this flag existed.
 	if (receipt) spendTurn(change, fact.spend);
 	else if (!apply(change, fact)) return unchanged;
+	if (change.item.run?.ci?.moved) change.item.foreignPush = true;
 	if (change.item.feedback && (FINAL.has(change.item.state) || change.item.state === "failed" || change.item.machineRemoved)) {
 		const f = change.item.feedback;
 		for (const batch of [f.awaiting, popHeld(f)]) if (batch)
@@ -710,6 +713,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "fea
 			return true;
 		}
 		case "session_deleted":
+			if (fact.key === key && step.kind === "plan_review" && step.turn) { step.turn = null; askPlan(c); return true; }
 			if (fact.key !== key || c.item.question?.kind === "turn_refused") return false;
 			step.turn = null;
 			ask(c, "turn_refused", "This agent was deleted.", [...handOver(c.item), choice("give_up")], null, null);
@@ -753,12 +757,30 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "fea
 			ask(c, "machine_away", `${fact.machine ? `The machine “${fact.machine}”` : "The machine"} has been offline since ${clock(fact.since)} UTC, and this item's turn is paused until it is back. Keep waiting, or give up on the item. To run it elsewhere, give up and start it again on another place.`, [choice("wait"), choice("give_up")], null, null);
 			return true;
 		case "turn_ended":
-			if (fact.key !== key || step.turn === null || step.kind === "review") return false;
+			if (fact.key !== key || step.turn === null || step.kind === "review" || step.kind === "plan_review") return false;
 			turnEnded(c, fact);
 			return true;
 		case "review_ended":
+			if (fact.key === key && step.turn && step.kind === "plan_review") { finishCritic(c, fact); return true; }
 			if (fact.key !== key || step.turn === null || step.kind !== "review") return false;
 			reviewEnded(c, fact);
+			return true;
+		case "auto_merge_result":
+			if (!run.ci || run.ci.autoMergeKey !== fact.key || step.kind !== "merged" || c.item.state !== "review" || fact.head !== c.item.head) return false;
+			if (fact.behind && run.ci.secondReview && mergeCandidate(c.item, run.ci.secondReview) && updateFromBase(c)) {
+				delete run.ci.autoMergeKey;
+				run.endedAt = null;
+				return true;
+			}
+			if (fact.reason !== null) {
+				delete run.ci.autoMergeKey;
+				c.say("Automatic merge handed over: " + fact.reason);
+				const review = run.ci.secondReview ?? skippedReview(PERSON_HANDOVER);
+				c.effects.push({ kind: "handoff", ...verdictAt(c, run.ci), ...review });
+			}
+			else {
+				prRead(c, { mergedByApp: true, kind: "pr_read", key, at: c.at, state: "merged", prHead: fact.head, webhooks: !!run.ci?.webhooks });
+			}
 			return true;
 		case "base_conflict":
 			if (fact.key !== key || step.kind !== "publish" || !run.updateFromBase || c.item.question) return false;
@@ -1103,7 +1125,7 @@ function capacityDeadline(c: Change, reason: string, since: number, sentence: st
 function checkTurn(c: Change): void {
 	const step = c.run.step;
 	step.checks += 1;
-	c.effects.push({ kind: "check_turn", key: `${c.key}/check${step.checks}`, turn: c.key, at: c.at + RULES.turnCheckMs, ...(step.kind === "review" && { to: "review" }) });
+	c.effects.push({ kind: "check_turn", key: `${c.key}/check${step.checks}`, turn: c.key, at: c.at + RULES.turnCheckMs, ...(step.kind === "plan_review" ? { to: "critic" as const } : step.kind === "review" && { to: "review" }) });
 }
 
 /**
@@ -1226,7 +1248,7 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		c.enter("publish"); c.effects.push({ kind: "describe_feature", key: c.key }); return;
 	}
 	// Only an orchestrated feature plans (`singleFirstPlan`): one implementer is given the task.
-	if (kind === "refine") return askPlan(c);
+	if (kind === "refine") return fact.autoApprovePlans ? considerCritic(c) : askPlan(c);
 	// A builder that changed nothing for a review answers it in its report: the same head is reviewed again, with that report.
 	if (!fact.changes && kind === "review_fix" && run.ci && run.review && run.ci.head === item.head) {
 		if (run.ci.moved) return readForHandoff(c, run.ci, keptReview(run, run.ci));
@@ -1458,6 +1480,23 @@ function conflictPlan(base: string): TurnPlan {
 		charge: "conflict", fingerprint: `conflict:${base}`, fetchBase: base };
 }
 
+function updateFromBase(c: Change): boolean {
+	const { item, run } = c;
+	const head = run.ci?.head;
+	if (!head || !isSha(head) || head !== item.head || run.ci?.moved || item.mode === "orchestrate") return false;
+	const fingerprint = `conflict:${item.task.base}`;
+	const previous = failuresOf(run);
+	if (previous.includes(fingerprint) && !newerPartBase(item, run.ci!)) return false;
+	run.updatedBaseTip = run.ci?.baseTip;
+	if (!previous.includes(fingerprint)) run.failures = [...previous, fingerprint];
+	run.lastFailure = fingerprint;
+	run.rounds.conflict++;
+	run.updateFromBase = { head, at: c.at };
+	c.say(`Updating the item branch from ${item.task.base}.`);
+	publish(c);
+	return true;
+}
+
 /** Apply the fixed CI rules to one pinned reading, including infrastructure recovery. */
 function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	const { run } = c;
@@ -1495,6 +1534,15 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	// settles it, even if still pending or unavailable, without starting another fix or asking again.
 	if (run.step.kind === "handoff") {
 		const review = ci.moved ? skippedReview(MOVED) : ci.secondReview ?? skippedReview("this item was handed over before second reviews were available");
+		if (c.item.state !== "review" && fact.autoMergeSingles && fact.prHead === ci.head && mergeCandidate(c.item, review) && verdictAt(c, ci).verdict.result === "pass") {
+			if (fact.baseAhead !== undefined && fact.baseAhead > 0 && updateFromBase(c)) return;
+			if (fact.baseAhead === 0) {
+				handoff(c, review, true);
+				ci.autoMergeKey = c.key;
+				c.effects.push({ kind: "auto_merge", key: c.key, head: ci.head, pr: c.item.pr!.number });
+				return;
+			}
+		}
 		return handoff(c, review);
 	}
 
@@ -1861,7 +1909,7 @@ function personFirst(c: Change, ci: CiProgress, filed: ItemReview): boolean {
 }
 
 /** Hands over the commit this run pushed, with the evidence kept for that commit: never a later, unpushed turn's. */
-function handoff(c: Change, review: HandoffReview): void {
+function handoff(c: Change, review: HandoffReview, merging = false): void {
 	const { item, run } = c;
 	const ci = run.ci;
 	if (item.head === null || item.pr === null || ci === null || ci.head !== item.head) throw new Error("an item is handed over only after this run pushed its work");
@@ -1870,7 +1918,7 @@ function handoff(c: Change, review: HandoffReview): void {
 	ci.handed ??= c.key;
 	ci.secondReview ??= review;
 	if (review.reviewNone) c.say(`No second review: ${review.reviewNone.replace(/\.$/, "")}.`);
-	handVerdict(c, ci, review, reviewDone || undefined);
+	handVerdict(c, ci, review, merging || reviewDone || undefined);
 	run.endedAt ??= c.at;
 	c.state("review");
 	c.enter("merged");
@@ -1946,6 +1994,8 @@ function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
 			run.endedAt = c.at;
 			c.item.question = null;
 		}
+		if (fact.state === "merged" && run.ci?.autoMergeKey && fact.mergedByApp && fact.prHead === run.ci.head)
+			c.say("Merged automatically: verdict pass, CI green, review approved.");
 		c.sayOfItem(fact.state === "merged" ? "The pull request was merged." : "The pull request was closed without merging.");
 		return c.state(fact.state === "merged" ? "done" : "cancelled");
 	}
@@ -1978,7 +2028,7 @@ function cancel(c: Change): void {
 	const { item } = c;
 	const run = item.run;
 	cancelActive(c);
-	if (run !== null && run.step.turn !== null) c.effects.push({ kind: "withdraw", key: c.key, ...(run.step.kind === "review" && { to: "review" }) });
+	if (run !== null && run.step.turn !== null) c.effects.push({ kind: "withdraw", key: c.key, ...(run.step.kind === "plan_review" ? { to: "critic" as const } : run.step.kind === "review" && { to: "review" }) });
 	if (run !== null && run.endedAt === null) {
 		run.endedAt = c.at;
 		run.stopReason = "cancelled";
@@ -2000,6 +2050,42 @@ function planQuestion(item: FactoryItem) {
 export function singlePlanAlternative(item: FactoryItem) {
 	if (item.mode === "orchestrate" && !item.replans && !crossRepo(item) && item.question?.kind === "plan_approval" && item.featurePlan?.status === "proposed" && item.filedTurn === currentKey(item))
 		return { id: "run_single" as const, label: "Run as a single item" };
+}
+
+function considerCritic(c: Change) {
+	const { item } = c, plan = item.featurePlan;
+	if (!plan || item.filedTurn !== c.key || !item.singleBudget || !smallPlan(plan, item.singleBudget, aliases(item)) ||
+		unattendedKeys(plan, completedKeys(item)).length || backstopTurns(item) >= RULES.turnBackstop ||
+		budgetStop({ ...item.budget, tokens: ownTokens(item) }, ownSpent(item, item.spent), item.place)) return askPlan(c);
+	c.enter("plan_review");
+	item.filedTurn = c.key;
+	c.run.step.turn = "delivered";
+	c.state("working");
+	c.say("An independent critic reviews the filed plan.");
+	c.effects.push({ kind: "deliver", key: c.key, to: "critic", agent: "critic", text: criticPrompt(item, plannerBudgetText(item)),
+		fetchBase: null, maxSteps: RULES.reviewMaxSteps, ...marked(item.untrusted) });
+	checkTurn(c);
+}
+
+function finishCritic(c: Change, fact: Extract<Fact, { kind: "review_ended" }>) {
+	spendTurn(c, fact.spend, fact.providerRefusal);
+	const review = fact.planReview;
+	if (!review || fact.outcome !== "succeeded" || fact.refused || fact.providerRefusal || fact.sandboxFailed ||
+		fact.outOfMemory || fact.stepLimit !== undefined || fact.spend.tokens <= 0) return askPlan(c);
+	if (review.decision === "approve" && fact.by === "critic") {
+		if (c.item.featurePlan?.singleSuggested) runSingle(c);
+		else if (!approveFeature(c, fact.inventory)) return askPlan(c);
+		c.say("Approved automatically: " + (review.findings.join(" ") || "The critic approved the plan as filed."));
+		return;
+	}
+	askPlan(c);
+	if (review.decision === "revise" && c.item.question) {
+		const q = c.item.question;
+		q.criticFindings = review.findings;
+		q.recommended = "revise";
+		q.choices = [choice("revise"), ...q.choices.filter(x => x.id !== "revise")];
+		q.text += "\nCritic recommends revision: " + review.findings.join("\n");
+	}
 }
 
 function askPlan(c: Change) {
@@ -2272,9 +2358,9 @@ function approveFeature(c: Change, inventory?: PlacementInventory, agents: reado
 	if (unconfirmed.length) throw new PlanError(unconfirmed.map(s => `${s.title}: confirm that it runs ${harnessName(s.agent!.harness)}, which works without asking.`).join(" "));
 	if (inventory) c.item.routes = approveRoutes(p, c.item.place, inventory, completed);
 	p.status = "approved";
-	c.item.approvedPlan = structuredClone(p);
 	p.approvedAt = c.at;
 	p.approvedBy = c.by;
+	c.item.approvedPlan = structuredClone(p);
 	c.item.question = null;
 	c.enter("subtasks");
 	c.state("waiting", { reason: "children", sentence: "Running the approved subtasks in dependency order.", retryAt: null });
@@ -2282,7 +2368,7 @@ function approveFeature(c: Change, inventory?: PlacementInventory, agents: reado
 	c.item.budget = featureTotal(c.item, p);
 	if (featureOpened(c.item)) nextChild(c);
 	else c.effects.push({ kind: "dispatch", key: c.key });
-	c.say("The feature plan was approved.");
+	if (c.by !== "critic") c.say("The feature plan was approved.");
 	return true;
 }
 
@@ -2473,7 +2559,7 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 		}
 		stopPendingChecks(c);
 		// A turn still queued for its place (the hosted cap) goes back: nothing of it started. One paused for its machine ends with it.
-		if (item.run?.step.turn === "delivered" || (question.kind === "machine_away" && item.run?.step.turn === "started")) c.effects.push({ kind: "withdraw", key: c.key, ...(item.run.step.kind === "review" && { to: "review" }) });
+		if (item.run?.step.turn === "delivered" || (question.kind === "machine_away" && item.run?.step.turn === "started")) c.effects.push({ kind: "withdraw", key: c.key, ...(item.run.step.kind === "plan_review" ? { to: "critic" as const } : item.run.step.kind === "review" && { to: "review" }) });
 		cancelActive(c);
 		c.state("failed");
 		return true;
@@ -2498,21 +2584,7 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 			c.state("waiting", { reason: "ci", sentence: "Waiting for the feature branch to update.", retryAt: null });
 			c.effects.push({ kind: "update_parent_feature", key: c.key, target: fact.target, ...(auto && { automatic: true }) });
 			break;
-		case "update_from_base": {
-			const head = run.ci?.head;
-			if (!head || !isSha(head) || head !== item.head || run.ci?.moved || item.mode === "orchestrate") return false;
-			const fingerprint = `conflict:${item.task.base}`;
-			const previous = failuresOf(run);
-			if (previous.includes(fingerprint) && !newerPartBase(item, run.ci!)) return false;
-			run.updatedBaseTip = run.ci?.baseTip;
-			if (!previous.includes(fingerprint)) run.failures = [...previous, fingerprint];
-			run.lastFailure = fingerprint;
-			run.rounds.conflict++;
-			run.updateFromBase = { head, at: c.at };
-			c.say(`Updating the item branch from ${item.task.base}.`);
-			publish(c);
-			break;
-		}
+		case "update_from_base": return updateFromBase(c);
 		case "ci_alone":
 			if (!item.parent || !run.ci || run.ci.head !== item.head || !isSha(run.ci.head)) return false;
 			run.ci.ciAlone = true;

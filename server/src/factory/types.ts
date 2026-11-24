@@ -42,6 +42,7 @@ export interface GateEvidence {
 
 /** CI of the head that was pushed last. */
 export interface CiProgress {
+	autoMergeKey?: string;
 	/** Base branch tip observed when this part was offered a CI update. */
 	baseTip?: string;
 	/** Older item rows predate webhook polling. */
@@ -219,6 +220,8 @@ export interface FeedbackDecision {
 }
 
 export interface FactoryItem {
+	/** A foreign push observed on this PR disqualifies it even if the original head returns. */
+	foreignPush?: true;
 	/** Question claimed by Add it and continue. No continuation is delivered until the save settles. */
 	claimedSecret?: Question;
 	/** One rerun request per commit. Keep the original job ids to distinguish a fresh attempt from a delayed listing. */
@@ -468,7 +471,7 @@ export type Fact =
 	/** The paused turn of `key` has waited for its machine since `since`, long enough (WLP_MACHINE_AWAY_ASK_MS) to ask the person once. */
 	| { kind: "machine_away"; deadline?: number; at: number; key: string; since: number; machine: string | null }
 	| {
-			kind: "turn_ended";
+			kind: "turn_ended"; autoApprovePlans?: boolean;
 			at: number;
 			key: string;
 			outcome: TurnOutcome;
@@ -516,7 +519,7 @@ export type Fact =
 			outOfMemory?: OutOfMemory;
 			spend: TurnSpend;
 	  }
-	| { kind: "review_ended"; at: number; key: string; outcome: TurnOutcome; stepLimit?: number; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; /** As `turn_ended`'s. */ sandboxFailed?: string; outOfMemory?: OutOfMemory; spend: TurnSpend }
+	| { kind: "review_ended"; planReview?: import("./autonomy.js").PlanReview; inventory?: PlacementInventory; by?: "critic"; at: number; key: string; outcome: TurnOutcome; stepLimit?: number; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; /** As `turn_ended`'s. */ sandboxFailed?: string; outOfMemory?: OutOfMemory; spend: TurnSpend }
 	/** The session's sandbox was removed for "Start on a fresh sandbox" (`fresh_sandbox` effect): `plan` runs next, in a new one. */
 	| { kind: "sandbox_freed"; at: number; key: string; plan: TurnPlan }
 	| { kind: "sandbox_resize_refused"; at: number; key: string; plan: TurnPlan; size: HostedSize }
@@ -529,8 +532,9 @@ export type Fact =
 	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
 	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
-	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
-	| { kind: "pr_read"; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
+	| { kind: "ci_read"; autoMergeSingles?: boolean; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
+	| { kind: "auto_merge_result"; behind?: boolean; at: number; key: string; head: string; reason: string | null }
+	| { kind: "pr_read"; mergedByApp?: boolean; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
 	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
 	| { kind: "spent"; at: number; hostedSeconds: number };
 
@@ -553,6 +557,7 @@ export type VerifiedCheckEffect = {
 } & ({ state: "in_progress"; conclusion: null } | { state: "completed"; conclusion: CheckConclusion });
 
 export type Effect =
+	| { kind: "auto_merge"; key: string; head: string; pr: number }
 	| VerifiedCheckEffect
 	| { kind: "sandbox_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan }
@@ -571,14 +576,14 @@ export type Effect =
 	| { kind: "poll_repo_pr"; key: string; repo: string; pr: number; at: number }
 	| { kind: "dispatch"; child?: string; key: string; at?: number }
 	/** Put a message in the session's inbox; it starts a turn when a slot and a lease are granted. */
-	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "planner" | "summary" | "run_checks" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput; /** `TurnPlan.untrusted`; for a reviewer's turn, always some. Absent: none. */ untrusted?: string[]; /** Every source of someone else's in `untrusted` is in `FactoryItem.unsandboxed`. */ unsandboxed?: true; /** A builder's turn that goes on with its step: the prompt for an agent without the step's conversation (session-inbox.ts `Delivery.fresh`). */ fresh?: { text: string; untrusted: string[]; unsandboxed?: true } }
+	| { kind: "deliver"; key: string; text: string; feedbackQuote?: TurnPlan["feedbackQuote"]; agent: "critic" | "planner" | "summary" | "run_checks" | null; maxSteps: number; fetchBase: string | null; /** A builder's turn: the questions its run may still ask (`ask_person`). */ asksLeft?: number; to?: "review" | "critic"; checkout?: ReviewCheckout; reviewerInput?: ReviewerInput; /** `TurnPlan.untrusted`; for a reviewer's turn, always some. Absent: none. */ untrusted?: string[]; /** Every source of someone else's in `untrusted` is in `FactoryItem.unsandboxed`. */ unsandboxed?: true; /** A builder's turn that goes on with its step: the prompt for an agent without the step's conversation (session-inbox.ts `Delivery.fresh`). */ fresh?: { text: string; untrusted: string[]; unsandboxed?: true } }
 	/** The turn of `key` is not wanted any more: take it out of the inbox, or stop it. */
 	| { kind: "release_review"; key: string; run: number; to: "review" }
-	| { kind: "withdraw"; key: string; to?: "review" }
+	| { kind: "withdraw"; key: string; to?: "review" | "critic" }
 	/** Remove the session's sandbox (the person chose a fresh one); `sandbox_freed` with `plan` follows. */
-	| { kind: "fresh_sandbox"; key: string; at?: number; plan: TurnPlan; to?: "review"; /** "Start on a larger sandbox": the size of the new one. */ hostedSize?: HostedSize }
+	| { kind: "fresh_sandbox"; key: string; at?: number; plan: TurnPlan; to?: "review" | "critic"; /** "Start on a larger sandbox": the size of the new one. */ hostedSize?: HostedSize }
 	/** Ask the session whether the turn of `turn` still runs; it answers `turn_running` with `key`, or `turn_ended`. */
-	| { kind: "check_turn"; key: string; turn: string; at: number; to?: "review" }
+	| { kind: "check_turn"; key: string; turn: string; at: number; to?: "review" | "critic" }
 	/** Commit and push the session's branch, then open or update its pull request with the agent's report and the verified section. */
 	| { kind: "publish"; key: string; at?: number }
 	| { kind: "rerun_ci"; key: string; head: string; jobs: RerunnableJob[]; openItems: number }

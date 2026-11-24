@@ -230,6 +230,7 @@ import { attachmentStore, uploadShots } from "../sandbox/attach.js";
 import { REPORT_TAKEN, askPerson, requestSecret, secretRequestNotice } from "../agent-publish.js";
 import { RULES } from "../factory/blueprint.js";
 import { DATA_DIR } from "../sandbox/provider.js";
+import { planReviewOf, type PlanReview } from "../factory/autonomy.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
 import { resetTime, windlassAccountKey, type LimitEvent, type UsageObservation } from "../provider-usage.js";
 import { type ProviderRefusal, limitObservation, publicUsageEvent, refusalMessage, stepRefusal, turnRefusal } from "../provider-refusal.js";
@@ -597,7 +598,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; policyRefusal?: true; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string; /** The turn's sandbox could not be prepared (`openSandbox` threw): what went wrong. */ sandboxFailed?: string; /** Its sandbox ran out of memory in or before this turn. */ outOfMemory?: OutOfMemory };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; planReview?: PlanReview; said?: string; pushedAtStart: string | null; policyRefusal?: true; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string; /** The turn's sandbox could not be prepared (`openSandbox` threw): what went wrong. */ sandboxFailed?: string; /** Its sandbox ran out of memory in or before this turn. */ outOfMemory?: OutOfMemory };
 }
 
 /**
@@ -891,7 +892,7 @@ function summaryOf(meta: SessionMeta): SessionSummary {
 		...(meta.startTimes?.length ? { startTimes: meta.startTimes } : {}),
 		sandbox: meta.sandbox,
 		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt } } : {}),
-		...(meta.origin ? { item: { id: meta.origin.itemId, role: meta.origin.role ?? "builder" } } : {}),
+		...(meta.origin ? { item: { id: meta.origin.itemId, role: meta.origin.role ?? "builder", ...(meta.origin.planCritic && { planCritic: true }) } } : {}),
 		...(meta.environmentBuild ? { environmentBuild: true as const } : {}),
 		...(meta.environment ? { environment: meta.environment } : {}),
 	};
@@ -3983,6 +3984,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	const mode = meta.origin ? itemModeOf(meta.harness, meta.profile) : meta.mode;
 	const reviewer = meta.origin?.role === "reviewer";
 	const checkout = active.item?.row.checkout;
+	const critic = reviewer && active.item?.row.agent === "critic";
 	// Where the outside text of an item's turn came from, and the one rule for every agent of how it goes (factory/untrusted.ts):
 	// marked for Windlass where it can contain commands once told, labelled only otherwise, and on "Docker, hardened" someone
 	// else's stops the turn until the person chose to run it anyway (`unsandboxed`).
@@ -4111,7 +4113,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			active.item!.policyRefusal = true;
 			throw new TurnProblem(signedOut);
 		}
-		if (reviewer && (!checkout || !reviewerAllowed(meta.place, layer.sandboxes.profile(meta.profile)))) {
+		if (reviewer && ((!checkout && !critic) || !reviewerAllowed(meta.place, layer.sandboxes.profile(meta.profile)))) {
 			const reason = REVIEW_PROFILE_REASON;
 			if (active.item) active.item.refused = reason;
 			throw new TurnProblem(reason);
@@ -4153,7 +4155,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const caps = await harness.capabilities(sandbox);
 		const platformTool = (tool: (typeof caps.platformTools)[number]) => caps.platformTools.includes(tool);
 		// A reviewer runs only in the restricted session with its filing tool: a harness that has not both does not start one.
-		if (reviewer && (!caps.restrictedReview || !platformTool("file_review"))) {
+		if (reviewer && (!caps.restrictedReview || !platformTool(critic ? "file_plan_review" : "file_review"))) {
 			const reason = REVIEW_PROFILE_REASON;
 			if (active.item) active.item.refused = reason;
 			throw new TurnProblem(reason);
@@ -4169,7 +4171,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			meta.summaryConversation = summary || undefined;
 		}
 		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
-		resumed = meta.windlassSessionId;
+		resumed = critic ? null : meta.windlassSessionId;
 		// A turn that resumes after a pause: its agent goes on with a short "carry on" when it has its conversation of the turn,
 		// and is given the whole task when it has not (a new sandbox, a memory that was lost); also when the saved session turns
 		// out to be gone only once the agent is asked for it (`fresh`). The whole task's sources go by the same rule as any turn's.
@@ -4232,7 +4234,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const item = active.item;
 		const held = active.secrets;
 		const planning = item?.row.agent === "planner";
-		const planner = planning || item?.row.agent === "summary";
+		const planner = critic || planning || item?.row.agent === "summary";
 		// Told once, to whichever agent takes the next prompt: what setup left, and whether the workspace is a new one.
 		const notes = platformNotes(meta, reviewer);
 		const store = item ? attachmentStore() : null;
@@ -4396,7 +4398,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			let uiChanged = false;
 			let filingFiles: (() => { read(path: string, sha: string): Promise<string>; close(): Promise<void> }) | null = null;
 			let storedBrief: string | null = null;
-			if (reviewer && checkout && item) {
+			if (reviewer && (checkout || critic) && item) {
 				const repo = meta.repo;
 				const app = githubApp();
 				if (!repo || !app || !meta.cloned) throw new ReviewRefused("the base clone is unavailable");
@@ -4406,7 +4408,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				const scope = { repositoryId: repo.id, permissions: { contents: "read", metadata: "read" } } as const;
 				const { owner, name } = resolved.repository;
 				const directory = meta.cloneDirectory ?? ".";
-				await app.withToken(resolved.installation.id, scope, token => checkoutReview(sandbox, app.cloneUrl(owner, name), token, directory, checkout.pr, checkout.head, signal), { revokeAfter: true });
+				if (checkout) await app.withToken(resolved.installation.id, scope, token => checkoutReview(sandbox, app.cloneUrl(owner, name), token, directory, checkout.pr, checkout.head, signal), { revokeAfter: true });
 				// Windlass starts a project server with a remembered grant before it asks the platform.
 				// The private data directory starts empty; fail closed if setup populated its grants.
 				const grants = `${DATA_DIR}/approvals`;
@@ -4419,22 +4421,31 @@ if test -e '${grants}'; then
 fi`, { signal, timeoutMs: 5000 });
 				if (grantCheck.aborted || grantCheck.timedOut) throw new TurnProblem("checking the saved project approvals was interrupted");
 				if (grantCheck.exitCode !== 0) throw new ReviewRefused("could not establish that Windlass has no saved project approvals");
-				const paths = await changedReviewPaths(sandbox, directory, checkout.baseSha, checkout.head);
-				filingFiles = () => {
-					let issued: InstallationToken | undefined;
-					return {
-						async read(path, sha) {
-							issued ??= await app.installationToken(resolved.installation.id, scope);
-							return app.fileAt(issued.token, owner, name, path, sha);
-						},
-						async close() { if (issued) await app.revoke(issued); },
+				if (critic) {
+					const list = `git -C ${shellQuote(directory)} ls-tree -r --name-only -z HEAD` +
+						(item.crossRepoPlan ? ` && find ${shellQuote(INPUTS_DIRECTORY)} -mindepth 2 -type f -print0` : "");
+					const tree = await sandbox.run(list, { signal, timeoutMs: 10000 });
+					if (tree.exitCode !== 0 || tree.timedOut || tree.aborted || !tree.stdout.endsWith("\0")) throw new TurnProblem("The critic could not read the tracked repository tree.");
+					text += "\n\nTracked repository tree: " + JSON.stringify(tree.stdout.split("\0").slice(0, -1));
+				}
+				if (checkout) {
+					const paths = await changedReviewPaths(sandbox, directory, checkout.baseSha, checkout.head);
+					filingFiles = () => {
+						let issued: InstallationToken | undefined;
+						return {
+							async read(path, sha) {
+								issued ??= await app.installationToken(resolved.installation.id, scope);
+								return app.fileAt(issued.token, owner, name, path, sha);
+							},
+							async close() { if (issued) await app.revoke(issued); },
+						};
 					};
-				};
-				uiChanged = paths.some(path => /\.(tsx|jsx|vue|svelte|css|scss|html)$|^(web|app|pages|components|src\/ui)\//i.test(path));
-				const manifestsChanged = paths.some(path => /(?:^|\/)(?:package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lock[^/]*|requirements[^/]*\.txt|pyproject\.toml|uv\.lock|poetry\.lock|Cargo\.(?:toml|lock)|go\.(?:mod|sum)|Gemfile[^/]*)$/.test(path));
-				const brief = reviewerTask(held.redactor.deep({ ...checkout, changed: groupReviewPaths(paths), uiChanged, manifestsChanged, screenshots }), listed, held.redactor.text(text));
-				storedBrief = held.redactor.text(itemPrompt(item.row));
-				text = brief;
+					uiChanged = paths.some(path => /\.(tsx|jsx|vue|svelte|css|scss|html)$|^(web|app|pages|components|src\/ui)\//i.test(path));
+					const manifestsChanged = paths.some(path => /(?:^|\/)(?:package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lock[^/]*|requirements[^/]*\.txt|pyproject\.toml|uv\.lock|poetry\.lock|Cargo\.(?:toml|lock)|go\.(?:mod|sum)|Gemfile[^/]*)$/.test(path));
+					const brief = reviewerTask(held.redactor.deep({ ...checkout, changed: groupReviewPaths(paths), uiChanged, manifestsChanged, screenshots }), listed, held.redactor.text(text));
+					storedBrief = held.redactor.text(itemPrompt(item.row));
+					text = brief;
+				}
 			}
 			let calls = 0;
 			// Told of no source (above): the timeline says once that the text went labelled only.
@@ -4461,6 +4472,13 @@ fi`, { signal, timeoutMs: 5000 });
 				// Once Windlass says the session is tainted, also part way through this turn, nobody is there to answer for the user's servers.
 				...(item && { unaskedUntilTainted: true }),
 				reportScreenshots: browser,
+				onPlanReview: critic && item ? async (request, withdrawn) => {
+					if (withdrawn.aborted || item.planReview) return "This critic filing is closed.";
+					const review = planReviewOf(held.redactor.deep(request.arguments));
+					if (!review) return "File approve or revise and up to twelve concise findings. Revision needs a concrete finding.";
+					item.planReview = review;
+					return "Plan review filed. End your turn.";
+				} : undefined,
 				onReview: reviewer && item && checkout && filingFiles && platformTool("file_review") ? (request, withdrawn) => {
 					const openFiles = filingFiles;
 					const file = async () => {
@@ -4765,7 +4783,7 @@ fi`, { signal, timeoutMs: 5000 });
 		});
 		if (reviewer && layer && meta.sandboxId) {
 			try {
-				if (active.item && (active.item.withdrawn || active.item.refused || meta.review?.id === active.item.row.key)) {
+				if (active.item && (critic || active.item.withdrawn || active.item.refused || meta.review?.id === active.item.row.key)) {
 					await removeSandbox(c, meta, meta.sandboxId, "Removed the reviewer’s checkout at the end of its turn.");
 				} else if (meta.sandbox === "running") {
 					await layer.sandboxes.suspend(meta.sandboxId);
@@ -5607,8 +5625,8 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
  * without them.
  */
 async function planningInputs(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, sandbox: SandboxHandle, turn: number): Promise<void> {
-	if (meta.origin?.role !== "builder") return;
-	const asked = item.row.agent === "planner" ? await itemActor(c, meta.uid, item.row.itemId).internalPlanningInputs(item.row.key) : null;
+	if (meta.origin?.role !== "builder" && !meta.origin?.planCritic) return;
+	const asked = item.row.agent === "planner" || item.row.agent === "critic" ? await itemActor(c, meta.uid, item.row.itemId).internalPlanningInputs(item.row.key) : null;
 	if (!asked) {
 		// Left by an earlier planning turn (a feature converted to one implementer runs its builder here next).
 		if (meta.planningInputs && item.row.agent !== "summary") {
@@ -5693,7 +5711,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 	}
 	let fact: EndedFact;
 	if (meta.origin?.role === "reviewer") {
-		fact = reviewEndedFactOf(row.key, ended.outcome, meta.review, item.said ?? null, item.refused ?? null, ended.usage);
+		fact = { ...reviewEndedFactOf(row.key, ended.outcome, meta.review, item.said ?? null, item.refused ?? null, ended.usage), ...(item.planReview && { planReview: item.planReview }) };
 	} else {
 		const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.baseSha ?? null, ended.checks, ended.verified, meta.origin?.owns).catch(() => []) : [];
 		// Not known (git said nothing): taken as changed, and the push says whether there was anything. What the agent pushed itself in the turn is a change too.
@@ -6624,7 +6642,7 @@ export const agentSession = actor({
 			requireService(c);
 			const meta = liveMeta(c);
 			const delivery = deliveryOf(input);
-			if (!delivery || meta.origin?.itemId !== delivery.itemId || (meta.origin.role === "reviewer") !== Boolean(delivery.checkout) || (delivery.checkout && (delivery.agent || delivery.fetchBase))) throw new UserError("That delivery is not this session's.", { code: "bad_input" });
+			if (!delivery || meta.origin?.itemId !== delivery.itemId || !!meta.origin.planCritic !== (delivery.agent === "critic") || (meta.origin.role === "reviewer") !== Boolean(delivery.checkout || delivery.agent === "critic") || (delivery.checkout && (delivery.agent || delivery.fetchBase))) throw new UserError("That delivery is not this session's.", { code: "bad_input" });
 			// Stored before the item is answered: from here the same delivery again adds nothing.
 			await serial(c, () => receive(c.db, delivery, Date.now()));
 			const row = await inboxRow(c.db, delivery.key);
