@@ -7,11 +7,12 @@
  * every rule here checkable with a stand-in host (scripts/environment-check.ts).
  */
 
+import type { EnvironmentBuildReport } from "./internal.js";
 import type { RawAccess } from "rivetkit/db";
 import type { EnvironmentBuild, EnvironmentPlace, EnvironmentSchedule, EnvironmentTrigger, HostedSize, MachineSummary, RepositoryCheck, RepositoryDefaults, RepositoryEnvironments, SessionSummary } from "../contract.js";
 import { ITEM_HOSTED_SIZE } from "../contract.js";
 import {
-	afterChange, afterPush, emptyRow, environmentInputs, environmentPlaces, environmentView, finishBuild, HOSTED, nextBuild, nextScheduled, nextWake, placeRefusal, readEnvironments, readSchedule,
+	afterChange, afterPush, emptyRow, environmentInputs, environmentPlaces, environmentView, finishBuild, HOSTED, nextBuild, nextScheduled, nextWake, placeRefusal, readEnvironments, readSchedule, sameInputs,
 	BUILD_LOST_MS, RETRY_MS, usable, writeEnvironment, defaultSchedule, type DueBuild, type EnvironmentRow, type PlaceFacts,
 } from "../environments.js";
 
@@ -38,6 +39,7 @@ export interface EnvironmentHost {
 	sessions(): SessionSummary[];
 	machines(): Promise<MachineSummary[]>;
 	saved(project: string): Promise<SavedInputs>;
+	dependenciesChanged(repositoryId: string, since: string): Promise<boolean>;
 	/** Whether the deployment keeps prepared sandboxes hosted, and on machines (`snapshotsFor`). */
 	snapshots: { hosted: boolean; machines: boolean };
 	/** E2B's WLP_E2B_SNAPSHOT_USER_MAX where hosted sandboxes are E2B; null where the store caps bytes, not count. */
@@ -98,6 +100,7 @@ async function scheduled(host: EnvironmentHost, rows: EnvironmentRow[]): Promise
 		const kept = rows.filter(r => r.project === project);
 		for (const place of environmentPlaces(await placeFacts(host, project), now, kept.map(r => r.place))) {
 			const row = kept.find(r => r.place === place.place);
+			if (row?.note && row.dueAt !== null && row.dueAt > now) continue; // Honor a deferred build’s retry time.
 			const when = nextScheduled(hours, row?.attempt?.startedAt ?? 0, host.uid + ":" + project, now);
 			if (when === null) continue;
 			if (when <= now) due.push({ project, place: place.place, trigger: "schedule" });
@@ -170,6 +173,17 @@ async function start(host: EnvironmentHost, due: DueBuild): Promise<void> {
 	const sandbox = buildSandbox(host, due.project, due.place, saved);
 	if (!sandbox) return later("Choose a sandbox under Defaults for new agents, or run an agent on this repository here first.");
 	const inputs = environmentInputs(saved.command, saved.checks);
+	// Compare the tree after pushes settle with the one whose setup and checks ran.
+	if (due.trigger === "push" && row.attempt?.commit && sameInputs(row.attempt, inputs)) {
+		let changed: boolean;
+		try { changed = await host.dependenciesChanged(repoOf(due.project), row.attempt.commit); }
+		catch { return later("Waiting to read the repository’s environment inputs."); }
+		if (!changed) {
+			// A newer push or settings change may have arrived during the GitHub read.
+			await host.db.execute("UPDATE environment SET due_at = NULL, due_trigger = NULL, first_push = NULL, note = NULL WHERE project = ? AND place = ? AND due_trigger = 'push' AND due_at = ?", row.project, row.place, row.dueAt);
+			return;
+		}
+	}
 	let attempt: EnvironmentBuild = { trigger: due.trigger, startedAt: now, finishedAt: null, commit: "", image: "", ...inputs, profile: sandbox.profile, checks: [], failure: null, snapshot: false };
 	let session: string;
 	try {
@@ -183,20 +197,23 @@ async function start(host: EnvironmentHost, due: DueBuild): Promise<void> {
 	const made = host.sessions().find(s => s.id === session)?.hostedSize;
 	if (made) attempt = { ...attempt, hostedSize: made };
 	await writeEnvironment(host.db, { ...row, attempt, session, note: null, dueAt: null, dueTrigger: null, firstPush: null });
+	console.log(`[wlp] environment.started session=${session} trigger=${due.trigger}`);
 	await host.watchPushes(repoOf(due.project));
 }
 
 /** A build's session reports how it ended. Promoted only when every check passed; the session is then deleted. */
-export async function buildResult(host: EnvironmentHost, sessionId: string, result: Omit<EnvironmentBuild, "trigger" | "startedAt" | "setupHash" | "checksHash" | "profile" | "hostedSize">): Promise<boolean> {
+export async function buildResult(host: EnvironmentHost, sessionId: string, result: EnvironmentBuildReport): Promise<boolean> {
 	const row = (await readEnvironments(host.db)).find(r => r.session === sessionId);
 	if (!row?.attempt) return false;
-	const build: EnvironmentBuild = { ...row.attempt, ...result, finishedAt: result.finishedAt ?? host.now(),
-		// A pass that saved no image where one was expected is no ready environment for sessions, but it was validated.
-		failure: result.failure };
-	await writeEnvironment(host.db, finishBuild(row, build));
+	if ("waiting" in result) {
+		await writeEnvironment(host.db, { ...row, session: null, attempt: row.ready, note: result.waiting,
+			dueAt: host.now() + RETRY_MS, dueTrigger: row.dueTrigger === "rebuild" ? "rebuild" : row.attempt.trigger });
+	} else {
+		await writeEnvironment(host.db, finishBuild(row, { ...row.attempt, ...result, finishedAt: result.finishedAt ?? host.now() }));
+	}
 	await host.removeSession(sessionId).catch(() => undefined);
 	await tick(host);
-	return build.failure === null;
+	return !("waiting" in result) && result.failure === null;
 }
 
 /** A push to the repository's default branch: each of its environments builds once the pushes settle. */
@@ -221,8 +238,10 @@ export async function settingsChanged(host: EnvironmentHost, project: string): P
 		return;
 	}
 	const places = environmentPlaces(await placeFacts(host, project), host.now(), kept.map(r => r.place)).map(p => p.place);
+	const inputs = environmentInputs(saved.command, saved.checks);
 	for (const place of new Set([...kept.map(r => r.place), ...places])) {
 		const row = kept.find(r => r.place === place) ?? emptyRow(project, place);
+		if (sameInputs(row.attempt, inputs)) continue;
 		await writeEnvironment(host.db, { ...row, ...afterChange(row, host.now()) });
 	}
 	await rearm(host);
@@ -261,7 +280,7 @@ export async function nudge(host: EnvironmentHost, project: string, place: Envir
 		if (!row.ready) return;
 		await writeEnvironment(host.db, { ...row, stale: "Its prepared image is no longer at this place: the image changed or was removed.", dueAt: row.dueAt ?? host.now() + 60_000, dueTrigger: row.dueTrigger ?? "image" });
 	} else {
-		if (row.session !== null || row.dueAt !== null || usable(row, environmentInputs(saved.command, saved.checks))) return;
+		if (row.session !== null || row.dueAt !== null || (row.stale === null && sameInputs(row.ready, environmentInputs(saved.command, saved.checks)))) return;
 		// One that failed is not tried again for every cold start: its schedule, a push or Rebuild builds it.
 		if (row.attempt?.failure && (!row.ready || row.attempt.startedAt > row.ready.startedAt)) return;
 		await writeEnvironment(host.db, { ...row, dueAt: host.now() + 60_000, dueTrigger: "first_use" });

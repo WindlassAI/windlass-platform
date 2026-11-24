@@ -852,9 +852,10 @@ try {
 		const slots = sizeMachine({ cores: 10, memoryBytes: 12 * GiB });
 		const machine = new LocalExecutor({ uid: "u_fixture", machineId }, { slots });
 		const kept: Box = { raw, sessionId: session, state: "running", profile, usedAt: 0, busy: 0, workspaceChecked: true, activeTurns: 0 };
-		machine.boxes.set(id, kept);
 		Object.assign(machine, { availableMemory: () => 7 * GiB });
-		assert.equal(machine["spareRoom"](), "memory", "keep another real slot's 5 GiB available");
+		assert.equal(machine["spareRoom"](), "memory", "a spare must leave the other empty slot covered");
+		machine.boxes.set(id, kept);
+		assert.equal(machine["spareRoom"](), 1, "the spare fills the one empty slot");
 		machine.boxes.set("other", { ...kept, activeTurns: 1 });
 		assert.equal(machine["spareRoom"](), 1, "both real slots have containers and 7 GiB is still free");
 
@@ -868,7 +869,7 @@ try {
 		assert.equal(small["spareRoom"](), 1);
 	});
 
-	await checkControl("a ready spare in the second slot survives memory maintenance and serves the next work item", async () => {
+	await checkControl("a second Quick item claims the first item’s spare while background environment builds wait", async () => {
 		const { spareKey } = await import("../runner/src/warm-spares.js");
 		const { sizeMachine } = await import("../runner/src/sizing.js");
 		const GiB = 2 ** 30, slots = sizeMachine({ cores: 10, memoryBytes: 12 * GiB });
@@ -877,7 +878,7 @@ try {
 		const runner = new LocalExecutor({ uid, machineId }, { slots }, false, false, [profile], { mode: "restricted", allow: [] });
 		const recipe = { url: "https://example.org/r.git", connected: { repo: "42", branch: "main", commit: "c".repeat(40),
 			generation: "a".repeat(64), command: "make deps", timeoutMs: 3000 } };
-		let free = 12 * GiB, disk = 100e9, cold = 0, built = "";
+		let free = slots.unit.memoryBytes + slots.reserve.memoryBytes, disk = 100e9, cold = 0, built = "";
 		let builtKey: string | undefined;
 		const dropped: string[] = [];
 		const verify = runner["verifySpare"].bind(runner);
@@ -897,24 +898,55 @@ try {
 		runner.provider.connect = async () => ({ uid, profile, ownData: true }) as DockerSandboxHandle;
 		const probe = mock.method(DockerSandboxHandle.prototype, "ask", async () => success);
 		try {
-			const create = (sessionId: string) => runner.serial(() => runner.create(sessionId, profile, false, undefined, 1, undefined, "42", recipe));
+			const { machineLayer } = await import("../server/src/sandbox/runner-layer.js");
+			const { sessionSandboxInput } = await import("../server/src/actors/internal.js");
+			const create = (sessionId: string, background = false) => {
+				const link = { who: { uid, sessionId, machineId }, facts: async () => ({ report: runner.report() }),
+					again: (name: "create", args: Args<"create">) => {
+						assert.ok(validArgs(name, args));
+						return runner.serial(() => runner.create(sessionId, args.profile, args.screenshots, args.harness, args.size, args.prepared, args.mirrorRepo, args.spare, args.environmentBuild));
+					} };
+				const meta = background ? { environmentBuild: { project: "github:42", place: machineId, screenshots: false } }
+					: { origin: { kind: "item" as const, itemId: sessionId, role: "builder" as const } };
+				return machineLayer(link as never, {} as import("../server/src/sandbox/api.js").SandboxLayer).sandboxes.create({
+					...sessionSandboxInput({ uid, sessionId, profile, ...meta }), mirrorRepo: "42", spareRecipe: async () => background ? undefined : recipe });
+			};
 			const first = await create("s_item_a");
 			const kept = runner.boxes.get(first)!;
 			await runner.turnStarted(kept);
 			runner.turnEnded(kept);
 			await runner.maintainSpares();
 			await until(() => runner.report().warmSpares?.ready === 1);
-			// A is handed over. There is still an OS margin, but no extra 5 GiB for a third container.
+			const afterA = built;
+			await assert.rejects(create("s_env_a", true), /Waiting for a free slot/);
+			// A stays running for CI. There is an OS margin but no extra 5 GiB for a third container.
 			free = 4 * GiB;
 			await runner.maintainSpares();
 			assert.equal(runner.report().warmSpares?.ready, 1);
 			disk = 6e9; // Below the speculative build floor. Claiming needs no new container.
 			const second = await create("s_item_b");
-			assert.equal(runner.boxes.get(second)?.raw, built);
+			assert.equal(runner.boxes.get(second)?.raw, afterA);
 			assert.deepEqual(dropped, []);
 			assert.equal(cold, 1);
 			assert.equal(kept.state, "running");
 			assert.equal(runner.boxes.get(second)?.claim?.session, "s_item_b");
+			kept.state = "paused";
+			await runner.turnStarted(runner.boxes.get(second)!);
+			runner.turnEnded(runner.boxes.get(second)!);
+			disk = 100e9;
+			free = slots.unit.memoryBytes + slots.reserve.memoryBytes;
+			await runner.maintainSpares();
+			await until(() => runner.report().warmSpares?.ready === 1);
+			assert.notEqual(built, afterA);
+			await assert.rejects(create("s_env_b", true), /Waiting for a free slot/);
+			assert.deepEqual(dropped, []);
+			runner.boxes.get(second)!.state = "paused";
+			const retried = await create("s_env_b", true);
+			assert.ok(runner.boxes.has(retried));
+			await runner.maintainSpares();
+			assert.equal(runner.report().warmSpares?.ready, 1);
+			assert.deepEqual(dropped, []);
+			assert.equal(cold, 2);
 		} finally { probe.mock.restore(); }
 	});
 

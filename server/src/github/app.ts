@@ -679,7 +679,7 @@ export class GithubApp {
 	}
 
 	/** Resolve a branch (or pinned review base) once. Every dependency read uses immutable objects. */
-	async setupInputs(token: string, owner: string, name: string, revision: string) {
+	async setupInputs(token: string, owner: string, name: string, revision: string, requireLock = true) {
 		const prefix = `/repos/${owner}/${name}`;
 		const auth = { bearer: token };
 		const { body } = await this.call({ path: prefix + "/commits/" + encodeURIComponent(revision), auth, what: "resolve the setup revision" });
@@ -692,7 +692,7 @@ export class GithubApp {
 			if (!text(e.path) || !SHA.test(text(e.sha))) throw new Error("Incomplete tree entry");
 			return { path: text(e.path), sha: text(e.sha), mode: text(e.mode), type: text(e.type) };
 		});
-		return { commit, dependencies: dependencyHash(files) };
+		return { commit, dependencies: dependencyHash(files, requireLock) };
 	}
 
 	/**

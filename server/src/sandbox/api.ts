@@ -186,7 +186,10 @@ export interface ConnectOptions {
 	ownData?: boolean;
 }
 
+export const ENVIRONMENT_SLOT_WAIT = "Waiting for a free slot alongside the machine’s warm spare.";
+
 export interface CreateSandboxInput {
+	environmentBuild?: true;
 	/** Evaluated only for a machine advertising ready sandboxes. */
 	spareRecipe?: (ready: number) => Promise<import("../runner/spare-recipe.js").SpareRecipe | undefined>;
 	/** As `ConnectOptions.network`, from the first command in the sandbox. */

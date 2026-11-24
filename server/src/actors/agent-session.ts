@@ -225,7 +225,7 @@ import { judgeChecks } from "../environments.js";
 import { outputExcerpt } from "../factory/check-environment.js";
 import { runBaseTests, type BaseTestResult, type NamedTests } from "../factory/base-tests.js";
 import { PlatformChecks } from "../sandbox/platform-checks.js";
-import { itemActor, grantIsValid, type EnvironmentBuildOrigin, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
+import { itemActor, grantIsValid, type EnvironmentBuildOrigin, type EnvironmentBuildReport, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
 import { REPORT_TAKEN, askPerson, requestSecret, secretRequestNotice } from "../agent-publish.js";
@@ -241,7 +241,7 @@ import { recentSubject } from "../factory/intake.js";
 import { untrustedTurn, unmarkedNote, untrustedWords } from "../factory/untrusted.js";
 import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
 import type { Fact, ItemProviderRefusal, UntrustedRefusal } from "../factory/types.js";
-import { DeploymentFull, PLATFORM_RESTART, observeSandbox } from "../sandbox/api.js";
+import { DeploymentFull, ENVIRONMENT_SLOT_WAIT, PLATFORM_RESTART, observeSandbox } from "../sandbox/api.js";
 import { leaseState } from "../sandbox/relay-leases.js";
 import { StartClock, keepStartTimes, startTimesLog } from "../start-times.js";
 import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
@@ -664,7 +664,7 @@ interface SessionVars {
 	/** Null for an actor that `user` did not create: it rejects everything and removes itself. */
 	meta: SessionMeta | null;
 	/** A build session's result, once its setup and checks ran (`buildEnvironment`); reported when its turn has closed. */
-	environmentResult?: EnvironmentBuildResult;
+	environmentResult?: EnvironmentBuildReport;
 	nextSeq: number;
 	/** Timeline items not yet in SQLite, in `seq` order. */
 	unwritten: TimelineItem[];
@@ -4608,6 +4608,7 @@ fi`, { signal, timeoutMs: 5000 });
 		}
 	} catch (error) {
 		thrown = error;
+		if (meta.environmentBuild && opening && isSandboxUserError(error) && error.message === ENVIRONMENT_SLOT_WAIT) c.vars.environmentResult = { waiting: ENVIRONMENT_SLOT_WAIT };
 		const failure = checkout && meta.repo && error instanceof GithubError ? problemOf(error, meta.repo.owner, meta.repo.name) : error;
 		if (checkout && active.item && !signal.aborted && (failure instanceof ReviewRefused || (failure instanceof GithubProblem && (failure.code === "github_denied" || failure.code === "github_gone")))) {
 			const reason = active.secrets?.redactor.text(failure.message) ?? failure.message;

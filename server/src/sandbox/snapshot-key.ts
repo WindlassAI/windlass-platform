@@ -28,7 +28,7 @@ export function snapshotPrompt(commit: string) {
 
 const lock = /^(?:package-lock\.json|bun\.lockb?|pnpm-lock\.yaml|yarn\.lock|uv\.lock|Gemfile\.lock|composer\.lock|Pipfile\.lock|poetry\.lock|pyproject\.toml|requirements[^/]*\.txt|flake\.lock|mix\.lock|Cargo\.lock|go\.sum)$/;
 export interface TreeEntry { path: string; sha: string; mode: string; type: string }
-export function dependencyHash(tree: TreeEntry[]): string | null {
+export function dependencyHash(tree: TreeEntry[], requireLock = true): string | null {
 	let locked = false;
 	const entries: [string, string][] = [];
 	for (const file of tree) {
@@ -38,5 +38,5 @@ export function dependencyHash(tree: TreeEntry[]): string | null {
 		if (!/^100(644|755)$/.test(file.mode) || file.type !== "blob" || !SHA.test(file.sha)) throw new Error("Unsupported dependency input");
 		entries.push([file.path, file.sha]);
 	}
-	return locked ? digest(entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : null;
+	return locked || !requireLock ? digest(entries.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : null;
 }
