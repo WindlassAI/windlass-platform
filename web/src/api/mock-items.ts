@@ -144,6 +144,7 @@ const CHOICES: Record<ChoiceId, string> = {
 	hand_over: "Hand it over as it is",
 	run_checks: "Run the checks again",
 	ci_alone: "Integrate on CI alone",
+	update_from_base: "Update from the base branch and run CI again",
 	give_up: "Give up",
 	add_secret: "Add it and continue",
 	without_secret: "Continue without it",

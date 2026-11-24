@@ -186,7 +186,7 @@ import { cloneCommand, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, 
 import { INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY, isHostName } from "../sandbox/e2b/network.js";
-import { type PublishEvidence, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
+import { type PublishEvidence, BaseMergeConflict, updateBranchFromBase, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, problemOf, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
@@ -2557,7 +2557,7 @@ const verifiedLine = (pull: PullRequestInfo) => ` Its description reports: ${pul
  * checked that nothing is in the way. `shownIsEnough` for the item's step: its agent may have pushed
  * everything itself (`agentPush`), and then an open pull request is only described again.
  */
-async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false, branchOnly = false, blockedNetwork?: BlockedNetwork): Promise<PublishResult> {
+async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false, branchOnly = false, blockedNetwork?: BlockedNetwork, updateFromBase?: { head: string; at: number }): Promise<PublishResult> {
 	const app = githubApp();
 	if (!app || !meta.sandboxId) throw new UserError(publishBlocked(c, meta) ?? "There is nothing to push yet.", { code: "publish_blocked" });
 	// A suspend or removal of the idle sandbox finishes first, as before a prompt.
@@ -2578,10 +2578,11 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 	meta.publishBranch = branch;
 	try {
 		// An item's step pushes over the platform's own last push where its agent rebased and did not push; the panel's never forces.
-		if (branchOnly) {
+		if (branchOnly || updateFromBase) {
 			const evidence = await evidenceOf(c, meta, null);
-			const pushed = await pushWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pushed: meta.pushedHead ?? null, lease: meta.platformPushed ?? null, redact: evidence.redact }, message.title);
-			if (pushed.workspaceChanged || !pushed.head) throw new UserError("Git did not confirm the checked child commit.", { code: "publish_failed" });
+			const input = { app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pushed: meta.pushedHead ?? null, lease: meta.platformPushed ?? null, redact: evidence.redact };
+			const pushed = updateFromBase ? await updateBranchFromBase(input, updateFromBase) : await pushWork(input, message.title);
+			if (pushed.workspaceChanged || !pushed.head) throw new UserError("Git did not confirm the checked item commit.", { code: "publish_failed" });
 			recordPushHead(meta, sandbox, pushed.head);
 			return { state: await afterPublish(c, meta, sandbox), opened: false };
 		}
@@ -6579,7 +6580,7 @@ export const agentSession = actor({
 			return await closeCutTurn(c, meta, row, row.turn === null ? null : cutTurnUsage(await windlassEventsOf(c, row.turn)));
 		},
 
-		internalPublish: async (c, input: { key: string; title: string; body: string; blockedNetwork?: BlockedNetwork; branchOnly?: boolean }): Promise<ItemPublishAnswer> => {
+		internalPublish: async (c, input: { key: string; title: string; body: string; blockedNetwork?: BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number } }): Promise<ItemPublishAnswer> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			if (meta.origin?.role === "reviewer") throw new UserError("The reviewer cannot publish.", { code: "reviewer" });
@@ -6595,7 +6596,7 @@ export const agentSession = actor({
 			try {
 				const report = meta.report?.run === Number(input.key.split(":")[1]) ? meta.report : null;
 				const body = report ? [report.description, report.concerns ? `**What the agent is unsure of:** ${report.concerns}` : ""].filter((part) => part !== "").join("\n\n") : String(input?.body ?? "");
-				const result = await c.keepAwake(publishSession(c, meta, repo, { title: report?.title || String(input?.title ?? meta.title), body }, true, input.branchOnly, input.blockedNetwork));
+				const result = await c.keepAwake(publishSession(c, meta, repo, { title: report?.title || String(input?.title ?? meta.title), body }, true, input.branchOnly, input.blockedNetwork, input.updateFromBase));
 				const pull = result.state.pullRequest;
 				if (!input.branchOnly && !pull) return { kind: "publish_failed", said: "GitHub opened no pull request", transient: true };
 				// The commit git said it pushed; where git says nothing (a sandbox layer without git), the branch names it.
@@ -6604,6 +6605,7 @@ export const agentSession = actor({
 				return answer;
 			} catch (error) {
 				// GitHub out of reach, or a push that took too long, is tried again by the item; any other refusal is its person's to decide.
+				if (error instanceof BaseMergeConflict) return { kind: "base_conflict" };
 				if (error instanceof UserError) return { kind: "publish_failed", said: error.message, transient: error instanceof PublishRefused && error.transient };
 				return { kind: "publish_failed", said: describeError(error), transient: true };
 			} finally {

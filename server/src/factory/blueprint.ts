@@ -578,7 +578,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "claim_join" | "finish_
 				// One repository refused its branch or draft PR: what opened stays, and "again" retries only the rest.
 				ask(c, "integration", `${fact.reason}. The pull requests opened so far are kept; no subtask runs until every repository has its draft.`, [{ id: "again", label: "Try the remaining repository again" }, choice("give_up")], null, null);
 			} else if (fact.rebase && c.item.parent) {
-				nextTurn(c, { ...IMPLEMENT, kind: "conflict", charge: "conflict", fingerprint: "conflict:" + c.item.task.base, fetchBase: c.item.task.base, text: "Merge origin/" + c.item.task.base + " into your own branch and resolve the conflicts. Checks and CI must pass again." });
+				nextTurn(c, conflictPlan(c.item.task.base));
 			} else ask(c, "publish_refused", fact.reason, [choice("give_up")], null, null);
 			return true;
 		case "sandbox_retry":
@@ -666,6 +666,12 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "claim_join" | "finish_
 		case "review_ended":
 			if (fact.key !== key || step.turn === null || step.kind !== "review") return false;
 			reviewEnded(c, fact);
+			return true;
+		case "base_conflict":
+			if (fact.key !== key || step.kind !== "publish" || !run.updateFromBase || c.item.question) return false;
+			delete run.updateFromBase;
+			// The update already spent this conflict round.
+			nextTurn(c, { ...conflictPlan(c.item.task.base), charge: null, fingerprint: null });
 			return true;
 		case "published":
 		case "publish_failed":
@@ -1275,6 +1281,7 @@ function published(c: Change, fact: Extract<Fact, { kind: "published" }>): void 
 	const { item, run } = c;
 	// A cross-repo feature's descriptions are written: it is handed over without the one-PR CI read, review and Ready.
 	if (crossRepo(item) && item.mode === "orchestrate" && !item.parent) return crossHandOver(flow(c));
+	delete run.updateFromBase;
 	item.head = fact.head;
 	item.pr = fact.pr;
 	c.say(fact.pr ? `Pushed ${shortSha(fact.head)} to pull request #${fact.pr.number}.` : `Pushed subtask commit ${shortSha(fact.head)} for CI.`);
@@ -1347,6 +1354,11 @@ const isSha = (head: string) => /^[0-9a-f]{40}$/.test(head);
 /** The commit the pull request holds, when GitHub named one other than `head`. */
 const movedFrom = (head: string, prHead: string | null) => (prHead && isSha(head) && prHead !== head ? prHead : null);
 
+function conflictPlan(base: string): TurnPlan {
+	return { ...IMPLEMENT, kind: "conflict", text: `The branch conflicts with ${base}. The platform fetched ${base} into the workspace as origin/${base}: merge it into your branch (git merge origin/${base}; do not rebase) and resolve the conflicts.`,
+		charge: "conflict", fingerprint: `conflict:${base}`, fetchBase: base };
+}
+
 function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	const { run } = c;
 	const ci = run.ci;
@@ -1396,18 +1408,17 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		return afterCi(c, ci);
 	}
 
-	if (fact.mergeable === false) {
+	const baseAhead = fact.baseAhead ?? 0;
+	const canUpdate = baseAhead > 0 && isSha(ci.head) && ci.head === c.item.head && c.item.mode !== "orchestrate" &&
+		!failuresOf(run).includes(`conflict:${c.item.task.base}`);
+	const question = (sentence: string, plan: TurnPlan | null = null) => {
+		const choices = plan ? [{ id: "again" as const, label: "Have the agent fix CI" }] : [choice("wait")];
+		if (canUpdate) sentence += ` The base branch ${c.item.task.base} is ${baseAhead} commit${baseAhead === 1 ? "" : "s"} ahead of this commit.`;
+		return ask(c, "ci_timeout", sentence, [...choices, ...(canUpdate ? [choice("update_from_base")] : []), ...handOver(c.item), choice("give_up")], null, plan);
+	};
+	if (fact.mergeable === false && !canUpdate) {
 		c.say(`GitHub says the pull request conflicts with ${c.item.task.base}.`);
-		const base = c.item.task.base;
-		return nextTurn(c, {
-			...IMPLEMENT,
-			kind: "conflict",
-			text: `The pull request conflicts with ${base}. The platform fetched ${base} into the workspace as origin/${base}: merge it into your branch (git merge origin/${base}; do not rebase) and resolve the conflicts.`,
-			charge: "conflict",
-			// A second conflict in the same run is the same failure: the stuck detector stops it.
-			fingerprint: `conflict:${base}`,
-			fetchBase: base,
-		});
+		return nextTurn(c, conflictPlan(c.item.task.base));
 	}
 	switch (state) {
 		case "passed":
@@ -1423,6 +1434,7 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 					jobs: cancelled.map(({ name, jobId }) => ({ name, jobId })) });
 				return;
 			}
+			if (canUpdate) return question(sentence);
 			if (since < CI_POLLING.timeoutMs && rerun?.some(job => !reading.runs.some(check => check.name === job.name) ||
 				(job.jobId && cancelled.some(check => check.jobId === job.jobId)))) {
 				return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the rerun of the cancelled checks.");
@@ -1436,31 +1448,37 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		case "incomplete":
 			c.say(reading.kind === "read" && reading.runs.length === 0 ? "GitHub cut its list of CI's checks short before any could be read." : "CI has more checks than the platform reads; none of those it read failed.");
 			return afterCi(c, ci);
-		case "failed":
+		case "failed": {
 			if (reading.kind !== "read") return;
-			c.say(ciSentence(verdictCi(ci)));
-			return nextTurn(c, { ...IMPLEMENT, kind: "ci_fix", text: ciFixText(ci.head, reading), charge: "ci", fingerprint: ciFingerprint(reading), ...marked([untrustedWords.ci(ci.head)]) });
+			const plan: TurnPlan = { ...IMPLEMENT, kind: "ci_fix", text: ciFixText(ci.head, reading), charge: "ci", fingerprint: ciFingerprint(reading), ...marked([untrustedWords.ci(ci.head)]) };
+			const sentence = ciSentence(verdictCi(ci));
+			if (canUpdate) return question(sentence, plan);
+			c.say(sentence);
+			return nextTurn(c, plan);
+		}
 		case "none":
 			if (since >= CI_POLLING.noneAfterMs) {
 				c.say(`No CI ran within ${spellSeconds(CI_POLLING.noneAfterMs / 1000)} of the push.`);
+				if (canUpdate && c.item.parent) return question("No passing CI reported on the subtask push.");
 				return afterCi(c, ci);
 			}
 			break;
 		case "skipped":
 			// Waited for as "no CI" is: a job that needs another may not be listed yet.
 			if (since >= CI_POLLING.noneAfterMs) {
+				if (canUpdate && c.item.parent) return question("CI skipped every check on the subtask push.");
 				c.say(`CI ran, and nothing in it passed within ${spellSeconds(CI_POLLING.noneAfterMs / 1000)} of the push: every check was skipped or neutral.`);
 				return afterCi(c, ci);
 			}
 			break;
 		case "not_run": {
 			const sentence = ciSentence(verdictCi(ci));
-			if (since >= CI_POLLING.timeoutMs) return ask(c, "ci_timeout", sentence, [choice("wait"), ...handOver(c.item), choice("give_up")], null, null);
+			if (since >= CI_POLLING.timeoutMs) return question(sentence);
 			return pollCi(c, fact.openItems, null, sentence);
 		}
 		case "pending":
 		case "retry":
-			if (since >= CI_POLLING.timeoutMs) return ask(c, "ci_timeout", `CI has not finished ${spellSeconds(since / 1000)} after the push.`, [choice("wait"), ...handOver(c.item), choice("give_up")], null, null);
+			if (since >= CI_POLLING.timeoutMs) return question(`CI has not finished ${spellSeconds(since / 1000)} after the push.`);
 			break;
 	}
 	pollCi(c, fact.openItems, reading.kind === "rate_limited" ? reading.retryAt : null, ciWaitSentence(ci.head, reading));
@@ -2134,6 +2152,7 @@ const CHOICES: Record<ChoiceId, string> = {
 	hand_over: "Hand it over as it is",
 	run_checks: "Run the checks again",
 	ci_alone: "Integrate on CI alone",
+	update_from_base: "Update from the base branch and run CI again",
 	give_up: "Give up",
 	add_secret: "Add it and continue",
 	without_secret: "Continue without it",
@@ -2274,6 +2293,20 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			const plan = subtaskCheckPlan(run.ci, note);
 			raise(c, "repeated", undefined, plan);
 			nextTurn(c, plan);
+			break;
+		}
+		case "update_from_base": {
+			const head = run.ci?.head;
+			if (!head || !isSha(head) || head !== item.head || run.ci?.moved || item.mode === "orchestrate") return false;
+			const fingerprint = `conflict:${item.task.base}`;
+			const previous = failuresOf(run);
+			if (previous.includes(fingerprint)) return false;
+			run.failures = [...previous, fingerprint];
+			run.lastFailure = fingerprint;
+			run.rounds.conflict++;
+			run.updateFromBase = { head, at: c.at };
+			c.say(`Updating the item branch from ${item.task.base}.`);
+			publish(c);
 			break;
 		}
 		case "ci_alone":

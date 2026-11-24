@@ -78,6 +78,8 @@ export interface Run extends ItemRun {
 	failures?: string[];
 	/** Set while the workspace is pushed for "Hand it over as it is" (blueprint.ts `answer`): it is handed over once pushed. */
 	handOver?: true;
+	/** A person's base update stays attached to its publish step across retries. */
+	updateFromBase?: { head: string; at: number };
 	/** The turn that produced the work about to be published, including across publish retries. */
 	gate: (GateEvidence & { turn: string }) | null;
 	ci: CiProgress | null;
@@ -496,13 +498,14 @@ export type Fact =
 	| { kind: "sandbox_freed"; at: number; key: string; plan: TurnPlan }
 	| { kind: "sandbox_resize_refused"; at: number; key: string; plan: TurnPlan; size: HostedSize }
 	/** `openItems`: the user's items not done, failed or cancelled; it sets how often CI is polled. */
+	| { kind: "base_conflict"; at: number; key: string }
 	| { kind: "published"; at: number; key: string; head: string; pr: { number: number; url: string } | null; openItems: number; webhooks: boolean }
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */
 	| { kind: "publish_failed"; at: number; key: string; said: string; transient: boolean }
 	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: CancelledJob[]; openItems: number }
 	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
-	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
+	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
 	| { kind: "pr_read"; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
 	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
 	| { kind: "spent"; at: number; hostedSeconds: number };
