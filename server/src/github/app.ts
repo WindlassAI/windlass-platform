@@ -862,7 +862,7 @@ export class GithubApp {
 	}
 
 	async acknowledgeFeedback(installationId: GithubId, repo: Pick<Repository, "id" | "owner" | "name">, key: string, reviewNodeId?: string) {
-		const [kind, id] = key.split(":");
+		const [kind, id = ""] = key.split(":");
 		const permission = kind === "issue_comment" ? "issues" : "pull_requests";
 		await this.withToken(installationId, { repositoryId: repo.id, permissions: { metadata: "read", [permission]: "write" } }, async token => {
 			if (kind === "issue_comment" || kind === "review_comment") return this.react(token, repo, { kind, id }, "eyes");
