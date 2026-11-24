@@ -158,7 +158,7 @@ export interface SessionFeed {
 	onConnection(state: ConnectionState, error?: PlatformError): void;
 }
 
-export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
+export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelProviders" | "saveModelProvider" | "checkModelProvider" | "removeModelProvider"> {
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
 	/** The models the user may choose and the efforts of each: their ChatGPT plan's, or the stand-in, and which it is. */

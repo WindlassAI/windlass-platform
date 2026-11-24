@@ -1290,6 +1290,37 @@ export interface AccountSecret {
 	repositories: string[];
 }
 
+export const MODEL_CHECKS_PER_MINUTE = 12;
+export const MODEL_PROVIDERS = ["openai", "anthropic", "google", "openrouter"] as const;
+export type ModelProvider = typeof MODEL_PROVIDERS[number];
+
+export function isModelProvider(value: unknown): value is ModelProvider {
+	return MODEL_PROVIDERS.some(provider => provider === value);
+}
+
+const MODEL_KEY_SHAPES: Record<ModelProvider, RegExp> = {
+	openai: /^sk-(?:(?:proj|svcacct)-[A-Za-z0-9_-]{16,512}|[A-Za-z0-9]{16,512})$/,
+	anthropic: /^sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{16,512}$/,
+	google: /^(?:AIza[A-Za-z0-9_-]{35}|AQ\.[A-Za-z0-9_.-]{16,1024})$/,
+	openrouter: /^sk-or-v1-[A-Za-z0-9]{16,512}$/,
+};
+
+export function validModelKey(provider: ModelProvider, key: unknown): key is string {
+	return typeof key === "string" && MODEL_KEY_SHAPES[provider].test(key);
+}
+
+export interface ModelProviderStatus {
+	provider: ModelProvider;
+	last4: string;
+	addedAt: number;
+	checkedAt: number | null;
+	ok: boolean;
+	models?: string[];
+}
+
+/** A failed check leaves the key saved and returns a message safe to display. */
+export type ModelProviderCheck = ModelProviderStatus & { message?: string };
+
 export interface AccountSecrets {
 	secrets: AccountSecret[];
 	/** The profile `reach` is said for. */
@@ -2789,6 +2820,10 @@ export interface UserActions {
 	savePersonalServer(input: { name: string; definition: unknown; unasked?: boolean; existing?: boolean }): Promise<AccountSettings>;
 	/** Deletes one of the user's own MCP servers. A turn that is running keeps it until it ends. */
 	deletePersonalServer(name: string): Promise<AccountSettings>;
+	modelProviders(): Promise<ModelProviderStatus[]>;
+	saveModelProvider(input: { provider: ModelProvider; key: string }): Promise<ModelProviderCheck>;
+	checkModelProvider(provider: ModelProvider): Promise<ModelProviderCheck>;
+	removeModelProvider(provider: ModelProvider): Promise<void>;
 	/** The names and times of the account's secrets, and what each reaches in a sandbox of `profile` made now. No value. */
 	accountSecrets(input: { profile: SandboxProfileId }): Promise<AccountSecrets>;
 	/**

@@ -101,6 +101,11 @@ import {
 	type Verified,
 	type AccountDefaults,
 	type LastStart,
+	MODEL_CHECKS_PER_MINUTE,
+	isModelProvider,
+	validModelKey,
+	type ModelProvider,
+	type ModelProviderStatus,
 	type AccountSecrets,
 	type AccountSettings,
 	type AuthResult,
@@ -1334,6 +1339,8 @@ interface World {
 	names: Map<GithubId, string>;
 	/** What the user keeps for their account, whatever the repository. A secret's value is not kept at all. */
 	account: {
+		providers: Map<ModelProvider, ModelProviderStatus>;
+		checks: { minute: number; used: number };
 		defaults: SavedDefaults | null;
 		/** Where the newest agent the user started ran, its agent and mode (`AccountSettings.lastStart`). */
 		lastStart: LastStart | null;
@@ -1493,7 +1500,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
+			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { providers: new Map(), checks: { minute: 0, used: 0 }, defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
 			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
@@ -3741,6 +3748,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	// ---- the interface --------------------------------------------------------------------------
 
+	function takeModelCheck(account: World["account"]) {
+		const minute = Math.floor(now() / 60_000);
+		if (account.checks.minute !== minute) account.checks = { minute, used: 0 };
+		if (account.checks.used >= MODEL_CHECKS_PER_MINUTE) throw new PlatformError("user", "Too many model provider checks. Try again next minute.", { reason: "rate_limited" });
+		account.checks.used++;
+	}
+
 	function userApi(auth: AuthResult): UserApi {
 		const world = () => worldOf(auth);
 		return {
@@ -4080,6 +4094,31 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(280);
 				world().account.servers.delete(name);
 				return accountOf(world());
+			},
+			async modelProviders() {
+				return structuredClone([...world().account.providers.values()].sort((a, b) => a.provider.localeCompare(b.provider)));
+			},
+			async saveModelProvider({ provider, key }) {
+				const account = world().account;
+				if (!isModelProvider(provider)) throw new PlatformError("user", "Unknown model provider.", { reason: "bad_provider" });
+				if (!validModelKey(provider, key)) throw new PlatformError("user", "The key format does not match the provider.", { reason: "bad_model_key" });
+				takeModelCheck(account);
+				const model = { openai: "gpt-4.1", anthropic: "claude-sonnet-4", google: "gemini-2.5-flash", openrouter: "openai/gpt-4.1" }[provider];
+				const at = now();
+				const status = { provider, last4: key.slice(-4), addedAt: at, checkedAt: at, ok: true, models: [model] };
+				account.providers.set(provider, status);
+				return structuredClone(status);
+			},
+			async checkModelProvider(provider) {
+				const account = world().account;
+				takeModelCheck(account);
+				const status = account.providers.get(provider);
+				if (!status) throw new PlatformError("user", "No key is saved for this provider.", { reason: "model_key_missing" });
+				status.checkedAt = now();
+				return structuredClone(status);
+			},
+			async removeModelProvider(provider) {
+				world().account.providers.delete(provider);
 			},
 			async accountSecrets(profile: SandboxProfileId): Promise<AccountSecrets> {
 				await latency(200);

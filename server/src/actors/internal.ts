@@ -11,7 +11,7 @@
 import type { HoldReport } from "../usage.js";
 import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
-import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, RepositoryAutonomy, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, ModelProvider, RepositoryAutonomy, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { SignInMethod } from "../sandbox/harnesses.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -95,6 +95,7 @@ export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: st
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
+	internalModelKey(provider: ModelProvider, nonce: string): Promise<string | null>;
 	internalLinearHoldsTeam(workspaceId: string, teamId: string): Promise<boolean>;
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
 	internalDefaultBuilder(input: { id: string; job: import("./user-items.js").DefaultBuilder }): ReturnType<typeof import("./user-items.js").itemActions.internalDefaultBuilder>;

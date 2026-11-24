@@ -10,6 +10,12 @@ Choose a default **Sandbox** and **Model**, or **No default**. They save as soon
 
 **Where new agents start** shows where your last agent started. A new agent starts there too. Choose **Forget** to start the next one on this platform with Windlass.
 
+### Model providers
+
+Your account can hold one API key each for OpenAI, Anthropic, Google (Gemini), and OpenRouter. The platform checks a key with the provider when you save it and keeps a short list of model IDs. You can check it again, replace it, or remove it.
+
+These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and never sends them into a sandbox.
+
 ### MCP servers
 
 Add servers of your own with **Add…**. They give every agent of yours their tools, whatever the repository. Windlass starts them without asking first. Windlass asks before a call of an MCP tool. Tick **Run this server's tools without asking** to have the platform answer for you, in every agent of yours. Each call still shows in the timeline.
