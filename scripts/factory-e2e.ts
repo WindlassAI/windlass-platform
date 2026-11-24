@@ -523,19 +523,18 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 				await untilItem(user, search.id, "the part’s next CI question offering its new base",
 					v => !!v.question?.choices.some(c => c.id === "update_from_base"), CI_WAIT_MS);
 
-				standin.commit(repo, "main", { "index/setup.sh": "echo conflicting-target\n" }, "Change setup on main");
+				const newTarget = standin.commit(repo, "main", { "index/setup.sh": "echo conflicting-target\n" }, "Change setup on main");
 				await user.actOnItem({ id: feature.id, action: { kind: "update_feature" } });
-				const conflict = await untilItem(user, feature.id, "the target merge conflict", v => v.question?.kind === "feature_update");
-				assert(conflict.head === updated.head && standin.branchHead(repo, branch) === updated.head &&
-					conflict.question!.text.includes("in index/setup.sh") && conflict.question!.text.includes("Resolve it on GitHub") && conflict.question!.choices.some(c => c.id === "give_up"),
-					"The conflict moved the branch or did not ask the owner");
-				// The person resolves on GitHub, keeping the feature’s copy of the one conflicting file.
-				const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Owner", "-c", "user.email=owner@example.com", ...args], { cwd: repo.path, encoding: "utf8" }).trim();
-				const resolved = git("commit-tree", updated.head + "^{tree}", "-p", updated.head!, "-p", "main", "-m", "Resolve setup conflict");
-				git("update-ref", "refs/heads/" + branch, resolved, updated.head!);
-				await user.actOnItem({ id: feature.id, action: { kind: "answer", question: conflict.question!.id, choice: "update_feature" } });
-				await untilItem(user, feature.id, "the recorded GitHub resolution", v => v.head === resolved && !v.question);
-				return "serialized both writers, refreshed the part’s CI choices, named the conflict and resumed at the resolved tip";
+				const repairing = await untilItem(user, feature.id, "the conflict part's push", v =>
+					!!v.children?.some(ch => ch.parent?.key.startsWith("conflict-fix-") && ch.step?.kind === "ci"), CI_WAIT_MS);
+				const repair = repairing.children!.find(ch => ch.parent?.key.startsWith("conflict-fix-"))!;
+				const resolved = headOf(repair);
+				assert(!repairing.question && repairing.head === updated.head, "The feature moved before the repair passed CI");
+				assert(execFileSync("git", ["log", "--merges", "--format=%P", updated.head + ".." + resolved], { cwd: repo.path, encoding: "utf8" }).trim().includes(newTarget),
+					"The repair did not merge the new main");
+				setCi(repo, resolved, "success");
+				await untilItem(user, feature.id, "the checked resolution to integrate", v => v.head === resolved && !v.question, CI_WAIT_MS);
+				return "serialized both writers, refreshed the waiting part and integrated the conflict resolution after CI";
 			} finally {
 				release();
 				delete standin.beforeFastForward;

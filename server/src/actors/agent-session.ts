@@ -5798,9 +5798,9 @@ async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<Acti
 	item.started = true;
 	const app = githubApp();
 	if (item.row.fetchBase !== null && meta.repo && app) {
-		const base = meta.repo.branch;
+		const base = item.row.fetchBase;
 		try {
-			await fetchBase(app, await githubConnection(c, meta), meta.repo, sandbox);
+			await fetchBase(app, await githubConnection(c, meta), base === meta.repo.branch ? meta.repo : { ...meta.repo, branch: base }, sandbox);
 			note(c, turn, "info", `Fetched ${base} from GitHub into the workspace as origin/${base}, for the agent to merge.`);
 		} catch (error) {
 			note(c, turn, "warn", `${base} could not be fetched from GitHub for the agent to merge: ${error instanceof GithubProblem ? error.message : describeError(error)}`);

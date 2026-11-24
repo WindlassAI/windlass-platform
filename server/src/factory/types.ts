@@ -177,7 +177,7 @@ export interface IntegrationRun extends IntegrationView {
 	charged: boolean;
 }
 
-export type JoinResult = { key: string } & ({ head: string } | { reason: string; conflict: boolean });
+export type JoinResult = { key: string } & ({ head: string } | { reason: string; conflict: boolean; missingTarget?: boolean });
 
 /** The independent CI poll on one feature branch, pinned to its current head. */
 export interface FeatureCi {
@@ -190,6 +190,7 @@ export interface FeatureCi {
 
 export interface FeatureJob {
 	ciFix?: { head: string; fingerprint: string };
+	conflictFix?: { target: string; child?: string; retry?: true };
 	/** Immutable tip from which this child branches, after repository setup at the original seed. */
 	start?: string | null;
 	/** Current attempt attached to a creation request by the parent actor. */
@@ -293,6 +294,7 @@ export interface FactoryItem {
 	forceSplit?: boolean;
 	seed?: string;
 	childBase?: string;
+	mergeTarget?: string;
 	/** The feature commit after this child's successful join. Its own pushed head stays on the child. */
 	integratedHead?: string;
 	cancelAfterIntegration?: boolean;
@@ -462,7 +464,7 @@ export type Fact =
 	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null; /** `merged_at` (ms), null when GitHub did not say. */ mergedAt?: number | null }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
 	| { kind: "update_feature"; automatic?: true; at: number; by: Cause; target?: string; child?: string; request?: string }
-	| { kind: "feature_updated"; at: number; key: string; result: { head: string } | { problem: string } }
+	| { kind: "feature_updated"; at: number; key: string; result: { head: string } | { problem: string } | { conflicts: string[] } }
 	| { kind: "parent_update_finished"; at: number; key: string }
 	| { kind: "claim_join"; at: number; child: string; key: string }
 	| { kind: "finish_join"; at: number; child: string; result: JoinResult }
@@ -471,7 +473,7 @@ export type Fact =
 	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
 	| { kind: "child_update"; startedAt?: number; wait?: string; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; head?: string; at: number; key: string }
-	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean }
+	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean; missingTarget?: boolean }
 	| { kind: "file_plan"; at: number; key: string; plan: unknown }
 	| { kind: "edit_plan"; at: number; by: string; version: number; plan: unknown }
 	/** `agents`: the subtasks whose agent works without asking that the person confirmed (`ItemAction`). */

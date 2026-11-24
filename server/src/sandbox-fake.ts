@@ -681,7 +681,7 @@ const TERMINAL = new Map([
 	["execution.interrupted", "interrupted"],
 ]);
 
-class FakeWindlass implements Windlass {
+export class FakeWindlass implements Windlass {
 	constructor(
 		private readonly sandboxes: FakeSandboxes,
 		private readonly eventDelayMs: number,
