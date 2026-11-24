@@ -1340,10 +1340,14 @@ async function memoryChecks(): Promise<void> {
 		const m = machine();
 		m.send({ kind: "start" });
 		m.send({ kind: "turn_started" });
+		const noChange = { kind: "turn_ended" as const, outcome: "succeeded" as const, verified: null, flags: [], changes: false, report: null, spend: { tokens: 1, hostedSeconds: 0 } };
+		m.send(noChange);
+		assert(m.item.run?.autoSteps === 1 && !m.item.question, "the first no-change turn should retry");
+		m.send({ kind: "turn_started" });
 		const actor = await itemActor(m.item);
-		// The turn changed nothing: the item asks its person. The page is asked for once that is decided and while it is being written.
+		// The retry also changed nothing: the item asks its person. The page is asked for once that is decided and while it is being written.
 		const release = actor.holdWrites();
-		const asking = actions.internalFact(actor.c, { kind: "turn_ended", at: T + 50, key: currentKey(m.item), outcome: "succeeded", verified: null, flags: [], changes: false, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
+		const asking = actions.internalFact(actor.c, { ...noChange, at: T + 50, key: currentKey(m.item) });
 		for (let wait = 0; wait < 100 && (actor.c.vars as { stored: { item: Item } }).stored.item.question === null; wait += 1) await new Promise((done) => setTimeout(done, 5));
 		const reading = actions.internalView(actor.c);
 		release();
