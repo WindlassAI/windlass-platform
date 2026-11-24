@@ -1,3 +1,4 @@
+import { newAgent } from "../factory/budget.js";
 /**
  * `workItem`, key [uid, itemId]: one work item of the software factory (Plans "software factory" §1,
  * §2), and the run controller that carries it through the blueprint (server/src/factory/blueprint.ts).
@@ -76,6 +77,8 @@ import type { ItemFacts } from "./user-items.js";
 
 /** What the item knows around the blueprint's `FactoryItem`. */
 export interface ItemMeta {
+	defaultPlace?: import("../contract.js").ItemPlaceDefaults;
+	pendingBuilder?: import("./user-items.js").DefaultBuilder;
 	/** Sealed by the requesting session. Kept with the claim until the save is settled. */
 	pendingSecret?: RequestedSecretSave;
 	/** Latest cumulative receipt for each session. A retry or an older receipt adds nothing. */
@@ -103,6 +106,7 @@ export interface ItemMeta {
 
 /** What `user` passes when it creates a `workItem`. */
 export interface ItemCreateInput {
+	placeNote?: string;
 	/** A grant bound to this actor's key (internal.ts): proof that `user` created it. */
 	grant: string;
 	item: FactoryItem;
@@ -194,6 +198,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		repository: { provider: repository.provider, id: repository.id, owner: repository.owner, name: repository.name, branch: repository.branch, private: repository.private, url: repository.url },
 		...(crossRepo(item) && { repositories: repoViews(item), integration: integrationView(item) }),
 		place: item.place,
+		...(item.awaitingPlace && { awaitingPlace: true }),
 		...(item.placement && { placement: item.placement }),
 		source: meta.source,
 		origin: meta.github?.origin ?? null,
@@ -419,6 +424,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	if (issue?.said) outcome.events.push({ at: fact.at, by: issue.by, step: null, said: issue.said });
 	stored.item = outcome.item;
 	if (outcome.item.run?.step.kind === "plan_review") stored.meta.criticSessionId = criticSessionId(outcome.item.id);
+	if (fact.kind === "default_place_ready") delete stored.meta.pendingBuilder;
 	if (fact.kind === "claim_secret") stored.meta.pendingSecret = secret;
 	if (fact.kind === "settle_secret") delete stored.meta.pendingSecret;
 	stored.meta.updatedAt = fact.at;
@@ -1154,6 +1160,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
  * it. A withdrawal is always wanted: it is what a cancel leaves.
  */
 export function live(item: FactoryItem, effect: Effect): boolean {
+	if (effect.kind === "resolve_default_place") return !!item.awaitingPlace && item.state === "waiting" && item.wait?.retryAt === effect.at;
 	if (effect.kind === "feedback_ready" || effect.kind === "feedback_ack") return true;
 	if (effect.kind === "feedback_comment") return item.run?.n === effect.run && item.state !== "review" && !ENDED.has(item.state);
 	if (effect.kind === "merge_feature_target") return item.featureUpdate?.key === effect.key && item.joining?.child === item.id && item.joining.key === effect.key;
@@ -1381,6 +1388,18 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		return gone;
 	};
 	switch (effect.kind) {
+		case "resolve_default_place": {
+			if (!meta.pendingBuilder) return false;
+			const result = await userActor(c, meta.uid).internalDefaultBuilder({ id: item.id, job: meta.pendingBuilder });
+			if (!c.vars.stored || !live(c.vars.stored.item, effect)) return false;
+			if ("wait" in result) await take(c, { kind: "default_place_wait", at: Date.now(), sentence: result.wait });
+			else {
+				const session = result.session;
+				await take(c, { kind: "default_place_ready", at: Date.now(), place: session.place,
+					agent: newAgent(session.harness ?? "windlass", session.model, meta.pendingBuilder.effort, session.item?.signIn) });
+			}
+			return true;
+		}
 		case "sandbox_retry":
 			await take(c, { ...effect, at: Date.now() });
 			return true;
@@ -1636,6 +1655,13 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					limited: inventory.limited?.filter(a => limitApplies(a, machineId)).map(({ harness, limitedUntil }) => ({ harness, limitedUntil })) }));
 				const parent = item.place;
 				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
+				const preferred = meta.defaultPlace;
+				if (preferred?.place) {
+					const chosen = preferred.place;
+					const prefer = typeof chosen === "object" ? inventory.machines.find(m => m.machineId === chosen.machine)?.name : parentName;
+					text += "\nWhen a part fits the owner's preferred place, use it as place.prefer. Choose a different place or agent when that part requires it. Owner preference (data): " +
+						JSON.stringify({ prefer, selection: preferred.place === "any-machine" ? "any compatible machine" : undefined, harness: preferred.harness ?? "windlass", profile: preferred.machineProfile });
+				}
 				text += "\n\nCurrent runners do not support sizing beyond one slot." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (small 1 vCPU, 1 GiB; standard 2 vCPU, 4 GiB, the default; large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than standard (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
 				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
 			}
@@ -1916,6 +1942,7 @@ export const workItem = actor({
 			let item = input.item;
 			const events: ItemEvent[] = [];
 			let effects: Effect[] = [];
+			if (input.placeNote && !(input.startedBy && item.awaitingPlace)) events.push({ at: input.meta.createdAt, by: "platform", step: null, said: input.placeNote });
 			if (input.startedBy !== null) {
 				const started = advance(item, { kind: "start", at: input.meta.createdAt, by: input.startedBy });
 				({ item } = started);

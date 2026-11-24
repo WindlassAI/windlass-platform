@@ -15,6 +15,7 @@
  * machines. On a machine the server gives it that machine's first available sandbox.
  */
 import { type GithubId, type HarnessId, type StepKind, ITEM_PAGE_DEFAULT, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemCursor, type ItemFeed, type ItemMode, type ItemState, type ItemSummary } from "@contract";
+import { savedPlace, resolveDefaultPlace } from "../../../server/src/factory/default-place";
 import { byFiling, nextCursor } from "../../../server/src/item-pages";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason } from "../api/client";
@@ -30,8 +31,8 @@ import { submissionOf, type Submission } from "../lib/submission";
 import { RECOMMENDATION_WORD } from "../components/SecondReview";
 import { StatusBadge } from "../components/Status";
 import { useApp, useAuth } from "../state/app";
-import { useModels, useNow } from "../state/hooks";
-import { useCatalog } from "../components/StartComposer";
+import { useAccount, useModels, useNow } from "../state/hooks";
+import { useDefaults, useCatalog } from "../components/StartComposer";
 import { effortChoices, effortsOf, harnessOptions, modelLabel } from "../lib/models";
 import { clockTime, useMachines } from "./Machines";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
@@ -420,7 +421,7 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 						</span>
 					) : null}
 					{ci && item.verdict ? <span className={`tone-${CI_WORD[item.verdict.ci].tone}`}>{CI_WORD[item.verdict.ci].word}</span> : null}
-					{item.state === "draft" ? null : (
+					{item.state === "draft" || item.awaitingPlace ? null : (
 						<span>
 							<a className="item-pull" {...linkProps({ name: "session", id: item.sessionId })} title="What its agent did, turn by turn" aria-label={`The agent of ${item.title}`}>
 								its agent
@@ -697,21 +698,29 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const machines = useMachines(machinesInfo !== null);
 	const now = useNow(30_000);
 	const mine = machinesInfo === null ? [] : (machines.list ?? []);
-	const [placeChoice, setPlace] = useState<string | null>(null);
+	const [placeChoice, setPlace] = useState<string | null>();
+	const saved = useDefaults(repositoryId);
+	const account = useAccount();
+	const policy = placeChoice === undefined ? savedPlace(saved.defaults, account.settings?.defaults) : undefined;
+	const destination = policy && resolveDefaultPlace(policy, mine);
+	const machineId = placeChoice ?? (destination?.place.kind === "machine" ? destination.place.machineId : null);
 	// A machine that was removed or can no longer be chosen while the form is open leaves the item on this platform, which the line then says.
-	const chosenMachine = mine.find((machine) => machine.machineId === placeChoice && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
+	const chosenMachine = mine.find((machine) => machine.machineId === machineId && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
 	const [modeChoice, setMode] = useState<ItemMode>("orchestrate");
 	// The builder's agent: Windlass, or one the chosen machine reports signed in, in its default item profile (Codex: Docker + Windlass
 	// sandbox, the others their hardened container). The start composer picks another profile.
-	const [agentChoice, setAgent] = useState<HarnessId>("windlass");
-	const agents = itemHarnesses(chosenMachine).filter((offered) => itemProfilesHere(chosenMachine, offered.id)[0] === itemProfiles(offered.id)[0]);
-	const agent: HarnessId = agents.some((offered) => offered.id === agentChoice) ? agentChoice : "windlass";
+	const [agentChoice, setAgent] = useState<HarnessId | null>(null);
+	const agents = itemHarnesses(chosenMachine).filter((offered) => (destination?.harness === offered.id && destination.profile ? itemProfilesHere(chosenMachine, offered.id).includes(destination.profile) : itemProfilesHere(chosenMachine, offered.id)[0] === itemProfiles(offered.id)[0]));
+	const preferredAgent = agentChoice ?? destination?.harness ?? "windlass";
+	const agent: HarnessId = agents.some(offered => offered.id === preferredAgent) ? preferredAgent : "windlass";
+	const usePolicy = !!policy && agentChoice === null;
 	// Plan first is Windlass's: its planner files the plan with a tool only Windlass has.
-	const mode: ItemMode = agent === "windlass" ? modeChoice : "single";
+	const mode: ItemMode = agent === "windlass" || usePolicy ? modeChoice : "single";
 	// The model and effort: the account's models for Windlass, what the machine reported for another agent. "" is the agent's default.
 	const accountModels = useModels();
-	const catalog = useCatalog(agent === "windlass" ? null : chosenMachine, agent === "windlass" ? "claude" : agent);
-	const modelList = agent === "windlass" ? accountModels.list : harnessOptions(chosenMachine, agent, catalog.options).models;
+	const modelAgent = mode === "orchestrate" && platform.info?.items?.orchestrate ? "windlass" : agent;
+	const catalog = useCatalog(modelAgent === "windlass" ? null : chosenMachine, modelAgent === "windlass" ? "claude" : modelAgent);
+	const modelList = modelAgent === "windlass" ? accountModels.list : harnessOptions(chosenMachine, modelAgent, catalog.options).models;
 	const [modelChoice, setModel] = useState("");
 	const [effortChoice, setEffort] = useState("");
 	const model = modelList?.models.some((one) => one.id === modelChoice) ? modelChoice : "";
@@ -731,12 +740,12 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 		.filter((line) => line !== "");
 	const tooMany = acceptance.length > MAX_ACCEPTANCE_CRITERIA;
 	const tooLong = acceptance.some((line) => line.length > MAX_NOTE_CHARS);
-	const ready = title.trim() !== "" && !tooMany && !tooLong && body.length <= MAX_ITEM_BODY_CHARS;
+	const ready = !saved.reading && !(account.reading && !account.settings) && !(policy && machinesInfo && !machines.list && !machines.error) && title.trim() !== "" && !tooMany && !tooLong && body.length <= MAX_ITEM_BODY_CHARS;
 
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}), ...(agent !== "windlass" ? { harness: agent } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(usePolicy ? { useDefaultPlace: true } : chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}), ...(!usePolicy && agent !== "windlass" ? { harness: agent } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;
@@ -759,7 +768,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 			title="New work item"
 			lede={
 				<>
-					On {name}, as a pull request into {base ?? "its default branch"}.{mine.length > 0 ? null : " It runs on a hosted sandbox."}
+					On {name}, as a pull request into {base ?? "its default branch"}.{destination?.note ? " " + destination.note : mine.length > 0 ? null : " It runs on a hosted sandbox."}
 				</>
 			}
 			onClose={onClose}
@@ -781,7 +790,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 						<span className="label">
 							How it runs
 						</span>
-						<ItemModePicker costId={ids.form + "-cost"} value={mode} onChange={setMode} disabled={busy || agent !== "windlass"} />
+						<ItemModePicker costId={ids.form + "-cost"} value={mode} onChange={setMode} disabled={busy || (!usePolicy && agent !== "windlass")} />
 						<ItemModeCost id={ids.form + "-cost"} mode={mode} />
 						<p className="field-note">{ITEM_MODE_WORDS[mode].description}</p>
 					</div>
@@ -848,7 +857,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 								Model
 							</label>
 							<select id={ids.model} className="select" value={model} disabled={busy} onChange={(event) => setModel(event.target.value)}>
-								<option value="">{`${HARNESS_NAMES[agent]}'s default (${modelLabel(modelList, modelList.defaultModel).replace(/ \(default\)$/, "")})`}</option>
+								<option value="">{`${HARNESS_NAMES[modelAgent]}'s default (${modelLabel(modelList, modelList.defaultModel).replace(/ \(default\)$/, "")})`}</option>
 								{modelList.models.map((one) => (
 									<option key={one.id} value={one.id}>
 										{modelLabel(modelList, one.id)}

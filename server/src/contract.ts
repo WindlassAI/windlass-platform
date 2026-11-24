@@ -1072,7 +1072,17 @@ export interface RepositoryAutonomy {
 	autoMergeSingles?: boolean;
 }
 
-export interface RepositoryDefaults extends RepositoryAutonomy {
+export type DefaultPlace = "hosted" | "any-machine" | { machine: string };
+
+/** One placement policy. A repository without a place inherits the account's whole policy. */
+export interface ItemPlaceDefaults {
+	place?: DefaultPlace | null;
+	placeFallback?: "wait" | "hosted" | null;
+	harness?: HarnessId | null;
+	machineProfile?: SandboxProfileId | null;
+}
+
+export interface RepositoryDefaults extends RepositoryAutonomy, ItemPlaceDefaults {
 	/** Allow item agents to file screenshots for this repository. Defaults to false. */
 	screenshots: boolean;
 	/** The sandbox profile, by its id; null when none is saved. */
@@ -2157,6 +2167,8 @@ export interface ItemAgent {
 }
 
 export interface ItemSummary {
+	/** Its builder session has not been created yet. */
+	awaitingPlace?: boolean;
 	/** Absent for items filed before agents could be chosen: Windlass. */
 	agent?: ItemAgent;
 	placement?: ChildPlacement;
@@ -2462,6 +2474,8 @@ export interface IntegrationView {
 }
 
 export interface CreateItemInput {
+	/** Resolve the saved placement again at filing. An explicit place overrides this. */
+	useDefaultPlace?: boolean;
 	mode?: ItemMode;
 	/**
 	 * Plan first only, and only where the deployment allows cross-repo features (WLP_FACTORY_CROSS_REPO=1):
@@ -2644,7 +2658,7 @@ export interface UserActions {
 	 * null saves none for it. Throws a UserError with code `bad_input` for a sandbox this deployment
 	 * does not offer or cannot run, and `bad_model` for a model that is not among the user's.
 	 */
-	saveRepositoryDefaults(input: { repositoryId: GithubId; autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(input: ItemPlaceDefaults & { repositoryId: GithubId; autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
 	/**
 	 * Forgets the user's remembered approvals of that MCP server for a repository, whatever its
 	 * definition was (`RepositoryView.forgetting` says what stays). Resolves when nothing was remembered, too.
@@ -2663,7 +2677,7 @@ export interface UserActions {
 	 * Saves what new sessions start with where neither the launch form nor the repository says. A field
 	 * that is left out stays as it is; null saves none for it. Throws as `saveRepositoryDefaults` does.
 	 */
-	saveAccountDefaults(input: { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
+	saveAccountDefaults(input: ItemPlaceDefaults & { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
 	/** Forgets where the newest agent was started (`AccountSettings.lastStart`): the next agent starts on the platform's defaults. The next agent started is remembered again. */
 	forgetLastStart(): Promise<AccountSettings>;
 	/**

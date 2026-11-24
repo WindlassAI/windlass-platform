@@ -21,6 +21,9 @@
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
+import { resolveDefaultPlace, savedPlace } from "../factory/default-place.js";
+import { isBranchName } from "../github/git.js";
+import type { ItemPlaceDefaults, SessionRepository } from "../contract.js";
 import { windlassAccountKey } from "../provider-usage.js";
 import { accountsAt, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
 import { choosePlacement, machineSlots, placeKey, type AgentModels, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
@@ -237,7 +240,7 @@ const feedOf = (state: ItemsState): ItemFeed => itemFeed(itemList(state), state.
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
 function summaryFields(item: ItemSummary): ItemSummary {
 	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
-	return { id, title, repository, place, ...(item.placement && { placement: item.placement }), source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision, ...(item.step && { step: item.step }) };
+	return { id, title, repository, place, ...(item.awaitingPlace && { awaitingPlace: true }), ...(item.placement && { placement: item.placement }), source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision, ...(item.step && { step: item.step }) };
 }
 
 /** Takes a summary the item reported when it is newer than the one held: reports can arrive out of order. */
@@ -394,6 +397,61 @@ async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxPr
 	return first.id;
 }
 
+export interface DefaultBuilder {
+	policy: ItemPlaceDefaults;
+	repository: CreateItemInput["repository"];
+	title: string;
+	model: string | null;
+	effort: string | null;
+	mode: "single" | "orchestrate";
+	hostedProfile: SandboxProfileId | null;
+	hostedSize?: HostedSize;
+	machineModel?: string;
+	issue?: { number: number; installationId: GithubId };
+}
+
+async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, job: DefaultBuilder, makeSession: MakeSession) {
+	const sessionId = itemSessionId(itemId);
+	const destination = resolveDefaultPlace(job.policy, config.machines ? [...c.vars.machines.values()] : []);
+	const harness = job.mode === "orchestrate" ? "windlass" : destination.harness;
+	const existing = c.vars.sessions.get(sessionId);
+	if (existing) return { session: existing, destination };
+	if (destination.wait) return { session: null, destination };
+	const open = async () => {
+		const hosted = destination.place.kind === "hosted";
+		const agent = hosted ? "windlass" : harness;
+		const model = agent === "windlass" ? job.model : job.machineModel;
+		const profile = hosted ? await itemProfile(c, job.repository.id, job.hostedProfile, destination.place) : destination.profile!;
+		return makeSession(c, owner, { title: job.title, repository: job.repository, place: destination.place, profile, harness: agent,
+			...(model && { model }), ...(hosted && job.hostedSize && { hostedSize: job.hostedSize }) }, null,
+			{ sessionId, itemId, role: "builder", issue: job.issue, ...(job.effort && (!hosted || !job.machineModel) && { effort: job.effort }) });
+	};
+	try { return { session: await open(), destination }; }
+	catch (error) {
+		// The runner can change its report while the launch checks GitHub or fetches a catalog.
+		if (destination.place.kind !== "machine" || !(error instanceof UserError) ||
+			!["machine_not_found", "machine_not_connected", "runner_outdated", "runner_signing_disabled", "bad_input", "bad_profile", "profile_unavailable", "harness_signed_out"].includes(error.code)) throw error;
+		if (job.policy.placeFallback !== "hosted") {
+			destination.wait = error.message + " Waiting for the selected machine placement.";
+			destination.note = destination.wait;
+			return { session: null, destination };
+		}
+		destination.place = { kind: "hosted" };
+		destination.note = error.message + " Using the hosted fallback with Windlass.";
+		return { session: await open(), destination };
+	}
+}
+
+/** Bind the same repository even when the item's machine session cannot be created yet. */
+async function waitingRepository(c: ItemsCtx, job: DefaultBuilder): Promise<SessionRepository> {
+	const app = githubApp(), connection = c.vars.github;
+	if (!app || !connection) throw new UserError("Connect GitHub to file this item.", { code: "github_not_connected" });
+	const { id, branch } = job.repository;
+	if (branch !== undefined && !isBranchName(branch)) throw new UserError("Choose a valid base branch.", { code: "bad_input" });
+	const { repository } = job.issue ? await resolveBoundRepository(app, connection, id, job.issue.installationId, "read") : await resolveRepository(app, connection, id, "read");
+	return { provider: "github", id, owner: repository.owner, name: repository.name, private: repository.private, branch: branch ?? repository.defaultBranch, url: app.repositoryUrl(repository.owner, repository.name) };
+}
+
 /**
  * Makes the item: its session (`makeSession`, under an id derived from the item's), then the item
  * actor, then its row in the index, in one step at the end. Both actors are made under ids fixed
@@ -402,6 +460,9 @@ async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxPr
  */
 async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, github?: IssueBinding, child?: { placement: ChildPlacement; id: string; base: string; start?: string | null; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
+	const asked = raw as CreateItemInput;
+	const policy = github?.defaultPlace ?? (source === "web" && !child && asked.useDefaultPlace === true && asked.place === undefined
+		? savedPlace(await readDefaults(c.db, "github:" + input.repository.id), await readAccountDefaults(c.db)) : undefined);
 	// A GitHub issue proposes a feature in its own repository only: a sibling needs the owner's own filing.
 	if (github && input.repositories) throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
 	// Where the deployment has billing, a feature over two repositories is Pro's (billing/plans.ts).
@@ -410,6 +471,10 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	const itemId = child?.id ?? (github && submission ? githubItemId(uid, submission.key) : `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
 	const sessionId = itemSessionId(itemId);
 	const issue = github && { number: github.origin.issue.number, installationId: github.installationId };
+	const externalModel = source === "web" && policy?.harness && policy.harness !== "windlass" && input.mode === "single";
+	const job: DefaultBuilder | undefined = policy && { policy, repository: input.repository, mode: input.mode, title: input.title,
+		model: externalModel ? null : input.model, ...(externalModel && input.model && { machineModel: input.model }),
+		hostedProfile: input.profile, hostedSize: input.hostedSize, effort: input.effort, issue };
 	let summary: ItemSummary;
 	// Set just before the session is made: a refusal before that made nothing, and leaves the key unused.
 	let begun = false;
@@ -425,32 +490,34 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		// A machine harness runs in a profile it has an item mode for: the filed one, else its first (Codex: Docker + Windlass sandbox),
 		// and only in "Docker, hardened" where that is its only one. makeSession refuses any other.
 		const harness = child?.placement.harness ?? input.harness;
-		const sandbox = existing ? null : child?.placement.profile ?? await itemProfile(c, input.repository.id, harness === "windlass" ? input.profile : machineItemProfile(harness, input.profile), input.place, harness !== "windlass");
+		const sandbox = existing || job ? null : child?.placement.profile ?? await itemProfile(c, input.repository.id, harness === "windlass" ? input.profile : machineItemProfile(harness, input.profile), input.place, harness !== "windlass");
 		// Bound before anything is made: a repository the connection cannot read refuses the filing with nothing left behind.
 		const repos = input.repositories && !child ? await bindRepositories(c, input.repositories, input.repository.branch) : undefined;
 		begun = true;
 		// The builder runs the item's harness; the reviewer (hosted only) stays Windlass.
-		const session = existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child?.start && { childBranch: { name: subtaskBranch(child.parent.itemId, child.parent.key, itemId), start: child.start } }), ...(child && { size: child.placement.units }), ...((child?.placement.hostedSize ?? input.hostedSize) && { hostedSize: child?.placement.hostedSize ?? input.hostedSize! }), ...(input.effort && { effort: input.effort }) }));
-		const repository = session.repository;
+		const placed = job ? await defaultBuilder(c, profile, itemId, job, makeSession) : null;
+		const session = placed ? placed.session : existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child?.start && { childBranch: { name: subtaskBranch(child.parent.itemId, child.parent.key, itemId), start: child.start } }), ...(child && { size: child.placement.units }), ...((child?.placement.hostedSize ?? input.hostedSize) && { hostedSize: child?.placement.hostedSize ?? input.hostedSize! }), ...(input.effort && { effort: input.effort }) }));
+		const repository = session?.repository ?? (job ? await waitingRepository(c, job) : null);
 		if (!repository) throw new Error("the item's session has no repository");
 		const reviewer = child ? { off: "feature" } as const : !config.factory.reviewer ? { off: "deployment" } as const :
-			session.place.kind === "hosted" && reviewerAllowed(session.place, (await getLayer()).sandboxes.profile(session.profile)) ? { on: true } as const : { off: "profile" } as const;
+			session?.place.kind === "hosted" && reviewerAllowed(session.place, (await getLayer()).sandboxes.profile(session.profile)) ? { on: true } as const : { off: "profile" } as const;
 		const reviewerSessionId = "on" in reviewer ? `s_${hex16(`review\n${itemId}`)}` : null;
-		if (reviewerSessionId && !c.vars.sessions.has(reviewerSessionId)) {
+		if (session && reviewerSessionId && !c.vars.sessions.has(reviewerSessionId)) {
 			// The reviewer runs the builder's checks too: in a sandbox of the builder's size.
 			await makeSession(c, profile, { title: input.title, profile: session.profile, model: session.model, repository: { id: repository.id, branch: repository.branch } }, null, { sessionId: reviewerSessionId, itemId, role: "reviewer", issue, ...(session.hostedSize && { hostedSize: session.hostedSize }) });
 		}
 		const now = Date.now();
-		const meta: ItemMeta = { uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
+		const meta: ItemMeta = { ...(policy && { defaultPlace: policy }), ...(placed && !session && { pendingBuilder: job }), uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
 		const limits = accountLimits(c.vars.items.limits).factory;
-		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session.place, budget: child?.budget ?? limits.item, agent: { harness: session.harness ?? "windlass", model: session.model, effort: input.effort, ...(session.item?.signIn && { signIn: session.item.signIn }) } });
+		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session?.place ?? placed!.destination.place, budget: child?.budget ?? limits.item, agent: { harness: session ? session.harness ?? "windlass" : input.mode === "orchestrate" ? "windlass" : placed!.destination.harness, model: session?.model ?? "default", effort: input.effort, ...(session?.item?.signIn && { signIn: session.item.signIn }) } });
+		if (placed && !session) item.awaitingPlace = placed.destination.wait;
 		if (child) { item.parent = child.parent; item.childBase = child.base; item.placement = child.placement; }
 		// An issue someone else wrote is not the person's own text: every turn that hands the agent the task says where it came from.
 		const outside = sources(child?.untrusted, github && !github.origin.issue.trusted ? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)] : []);
 		if (outside.length) item.untrusted = outside;
 		const allowed = thirdParty(child?.unsandboxed).filter(source => outside.includes(source));
 		if (allowed.length) item.unsandboxed = allowed;
-		await createItemActor(c, uid, itemId, { item, meta, startedBy: input.start ? `person:${uid}` : null });
+		await createItemActor(c, uid, itemId, { item, meta, placeNote: placed?.destination.note, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
 	} catch (error) {
 		// Nothing was made: the key is unused again, as a refused attempt leaves it. Once anything may exist, it stays this body's.
@@ -477,7 +544,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	} else await index(c.db);
 	c.broadcast("items", feedOf(c.vars.items));
 	console.log(`[wlp] item.created uid=${uid} item=${summary.id} session=${sessionId} source=${source}`);
-	if (summary.place.kind === "machine" && !c.vars.machines.has(summary.place.machineId)) {
+	if (!summary.awaitingPlace && summary.place.kind === "machine" && !c.vars.machines.has(summary.place.machineId)) {
 		await notifyRemovedMachines(c, summary.place.machineId);
 		return itemView(c, summary.id);
 	}
@@ -726,7 +793,7 @@ export async function notifyProviderWaits(c: ItemsCtx, items: Iterable<ItemSumma
 /** Removal also reaches drafts and work waiting on GitHub. Repeat on wake in case a notification was cut off. */
 export async function notifyRemovedMachines(c: ItemsCtx, machineId?: string): Promise<void> {
 	for (const item of c.vars.items.items.values()) {
-		if (item.place.kind !== "machine" || (machineId && item.place.machineId !== machineId) || c.vars.machines.has(item.place.machineId)) continue;
+		if (item.awaitingPlace || item.place.kind !== "machine" || (machineId && item.place.machineId !== machineId) || c.vars.machines.has(item.place.machineId)) continue;
 		if (["done", "failed", "cancelled"].includes(item.state) || item.question?.kind === "machine_removed") continue;
 		await itemActor(c, c.key[0]!, item.id).internalFact({ kind: "machine_removed", at: Date.now() });
 	}
@@ -916,6 +983,12 @@ export function childAgent(task: Pick<PlanSubtask, "agent">, placement: Pick<Chi
 
 const intakeWrites = new WeakMap<ItemsState, Promise<unknown>>();
 export const itemActions = {
+	async internalDefaultBuilder(c: ItemsCtx, input: { id: string; job: DefaultBuilder }, makeSession: MakeSession) {
+		requireServiceFor(c, "call");
+		if (!c.vars.profile) throw new Error("The item owner is unavailable.");
+		const { session, destination } = await defaultBuilder(c, c.vars.profile, input.id, input.job, makeSession);
+		return session ? { session } : { wait: destination.wait! };
+	},
 	async internalFeatureChild(c: ItemsCtx, input: { parent: string; child: string; cancel?: boolean }, makeSession: MakeSession, agentModels: () => Promise<AgentModels>): Promise<ItemView | null> {
 		requireServiceFor(c, "call");
 		const uid = c.key[0]!;

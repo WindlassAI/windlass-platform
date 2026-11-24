@@ -6,6 +6,7 @@ import { serviceParams } from "../auth.js";
 import { accountLimits } from "../user-limits.js";
 import { config } from "../config.js";
 import type { ItemSummary, UserProfile } from "../contract.js";
+import { savedPlace } from "../factory/default-place.js";
 import { issueMode, recentSubject, refusals, taskOfIssue, type IntakeTrigger, type IssueFiling } from "../factory/intake.js";
 import type { GithubApp, Repository } from "../github/app.js";
 import { isAddressed } from "../github/events.js";
@@ -103,7 +104,8 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 			const key = `github:${repo.id}#${issue.number}:${generation}`;
 			const defaults = await readDefaults(c.db, "github:" + repo.id);
 			const account = await readAccountDefaults(c.db);
-			const binding = { modeReason, triggerLabel: t.via === "label" ? t.label : undefined, installationId: t.installationId, generation, triggeredAt: subject.at, senderId: subject.author.id, issueId: issue.id, contentDigest: contentDigest(issue),
+			const defaultPlace = savedPlace(defaults, account);
+			const binding = { ...(defaultPlace && { defaultPlace }), modeReason, triggerLabel: t.via === "label" ? t.label : undefined, installationId: t.installationId, generation, triggeredAt: subject.at, senderId: subject.author.id, issueId: issue.id, contentDigest: contentDigest(issue),
 				origin: { issue: { number: issue.number, url: issue.url, author: issue.author.login, trusted }, sender: subject.author.login } };
 			decision = { kind: "file", itemId: itemId(key), filing: { binding, input: { ...task, mode, repository: { id: repo.id, branch: repo.defaultBranch },
 				profile: defaults.profile ?? account.profile ?? undefined, model: defaults.model ?? account.model ?? undefined, start: trusted, idempotencyKey: key } } };

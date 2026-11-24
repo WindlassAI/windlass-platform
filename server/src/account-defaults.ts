@@ -26,7 +26,7 @@
  * scripts/account-check.ts runs them against a database of its own.
  */
 
-import type { AccountDefaults, HarnessId, LastStart, SandboxPlace, SandboxProfileId } from "./contract.js";
+import type { AccountDefaults, ItemPlaceDefaults, HarnessId, LastStart, SandboxPlace, SandboxProfileId } from "./contract.js";
 import type { DefaultsChange, DefaultsDb } from "./repository-defaults.js";
 
 /** One row at most: the account's. */
@@ -35,14 +35,15 @@ export const ACCOUNT_DEFAULTS_TABLE = `
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		profile TEXT,
 		model TEXT,
+		item_place TEXT,
 		updated_at INTEGER NOT NULL
 	)
 `;
 
 /** The account's defaults; none when there is no row. */
 export async function readAccountDefaults(db: DefaultsDb): Promise<AccountDefaults> {
-	const [row] = await db.execute<{ profile: string | null; model: string | null; updated_at: number }>("SELECT profile, model, updated_at FROM account_defaults WHERE id = 1");
-	return { profile: (row?.profile ?? null) as SandboxProfileId | null, model: row?.model ?? null, updatedAt: row?.updated_at ?? null };
+	const [row] = await db.execute<{ item_place: string | null; profile: string | null; model: string | null; updated_at: number }>("SELECT item_place, profile, model, updated_at FROM account_defaults WHERE id = 1");
+	return { ...(row?.item_place && JSON.parse(row.item_place) as ItemPlaceDefaults), profile: (row?.profile ?? null) as SandboxProfileId | null, model: row?.model ?? null, updatedAt: row?.updated_at ?? null };
 }
 
 /**
@@ -51,16 +52,17 @@ export async function readAccountDefaults(db: DefaultsDb): Promise<AccountDefaul
  * nothing left in it is removed.
  */
 export async function saveAccountDefaults(db: DefaultsDb, change: DefaultsChange, now: number): Promise<AccountDefaults> {
-	const columns = (["profile", "model"] as const).filter((column) => change[column] !== undefined);
+	const columns = (["item_place", "profile", "model"] as const).filter((column) => change[column] !== undefined);
 	if (columns.length > 0) {
 		await db.execute(
-			`INSERT INTO account_defaults (id, profile, model, updated_at) VALUES (1, ?, ?, ?)
+			`INSERT INTO account_defaults (id, profile, model, item_place, updated_at) VALUES (1, ?, ?, ?, ?)
 			ON CONFLICT (id) DO UPDATE SET ${columns.map((column) => `${column} = excluded.${column}`).join(", ")}, updated_at = excluded.updated_at`,
 			change.profile ?? null,
 			change.model ?? null,
+			change.item_place ? JSON.stringify(change.item_place) : null,
 			now,
 		);
-		await db.execute("DELETE FROM account_defaults WHERE id = 1 AND profile IS NULL AND model IS NULL");
+		await db.execute("DELETE FROM account_defaults WHERE id = 1 AND profile IS NULL AND model IS NULL AND item_place IS NULL");
 	}
 	return readAccountDefaults(db);
 }

@@ -1,3 +1,4 @@
+import { resolveDefaultPlace, savedPlace } from "../../../server/src/factory/default-place";
 /**
  * The start of an agent: a composer, not a form. Typing the task and pressing Enter launches it with
  * the choices already standing. The choices are one line inside the composer's box (the pieces are
@@ -135,7 +136,7 @@ function launchLimit(numbers: UsageNumbers | null, hostedNotice = false): { text
 }
 
 /** What is saved as the defaults of the repository that is chosen: read when the choice changes. `defaults` is null while it is read and when it could not be. */
-function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefaults | null; checks: number | null; reading: boolean; error: string | null } {
+export function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefaults | null; checks: number | null; reading: boolean; error: string | null } {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [state, setState] = useState<{ repositoryId: GithubId | null; defaults: RepositoryDefaults | null; checks: number | null; error: string | null }>({ repositoryId: null, defaults: null, checks: null, error: null });
@@ -376,27 +377,29 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const now = useNow(30_000);
 	const mine = machinesInfo === null ? [] : (machines.list ?? []);
 	const why = (machine: MachineSummary) => machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", item ? "item" : "agent");
-	// A work item starts on this platform, as filing one always has; an agent where the last one ran.
+	// Items inherit the repository or account placement. Personal agents remember their last start.
 	const started = startedOn(account.settings?.lastStart ?? null);
 	const lastMachineId = !item && started.place?.kind === "machine" ? started.place.machineId : null;
-	const wantedMachine = placeChoice !== undefined ? placeChoice : lastMachineId;
+	const policy = item && placeChoice === undefined ? savedPlace(saved.defaults, account.settings?.defaults) : undefined;
+	const destination = policy && resolveDefaultPlace(policy, mine);
+	const wantedMachine = placeChoice !== undefined ? placeChoice : destination?.place.kind === "machine" ? destination.place.machineId : lastMachineId;
 	// A machine that was removed or can no longer be chosen leaves the agent on this platform, which its chip says.
 	const chosenMachine = mine.find((machine) => machine.machineId === wantedMachine && why(machine) === null) ?? null;
 	const machinesReading = machinesInfo !== null && machines.list === null && machines.error === null;
 	const lastMachine = mine.find((machine) => machine.machineId === lastMachineId) ?? null;
-	const placeProblem =
+	const placeProblem = destination?.note ?? (
 		wantedMachine === null || chosenMachine !== null || machinesReading
 			? null
 			: placeChoice !== undefined
 				? `The machine chosen can no longer be used, so this ${item ? "work item" : "agent"} runs on this platform.`
 				: lastMachine === null
 					? "The machine your last agent ran on is not one of yours any more, so this one runs on this platform."
-					: `Your last agent ran on “${machineLabel(lastMachine)}”, which cannot be used now, so this one runs on this platform. ${why(lastMachine) ?? ""}`.trim();
+					: `Your last agent ran on “${machineLabel(lastMachine)}”, which cannot be used now, so this one runs on this platform. ${why(lastMachine) ?? ""}`.trim());
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
 	// Another harness runs in the hardened container (Codex also in the Windlass sandbox): without one that can be used it cannot be chosen, and a machine that does not offer it leaves Windlass.
 	const hardened = placeProfiles.some((candidate) => candidate.id === HARNESS_PROFILE && candidate.available);
 	// A work item starts on Windlass unless chosen otherwise, and only on an agent its machine is signed into.
-	const wantedHarness = harnessChoice ?? (item ? "windlass" : (started.harness ?? "windlass"));
+	const wantedHarness = harnessChoice ?? (item ? destination?.harness ?? "windlass" : (started.harness ?? "windlass"));
 	const harnessesHere = (machine: MachineSummary | null) => (item ? itemHarnesses(machine) : offeredHarnesses(machine));
 	const runsHere = (id: HarnessId) => (item ? itemProfilesHere(chosenMachine, id).length > 0 : hardened);
 	const harness: HarnessId = wantedHarness !== "windlass" && runsHere(wantedHarness) && harnessesHere(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
@@ -420,8 +423,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// ---- the sandbox, the model and effort, the mode ------------------------------------------
 	const hasCodexSandbox = (machine: MachineSummary | null) => harness === "codex" && machine?.harnesses?.some(h => h.id === "codex" && h.modes?.includes("workspace-write"));
 	// A Codex work item runs in Codex's sandbox unless "Docker, hardened" is picked (server/src/sandbox/harnesses.ts, `itemModes`).
-	const codexItemSandbox = item && hasCodexSandbox(chosenMachine) && profileChoice !== HARNESS_PROFILE;
-	const profile = hasCodexSandbox(chosenMachine) && (profileChoice === "docker-windlass-sandbox" || codexItemSandbox) ? "docker-windlass-sandbox" : other ? HARNESS_PROFILE : startingProfile(profileChoice, defaults, info ? { profiles: placeProfiles } : null, last.of.windlass?.profile ?? null);
+	const askedProfile = profileChoice ?? (destination?.place.kind === "machine" ? destination.profile ?? null : null);
+	const codexItemSandbox = item && hasCodexSandbox(chosenMachine) && askedProfile !== HARNESS_PROFILE;
+	const profile = hasCodexSandbox(chosenMachine) && (askedProfile === "docker-windlass-sandbox" || codexItemSandbox) ? "docker-windlass-sandbox" : other ? HARNESS_PROFILE : startingProfile(askedProfile, defaults, info ? { profiles: placeProfiles } : null, last.of.windlass?.profile ?? null);
 	const modelList = other ? options.models : models.list;
 	const offers = (id: string) => modelList?.models.some((candidate) => candidate.id === id) === true;
 	// Another harness's "" is its own default model, the one its runner reported as that: nothing is sent for it, so the adapter starts on its own.
@@ -453,9 +457,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 
 	// ---- launching ------------------------------------------------------------------------------
 	const accountReading = account.reading && account.settings === null;
-	// A work item waits for what its repository starts on, and where it runs; none of an agent's defaults.
+	// Wait for the selected repository and its inherited place before filing.
 	const reading = item
-		? info === null || (items === null && repositoryId === undefined) || (sessions === null && repositoryId === undefined && newestItem === null) || repoReading || (machinesReading && wantedMachine !== null)
+		? info === null || (items === null && repositoryId === undefined) || (sessions === null && repositoryId === undefined && newestItem === null) || repoReading || saved.reading || accountReading || (machinesReading && !!policy?.place && policy.place !== "hosted")
 		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || !!selectedCatalog?.reading || (machinesReading && wantedMachine !== null);
 	const canCreate = !item && !reading && profile !== null && !repoInvalid && busy === null;
 	const task = prompt.trim();
@@ -524,21 +528,24 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		if (!canFile || !chosen || !filing) return;
 		setOpen(null);
 		setError(null);
+		const usePolicy = !!policy && harnessChoice === null && profileChoice === null;
+		const mode = info?.items?.orchestrate && (!other || usePolicy) ? itemMode : "single";
+		const prefersMachineAgentForParts = mode === "orchestrate" && !!other;
 		const input: Omit<CreateItemInput, "idempotencyKey"> = {
 			repository: { id: chosen.repository.id, branch: chosen.branch },
 			title: filing.title,
-			mode: info?.items?.orchestrate && !other ? itemMode : "single",
+			mode,
 			body: filing.body,
 			acceptance,
 			start: now,
-			...(chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}),
+			...(usePolicy ? { useDefaultPlace: true } : { place: chosenMachine ? { kind: "machine", machineId: chosenMachine.machineId } : { kind: "hosted" } }),
 			// The agent and its model: Windlass on the account's model unless one was chosen here.
-			...(other ? { harness } : {}),
+			...(!usePolicy && other ? { harness } : {}),
 			// Codex runs items in either of its profiles; the other agents only in their hardened container.
-			...(harness === "codex" && profile ? { profile } : {}),
-			...(model && (other || modelChoice !== "") ? { model } : {}),
+			...(!usePolicy && profile && (chosenMachine || profileChoice) ? { profile } : {}),
+			...(!prefersMachineAgentForParts && model && (other || modelChoice !== "") ? { model } : {}),
 			// Every turn of the item runs at it; left out, at the agent's default.
-			...(effort && effort !== "default" ? { effort } : {}),
+			...(!prefersMachineAgentForParts && effort && effort !== "default" ? { effort } : {}),
 			...(hostedSize ? { hostedSize } : {}),
 		};
 		// Filing the same again after an answer that never came, with nothing changed, makes no second item.
@@ -854,7 +861,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			</button>
 		) : undefined,
 	};
-	const placeName = chosenMachine ? machineLabel(chosenMachine) : "Hosted";
+	const placeName = destination?.wait && !chosenMachine ? policy?.place === "any-machine" ? "Any of my machines" : "Saved machine" : chosenMachine ? machineLabel(chosenMachine) : "Hosted";
 
 	const whereWarn = placeProblem !== null || chosenMachine?.status === "offline" || (!item && sandboxWarn);
 
@@ -1018,9 +1025,10 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 
 	// ---- how a work item runs: plan first or quick ------------------------------------
 	const orchestrateOffered = item && Boolean(info?.items?.orchestrate);
-	const orchestrating = orchestrateOffered && itemMode === "orchestrate" && !other;
+	const quickOnly = !!other && (!policy || harnessChoice !== null || profileChoice !== null);
+	const orchestrating = orchestrateOffered && itemMode === "orchestrate" && !quickOnly;
 	const orchestrateWarn = orchestrating ? orchestrateProblem(saved.checks) : null;
-	const shownItemMode: ItemMode = other ? "single" : itemMode;
+	const shownItemMode: ItemMode = quickOnly ? "single" : itemMode;
 
 	const hasSetup = chosen !== null && !item;
 	const setupForm = hasSetup ? (
@@ -1070,10 +1078,10 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								id: one,
 								value: one,
 								label: ITEM_MODE_WORDS[one].name,
-								description: one === "orchestrate" && other ? `${other} runs Quick: Plan first is Windlass's.` : ITEM_MODE_LINES[one],
+								description: one === "orchestrate" && quickOnly ? `${other} runs Quick: Plan first is Windlass's.` : ITEM_MODE_LINES[one],
 								wrap: true,
 								checked: shownItemMode === one,
-								disabled: busy !== null || (one === "orchestrate" && other !== null),
+								disabled: busy !== null || (one === "orchestrate" && quickOnly),
 								onSelect: () => setItemMode(one),
 							})),
 						},

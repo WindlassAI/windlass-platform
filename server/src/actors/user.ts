@@ -1,3 +1,5 @@
+import { changesPlace, changedPlace, placeProblem } from "../factory/default-place.js";
+import type { ItemPlaceDefaults } from "../contract.js";
 import { snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
 import type { AgentModels } from "../factory/placement.js";
@@ -1299,9 +1301,10 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			publishUnasked: repo !== null && input.publishUnasked === true,
 			demo: harness === "windlass" && profile.demo,
 			createdAt: now,
-		}).catch((error: unknown) => {
+		}).catch(async (error: unknown) => {
 			// An item's session has an id derived from its item's: one that exists is the one an earlier try made.
 			if (!item || !isDuplicateKey(error)) throw error;
+			summary = await sessionActor(c, profile.uid, item.sessionId).internalSummary();
 		});
 	} catch (error) {
 		throw clientError(c.log, error, "The agent could not be created. Try again.");
@@ -1600,6 +1603,7 @@ export const user = actor({
 			// What the user keeps for their account: the defaults for new sessions (account-defaults.ts), their own MCP
 			// servers (personal-servers.ts) and the secrets those read (account-secrets.ts), each value sealed.
 			await db.execute(ACCOUNT_DEFAULTS_TABLE);
+			if (!(await db.execute<{ name: string }>("PRAGMA table_info(account_defaults)")).some(col => col.name === "item_place")) await db.execute("ALTER TABLE account_defaults ADD COLUMN item_place TEXT");
 			// Where the newest agent was started, its agent and its mode (account-defaults.ts): one row, written when an agent is made.
 			await db.execute(LAST_START_TABLE);
 			// The models of the user's ChatGPT plan as Windlass last listed them (account-models.ts): one row.
@@ -2252,6 +2256,7 @@ export const user = actor({
 
 		// --- checks of repositories (repository-checks.ts) -------------------------------------------
 
+		internalDefaultBuilder: (c, input: { id: string; job: import("./user-items.js").DefaultBuilder }) => itemActions.internalDefaultBuilder(c, input, itemSession(c)),
 		internalPlanCritic: async (c, builderId: string): Promise<void> => {
 			requireServiceFor(c, "call");
 			const builder = c.vars.sessions.get(builderId), profile = c.vars.profile;
@@ -2655,7 +2660,7 @@ export const user = actor({
 			return found;
 		},
 
-		saveRepositoryDefaults: async (c, input: { repositoryId: GithubId; autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: string | null; model?: string | null; hostedSize?: string | null }): Promise<RepositoryDefaults> => {
+		saveRepositoryDefaults: async (c, input: ItemPlaceDefaults & { repositoryId: GithubId; autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: string | null; model?: string | null; hostedSize?: string | null }): Promise<RepositoryDefaults> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			let change: DefaultsChange;
@@ -2668,7 +2673,16 @@ export const user = actor({
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
 			}
 			try {
-				const saved = await saveDefaults(c.db, project, await labelFor(c, input.repositoryId, project), change, Date.now());
+				const label = await labelFor(c, input.repositoryId, project);
+				const saved = await c.db.transaction(async tx => {
+					if (changesPlace(input)) {
+						const policy = changedPlace(await readDefaults(tx, project), input);
+						const problem = placeProblem(policy, config.machines ? [...c.vars.machines.values()] : []);
+						if (problem) throw new UserError(problem, { code: "bad_input" });
+						change.item_place = policy.place ? policy : null;
+					}
+					return saveDefaults(tx, project, label, change, Date.now());
+				});
 				console.log(repositoryDefaultsLog(profile.uid, project, change));
 				return saved;
 			} catch (error) {
@@ -2745,7 +2759,7 @@ export const user = actor({
 			}
 		},
 
-		saveAccountDefaults: async (c, input: { profile?: string | null; model?: string | null }): Promise<AccountDefaults> => {
+		saveAccountDefaults: async (c, input: ItemPlaceDefaults & { profile?: string | null; model?: string | null }): Promise<AccountDefaults> => {
 			const profile = requireUser(c);
 			let change: DefaultsChange;
 			try {
@@ -2756,7 +2770,15 @@ export const user = actor({
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
 			}
 			try {
-				const saved = await saveAccountDefaults(c.db, change, Date.now());
+				const saved = await c.db.transaction(async tx => {
+					if (changesPlace(input)) {
+						const policy = changedPlace(await readAccountDefaults(tx), input);
+						const problem = placeProblem(policy, config.machines ? [...c.vars.machines.values()] : []);
+						if (problem) throw new UserError(problem, { code: "bad_input" });
+						change.item_place = policy.place ? policy : null;
+					}
+					return saveAccountDefaults(tx, change, Date.now());
+				});
 				console.log(`[wlp] defaults.saved uid=${profile.uid} project=account${change.profile === undefined ? "" : ` profile=${change.profile ?? "none"}`}${change.model === undefined ? "" : ` model=${change.model ?? "none"}`}`);
 				return saved;
 			} catch (error) {

@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SessionApi, UserApi } from "../api/client";
 import { createMockClient, type MockClient } from "../api/mock";
 import { saveAuth } from "../lib/authStore";
+import { StartComposer } from "./StartComposer";
 import { NewAgent } from "../screens/NewAgent";
 import { AppProvider } from "../state/app";
 
@@ -656,4 +657,25 @@ describe("connecting GitHub from the start composer in a popup", () => {
 		expect(asked).toBe(1);
 		expect(JSON.parse(sessionStorage.getItem("wlp.new-agent.draft") ?? "null")).toMatchObject({ prompt: "Add a health check" });
 	});
+});
+
+it("opens an item's repository placement in the composer and honors an explicit hosted choice", async () => {
+	client = mock();
+	saveAuth("mock", ada);
+	const user = client.user(ada);
+	await user.saveAccountDefaults({ place: "hosted" });
+	await user.saveRepositoryDefaults(7101, { place: { machine: "m_nas" }, harness: "claude", machineProfile: "docker-hardened" });
+	root = createRoot(host);
+	act(() => root!.render(createElement(AppProvider, { client, children: createElement(StartComposer, { kind: "item", sessions: [], items: [], repositoryId: 7101 }) })));
+	await settle();
+	expect(value("on")).toContain("nas");
+	expect(value("agent")).toContain("Claude Code");
+	open("where");
+	pick("platform");
+	expect(value("on")).toBe("Hosted");
+	write("Run this one on the platform");
+	await launchMenu("File as a draft");
+	await settle();
+	const filed = (await user.listItems()).find(i => i.title === "Run this one on the platform");
+	expect(filed?.place).toEqual({ kind: "hosted" });
 });

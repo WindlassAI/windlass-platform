@@ -303,6 +303,15 @@ class Change {
 	}
 }
 
+function waitForDefaultPlace(c: Change, sentence: string): boolean {
+	const at = retryAt(c.at, 0);
+	if (c.item.wait?.sentence !== sentence) c.say(sentence);
+	c.item.awaitingPlace = sentence;
+	c.state("waiting", { reason: "machine", sentence, retryAt: at });
+	c.effects.push({ kind: "resolve_default_place", key: String(at), at });
+	return true;
+}
+
 function apply(c: Change, fact: Fact): boolean {
 	const { item } = c;
 	switch (fact.kind) {
@@ -452,7 +461,7 @@ function apply(c: Change, fact: Fact): boolean {
 			runSingle(c);
 			return true;
 		case "machine_removed":
-			if (item.place.kind !== "machine" || item.machineRemoved) return false;
+			if (item.awaitingPlace || item.place.kind !== "machine" || item.machineRemoved) return false;
 			if (item.joining?.child !== item.id) delete item.featureUpdate;
 			// An in-flight ref write needs no machine. Let its receipt release the parent's durable grant.
 			if (item.parent && item.run?.step.kind === "subtasks" && !item.question) {
@@ -477,6 +486,18 @@ function apply(c: Change, fact: Fact): boolean {
 		case "start":
 			if (item.state !== "draft") return false;
 			c.say("Started.");
+			if (item.awaitingPlace) return waitForDefaultPlace(c, item.awaitingPlace);
+			beginRun(c, firstPlan(item, null));
+			return true;
+		case "default_place_wait":
+			if (!item.awaitingPlace || item.state !== "waiting") return false;
+			return waitForDefaultPlace(c, fact.sentence);
+		case "default_place_ready":
+			if (!item.awaitingPlace || item.state !== "waiting") return false;
+			delete item.awaitingPlace;
+			item.place = fact.place;
+			item.agent = fact.agent;
+			c.say("A compatible machine has a free slot.");
 			beginRun(c, firstPlan(item, null));
 			return true;
 		case "retry":
@@ -546,7 +567,7 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "feature_updated" | "parent_update_finished" | "claim_join" | "finish_join" | "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "claim_secret" | "settle_secret" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "default_place_ready" | "default_place_wait" | "update_feature" | "feature_updated" | "parent_update_finished" | "claim_join" | "finish_join" | "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "claim_secret" | "settle_secret" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
 	const run = c.item.run;
 	if (run === null || c.item.featureUpdate) return false;
 	const step = run.step;
