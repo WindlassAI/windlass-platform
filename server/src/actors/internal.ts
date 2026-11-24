@@ -11,7 +11,7 @@
 import type { HoldReport } from "../usage.js";
 import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
-import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, RepositoryAutonomy, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { SignInMethod } from "../sandbox/harnesses.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -106,7 +106,7 @@ export interface UserInternal {
 	internalProviderGeneration(location: import("./provider-accounts.js").AccountLocation): Promise<string | null>;
 	internalObserveUsage(location: import("./provider-accounts.js").AccountLocation, generation: string, observation: import("../provider-usage.js").UsageObservation): Promise<void>;
 	internalLimitedAccounts(): Promise<ReturnType<typeof import("./provider-accounts.js").limitedAccounts>>;
-	internalRepositoryAutonomy(repositoryId: GithubId): Promise<{ autoApprovePlans: boolean; autoMergeSingles: boolean }>;
+	internalRepositoryAutonomy(repositoryId: GithubId): Promise<Required<RepositoryAutonomy>>;
 	internalPlanCritic(builderId: string): Promise<void>;
 	internalPlannerMachines(): Promise<ReturnType<typeof import("../machines/details.js").plannerMachines>>;
 	internalAgentModels(): Promise<import("../factory/placement.js").AgentModels>;
@@ -254,7 +254,7 @@ export interface ItemInternal {
 	internalFinishJoin(child: string, result: import("../factory/types.js").JoinResult): Promise<void>;
 	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { budget?: ItemSummary["budget"]; integratedHead?: string }): Promise<void>;
 	/** `repository`: a cross-repo feature's child's own repository and base; null for a one-repository feature. */
-	internalChildRequest(child: string): Promise<{ paused?: boolean; job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; featureBody: string; repository: { id: GithubId; base: string; alias: string } | null; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace }; /** Where the subtask's outside text came from (factory/untrusted.ts). Absent from an older parent. */ untrusted?: string[]; /** The feature's `FactoryItem.unsandboxed`. */ unsandboxed?: string[] } | null>;
+	internalChildRequest(child: string): Promise<{ paused?: boolean; job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; joinOnGate: boolean; featureBody: string; repository: { id: GithubId; base: string; alias: string } | null; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace }; /** Where the subtask's outside text came from (factory/untrusted.ts). Absent from an older parent. */ untrusted?: string[]; /** The feature's `FactoryItem.unsandboxed`. */ unsandboxed?: string[] } | null>;
 	/** A cross-repo feature's planning turn of `key`: the other repositories it reads, and where in the workspace. */
 	internalPlanningInputs(key: string): Promise<{ directory: string; inputs: { alias: string; repositoryId: GithubId; installationId: GithubId; owner: string; name: string; baseRef: string; sha: string | null }[] } | null>;
 	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;

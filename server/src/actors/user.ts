@@ -1,5 +1,5 @@
 import { changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
-import type { ItemPlaceDefaults } from "../contract.js";
+import type { ItemPlaceDefaults, RepositoryAutonomy } from "../contract.js";
 import { snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
 import type { AgentModels } from "../factory/placement.js";
@@ -2320,8 +2320,8 @@ export const user = actor({
 
 		internalRepositoryAutonomy: async (c, repositoryId: GithubId) => {
 			requireService(c);
-			const { autoApprovePlans, autoMergeSingles } = await readDefaults(c.db, setupKeyOf(repositoryId));
-			return { autoApprovePlans: !!autoApprovePlans, autoMergeSingles: !!autoMergeSingles };
+			const { autoApprovePlans, autoMergeSingles, waitForCiOnEachPart } = await readDefaults(c.db, setupKeyOf(repositoryId));
+			return { autoApprovePlans: !!autoApprovePlans, autoMergeSingles: !!autoMergeSingles, waitForCiOnEachPart: !!waitForCiOnEachPart };
 		},
 
 		repositoryChecks: async (c, repositoryId: GithubId): Promise<RepositoryChecks> => {
@@ -2707,7 +2707,7 @@ export const user = actor({
 			return found;
 		},
 
-		saveRepositoryDefaults: async (c, input: ItemPlaceDefaults & { repositoryId: GithubId; autoApprovePlans?: boolean; autoMergeSingles?: boolean; screenshots?: boolean; profile?: string | null; model?: string | null; hostedSize?: string | null }): Promise<RepositoryDefaults> => {
+		saveRepositoryDefaults: async (c, input: ItemPlaceDefaults & RepositoryAutonomy & { repositoryId: GithubId; screenshots?: boolean; profile?: string | null; model?: string | null; hostedSize?: string | null }): Promise<RepositoryDefaults> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			let change: DefaultsChange;
