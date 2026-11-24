@@ -70,7 +70,7 @@ import { feedbackComment, itemComment, reportBlocks, REVIEW_OFF_REASON } from ".
 import type { Effect as BlueprintEffect, Fact, FactoryItem, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { checkBaseFailures } from "../github/ci-base.js";
-import { CI_POLLING, ciState, readCi, rerunJobs } from "../github/ci.js";
+import { CI_POLLING, ciState, readCi, rerunJobs, workflowOverdue } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { type RequestedSecretSave, secretsActor, grantIsValid, isSessionGone, itemActor, sessionActor, userActor } from "./internal.js";
 import type { ItemFacts } from "./user-items.js";
@@ -1764,20 +1764,18 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const number = item.pr?.number ?? 0;
 			const autoMergeSingles = item.run?.step.kind === "handoff" && item.mode !== "orchestrate" && !item.parent &&
 				(await repositoryAutonomy(c, meta)).autoMergeSingles;
-			// Not reaching GitHub at all (the connection gone, the repository out of reach) is a reading that failed:
-			// it waits as any other, and CI's time limit still ends in the person's question.
 			const read = async () => {
 				const hub = await github(c, meta);
 				// A commit's SHA, or the branch where git did not say which commit it pushed: as part of the address, in one piece.
 				const target = { installationId: hub.installationId, repositoryId: meta.repository.id, owner: hub.owner, name: hub.name, head: encodeURIComponent(effect.head) };
-				const reading = await readCi(hub.app, target);
+				const ci = item.run?.ci;
+				const reading = await readCi(hub.app, target, { since: ci?.since });
 				// GitHub works out whether a pull request can merge after a push, and says null until it has. Its head is the
 				// commit it holds now, which may be one pushed after the agent's.
 				const pull = item.parent ? null : await hub.pull(number).catch(() => null);
-				const ci = item.run?.ci;
 				const state = ciState(reading);
 				const elapsed = ci ? Date.now() - ci.since : 0;
-				const timedOut = ["retry", "pending", "not_run"].includes(state) && elapsed >= CI_POLLING.timeoutMs;
+				const timedOut = workflowOverdue(reading, Date.now());
 				const noChildCi = item.parent && (state === "not_permitted" || state === "incomplete" ||
 					((state === "none" || state === "skipped") && elapsed >= CI_POLLING.noneAfterMs));
 				const head = reading.kind === "read" && !/^[0-9a-f]{40}$/.test(effect.head) ? reading.head : effect.head;

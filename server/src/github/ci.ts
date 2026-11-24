@@ -1,9 +1,9 @@
 /**
  * What GitHub says of a commit's CI, read for the factory (Plans "software factory" §2.1 step 4): the
- * check runs and commit statuses of the pushed head and, for a GitHub Actions job that failed, the end
+ * workflow runs, check runs and commit statuses of the pushed head and, for a GitHub Actions job that failed, the end
  * of its log. When check output or a single annotation says the job never started, the Actions job
- * record must confirm it had no steps or runner. Read with an installation token asked for with the three read permissions CI needs
- * (Checks, Commit statuses, Actions) and nothing else, used for one reading and dropped.
+ * record must confirm it had no steps or runner. CI reads use an installation token scoped to Checks,
+ * Commit statuses and Actions. Listing recent default-branch commits uses the Contents read token.
  *
  * Every reading ends as one of four outcomes, and the four are never confused, because the factory acts
  * on each differently:
@@ -24,7 +24,8 @@
  * The polling intervals of the factory (slice 1) are here as data (`CI_POLLING`), not timers: the item
  * actor schedules its polls itself.
  *
- * GitHub's documentation, read 2026-11-19:
+ * GitHub's documentation:
+ *   workflow runs     https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository ("Actions: read")
  *   check runs        https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference ("Checks: read")
  *   combined status   https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference ("Commit statuses: read")
  *   a job's log       https://docs.github.com/en/rest/actions/workflow-jobs#download-job-logs-for-a-workflow-run ("Actions: read"; a 302 to a short-lived address)
@@ -45,10 +46,10 @@ export const CI_POLLING = {
 	/** The same, while the user has more than `crowdedAbove` items open: keeps an installation under GitHub's hourly limit. */
 	crowdedEveryMs: 180_000,
 	crowdedAbove: 10,
-	/** No check run and no status this long after the push: the repository has no CI. */
+	/** Wait this long before checking recent default-branch commits for evidence of CI. */
 	noneAfterMs: 10 * 60_000,
-	/** CI still running this long after the push: a person is asked. */
-	timeoutMs: 90 * 60_000,
+	/** Ask about a workflow GitHub reports as in progress for longer than this. */
+	inProgressLimitMs: 6 * 60 * 60_000,
 	/** While an item is in review: is its pull request merged or closed. */
 	prEveryMs: 10 * 60_000,
 	webhookEveryMs: 5 * 60_000,
@@ -94,7 +95,7 @@ export interface CiRun {
 export type CiLog = { name: string; untrusted: true; text: string; truncated: boolean } | { name: string; untrusted: true; text: null; why: string };
 
 export type CiReading =
-	| { kind: "read"; head: string; runs: CiRun[]; truncated: boolean; logs: CiLog[] }
+	| { kind: "read"; head: string; runs: CiRun[]; truncated: boolean; logs: CiLog[]; state?: "pending" | "incomplete"; inProgressSince?: number }
 	| { kind: "not_permitted"; said: string }
 	| { kind: "rate_limited"; retryAt: number; said: string }
 	| { kind: "failed"; said: string };
@@ -111,6 +112,7 @@ export type CiState = "cancelled" | "passed" | "not_run" | "failed" | "pending" 
 export function ciState(reading: CiReading): CiState {
 	if (reading.kind === "not_permitted") return "not_permitted";
 	if (reading.kind !== "read") return "retry";
+	if (reading.state) return reading.state;
 	// Nothing usable read of a listing cut short is not "no CI": the rest of it was never seen.
 	if (reading.runs.length === 0) return reading.truncated ? "incomplete" : "none";
 	// A failure that was read stands, however much was not.
@@ -121,6 +123,10 @@ export function ciState(reading: CiReading): CiState {
 	if (reading.runs.some((run) => run.state === "cancelled")) return "cancelled";
 	// At least one check must have verified the work.
 	return reading.runs.some((run) => run.state === "passed") ? "passed" : "skipped";
+}
+
+export function workflowOverdue(reading: CiReading, now: number): boolean {
+	return reading.kind === "read" && reading.inProgressSince !== undefined && now - reading.inProgressSince > CI_POLLING.inProgressLimitMs;
 }
 
 /** Conclusions of a completed check run that say the code failed something. "cancelled", "skipped", "stale" and "neutral" do not. */
@@ -384,12 +390,62 @@ export async function rerunJobs(app: GithubApp, target: CiTarget, jobs: Rerunnab
 	return { accepted, said: said || "No interrupted checks were confirmed eligible for a rerun." };
 }
 
+function listed(value: unknown, what: string): unknown[] {
+	if (!Array.isArray(value)) throw new GithubError(200, `missing ${what} list`, `read ${what}`);
+	return value;
+}
+
+/** The combined status resolves branch refs to the SHA used for the workflow listing. */
+async function listCommitCi(app: GithubApp, token: string, repo: string, ref: string) {
+	const auth = { bearer: token };
+	const base = `${repo}/commits/${ref}`;
+	const checks = await app.pages({ path: `${base}/check-runs`, auth, what: "list check runs" }, body => listed(record(body).check_runs, "check runs"));
+	let answeredFor = "";
+	const statuses = await app.pages({ path: `${base}/status`, auth, what: "read commit statuses" }, body => {
+		const fields = record(body);
+		answeredFor ||= text(fields.sha);
+		return listed(fields.statuses, "commit statuses");
+	});
+	const head = answeredFor || (/^[0-9a-f]{40}$/i.test(ref) ? ref : text(record(checks.items[0]).head_sha) || ref);
+	const workflows = await app.pages({ path: `${repo}/actions/runs`, query: { head_sha: head }, auth, what: "list workflow runs for the commit" },
+		body => listed(record(body).workflow_runs, "workflow runs").map(record));
+	return {
+		head,
+		checks: checks.items.map(record).filter(check => (!check.head_sha || check.head_sha === head) && !ownApp(record(check.app), app.settings)),
+		statuses: statuses.items,
+		workflows: workflows.items,
+		truncated: checks.truncated || statuses.truncated || workflows.truncated,
+	};
+}
+
+async function recentDefaultBranchCi(app: GithubApp, token: string, target: CiTarget, repo: string, head: string) {
+	const { body } = await app.withToken(target.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", contents: "read" } },
+		t => app.call({ path: `${repo}/commits`, query: { per_page: 3 }, auth: { bearer: t }, what: "list recent default-branch commits" }), { reuse: true });
+	for (const commit of listed(body, "commits")) {
+		const sha = text(record(commit).sha);
+		if (sha === head) continue;
+		const ci = await listCommitCi(app, token, repo, sha);
+		if (ci.checks.length || ci.statuses.length || ci.workflows.length || ci.truncated) return true;
+	}
+	return false;
+}
+
+const activeWorkflowStates = new Set(["queued", "pending", "waiting", "requested", "in_progress"]);
+
 /** Resolve ambiguous failures before collapsing names or choosing any logs to download. */
-async function readRuns(app: GithubApp, token: string, target: CiTarget, head: string, checks: unknown[], statuses: unknown[], truncated: boolean, baseResultsOnly: boolean): Promise<CiReading> {
+async function readRuns(app: GithubApp, token: string, target: CiTarget, listing: Awaited<ReturnType<typeof listCommitCi>>, baseResultsOnly: boolean): Promise<CiReading> {
+	const { head, checks, statuses, workflows } = listing;
+	let { truncated } = listing;
 	const candidates: Candidate[] = [];
 	let remainingJobReads = JOB_READS_PER_READING;
-	const fromHead = checks.map(record).filter((fields) => (!fields.head_sha || fields.head_sha === head) && !ownApp(record(fields.app), app.settings));
-	let runs = [...latestAttempts(fromHead).map((fields) => checkRunOf(fields, candidates)), ...statuses.map(statusOf)].filter((run): run is CiRun => run !== null);
+	let runs = [...latestAttempts(checks).map(fields => checkRunOf(fields, candidates)), ...statuses.map(statusOf)].filter((run): run is CiRun => run !== null);
+	if (!baseResultsOnly && workflows.some(run => activeWorkflowStates.has(text(run.status)))) {
+		// GitHub can set run_started_at while queued. The current status has held at least since updated_at.
+		const starts = workflows.filter(run => run.status === "in_progress").map(run => Date.parse(text(run.updated_at))).filter(Number.isFinite);
+		return { kind: "read", head, runs: distinctChecks(runs), truncated, logs: [], state: "pending", inProgressSince: starts.length ? Math.min(...starts) : undefined };
+	}
+	// CI was reported, but there is no usable check result for this commit.
+	if (!runs.length && (workflows.length || checks.length || statuses.length)) return { kind: "read", head, runs, truncated, logs: [], state: "incomplete" };
 	if (candidates.length) {
 		let messages = new Map<string, string>();
 		let unread: CiReading = { kind: "failed", said: "GitHub did not return the check annotations" };
@@ -445,27 +501,20 @@ async function readRuns(app: GithubApp, token: string, target: CiTarget, head: s
 }
 
 /** Reads the CI of a commit. Never throws for anything GitHub answers: every outcome is a `CiReading`. */
-export async function readCi(app: GithubApp, target: CiTarget, { baseResultsOnly = false } = {}): Promise<CiReading> {
+export async function readCi(app: GithubApp, target: CiTarget, { baseResultsOnly = false, since = Date.now() }: { baseResultsOnly?: boolean; since?: number } = {}): Promise<CiReading> {
 	// GitHub's answer to a call of the reading, as against one to the request for its token.
 	let answered: GithubError | null = null;
 	try {
 		return await app.withToken(target.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", checks: "read", statuses: "read", actions: "read" } }, async (token) => {
 			try {
-				const base = `/repos/${target.owner}/${target.name}/commits/${target.head}`;
-				const auth = { bearer: token };
-				const checks = await app.pages({ path: `${base}/check-runs`, auth, what: "list check runs" }, (body) => {
-					const list = record(body).check_runs;
-					return Array.isArray(list) ? list : [];
-				});
-				// The combined status names the commit GitHub answered for: the reading is of that commit, which is checked against the one asked of it.
-				let answeredFor = "";
-				const statuses = await app.pages({ path: `${base}/status`, auth, what: "read commit statuses" }, (body) => {
-					const { sha, statuses: list } = record(body);
-					if (answeredFor === "" && typeof sha === "string") answeredFor = sha;
-					return Array.isArray(list) ? list : [];
-				});
-				const head = answeredFor || (/^[0-9a-f]{40}$/i.test(target.head) ? target.head : text(record(checks.items[0]).head_sha) || target.head);
-				return await readRuns(app, token, target, head, checks.items, statuses.items, checks.truncated || statuses.truncated, baseResultsOnly);
+				const repo = `/repos/${target.owner}/${target.name}`;
+				const listing = await listCommitCi(app, token, repo, target.head);
+				const reading = await readRuns(app, token, target, listing, baseResultsOnly);
+				if (!baseResultsOnly && reading.kind === "read" && ciState(reading) === "none") {
+					const gracePeriod = Date.now() - since < CI_POLLING.noneAfterMs;
+					if (gracePeriod || await recentDefaultBranchCi(app, token, target, repo, reading.head)) reading.state = "pending";
+				}
+				return reading;
 			} catch (error) {
 				// Thrown on, so that a kept token GitHub no longer takes is replaced by a new one (`withToken`'s `reuse`).
 				if (error instanceof GithubError) answered = error;
