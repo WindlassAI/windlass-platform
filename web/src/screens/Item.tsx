@@ -537,7 +537,7 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 							<button
 								key={choice.id}
 								type="button"
-								className={`button ${index === 0 ? "button-primary" : choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
+								className={`button ${(question.recommended ? choice.id === question.recommended : index === 0) ? "button-primary" : choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
 								disabled={busy || (choice.id === "reply" && note.trim() === "")}
 								onClick={() => answer(choice.id)}
 							>

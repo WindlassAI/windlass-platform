@@ -190,17 +190,31 @@ An item also stops and asks you when it is stuck. There is no cap on rounds of f
 
 **Try it once more** goes on in the same run. Choose **Hand it over as it is** to take the work as it is, or **Give up**.
 
-A turn paused by a server restart is not a cut-off either: it resumes by itself, and the item sees one turn. A turn on your machine pauses when the machine goes offline. The item waits, with no failure and no question, and gives its turn slot to other items meanwhile. When the machine is back, the turn resumes first, ahead of turns that came later. The time offline does not count toward the turn's limit or the item's time. If the machine stays offline for three days, the item asks you once: **Keep waiting**, or **Give up**. To run the item somewhere else, give up and start it again on another place.
+A turn paused by a server restart is not a cut-off either: it resumes by itself, and the item sees one turn. A turn on your machine pauses when the machine goes offline. The item waits, with no failure and no question, and gives its turn slot to other items meanwhile. When the machine is back, the turn resumes first, ahead of turns that came later. The time offline does not count toward the turn's limit or the item's time. If the machine stays offline for six hours, the item asks you once: **Keep waiting**, or **Give up**. To run the item somewhere else, give up and start it again on another place.
 
-A turn whose sandbox could not be prepared is not a cut-off: the agent never ran. The item tries that turn once more by itself. If it fails again, the item asks you and says what went wrong. **Try again** uses the same sandbox. **Start on a fresh sandbox** removes the old sandbox and starts the step in a new one, from the repository on GitHub. Anything that was not pushed from the old sandbox is lost.
+### What the Factory does on its own
 
-When a turn's hosted sandbox runs out of memory and the turn does not finish, the item asks you, with the figures: "The sandbox ran out of memory (942 of 977 MiB)." **Go on in a larger sandbox** removes the sandbox and goes on in a new one of the next size, from the repository on GitHub; what was not pushed is lost. **Try again** stays in the same size. On the largest size, the item says so and suggests having the agent's commands use less memory at once. A turn that finished even though a program in it was killed for memory goes on, and its timeline says what happened.
+Each automatic action appears in the timeline and counts against that run’s allowance. A failure with the same fingerprint goes straight to you. The usual budget and stuck-work limits still apply.
+
+| When | Automatic action before asking |
+| --- | --- |
+| Sandbox preparation fails | Try again once, then wait two minutes and start a fresh sandbox once. A fresh sandbox starts from GitHub and loses unpushed work. |
+| A turn cannot start | Retry after 30 seconds, then after one minute. Policy and sign-in refusals go to you. |
+| The final summary is missing | Retry in a fresh conversation, up to twice. |
+| The agent changes nothing | Ask it once to finish the task or explain in its report why no change is needed. |
+| The sandbox runs out of memory | Try the next allowed hosted size once, or retry the same size once. Resizing also starts from GitHub. |
+| Checks cannot run in the environment | Retry the step once. |
+| Local checks did not verify a subtask | Run the saved checks once. If they still give no local evidence and CI passes on that exact commit, integrate and record the missing evidence in the verdict. |
+| CI is cancelled or times out | Request one eligible infrastructure rerun, update from an ahead base once, then wait once. |
+| A blocked part’s feature is behind its target | Update the feature from the target once, between integrations. |
+| No sandbox or approved place is free, or a machine is away | Show the reason and wait up to six hours. Work resumes when the place becomes available. |
+| An integration or feature update offers a recheck | Check again up to twice, within the integration’s existing retry limit. |
 
 A command the agent runs may take at most what is left of its turn (a turn is limited to 45 minutes). Windlass asks for a command's time limit itself; a longer one is refused with how much is left, and the agent runs it again with less. So a command that hangs, for example in a sandbox out of memory, cannot hold the turn to its end. Claude Code, OpenCode and Codex keep their own limits: Claude Code stops a command after 10 minutes at most by default.
 
 When a step goes on in an agent that no longer has its conversation, for example in a new sandbox or after its memory was lost, the agent is given the whole task again, not "continue from where you were". It is also told that its earlier conversation and any work that was not pushed are gone. The timeline says when that happened.
 
-The choices depend on the item. A subtask can only integrate after its checks and CI pass. Only the item that owns the pull request can hand it over. Nothing is stopped silently, and no choice throws away the sandbox's work.
+The choices depend on the item. Only the item that owns the pull request can hand it over. The timeline records why work stopped.
 
 ### When the budget is used
 
@@ -214,11 +228,11 @@ When the budget is used, the item pauses and asks, for example "This item has us
 
 A subtask asks the same way, without **Hand it over as it is**. What you give it adds to its feature's budget.
 
-**When every hosted sandbox you may keep is in use.** A hosted item's next turn may need a sandbox of its own, for instance its second reviewer's. When all the places are taken, the item asks you once in that step, and names what holds them: your agents by their titles, an item's builder or reviewer by its item. Free one on **Usage** and the turn starts by itself, choose **Keep waiting**, or **Give up**. An item counts as one place: its reviewer shares the place of its builder's sandbox, and the reviewer's sandbox is removed after each review. Sandboxes on your own machines are not counted.
+**When every hosted sandbox you may keep is in use.** A hosted item's next turn may need a sandbox of its own, for instance its second reviewer's. When all the places are taken, the item waits and names what holds them: your agents by their titles, an item's builder or reviewer by its item. Free one on **Usage** and the turn starts by itself, choose **Keep waiting**, or **Give up**. An item counts as one place: its reviewer shares the place of its builder's sandbox, and the reviewer's sandbox is removed after each review. Sandboxes on your own machines are not counted.
 
 ### When a check can't run
 
-Sometimes a check fails because the sandbox can't run its command, not because of the agent's code. The item doesn't send the agent back for that, and doesn't try again on its own. It asks you, under **It asks you**, with the check's command, the first line that shows why, and the end of what the check printed.
+Sometimes a check fails because the sandbox can't run its command, not because of the agent's code. The item retries the step once. If the environment still prevents the check, it asks you, under **It asks you**, with the check's command, the first line that shows why, and the end of what the check printed.
 
 It counts as the environment only when every failing check failed in one of these ways:
 
@@ -427,8 +441,6 @@ These stop the feature and ask you:
 - a subtask has no passing checks or no CI on its push: "Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up.";
 - two subtasks stopped with the same failure, or one subtask stopped a second time;
 - no CI passed on the whole feature within 10 minutes: "No passing CI reported on the complete feature. Wait for a check or hand over the PR."
-
-If a subtask’s sandbox cannot start, it retries automatically after 2, 5, and 5 minutes before asking you for help.
 
 Cancelling a feature cancels its subtasks too.
 

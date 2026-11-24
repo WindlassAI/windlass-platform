@@ -119,7 +119,7 @@ export function ciState(reading: CiReading): CiState {
 }
 
 /** Conclusions of a completed check run that say the code failed something. "cancelled", "skipped", "stale" and "neutral" do not. */
-const FAILING = new Set(["failure", "timed_out", "startup_failure", "action_required"]);
+const FAILING = new Set(["failure", "startup_failure", "action_required"]);
 
 const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {});
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -154,7 +154,7 @@ function checkRunOf(fields: Record<string, unknown>, candidates: Candidate[]): C
 	const app = text(record(fields.app).slug) || "unknown";
 	const status = text(fields.status);
 	const conclusion = text(fields.conclusion);
-	const state = status !== "completed" ? "pending" : FAILING.has(conclusion) ? "failed" : conclusion === "success" ? "passed" : conclusion === "cancelled" || conclusion === "stale" ? "cancelled" : "neutral";
+	const state = status !== "completed" ? "pending" : FAILING.has(conclusion) ? "failed" : conclusion === "success" ? "passed" : conclusion === "cancelled" || conclusion === "stale" || conclusion === "timed_out" ? "cancelled" : "neutral";
 	const output = record(fields.output);
 	const summary = plain([text(output.title), text(output.summary)].filter((part) => part !== "").join(": "));
 	const run: CiRun = { name, app, state, conclusion: status === "completed" ? conclusion : status, url: text(fields.html_url) || text(fields.details_url), summary: short(summary, 500), jobId: app === "github-actions" ? decimalId(fields.id) : null };
@@ -298,13 +298,14 @@ function jobTimeout(jobs: Record<string, unknown>, name: string): unknown {
 async function markRetryable(app: GithubApp, token: string, target: CiTarget, head: string, cancelled: CiRun[], budget: number) {
 	const definitions = new Map<string, Promise<Record<string, unknown>>>();
 	for (const run of cancelled) {
-		if (run.conclusion !== "cancelled" || !run.jobId) continue;
+		if (!["cancelled", "timed_out"].includes(run.conclusion) || !run.jobId) continue;
 		if (budget-- <= 0) break;
 		try {
 			const job = record((await app.call({ path: `/repos/${target.owner}/${target.name}/actions/jobs/${run.jobId}`,
 				auth: { bearer: token }, what: "check why the Actions job was cancelled" })).body);
 			const runId = decimalId(job.run_id);
-			if (!runId || job.head_sha !== head || job.conclusion !== "cancelled" || decimalId(job.id) !== run.jobId) continue;
+			if (!runId || job.head_sha !== head || job.conclusion !== run.conclusion || decimalId(job.id) !== run.jobId) continue;
+			if (job.conclusion === "timed_out") { run.retryRunId = runId; continue; }
 			const unassigned = job.runner_id === 0 || job.runner_id === null || (job.runner_id === undefined && "runner_name" in job);
 			if (unassigned && (job.runner_name == null || job.runner_name === "") && Array.isArray(job.steps) &&
 				job.steps.every(step => !record(step).started_at && (record(step).status === "queued" || record(step).conclusion === "skipped"))) {
@@ -352,7 +353,7 @@ export async function rerunCancelled(app: GithubApp, target: CiTarget, jobs: Can
 						const affected = listing.items.filter(job => !["success", "skipped", "neutral"].includes(text(job.conclusion)));
 						const expected = new Set(ids);
 						if (listing.truncated || !affected.every(job => job.head_sha === target.head && job.status === "completed" &&
-							job.conclusion === "cancelled" && expected.delete(decimalId(job.id) ?? "")) || expected.size) {
+							["cancelled", "timed_out"].includes(text(job.conclusion)) && expected.delete(decimalId(job.id) ?? "")) || expected.size) {
 							problems.add("the workflow includes other jobs or its attempts changed");
 							continue;
 						}

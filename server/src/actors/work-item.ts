@@ -196,7 +196,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		origin: meta.github?.origin ?? null,
 		state: item.state,
 		wait: item.wait,
-		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, askedAt: item.question.askedAt, ...(item.question.secret && { secret: item.question.secret }), ...(item.question.asked && { asked: item.question.asked }), ...(item.question.check && { check: item.question.check }) },
+		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, recommended: item.question.recommended ?? item.question.choices[0]?.id, askedAt: item.question.askedAt, ...(item.question.secret && { secret: item.question.secret }), ...(item.question.asked && { asked: item.question.asked }), ...(item.question.check && { check: item.question.check }) },
 		pullRequest: item.pr,
 		verdict: meta.verdict,
 		review: secondReview(item, meta),
@@ -248,6 +248,7 @@ async function viewOf(c: Ctx): Promise<ItemView> {
 			if (target?.available && target.value > 0) q.choices.splice(-1, 0, featureUpdateChoice(target.branch));
 		}
 	}
+	if (q && !q.choices.some(option => option.id === q.recommended)) q.recommended = q.choices[0]?.id;
 	return view;
 }
 
@@ -320,7 +321,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),
 		task: stored.item.task,
 		// What the gate and CI read stays here: the page shows the run as the contract has it.
-		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, ...(stored.item.parent && {failureFingerprint: run.lastFailure}), step: run.step, rounds: { ...run.rounds, review: run.rounds.review ?? 0 } },
+		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, ...(stored.item.parent && {failureFingerprint: run.lastFailure}), step: run.step, autoSteps: run.autoSteps ?? 0, rounds: { ...run.rounds, review: run.rounds.review ?? 0 } },
 		head: stored.item.head,
 		report: run ? await latestReport(c.db, run.n) : null,
 		events: events.map((row) => JSON.parse(row.data) as ItemEvent),
@@ -1444,7 +1445,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		}
 		case "update_parent_feature": {
 			const parent = itemActor(c, meta.uid, item.parent!.itemId);
-			if (await parent.internalUpdateForChild(item.id, effect.key, effect.target) === "pending") {
+			if (await parent.internalUpdateForChild(item.id, effect.key, effect.target, effect.automatic) === "pending") {
 				await queued(c, () => rescheduleChildPoll(c.db, row, Date.now()));
 				return "deferred";
 			}
@@ -1678,7 +1679,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				? await targetStatus(c, stored).catch(() => null) : null;
 			const featureTarget = target?.available && target.value > 0 ? target.branch : undefined;
 			const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
-			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, baseAhead, baseTip, featureTarget, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
+			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
 			return true;
 		}
 		case "poll_pr": {
@@ -1884,7 +1885,7 @@ export const workItem = actor({
 			const stored = c.vars.stored;
 			return stored && !stored.item.parent ? targetStatus(c, stored) : null;
 		},
-		internalUpdateForChild: async (c, child: string, request: string, target: string): Promise<"pending" | "finished"> => {
+		internalUpdateForChild: async (c, child: string, request: string, target: string, automatic?: true): Promise<"pending" | "finished"> => {
 			requireServiceFor(c, "call");
 			await c.vars.writing;
 			const item = c.vars.stored!.item;
@@ -1892,7 +1893,7 @@ export const workItem = actor({
 			if (!job || ENDED.has(item.state)) return "finished";
 			if (item.featureUpdate || item.question?.kind === "feature_update") return "pending";
 			if (job.featureUpdateReceipt === request) return "finished";
-			return await take(c, { kind: "update_feature", at: Date.now(), by: "person:" + c.key[0], child, request, target }) ? "pending" : "finished";
+			return await take(c, { kind: "update_feature", at: Date.now(), by: automatic ? "platform" : "person:" + c.key[0], child, request, target, automatic }) ? "pending" : "finished";
 		},
 		// The durable grant survives a restart between GitHub’s ref update and its receipt.
 		internalClaimJoin: async (c, child: string, key: string): Promise<"busy" | "claimed" | JoinResult> => {

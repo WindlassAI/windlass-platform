@@ -33,6 +33,8 @@ export type Step = ItemStep;
 
 /** What the gate read from the turn that ended last (§2.1 step 2). */
 export interface GateEvidence {
+	/** The turn explicitly verified an existing commit and needs its own local evidence. */
+	forcedChecks?: true;
 	outcome: TurnOutcome;
 	verified: Verified | null;
 	flags: VerifiedFlag[];
@@ -57,7 +59,7 @@ export interface CiProgress {
 	 * What the gate recorded of the work at `head`, kept from when it was pushed: a later turn that
 	 * pushed nothing (a fix whose checks failed again) is not evidence for this commit.
 	 */
-	gate: GateEvidence | null;
+	gate: (GateEvidence & { turn?: string }) | null;
 	/**
 	 * The commit the pull request's branch was at when GitHub was last asked, when that is not `head`: pushed there by someone
 	 * other than the agent, and verified by nothing. Null while the pull request holds `head`, or GitHub did not say.
@@ -71,6 +73,10 @@ export interface CiProgress {
 
 /** One attempt of the blueprint (§1.2 `runs`): what the contract shows (`ItemRun`), and what the gate and CI read. */
 export interface Run extends ItemRun {
+	/** Ordered policy positions taken and the evidence that prompted each one. */
+	autoHistory?: Record<string, { position: number; fingerprint: string }[]>;
+	/** Delivery and original commit of the automatic local verification attempt. */
+	autoCheck?: { turn: string; head: string };
 	/** The fingerprint of the last failure a fix turn was started for. */
 	lastFailure: string | null;
 	/**
@@ -175,6 +181,7 @@ export interface FeatureJob {
 	startedAt?: number;
 	wait?: string;
 	placementRefusal?: string;
+	placementWaitSince?: number;
 	/** Last serialized integration result, retained so a restarted child can receive it again. */
 	join?: JoinResult;
 	/** Receipt for a target update requested from this part’s CI question. */
@@ -323,6 +330,7 @@ export type StopCause = "repeated" | "turns" | "interruptions" | "plan" | "gate"
 
 /** A question as the contract shows it (`ItemQuestion`), and what answering it goes on with. */
 export interface Question extends ItemQuestion {
+	child?: string;
 	cause: StopCause | null;
 	/** The turn that was about to start when the question was asked: what "raise" and "again" go on with. */
 	resume: TurnPlan | null;
@@ -419,7 +427,7 @@ export type Fact =
 	| { kind: "repo_pr_lost"; at: number; key: string; repo: string; said: string }
 	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null; /** `merged_at` (ms), null when GitHub did not say. */ mergedAt?: number | null }
 	| { kind: "cancel_subtask"; key: string; by: string; at: number }
-	| { kind: "update_feature"; at: number; by: Cause; target?: string; child?: string; request?: string }
+	| { kind: "update_feature"; automatic?: true; at: number; by: Cause; target?: string; child?: string; request?: string }
 	| { kind: "feature_updated"; at: number; key: string; result: { head: string } | { problem: string } }
 	| { kind: "parent_update_finished"; at: number; key: string }
 	| { kind: "claim_join"; at: number; child: string; key: string }
@@ -458,7 +466,7 @@ export type Fact =
 	/** The paused turn of `key` runs again: its machine came back after `offlineMs`. */
 	| { kind: "turn_resumed"; at: number; key: string; offlineMs: number }
 	/** The paused turn of `key` has waited for its machine since `since`, long enough (WLP_MACHINE_AWAY_ASK_MS) to ask the person once. */
-	| { kind: "machine_away"; at: number; key: string; since: number; machine: string | null }
+	| { kind: "machine_away"; deadline?: number; at: number; key: string; since: number; machine: string | null }
 	| {
 			kind: "turn_ended";
 			at: number;
@@ -483,6 +491,8 @@ export type Fact =
 			 * person. Absent for a turn that ran, or was cut off.
 			 */
 			refused?: string | null;
+			policyRefusal?: true;
+			reportProblem?: string;
 			/**
 			 * With `refused`, when the session refused it on "Docker, hardened" for someone else's text: those
 			 * sources, and the turn as it was delivered, to run anyway.
@@ -519,7 +529,7 @@ export type Fact =
 	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: CancelledJob[]; openItems: number }
 	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
-	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
+	| { kind: "ci_read"; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
 	| { kind: "pr_read"; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
 	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
 	| { kind: "spent"; at: number; hostedSeconds: number };
@@ -550,7 +560,7 @@ export type Effect =
 	| { kind: "notify_integrated"; key: string; head: string }
 	| { kind: "integrate"; key: string; head: string }
 	| { kind: "merge_feature_target"; key: string; target: string }
-	| { kind: "update_parent_feature"; key: string; target: string }
+	| { kind: "update_parent_feature"; automatic?: true; key: string; target: string }
 	| { kind: "describe_feature"; key: string }
 	/** A cross-repo feature: write the managed section that links its pull requests on each of them. */
 	| { kind: "link_prs"; key: string }
@@ -566,7 +576,7 @@ export type Effect =
 	| { kind: "release_review"; key: string; run: number; to: "review" }
 	| { kind: "withdraw"; key: string; to?: "review" }
 	/** Remove the session's sandbox (the person chose a fresh one); `sandbox_freed` with `plan` follows. */
-	| { kind: "fresh_sandbox"; key: string; plan: TurnPlan; to?: "review"; /** "Start on a larger sandbox": the size of the new one. */ hostedSize?: HostedSize }
+	| { kind: "fresh_sandbox"; key: string; at?: number; plan: TurnPlan; to?: "review"; /** "Start on a larger sandbox": the size of the new one. */ hostedSize?: HostedSize }
 	/** Ask the session whether the turn of `turn` still runs; it answers `turn_running` with `key`, or `turn_ended`. */
 	| { kind: "check_turn"; key: string; turn: string; at: number; to?: "review" }
 	/** Commit and push the session's branch, then open or update its pull request with the agent's report and the verified section. */

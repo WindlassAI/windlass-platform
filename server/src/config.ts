@@ -42,7 +42,7 @@
  *   WLP_TURN_HEARTBEAT_MS      how far ahead a running turn keeps the wake that resumes it after a
  *                              crash (default one minute). For tests
  *   WLP_MACHINE_AWAY_ASK_MS    how long an item's turn waits for its machine before the item asks its
- *                              person once (default three days). For tests
+ *                              person once (default six hours). For tests
  *   WLP_SETUP_TIMEOUT_MS       how long a repository's setup command may run in a new sandbox before the
  *                              platform stops it (default 600000, ten minutes; at most the time a turn
  *                              may take, since it runs inside one). The same on every server
@@ -847,7 +847,7 @@ hostedQuestionTimeoutMs: Math.min(readQuestionTimeout(), readDuration("WLP_HOSTE
 		floorMs: readDuration("WLP_TURN_RESUME_FLOOR_MS", 5 * 60 * 1000, 1_000),
 		delayMs: readDuration("WLP_TURN_RESUME_DELAY_MS", 3_000, 0),
 		heartbeatMs: readDuration("WLP_TURN_HEARTBEAT_MS", 60 * 1000, 2_000),
-		machineAskMs: readDuration("WLP_MACHINE_AWAY_ASK_MS", 3 * 24 * 60 * 60 * 1000, 1_000),
+		machineAskMs: readDuration("WLP_MACHINE_AWAY_ASK_MS", 6 * 60 * 60 * 1000, 1_000),
 	},
 	usage: {
 		dailySeconds: readCount("WLP_DAILY_SANDBOX_SECONDS", DEFAULT_DAILY_SECONDS, 60, 86_400, true),

@@ -33,11 +33,12 @@
  * session only for that (`RunTurnInput.onChecks`); the timeline gets a note per run.
  */
 
-import { CHECK_OUTPUT_CHARS, type CheckStatus, type RepositoryCheck, type WindlassEvent } from "../contract.js";
+import { CHECK_OUTPUT_CHARS, type CheckStatus, type RepositoryCheck, type Verified, type WindlassEvent } from "../contract.js";
 import { data, fence } from "../factory/reviewer-task.js";
 import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
 import { outputTail } from "../verified.js";
 import { environmentFailure } from "../factory/check-environment.js";
+import { shellQuote } from "./provider.js";
 import type { SandboxHandle } from "./api.js";
 
 /** How many times one turn's agent is sent back with failing checks (the factory's `RULES.gateRounds`). */
@@ -119,6 +120,31 @@ export function checksFor(checks: readonly RepositoryCheck[], changed: readonly 
 	}));
 }
 
+/** A checks-only native turn needs fresh evidence for every saved command, including checks with a path filter. */
+function needsForcedChecks(verified: Verified, saved: readonly RepositoryCheck[]): boolean {
+	const run = verified.run;
+	return saved.length > 0 && (verified.changedAfter || run?.turn !== verified.turn ||
+		(verified.state !== "passed" && verified.state !== "unresolved") ||
+		saved.some(check => !run.checks.some(r => r.required && !r.carried && r.name === check.name && r.command === check.command)));
+}
+
+/** Run only in the workspace and image toolchain. No network, inherited environment, token directory or agent home. */
+function isolatedCommand(cwd: string, command: string): string {
+	// The image's pnpm wrapper can use the pinned package manager installed during repository setup.
+	const cache = "/home/agent/.cache/node/corepack/v1/pnpm";
+	const args = ["/usr/bin/bwrap", "--unshare-all", "--die-with-parent", "--new-session", "--clearenv",
+		"--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/lib", "/lib",
+		"--ro-bind-try", "/lib64", "/lib64", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+		"--dir", "/tmp/home", "--setenv", "HOME", "/tmp/home", "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin",
+		"--bind", cwd, cwd, "--chdir", cwd];
+	// Bind the opened directory after checking its resolved path, so a renamed link cannot substitute another directory.
+	return [
+		`set -- ${args.map(shellQuote).join(" ")}`,
+		`if [ -d ${cache} ] && exec 3<${cache}; then if [ "$(/usr/bin/readlink /proc/self/fd/3)" = ${cache} ]; then set -- "$@" --ro-bind-fd 3 /tmp/home/.cache/node/corepack/v1/pnpm; else exec 3<&-; fi; fi`,
+		`exec "$@" -- /bin/bash -c ${shellQuote(command)}`,
+	].join("\n");
+}
+
 /** The end of `text`, whole lines where there are any, at most `max` characters. */
 function tailOf(text: string, max: number): string {
 	if (text.length <= max) return text;
@@ -163,7 +189,7 @@ export class PlatformChecks {
 		private readonly checks: readonly RepositoryCheck[],
 		private readonly emit: (event: WindlassEvent, note?: ChecksNote) => void,
 		/** `unavailable`: why no check may run in this sandbox (above); each is then recorded as not started, with it. */
-		private readonly options: { agent: string; redactor?: Redactor; signal?: AbortSignal; force?: boolean; unavailable?: string },
+		private readonly options: { agent: string; redactor?: Redactor; signal?: AbortSignal; force?: boolean; isolated?: boolean; unavailable?: string },
 	) {}
 
 	private event(type: string, data: Record<string, unknown>): WindlassEvent {
@@ -197,7 +223,7 @@ export class PlatformChecks {
 	/** Before the turn's prompt: the state its changes are measured from. Runs nothing for a repository without checks. */
 	async begin(): Promise<void> {
 		this.began = true;
-		if (this.checks.length) this.start = await this.snapshot("turn_start");
+		if (this.checks.length && !this.options.force) this.start = await this.snapshot("turn_start");
 	}
 
 	private end(verification: Record<string, unknown>, note?: ChecksNote): null {
@@ -213,7 +239,8 @@ export class PlatformChecks {
 		const startedAt = Date.now();
 		const base = { name: check.name, command: check.command, showOutput: check.showOutput === true };
 		try {
-			const got = await this.handle.run(check.command, {
+			const command = this.options.isolated ? isolatedCommand(this.handle.cwd, check.command) : check.command;
+			const got = await this.handle.run(command, {
 				cwd: this.handle.cwd, timeoutMs: (check.timeoutSeconds ?? DEFAULT_CHECK_SECONDS) * 1000, signal: this.options.signal,
 				onStdout: keep, onStderr: keep,
 			});
@@ -245,21 +272,27 @@ export class PlatformChecks {
 	 * The agent's prompt ended with `end_turn`: runs what applies, and answers with the prompt that sends the agent
 	 * back, or null when the turn ends now (passed, nothing to run, out of rounds, or stopped).
 	 */
-	async settle(): Promise<string | null> {
+	async settle(sendBack = true): Promise<string | null> {
 		if (!this.began) await this.begin();
 		const agent = this.options.agent;
 		if (!this.checks.length) return this.end({ status: "not_configured" });
-		const now = await this.snapshot("checks_end");
+		const now = this.options.force ? null : await this.snapshot("checks_end");
 		if (this.options.signal?.aborted) return null;
 		const changed = this.options.force ? null : await this.changed(this.start, now);
 		// The agent put every file back as it was at the turn's start after its checks had run: nothing needs checking.
 		if (changed?.length === 0) return this.end(this.ran ? { status: "not_needed", reason: "state_unchanged", since: { run: null } } : { status: "not_needed", reason: "turn_unchanged" });
 		const selected = checksFor(this.checks, changed);
 		if (!selected.length) return this.end({ status: "not_needed", reason: "not_covered" }, { level: "info", text: "No saved check covers the files this turn changed, so the platform ran none." });
+		let unavailable = this.options.unavailable;
+		if (this.options.isolated) {
+			try {
+				const probe = await this.handle.run(isolatedCommand(this.handle.cwd, "true"), { cwd: this.handle.cwd, timeoutMs: SNAPSHOT_MS, signal: this.options.signal });
+				if (probe.exitCode !== 0) unavailable = "The workspace command sandbox could not start.";
+			} catch { unavailable = "The workspace command sandbox could not start."; }
+		}
 		const results: PlatformCheckResult[] = [];
 		for (const check of selected) {
 			if (this.options.signal?.aborted) break;
-			const { unavailable } = this.options;
 			results.push(unavailable ? { name: check.name, command: check.command, status: "could_not_start", exitCode: null, durationMs: 0, output: "", startError: unavailable, showOutput: false } : await this.runOne(check));
 		}
 		if (this.options.signal?.aborted || results.some(r => r.status === "interrupted")) return null;
@@ -284,10 +317,16 @@ export class PlatformChecks {
 		if (!failed.length && !notStarted.length) return this.end({ status: "passed" }, { level, text: said });
 		if (!failing.length && environment.length) return this.end({ status: "unresolved", reason: "environment" }, { level, text: `${said} The sandbox could not run ${environment.map(r => r.name).join(", ")}, which says nothing about the code, so ${agent} was not sent back.` });
 		if (!failing.length) return this.end({ status: "unresolved", reason: "not_started" }, { level, text: `${said} A check that could not start says nothing about the code, so ${agent} was not sent back.` });
+		if (!sendBack) return this.end({ status: "unresolved", reason: "report_mode" }, { level, text: said });
 		if (this.sendBacks >= PLATFORM_CHECK_ROUNDS) return this.end({ status: "unresolved", reason: "max_rounds" }, { level, text: `${said} ${agent} was sent back ${PLATFORM_CHECK_ROUNDS} times already, so the turn ends with checks failing.` });
 		this.sendBacks++;
 		this.emit(this.event("synthetic.appended", { origin: "check_report" }), { level, text: `${said} The platform sent ${agent} back with the failing output (round ${this.sendBacks} of ${PLATFORM_CHECK_ROUNDS}).` });
 		return sendBackPrompt(failing, results.length, this.sendBacks);
+	}
+
+	/** The native gate may skip an unchanged tree or carry an older run. Finish a checks-only turn on its final files. */
+	async finishNativeTurn(evidence: Verified): Promise<void> {
+		if (needsForcedChecks(evidence, this.checks)) await this.settle(false);
 	}
 
 	/** The turn ends before the gate did (stopped, the step limit): the state it ends on, so a run of checks says whether files changed after it. */

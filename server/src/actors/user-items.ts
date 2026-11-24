@@ -939,7 +939,7 @@ export const itemActions = {
 				if (!fit.decision) {
 					if (job.dispatchKey) await parentActor.internalFact({
 						kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(),
-						sentence: fit.refused ?? fit.wait, dailyCap: fit.dailyCap, providerUntil: fit.providerUntil, accountKey: fit.accountKey, refused: fit.refused !== undefined,
+						sentence: fit.refused ?? fit.wait, dailyCap: fit.dailyCap, providerUntil: fit.providerUntil, accountKey: fit.accountKey, refused: fit.refused !== undefined && fit.permanent,
 					});
 					return null;
 				}

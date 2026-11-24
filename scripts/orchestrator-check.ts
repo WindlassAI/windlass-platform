@@ -812,13 +812,12 @@ test("approval refuses only a permanent placement problem: busy, offline or shor
 	// A machine that never reported is judged when it connects.
 	const unreported = { ...offline, status: "waiting" as const, egress: undefined, screenshots: undefined };
 	assert.equal(placementFeature([unreported], { screenshots: true }).featurePlan?.status, "approved");
-	// Low disk is not permanent: approval allows it, and dispatch asks the owner, who can retry.
+	// Low disk is temporary: dispatch waits and retries after space becomes available.
 	const full = { ...mac, freeDiskBytes: 5 * GiB - 1 };
-	const asked = dispatch(placementFeature([full]), [full]);
-	assert.equal(asked.question?.kind, "placement_refused");
-	assert.match(asked.question!.text, /disk/);
-	const retried = advance(asked, { kind: "answer", choice: "again", question: asked.question!.id, at: 8, by: "owner" }).item;
-	assert.deepEqual(dispatch(retried, [mac]).jobs![0].placement?.place, { kind: "machine", machineId: macId });
+	const waiting = dispatch(placementFeature([full]), [full]);
+	assert.equal(waiting.question, null);
+	assert.match(waiting.wait!.sentence, /disk/);
+	assert.deepEqual(dispatch(waiting, [mac]).jobs![0].placement?.place, { kind: "machine", machineId: macId });
 });
 test("a removed machine or changed policy asks the owner at dispatch and at launch", () => {
 	const mac = machineReport();
@@ -1579,7 +1578,10 @@ test("cross-repo: an opening refused in one repository keeps the other, and retr
 	let item = advance(crossProposed(), { kind: "approve_plan", version: 1, at: 4, by: "person:owner" }).item;
 	for (const [repo, c] of [["platform", "3"], ["cli", "4"]] as const) item = step(item, { kind: "feature_seed", repo, sha: sha(c) }).item;
 	item = step(item, { kind: "feature_ready", repo: "platform", head: sha("5"), pr: { number: 1, url: "u" } }).item;
-	const refused = step(item, { kind: "feature_problem", reason: "ada/cli: draft pull requests are not supported in ada/cli" }).item;
+	const problem = { kind: "feature_problem", reason: "ada/cli: draft pull requests are not supported in ada/cli" };
+	const retry = step(item, problem);
+	assert.ok(retry.effects.some(e => e.kind === "dispatch"));
+	const refused = step(retry.item, problem).item;
 	assert.equal(refused.question!.kind, "integration");
 	assert.equal(refused.repos![0].pr!.number, 1, "the opened PR was dropped");
 	const again = advance(refused, { kind: "answer", question: refused.question!.id, choice: "again", by: "person", at: 20 });
@@ -1613,13 +1615,10 @@ test("cross-repo: a failed run asks, a cancelled one is retried once at the same
 	item = started.item;
 	item = step(item, { kind: "integration_read", attempt: 1, state: "running", url: null, said: null }).item;
 	assert.equal(item.integration!.state, "running");
-	const cancelled = step(item, { kind: "integration_read", attempt: 1, state: "cancelled", url: null, said: "the runner was lost", seconds: 300 }).item;
-	assert.equal(cancelled.question!.kind, "integration");
-	assert.ok(cancelled.question!.choices.some(c => c.id === "again"));
-	const spent = cancelled.spent.activeSeconds;
-	// The same reading again (redelivered) charges nothing more.
-	assert.equal(advance(cancelled, { kind: "integration_read", key: integration, attempt: 1, state: "cancelled", url: null, said: null, seconds: 300, at: 30 } as never).item, cancelled);
-	const retried = advance(cancelled, { kind: "answer", question: cancelled.question!.id, choice: "again", by: "person", at: 40 });
+	const retried = step(item, { kind: "integration_read", attempt: 1, state: "cancelled", url: null, said: "the runner was lost", seconds: 300 });
+	assert.equal(retried.item.question, null);
+	const spent = retried.item.spent.activeSeconds;
+	assert.equal(advance(retried.item, { kind: "integration_read", key: integration, attempt: 1, state: "cancelled", url: null, said: null, seconds: 300, at: 30 } as never).item, retried.item);
 	assert.equal(retried.item.integration!.attempt, 2);
 	assert.equal(retried.item.integration!.retries, 1);
 	assert.deepEqual(retried.item.integration!.heads, { platform: sha("8"), cli: sha("7") });
