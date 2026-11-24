@@ -1873,7 +1873,6 @@ export interface ItemQuestion {
 	/** Current repository requirement blocking approval of this plan. */
 	approvalBlock?: string;
 	criticFindings?: string[];
-	recommended?: ChoiceId;
 	text: string;
 	choices: Array<{ id: ChoiceId; label: string }>;
 	/** Suggested answer. Older clients and stored questions may omit it. */

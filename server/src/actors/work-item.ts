@@ -45,7 +45,7 @@ import { getLayer } from "../layer.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf } from "../github/publish.js";
-import { subtaskBranch, featureBranch, openFeature, refHead, advanceFeatureRef, compareBranches, mergeIntoFeature, readyFeature } from "../github/feature.js";
+import { subtaskBranch, featureBranch, openFeature, refHead, advanceFeatureRef, compareBranches, mergeIntoFeature, readyFeature, mergeReviewedPull } from "../github/feature.js";
 import { crossRepo, integrationView, issueReference, linkSection, nextOpening, readyRefusal, repoOf, repoViews, withSection, INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { ForeignRun, dispatchIntegration, findIntegrationRun, integrationWorkflowProblem, readIntegrationRun } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
@@ -1697,19 +1697,16 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					if (pull.mergedByApp && pull.headSha === effect.head && pull.base === item.task.base) return; // Replayed after GitHub accepted the merge.
 					if (pull.state !== "open" || !pull.mergeable || pull.base !== item.task.base || pull.headSha !== effect.head || !pull.title)
 						throw new Error("The pull request is no longer open and mergeable at the reviewed head and base.");
-					const ci = await readCi(hub.app, { installationId: hub.installationId, repositoryId: meta.repository.id, owner: hub.owner, name: hub.name, head: effect.head });
-					if (ci.kind !== "read" || ci.head !== effect.head || ciState(ci) !== "passed") throw new Error("CI no longer passes on the reviewed head.");
-					const settings = await userActor(c, meta.uid).internalRepositoryAutonomy(meta.repository.id);
-					if (!settings.autoMergeSingles) throw new Error("Automatic merge is off.");
-					const compared = await compareBranches(hub.app, token, hub.owner, hub.name, pull.base, effect.head);
-					behind = compared.behind > 0;
-					if (behind || compared.base !== pull.baseSha) throw new Error("The base branch changed before merge.");
 					await queued(c, async () => {
 						const pending = await c.db.execute("SELECT 1 FROM feedback WHERE state IN ('pending','held','question') LIMIT 1");
 						const latest = c.vars.stored!.item, review = latest.run?.ci?.secondReview;
 						if (pending.length || !live(latest, effect) || !review || !mergeCandidate(latest, review))
 							throw new Error("Feedback or a change to this item requires handover.");
-						await hub.app.squashMerge(token, hub.owner, hub.name, effect.pr, effect.head, pull.title);
+						const settings = await userActor(c, meta.uid).internalRepositoryAutonomy(meta.repository.id);
+						if (!settings.autoMergeSingles) throw new Error("Automatic merge is off.");
+						const target = { installationId: hub.installationId, repositoryId: meta.repository.id, owner: hub.owner, name: hub.name, head: effect.head };
+						behind = await mergeReviewedPull(hub.app, token, target, pull, effect.baseTip) === "behind";
+						if (behind) reason = "The base branch advanced before merge.";
 					});
 				});
 			} catch (error) { reason = describeError(error); }

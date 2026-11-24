@@ -74,6 +74,8 @@ export interface CiProgress {
 
 /** One attempt of the blueprint (§1.2 `runs`): what the contract shows (`ItemRun`), and what the gate and CI read. */
 export interface Run extends ItemRun {
+	/** All planning deliveries in this run were checked for third-party input. Absent on older runs. */
+	planInputsTrusted?: boolean;
 	/** Ordered policy positions taken and the evidence that prompted each one. */
 	autoHistory?: Record<string, { position: number; fingerprint: string }[]>;
 	/** Delivery and original commit of the automatic local verification attempt. */
@@ -557,7 +559,7 @@ export type VerifiedCheckEffect = {
 } & ({ state: "in_progress"; conclusion: null } | { state: "completed"; conclusion: CheckConclusion });
 
 export type Effect =
-	| { kind: "auto_merge"; key: string; head: string; pr: number }
+	| { kind: "auto_merge"; key: string; head: string; baseTip?: string; pr: number }
 	| VerifiedCheckEffect
 	| { kind: "sandbox_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan }

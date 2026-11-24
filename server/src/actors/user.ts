@@ -157,7 +157,7 @@ import { refreshSecretRows } from "../signin/secret-rows.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, unavailableSecretName, validRequestedSecretName, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
 import { criticSessionId } from "../factory/feature-ids.js";
 import { reviewerAllowed } from "../factory/review.js";
-import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, migrateDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
+import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, repositoryDefaultsLog, migrateDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
 import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { forgettingWords, personalServerReach } from "../server-question.js";
@@ -2669,7 +2669,7 @@ export const user = actor({
 			}
 			try {
 				const saved = await saveDefaults(c.db, project, await labelFor(c, input.repositoryId, project), change, Date.now());
-				console.log(`[wlp] defaults.saved uid=${profile.uid} project=${project}${change.profile === undefined ? "" : ` profile=${change.profile ?? "none"}`}${change.model === undefined ? "" : ` model=${change.model ?? "none"}`}${change.hostedSize === undefined ? "" : ` hosted_size=${change.hostedSize ?? "none"}`}`);
+				console.log(repositoryDefaultsLog(profile.uid, project, change));
 				return saved;
 			} catch (error) {
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");

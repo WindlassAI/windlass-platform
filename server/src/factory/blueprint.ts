@@ -857,7 +857,8 @@ function singleFirstPlan({ task, mode, featurePlan, untrusted }: FactoryItem, no
 		] as const;
 		const sections = featurePlan.questions.filter(q => q.answer).map(q => q.text + "\n" + q.answer);
 		sections.push(...spec.map(([label, lines]) => label + ":\n" + lines.map(line => "- " + line).join("\n")));
-		return { ...IMPLEMENT, text: text + "\n\nOwner-approved plan (quoted data):\n" + sections.join("\n\n").slice(0, MAX_ITEM_BODY_CHARS), ...marked(untrusted) };
+		const label = featurePlan.approvedBy === "critic" ? "Plan approved automatically by the critic" : "Owner-approved plan";
+		return { ...IMPLEMENT, text: text + "\n\n" + label + " (quoted data):\n" + sections.join("\n\n").slice(0, MAX_ITEM_BODY_CHARS), ...marked(untrusted) };
 	}
 	return { ...IMPLEMENT, text, ...marked(untrusted) };
 }
@@ -881,6 +882,7 @@ function beginRun(c: Change, plan: TurnPlan): void {
 		before.stopReason = "retried";
 	}
 	item.run = {
+		...(plan.kind === "refine" && { planInputsTrusted: !thirdParty(plan.untrusted).length }),
 		n: (before?.n ?? 0) + 1,
 		autoSteps: 0,
 		startedAt: c.at,
@@ -1097,6 +1099,7 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 		// One question a turn, which the session holds to; a run asks as often as its turns do, each a stop that waits for the person.
 		const asking = ASKING.has(plan.kind) ? { asksLeft: 1 } : {};
 		const untrusted = marked(plan.untrusted);
+		if (plan.kind === "refine" && thirdParty(plan.untrusted).length) run.planInputsTrusted = false;
 		// The whole task goes with its own sources: the session sends one text or the other, with the sources of that one.
 		const freshPrompt = fresh && { fresh: { text: plan.includeInFresh ? fresh.text + "\n\n" + plan.text : fresh.text, untrusted: fresh.untrusted ?? [], ...unsandboxedOf(item, fresh.untrusted) } };
 		c.effects.push({ ...delivery, agent: plan.kind === "run_checks" || plan.kind === "summary" ? plan.kind : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted), ...freshPrompt });
@@ -1536,10 +1539,10 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		const review = ci.moved ? skippedReview(MOVED) : ci.secondReview ?? skippedReview("this item was handed over before second reviews were available");
 		if (c.item.state !== "review" && fact.autoMergeSingles && fact.prHead === ci.head && mergeCandidate(c.item, review) && verdictAt(c, ci).verdict.result === "pass") {
 			if (fact.baseAhead !== undefined && fact.baseAhead > 0 && updateFromBase(c)) return;
-			if (fact.baseAhead === 0) {
+			if (fact.baseAhead === 0 && fact.baseTip) {
 				handoff(c, review, true);
 				ci.autoMergeKey = c.key;
-				c.effects.push({ kind: "auto_merge", key: c.key, head: ci.head, pr: c.item.pr!.number });
+				c.effects.push({ kind: "auto_merge", key: c.key, head: ci.head, baseTip: fact.baseTip, pr: c.item.pr!.number });
 				return;
 			}
 		}
@@ -2052,9 +2055,13 @@ export function singlePlanAlternative(item: FactoryItem) {
 		return { id: "run_single" as const, label: "Run as a single item" };
 }
 
+function trustedPlanInputs(item: FactoryItem): boolean {
+	return item.run?.planInputsTrusted === true && !thirdParty(item.untrusted).length;
+}
+
 function considerCritic(c: Change) {
 	const { item } = c, plan = item.featurePlan;
-	if (!plan || item.filedTurn !== c.key || !item.singleBudget || !smallPlan(plan, item.singleBudget, aliases(item)) ||
+	if (!trustedPlanInputs(item) || !plan || item.filedTurn !== c.key || !item.singleBudget || !smallPlan(plan, item.singleBudget, aliases(item)) ||
 		unattendedKeys(plan, completedKeys(item)).length || backstopTurns(item) >= RULES.turnBackstop ||
 		budgetStop({ ...item.budget, tokens: ownTokens(item) }, ownSpent(item, item.spent), item.place)) return askPlan(c);
 	c.enter("plan_review");
@@ -2070,7 +2077,7 @@ function considerCritic(c: Change) {
 function finishCritic(c: Change, fact: Extract<Fact, { kind: "review_ended" }>) {
 	spendTurn(c, fact.spend, fact.providerRefusal);
 	const review = fact.planReview;
-	if (!review || fact.outcome !== "succeeded" || fact.refused || fact.providerRefusal || fact.sandboxFailed ||
+	if (!trustedPlanInputs(c.item) || !review || fact.outcome !== "succeeded" || fact.refused || fact.providerRefusal || fact.sandboxFailed ||
 		fact.outOfMemory || fact.stepLimit !== undefined || fact.spend.tokens <= 0) return askPlan(c);
 	if (review.decision === "approve" && fact.by === "critic") {
 		if (c.item.featurePlan?.singleSuggested) runSingle(c);

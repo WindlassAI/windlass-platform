@@ -1752,7 +1752,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const feature = newItem({ mode: "orchestrate", budget: { tokens: 10_000 } });
 	const part = (key: string, tokens = 10_000) => ({ key, title: key, brief: key, owns: [key], dependsOn: [] as string[], acceptance: ["Run npm test"], budget: { tokens } });
 	const plan = { spec: { goal: "Build", requirements: [], outOfScope: [], acceptance: ["Run npm test"] }, questions: [], subtasks: [part("a"), part("b")] };
-	const start = (proposal: unknown, enabled = true) => walk(feature, [{ kind: "start" }, { kind: "file_plan", plan: proposal },
+	const start = (proposal: unknown, enabled = true, item = feature) => walk(item, [{ kind: "start" }, { kind: "file_plan", plan: proposal },
 		{ ...turnEnded("succeeded", null), autoApprovePlans: enabled }]);
 	const critic = start(plan);
 	assert.equal(effect(critic.last, "deliver")?.to, "critic");
@@ -1763,6 +1763,36 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	assert.equal(approved.item.spent.tokens - critic.item.spent.tokens, 17);
 	assert.ok(approved.last.events.some(e => e.by === "critic" && e.said === "Approved automatically: Covers the requested change."));
 	assert.ok(!approved.item.question && effect(approved.last, "dispatch"));
+	const outside = start(plan, true, { ...feature, untrusted: ["issue #7 by @alex"] });
+	assert.equal(outside.item.question?.kind, "plan_approval");
+	assert.equal(effect(outside.last, "deliver"), undefined);
+	const oldCritic = structuredClone(critic.item);
+	delete oldCritic.run!.planInputsTrusted;
+	assert.equal(walk(oldCritic, [finish("approve", [])]).item.question?.kind, "plan_approval");
+	expect("third-party issues and in-flight plans with unknown provenance require the owner", true);
+
+	const reviewed = walk(newItem(), [...pushedRun(H(1)), ciFact(passedCi)]).item;
+	for (const others of [true, false]) {
+		const reopened = walk({ ...reviewed, mode: "orchestrate", singleBudget: feature.singleBudget, budget: feature.budget,
+			featurePlan: approved.item.approvedPlan, approvedPlan: approved.item.approvedPlan }, [
+			{ kind: "github_feedback", by: "github:alex", ids: ["comment:42"], text: "Recheck the plan.", fingerprint: "f42", others },
+			...(others ? [{ kind: "answer", choice: "send" }] : []),
+		]);
+		assert.equal(effect(reopened.last, "deliver")?.agent, "planner");
+		const replan = walk(reopened.item, [{ kind: "file_plan", plan }, { ...turnEnded("succeeded", null), autoApprovePlans: true }]);
+		assert.equal(replan.item.featurePlan?.questions.length, 0);
+		if (others) assert.equal(replan.item.question?.kind, "replan_approval");
+		else assert.equal(effect(replan.last, "deliver")?.to, "critic");
+	}
+	expect("sending another writer’s feedback to the planner still leaves re-plan approval with the owner", true);
+
+	const single = { ...plan, singleSuggested: "One implementer can do this.", subtasks: [] };
+	const automatic = walk(start(single).item, [finish("approve", [])]);
+	const manual = walk(start(single, false).item, [{ kind: "answer", choice: "run_single" }]);
+	assert.match(effect(automatic.last, "deliver")!.text, /Plan approved automatically by the critic \(quoted data\):/);
+	assert.doesNotMatch(effect(automatic.last, "deliver")!.text, /Owner-approved/);
+	assert.match(effect(manual.last, "deliver")!.text, /Owner-approved plan \(quoted data\):/);
+	expect("the single implementer sees who approved the plan", true);
 	const revised = walk(critic.item, [finish("revise", ["The consumer lacks its prerequisite."])]);
 	assert.equal(revised.item.question?.recommended, "revise");
 	assert.match(revised.item.question!.text, /consumer lacks its prerequisite/);
@@ -1794,9 +1824,10 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const end = { kind: "review_ended", outcome: "succeeded", review: filing("approve", currentKey(reviewed.item)!), said: null, spend: { tokens: 19, hostedSeconds: 7 } };
 	end.review.verdictId = reviewed.item.run!.review!.verdictId;
 	const waiting = walk(reviewed.item, [end]).item;
-	const handoff = { ...ciFact(passedCi), baseAhead: 0, autoMergeSingles: true };
+	const handoff = { ...ciFact(passedCi), baseAhead: 0, baseTip: H(3), autoMergeSingles: true };
 	const accepted = walk(waiting, [handoff]), merge = effect(accepted.last, "auto_merge");
 	assert.equal(merge?.head, H(1));
+	assert.equal(merge?.baseTip, H(3));
 	const receipt = { kind: "auto_merge_result", key: merge!.key, head: H(1), reason: null };
 	const done = walk(accepted.item, [receipt]);
 	assert.equal(done.item.state, "done");
@@ -1805,7 +1836,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	assert.equal(refused.item.state, "review");
 	assert.ok(effect(refused.last, "handoff") && refused.last.events.some(e => e.said.includes("Required approving review")));
 	assert.ok(!effect(walk(refused.item, [receipt]).last, "auto_merge"));
-	for (const change of [{ autoMergeSingles: false }, { baseAhead: undefined }, { mergeable: false }, { mergeable: null }, { prHead: H(2) },
+	for (const change of [{ autoMergeSingles: false }, { baseTip: undefined }, { baseAhead: undefined }, { mergeable: false }, { mergeable: null }, { prHead: H(2) },
 		{ prHead: null }, { reading: { ...passedCi, head: H(2) } }, { reading: emptyCi }]) {
 		const fallback = walk(waiting, [{ ...handoff, ...change }]);
 		assert.ok(effect(fallback.last, "handoff") && !effect(fallback.last, "auto_merge"));
@@ -1829,6 +1860,17 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		assert.ok(effect(fallback.last, "handoff") && !effect(fallback.last, "auto_merge"), change.toString());
 	}
 	expect("automatic squash merge requires every handoff condition; update, refusal and merged receipts use their normal paths", true);
+}
+
+{
+	const { repositoryDefaultsLog } = await import("../server/src/repository-defaults.js");
+	const prefix = "[wlp] defaults.saved uid=u1 project=github:7101";
+	const log = (change: Parameters<typeof repositoryDefaultsLog>[2]) => repositoryDefaultsLog("u1", "github:7101", change);
+	assert.equal(log({ autoMergeSingles: true }), prefix + " auto_merge_singles=true");
+	assert.equal(log({ autoApprovePlans: true, autoMergeSingles: false }), prefix + " auto_approve_plans=true auto_merge_singles=false");
+	assert.equal(log({ autoApprovePlans: false }), prefix + " auto_approve_plans=false");
+	assert.equal(log({ screenshots: true }), prefix);
+	expect("the defaults audit records each supplied autonomy switch with its true or false value", true);
 }
 
 // A cancelled subtask can take a base fix without surrendering its work or bypassing CI.
@@ -3216,6 +3258,30 @@ try {
 	);
 	expect("that reading, given to the blueprint, hands the item over saying CI was not read", handed.item.state === "review" && effect(handed, "handoff")?.verdict.ci.state === "not_permitted");
 	standin.appPermissions = granted;
+
+	// Change GitHub's evidence after the merge decision and count requests at the merge endpoint.
+	{
+		const { mergeReviewedPull } = await import("../server/src/github/feature.js");
+		const base = standin.commit(repo, "merge-base", {}, "Base", "main");
+		const head = standin.commit(repo, "merge-candidate", { fix: "fixed" }, "Fix", "merge-base");
+		const checks = { runs: [checkRun(42, "build", "success")], statuses: [] };
+		repo.ci.set(head, checks);
+		await app.withToken(installation.id, { repositoryId: repo.id, permissions: { contents: "write", pull_requests: "write", metadata: "read" } }, async token => {
+			const pull = await app.createPull(token, repo.owner, repo.name, { title: "Fix", body: "", head: "merge-candidate", base: "merge-base" });
+			standin.pulls.find(p => p.repository === repo.id && p.number === pull.number)!.mergeable = true;
+			const attempt = (tip: string) => mergeReviewedPull(app, token, { ...target, head }, pull, tip);
+			const puts = () => standin.requests.filter(r => r.method === "PUT" && r.path.endsWith(`/pulls/${pull.number}/merge`)).length;
+			assert.equal(ciState(await readCi(app, { ...target, head })), "passed");
+			checks.runs = [checkRun(42, "build", null)];
+			await assert.rejects(attempt(base), /CI no longer passes/);
+			checks.runs = [checkRun(42, "build", "success")];
+			await assert.rejects(attempt(H(8)), /base branch changed/);
+			standin.commit(repo, "merge-base", { later: "new" }, "Advance base");
+			assert.equal(await attempt(base), "behind");
+			assert.equal(puts(), 0);
+		});
+		expect("the final merge check sends no PUT when CI restarts or the reviewed base changes", true);
+	}
 
 	standin.down = true;
 	const down = await readCi(app, target);

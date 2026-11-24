@@ -148,9 +148,11 @@ Turn on **Take screenshots for work items** in the repository's settings, under 
 
 Both settings start off. The repository owner can change them under **Work item approvals**.
 
-**Auto-approve small plans** gives a structurally valid plan one independent, read-only critic turn on the account's standard default model. The plan can suggest a single item or contain up to three parts. Its total token budget, including the feature's own allowance, must fit within three single-item budgets. Open questions, unordered parts with overlapping files, or an agent needing explicit confirmation send the plan to you. For a feature spanning repositories, each repository must enable automatic approval. The feature pays for the critic. A revision recommendation shows you the findings. An unavailable critic or a failed approval check also leaves the decision with you.
+**Auto-approve small plans** gives a structurally valid plan one independent, read-only critic turn on the account's standard default model. The plan can suggest a single item or contain up to three parts. Its total token budget, including the feature's own allowance, must fit within three single-item budgets. Plans based on another person’s issue or feedback go to you for approval. Open questions, unordered parts with overlapping files, or an agent needing explicit confirmation send the plan to you. For a feature spanning repositories, each repository must enable automatic approval. The feature pays for the critic. A revision recommendation shows you the findings. An unavailable critic or a failed approval check also leaves the decision with you.
 
 **Auto-merge single items** squash-merges a PR using its title when the platform verdict passes, CI passes on the exact head, and the second reviewer approves that head with zero blocking findings. The branch must be current with its base and GitHub must allow the merge. A behind branch goes through the usual base update and verification. Features, their parts, foreign pushes, pending feedback and work based on third-party text still need handover. GitHub's refusal appears on the item timeline.
+
+Windlass checks CI and the base again immediately before requesting the merge. To close the seconds-wide window before GitHub accepts it, configure branch protection on the target branch with required status checks and **Require branches to be up to date before merging**. The rule must apply to the GitHub App.
 
 ## The verdict
 

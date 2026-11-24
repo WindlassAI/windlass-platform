@@ -42,6 +42,16 @@ export interface DefaultsChange extends RepositoryAutonomy {
 	hostedSize?: HostedSize | null;
 }
 
+export function repositoryDefaultsLog(uid: string, project: string, change: DefaultsChange): string {
+	const fields = [`[wlp] defaults.saved uid=${uid} project=${project}`];
+	if (change.profile !== undefined) fields.push(`profile=${change.profile ?? "none"}`);
+	if (change.model !== undefined) fields.push(`model=${change.model ?? "none"}`);
+	if (change.hostedSize !== undefined) fields.push(`hosted_size=${change.hostedSize ?? "none"}`);
+	if (change.autoApprovePlans !== undefined) fields.push(`auto_approve_plans=${change.autoApprovePlans}`);
+	if (change.autoMergeSingles !== undefined) fields.push(`auto_merge_singles=${change.autoMergeSingles}`);
+	return fields.join(" ");
+}
+
 /**
  * What a client sent, as a change: `screenshots` is an optional boolean; `profile` and `model` may be omitted,
  * null, or a sandbox this deployment can run and one of the user's models (account-models.ts). Throws
