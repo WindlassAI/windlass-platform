@@ -112,9 +112,9 @@ interface ReviewProps {
 /** One review: its line, the platform's notes on it, its questions, its blocks and its screenshots. */
 function Review({ view, review, links, when, named }: ReviewProps) {
 	const latest = view.verdicts[view.verdicts.length - 1];
-	const earlierCommit = latest !== undefined && latest.head !== review.head;
+	const earlierCommit = !review.requestedPull && latest !== undefined && latest.head !== review.head;
 	const verdict = verdictOf(review, view.verdicts);
-	const linkTo: LinkTo = (at: ReviewLocation) => blobLink(view.repository, at.side === "base" ? review.base : review.head, at);
+	const linkTo: LinkTo = (at: ReviewLocation) => blobLink(review.requestedPull ?? view.repository, at.side === "base" ? review.base : review.head, at);
 	const author = "The reviewer";
 	if (review.state === "none") {
 		return (
@@ -140,7 +140,7 @@ function Review({ view, review, links, when, named }: ReviewProps) {
 		<article className="item-verdict-block review-article">
 			<p className="item-verdict-head">
 				<span className="review-says">
-					Second review: <span className="review-word">{review.recommendation ? RECOMMENDATION_WORD[review.recommendation] : "no recommendation"}</span>
+					{review.requestedPull ? `Requested review of PR #${review.requestedPull.pr}` : "Second review"}: <span className="review-word">{review.recommendation ? RECOMMENDATION_WORD[review.recommendation] : "no recommendation"}</span>
 				</span>
 				<span className="agent-meta">
 					<span>at {review.head.slice(0, 7)}</span>
@@ -187,10 +187,10 @@ export function shownReview(view: ItemView): { state: ReviewState | null; curren
 	const { reviews } = view;
 	const state = view.review?.state ?? null;
 	const run = view.run?.n ?? null;
-	const last = reviews[reviews.length - 1] ?? null;
+	const last = reviews.findLast(review => !review.requestedPull) ?? null;
 	// The review of the run shown is shown when it was filed; any other, earlier or not filed, is folded under it.
 	const current = last !== null && (run === null || last.run === run) && (state === null || state === "filed" || last.state === "none") ? last : null;
-	const before = reviews.filter((one) => one !== current).reverse();
+	const before = reviews.filter((one) => one !== current && !one.requestedPull).reverse();
 	const line = current ? null : state === null ? null : stateLine(view, state, null);
 	return { state, current, before, line };
 }
@@ -207,7 +207,8 @@ export function SecondReview({ view, links, when, bare = false }: { view: ItemVi
 	const { reviews } = view;
 	const { state, current, before, line } = shownReview(view);
 	if (state === null && reviews.length === 0) return null;
-	const titles = new Map(reviews.flatMap((one) => one.blocks.flatMap((block) => (block.kind === "finding" ? [[block.id, block.title] as const] : []))));
+	const requested = reviews.filter(one => one.requestedPull).reverse();
+	const titles = new Map(reviews.filter(one => !one.requestedPull).flatMap((one) => one.blocks.flatMap((block) => (block.kind === "finding" ? [[block.id, block.title] as const] : []))));
 	const named = (finding: string) => titles.get(finding) ?? null;
 	const session = view.reviewerSessionId;
 	return (
@@ -231,6 +232,7 @@ export function SecondReview({ view, links, when, bare = false }: { view: ItemVi
 					to see what it ran. Its words are its own: the platform's records above do not rest on them.
 				</p>
 			) : null}
+			{requested.map(one => <Review key={one.id} view={view} review={one} links={links} when={when} named={named} />)}
 			{before.length > 0 ? (
 				<>
 					<p className="agents-fold items-fold">

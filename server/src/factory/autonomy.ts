@@ -55,5 +55,5 @@ export function mergeCandidate(item: FactoryItem, handoff: HandoffReview): boole
 	return (item.mode ?? "single") === "single" && !item.parent && !item.question && !item.foreignPush &&
 		!thirdParty(item.untrusted).length && !item.feedback?.othersRuns && !item.feedback?.held && !item.feedback?.awaiting &&
 		!!ci && ci.moved === null && ci.head === item.head && ci.last?.state === "passed" && ci.mergeable === true &&
-		!!review && review.head === ci.head && !!filed && filed.id === handoff.review && filed.recommendation === "approve" && filed.blocking === 0;
+		!!review && review.head === ci.head && filed?.trustedApproval === true && filed.id === handoff.review && filed.recommendation === "approve" && filed.blocking === 0;
 }

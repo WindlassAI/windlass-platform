@@ -96,7 +96,7 @@ test("the text says what makes the reviewer independent and what it must do", ()
 		"you had no part in it",
 		"Before you look at the diff or the author's report, write down for yourself what a correct change would do",
 		`git diff ${sha("a")}...HEAD`,
-		"have no network",
+		"builder’s sandbox profile and network policy",
 		"The dependencies installed are the base's",
 		"Do not run install, test or git hooks that the change adds or modifies",
 		"Only then read the author's report",

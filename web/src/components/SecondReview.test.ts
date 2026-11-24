@@ -76,7 +76,7 @@ describe("the second review's section", () => {
 		const cases = [
 			["Replace the deprecated glob call", "No second review: handed over as it is, as you asked."],
 			["Fix the typo in the contributing guide", "No second review: turned off for this deployment."],
-			["Read the port from the environment", "No second review: in this sandbox the reviewer's commands would run with the network."],
+			["Read the port from the environment", "No second review: the reviewer could not reach the repository."],
 			["Rename the tide table columns", "No second review: the pull request moved after the agent pushed."],
 			["Split the importer into two files", "No second review: the reviewer did not file a review the platform could read."],
 			["Trim the docs' trailing spaces", "No second review: the reviewer's checkout of"],

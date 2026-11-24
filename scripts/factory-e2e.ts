@@ -954,11 +954,13 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			assert(builderMarks.prompts.join() === (await import("../server/src/factory/untrusted.js")).untrustedWords.review(first.head), `builder marks ${JSON.stringify(builderMarks)}`);
 			return `2 reviews, 1 fix turn, round 2 answered r1.f1; check ${view.verifiedCheck?.conclusion}`;
 		});
-		await check("reviewer: networked commands hand over with the profile reason", async () => {
+		await check("reviewer: the reviewer uses the builder’s networked profile", async () => {
 			const item = await user.createItem({ mode: "single", repository: { id: harbor.id }, profile: "docker-hardened", title: "Networked profile", body: "Change the homepage.", start: true });
-			const view = await untilItem(user, item.id, "the handoff without a reviewer", v => v.state === "review", CI_WAIT_MS);
-			assert(view.reviewerSessionId === null && !view.reviews.length && view.review?.state === "off" && view.reviewNone?.includes("commands would run with the network"), "networked commands admitted a reviewer");
-			return view.reviewNone ?? undefined;
+			const view = await untilItem(user, item.id, "the networked review", v => v.state === "review", CI_WAIT_MS);
+			assert(view.reviewerSessionId && view.review?.state === "filed", "the networked review did not file");
+			const { summary } = await client.agentSession.get([auth.profile.uid, view.reviewerSessionId!], { params: { token: auth.token } }).snapshot();
+			assert(summary.profile === "docker-hardened", "the reviewer used a different profile");
+			return summary.profile;
 		});
 		await check("reviewer: repository screenshot opt-out reaches both agents", async () => {
 			await user.saveRepositoryDefaults({ repositoryId: harbor.id, screenshots: false });

@@ -996,7 +996,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		groups: [...agentGroups, ...(effortRows ? [effortRows] : [])],
 		footer: (
 			<>
-				{item && other ? <p className="ui-menu-note">{other} works on the item in the hardened container without asking, and runs Quick: Plan first is Windlass's.{capabilitiesOf(harness).checks === "platform" ? " The platform runs this repository's saved checks when it ends a turn, and there is" : capabilitiesOf(harness).checks === "none" ? " It does not run this repository's checks, so CI decides, and there is" : " There is"} no second reviewer on a machine.</p> : null}
+				{item && other ? <p className="ui-menu-note">{other} works on the item in the hardened container without asking, and runs Quick: Plan first is Windlass's.{capabilitiesOf(harness).checks === "platform" ? " The platform runs this repository's saved checks when it ends a turn." : capabilitiesOf(harness).checks === "none" ? " It does not run this repository's checks, so CI decides." : ""}</p> : null}
 				{!item && machineHarness(harness) ? <p className="ui-menu-note">{machineAgentLine(machineHarness(harness)!)}{onPullRequest(harness)}</p> : null}
 				<p className="ui-menu-note">{other ? `The models “${chosenMachine ? machineLabel(chosenMachine) : ""}”'s runner reported for ${other}.` : modelList ? modelsNote(modelList) : null}</p>
 				{modelChanged ? (

@@ -28,8 +28,8 @@
  *
  * This file has what is the same everywhere: the tools' declarations, what a request may hold, and
  * the words of the question, of the timeline's lines and of what the agent is told. Windlass takes the
- * tools as host tools, as above; Claude Code, OpenCode and Codex take the same tools, but the planner's
- * and the reviewer's, over MCP on their ACP connection, where any process in the container may make a
+ * tools as host tools. Claude Code, OpenCode and Codex take the sandbox tools, including file_review,
+ * over MCP on their ACP connection, where any process in the container may make a
  * call: so a publish that came that way is always put to the person (`publishQuestionWords`, `via`), and
  * a push or a fetch is limited per turn. platform-tools.ts maps a turn's callbacks to the tools for either
  * transport, and says why each may be served from inside the sandbox.
@@ -277,9 +277,9 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 			} } }, singleSuggested: { type: ["string", "null"] },
 		} })];
 	if (offer.review) return [tool(REVIEW_TOOL,
-		"File a recommendation and typed review blocks for this commit. To see completed shell command refs in execution order, call with {commands:true}; this lookup does not use a filing.",
+		offer.mcp ? "File your recommendation and typed review blocks for this commit. You have one call." : "File a recommendation and typed review blocks for this commit. To see completed shell command refs in execution order, call with {commands:true}; this lookup does not use a filing.",
 		{ type: "object", properties: {
-			commands: { type: "boolean" },
+			...(!offer.mcp && { commands: { type: "boolean" } }),
 			recommendation: { type: "string", enum: ["approve", "changes_requested", "needs_person"] },
 			blocks: { type: "array", items: { type: "object" } },
 		}, additionalProperties: false }, 180)];
