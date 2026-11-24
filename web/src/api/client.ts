@@ -24,6 +24,8 @@ import type {
 	GithubRepository,
 	GithubRepositoryList,
 	GithubStatus,
+	LinearStatus,
+	LinearTeamList,
 	HostAllowed,
 	SetRequestedSecretInput,
 	ItemAction,
@@ -279,6 +281,16 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere"> {
 	actOnItem(id: string, action: ItemAction): Promise<ItemView>;
 	/** The factory's limits for this user, which the deployment's owner sets. */
 	factoryLimits(): Promise<FactoryLimits>;
+	/** The Linear connection (`LinearStatus`): `off` where the deployment has no Linear client. */
+	linear(): Promise<LinearStatus>;
+	/** Begins connecting a workspace: the address at Linear to send the browser to. The page comes back with `#linear=connected` or `#linear-error=<code>`. */
+	linearConnect(input: { origin: string }): Promise<{ url: string }>;
+	/** The workspace's teams and the repository each files to. Throws with reason `linear_not_connected`. */
+	linearTeams(): Promise<LinearTeamList>;
+	/** Maps a team to one connected repository. Answers with the teams as they are then. */
+	saveLinearMapping(input: { teamId: string; repositoryId: GithubId }): Promise<LinearTeamList>;
+	/** Removes a team's mapping: its issues are ignored again. Items already filed stay. */
+	removeLinearMapping(teamId: string): Promise<LinearTeamList>;
 	/** The user's API tokens, the newest first, without their values. */
 	apiTokens(): Promise<ApiToken[]>;
 	/** Makes one: `secret` is its value, which is never sent again. Throws with reason `bad_input` or `too_many_tokens`. */

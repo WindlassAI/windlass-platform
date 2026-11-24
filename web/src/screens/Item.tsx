@@ -1033,7 +1033,7 @@ export function Item({ page }: { page: ItemPage }) {
 							</>
 						) : (
 							<>
-								{view.mode === "orchestrate" ? "Plan first" : view.plan ? "Plan first · one implementer" : "Quick"} · {view.source === "github" ? "from GitHub" : view.source === "api" ? "from the API" : "from the web"}
+								{view.mode === "orchestrate" ? "Plan first" : view.plan ? "Plan first · one implementer" : "Quick"} · {view.source === "github" ? "from GitHub" : view.source === "linear" ? "from Linear" : view.source === "api" ? "from the API" : "from the web"}
 							</>
 						)}
 					</p>

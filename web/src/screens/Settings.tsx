@@ -20,6 +20,7 @@ import { ApiTokens } from "../components/ApiTokens";
 import { AccountSecretsBlock } from "../components/Secrets";
 import { DefaultsSection } from "../components/Defaults";
 import { ArrowLeftIcon, WarnIcon } from "../components/Icons";
+import { LinearSettings } from "../components/LinearSettings";
 import { PersonalServers } from "../components/PersonalServers";
 import { PlanSection } from "../components/Plan";
 import { HARNESS_NAMES } from "../lib/acp";
@@ -206,6 +207,7 @@ export function Settings() {
 				</section>
 			) : null}
 
+			{info?.items ? <LinearSettings /> : null}
 			{info?.items ? <ApiTokens /> : null}
 			<SessionSettings />
 		</main>
