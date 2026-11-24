@@ -174,6 +174,14 @@ describe("the platform's routes", () => {
 	});
 });
 
+describe("a request that meets the platform restarting", () => {
+	it("is told apart from a real internal error", () => {
+		expect(toPlatformError({ group: "guard", code: "actor_stopped_while_waiting", message: "" }, "https://engine.test")).toMatchObject({ code: "restarting", message: "The platform is restarting. Trying again…" });
+		expect(toPlatformError(new Error("HTTP request error: Request failed: TypeError: Failed to fetch"), "https://engine.test")).toMatchObject({ code: "restarting" });
+		expect(toPlatformError(new Error("HTTP request error: Internal Server Error (500):\n"), "https://engine.test")).toMatchObject({ code: "internal" });
+	});
+});
+
 describe("what the engine refuses", () => {
 	it("is told apart from a sign-in the platform refuses, which shares the code", () => {
 		const engine = { group: "auth", code: "token_expired", message: "Authentication token has expired." };

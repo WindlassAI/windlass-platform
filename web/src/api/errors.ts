@@ -14,6 +14,35 @@ const UNAUTHORIZED_CODES = new Set(["unauthorized", "unauthenticated", "forbidde
  */
 const LIMIT_CODES = new Set(["allowance_used", "too_many_sandboxes"]);
 
+/**
+ * The codes of the Rivet gateway for a request that met an actor while it stopped or restarted: RivetKit's
+ * own list of gateway errors worth sending again (`isRetryableGuardGatewayHttpError`).
+ */
+const GATEWAY_RESTART_CODES = new Set(["service_unavailable", "actor_wake_retries_exceeded", "actor_stopped_while_waiting", "tunnel_request_aborted", "tunnel_message_timeout", "tunnel_response_closed", "gateway_response_start_timeout"]);
+/** The codes of the group `actor` for an actor that is stopping or restarting. */
+const ACTOR_RESTART_CODES = new Set(["restarting", "stopping", "stopped"]);
+/** What the proxy answers while the server behind it is down. */
+const PROXY_RESTART_STATUSES = new Set([502, 503, 504]);
+
+export const RESTARTING_MESSAGE = "The platform is restarting. Trying again…";
+export const RESTARTED_MESSAGE = "The platform is restarting. Try again in a moment.";
+
+/**
+ * Whether a request failed the way requests fail while the platform restarts: the gateway or the actor
+ * said so, the proxy answered 502, 503 or 504, or the connection dropped. RivetKit throws the last two as
+ * its `HttpRequestError`, whose message carries the status ("Bad Gateway (502)") or "Request failed".
+ */
+export function isRestart(error: unknown): boolean {
+	if (isRivetError(error)) {
+		if (error.group === "guard" && GATEWAY_RESTART_CODES.has(error.code)) return true;
+		if (error.group === "actor" && ACTOR_RESTART_CODES.has(error.code)) return true;
+		return "statusCode" in error && typeof error.statusCode === "number" && PROXY_RESTART_STATUSES.has(error.statusCode);
+	}
+	if (!(error instanceof Error) || !error.message.startsWith("HTTP request error: ")) return false;
+	const status = /\((\d{3})\)/.exec(error.message)?.[1];
+	return error.message.includes("Request failed: ") || (status !== undefined && PROXY_RESTART_STATUSES.has(Number(status)));
+}
+
 /** Whether something thrown at the interface is a refusal by one of the user's limits. */
 export function isLimitRefusal(error: unknown): boolean {
 	return error instanceof PlatformError && error.reason !== null && LIMIT_CODES.has(error.reason);
@@ -42,6 +71,7 @@ export function isRefusedConnectionToken(error: unknown): boolean {
  */
 export function toPlatformError(error: unknown, endpoint: string): PlatformError {
 	if (error instanceof PlatformError) return error;
+	if (isRestart(error)) return new PlatformError("restarting", RESTARTING_MESSAGE, { cause: error });
 	if (isRivetError(error)) {
 		const { group, code, message } = error;
 		if (group === "auth") {
