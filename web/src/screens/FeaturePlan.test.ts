@@ -342,8 +342,10 @@ describe("a feature's plan on its page", () => {
 		const feature = await featureNamed("Export the release manifest as CSV");
 		await show(`/items/${feature.id}`);
 		// The subtasks block says what each is doing now; the plan is folded under it.
-		expect([...host.querySelectorAll(".subtask-run .subtask-run-word")].map((word) => word.textContent)).toEqual(["merged", "implementing", "waits"]);
-		expect(host.querySelector(".subtasks-head .subtask-tally")?.textContent).toBe("1 running1 of 3 done");
+		// Running first, then what is next; the merged one is folded under Done.
+		expect([...host.querySelectorAll(".subtask-run .subtask-run-word")].map((word) => word.textContent)).toEqual(["running", "waits for"]);
+		expect([...host.querySelectorAll(".subtask-group-head")].map((head) => head.textContent)).toEqual(["Running now1 of 3", "Up next1", "Done1 integratedShow"]);
+		expect(host.querySelector(".subtasks-head .subtask-tally")?.textContent).toBe("1 of 3 integrated");
 		expect(host.querySelector(".plan-task")).toBeNull();
 		openPlan();
 		const states = [...host.querySelectorAll(".plan-task")].map((row) => row.querySelector(".item-track-word, .plan-task-word")?.textContent);

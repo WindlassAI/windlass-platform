@@ -1,12 +1,12 @@
 /**
  * A feature's subtasks while they run, where a person looks for them:
  *
- * - `SubtasksBlock`, on the feature's page once its plan is approved: the tally ("2 running · 1 asks
- *   you · 1 of 6 done") with a bar of one segment a subtask, then one row a subtask in plan order:
- *   what it is doing now (its step and fix round, from the run), where it runs, what it spent of its
- *   budget, and its session. A subtask that asks gets the start of its question and Answer.
- * - `SubtaskStrip`, on a subtask's page: "Subtask 4 of 6", a numbered chip a sibling, and the ones
- *   before and after it.
+ * - `SubtasksBlock`, on the feature's page once its plan is approved: how many are integrated, a bar of
+ *   one segment a subtask, then three groups (lib/subtasks.ts, `groupSubtasks`): "Running now (2 of 3)",
+ *   a compact row each with what it is doing, where it runs, for how long and its session; "Up next",
+ *   each with what holds it (a dependency, a running one's files, a full set of slots); and "Done",
+ *   folded to its counts. A subtask that asks gets the start of its question and Answer.
+ * - `SubtaskStrip`, on a subtask's page: a numbered chip a sibling, and the ones running alongside it.
  * - `FactorySubtasks`, under a feature's row in the Factory: the tally of the subtasks that are open,
  *   and only the active ones (running or asking), each with its step word and place.
  *
@@ -14,10 +14,11 @@
  * one subtask at a time.
  */
 import type { FeaturePlan, ItemSummary, ItemView } from "@contract";
-import { LongText } from "../components/Fold";
-import { compact, plural } from "../lib/format";
+import { useId, useState, type ReactNode } from "react";
+import { FoldToggle, LongText } from "../components/Fold";
+import { absoluteTime, compact, plural } from "../lib/format";
 import { linkProps } from "../lib/router";
-import { activeSubtasks, doingNow, doneKeys, plannedSubtasks, siblingsOf, subtaskState, tallyOf, tallyParts, type PlannedSubtask, type SubtaskState, type SubtaskTally } from "../lib/subtasks";
+import { activeSubtasks, doingNow, elapsed, groupSubtasks, plannedSubtasks, subtaskState, tallyParts, type PlannedSubtask, type SubtaskLine, type SubtaskState, type SubtaskTally } from "../lib/subtasks";
 import { ItemGlyph } from "./Items";
 
 const STATE_LABEL: Record<SubtaskState, string> = { running: "running", asks: "asks you", done: "done", stopped: "stopped", to_go: "not started" };
@@ -46,45 +47,83 @@ export function SegmentBar({ states }: { states: SubtaskState[] }) {
 	);
 }
 
-/** Where a subtask runs: where it was placed, with its overflow, or where it is planned to. */
-function placeOf(entry: PlannedSubtask): { name: string | null; note: string | null } {
-	const prefer = entry.task.place?.prefer ?? null;
-	const placed = entry.child?.placement?.name ?? null;
-	if (placed) return { name: placed, note: prefer && placed !== prefer ? `overflow from ${prefer}` : null };
-	return { name: prefer, note: prefer && !entry.child ? "planned" : null };
-}
-
 /** The start of what a subtask asks: the agent's own words where it asked in them, else the platform's sentence. */
 const askedText = (child: ItemSummary): string => child.question?.asked?.text ?? child.question?.text ?? "";
 
-function SubtaskRunRow({ entry, numbers, done, now }: { entry: PlannedSubtask; numbers: ReadonlyMap<string, number>; done: ReadonlySet<string>; now: number }) {
-	const { child, task, n, state } = entry;
-	const doing = doingNow(entry, numbers, done, now);
-	const place = placeOf(entry);
-	const spent = child?.spent.tokens ?? 0;
-	const budget = child?.budget.tokens ?? task.budget.tokens;
-	const share = Math.min(100, (spent / Math.max(1, budget)) * 100);
-	const options = child?.question?.asked?.options.length ?? 0;
+/** A subtask's number and title, linking to its page once it has one. */
+function SubtaskName({ entry, className = "subtask-run-link" }: { entry: PlannedSubtask; className?: string }) {
 	return (
-		<li className={`subtask-run subtask-run-${state}`}>
+		<>
+			<span className="subtask-run-n">{entry.n}</span>
+			{entry.child ? (
+				<a className={className} {...linkProps({ name: "item", id: entry.child.id })}>
+					{entry.task.title}
+				</a>
+			) : (
+				<span>{entry.task.title}</span>
+			)}
+		</>
+	);
+}
+
+/** A subtask named inline in a sentence: "2 Convert units on import", linking to it where it can. */
+function NamedSubtask({ entry }: { entry: PlannedSubtask }) {
+	return (
+		<span className="subtask-named">
+			<SubtaskName entry={entry} className="subtask-named-link" />
+		</span>
+	);
+}
+
+/** Why a subtask not started yet waits: its dependencies, a running one's files, or a full set of slots. */
+function WaitsFor({ line }: { line: SubtaskLine }) {
+	if (line.phase === "after" && line.after) {
+		return (
+			<span className="subtask-run-fact">
+				{line.after.map((entry, index) => (
+					<span key={entry.task.key}>
+						{index > 0 ? (index === line.after!.length - 1 ? " and " : ", ") : null}
+						<NamedSubtask entry={entry} />
+					</span>
+				))}
+			</span>
+		);
+	}
+	if (line.phase === "files" && line.files) {
+		return (
+			<span className="subtask-run-fact">
+				{line.files.path ? (
+					<>
+						<code className="plan-code">{line.files.path}</code>, owned by <NamedSubtask entry={line.files.owner} />
+					</>
+				) : (
+					<>
+						<NamedSubtask entry={line.files.owner} />, as one of them lists no files of its own
+					</>
+				)}
+			</span>
+		);
+	}
+	return line.fact ? <span className="subtask-run-fact">{line.fact}</span> : null;
+}
+
+function SubtaskLineRow({ line, now }: { line: SubtaskLine; now: number }) {
+	const { entry, phase } = line;
+	const { child } = entry;
+	const options = child?.question?.asked?.options.length ?? 0;
+	const started = line.since !== null && !["after", "files", "slot", "starting", "integrated", "failed", "cancelled"].includes(phase);
+	return (
+		<li className={`subtask-run subtask-run-${entry.state} subtask-phase-${phase}`}>
 			<span className="subtask-run-glyph" aria-hidden="true">
-				{child ? <ItemGlyph item={child} /> : <span className="item-glyph-waiting" />}
+				{child && phase !== "place" ? <ItemGlyph item={child} /> : <span className="item-glyph-waiting" />}
 			</span>
 			<div className="subtask-run-main">
 				<p className="subtask-run-title">
-					<span className="subtask-run-n">{n}</span>
-					{child ? (
-						<a className="subtask-run-link" {...linkProps({ name: "item", id: child.id })}>
-							{task.title}
-						</a>
-					) : (
-						<span>{task.title}</span>
-					)}
+					<SubtaskName entry={entry} />
 				</p>
 				<p className="subtask-run-doing">
-					<span className="subtask-run-word">{doing.word}</span>
-					{doing.fact ? <span className="subtask-run-fact">{doing.fact}</span> : null}
-					{doing.code ? <code className="plan-code subtask-run-fact">{doing.code}</code> : null}
+					<span className="subtask-run-word">{line.word}</span>
+					{phase === "checks" && line.fact ? <code className="plan-code subtask-run-fact">{line.fact}</code> : phase === "place" && line.fact ? <span className="subtask-run-fact subtask-run-wait">{line.fact}</span> : <WaitsFor line={line} />}
 				</p>
 				{child?.question ? (
 					<div className="subtask-run-asks">
@@ -98,31 +137,21 @@ function SubtaskRunRow({ entry, numbers, done, now }: { entry: PlannedSubtask; n
 					</div>
 				) : null}
 			</div>
-			<p className="subtask-run-place">
-				{place.name ? <span className="subtask-run-place-name">{place.name}</span> : null}
-				{place.note ? <span className="subtask-run-place-note">{place.note}</span> : null}
-			</p>
-			<p className="subtask-run-spend" aria-label={child ? `Spent ${compact(spent)} of ${compact(budget)} tokens` : `Budget ${compact(budget)} tokens`}>
-				{child ? (
-					<>
-						<span className="usage-meter subtask-run-meter" aria-hidden="true">
-							<span className="usage-meter-used" style={{ width: `${share}%` }} />
+			{line.place || started || (child && child.state !== "draft") ? (
+				<p className="subtask-run-facts">
+					{line.place ? <span className="subtask-run-place">{line.place}</span> : null}
+					{started ? (
+						<span className="subtask-run-time" title={`Started ${absoluteTime(line.since!)}`}>
+							{elapsed(now - line.since!)}
 						</span>
-						<span className="subtask-run-spent">
-							{compact(spent)} <span className="tone-faint">of {compact(budget)}</span>
-						</span>
-					</>
-				) : (
-					<span className="subtask-run-spent tone-faint">{compact(budget)} budget</span>
-				)}
-			</p>
-			<p className="subtask-run-session">
-				{child && child.state !== "draft" ? (
-					<a className="link" {...linkProps({ name: "session", id: child.sessionId })} aria-label={`Session of ${task.title}`}>
-						Session
-					</a>
-				) : null}
-			</p>
+					) : null}
+					{child && child.state !== "draft" ? (
+						<a className="link subtask-run-session" {...linkProps({ name: "session", id: child.sessionId })} aria-label={`Session of ${entry.task.title}`}>
+							Session
+						</a>
+					) : null}
+				</p>
+			) : null}
 		</li>
 	);
 }
@@ -132,12 +161,23 @@ export function showsSubtasks(view: Pick<ItemView, "plan" | "children" | "state"
 	return view.mode === "orchestrate" && view.plan?.status === "approved" && view.plan.subtasks.length > 0 && !["done", "failed", "cancelled"].includes(view.state);
 }
 
-/** The feature page's block of its subtasks: the tally and bar, a row a subtask, and what they spent together. */
-export function SubtasksBlock({ plan, children, now }: { plan: FeaturePlan; children: readonly ItemSummary[]; now: number }) {
+/** "1 integrated · 1 failed": the done group's counts, by how each ended. */
+export function doneWords(done: readonly SubtaskLine[]): string {
+	const counts = new Map<string, number>();
+	for (const line of done) counts.set(line.word, (counts.get(line.word) ?? 0) + 1);
+	return ["integrated", "failed", "cancelled"].filter((word) => counts.has(word)).map((word) => `${counts.get(word)} ${word}`).join(" · ");
+}
+
+/**
+ * The feature page's block of its subtasks: "Running now (2 of 3)" first, each with what it is doing,
+ * where and for how long; then "Up next", each with what holds it; then "Done", folded to its counts.
+ */
+export function SubtasksBlock({ plan, children, jobs, now }: { plan: FeaturePlan; children: readonly ItemSummary[]; jobs?: ItemView["subtasks"]; now: number }) {
 	const subtasks = plannedSubtasks(plan, children);
-	const tally = tallyOf(subtasks);
-	const numbers = new Map(subtasks.map((entry) => [entry.task.key, entry.n]));
-	const done = doneKeys(subtasks);
+	const groups = groupSubtasks(plan, children, jobs);
+	const [showDone, setShowDone] = useState(false);
+	const doneId = useId();
+	const integrated = groups.done.filter((line) => line.phase === "integrated").length;
 	const made = subtasks.map((entry) => entry.child).filter((child): child is ItemSummary => child !== null);
 	const spent = made.reduce((sum, child) => sum + child.spent.tokens, 0);
 	const budget = subtasks.reduce((sum, entry) => sum + (entry.child?.budget.tokens ?? entry.task.budget.tokens), 0);
@@ -145,14 +185,39 @@ export function SubtasksBlock({ plan, children, now }: { plan: FeaturePlan; chil
 		<section className="subtasks-block" aria-label="Subtasks">
 			<header className="subtasks-head">
 				<h2 className="subtasks-title">Subtasks</h2>
-				<Tally tally={tally} />
+				<span className="subtask-tally">
+					<span className="subtask-tally-part">
+						<strong>{integrated}</strong> of {subtasks.length} integrated
+					</span>
+				</span>
 				<SegmentBar states={subtasks.map((entry) => entry.state)} />
 			</header>
-			<ol className="subtask-runs">
-				{subtasks.map((entry) => (
-					<SubtaskRunRow key={entry.task.key} entry={entry} numbers={numbers} done={done} now={now} />
-				))}
-			</ol>
+			{groups.running.length > 0 ? (
+				<SubtaskGroup label="Running now" count={`${groups.running.length} of ${groups.slots}`}>
+					{groups.running.map((line) => (
+						<SubtaskLineRow key={line.entry.task.key} line={line} now={now} />
+					))}
+				</SubtaskGroup>
+			) : null}
+			{groups.next.length > 0 ? (
+				<SubtaskGroup label="Up next" count={String(groups.next.length)}>
+					{groups.next.map((line) => (
+						<SubtaskLineRow key={line.entry.task.key} line={line} now={now} />
+					))}
+				</SubtaskGroup>
+			) : null}
+			{groups.done.length > 0 ? (
+				<div className="subtask-group subtask-group-done">
+					<p className="subtask-group-head">
+						<span className="subtask-group-label">Done</span>
+						<span className="subtask-group-count">{doneWords(groups.done)}</span>
+						<FoldToggle open={showDone} controls={doneId} label="Show" onToggle={() => setShowDone((open) => !open)} className="subtask-group-toggle" />
+					</p>
+					<ol className="subtask-runs" id={doneId} hidden={!showDone}>
+						{showDone ? groups.done.map((line) => <SubtaskLineRow key={line.entry.task.key} line={line} now={now} />) : null}
+					</ol>
+				</div>
+			) : null}
 			<p className="subtasks-foot">
 				<span>
 					{compact(spent)} <span className="tone-faint">of {compact(budget)} tokens</span>
@@ -162,30 +227,33 @@ export function SubtasksBlock({ plan, children, now }: { plan: FeaturePlan; chil
 	);
 }
 
-/** A subtask's place among its siblings: "Subtask 4 of 6", a chip a sibling, and the ones before and after it. */
-export function SubtaskStrip({ plan, children, current }: { plan: FeaturePlan; children: readonly ItemSummary[]; current: string }) {
+function SubtaskGroup({ label, count, children }: { label: string; count: string; children: ReactNode }) {
+	return (
+		<div className="subtask-group">
+			<p className="subtask-group-head">
+				<span className="subtask-group-label">{label}</span>
+				<span className="subtask-group-count">{count}</span>
+			</p>
+			<ol className="subtask-runs" aria-label={label}>
+				{children}
+			</ol>
+		</div>
+	);
+}
+
+/** Which of the feature's subtasks this one is: "Part 2 of 5", for the line that links back to the feature. */
+export function partOf(plan: Pick<FeaturePlan, "subtasks">, key: string): { n: number; of: number } | null {
+	const index = plan.subtasks.findIndex((task) => task.key === key);
+	return index < 0 ? null : { n: index + 1, of: plan.subtasks.length };
+}
+
+/** A subtask's place among its siblings, under its title: a chip a sibling, then the ones running alongside it. */
+export function SubtaskStrip({ plan, children, jobs, current }: { plan: FeaturePlan; children: readonly ItemSummary[]; jobs?: ItemView["subtasks"]; current: string }) {
 	const subtasks = plannedSubtasks(plan, children);
-	const around = siblingsOf(subtasks, current);
-	if (!around) return null;
-	const step = (entry: PlannedSubtask | null, dir: "previous" | "next") =>
-		entry?.child ? (
-			<a className={`link subtask-strip-${dir}`} {...linkProps({ name: "item", id: entry.child.id })} title={entry.task.title}>
-				{dir === "previous" ? "‹ " : ""}
-				<span className="subtask-strip-n">{entry.n}</span> <span className="subtask-strip-name">{entry.task.title}</span>
-				{dir === "next" ? " ›" : ""}
-			</a>
-		) : entry ? (
-			<span className={`subtask-strip-${dir} tone-faint`} title={`${entry.task.title}: not started`}>
-				{dir === "previous" ? "‹ " : ""}
-				<span className="subtask-strip-n">{entry.n}</span> <span className="subtask-strip-name">{entry.task.title}</span>
-				{dir === "next" ? " ›" : ""}
-			</span>
-		) : null;
+	if (!subtasks.some((entry) => entry.task.key === current)) return null;
+	const alongside = groupSubtasks(plan, children, jobs).running.filter((line) => line.entry.task.key !== current);
 	return (
 		<nav className="subtask-strip" aria-label="Subtasks of the feature">
-			<span className="subtask-strip-at">
-				Subtask {around.at.n} of {subtasks.length}
-			</span>
 			<ol className="subtask-chips">
 				{subtasks.map((entry) => {
 					const label = `${entry.n}. ${entry.task.title}: ${STATE_LABEL[entry.state]}`;
@@ -205,10 +273,17 @@ export function SubtaskStrip({ plan, children, current }: { plan: FeaturePlan; c
 					);
 				})}
 			</ol>
-			<span className="subtask-strip-steps">
-				{step(around.previous, "previous")}
-				{step(around.next, "next")}
-			</span>
+			{alongside.length > 0 ? (
+				<span className="subtask-strip-alongside">
+					Running alongside:{" "}
+					{alongside.map((line, index) => (
+						<span key={line.entry.task.key}>
+							{index > 0 ? ", " : null}
+							<NamedSubtask entry={line.entry} />
+						</span>
+					))}
+				</span>
+			) : null}
 		</nav>
 	);
 }
