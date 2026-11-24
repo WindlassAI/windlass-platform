@@ -1,6 +1,12 @@
 name: CI
 
-on: [push, pull_request, workflow_dispatch]
+# Agent branches (wip/**, windlass/**) run on push, since a subtask branch has no PR; a PR from one
+# of them would run the same commit again, so pull_request jobs skip those heads.
+on:
+  push:
+    branches: [main, 'wip/**', 'windlass/**']
+  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -11,6 +17,8 @@ concurrency:
 
 jobs:
   typecheck:
+    # The push of an agent branch already ran this commit.
+    if: ${{ !(github.event_name == 'pull_request' && (startsWith(github.head_ref, 'wip/') || startsWith(github.head_ref, 'windlass/'))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -25,11 +33,18 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm --filter @windlass-platform/web build
 
-  test:
-    # Agents' wip/* branches get the same suites from ci-heavy.yml, chosen by path; running both doubled the queue.
-    if: ${{ github.event_name == 'workflow_dispatch' || !startsWith(github.ref, 'refs/heads/wip/') }}
+  test-shard:
+    # Agent PRs use the path-selected heavy suites. On a PR, github.ref is the merge ref.
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && !startsWith(github.head_ref, 'wip/') && !startsWith(github.head_ref, 'windlass/'))
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [factory, core, usage, resume]
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 15
     env:
       WLP_SANDBOX: fake
     steps:
@@ -41,9 +56,21 @@ jobs:
           node-version: '22.22.2'
       - run: corepack enable pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+      - run: pnpm test:${{ matrix.shard }}
+
+  # Keep the single check required by the main branch ruleset.
+  test:
+    needs: test-shard
+    if: ${{ always() && needs.test-shard.result != 'skipped' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test "$SHARD_RESULT" = success
+        env:
+          SHARD_RESULT: ${{ needs.test-shard.result }}
 
   secret-scan:
+    # The push of an agent branch already ran this commit.
+    if: ${{ !(github.event_name == 'pull_request' && (startsWith(github.head_ref, 'wip/') || startsWith(github.head_ref, 'windlass/'))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
