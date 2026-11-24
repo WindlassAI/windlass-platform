@@ -56,7 +56,7 @@ class Engine {
 	private timers: ReturnType<typeof setTimeout>[] = [];
 	private prompt: unknown = null;
 
-	constructor(private readonly say: (line: string) => void, private readonly onOpen: (meta: Record<string, unknown>) => void) {}
+	constructor(private readonly say: (line: string) => void, private readonly onOpen: (meta: Record<string, unknown>) => void, private readonly missingSession: () => boolean) {}
 
 	input(data: string): void {
 		this.buffer += data;
@@ -87,6 +87,7 @@ class Engine {
 				this.session = String(m.params?.session);
 				return reply({ sessionId: this.session, cwd: "/workspace" });
 			case "session/resume":
+				if (this.missingSession()) return this.send({ id: m.id, error: { code: -32002, message: "The saved session is gone." } });
 				this.onOpen((m.params?._meta as { windlass?: Record<string, unknown> })?.windlass ?? {});
 				return reply({});
 			case "session/close":
@@ -168,6 +169,7 @@ export class StandInRunner {
 	leftovers = 0;
 	/** Agent processes started, of any session: a turn taken up after a restart starts none. */
 	engineStarts = 0;
+	readonly missingSessions = new Set<string>();
 	/** The machine is at its owner's cap (`--max-sandboxes`): a `create` is refused as the real runner refuses it. */
 	full = false;
 	/** Its owner's `--max-sandboxes`: a `create` for a new session past this many is refused, as `full` is. */
@@ -409,7 +411,7 @@ export class StandInRunner {
 						channel.output(op.id, 1, line);
 					}, this.options.stateDir);
 					engine = { input: chunk => { this.acpInput.push(chunk); agent.input(chunk); }, stop: () => agent.stop() };
-				} else engine = isEngine ? new Engine((line) => channel.output(op.id, 1, line), meta => this.opens.set(sessionId, meta)) : null;
+				} else engine = isEngine ? new Engine((line) => channel.output(op.id, 1, line), meta => this.opens.set(sessionId, meta), () => this.missingSessions.has(sessionId)) : null;
 				if (engine) box.engines.add(engine);
 				if (engine) this.engineStarts += 1;
 				served.processes.set(op.id, { engine, box });

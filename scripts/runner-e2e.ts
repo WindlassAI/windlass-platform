@@ -152,8 +152,14 @@ async function serverNode(): Promise<void> {
 		const script = JSON.parse(readFileSync(process.env.WLP_TEST_MODEL_SCRIPT, "utf8"));
 		SandboxWindlass.prototype.demoScript = () => script;
 	}
+	if (process.env.WLP_TEST_PAUSED_ITEM) {
+		const { RULES } = await import("../server/src/factory/blueprint.js");
+		Object.assign(RULES, { turnCheckMs: 2_000 });
+	}
 	const { agentSession } = await import("../server/src/actors/agent-session.js");
 	Object.assign(agentSession.config.actions!, {
+		// Advance only the age of this fixture's paused turn so the item's real due check can repair it.
+		e2eAgePause: (c: { vars: { meta: { run: { paused: { at: number } } } } }) => { c.vars.meta.run.paused.at -= 16 * 60_000; },
 		e2eMeta: (c: { vars: { meta: unknown } }) => c.vars.meta,
 		e2eCheckpoint: async (c: { db: { execute<T>(sql: string): Promise<T[]> } }) => (await c.db.execute<{ turn: number }>("SELECT turn FROM turn_checkpoint"))[0]?.turn ?? null,
 	});
@@ -1513,6 +1519,109 @@ async function main(): Promise<void> {
 		// A machine that goes away mid-turn (WLP_TURN_RESUME): past the grace (WLP_TEST_RUNNER_GRACE_MS, short here) the turn
 		// pauses instead of ending, takes what is sent meanwhile as held, and resumes by itself when the runner is back.
 		const resumeEnv = { ...github.env(), WLP_ITEMS: "1", WLP_TURN_RESUME: "1", WLP_TEST_RUNNER_GRACE_MS: "3000" };
+		const pausedItemEnv = { ...durable, WLP_TURN_RESUME: "1", WLP_TEST_PAUSED_ITEM: "1", WLP_TURN_HEARTBEAT_MS: "600000" };
+		let pausedItemServer = false;
+		const preparePausedItem = async () => {
+			if (!pausedItemServer) {
+				await server.stop();
+				await server.start(pausedItemEnv);
+				pausedItemServer = true;
+			}
+			await machineIs("online");
+		};
+		const startPausedItem = (title: string, body: string) => {
+			const repo = [...github.repositories.values()].find(r => r.name === "harbor")!;
+			return user.createItem({ mode: "single", title, body, repository: { id: repo.id }, profile: "docker-hardened", place, start: true });
+		};
+		for (const scenario of ["restart offline", "second restart and missed hello", "expired runner and missing agent conversation"]) {
+			await check(`paused item turn resumes after ${scenario}`, async () => {
+				await preparePausedItem();
+				const body = "Write the primes for the paused work item (slow).";
+				const item = await startPausedItem("Recover the checks", body);
+				const id = item.sessionId;
+				const session = client.agentSession.get([uid, id], { params: { token } });
+				try {
+					await until("the item's first turn to produce output", async () => (await session.snapshot()).timeline.some(i => i.turn === 1 && i.kind === "windlass"));
+					await server.stop();
+					await runner.setOffline(true);
+					assert(server.log().includes(`turn.paused session=${id} turn=1 reason=restart`), "the deploy did not pause the running turn");
+					await server.start(pausedItemEnv);
+					await until("the item to learn about its offline machine", async () => (await user.item(item.id)).wait?.sentence.startsWith("Paused:"));
+					if (scenario === "second restart and missed hello") {
+						await server.stop();
+						await server.start(pausedItemEnv);
+					}
+					const conn = session.connect();
+					try {
+						await until("the replacement server to see the machine pause", async () => (await conn.snapshot()).summary.paused?.reason === "machine");
+						if (scenario === "second restart and missed hello") {
+							// Lose the machine's callback, and keep the session awake. Only the item's
+							// two-second check is due before the session's own five-minute fallback.
+							await client.machine.get([uid, place.machineId], { params: serviceParams() }).internalPausedSession(id, false);
+							await (conn as unknown as { e2eAgePause(): Promise<void> }).e2eAgePause();
+						}
+						const before = enginePrompts.length;
+						if (scenario === "expired runner and missing agent conversation") {
+							runner.expireGrace(id);
+							runner.missingSessions.add(id);
+						}
+						await runner.setOffline(false);
+						await machineIs("online");
+						const ended = await until("the resumed item turn to end", async () => (await conn.snapshot()).timeline.find(i => i.turn === 1 && i.kind === "turn.ended"), 60_000);
+						assert(ended.kind === "turn.ended" && ended.outcome === "succeeded", JSON.stringify(ended));
+						const notes = (await conn.snapshot()).timeline.filter(i => i.turn === 1 && i.kind === "platform" && i.code === "turn_resumed");
+						assert(notes.length === 1, "expected exactly one resumed segment");
+						if (scenario === "second restart and missed hello") assert(server.log().includes(`turn.pause_check session=${id} turn=1`), "the item timer never checked the stale pause");
+						const given = enginePrompts.slice(before)[0] ?? "";
+						assert(scenario === "expired runner and missing agent conversation" ? given.includes(body) : given.includes("Your machine was switched off"), given);
+						await until("the item to receive the resume and completion", async () => {
+							const view = await user.item(item.id);
+							return view.spent.turns >= 1 && view.events.some(event => event.said.includes("the turn resumed"));
+						});
+						return "one resume of turn 1, its prompt and completion received";
+					} finally { await conn.dispose(); }
+				} finally {
+					runner.missingSessions.delete(id);
+					if (runner.offline) await runner.setOffline(false);
+					await user.actOnItem({ id: item.id, action: { kind: "cancel" } }).catch(() => undefined);
+				}
+			});
+		}
+
+		await check("a restored item process lost during the runner grace recovers its whole task", async () => {
+			await preparePausedItem();
+			runner.fake.report.resumableConversation = true;
+			runner.report();
+			const machine = client.machine.get([uid, place.machineId], { params: serviceParams() });
+			await until("runner conversation retention", async () => (await machine.internalFacts()).report?.resumableConversation);
+			const body = "Check the saved work after losing the old process (slow).";
+			const item = await startPausedItem("Recover the process", body);
+			const id = item.sessionId;
+			const session = client.agentSession.get([uid, id], { params: { token } });
+			try {
+				await until("a checkpoint for the item's process", async () => (await (session as unknown as { e2eCheckpoint(): Promise<number | null> }).e2eCheckpoint()) === 1);
+				await server.stop();
+				assert(server.log().includes(`turn.kept session=${id} turn=1`), "the turn had no retained process");
+				await runner.setOffline(true);
+				runner.expireGrace(id);
+				runner.missingSessions.add(id);
+				const before = enginePrompts.length;
+				await server.start(pausedItemEnv);
+				await until("the replacement server to take up the saved process", () => server.log().includes(`turn.take_up session=${id} turn=1`));
+				await runner.setOffline(false);
+				const end = await until("the item to recover the lost process", async () => (await session.snapshot()).timeline.find(i => i.turn === 1 && i.kind === "turn.ended"), 60_000);
+				assert(end.kind === "turn.ended" && end.outcome === "succeeded" && enginePrompts.slice(before).some(prompt => prompt.includes(body)), JSON.stringify(end));
+				await until("the item to receive its completed turn", async () => (await user.item(item.id)).spent.turns >= 1);
+				return "lost checkpoint process replaced, whole task delivered, item advanced";
+			} finally {
+				delete runner.fake.report.resumableConversation;
+				runner.missingSessions.delete(id);
+				if (runner.offline) await runner.setOffline(false);
+				runner.report();
+				await user.actOnItem({ id: item.id, action: { kind: "cancel" } }).catch(() => undefined);
+			}
+		});
+
 		await check("a machine that goes away mid-turn pauses the turn past the grace, holds what is sent, and resumes it when the machine is back", async () => {
 			await server.stop();
 			await server.start(resumeEnv);

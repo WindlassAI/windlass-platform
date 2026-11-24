@@ -64,7 +64,7 @@ import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
-import { activeJob, advance, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, nextPrPoll, prPollKey, singlePlanAlternative, upgradeSubtaskQuestion } from "../factory/blueprint.js";
+import { activeJob, advance, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -1662,9 +1662,10 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "check_turn": {
 			const fact = await session.internalCheckTurn({ turn: effect.turn, check: effect.key }).catch(onGone);
 			if (fact === gone) return true;
-			// A turn still waiting for its slot is not running at the session: it is still in the session's hands, and looked at again.
-			if (fact === null && item.run?.step.turn === "delivered") await take(c, { kind: "turn_running", at: Date.now(), key: effect.key });
-			else if (fact !== null) await takeSessionFact(c, stored, fact);
+			// No receipt yet (including a started turn draining its network outbox). Keep the
+			// check alive until the session can answer for this delivery.
+			if (fact === null) await take(c, { kind: "turn_running", at: Date.now(), key: effect.key });
+			else await takeSessionFact(c, stored, fact);
 			return true;
 		}
 		case "publish": {
@@ -1895,8 +1896,13 @@ export const workItem = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS issue_actions(subject TEXT PRIMARY KEY)");
 			await db.execute("CREATE TABLE IF NOT EXISTS issue_comment(singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL)");
 			await db.execute(VERDICT_COMMENT_TABLE);
-			// Backfill items published before G2 on their next wake.
 			const stored = await load(db);
+			// An older server could consume a started turn's check while its receipt was pending.
+			if (stored?.item.place.kind === "machine" && stored.item.run?.step.turn === "started") {
+				const poll = turnCheckEffect(currentKey(stored.item)!, stored.item.run.step, Date.now());
+				if (live(stored.item, poll)) await db.execute("INSERT OR IGNORE INTO effects VALUES (?, ?, ?, 0)", rowId(poll), JSON.stringify(poll), poll.at);
+			}
+			// Backfill items published before G2 on their next wake.
 			if (stored?.item.run?.step.kind === "review" && stored.item.pr && !ENDED.has(stored.item.state)) {
 				const poll = nextPrPoll(stored.item, Date.now());
 				await db.execute("INSERT OR IGNORE INTO effects VALUES (?, ?, ?, 0)", rowId(poll), JSON.stringify(poll), poll.at);

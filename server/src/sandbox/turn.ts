@@ -963,26 +963,28 @@ class Turn {
 			requiredChecks: windlassChecks(input.checks ?? []),
 			...hostToolsMeta(this.hostTools, input.reportScreenshots, input.crossRepoPlan),
 		};
-		if (input.windlassSessionId === undefined) {
-			const made = await peer.request<{ sessionId?: unknown }>("session/new", sessionOpenParams(this.sandbox.cwd, meta), { timeoutMs: OPEN_TIMEOUT_MS });
-			if (typeof made?.sessionId !== "string") throw new AcpError("the engine opened a session without naming it", 0, null);
-			this.adopt(made.sessionId);
-			return;
+		if (input.windlassSessionId !== undefined) {
+			try {
+				await this.resumeSession(input.windlassSessionId, meta);
+				return;
+			} catch (error) {
+				// Either the lookup or the open can discover that the saved conversation is gone.
+				if (!input.fresh || !(error instanceof AcpError) || this.failureOf(error).reason !== "session_not_found") throw error;
+			}
 		}
-		let named: { sessionId?: unknown; cwd?: unknown } | undefined;
-		try {
-			named = await peer.request<{ sessionId?: unknown; cwd?: unknown }>(EXT.resolve, { cwd: this.sandbox.cwd, session: input.windlassSessionId }, { timeoutMs: OPEN_TIMEOUT_MS });
-		} catch (error) {
-			// A turn that resumes, whose session the engine no longer has (its store was lost): a new session, given the whole task.
-			if (input.fresh === undefined || !(error instanceof AcpError) || this.failureOf(error).reason !== "session_not_found") throw error;
-			const made = await peer.request<{ sessionId?: unknown }>("session/new", sessionOpenParams(this.sandbox.cwd, meta), { timeoutMs: OPEN_TIMEOUT_MS });
-			if (typeof made?.sessionId !== "string") throw new AcpError("the engine opened a session without naming it", 0, null);
+		const made = await peer.request<{ sessionId?: unknown }>("session/new", sessionOpenParams(this.sandbox.cwd, meta), { timeoutMs: OPEN_TIMEOUT_MS });
+		if (typeof made?.sessionId !== "string") throw new AcpError("the engine opened a session without naming it", 0, null);
+		if (input.windlassSessionId !== undefined) {
 			this.freshened = true;
 			this.notes.push("[platform] the engine no longer had the session this turn resumes; a new one was opened with the whole task");
-			this.adopt(made.sessionId);
-			return;
 		}
-		const sessionId = typeof named?.sessionId === "string" ? named.sessionId : input.windlassSessionId;
+		this.adopt(made.sessionId);
+	}
+
+	private async resumeSession(prior: string, meta: Record<string, unknown>): Promise<void> {
+		const peer = this.peer;
+		const named = await peer.request<{ sessionId?: unknown; cwd?: unknown }>(EXT.resolve, { cwd: this.sandbox.cwd, session: prior }, { timeoutMs: OPEN_TIMEOUT_MS });
+		const sessionId = typeof named?.sessionId === "string" ? named.sessionId : prior;
 		const cwd = typeof named?.cwd === "string" ? named.cwd : this.sandbox.cwd;
 		// Before the answer: what the open itself appends (a crashed turn's recovery) arrives ahead of it.
 		this.adopt(sessionId);
