@@ -68,8 +68,8 @@ node scripts/ci-heavy.mjs select --base origin/main
 ```
 
 [Testing](docs/testing.md) lists the images, services and fixtures each group needs.
-On this shared host, keep the PID when starting a process and stop that PID with `kill "$pid"`.
-Never use `pkill -f`. It can stop another checkout's server or check.
+If several checkouts run side by side, keep the PID when starting a process and stop that PID with `kill "$pid"`.
+Avoid `pkill -f`: it can stop another checkout's server or check.
 
 ## Edit and hand off
 
@@ -77,6 +77,6 @@ Never use `pkill -f`. It can stop another checkout's server or check.
 - Skip compatibility code for old or stored data. Avoid extra fallbacks.
 - Prefer a few clear statements over a dense one-liner.
 - Keep comments short and explain why. Skip restatements and long prose blocks.
-- `README.md` is frozen. Put behaviour documentation in `web/src/docs/content/*.md`.
+- Keep `README.md` short. Put behaviour documentation in `web/src/docs/content/*.md`.
 - When a guide's paths or commands change, run `node scripts/agents-docs-check.ts`.
 - Write one short, plain imperative line for each commit message.
