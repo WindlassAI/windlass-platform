@@ -12,10 +12,11 @@
  * apart, and the `Same` assertions at the end tie the operations to the provider interfaces they carry.
  */
 import { spareRecipe, spareSetup } from "./spare-recipe.js";
+import { forwardHost, forwardPlaceholder, validProofKey } from "../../../sandbox/relay/wires.cjs";
 import { isIP } from "node:net";
 import { DEFERRED_INPUTS } from "../sandbox/snapshot-key.js";
 import { helloFields, welcomeFields } from "./frame-auth.js";
-import type { SandboxProfileId } from "../contract.js";
+import { MODEL_PROVIDERS, type SandboxProfileId } from "../contract.js";
 import type { CreateSandboxInput, ExecOptions, ExecResult } from "../sandbox/api.js";
 import { RUN_TAG, type Answer, type SandboxProcess, type StartOptions, type TurnSandbox } from "../sandbox/provider.js";
 import { type Assert, type Check, type Of, type Same, anything, boolean, count, either, integer, is, json, list, nil, nullable, object, oneOf, optional, plain, string, text } from "./check.js";
@@ -57,6 +58,8 @@ export const PROFILE_DENIED = "This machine’s owner has not allowed the Windla
 const harness = optional(oneOf("claude", "opencode", "codex"));
 const sandbox = { id };
 const relayLease = is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v));
+const forwardKey = object({ provider: oneOf(...MODEL_PROVIDERS),
+	host: forwardHost, placeholder: forwardPlaceholder, proofKey: optional(validProofKey), expiresAt: count });
 const startOptions = { gitUser: optional(oneOf(true)), cwd: optional(string), env: optional(env), secretEnv: optional(env) };
 
 /**
@@ -114,7 +117,7 @@ const operations = {
 	 * lease for one turn (its forwarder listens in the sandbox), the turn's token handed to the relay, and
 	 * the lease's end. `lease` names the lease on the runner; it is no credential.
 	 */
-	modelRelay: [object(sandbox), object({ lease: relayLease, placeholder: is<string>(v => typeof v === "string" && /^wlp-model\.[a-f0-9]{32}$/.test(v)), env })],
+	modelRelay: [object({ ...sandbox, forward: optional(forwardKey) }), object({ lease: relayLease, placeholder: is<string>(v => typeof v === "string" && /^wlp-model\.[a-f0-9]{32}$/.test(v)), env })],
 	modelRelayToken: [object({ ...sandbox, lease: relayLease, accessToken: is<string>(v => typeof v === "string" && /^[\x21-\x7e]{16,16384}$/.test(v)), expiresAt: count }), nil],
 	modelRelayClose: [object({ ...sandbox, lease: relayLease }), nil],
 } as const satisfies Record<string, readonly [Check<unknown>, Check<unknown>]>;

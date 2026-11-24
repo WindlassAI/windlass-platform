@@ -197,6 +197,10 @@ test('the provider\'s error code, type and message reach Windlass; its body does
 	assert.equal(body.error.param, 'input');
 	assert.match(body.error.message, /exceeds the context window; seen Bearer \[redacted\]/);
 	assert.ok(!overflow.text.includes(REAL_A));
+	for (const status of [401, 403]) {
+		const message = 'Incorrect API key provided: sk-test****abcd';
+		assert.equal(JSON.parse(errorBody(status, JSON.stringify({error: {message}}))).error.message, 'The provider rejected the API key.');
+	}
 	// A body that is not JSON is cut down to its text; one with control characters too.
 	assert.equal(JSON.parse(errorBody(502, 'bad\u0000 gateway')).error.message, 'bad gateway');
 	assert.equal(JSON.parse(errorBody(500, '{"detail":"x"}')).error.message, 'x');

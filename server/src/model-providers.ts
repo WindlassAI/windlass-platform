@@ -160,6 +160,12 @@ export const modelProviderActions = {
 		requireUser(c);
 		await c.db.execute("DELETE FROM model_provider WHERE provider = ?", providerOf(raw));
 	},
+	/** A turn can pin the saved generation without opening the key. */
+	async internalModelKeyGeneration(c: Context, raw: ModelProvider): Promise<string | null> {
+		requireServiceFor(c, modelKeyCaller(c.key[0]!));
+		const [row] = await c.db.execute<{ generation: string }>("SELECT generation FROM model_provider WHERE provider = ?", providerOf(raw));
+		return row?.generation ?? null;
+	},
 	async internalModelKey(c: Context, raw: ModelProvider, nonce: string): Promise<string | null> {
 		const uid = c.key[0]!;
 		requireServiceFor(c, modelKeyCaller(uid));

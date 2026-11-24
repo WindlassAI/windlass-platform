@@ -13,7 +13,7 @@ platform server, a relay container, or the machine's relay container. Commands, 
 approved MCP servers in the sandbox can still make model requests through the relay while a turn runs.
 They cannot take a bearer elsewhere.
 
-Without the relay, the turn's real access token is written into the sandbox (`token-file.ts`). The
+Without the relay, a ChatGPT turn's real access token is written into the sandbox (`token-file.ts`). The
 `docker-hardened` and `e2b-open` profiles let commands read it, and setup leftovers can read it on
 every profile.
 
@@ -27,12 +27,48 @@ The relay uses the Windlass account’s ChatGPT sign-in. Keys in the account’s
 | A user's machine (runner) | One relay container per machine, `wlp-model-relay-<machine id>`, made by the runner | As hosted Docker, with the runner's helpers | `http://127.0.0.1:17893/v1` |
 | Hosted E2B | The platform server itself: `POST /model-relay/v1/responses` and `GET /model-relay/v1/models` on `WLP_MODEL_RELAY_URL`, a hostname of the relay's own | Over the internet. In `restricted` and `none` E2B allows that hostname in place of `api.openai.com`, and never the platform's public host | `<WLP_MODEL_RELAY_URL>/model-relay/v1`, with `WINDLASS_MODEL_ALLOWED_ORIGIN=<WLP_MODEL_RELAY_URL>` |
 
+### Settings keys
+
+Read the generation through the user-bound `modelKeyActor(...).internalModelKeyGeneration(provider)`.
+A caller opens a key-backed turn with `openModelKeyRelay(sandbox, sessionId, { provider, generation })`
+in `sandbox/token-file.ts`. Start the client with the returned base URL and placeholder in the provider's
+usual credential header or as a Bearer token. Close the lease when the turn ends. Opening fails if the sandbox
+has no key relay. The ChatGPT access-token file fallback is specific to ChatGPT.
+
+The platform lease holds the provider and the generation saved by the user actor. For each admitted
+request the platform relay calls B1's `internalModelKey` as `model-key/<uid>` with a fresh nonce,
+opens the 60-second transit blob, and checks the generation before sending the request.
+Removing or replacing the key blocks the next request on every lease of the old generation.
+
+The paths below are relative to `/model-relay` on the platform and the loopback origin on Docker.
+The client base ends in `/v1` for OpenAI and `/api/v1` for OpenRouter. Anthropic and Gemini use
+the relay root and append their own API version.
+
+| Lease | GET | POST | Upstream credential |
+| --- | --- | --- | --- |
+| ChatGPT | `/v1/models` | `/v1/responses` | Bearer at `api.openai.com` |
+| OpenAI | `/v1/models` | `/v1/responses`, `/v1/chat/completions` | Bearer at `api.openai.com` |
+| Anthropic | `/v1/models` | `/v1/messages` | `x-api-key` at `api.anthropic.com`, version `2023-06-01` |
+| Google | `/v1beta/models` | `/v1beta/models/{model}:generateContent`, `:streamGenerateContent` | `x-goog-api-key` at `generativelanguage.googleapis.com` |
+| OpenRouter | `/api/v1/models` | `/api/v1/chat/completions` | Bearer at `openrouter.ai` |
+
+Gemini streaming accepts `?alt=sse`. Anthropic Messages accepts the `interleaved-thinking-2025-05-14`
+beta. Each route selects its upstream and permitted headers from the lease. Caller-supplied OpenRouter
+attribution, credentials in query strings, and redirects are refused.
+
+Hosted Docker and paired machines forward key-backed requests to `WLP_MODEL_RELAY_URL`, which must
+be configured and reachable from the relay container. The container holds a second placeholder for
+the platform lease in its private tmpfs. Its sandbox gets only the local placeholder tied to the forwarder.
+A paired machine signs each forwarded request with a per-turn key delivered over its session connection.
+The platform verifies the signature for that machine and path. The forwarding lease expires one minute
+after the turn timeout. The runner never receives the provider key. Agent selection and provider configuration are separate work.
+
 The Docker relay is the program `sandbox/relay/windlass.cjs`, on the shared `createRelay` of
 `sandbox/relay/server.cjs`, the same one the Claude Code, Codex and OpenCode relays of machines use. It
 runs from the pinned base image as `agent`, read-only, with every capability dropped, rotated Docker logs on machines,
 192 MiB (`RELAY_MEMORY`) and 48 processes. The Docker check runs 64 streams at once through it, each with a
-1 MiB request body and a 2 MiB answer, and fails if the relay comes near that memory. Its only network is the Docker bridge, which it needs for
-`https://api.openai.com`. The forwarder is `wlp-model-forward` in `runner/src/egress-proxy.mjs`, beside
+1 MiB request body and a 2 MiB answer, and fails if the relay comes near that memory. Its only network is the Docker bridge, which reaches
+OpenAI for ChatGPT leases and the platform relay for Settings keys. The forwarder is `wlp-model-forward` in `runner/src/egress-proxy.mjs`, beside
 the machine's other forwarders. Only the relay and the forwarders mount the socket volume
 (`wlp-model-socket[-<machine id>]`), and the forwarders mount it read-only.
 
@@ -49,7 +85,7 @@ leaves it.
 
 The route has a hostname of its own, `WLP_MODEL_RELAY_URL` (for example
 `https://windlass-relay.example.com`), routed to the same server as `WLP_PUBLIC_URL`. When a request's
-`Host` is that name, the server answers the relay's two paths and refuses everything else with a 404. No
+`Host` is that name, the server answers the relay's model routes and refuses everything else with a 404. No
 other host serves the relay's paths. So E2B's allow list opens only the relay to a sandbox, and not the
 web app, the API or the runner routes. Without `WLP_MODEL_RELAY_URL`, E2B turns get today's token file,
 the server says so once at startup, and the platform's public host is never allowed in its place.
@@ -88,7 +124,7 @@ ends.
   this relay, under the caps below.
 
 The placeholder file has the same form as a handed-in token, `{"accessToken": "<placeholder>",
-"expiresAt": <ms>}`, with the expiry of the real token behind it. Windlass then refuses an expired
+"expiresAt": <ms>}`, with the expiry of the ChatGPT token behind it. Windlass then refuses an expired
 placeholder before it sends anything, and the platform's existing failures (`handed_in_expired`,
 `handedInFailure`) keep their meaning.
 
@@ -104,7 +140,9 @@ the relay first, and then the placeholder file is rewritten with the new expiry.
   that starts after a replacement uses the new token. A request already streaming keeps the token it
   started with.
 - On E2B, the turn's lease holds the current token in memory. The route reads it on every request,
-  cached for at most 5 seconds when it came from another process.
+  cached for at most 5 seconds when it came from another process. The session actor seals that
+  ChatGPT token for the requesting relay, bound to user, session, lease and request nonce. The transit
+  blob expires after 60 seconds.
 
 ### When the lease ends
 
@@ -140,7 +178,8 @@ before a 503 with `retry-after`. A session's connections past 32 are refused. Th
 relay is 24 on a machine, which serves one user. A hosted relay serves every user of the deployment, so
 it uses `WLP_MODEL_RELAY_REQUESTS` (default 64), and 16 in flight per user (`HOSTED_RELAY_USER_REQUESTS`,
 counted by the user each turn's file names). The E2B route applies the same per-turn numbers, the same
-deployment ceiling and 16 in flight per user. It also has:
+deployment ceiling and 16 in flight per user. Key-backed turns on every backend go through this route,
+so the platform's 16 in-flight requests per user is the effective per-user limit. It also has:
 
 - 300 requests a minute per user, after a burst of 100, counted from the placeholder's signed user before
   any lookup. Past it the answer is a 503 with `retry-after`.
@@ -154,18 +193,15 @@ deployment ceiling and 16 in flight per user. It also has:
   A 200 to `POST /responses` with no content type, or `text/plain`, is passed on as an event stream,
   because Windlass reads that answer as one whatever its type says. Any other type is a 502.
 
-  Every answer of the route that is not a 200 is a line `[wlp] model_relay.failed status=... path=...` in
-  the server's log. Each upstream answer the relay does not stream on is a `model_relay.detail` line with
-  the upstream status, `content-type`, `content-encoding`, whether there was a `location`, and the
-  `x-request-id` and `cf-ray`. So is a type passed on as an event stream, a failure to reach
-  `api.openai.com`, and a stream that broke off. There are at most 60 of these lines a minute.
+  The server logs failed status codes, elapsed time and fixed upstream diagnostics. The log limit is
+  60 lines a minute. Provider text, request IDs and user-supplied paths stay out of diagnostics.
 
 The E2B route's limits are those of one server process. A deployment of several processes has each limit
 once per process, so its real ceilings are that many times higher. The per-user limits bound how many
 requests a user has in flight, not what they spend: a user's turns can still use the plan's whole quota
 through the relay while they run.
 
-The relay accepts only `GET /v1/models` and `POST /v1/responses`, with `Host: 127.0.0.1:17893` on
+The ChatGPT lease accepts only `GET /v1/models` and `POST /v1/responses`, with `Host: 127.0.0.1:17893` on
 Docker. It sends them to `https://api.openai.com/v1/...` with the real bearer, and passes on only
 `content-type`, `accept`, `session-id` and `user-agent`. A redirect is a 502. Every token the relay
 has used is removed from the response stream. An error reply keeps the provider's `error.code`,

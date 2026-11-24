@@ -221,14 +221,22 @@ export class E2bSandboxHandle implements TurnSandbox {
 		const relay = owner.modelRelayOrigin;
 		// A sandbox that names no session cannot have a lease any server process finds: its turns fail, and
 		// never get the token in the sandbox in its place.
-		if (relay !== null) this.modelRelay = async () => {
-			if (!session) throw new Error("this sandbox names no session (its wlp_session is empty), so its turns cannot use the model relay");
-			return openRelayLease({ uid, sessionId: session, origin: relay, ttlMs: owner.relayLeaseMs });
-		};
+		if (relay !== null) {
+			const leaseInput = () => {
+				if (!session) throw new Error("this sandbox names no session (its wlp_session is empty), so its turns cannot use the model relay");
+				return { uid, sessionId: session, origin: relay, ttlMs: owner.relayLeaseMs };
+			};
+			this.modelRelay = async () => openRelayLease(leaseInput());
+			this.modelKeyRelay = async (sessionId, key) => {
+				if (sessionId !== session) throw new Error("This model relay belongs to another session.");
+				return openRelayLease({ ...leaseInput(), key });
+			};
+		}
 	}
 
 	/** `TurnSandbox.modelRelay`, where the deployment's sandboxes reach the relay route. */
 	readonly modelRelay?: () => Promise<TurnModelRelay>;
+	readonly modelKeyRelay?: TurnSandbox["modelKeyRelay"];
 
 	/** Made from a post-setup snapshot (snapshots.ts): what it was saved from. Set by `E2bSandboxes` before the handle is handed out. */
 	snapshot?: SnapshotSource;

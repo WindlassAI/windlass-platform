@@ -14,6 +14,7 @@
 
 import { randomBytes } from "node:crypto";
 import { RUNNER_HTTP_PROXY } from "../runner/egress.js";
+import type { ModelProvider } from "../contract.js";
 import type { AccessToken, ExecResult, SandboxHandle } from "./api.js";
 
 /** Windlass's data directory inside a sandbox (`$XDG_DATA_HOME` is unset, so `~/.local/share/windlass`). */
@@ -168,8 +169,26 @@ export interface TurnSandbox extends SandboxHandle {
 	 * written into the sandbox.
 	 */
 	modelRelay?(): Promise<TurnModelRelay>;
+	modelKeyRelay?(sessionId: string, key: ModelKeyLease): Promise<KeyTurnRelay>;
 	/** The lease a turn of a server that has since restarted opened (`TurnModelRelay.lease`), taken up again for the same process. */
 	resumeRelay?(relay: { lease: string; placeholder: string; env: Record<string, string> }): TurnModelRelay;
+}
+
+export interface ModelKeyLease {
+	provider: ModelProvider;
+	generation: string;
+}
+
+export type KeyTurnRelay = Pick<TurnModelRelay, "env" | "placeholder" | "close">;
+
+/** Only this scoped platform placeholder crosses to a Docker relay. */
+export interface ForwardedKeyLease {
+	/** Delivered only to the paired machine that signs requests for this turn. */
+	proofKey?: string;
+	provider: ModelProvider;
+	host: string;
+	placeholder: string;
+	expiresAt: number;
 }
 
 /** One turn's lease of the model relay. */

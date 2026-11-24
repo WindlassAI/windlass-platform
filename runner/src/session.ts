@@ -5,7 +5,7 @@ import { SandboxUserError } from "../../server/src/sandbox/api.js";
 import { DockerSandboxHandle, type DockerProcess, type StartOptions } from "../../server/src/sandbox/sandboxes.js";
 import { tokenFilePath } from "../../server/src/sandbox/token-file.js";
 import { containerName } from "../../server/src/sandbox/sandboxes.js";
-import type { DockerTurnRelay } from "../../server/src/sandbox/model-relay.js";
+import type { DockerKeyRelay, DockerTurnRelay } from "../../server/src/sandbox/model-relay.js";
 import { randomBytes } from "node:crypto";
 import { audit, safeSentence } from "./audit.js";
 import { type Box, Executor } from "./docker-executor.js";
@@ -40,7 +40,7 @@ class Conversation {
 	private processes = new Map<string, { p: DockerProcess; acp: boolean; handle: Handle; id: string }>();
 	private runs = new Map<string, AbortController>();
 	/** The turns' leases of the model relay this conversation opened, by the name the server knows them by. */
-	private relays = new Map<string, { relay: DockerTurnRelay; id: string; untrack: () => void }>();
+	private relays = new Map<string, { relay: DockerKeyRelay | DockerTurnRelay; id: string; untrack: () => void }>();
 	constructor(private owner: Executor, private session: string, private channel: RunnerChannel) {}
 	input(id: string, data: string) { this.processes.get(id)?.p.write(data); }
 	eof(id: string) { this.processes.get(id)?.p.closeStdin(); }
@@ -184,7 +184,7 @@ class Conversation {
 				case "sweep": return await h.sweep(op.args.tag, op.args.options);
 				case "modelRelay": {
 					if (box.harness || !o.modelRelays || !o.modelRelayReady) throw new Refusal("This sandbox's turns cannot use the model relay.");
-					const relay = await o.modelRelay.open(containerName(box.raw), box.raw);
+					const relay = await o.modelRelay.open(containerName(box.raw), box.raw, undefined, op.args.forward);
 					if (!this.active) { await relay.close(); throw new Refusal("The session conversation ended."); }
 					const lease = randomBytes(16).toString("hex");
 					// A suspend or removal of the sandbox ends it too, and takes it out of this conversation.
@@ -194,7 +194,7 @@ class Conversation {
 				}
 				case "modelRelayToken": {
 					const held = this.relays.get(op.args.lease);
-					if (held?.id !== id) throw new Refusal("This model relay lease is not this sandbox's, or it has ended.");
+					if (held?.id !== id || !("hand" in held.relay)) throw new Refusal("This model relay lease is not this sandbox's, or it has ended.");
 					await held.relay.hand({ accessToken: op.args.accessToken, expiresAt: op.args.expiresAt });
 					return null;
 				}

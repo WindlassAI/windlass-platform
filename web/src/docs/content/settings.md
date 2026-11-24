@@ -14,7 +14,7 @@ Choose a default **Sandbox** and **Model**, or **No default**. They save as soon
 
 In **Settings → Model providers**, choose **Add key…** for OpenAI, Anthropic, Google (Gemini) or OpenRouter. You can save one key per provider. Windlass stores it encrypted, checks it with the provider and shows its last four characters and the number of models found. Use **Check**, **Replace…** or **Remove…** to manage it later.
 
-Agents still use their existing sign-ins. Saving a provider key does not change the models or credentials used for a turn.
+These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and uses a per-turn relay to keep the key outside the sandbox. Removing or replacing a key stops new requests through leases for the old key. For now agents still use their existing sign-ins: saving a key does not yet change the models or credentials used for a turn.
 
 ### MCP servers
 

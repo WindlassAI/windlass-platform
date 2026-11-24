@@ -44,7 +44,7 @@
 
 import { type AccessToken, type AccessTokens, SandboxUserError } from "./api.js";
 import { TOKEN_REPLACE_LEAD_MS, TOKEN_REPLACE_RETRY_MS, type TokenFileState, tokenFileContent } from "./handoff.js";
-import { DATA_DIR, type TurnModelRelay, type TurnSandbox } from "./provider.js";
+import { DATA_DIR, type ModelKeyLease, type KeyTurnRelay, type TurnModelRelay, type TurnSandbox } from "./provider.js";
 
 /** Prefix used by both providers and for cleaning pre-upgrade volumes. */
 export const TOKEN_FILE_PREFIX = "access-token-";
@@ -85,6 +85,12 @@ export class TokenFileError extends Error {
 		super(message);
 		this.name = "TokenFileError";
 	}
+}
+
+/** Settings-key turns get only a relay address and placeholder. */
+export async function openModelKeyRelay(sandbox: TurnSandbox, sessionId: string, key: ModelKeyLease): Promise<KeyTurnRelay> {
+	if (!sandbox.modelKeyRelay) throw new TokenFileError("A saved provider key requires a model relay for this sandbox.");
+	return sandbox.modelKeyRelay(sessionId, key);
 }
 
 export class TokenFile {

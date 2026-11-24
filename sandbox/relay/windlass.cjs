@@ -1,4 +1,5 @@
-// Windlass's model relay (docs/model-relay.md). It runs in a relay container of its own, outside every
+// Windlass's model relay (docs/model-relay.md). A Settings-key record holds a scoped platform
+// placeholder; only the platform relay resolves the saved key. This container runs outside every
 // session's namespaces. Each turn's ChatGPT access token is written into this container's private tmpfs,
 // one file per turn's nonce: `{"accessToken", "expiresAt", "lease", "user"}`. The session gets only the
 // lease (`wlp-model.<32 hex>`) as the bearer in its token file. The trusted forwarder in the session's
@@ -17,13 +18,53 @@ const TOKENS = '/run/wlp-model/tokens';
 const SOCKET = '/workspace/relay.sock';
 /** What Windlass sends as Host to `WINDLASS_MODEL_BASE_URL=http://127.0.0.1:17893/v1`. */
 const HOST = '127.0.0.1:17893';
-/** Windlass 0.6.0 sends only these two (its docs/user-guide.md, "Signing in"). */
-const routes = new Map([['/v1/models', 'GET'], ['/v1/responses', 'POST']]);
-/** What a turn's bearer is. */
 const LEASE = /^wlp-model\.[a-f0-9]{32}$/;
 const NONCE = /^[a-f0-9]{32}$/;
-/** The request headers Windlass sends besides its authorization (openai-responses-encode.ts, listModels). */
-const passed = ['content-type', 'accept', 'session-id', 'user-agent'];
+const { wires, forwardHost, forwardPlaceholder, validProofKey, forwardProof, proofHeader } = require('./wires.cjs');
+function methodFor(provider, path) {
+	const wire = wires[provider];
+	if (path === wire.models) return 'GET';
+	if (wire.posts.includes(path) || wire.postPattern?.test(path)) return 'POST';
+}
+function anyMethod(path) {
+	for (const provider of Object.keys(wires)) {
+		const method = methodFor(provider, path);
+		if (method) return method;
+	}
+}
+function placeholderOf(headers) {
+	const auth = [headers.authorization, headers['x-api-key'], headers['x-goog-api-key']].filter(value => value !== undefined);
+	if (auth.length !== 1 || typeof auth[0] !== 'string') return;
+	return headers.authorization ? /^Bearer (\S+)$/.exec(auth[0])?.[1] : auth[0];
+}
+// Transport, proxy and SDK metadata is discarded at the relay.
+const transport = new Set(['content-type', 'host', 'connection', 'content-length', 'transfer-encoding', 'accept-encoding', 'accept-language',
+	'via', 'forwarded', 'cdn-loop', 'traceparent', 'tracestate', 'x-real-ip', 'sec-fetch-mode']);
+function wireTarget(provider, path, incoming, credential) {
+	const method = methodFor(provider, path);
+	if (!method) return;
+	const wire = wires[provider];
+	const auth = wire.auth ?? 'authorization';
+	if (!(incoming[auth] || incoming.authorization) || !placeholderOf(incoming)) return;
+	const headers = { [auth]: wire.auth ? credential : 'Bearer ' + credential };
+	for (const [name, value] of Object.entries(wire.fixed ?? {})) {
+		if (incoming[name] !== undefined && incoming[name] !== value) return;
+		headers[name] = value;
+	}
+	if (wire.betas && incoming['anthropic-beta'] !== undefined) {
+		const beta = incoming['anthropic-beta'];
+		if (method !== 'POST' || typeof beta !== 'string') return;
+		const values = beta.split(',').map(value => value.trim());
+		if (!values.every(value => wire.betas.includes(value))) return;
+		headers['anthropic-beta'] = values.join(',');
+	}
+	for (const [name, value] of Object.entries(incoming)) {
+		if ((name === 'accept' || name === 'user-agent' || (name === 'content-type' && method === 'POST') || wire.passed?.includes(name)) && typeof value === 'string') headers[name] = value;
+		else if (!wire.dropUnknown && !wire.drop?.includes(name) && name !== 'authorization' && !Object.hasOwn(headers, name) && !transport.has(name)
+			&& !/^(?:cf-|x-forwarded-|x-stainless-)/.test(name)) return;
+	}
+	return { hostname: wire.host, path, headers };
+}
 // Room for a long code or message, never a body of its own.
 const CODE = /^[A-Za-z0-9_.:-]{1,128}$/;
 
@@ -44,7 +85,14 @@ function errorBody(status, text, secrets = []) {
 	} catch {
 		message = text.trim();
 	}
-	for (const secret of secrets) if (secret && message.includes(secret)) message = message.split(secret).join('[redacted]');
+	if ((status === 401 || status === 403) && /api key/i.test(message)) message = 'The provider rejected the API key.';
+	for (const secret of secrets) {
+		if (!secret) continue;
+		message = message.split(secret).join('[redacted]');
+		if (code?.includes(secret)) code = null;
+		if (type?.includes(secret)) type = null;
+		if (param?.includes(secret)) param = null;
+	}
 	// eslint-disable-next-line no-control-regex
 	message = message.replace(/[\u0000-\u001f\u007f\s]+/g, ' ').trim().slice(0, 1000) || `The provider answered HTTP ${status}.`;
 	return JSON.stringify({ error: { message, type, code, ...(param && { param }) } });
@@ -66,15 +114,21 @@ function same(a, b) {
  * `api.openai.com:443` but in the relay's own checks.
  */
 function windlassProvider({ load = nonce => readFile(`${TOKENS}/${nonce}.json`, 'utf8').then(JSON.parse),
-	upstream = { hostname: 'api.openai.com', port: 443 }, now = Date.now,
+	upstream, machine = process.env.WLP_MODEL_RELAY_MACHINE, now = Date.now,
 	list = () => readdir(TOKENS), remove = name => unlink(`${TOKENS}/${name}`), changes = onChange => watch(TOKENS, onChange),
 	watchMs = WATCH_MS, sweepMs = SWEEP_MS } = {}) {
 	/** The record of a turn whose lease is live: its file is here, well-formed and not expired. */
 	async function lease(nonce) {
 		if (!NONCE.test(nonce ?? '')) return;
 		const record = await load(nonce).catch(() => undefined);
-		if (!record || typeof record.accessToken !== 'string' || !/^[\x21-\x7e]{16,16384}$/.test(record.accessToken)
-			|| typeof record.lease !== 'string' || !LEASE.test(record.lease) || !Number.isFinite(record.expiresAt) || record.expiresAt <= now()) return;
+		if (!record || typeof record.lease !== 'string' || !LEASE.test(record.lease)
+			|| !Number.isSafeInteger(record.expiresAt) || record.expiresAt <= now()) return;
+		const forward = record.forward;
+		if (forward) {
+			if (!Object.hasOwn(wires, forward.provider) || forward.provider === 'chatgpt') return;
+			if (!forwardHost(forward.host) || !forwardPlaceholder(forward.placeholder)) return;
+			if (machine && !validProofKey(forward.proofKey)) return;
+		} else if (typeof record.accessToken !== 'string' || !/^[\x21-\x7e]{16,16384}$/.test(record.accessToken)) return;
 		if (record.user !== undefined && (typeof record.user !== 'string' || !/^[\x21-\x7e]{1,256}$/.test(record.user))) return;
 		return record;
 	}
@@ -89,15 +143,13 @@ function windlassProvider({ load = nonce => readFile(`${TOKENS}/${nonce}.json`, 
 		}
 	}
 	return {
-		methodFor: url => routes.get(url),
-		accepts: url => routes.has(url),
-		bearer: headers => headers.authorization,
+		methodFor: anyMethod,
+		bearer: placeholderOf,
 		unauthorizedCode: LEASE_ENDED,
 		async authorize(bearer, nonce) {
-			const match = /^Bearer (\S+)$/.exec(bearer ?? '');
-			if (!match || !LEASE.test(match[1])) return false;
+			if (!LEASE.test(bearer ?? '')) return false;
 			const record = await lease(nonce);
-			if (!record || !same(match[1], record.lease)) return false;
+			if (!record || !same(bearer, record.lease)) return false;
 			// The user, where the platform named one: the hosted relay's ceiling per user counts by it.
 			return { user: record.user };
 		},
@@ -124,12 +176,23 @@ function windlassProvider({ load = nonce => readFile(`${TOKENS}/${nonce}.json`, 
 		},
 		// Read again here: a token replaced while the request waited for a slot is the one sent.
 		async target(url, headers, nonce) {
-			if (!routes.has(url)) return;
 			const record = await lease(nonce);
 			if (!record) return;
-			const out = { authorization: 'Bearer ' + record.accessToken };
-			for (const name of passed) if (typeof headers[name] === 'string') out[name] = headers[name];
-			return { ...upstream, path: url, headers: out, secrets: [record.accessToken] };
+			const forward = record.forward;
+			const secret = forward?.placeholder ?? record.accessToken;
+			const target = wireTarget(forward?.provider ?? 'chatgpt', url, headers, secret);
+			if (!target) return { refused: true };
+			const secrets = [secret];
+			if (forward) {
+				if (machine) {
+					const proof = forwardProof(forward.proofKey, machine, methodFor(forward.provider, url), url, now());
+					target.headers[proofHeader] = proof;
+					secrets.push(proof);
+				}
+				target.hostname = forward.host;
+				target.path = '/model-relay' + url;
+			}
+			return { ...target, ...upstream, secrets };
 		},
 		responseFilter: (type, url, secrets) => scrubStream(secrets ?? [], type, true),
 		// api.openai.com answers a ChatGPT-token stream with a 200 and no content type (as the server's route found,
@@ -139,7 +202,7 @@ function windlassProvider({ load = nonce => readFile(`${TOKENS}/${nonce}.json`, 
 	};
 }
 
-module.exports = { windlassProvider, errorBody, HOST, TOKENS, SOCKET, LEASE_ENDED };
+module.exports = { windlassProvider, errorBody, wireTarget, anyMethod, placeholderOf, HOST, TOKENS, SOCKET, LEASE_ENDED };
 
 if (process.env.WLP_MODEL_RELAY_PROGRAM === '1') {
 	// The relay's own checks send the requests to a recorder instead (docs/model-relay.md, "Checks").
