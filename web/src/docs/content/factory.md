@@ -116,6 +116,8 @@ Set checks in the repository's settings, under **Checks**. Windlass runs them be
 
 If no CI starts within 10 minutes of a push, the item is handed over without it. If CI is still running after 90 minutes, the item asks you what to do.
 
+When CI fails, stays cancelled or times out and the base branch has new commits, choose **Update from the base branch and run CI again** to merge the target branch (the feature branch for a subtask) and check the new commit.
+
 ### The second review
 
 A second agent, with no part in making the change, checks out the pushed commit in its own sandbox and reads it against the task. It approves, asks for changes, or says it needs you.

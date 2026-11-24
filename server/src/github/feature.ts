@@ -21,6 +21,15 @@ export async function refHead(app: GithubApp, token: string, owner: string, repo
 	const { body } = await app.call({ path, auth: { bearer: token }, what: "read the branch commit" });
 	return sha(obj(obj(body).object).sha);
 }
+/** Commits reachable from the base branch but absent from this item's exact pushed head. */
+export async function commitsBehindBase(app: GithubApp, token: string, owner: string, repo: string, base: string, head: string): Promise<number> {
+	const path = `/repos/${owner}/${repo}/compare/${encodeURIComponent(base)}...${sha(head)}`;
+	const { body } = await app.call({ path, query: { per_page: 1 }, auth: { bearer: token }, what: "compare the item with its base branch" });
+	const behind = obj(body).behind_by;
+	if (typeof behind !== "number" || !Number.isSafeInteger(behind) || behind < 0) throw new Error("GitHub did not report how far the base branch is ahead.");
+	return behind;
+}
+
 export async function advanceFeatureRef(app: GithubApp, token: string, owner: string, repo: string, id: string, base: string, head: string) {
 	const branch = featureBranch(id);
 	if (branch === base) throw new Error("The feature branch must differ from the destination.");

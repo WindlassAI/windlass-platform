@@ -16,14 +16,14 @@
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
-import { subtaskBranch } from "../server/src/github/feature.js";
-import { branchFor } from "../server/src/github/publish.js";
+import { commitsBehindBase, subtaskBranch } from "../server/src/github/feature.js";
+import { BaseMergeConflict, branchFor, updateBranchFromBase } from "../server/src/github/publish.js";
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
 import { verdictWords } from "../server/src/factory/verdict.js";
 import { localListeners } from "./check-listeners.js";
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { createWriteStream, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createWriteStream, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
@@ -231,10 +231,60 @@ async function api(path: string, init: RequestInit & { token?: string; key?: str
 
 const standin = new GithubStandin({ callbackUrl: `${API}/github/callback`, strictBranches: false });
 await standin.start();
-standin.addUser("ada");
+const ada = standin.addUser("ada");
 const installation = standin.addInstallation("ada", "User");
 const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { ".github/workflows/build.yml": "on: pull_request\n", "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
 standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "write", statuses: "read", actions: "read" };
+
+await check("ci: update from base pushes the sandbox merge and replays the same commit", async () => {
+	const { GithubApp } = await import("../server/src/github/app.js");
+	const app = new GithubApp({ appId: standin.appId, slug: standin.slug, clientId: standin.clientId, apiUrl: standin.apiUrl, webUrl: standin.url },
+		{ clientSecret: () => standin.clientSecret, privateKey: () => standin.privateKeyPem });
+	const repo = standin.addRepository({ owner: "ada", name: "base-update", installation });
+	const base = "windlass/feature-test", branch = base + "-child";
+	standin.commit(repo, base, { "shared": "old" }, "Start feature", "main");
+	const head = standin.commit(repo, branch, { "child": "child change" }, "Implement child", base);
+	standin.commit(repo, base, { "shared": "base fix" }, "Fix CI", base);
+	const compare = (sha: string) => app.withToken(installation.id, { repositoryId: repo.id, permissions: { metadata: "read", contents: "read" } },
+		token => commitsBehindBase(app, token, repo.owner, repo.name, base, sha));
+	assert(await compare(head) === 1, "GitHub must count only commits the child lacks");
+	const tip = standin.commit(repo, base, { "other": "another fix" }, "Advance after the question", base);
+	const cwd = mkdtempSync(join(tmpdir(), "wlp-base-update-"));
+	try {
+		execFileSync("git", ["clone", "-q", "-b", branch, repo.path, cwd]);
+		const sandbox: import("../server/src/sandbox/api.js").SandboxHandle = {
+			id: "merge", cwd, profile: "docker-hardened",
+			run: (command, options = {}) => new Promise(resolve => {
+				const proc = execFile("bash", ["-c", command], { cwd: options.cwd ?? cwd, timeout: options.timeoutMs },
+					(err, stdout, stderr) => resolve({ exitCode: err ? Number(err.code) || 1 : 0, aborted: false, timedOut: !!err?.killed, stdout, stderr }));
+				proc.stdin!.on("error", () => {});
+				proc.stdin!.end(options.stdin ?? "");
+			}),
+			readTextFile: async path => readFileSync(path, "utf8"),
+			writeTextFile: async (path, content) => writeFileSync(path, content),
+		};
+		const input = { app, connection: { user: ada, installations: [{ id: installation.id, account: installation.account, htmlUrl: standin.url }], connectedAt: Date.now() },
+			repository: { provider: "github" as const, id: repo.id, owner: repo.owner, name: repo.name, branch: base, private: false, url: standin.url, installationId: installation.id },
+			sandbox, sessionId: "update", branch, pushed: head };
+		const update = { head, at: Date.now() };
+		const merged = (await updateBranchFromBase(input, update)).head;
+		assert(merged && standin.branchHead(repo, branch) === merged && await compare(merged) === 0, "the pushed child must contain the base tip");
+		const git = (...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+		assert(git("show", "-s", "--format=%P%n%s%n%an", "HEAD") === `${head} ${tip}\nMerge ${base} into ${branch}\nada`, "wrong merge parents, message or author");
+		assert(!git("status", "--porcelain") && readFileSync(join(cwd, "shared"), "utf8") === "base fix", "the sandbox must match the pushed merge");
+		standin.commit(repo, base, { "later": "new work" }, "Advance after the push", base);
+		assert((await updateBranchFromBase(input, update)).head === merged, "redelivery must return the same head");
+		const changed = standin.commit(repo, branch, { "shared": "child side" }, "Change child", branch);
+		standin.commit(repo, base, { "shared": "base side" }, "Change feature", base);
+		git("fetch", "-q", "origin");
+		git("merge", "--ff-only", "origin/" + branch);
+		try { await updateBranchFromBase({ ...input, pushed: changed }, { head: changed, at: Date.now() }); throw new Error("Expected a merge conflict"); }
+		catch (error) { if (!(error instanceof BaseMergeConflict)) throw error; }
+		assert(standin.branchHead(repo, branch) === changed && !git("status", "--porcelain"), "a conflict must leave the child ready for its resolving turn");
+		return "compared both tips, pushed two parents, replayed the receipt and left a conflict for the agent";
+	} finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+if (only.length === 1 && only[0] === "ci: update from base") { await standin.stop(); process.exit(failed ? 1 : 0); }
 
 if (!only.length || only.some(name => name.startsWith("user-limits"))) {
 	const server = new Server();

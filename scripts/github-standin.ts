@@ -908,6 +908,14 @@ export class GithubStandin {
 				const paths = git(["ls-tree","-r","--name-only",repository.defaultBranch,"--",".github/workflows"],repository.path);
 				return pageOf("workflows", paths.split("\n").filter(Boolean).map(path => ({path,state:"active"})));
 			}
+			const comparison = /^\/compare\/(.+)\.\.\.([0-9a-f]{40})$/.exec(rest);
+			if (comparison && method === "GET") {
+				if (!this.allows(token, repository, "contents", "read")) return denied();
+				const base = this.branchHead(repository, decodeURIComponent(comparison[1]));
+				if (!base) return answer(404, { message: "Branch not found" });
+				try { return answer(200, { behind_by: Number(git(["rev-list", "--count", base, "^" + comparison[2]], repository.path)) }); }
+				catch { return answer(404, { message: "Commit not found" }); }
+			}
 			if (rest === "/merges" && method === "POST") {
 				if (!this.allows(token, repository, "contents", "write")) return denied();
 				const { base, head, commit_message } = body as { base: string; head: string; commit_message: string };

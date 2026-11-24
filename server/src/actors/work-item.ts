@@ -44,7 +44,7 @@ import { getLayer } from "../layer.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf } from "../github/publish.js";
-import { subtaskBranch, featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
+import { subtaskBranch, featureBranch, openFeature, commitsBehindBase, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
 import { crossRepo, integrationView, issueReference, linkSection, nextOpening, readyRefusal, repoOf, repoViews, withSection, INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { ForeignRun, dispatchIntegration, findIntegrationRun, integrationWorkflowProblem, readIntegrationRun } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
@@ -67,7 +67,7 @@ import { activeJob, advance, canRetry, completedKeys, currentKey, nextPrPoll, pr
 import { feedbackComment, itemComment, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
-import { readCi, rerunCancelled } from "../github/ci.js";
+import { CI_POLLING, ciState, readCi, rerunCancelled } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { type RequestedSecretSave, secretsActor, grantIsValid, isSessionGone, itemActor, sessionActor, userActor } from "./internal.js";
 import type { ItemFacts } from "./user-items.js";
@@ -109,7 +109,7 @@ export interface ItemCreateInput {
 }
 
 /** What a session answers about a turn of the item, as facts (session-inbox.ts). */
-export type ItemPublishAnswer = { kind: "published"; head: string; pr: { number: number; url: string } | null } | { kind: "publish_failed"; said: string; transient: boolean };
+export type ItemPublishAnswer = { kind: "base_conflict" } | { kind: "published"; head: string; pr: { number: number; url: string } | null } | { kind: "publish_failed"; said: string; transient: boolean };
 
 interface Stored {
 	item: FactoryItem;
@@ -465,7 +465,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 					await tx.execute("INSERT OR REPLACE INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)", rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 				}
 				if (fact.kind === "turn_ended") await storeReport(tx, before, stored.meta.sessionId, fact);
-				if (fact.kind === "published" && before.run?.gate) await publishReport(tx, before.run.gate.turn, fact.head);
+				if (fact.kind === "published" && before.run?.gate && !before.run.updateFromBase) await publishReport(tx, before.run.gate.turn, fact.head);
 				if (filing) {
 					const r = filing;
 					await tx.execute("INSERT OR REPLACE INTO reviews (id, run, head, at, data) VALUES (?, ?, ?, ?, ?)", r.id, r.run, r.head, r.at, JSON.stringify(r));
@@ -1549,7 +1549,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const now = c.vars.stored;
 			if (!now || !live(now.item, effect)) return false;
 			const body = meta.github ? `${item.task.body}\n\nCloses #${meta.github.origin.issue.number}.` : item.task.body;
-			const answer = await session.internalPublish({ key: effect.key, title: item.task.title, body, blockedNetwork: itemNetwork(meta), branchOnly: !!item.parent }).catch(onGone);
+			const answer = await session.internalPublish({ key: effect.key, title: item.task.title, body, blockedNetwork: itemNetwork(meta), branchOnly: !!item.parent, updateFromBase: item.run?.updateFromBase }).catch(onGone);
 			if (answer === gone) return true;
 			const receipt = { at: Date.now(), key: effect.key };
 			await take(c, answer.kind === "published" ? { ...answer, ...receipt, openItems, webhooks: githubConfig().pollFallback } : { ...answer, ...receipt });
@@ -1578,11 +1578,20 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				// GitHub works out whether a pull request can merge after a push, and says null until it has. Its head is the
 				// commit it holds now, which may be one pushed after the agent's.
 				const pull = item.parent ? null : await hub.pull(number).catch(() => null);
-				return { reading, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
+				const ci = item.run?.ci;
+				const state = ciState(reading);
+				const elapsed = ci ? Date.now() - ci.since : 0;
+				const timedOut = ["retry", "pending", "not_run"].includes(state) && elapsed >= CI_POLLING.timeoutMs;
+				const noChildCi = item.parent && (state === "none" || state === "skipped") && elapsed >= CI_POLLING.noneAfterMs;
+				const compare = item.run?.step.kind === "ci" && item.mode !== "orchestrate" && /^[0-9a-f]{40}$/.test(effect.head) &&
+					(!pull || pull.headSha === effect.head) && (state === "failed" || state === "cancelled" || timedOut || noChildCi);
+				const baseAhead = compare ? await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "read" } },
+					token => commitsBehindBase(hub.app, token, hub.owner, hub.name, item.task.base, effect.head), { reuse: true }).catch(() => 0) : 0;
+				return { reading, baseAhead, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
 			};
-			const { reading, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, mergeable: null, prHead: null, baseSha: null }));
+			const { reading, baseAhead, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, baseAhead: 0, mergeable: null, prHead: null, baseSha: null }));
 			const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
-			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
+			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, reading, baseAhead, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
 			return true;
 		}
 		case "poll_pr": {

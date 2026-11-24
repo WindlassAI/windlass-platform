@@ -368,6 +368,37 @@ export function workCheckoutScript(directory: string, work: string, start?: stri
 	].join("\n");
 }
 
+/** Merge the confirmed base without invoking workspace config or leaving conflict markers.
+ * A deterministic commit lets a retry recognize its own checkout or push after a lost reply. */
+export function mergeBaseForCi(sandbox: SandboxHandle, branch: string, base: string, baseSha: string, head: string, at: number, author: CommitInput["author"]) {
+	const date = shellQuote(new Date(at).toISOString());
+	const ref = shellQuote("refs/heads/" + branch);
+	const script = [
+		privateStart({ refs: ["refs/heads/" + branch] }),
+		`[ "$(git symbolic-ref HEAD)" = ${ref} ] || { echo "The workspace is on another branch." >&2; exit 1; }`,
+		`original=${commitId(head)}; base=${commitId(baseSha)}; local_head=$(git rev-parse HEAD); remote=$(git rev-parse ${shellQuote("refs/remotes/origin/" + branch)})`,
+		// On a retry the base may have advanced again. Reconstruct the merge already prepared for this answer.
+		'candidate="$local_head"; if [ "$candidate" = "$original" ]; then candidate="$remote"; fi',
+		'if [ "$candidate" != "$original" ]; then',
+		'  prior=$(git rev-parse --verify "$candidate^2") && git merge-base --is-ancestor "$prior" "$base" || { echo "The item branch moved since CI." >&2; exit 1; }',
+		'  base="$prior"',
+		'fi',
+		'if git merge-base --is-ancestor "$base" "$original"; then echo "The base no longer has new commits." >&2; exit 1; fi',
+		'rc=0; git merge-tree --write-tree "$original" "$base" > "$private/merge" || rc=$?',
+		'if [ "$rc" = 1 ] && [ "$candidate" = "$original" ]; then echo wlp:conflict; exit 0; fi',
+		'[ "$rc" = 0 ] || exit "$rc"',
+		`merged=$(${GIT_ENV} GIT_AUTHOR_DATE=${date} GIT_COMMITTER_DATE=${date} git ${SAFE_FLAGS} --git-dir="$private/repo" -c user.name=${shellQuote(author.name)} -c user.email=${shellQuote(author.email)} commit-tree "$(head -1 "$private/merge")" -p "$original" -p "$base" -m ${shellQuote("Merge " + base + " into " + branch)})`,
+		'for tip in "$remote" "$local_head"; do [ "$tip" = "$original" ] || [ "$tip" = "$merged" ] || { echo "The item branch moved since CI." >&2; exit 1; }; done',
+		'if [ "$local_head" != "$merged" ]; then',
+		'  git diff --quiet HEAD -- || { echo "The workspace has uncommitted changes." >&2; exit 1; }',
+		`  git checkout --quiet --no-overwrite-ignore -B ${shellQuote(branch)} "$merged"`,
+		`  bridge export HEAD index ${ref}`,
+		'fi',
+		'echo "wlp:head $merged"',
+	].join("\n");
+	return run(sandbox, script, { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });
+}
+
 /** Runs `workCheckoutScript`. */
 export function checkoutWork(sandbox: SandboxHandle, directory: string, work: string, start?: string): Promise<GitOutcome> {
 	return run(sandbox, workCheckoutScript(directory, work, start), { stdin: "", timeoutMs: COMMIT_TIMEOUT_MS });

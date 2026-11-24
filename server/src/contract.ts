@@ -1841,7 +1841,7 @@ export type QuestionKind = "sandboxes" | "integration" | "feedback_feature" | "f
  *   fresh_sandbox  a `sandbox_failed` question: the session's sandbox is removed and the step runs in a new one
  *   larger_sandbox an `out_of_memory` question: the same, in a sandbox of the next hosted size
  */
-export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone";
+export type ChoiceId = "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base";
 
 /** Render the reason as quoted plain text, separately from the platform's own notice. */
 export interface SecretRequest {

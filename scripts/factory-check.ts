@@ -1727,6 +1727,57 @@ const ciFact = (reading: CiReading, head = H(1), prHead: string | null = head) =
 const passedCi = ciRead([{ name: "build", state: "passed" }]);
 const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }, turnEnded("succeeded", PASSED), { kind: "published", webhooks: false, head, pr: { number: 7, url: "" }, openItems: 1 }];
 
+// A cancelled subtask can take a base fix without surrendering its work or bypassing CI.
+{
+	const child = newItem();
+	child.parent = { itemId: "i_feature", key: "fix", title: "Feature" };
+	child.task.base = "windlass/feature-i_feature";
+	const first = walk(child, pushedRun(H(1)).map(f => f.kind === "published" ? { ...f, pr: null } : f)).item;
+	const cancelled = { kind: "read" as const, head: H(1), logs: [], truncated: false,
+		runs: [{ name: "build", app: "ci", state: "cancelled" as const, conclusion: "cancelled", url: "", summary: "", jobId: null }] };
+	const poll = ciFact(cancelled, H(1), null);
+	const rerun = effect(walk(first, [poll]).last, "rerun_ci")!;
+	const retried = walk(first, [poll, { ...rerun, kind: "ci_rerun_started" }]).item;
+	const choices = (item: FactoryItem) => item.question?.choices.map(option => option.id) ?? [];
+	const unchanged = walk(retried, [{ ...poll, baseAhead: 0 }]).item;
+	assert.deepEqual(choices(unchanged), ["wait", "give_up"]);
+	assert.equal(walk(unchanged, [{ kind: "answer", choice: "update_from_base" }]).item, unchanged);
+	const asked = walk(retried, [{ ...poll, baseAhead: 2 }]).item;
+	assert.deepEqual(choices(asked), ["wait", "update_from_base", "give_up"]);
+	assert.match(asked.question!.text, /windlass\/feature-i_feature is 2 commits ahead/);
+	const update = walk(asked, [{ kind: "answer", choice: "update_from_base" }]);
+	assert.ok(effect(update.last, "publish"));
+	assert.equal(update.item.run?.rounds.conflict, 1);
+	const conflict = walk(update.item, [{ kind: "base_conflict" }]);
+	assert.equal(effect(conflict.last, "deliver")?.fetchBase, child.task.base);
+	assert.equal(conflict.item.run?.step.kind, "conflict");
+	assert.equal(conflict.item.run?.rounds.conflict, 1);
+	const pushed = walk(update.item, [{ kind: "published", head: H(2), pr: null, openItems: 1, webhooks: false }]);
+	assert.equal(effect(pushed.last, "poll_ci")?.head, H(2));
+	assert.equal(walk(pushed.item, [ciFact(passedCi, H(1))]).item, pushed.item);
+	assert.equal(effect(walk(pushed.item, [ciFact(passedCi, H(2), null)]).last, "integrate")?.head, H(2));
+	const done = walk(pushed.item, [ciFact(passedCi, H(2), null), { kind: "integrated", head: H(2) }]).item;
+	assert.equal(done.state, "done");
+	const timeout = { ...ciFact(pendingBuild), at: T0 + 100 * MINUTE, baseAhead: 1 };
+	const single = walk(newItem(), pushedRun(H(1))).item;
+	for (const fact of [timeout, { ...ciFact(failingCi("build failed")), baseAhead: 1 }]) {
+		const q = walk(single, [fact]).item;
+		assert.match(q.question!.text, /main is 1 commit ahead/);
+		assert.ok(choices(q).includes("update_from_base") && choices(q).includes("hand_over"));
+	}
+	const cancelledSingle = walk(single, [poll, { ...rerun, kind: "ci_rerun_started" }, { ...poll, baseAhead: 1 }]);
+	assert.ok(choices(cancelledSingle.item).includes("update_from_base"));
+	const updatedSingle = walk(cancelledSingle.item, [{ kind: "answer", choice: "update_from_base" },
+		{ kind: "published", head: H(2), pr: single.pr, openItems: 1, webhooks: false }, ciFact(passedCi, H(2))]);
+	assert.equal(effect(updatedSingle.last, "handoff")?.verdict.head, H(2));
+	assert.equal(updatedSingle.item.run?.ci?.moved, null);
+	const fixed = walk(single, [{ ...ciFact(failingCi("failed")), baseAhead: 1 }, { kind: "answer", choice: "again" }]);
+	assert.equal(fixed.item.run?.step.kind, "ci_fix");
+	const spent = walk(pushed.item, [{ ...timeout, head: H(2), prHead: null }]).item;
+	assert.ok(!choices(spent).includes("update_from_base"));
+	expect("base updates cover cancelled subtasks, failed or timed-out single items, clean and conflicting merges, stale CI and conflict rounds", true);
+}
+
 // Exercise approval, child polling and replay with more than one outstanding dispatch.
 {
 	const task = (key: string, owns: string[] = [key], dependsOn: string[] = []) => ({ key, title: key, brief: key, owns, dependsOn, acceptance: ["Run npm test"], budget: { tokens: 1000 } });

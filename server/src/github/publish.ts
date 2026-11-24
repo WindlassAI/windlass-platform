@@ -29,7 +29,7 @@ import type { GithubId, PublishMessage, PullRequestInfo, SessionRepository, Veri
 import type { SandboxHandle } from "../sandbox/api.js";
 import { type WorkDiff, verifiedSection, verifiedWords, withVerifiedSection, workFlags } from "../verified.js";
 import { type GithubApp, GithubError, type Pull, type Repository } from "./app.js";
-import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, hasMirror, saveMirrorAfterClone, commitWork, outgoingPatch, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
+import { CLONE_MINUTES, type GitOutcome, checkoutWork, cloneWithToken, hasMirror, saveMirrorAfterClone, commitWork, mergeBaseForCi, outgoingPatch, unsafeWorkspace, discardHandover, fetchWithToken, probeWork, pushWithToken, readWork } from "./git.js";
 import { refHead } from "./feature.js";
 import { outgoingCredentials, redact } from "./redact.js";
 import { GithubProblem, NOT_CONNECTED, type StoredConnection, problemOf, resolveBoundRepository, resolveRepository } from "./repos.js";
@@ -325,7 +325,23 @@ export async function pushWork(input: PushInput, message: string): Promise<Pushe
 	return commitAndPush(input, await sessionRepository(input.app, input.connection, input.repository, "write"), message);
 }
 
-async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<typeof resolveRepository>>, message: string): Promise<Pushed> {
+export class BaseMergeConflict extends Error {}
+
+/** Fetch at answer time. Only the exact merge of the polled head may go through the normal scanned push. */
+export async function updateBranchFromBase(input: PushInput, update: { head: string; at: number }): Promise<Pushed> {
+	const { app, repository, branch, sandbox, connection } = input;
+	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
+	const resolved = await sessionRepository(app, connection, repository, "write");
+	const found = await fetchBase(app, connection, repository, sandbox, branch);
+	if (!found || !repository.baseSha) throw new GithubProblem("github_unreachable", "The item branch or its current base could not be confirmed.");
+	const merged = await mergeBaseForCi(sandbox, branch, repository.branch, repository.baseSha, update.head, update.at, authorOf(connection));
+	if (merged.ok && merged.marks.has("conflict")) throw new BaseMergeConflict();
+	const head = merged.marks.get("head");
+	if (!merged.ok || !head) throw new GithubProblem("github_failed", `The base could not be merged into ${branch}. ${merged.said}`.trim());
+	return commitAndPush({ ...input, pushed: update.head, lease: null }, resolved, `Merge ${repository.branch} into ${branch}`, head);
+}
+
+async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<typeof resolveRepository>>, message: string, expectedHead?: string): Promise<Pushed> {
 	const { app, repository, sandbox, branch } = input;
 	const connection = input.connection as StoredConnection;
 	const { installation } = resolved;
@@ -351,6 +367,10 @@ async function commitAndPush(input: PushInput, resolved: Awaited<ReturnType<type
 	}
 	if (committed.marks.has("norepo")) throw new GithubProblem("github_failed", "The workspace is not a git repository any more, so there is nothing to push.");
 	const head = committed.marks.get("head") || null;
+	if (expectedHead && head !== expectedHead) {
+		await discardHandover(sandbox, committed.attempt);
+		throw new GithubProblem("github_failed", "The workspace changed while updating the branch. Nothing was pushed.");
+	}
 	const count = Number(committed.marks.get("committed"));
 	const committedFiles = committed.marks.has("committed") && Number.isInteger(count) ? count : null;
 	if (committed.marks.has("nothing")) return { pushed: false, forced: false, head, committedFiles };
