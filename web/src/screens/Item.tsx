@@ -522,7 +522,7 @@ function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: bo
 /** The open question: its text, its answers, and a note to the agent with any of them. */
 function Question({ view, question, acting, now }: { view: ItemView; question: ItemQuestion; acting: Acting; now: number }) {
 	// No agent is left to read a note once its machine was removed.
-	const noted = !["machine_removed", "feedback_feature", "feedback_more"].includes(question.kind);
+	const noted = !["machine_removed", "feedback_feature", "feedback_more", "push_ci"].includes(question.kind);
 	const [note, setNote] = useState("");
 	const [raising, setRaising] = useState(false);
 	const ids = { title: useId(), note: useId(), asked: useId() };

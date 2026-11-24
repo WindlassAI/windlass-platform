@@ -523,19 +523,18 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 				await untilItem(user, search.id, "the part’s next CI question offering its new base",
 					v => !!v.question?.choices.some(c => c.id === "update_from_base"), CI_WAIT_MS);
 
-				standin.commit(repo, "main", { "index/setup.sh": "echo conflicting-target\n" }, "Change setup on main");
+				const newTarget = standin.commit(repo, "main", { "index/setup.sh": "echo conflicting-target\n" }, "Change setup on main");
 				await user.actOnItem({ id: feature.id, action: { kind: "update_feature" } });
-				const conflict = await untilItem(user, feature.id, "the target merge conflict", v => v.question?.kind === "feature_update");
-				assert(conflict.head === updated.head && standin.branchHead(repo, branch) === updated.head &&
-					conflict.question!.text.includes("in index/setup.sh") && conflict.question!.text.includes("Resolve it on GitHub") && conflict.question!.choices.some(c => c.id === "give_up"),
-					"The conflict moved the branch or did not ask the owner");
-				// The person resolves on GitHub, keeping the feature’s copy of the one conflicting file.
-				const git = (...args: string[]) => execFileSync("git", ["-c", "user.name=Owner", "-c", "user.email=owner@example.com", ...args], { cwd: repo.path, encoding: "utf8" }).trim();
-				const resolved = git("commit-tree", updated.head + "^{tree}", "-p", updated.head!, "-p", "main", "-m", "Resolve setup conflict");
-				git("update-ref", "refs/heads/" + branch, resolved, updated.head!);
-				await user.actOnItem({ id: feature.id, action: { kind: "answer", question: conflict.question!.id, choice: "update_feature" } });
-				await untilItem(user, feature.id, "the recorded GitHub resolution", v => v.head === resolved && !v.question);
-				return "serialized both writers, refreshed the part’s CI choices, named the conflict and resumed at the resolved tip";
+				const repairing = await untilItem(user, feature.id, "the conflict part's push", v =>
+					!!v.children?.some(ch => ch.parent?.key.startsWith("conflict-fix-") && ch.step?.kind === "ci"), CI_WAIT_MS);
+				const repair = repairing.children!.find(ch => ch.parent?.key.startsWith("conflict-fix-"))!;
+				const resolved = headOf(repair);
+				assert(!repairing.question && repairing.head === updated.head, "The feature moved before the repair passed CI");
+				assert(execFileSync("git", ["log", "--merges", "--format=%P", updated.head + ".." + resolved], { cwd: repo.path, encoding: "utf8" }).trim().includes(newTarget),
+					"The repair did not merge the new main");
+				setCi(repo, resolved, "success");
+				await untilItem(user, feature.id, "the checked resolution to integrate", v => v.head === resolved && !v.question, CI_WAIT_MS);
+				return "serialized both writers, refreshed the waiting part and integrated the conflict resolution after CI";
 			} finally {
 				release();
 				delete standin.beforeFastForward;
@@ -1668,7 +1667,8 @@ async function memoryChecks(): Promise<void> {
 		Object.assign(app, {
 			pages: async ({ path }: { path: string }) => {
 				ciPaths.push(path);
-				return { items: [], truncated: false };
+				const items = path.endsWith("/commits/" + moved + "/status") ? [{ context: "owner-build", state: "failure" }] : [];
+				return { items, truncated: false };
 			},
 			pull: async () => ({ number: 1, url: "local", state: "open", mergeable: true, title: "T", body: "", head: "work", headSha: moved, base: "main", requestedReviewers: ["u"] }),
 		});
@@ -1683,8 +1683,9 @@ async function memoryChecks(): Promise<void> {
 		const stored = (actor.c.vars as { stored: { item: Item; meta: { verdict: { result: string } | null } } }).stored;
 		const verdicts = actor.raw.prepare("SELECT json_extract(data, '$.result') AS result, json_extract(data, '$.moved') AS moved FROM verdicts").all() as Array<{ result: string; moved: string | null }>;
 		assert(ciPaths.filter((path) => path.endsWith(`/commits/${HEAD}/check-runs`)).length === 1, "the replacement verdict did not read CI once for the pushed commit");
-		assert(stored.item.state === "review" && stored.meta.verdict?.result === "unverified" && verdicts.length === 1 && verdicts[0]?.result === "unverified" && verdicts[0].moved === moved, `the item is ${stored.item.state}, its summary ${stored.meta.verdict?.result}; verdicts ${JSON.stringify(verdicts)}`);
-		return "the verdict became not verified when the pull request moved, in place of the pass";
+		assert(stored.item.question?.kind === "push_ci" && stored.item.run?.n === 1, "The failed push did not ask before rework");
+		assert(stored.item.state === "waiting" && stored.meta.verdict?.result === "unverified" && verdicts.length === 1 && verdicts[0]?.result === "unverified" && verdicts[0].moved === moved, `the item is ${stored.item.state}, its summary ${stored.meta.verdict?.result}; verdicts ${JSON.stringify(verdicts)}`);
+		return "the original verdict became unverified and CI on the newer head offered a hand-back";
 	});
 
 	/** The user actor's turn queue over a database in memory, with sessions a, b and c of items, and one of the person's own. */

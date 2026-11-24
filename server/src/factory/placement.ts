@@ -104,6 +104,10 @@ export function machineSlots(machine: Pick<MachineSummary, "slots" | "turns" | "
 		unit: { cpus: machine.host?.sandboxCpus ?? 0, memoryBytes: 1.5 * GiB } };
 }
 
+// An older runner without a concurrency cap offers one known slot.
+export const freeMachineSlots = ({ max, busy }: Pick<ReturnType<typeof machineSlots>, "max" | "busy">) =>
+	max === null ? 1 : Math.max(0, max - busy);
+
 /**
  * Why the model or effort a subtask chose is not one its agent offers, by `list`; null where it is, or nothing
  * was chosen. Windlass without a model of its own runs the feature's (`featureModel`): an effort alone is held
@@ -219,8 +223,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	const wanted: SandboxProfileId | undefined = needs.profile ?? (onMachine ? HARNESS_PROFILE : undefined);
 	const profile = wanted ? allowed.find(p => p === wanted) : allowed.find(p => p === inventory.defaultProfile) ?? allowed[0];
 	if (!profile) return notNow("no available owner-allowed profile matches");
-	// An older online runner may have no concurrency cap. Award only one known slot in that case.
-	const free = slots.max === null ? 1 : Math.max(0, slots.max - slots.busy);
+	const free = freeMachineSlots(slots);
 	if (free < units) return { wait: slotWait(m.name, units, free) };
 	return { decision: { name: m.name, place, reason, units, sendSecrets: m.repositorySecrets, profile, ...(onMachine && { harness: onMachine }) },
 		score: bonus + Math.min(free, 3) - slots.queued - m.personalRunning };

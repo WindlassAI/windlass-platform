@@ -48,10 +48,10 @@ import { criticPrompt, mergeCandidate, smallPlan } from "./autonomy.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
 import type { OutOfMemory } from "../sandbox/api.js";
-import { MAX_ITEM_BODY_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
+import { MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState, workflowOverdue } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
-import { approveRoutes, bindRoute, choosePlacement, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
+import { approveRoutes, bindRoute, choosePlacement, freeMachineSlots, machineSlots, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
 import { answeredWords } from "./answered.js";
 import { feedbackWords, fixText, replanText } from "./feedback.js";
@@ -387,13 +387,17 @@ function apply(c: Change, fact: Fact): boolean {
 			if (FINAL.has(item.state) || item.state === "failed" || item.machineRemoved) return true;
 			if ("problem" in fact.result) {
 				ask(c, "feature_update", fact.result.problem, [{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], null, null, undefined, { target: update.target });
-			} else if (c.run.step.kind === "ci") {
+			} else if ("head" in fact.result && c.run.step.kind === "ci") {
 				c.run.ci = ciProgress(fact.result.head, c.at, null, c.run.ci?.webhooks ?? false);
 				readUpdatedCi(c);
-				pendingCheck(c, fact.result.head, `Waiting for CI on ${shortSha(fact.result.head)}`);
+				pendingCheck(c, fact.result.head, "Waiting for CI on " + shortSha(fact.result.head));
 			} else {
-				c.state("waiting", { reason: "children", sentence: "Continuing subtasks on the updated feature branch.", retryAt: null });
-				for (const job of item.jobs ?? []) if (activeJob(job) && (!job.ciFix || job.dispatchKey)) dispatchJob(c, job);
+				if ("conflicts" in fact.result) {
+					if (c.run.step.kind !== "subtasks") c.enter("subtasks");
+					queueConflictFix(c, { target: update.target, child: update.child }, fact.result.conflicts);
+				}
+				c.state("waiting", { reason: "children", sentence: "conflicts" in fact.result ? "Resolving the feature update conflicts." : "Continuing subtasks on the updated feature branch.", retryAt: null });
+				for (const job of item.jobs ?? []) if (activeJob(job) && (!repair(job) || job.dispatchKey)) dispatchJob(c, job);
 				nextChild(c);
 			}
 			return true;
@@ -437,7 +441,7 @@ function apply(c: Change, fact: Fact): boolean {
 				if (fact.integratedHead) job.head = fact.integratedHead;
 				return changed || charged;
 			}
-			if (activeJob(job) && item.run?.step.kind === "subtasks" && !item.question && item.state === "waiting") {
+			if (activeJob(job) && (!repair(job) || job.dispatchKey) && item.run?.step.kind === "subtasks" && !item.question && item.state === "waiting") {
 				dispatchJob(c, job);
 				return true;
 			}
@@ -449,7 +453,7 @@ function apply(c: Change, fact: Fact): boolean {
 			if (fact.kind === "edit_plan") {
 				if (!item.featurePlan || item.featurePlan.version !== fact.version || !planQuestion(item)) return false;
 			} else if (!item.run?.step.turn || item.run.step.kind !== "refine" || c.key !== fact.key) return false;
-			const plannedJobs = item.jobs?.filter(j => !j.ciFix) ?? [];
+			const plannedJobs = item.jobs?.filter(j => !repair(j)) ?? [];
 			const completed = plannedJobs.filter(j => j.state === "done");
 			const plan = validatePlan(fact.plan, item.singleBudget, aliases(item));
 			if (fact.kind === "edit_plan" && !Object.hasOwn(fact.plan as object, "overflow")) plan.overflow = item.featurePlan?.overflow ?? false;
@@ -568,11 +572,7 @@ function apply(c: Change, fact: Fact): boolean {
 			else beginRun(c, firstPlan(item, null));
 			return true;
 		case "send_back":
-			if (item.mode === "orchestrate" || item.state !== "review" || item.machineRemoved) return false;
-			c.sayOfItem(`Sent back: ${fact.note}`);
-			beginRun(c, { ...IMPLEMENT, text: `The person sent your work back: ${fact.note}` });
-			decided(item, { kind: "send_back", run: c.run.n, text: fact.note });
-			return true;
+			return sendBack(c, fact.note);
 		case "note":
 			if (item.mode === "orchestrate") return false;
 			c.sayOfItem(fact.steered ? `Note to the running turn: ${fact.note}` : `Note for the next turn: ${fact.note}`);
@@ -748,7 +748,14 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "request_review" | "def
 				dispatchJob(c, job, retryAt(c.at, 0));
 			} else {
 				if (job.state === "done" && job.head && !job.join) integratedTip(c.item, job, job.head);
-				if (job.state !== "done" && !c.item.stoppedJob) {
+				if (job.state === "failed" && job.conflictFix && !c.item.stoppedJob) {
+					if (!job.conflictFix.retry) queueConflictFix(c, { ...job.conflictFix, retry: true }, job.task.owns ?? []);
+					else {
+						ask(c, "feature_update", "The conflict-resolution part failed twice. Check the feature branch again or give up.",
+							[{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], "repeated", null);
+						return true;
+					}
+				} else if (job.state !== "done" && !c.item.stoppedJob) {
 					c.item.stoppedJob = job.id;
 					cancelActive(c);
 				}
@@ -771,6 +778,10 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "request_review" | "def
 			if (crossRepo(c.item) && !featureOpened(c.item)) {
 				// One repository refused its branch or draft PR: what opened stays, and "again" retries only the rest.
 				ask(c, "integration", `${fact.reason}. The pull requests opened so far are kept; no subtask runs until every repository has its draft.`, [{ id: "again", label: "Try the remaining repository again" }, choice("give_up")], null, null);
+			} else if (fact.missingTarget && c.item.mergeTarget) {
+				c.say(fact.reason);
+				c.run.endedAt = c.at;
+				c.state("failed");
 			} else if (fact.rebase && c.item.parent) {
 				nextTurn(c, conflictPlan(c.item.task.base));
 			} else ask(c, "publish_refused", fact.reason, [choice("give_up")], null, null);
@@ -944,6 +955,7 @@ function taskText(task: Task): string {
 /** A run's first turn: the plan (step 0) for an orchestrated feature, the task otherwise. */
 function firstPlan(item: FactoryItem, note: string | null): TurnPlan {
 	const plan = singleFirstPlan(item, note);
+	if (item.mergeTarget && item.childBase) plan.fetchBase = item.childBase;
 	return crossRepo(item) && item.mode === "orchestrate" && plan.kind === "refine" ? { ...plan, text: plan.text + plannerText(item) } : plan;
 }
 
@@ -976,6 +988,17 @@ function freshPlan(item: FactoryItem): Pick<TurnPlan, "text" | "untrusted"> | nu
 /** The person's own words to the agent, trusted: a note with a turn's prompt, or steered into a running turn. */
 export const personAdds = (note: string) => `The person adds: ${note}`;
 const withNote = (text: string, note: string | null) => (note === null ? text : `${text}\n\n${personAdds(note)}`);
+
+function sendBack(c: Change, note: string, push?: string): boolean {
+	const { item } = c;
+	if (item.mode === "orchestrate" || item.state !== "review" || item.machineRemoved) return false;
+	c.sayOfItem("Sent back: " + note);
+	const text = push ? "Use fetch_base to fetch the updated PR branch and start from " + push + ". " + note
+		: "The person sent your work back: " + note;
+	beginRun(c, { ...IMPLEMENT, text, ...(push && marked([untrustedWords.ci(push)])) });
+	decided(item, { kind: "send_back", run: c.run.n, text: note });
+	return true;
+}
 
 function beginRun(c: Change, plan: TurnPlan): void {
 	const { item } = c;
@@ -1043,7 +1066,7 @@ function feedbackRefusal(item: FactoryItem, batch: FeedbackInput): string | null
 	if (runs && Object.hasOwn(runs, batch.fingerprint)) return feedbackWords.repeat(runs[batch.fingerprint]!);
 	if (item.machineRemoved) return feedbackWords.machineRemoved;
 	if (item.mode === "orchestrate") {
-		const keys = [...(item.jobs ?? []).filter(j => !j.ciFix).map(j => j.task.key), ...(item.approvedPlan?.subtasks ?? []).map(t => t.key)];
+		const keys = [...(item.jobs ?? []).filter(j => !repair(j)).map(j => j.task.key), ...(item.approvedPlan?.subtasks ?? []).map(t => t.key)];
 		if (new Set(keys).size >= 6) return feedbackWords.full;
 	}
 	return null;
@@ -1140,6 +1163,13 @@ export function plannerBudgetText(item: FactoryItem): string {
 		"Independent subtasks run in parallel. Split work by file, list accurate owned paths in owns, and use dependsOn only for real prerequisites.",
 		"- The feature's budget is its subtasks' budgets together and that allowance. A subtask that uses its budget asks the owner for more.",
 	].join("\n");
+}
+
+export function plannerCapacityText(place: FactoryItem["place"], machines: PlacementInventory["machines"]): string {
+	if (place.kind === "hosted") return `Hosted parts run up to ${RULES.parallelChildren} at once.`;
+	const machine = machines.find(m => m.machineId === place.machineId);
+	const parts = machine?.online ? Math.min(RULES.parallelChildren, freeMachineSlots(machineSlots(machine))) : 0;
+	return `Your machine '${machine?.name ?? place.machineId}' can run ${parts} part${parts === 1 ? "" : "s"} at once. Additional parts wait for a slot.`;
 }
 
 /** The turns an item has taken toward the backstop: a feature's own, not its subtasks'. */
@@ -1661,7 +1691,12 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	}
 	if (reading.kind === "not_permitted") ci.last = { state: "not_permitted", runs: [], said: reading.said };
 
-	if (fact.prHead !== null) ci.moved = movedFrom(ci.head, fact.prHead);
+	if (fact.prHead !== null) {
+		const moved = movedFrom(ci.head, fact.prHead);
+		if (moved !== ci.moved && c.item.state === "review" && c.item.mode !== "orchestrate")
+			ci.reviewPush = moved ? { head: moved } : undefined;
+		ci.moved = moved;
+	}
 	if (c.item.featureCi && c.item.state !== "review") {
 		if (fact.prHead === ci.head && state === "failed" && reading.kind === "read") {
 			c.item.featureCi = { head: ci.head, since: ci.since };
@@ -2082,6 +2117,7 @@ function handoff(c: Change, review: HandoffReview, merging = false): void {
 	c.enter("merged");
 	c.effects.push(nextPrPoll(item, c.at));
 	takeHeld(c);
+	askPushCi(c);
 	if (item.run !== run) {
 		const handed = c.effects.find(e => e.kind === "handoff");
 		if (handed) handed.continuedIn = c.run.n;
@@ -2142,10 +2178,18 @@ export function nextPrPoll(item: FactoryItem, at: number): Extract<Effect, { kin
 	return { kind: "poll_pr", key, pr: item.pr.number, at: at + (item.run?.ci?.webhooks ? CI_POLLING.webhookPrEveryMs : CI_POLLING.prEveryMs) };
 }
 
+function askPushCi(c: Change) {
+	const push = c.run.ci?.reviewPush;
+	if (c.item.state !== "review" || c.item.question || !push?.failure || push.asked || push.head !== c.run.ci?.moved) return;
+	push.asked = true;
+	ask(c, "push_ci", "CI failed after your push to " + shortSha(push.head) + ". Hand it back to fix?",
+		[choice("send_back"), choice("dismiss")], null, null);
+}
+
 function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
 	const { run } = c;
 	if (fact.state === "merged" || fact.state === "closed") {
-		if (c.item.feedback?.awaiting) c.item.question = null;
+		if (c.item.feedback?.awaiting || c.item.question?.kind === "push_ci") c.item.question = null;
 		if (run.step.kind === "review") {
 			if (run.step.turn) c.effects.push({ kind: "withdraw", key: c.key, to: "review" });
 			run.step.turn = null;
@@ -2173,11 +2217,22 @@ function prRead(c: Change, fact: Extract<Fact, { kind: "pr_read" }>): void {
 	}
 	run.step.attempt += 1;
 	// After handover, a move replaces the public verdict.
+	if (c.item.question?.kind === "push_ci" && fact.prHead && fact.prHead !== ci?.moved) {
+		c.item.question = null;
+		c.state("review");
+	}
+	if (ci && fact.prHead && c.item.state === "review" && c.item.mode !== "orchestrate" && !c.item.machineRemoved) {
+		if (fact.prHead !== ci.moved) ci.reviewPush = movedFrom(ci.head, fact.prHead) ? { head: fact.prHead } : undefined;
+		const push = ci.reviewPush, reading = fact.pushCi;
+		if (push && !push.asked && reading?.kind === "read" && reading.head === push.head && ciState(reading) === "failed")
+			push.failure = ciFixText(push.head, reading).slice(0, MAX_NOTE_CHARS);
+	}
 	if (ci !== null && fact.prHead !== null && movedFrom(ci.head, fact.prHead) !== ci.moved) {
 		ci.moved = movedFrom(ci.head, fact.prHead);
 		c.say(ci.moved === null ? `The pull request is back at ${shortSha(ci.head)}, the commit this run pushed.` : `The pull request moved to ${shortSha(ci.moved)} after it was handed over.`);
 		return readForHandoff(c, ci);
 	}
+	askPushCi(c);
 	c.effects.push(nextPrPoll(c.item, c.at));
 }
 
@@ -2377,7 +2432,7 @@ export const featureUpdateChoice = (target: string) => ({ id: "update_feature" a
 
 /** A single feature ref can move during part integration or before whole-feature CI is settled. */
 export function canUpdateFeature(item: FactoryItem): boolean {
-	if (item.mode !== "orchestrate" || crossRepo(item) || !item.pr || !item.head || item.state !== "waiting" || item.featureUpdate || item.machineRemoved) return false;
+	if (item.mode !== "orchestrate" || crossRepo(item) || !item.pr || !item.head || item.state !== "waiting" || item.featureUpdate || item.jobs?.some(j => j.conflictFix && activeJob(j)) || item.machineRemoved) return false;
 	return (item.run?.step.kind === "subtasks" || item.run?.step.kind === "ci") &&
 		(!item.question || item.question.kind === "feature_update" || featureCiQuestion(item));
 }
@@ -2472,6 +2527,23 @@ function followFeatureHead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>):
 	return true;
 }
 
+const repair = (job: FeatureJob) => job.ciFix || job.conflictFix;
+
+function queueRepair(c: Change, task: Omit<FeatureJob["task"], "dependsOn" | "budget">, fix: Pick<FeatureJob, "ciFix" | "conflictFix">) {
+	const { item } = c, plan = item.featurePlan!;
+	const budget = { tokens: Math.min(...plan.subtasks.map(t => t.budget.tokens)) };
+	(item.jobs ??= []).push({ id: childItemId(item.id, plan.version, task.key), task: { ...task, dependsOn: [], budget },
+		start: featureCiBranch(item, task.repo).head, ...fix, state: "draft", spent: noSpend(), head: null, report: "" });
+}
+
+function queueConflictFix(c: Change, conflictFix: NonNullable<FeatureJob["conflictFix"]>, files: string[]) {
+	const base = c.item.task.base;
+	const title = "Resolve conflicts with " + base;
+	queueRepair(c, { key: "conflict-fix-" + (c.item.revision + 1), title, brief: conflictPlan(base).text,
+		owns: files, acceptance: ["The feature includes " + conflictFix.target + " and its checks pass."] }, { conflictFix });
+	c.say("Queued a part to resolve conflicts with " + base + ".");
+}
+
 function readFeatureCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>) {
 	const { item } = c, branch = featureCiBranch(item, fact.repo), ci = branch.featureCi!;
 	const reading = fact.reading;
@@ -2486,11 +2558,8 @@ function readFeatureCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>) {
 			const key = `ci-fix-${item.revision + 1}`;
 			const brief = `Inspect the feature diff with git diff ${branch.seed ?? item.task.base}...${fact.head}.\n\n` +
 				ciFixText(fact.head, reading).slice(0, 10_000);
-			const task = { key, title: "Fix feature CI on " + shortSha(fact.head), brief, repo: fact.repo,
-				dependsOn: [], owns: fact.paths ?? [], acceptance: ["The failing feature checks pass."],
-				budget: { tokens: Math.min(...item.featurePlan!.subtasks.map(t => t.budget.tokens)) } };
-			item.jobs!.push({ id: childItemId(item.id, item.featurePlan!.version, key), task, start: fact.head, ciFix: { head: fact.head, fingerprint },
-				state: "draft", spent: noSpend(), head: null, report: "" });
+			queueRepair(c, { key, title: "Fix feature CI on " + shortSha(fact.head), brief, repo: fact.repo,
+				owns: fact.paths ?? [], acceptance: ["The failing feature checks pass."] }, { ciFix: { head: fact.head, fingerprint } });
 			c.say(`Queued a fix for feature CI on ${shortSha(fact.head)}.`);
 		}
 	}
@@ -2505,12 +2574,14 @@ function nextChild(c: Change) {
 	const { item } = c, plan = item.featurePlan!;
 	const jobs = item.jobs ??= [];
 	// A fix that has not started belongs only to the head that requested it.
-	let fix = jobs.find(j => j.ciFix && j.state === "draft" && !j.dispatchKey);
-	if (fix && (fix.ciFix!.head !== featureCiBranch(item, fix.task.repo).head || featureCiBranch(item, fix.task.repo).featureCi?.passed)) {
-		jobs.splice(jobs.indexOf(fix), 1);
-		fix = undefined;
-	}
-	const running = jobs.filter(j => j !== fix && activeJob(j));
+	const queued = jobs.filter(j => repair(j) && j.state === "draft" && !j.dispatchKey);
+	const fixes = queued.filter(job => {
+		const branch = featureCiBranch(item, job.task.repo);
+		if (!job.ciFix || (job.ciFix.head === branch.head && !branch.featureCi?.passed)) return true;
+		jobs.splice(jobs.indexOf(job), 1);
+		return false;
+	});
+	const running = jobs.filter(j => !queued.includes(j) && activeJob(j));
 	if (item.retryChildren) {
 		if (running.length) return;
 		delete item.retryChildren;
@@ -2544,29 +2615,37 @@ function nextChild(c: Change) {
 		if (canUseHosted(item, job.route)) free.hostedSeconds -= Math.max(0, (job.budget?.hostedSeconds ?? perChildSeconds) - job.spent.hostedSeconds);
 	}
 	let short: keyof ItemBudget | undefined;
-	for (const task of fix ? [fix.task, ...plan.subtasks] : plan.subtasks) {
-		if (running.length >= RULES.parallelChildren) break;
-		if (done.has(task.key) || !task.dependsOn.every(k => done.has(k)) || running.some(j => j.task.key === task.key || sharedPaths(j.task, task))) continue;
+	for (const task of [...fixes.map(j => j.task), ...plan.subtasks]) {
+		const fix = fixes.find(j => j.task === task);
+		// The requesting child is paused until this repair joins.
+		const competing = running.filter(j => j.id !== fix?.conflictFix?.child);
+		if (competing.length >= RULES.parallelChildren) continue;
+		const writers = fix?.conflictFix ? competing.filter(j => j.state !== "waiting") : competing;
+		if (done.has(task.key) || !task.dependsOn.every(k => done.has(k)) || writers.some(j => j.task.key === task.key || sharedPaths(j.task, task))) continue;
 		const route = item.routes?.[task.key];
 		const hosted = canUseHosted(item, route);
-		const budget = { tokens: task.budget.tokens, hostedSeconds: perChildSeconds };
+		const budget = { tokens: task.budget.tokens, hostedSeconds: fix?.conflictFix && hosted
+			? Math.min(perChildSeconds, Math.max(1, Math.floor(free.hostedSeconds))) : perChildSeconds };
 		if (budget.tokens > free.tokens || (hosted && budget.hostedSeconds > free.hostedSeconds)) {
 			short = budget.tokens > free.tokens ? "tokens" : "hostedSeconds";
 			continue;
 		}
 		const warm = jobs.filter(j => j.state === "done" && j.placement && task.dependsOn.includes(j.task.key)).map(j => placeKey(j.placement!.place));
-		const job: FeatureJob = fix && task === fix.task ? fix : { id: childItemId(item.id, plan.version, task.key), task,
+		const job: FeatureJob = fix ?? { id: childItemId(item.id, plan.version, task.key), task,
 			state: "draft", spent: noSpend(), head: null, start: featureCiBranch(item, task.repo).head, report: "" };
 		Object.assign(job, { budget, route, warm, dispatchedAt: c.at });
 		free.tokens -= budget.tokens;
 		if (hosted) free.hostedSeconds -= budget.hostedSeconds;
-		if (job === fix) c.run.rounds.ci++;
+		if (fix) c.run.rounds[fix.conflictFix ? "conflict" : "ci"]++;
 		else jobs.push(job);
 		running.push(job);
 		dispatchJob(c, job);
 	}
+	// A child waiting on its own repair cannot release its reservation.
+	const requester = fixes.find(j => j.conflictFix)?.conflictFix?.child;
+	if (short && running.every(j => j.id === requester))
+		return ask(c, "budget", "The remaining feature budget cannot cover the next subtask.", [choice("raise"), choice("revise"), choice("give_up")], short, null);
 	if (running.length) return;
-	if (short) return ask(c, "budget", "The remaining feature budget cannot cover the next subtask.", [choice("raise"), choice("revise"), choice("give_up")], short, null);
 	if (!featureSettled(item)) {
 		c.state("waiting", { reason: "ci", sentence: "Waiting for CI on the current feature head.", retryAt: null });
 		return;
@@ -2638,6 +2717,7 @@ function runSingle(c: Change) {
 }
 
 const CHOICES: Record<ChoiceId, string> = {
+	send_back: "Hand it back", dismiss: "Dismiss",
 	send: feedbackWords.send, leave: feedbackWords.leave,
 	run_single: "Approve for one implementer", orchestrate_anyway: "Ask for subtasks",
 	approve: "Approve the plan",
@@ -2746,7 +2826,7 @@ function ask(c: Change, kind: QuestionKind, text: string, choices: Question["cho
 	const { item } = c;
 	// The revision this change gives the item: no two questions of an item share it.
 	const { policy: explicit, evidence = kind === "integration" && item.integration?.url ? text.replace(item.integration.url, "").trim() : text, target, ...fields } = details;
-	const policy = explicit ?? (kind === "integration" || kind === "feature_update" || kind === "sandbox_failed" ||
+	const policy = explicit ?? (kind === "integration" || (kind === "feature_update" && cause !== "repeated") || kind === "sandbox_failed" ||
 		kind === "no_change" || kind === "out_of_memory" || kind === "check_environment" ? kind : undefined);
 	const suggested = policy && AUTO_POLICY[policy].flatMap(step => step.choices).find(id => choices.some(choice => choice.id === id));
 	let recommended = choices[0]!.id;
@@ -2817,6 +2897,15 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 	const resume = question.resume;
 	if (question.kind === "integration") return integrationAnswer(flow(c), fact.choice, question.text);
 	switch (fact.choice) {
+		case "send_back":
+		case "dismiss": {
+			const push = run.ci?.reviewPush;
+			if (question.kind !== "push_ci" || !push?.failure || push.head !== run.ci?.moved) return false;
+			c.state("review");
+			if (fact.choice === "send_back") return sendBack(c, push.failure, push.head);
+			takeHeld(c);
+			break;
+		}
 		case "run_checks": {
 			if (!item.parent || !run.ci) return false;
 			const plan = subtaskCheckPlan(run.ci, note);

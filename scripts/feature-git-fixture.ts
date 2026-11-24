@@ -1,8 +1,8 @@
 /** Preloaded only by the feature actor e2e, with the loopback GitHub stand-in and a fresh test directory. */
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { FakeHandle } from "../server/src/sandbox-fake.js";
+import { FakeHandle, FakeWindlass } from "../server/src/sandbox-fake.js";
 import { CI_POLLING } from "../server/src/github/ci.js";
 import { CROSS_POLLING } from "../server/src/factory/cross-repo.js";
 
@@ -11,6 +11,15 @@ if (!root || new URL(process.env.WLP_GITHUB_API_URL!).hostname !== "127.0.0.1") 
 Object.assign(CI_POLLING, {everyMs: 200});
 // A cross-repo feature's run is read every second; its merges are woken by webhooks, the poll being a fallback.
 Object.assign(CROSS_POLLING, {integrationMs: 1000, mergeMs: 120_000});
+// The recorded builder keeps the feature's setup script when resolving the target-update fixture.
+const fakeTurn = FakeWindlass.prototype.runTurn;
+FakeWindlass.prototype.runTurn = async function(sandbox, input) {
+	if (input.prompt.includes("git merge origin/main; do not rebase")) {
+		execFileSync("git", ["-c", "user.name=Builder", "-c", "user.email=builder@example.com",
+			"merge", "--no-edit", "-X", "ours", "origin/main"], { cwd: join(root, sandbox.id, "workspace") });
+	}
+	return fakeTurn.call(this, sandbox, input);
+};
 const fakeRun = FakeHandle.prototype.run;
 FakeHandle.prototype.run = async function(command, options = {}) {
 	// A cross-repo feature's planning inputs, and what its fake planner reads of them, are real files too.

@@ -65,7 +65,7 @@ import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
-import { RULES, activeJob, advance, personAdds, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
+import { RULES, activeJob, advance, personAdds, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, plannerCapacityText, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, requestedReviewBody, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, RequestedReview, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -1514,9 +1514,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return "deferred";
 		case "feedback_ack": {
 			const hub = await github(c, meta);
-			await hub.app.acknowledgeFeedback(hub.installationId, { id: meta.repository.id, owner: hub.owner, name: hub.name }, effect.key).catch(error => {
-				if (!(error instanceof GithubError && [404, 410].includes(error.status))) throw error;
-			});
+			await hub.app.acknowledgeFeedback(hub.installationId, { id: meta.repository.id, owner: hub.owner, name: hub.name }, effect.key);
 			return true;
 		}
 		case "feedback_comment": {
@@ -1609,9 +1607,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				result = { head };
 			} catch (error) {
 				if (error instanceof GithubError && error.status === 409) {
-					const details = error.conflictFiles.length ? ` in ${error.conflictFiles.join(", ")}` :
-						error.said && !/^merge conflict\.?$/i.test(error.said) ? ` (${error.said})` : "";
-					result = { problem: `${item.task.base} conflicts with the feature branch${details}. Resolve it on GitHub or give up.` };
+					result = { conflicts: error.conflictFiles };
 				} else if (lostAccess(error)) result = { problem: `GitHub refused the feature update. ${describeError(error)}` };
 				else throw error;
 			}
@@ -1629,9 +1625,12 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			if (claim === "claimed") {
 				try {
 					const hub = await github(c, meta, "write");
-					const head = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { contents: "write", metadata: "read" } },
-						token => advanceFeatureRef(hub.app, token, hub.owner, hub.name, item.parent!.itemId, item.childBase!, effect.head));
-					result = { key: effect.key, head };
+					result = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { contents: "write", metadata: "read" } }, async token => {
+						if (item.mergeTarget && (await compareBranches(hub.app, token, hub.owner, hub.name, item.mergeTarget, effect.head)).behind)
+							return { key: effect.key, reason: "The conflict resolution did not merge the requested target commit.", conflict: false, missingTarget: true };
+						const head = await advanceFeatureRef(hub.app, token, hub.owner, hub.name, item.parent!.itemId, item.childBase!, effect.head);
+						return { key: effect.key, head };
+					});
 				} catch (error) {
 					if (!lostAccess(error) && !(error instanceof GithubError && error.status === 409)) throw error;
 					result = { key: effect.key, reason: describeError(error), conflict: error instanceof GithubError && error.status === 409 && /merge/i.test(error.message) };
@@ -1639,7 +1638,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				await parent.internalFinishJoin(item.id, result);
 			} else result = claim;
 			if ("head" in result) await take(c, { kind: "integrated", key: effect.key, head: result.head, at: Date.now() });
-			else await take(c, { kind: "feature_problem", key: effect.key, reason: result.reason, rebase: result.conflict, at: Date.now() });
+			else await take(c, { kind: "feature_problem", key: effect.key, reason: result.reason, rebase: result.conflict, missingTarget: result.missingTarget, at: Date.now() });
 			return true;
 		}
 		case "dispatch":
@@ -1757,6 +1756,10 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const parent = item.place;
 				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
 				const preferred = meta.defaultPlace;
+				const selected = preferred?.place;
+				const defaultPlace = selected && typeof selected === "object" ? { kind: "machine" as const, machineId: selected.machine }
+					: selected === "hosted" ? { kind: "hosted" as const } : parent;
+				text += "\n" + plannerCapacityText(defaultPlace, inventory.machines);
 				if (preferred?.place) {
 					const chosen = preferred.place;
 					// A hosted fallback runs this planner only. Its parts still prefer a compatible machine.
@@ -1907,7 +1910,13 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			await factsOf(c, meta);
 			const hub = await github(c, meta);
 			const pull = await hub.pull(effect.pr);
-			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, state: pull.state, mergedByApp: pull.mergedByApp, prHead: pull.headSha || null, webhooks: githubConfig().pollFallback });
+			const ci = item.run?.ci;
+			const pushCi = ci && item.state === "review" && item.mode !== "orchestrate" && !item.machineRemoved &&
+				(pull.state === "open" || pull.state === "draft") && pull.headSha && pull.headSha !== ci.head &&
+				(pull.headSha !== ci.moved || (ci.reviewPush?.head === pull.headSha && !ci.reviewPush.asked))
+				? await readCi(hub.app, { installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: pull.headSha })
+				: undefined;
+			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, pushCi, state: pull.state, mergedByApp: pull.mergedByApp, prHead: pull.headSha || null, webhooks: githubConfig().pollFallback });
 			if ((pull.state === "open" || pull.state === "draft") && item.state === "review") await reconcileFeedback(c, meta, hub, effect.pr);
 			return true;
 		}
@@ -2124,7 +2133,7 @@ export const workItem = actor({
 			const item = c.vars.stored!.item;
 			const job = item.jobs?.find(j => j.id === child);
 			if (!job || ENDED.has(item.state)) return "finished";
-			if (item.featureUpdate || item.question?.kind === "feature_update") return "pending";
+			if (item.featureUpdate || item.question?.kind === "feature_update" || item.jobs?.some(j => j.conflictFix?.child === child && activeJob(j))) return "pending";
 			if (job.featureUpdateReceipt === request) return "finished";
 			return await take(c, { kind: "update_feature", at: Date.now(), by: automatic ? "platform" : "person:" + c.key[0], child, request, target, automatic }) ? "pending" : "finished";
 		},

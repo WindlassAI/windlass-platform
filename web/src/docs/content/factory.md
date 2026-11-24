@@ -278,7 +278,7 @@ For a missing environment variable, the builder can request a secret by name and
 
 - **Start** a draft.
 - **Retry** a failed top-level item if it has not started dispatching subtasks. A retry starts a new run.
-- **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. You can also ask for changes on the pull request itself (see below).
+- **Send back…** a single-implementer item in review, with a note. Its agent works on the same branch, the pull request is updated and the work gets a new verdict. If CI fails on a newer push after handover, choose **Hand it back** to start a run with the failing checks, or **Dismiss** to keep it in review. You can also ask for changes on the pull request itself (see below).
 - **Send note** to a working item's agent, or on a feature's page to a running part. While its builder's turn runs, the note goes into that turn, as a message you send to a running agent does. Otherwise it goes with the builder's next turn. The note is your own words, shown as yours in **What happened**, and the second review is held to it as it is to a send-back.
 - **Cancel…** an item.
 
@@ -302,7 +302,7 @@ You can ask for changes on the item's pull request at GitHub instead of on its p
 
 **Not taken.** Feedback is not taken on a failed, done or cancelled item, on a subtask's own work, or after its machine was removed.
 
-**On GitHub**, a taken comment gets a 👀 reaction. Reviews cannot take reactions. The item's comment on the pull request says which run works on the changes. At the next handoff, Windlass asks each writer whose change request it took to review again. Windlass never replies to people who do not count.
+**On GitHub**, a taken comment gets a 👀 reaction. Reviews cannot take reactions. The item's comment on the pull request says which run works on the changes. At the next handoff, Windlass asks each writer whose change request it took to review again. Windlass never replies to people who do not count. If GitHub refuses the 👀 reaction for lack of permission, the factory logs the refusal once and continues.
 
 **On the item's page**, the Checks panel lists the open comments, and **Show all batches** under them lists each batch: who wrote it and when, the file and line, a link to it on GitHub, and what happened to it. A batch is **Taken** into a run, **Held** while a run works, **Waiting** while comments collect, **Needs you** when it asks first, or **Not taken** with the reason. Feedback from people without write access shows as **Counted only**.
 
@@ -431,11 +431,11 @@ When the feature's own turns use its own budget, for example a long planning, it
 
 Each subtask is a work item with its own page, which says **subtask of** the feature. It starts from the feature's branch, runs at its approved placement with its own agent, model and effort (the feature's Windlass model where it chose none), and has the subtask's budget. It is given its brief, its paths and the reports of the subtasks it waits for.
 
-Up to three subtasks can run together when their dependencies are done and their owned paths are disjoint. A subtask with no owned paths runs alone. Each gets its own branch, place and reserved budget. If a place or budget share is unavailable, it waits while the others work.
+Up to three subtasks can run together when their dependencies are done and their owned paths are disjoint. A subtask with no owned paths runs alone. The planner sees how many parts can run at once on the default machine given its free slots, or the three-part limit for hosted work. Each gets its own branch, place and reserved budget. If a place or budget share is unavailable, it waits while the others work.
 
 By default, each part can join the feature as soon as its local checks pass. Dependent parts can then start. To require passing GitHub CI on each part as well, turn on **Wait for CI on each part** in the repository’s settings before the feature branch opens. The platform integrates one branch at a time by fast-forward or merge commit. A conflict goes back to that subtask to merge the feature branch and pass its checks again. The final summary and review wait for every subtask.
 
-When the target branch moves during a single-repository feature, choose **Update the feature from main** (or the name of your target) on the feature page or a CI question. The platform merges the target into the feature branch between subtask integrations. New parts start from the updated tip. A running part whose CI needs attention can then choose **Update from the base branch and run CI again**. If the target conflicts with the feature, resolve it on GitHub and check the branch again, or choose **Give up**.
+When the target branch moves during a single-repository feature, choose **Update the feature from main** (or the name of your target) on the feature page or a CI question. The platform merges the target into the feature branch between subtask integrations. New parts start from the updated tip. A running part whose CI needs attention can then choose **Update from the base branch and run CI again**. If the target conflicts with the feature, a new part merges the target, resolves the conflicts and goes through the usual checks and integration. If that part fails twice, the feature asks you to check the branch again or give up.
 
 **Following them as they run.** Once the plan is approved, the feature's page shows a **Subtasks** block where it showed where the item is. Its first line counts them, for example "2 running · 1 asks you · 1 of 6 done", with a bar of one segment per subtask. Under it each subtask has one row, in the plan's order: what it is doing now (its step and fix round, for example "implementing · turn 2" or "fixing · your checks failed, fix 1"), where it runs (with "overflow from nas" when it went to an alternative), what it has spent of its token budget, and a **Session** link to its agent. A subtask that asks you shows the start of its question and **Answer**, which opens its page. A subtask not started says what it waits for, for example "after 2 and 3". The approved plan folds under the block to its goal; **Show all** opens it.
 
