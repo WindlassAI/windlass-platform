@@ -152,10 +152,13 @@ export function validRequestedSecretName(name: unknown): name is string {
 		&& !name.endsWith("_PROXY") && !REQUEST_RESERVED_NAMES.includes(name) && !REQUEST_RESERVED_PREFIXES.some(prefix => name.startsWith(prefix));
 }
 
+export const unavailableSecretName = (name: string) => `${name} cannot be requested; ask your person to set it under Secrets if you need it.`;
+export const MAX_SECRET_REQUESTS = 3;
+
 /** Ordinary questions count toward the point at which a builder must stop requesting secrets. */
 export function secretRequestLimit(name: string, asks: number, declined: readonly string[], period: "run" | "session"): string | null {
-	if (declined.includes(name)) return `Your person chose to continue without ${name}. Do not request it again in this ${period}.`;
-	return asks >= 3 ? `No more secret requests are allowed in this ${period}; three questions have already been recorded.` : null;
+	if (asks >= MAX_SECRET_REQUESTS) return `No more secret requests are allowed in this ${period}; three questions have already been recorded.`;
+	return declined.includes(name) ? unavailableSecretName(name) : null;
 }
 
 /** The name as it is saved: an environment variable's. Throws SecretProblem. */

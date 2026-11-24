@@ -38,7 +38,7 @@
 import { REVIEW_TOOL } from "./factory/reviewer-task.js";
 import { anyOf, machineHarnesses } from "./sandbox/harnesses.js";
 import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS, type SecretRequest, type ItemAttachment, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
-import { validRequestedSecretName, type CommandSandbox, type Redactor } from "./repo-secrets.js";
+import { unavailableSecretName, validRequestedSecretName, type CommandSandbox, type Redactor } from "./repo-secrets.js";
 
 /**
  * A name no MCP server of a user's may have (personal-servers.ts), and that the platform takes out of
@@ -390,7 +390,9 @@ export function requestSecret(given: Record<string, unknown>, already: boolean, 
 	if (untrusted) return { told: "A request coming from third-party text was not shown as a secret prompt." };
 	if (already) return { told: ASK_AGAIN };
 	const { name, why } = given;
-	if (!validRequestedSecretName(name) || redactor.text(name) !== name) return { told: "Use an available uppercase environment variable name of 2 to 64 characters." };
+	if (!validRequestedSecretName(name) || redactor.text(name) !== name) return {
+		told: unavailableSecretName(typeof name === "string" && /^[A-Z][A-Z0-9_]{1,63}$/.test(name) && redactor.text(name) === name ? name : "That name"),
+	};
 	if (typeof why !== "string" || Object.keys(given).some(key => key !== "name" && key !== "why")) return { told: "Supply only a name and a short reason." };
 	const reason = redactor.text(why.replace(CONTROL, "").replace(HIDDEN, "").replace(/\s+/g, " ").trim());
 	if (!reason || reason.length > 240) return { told: "Give a reason of 1 to 240 characters." };

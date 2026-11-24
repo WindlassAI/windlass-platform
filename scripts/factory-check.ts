@@ -913,6 +913,11 @@ function askedEnd(outcome: "succeeded" | "unresolved" | "interrupted" | "stopped
 		start, turn, asks(1), replies(1), turn, secret("FIRST_TOKEN", 2), skip, turn, secret("SECOND_TOKEN", 3), skip,
 		turn, { fact: secretEnd("LAST_TOKEN"), state: "working", effects: ["publish"] },
 	]);
+	const attempt = (previous: number): Row => ({ fact: k => ({ kind: "secret_attempt", key: k.key, previous }), state: "working", effects: [], ...(previous === 3 && { unchanged: true }) });
+	drive("refused item requests use the run allowance and an accepted third request is charged once", newItem(), [
+		start, turn, attempt(0), attempt(1), attempt(2), attempt(3), secret("LAST_ALLOWED", 3), skip, turn,
+		attempt(3), { fact: secretEnd("OVER_LIMIT"), state: "working", effects: ["publish"] },
+	]);
 	drive("a skipped name cannot open another question in this run", newItem(), [
 		start, turn, secret("SERVICE_TOKEN", 1), skip, turn, { fact: secretEnd("SERVICE_TOKEN"), state: "working", effects: ["publish"] },
 	]);
@@ -1152,7 +1157,12 @@ drive("the machine coming back answers the question about waiting", newItem(), [
 		row(6, 2, { kind: "user", text: "Use the fixtures folder.", model: "m", effort: null, steer: true }),
 		row(7, 2, { kind: "user", text: "And keep it short.", model: "m", effort: null, steer: true, held: true }),
 	], 2, ["And keep it short."]);
-	expect("a session's whole task: this turn's message, what was sent since, the first prompt, and a labelled reconstruction", ["Your earlier conversation is gone", "> Now add a test for it.", "> Use the fixtures folder.", "> And keep it short.", "The session's first prompt was", "> Make the parser strict.", "reconstructed by the platform", "files changed: src/parse.ts", "Done: the parser rejects trailing commas."].every((part) => whole.includes(part)) && whole.split("And keep it short.").length === 2, whole);
+	expect("a session's whole task: this turn's message, what was sent since, the first prompt, and a labelled reconstruction", ["Your earlier conversation is gone", "> Now add a test for it.", "> Use the fixtures folder.", "> And keep it short.", "The session's first prompt was", "> Make the parser strict.", "reconstructed by the platform", "files changed: src/parse.ts", "Done: the parser rejects trailing commas."].every((part) => whole.text.includes(part)) && whole.text.split("And keep it short.").length === 2, whole.text);
+	const source = (await import("../server/src/factory/untrusted.js")).untrustedWords.conversation;
+	expect("reconstruction marks earlier agent words for the resumed prompt and secret guard", whole.untrusted.join() === source && whole.text.includes("untrusted quoted text"));
+	const user = row(1, 1, { kind: "user", text: "original" });
+	const chunk = row(2, 1, { kind: "acp", update: { sessionUpdate: "agent_message_chunk", content: { text: "earlier reply" } } });
+	expect("ACP quotes have the same source, and person-only history has none", sessionWholeTask([user, chunk], 2).untrusted.join() === source && !sessionWholeTask([user], 2).untrusted.length);
 }
 
 // The live case: a turn cut off by a deploy, then a sandbox that could not be prepared on every later turn. Those are no
@@ -2596,6 +2606,9 @@ try {
 		const item = walk(newItem(), pushedRun(HEAD)).item;
 		const poll = async (before: FactoryItem) => walk(before, [ciFact(await readCi(app, target), HEAD)]);
 		ciData.runs = [linux, ...cancelled, skip];
+		const workflow = "9007199254740993";
+		const details = { run_id: BigInt(workflow), head_sha: HEAD, status: "completed", conclusion: "cancelled", steps: [], runner_id: null, runner_name: "" };
+		for (const job of cancelled) repo.jobs.set(String(job.id), details);
 		const initial = await poll(item);
 		const retry = effect(initial.last, "rerun_ci");
 		assert.ok(retry);
@@ -2610,16 +2623,17 @@ try {
 		expect("read-only installation explains the skipped rerun and hands over cancelled checks", !denied.accepted.length && refused.last.events.some(e => e.said.includes("Actions: write")) && effect(unavailable.last, "handoff")?.verdict.ci.state === "cancelled");
 
 		// The stand-in supplies the installation token and job records. Capture only the workflow POST.
-		const workflow = "9007199254740993";
-		for (const job of cancelled) {
-			const details = { run_id: BigInt(workflow), head_sha: HEAD, steps: [], runner_id: null, runner_name: "" };
-			repo.jobs.set(String(job.id), details);
-		}
 		const posts: string[] = [];
 		const original = globalThis.fetch;
 		standin.appPermissions = { ...granted, actions: "write" };
+		let sibling = false;
 		globalThis.fetch = (input, init) => {
 			const path = new URL(String(input)).pathname;
+			if (path.endsWith(`/runs/${workflow}/jobs`)) {
+				const jobs = cancelled.map(job => ({ ...job, head_sha: HEAD }));
+				if (sibling) jobs.push({ ...checkRun(7000, "manual sibling", "cancelled"), head_sha: HEAD });
+				return Promise.resolve(Response.json({ jobs }));
+			}
 			if (!path.endsWith("/rerun-failed-jobs")) return original(input, init);
 			const token = standin.minted.at(-1)?.token;
 			assert.ok(token && new Headers(init?.headers).get("authorization") === `Bearer ${token}`, "the POST uses the installation token");
@@ -2628,6 +2642,10 @@ try {
 		};
 		let result;
 		try {
+			sibling = true;
+			const mixed = await rerunCancelled(app, target, retry.jobs);
+			expect("a workflow containing an additional stopped job cannot restart it as a sibling", !mixed.accepted.length && !posts.length);
+			sibling = false;
 			result = await rerunCancelled(app, target, retry.jobs);
 		} finally {
 			globalThis.fetch = original;
@@ -2643,12 +2661,37 @@ try {
 		const passed = await poll(waiting);
 		expect("successful reruns win regardless of listing order and skipped checks do not inflate the count", effect(passed.last, "handoff")?.verdict.said.ci === "CI passed (4 checks).");
 		ciData.runs = [linux, skip, ...cancelled, ...names.map((name, i) => checkRun(5500 + i, name, "cancelled"))];
+		names.forEach((_, i) => repo.jobs.set(String(5500 + i), details));
 		const twice = await poll(waiting);
 		const handoff = effect(twice.last, "handoff");
 		const sentence = `CI did not finish: 3 checks were cancelled (${names.join(", ")}); nothing failed.`;
 		expect("cancelled twice names the checks in the handoff and verification without another rerun or fix turn", handoff?.verdict.result === "unverified" && handoff.words.includes(sentence) && !handoff.words.includes("CI passed") && effect(twice.last, "verified_check")?.conclusion === "action_required" && !effect(twice.last, "rerun_ci") && !effect(twice.last, "deliver") && twice.item.run?.rounds.ci === 0);
 		ciData.runs = [linux, checkRun(5503, "macOS tests", "stale")];
 		expect("a stale check prevents a pass", ciState(await readCi(app, target)) === "cancelled");
+		const started = { ...details, runner_name: "runner", runner_id: 1, steps: [{ status: "completed" }], started_at: "2026-01-01T00:00:00Z" };
+		const outcomes = ["manual", "unknown timeout", "timeout", "stale"];
+		ciData.runs = outcomes.map((name, i) => checkRun(7100 + i, name, i === 3 ? "stale" : "cancelled"));
+		for (const [i, name] of outcomes.entries()) {
+			const job = { ...started, name, completed_at: i === 0 ? "2026-01-01T00:09:59Z" : "2026-01-01T00:10:00Z" };
+			repo.jobs.set(String(7100 + i), i === 3 ? details : job);
+		}
+		globalThis.fetch = (input, init) => {
+			const url = new URL(String(input));
+			if (url.pathname.endsWith(`/runs/${workflow}`)) return Promise.resolve(Response.json({ event: "push", head_sha: HEAD, path: ".github/workflows/build.yml" }));
+			if (url.pathname.endsWith("/contents/.github/workflows/build.yml") && url.searchParams.get("ref") === HEAD) {
+				const source = "jobs:\n  manual: {timeout-minutes: 10}\n  timeout: {timeout-minutes: 10}\n";
+				return Promise.resolve(Response.json({ path: ".github/workflows/build.yml", type: "file", encoding: "base64", content: Buffer.from(source).toString("base64") }));
+			}
+			return original(input, init);
+		};
+		try {
+			const timed = await poll(item);
+			expect("only a job reaching its configured timeout is eligible, including the exact boundary", effect(timed.last, "rerun_ci")?.jobs.map(j => j.name).join() === "timeout");
+			ciData.runs = ciData.runs.filter((_, i) => i !== 2);
+			const stopped = await poll(item);
+			const words = effect(stopped.last, "handoff")?.verdict.said.ci;
+			expect("mid-run, unknown timeout and stale cancellations hand over without requesting a rerun", !effect(stopped.last, "rerun_ci") && words === "CI did not finish: 3 checks were cancelled (manual, unknown timeout, stale); not rerun because they were stopped while running.");
+		} finally { globalThis.fetch = original; }
 	}
 
 	{

@@ -1904,6 +1904,8 @@ export interface ItemEvent {
 
 /** A check run or commit status of CI, as the verdict lists it. */
 export interface VerdictRun {
+	/** A cancellation without evidence of runner starvation or timeout. */
+	stopped?: true;
 	name: string;
 	/** The app that reported it ("github-actions"), or "status" for a commit status. */
 	app: string;
