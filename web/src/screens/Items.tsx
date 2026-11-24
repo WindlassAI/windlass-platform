@@ -14,6 +14,7 @@
  * start composer of an agent does, with the same cards (components/PlaceChoice.tsx): this platform, or one of the user's
  * machines. On a machine the server gives it that machine's first available sandbox.
  */
+import { originIssue } from "../lib/origin";
 import { type GithubId, type HarnessId, type StepKind, ITEM_PAGE_DEFAULT, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemCursor, type ItemFeed, type ItemMode, type ItemState, type ItemSummary } from "@contract";
 import { savedPlace, resolveDefaultPlace } from "../../../server/src/factory/default-place";
 import { byFiling, nextCursor } from "../../../server/src/item-pages";
@@ -406,13 +407,13 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 					) : null}
 					{item.origin ? (
 						<span>
-							<a className="item-pull" href={item.origin.issue.url} target="_blank" rel="noreferrer" aria-label={`Issue #${item.origin.issue.number} on GitHub`}>
-								issue #{item.origin.issue.number}
+							<a className="item-pull" href={originIssue(item.origin).url} target="_blank" rel="noreferrer" aria-label={item.origin.issue ? `Issue #${item.origin.issue.number} on GitHub` : `Issue ${item.origin.linear.identifier} on Linear`}>
+								{originIssue(item.origin).label}
 								<ExternalIcon size={10} />
 							</a>
 						</span>
 					) : null}
-					{ci && item.origin && !item.origin.issue.trusted ? <span>from an outside author</span> : null}
+					{ci && item.origin && !originIssue(item.origin).trusted ? <span>from an outside author</span> : null}
 					{item.source === "api" ? <span>from the API</span> : null}
 					{item.agent && item.agent.harness !== "windlass" ? (
 						<span>

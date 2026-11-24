@@ -59,7 +59,7 @@ async function render(screen: () => ReturnType<typeof createElement>, change: (v
 	await wait();
 }
 
-const fromIssue = (trusted: boolean) => items.find((item) => item.origin?.issue.trusted === trusted) as ItemSummary;
+const fromIssue = (trusted: boolean) => items.find((item) => item.origin?.issue?.trusted === trusted) as ItemSummary;
 const itemPage = (pick: () => ItemSummary) => () => createElement(Item, { page: useItem(pick().id, true) });
 const buttons = (scope: ParentNode, label: string) => [...scope.querySelectorAll("button")].filter((button) => button.textContent === label);
 
@@ -110,7 +110,7 @@ describe("an item from a GitHub issue", () => {
 		const section = host.querySelector("section[aria-labelledby='repo-items']") as HTMLElement;
 		const rowOf = (item: ItemSummary) => [...section.querySelectorAll("li.item-row")].find((row) => row.querySelector(".agent-title")?.textContent?.startsWith(item.title)) as HTMLElement;
 		for (const item of [fromIssue(false), fromIssue(true)]) {
-			const issue = item.origin?.issue as NonNullable<ItemSummary["origin"]>["issue"];
+			const issue = item.origin?.issue as NonNullable<NonNullable<ItemSummary["origin"]>["issue"]>;
 			const links = [...rowOf(item).querySelectorAll("a")].filter((link) => link.getAttribute("href") === issue.url);
 			expect(links.map((link) => link.textContent)).toEqual([`issue #${issue.number}`]);
 			expect(links[0]?.getAttribute("aria-label")).toBe(`Issue #${issue.number} on GitHub`);
@@ -160,7 +160,7 @@ describe("an item from a GitHub issue", () => {
 	});
 
 	it("as a draft from the web, or from the person's own issue, keeps Start in the header and its task where it was", async () => {
-		await render(itemPage(() => fromIssue(false)), (view) => ({ ...view, origin: view.origin && { ...view.origin, issue: { ...view.origin.issue, trusted: true } } }));
+		await render(itemPage(() => fromIssue(false)), (view) => ({ ...view, origin: view.origin?.issue ? { ...view.origin, issue: { ...view.origin.issue, trusted: true } } : view.origin }));
 		expect(buttons(host.querySelector(".item-actions") as HTMLElement, "Start")).toHaveLength(1);
 		expect(buttons(host, "Start")).toHaveLength(1);
 		expect(host.querySelector(".item-snapshot")).toBeNull();
