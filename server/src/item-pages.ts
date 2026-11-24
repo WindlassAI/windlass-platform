@@ -27,7 +27,7 @@ export class ItemPageProblem extends Error {
 }
 
 const ENDED: ReadonlySet<ItemSummary["state"]> = new Set(["done", "failed", "cancelled"]);
-const SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["web", "api", "github"]);
+const SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["web", "api", "github", "linear"]);
 
 /** A page as asked for, checked: the cursor, the limit, and what it keeps. */
 export interface CleanPage {
@@ -56,7 +56,7 @@ export function cleanItemPage(raw: unknown): CleanPage | null {
 	if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > ITEM_PAGE_MAX) throw new ItemPageProblem(`A page holds 1 to ${ITEM_PAGE_MAX} work items.`);
 	if (input.ended !== undefined && typeof input.ended !== "boolean") throw new ItemPageProblem("Say true or false for ended items only.");
 	if (input.repository !== undefined && input.repository !== null && !isGithubId(input.repository)) throw new ItemPageProblem("Name the repository by GitHub's id for it.");
-	if (input.source !== undefined && input.source !== null && !SOURCES.has(input.source as ItemSummary["source"])) throw new ItemPageProblem("Filed from is web, api or github.");
+	if (input.source !== undefined && input.source !== null && !SOURCES.has(input.source as ItemSummary["source"])) throw new ItemPageProblem("Filed from is web, api, github or linear.");
 	return { before, limit, ended: typeof input.ended === "boolean" ? input.ended : null, repository: (input.repository ?? null) as GithubId | null, source: (input.source ?? null) as ItemSummary["source"] | null };
 }
 

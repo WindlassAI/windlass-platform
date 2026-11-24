@@ -551,6 +551,46 @@ export interface GithubStatus {
 	connection: GithubConnection | null;
 }
 
+/**
+ * The Linear integration, one-way: an issue in a mapped team that gains the `windlass` label, or is assigned to the
+ * Windlass app user, is filed as a work item on the team's repository. Windlass writes nothing back to Linear.
+ * `UserActions.linear` and the actions after it are the Settings page's.
+ */
+export type LinearStatus =
+	/** The deployment has no Linear OAuth client or signing secret (server env): Settings shows nothing to connect. */
+	| { state: "off" }
+	| { state: "disconnected" }
+	| { state: "connected"; connection: LinearConnection };
+
+export interface LinearConnection {
+	workspace: { id: string; name: string; urlKey: string };
+	/** The Linear user who connected. An issue they created is theirs: it files as a started item, as one of the owner's own GitHub issues does. */
+	user: { id: string; name: string };
+	/** The Windlass app user an issue is assigned to. Null when Linear did not report one. */
+	appUser: { id: string; name: string } | null;
+	connectedAt: number;
+}
+
+/** A team of the connected workspace and the repository it files to; null: its issues are ignored. */
+export interface LinearTeam {
+	id: string;
+	/** The prefix of its issues' identifiers ("ENG"). */
+	key: string;
+	name: string;
+	mapping: LinearMapping | null;
+}
+
+/** One team files to one repository of the owner's GitHub connection. */
+export interface LinearMapping {
+	teamId: string;
+	repository: { id: GithubId; owner: string; name: string };
+	savedAt: number;
+}
+
+export interface LinearTeamList {
+	teams: LinearTeam[];
+}
+
 /** A repository the connection covers and the connected GitHub user can open. */
 export interface GithubRepository {
 	/** GitHub's id for it: what `CreateSessionInput.repository` names. */
@@ -1666,7 +1706,7 @@ export interface ItemListPage {
 	limit?: number;
 	ended?: boolean;
 	repository?: GithubId | null;
-	source?: "web" | "api" | "github" | null;
+	source?: ItemSource | null;
 }
 
 /** How many ended work items the live feed carries (`ItemFeed.ended`): the first page of them. */
@@ -1680,7 +1720,7 @@ export interface ItemCount {
 	repository: GithubId;
 	owner: string;
 	name: string;
-	source: "web" | "api" | "github";
+	source: ItemSource;
 	/** Not done, failed or cancelled. */
 	open: number;
 	done: number;
@@ -2166,6 +2206,33 @@ export interface ItemAgent {
 	fiveHour: { first: number; latest: number } | null;
 }
 
+/** How a work item was filed. "github" and "linear" are the two intakes that file from an issue (factory/intake.ts). */
+export type ItemSource = "web" | "api" | "github" | "linear";
+
+/**
+ * A work item filed from a GitHub issue. `issue.number` is the issue's own number in `ItemSummary.repository`;
+ * the item's pull request closes it. `sender` is the GitHub login that added the label or wrote the command.
+ */
+export interface GithubIssueOrigin {
+	issue: { number: number; url: string; author: string; trusted: boolean };
+	sender: string;
+	linear?: undefined;
+}
+
+/**
+ * A work item filed from a Linear issue. Linear has no GitHub issue number: nothing here is polled, commented on or closed
+ * (the integration is one-way). `identifier` is the issue's own ("ENG-12"), `url` its page, `author` the creator's name and
+ * `sender` the name of the person who labelled or assigned it. `trusted` is true when the creator is the Linear user who
+ * connected the workspace: otherwise the item is a draft and its text is third-party text.
+ */
+export interface LinearIssueOrigin {
+	linear: { id: string; identifier: string; url: string; author: string; trusted: boolean };
+	sender: string;
+	issue?: undefined;
+}
+
+export type ItemOrigin = GithubIssueOrigin | LinearIssueOrigin;
+
 export interface ItemSummary {
 	/** Its builder session has not been created yet. */
 	awaitingPlace?: boolean;
@@ -2183,9 +2250,10 @@ export interface ItemSummary {
 	/** A cross-repo feature's combined run. */
 	integration?: IntegrationView;
 	place: SandboxPlace;
-	/** How the item was filed. Older stored summaries have a null origin. */
-	source: "web" | "api" | "github";
-	origin: { issue: { number: number; url: string; author: string; trusted: boolean }; sender: string } | null;
+	/** How the item was filed. */
+	source: ItemSource;
+	/** The issue it was filed from: null unless `source` is "github" or "linear" (a GitHub issue's origin has `issue`, a Linear issue's has `linear`). */
+	origin: ItemOrigin | null;
 	state: ItemState;
 	/** Set exactly when `state` is "waiting". */
 	wait: Waiting | null;
@@ -2583,6 +2651,24 @@ export interface UserActions {
 	githubComplete(ticket: string): Promise<GithubStatus>;
 	/** Forgets the connection. Sessions launched on its repositories stay, and can no longer push. */
 	githubDisconnect(): Promise<GithubStatus>;
+	/** The Linear connection (see `LinearStatus`). Never throws for a deployment without Linear: the answer is `{ state: "off" }`. */
+	linear(): Promise<LinearStatus>;
+	/**
+	 * Begins connecting a Linear workspace and returns the address at Linear to send the browser to. `origin` is the web app's own
+	 * address: the server's callback finishes the connection and sends the browser back there with `#linear=connected` or
+	 * `#linear-error=<code>`, after which the page asks `linear` again. Throws a UserError with code `linear_off` on a deployment without Linear.
+	 */
+	linearConnect(input: { origin: string }): Promise<{ url: string }>;
+	/** The workspace's teams with the repository each files to. Throws a UserError with code `linear_not_connected` before a workspace is connected. */
+	linearTeams(): Promise<LinearTeamList>;
+	/**
+	 * Files a team's issues to a repository of the user's GitHub connection (replacing its earlier mapping) and answers with the teams.
+	 * Codes: `linear_not_connected`, `linear_team` (no such team in the workspace), `github_not_connected`, `bad_input` (a repository the connection
+	 * does not cover, or one the user cannot push to).
+	 */
+	saveLinearMapping(input: { teamId: string; repositoryId: GithubId }): Promise<LinearTeamList>;
+	/** Stops filing a team's issues. Items already filed stay as they are. Answers with the teams. */
+	removeLinearMapping(teamId: string): Promise<LinearTeamList>;
 	/**
 	 * Repositories of the connection whose `owner/name` contains `query`, the most recently pushed first.
 	 * With `fresh`, GitHub is asked anew: for a repository that was added to an installation a moment ago.

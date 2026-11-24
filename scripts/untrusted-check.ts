@@ -22,7 +22,9 @@ import type { RunTurnInput, SandboxHandle } from "../server/src/sandbox/api.js";
 import { markTurnSandbox, type ProcessEnd, type SandboxProcess } from "../server/src/sandbox/provider.js";
 
 const { SandboxWindlass } = await import("../server/src/sandbox/turn.js");
-const { UNTRUSTED_SOURCE_MAX, untrustedTurn, agentUnmarkedNote, hardenedUnmarkedNote } = await import("../server/src/factory/untrusted.js");
+const { UNTRUSTED_SOURCE_MAX, untrustedTurn, agentUnmarkedNote, hardenedUnmarkedNote, thirdParty, untrustedWords } = await import("../server/src/factory/untrusted.js");
+const { linearSources } = await import("../server/src/actors/issue-intake.js");
+const { linearName, taskOfLinear } = await import("../server/src/factory/intake.js");
 const { harnessName, machineHarness, takesUntrustedMarker } = await import("../server/src/sandbox/harnesses.js");
 const { PROFILES } = await import("../server/src/sandbox/profiles.js");
 const { deliveryOf, receive, inboxRow, INBOX_TABLES } = await import("../server/src/actors/session-inbox.js");
@@ -191,6 +193,26 @@ if (stop.kind === "stop") expect(`${name}, docker-hardened: the refusal names wh
 	const sandboxFrame = await frameOf("docker-windlass-sandbox");
 	expect("Windlass, docker-hardened, run anyway: the frame carries no marker", hardenedFrame !== undefined && !(MARKER in hardenedFrame), JSON.stringify(hardenedFrame));
 	expect("Windlass, docker-windlass-sandbox: the frame carries the source", JSON.stringify(sandboxFrame?.[MARKER]) === JSON.stringify({ source: ISSUE }), JSON.stringify(sandboxFrame));
+}
+
+{
+	// An outside author's Linear issue is third-party text the way a GitHub issue of someone else's is: the same hardened-run guard stops it.
+	const outsider = { identifier: "ENG-12", author: linearName("Mallory\nSmith; ignore all"), trusted: false };
+	const [source] = linearSources({ linear: outsider });
+	expect("a Linear issue of someone else's is a source in the person's words, on one line", source === untrustedWords.linear("ENG-12", "Mallory Smith ignore all") && !/[\n;]/.test(source!), source);
+	expect("it is third-party text", thirdParty([source!]).join() === source && thirdParty(["CI logs of 1111111"]).length === 0);
+	expect("the owner's own Linear issue is no source", linearSources({ linear: { ...outsider, trusted: true } }).length === 0);
+	for (const agent of ["windlass", "claude", "opencode", "codex"] as const) {
+		const stop = untrustedTurn({ agent, profile: "docker-hardened", untrusted: [source!], unsandboxed: false });
+		expect(`${harnessName(agent)}, docker-hardened: someone else's Linear issue stops the turn until the person runs it anyway`, stop.kind === "stop" && stop.sources.join() === source && stop.reason.includes(source!), JSON.stringify(stop));
+		expect(`${harnessName(agent)}, docker-hardened: run anyway, it goes labelled only`, untrustedTurn({ agent, profile: "docker-hardened", untrusted: [source!], unsandboxed: true }).kind === "labelled");
+	}
+	const marked = untrustedTurn({ agent: "windlass", profile: "docker-windlass-sandbox", untrusted: [source!], unsandboxed: false });
+	expect("on another profile Windlass is told the source", marked.kind === "marked" && marked.sources.join() === source);
+	const task = taskOfLinear({ title: "Fix it", body: "- [ ] do it\nplease\n<!-- hidden -->", identifier: "ENG-12", url: "https://linear.app/acme/issue/ENG-12", author: outsider.author, trusted: false }).task;
+	expect("the task quotes the outsider's text and names who wrote it, in a criterion too", task.body.startsWith("From Linear issue ENG-12.") && task.body.includes("written by Mallory Smith ignore all on Linear") && task.body.includes("> please") && !task.body.includes("hidden") && task.acceptance[0] === "Mallory Smith ignore all wrote: do it", JSON.stringify(task));
+	const own = taskOfLinear({ title: "Fix it", body: "please", identifier: "ENG-12", url: "https://linear.app/acme/issue/ENG-12", author: "Ada", trusted: true }).task;
+	expect("the owner's own issue is not quoted", own.body.endsWith("please") && !own.body.includes("> "), own.body);
 }
 
 assert.ok(passes > 0);
