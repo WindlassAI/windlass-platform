@@ -5,8 +5,8 @@ import { machineSlots } from "./placement.js";
 export function savedPlace(repo?: ItemPlaceDefaults | null, account?: ItemPlaceDefaults | null): ItemPlaceDefaults | undefined {
 	const source = repo?.place ? repo : account;
 	if (!source?.place) return;
-	const { place, harness, machineProfile, placeFallback } = source;
-	return { place, harness, machineProfile, placeFallback };
+	const { place, harness, machineProfile, placeFallback, machineModel, machineEffort } = source;
+	return { place, harness, machineProfile, placeFallback, machineModel, machineEffort };
 }
 
 export function placeMachines(place: ItemPlaceDefaults["place"], machines: readonly MachineSummary[]) {
@@ -34,7 +34,9 @@ function compatible(defaults: ItemPlaceDefaults, machines: readonly MachineSumma
 }
 
 export function placeProblem(policy: ItemPlaceDefaults, machines: readonly MachineSummary[]): string | null {
-	const { place, harness, machineProfile, placeFallback } = policy;
+	const { place, harness, machineProfile, placeFallback, machineModel, machineEffort } = policy;
+	if ([machineModel, machineEffort].some(id => id != null && (typeof id !== "string" || !/^[\w.:/@+\[\]-]{1,200}$/.test(id)))) return "Choose a model and effort from the list.";
+	if ((machineModel || machineEffort) && !machineHarness(harness ?? "windlass")) return "Choose a machine agent for this model.";
 	if (placeFallback != null && placeFallback !== "wait" && placeFallback !== "hosted") return "Choose whether to wait or run hosted.";
 	if (machineProfile != null && machineProfile !== "docker-windlass-sandbox" && machineProfile !== "docker-hardened") return "Choose a reported machine profile.";
 	if (harness != null && !knownHarness(harness)) return "Choose an agent from the list.";
@@ -84,15 +86,19 @@ export function resolveDefaultPlace(defaults: ItemPlaceDefaults, machines: reado
 }
 
 export const changesPlace = (change: ItemPlaceDefaults) =>
-	[change.place, change.harness, change.machineProfile, change.placeFallback].some(v => v !== undefined);
+	[change.place, change.harness, change.machineProfile, change.placeFallback, change.machineModel, change.machineEffort].some(v => v !== undefined);
 
 /** A new place starts with its own agent/profile; a patch to the current place keeps the other choices. */
 export function changedPlace(before: ItemPlaceDefaults, change: ItemPlaceDefaults): ItemPlaceDefaults {
 	const place = change.place === undefined ? before.place : change.place;
 	const same = place === before.place || (typeof place === "object" && place && typeof before.place === "object" && before.place?.machine === place.machine);
 	const previous = same ? before : {};
+	// Another agent starts on its own default model.
+	const agent = change.harness === undefined || change.harness === previous.harness ? previous : {};
 	return { place: typeof place === "object" && place ? { machine: place.machine } : place ?? null,
 		harness: change.harness === undefined ? previous.harness ?? null : change.harness,
 		machineProfile: change.machineProfile === undefined ? previous.machineProfile ?? null : change.machineProfile,
-		placeFallback: change.placeFallback === undefined ? previous.placeFallback ?? null : change.placeFallback };
+		placeFallback: change.placeFallback === undefined ? previous.placeFallback ?? null : change.placeFallback,
+		machineModel: change.machineModel === undefined ? agent.machineModel ?? null : change.machineModel,
+		machineEffort: change.machineEffort === undefined ? agent.machineEffort ?? null : change.machineEffort };
 }

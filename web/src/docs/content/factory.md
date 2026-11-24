@@ -4,7 +4,7 @@ A work item is a task on one of your GitHub repositories that an agent carries t
 
 Work items need a repository from your GitHub connection. They run with Windlass unless you choose another agent on one of your machines: see [Choose the agent](#choose-the-agent). The Factory is offered where the platform turns work items on. Then **Agents · Factory** appears in the bar.
 
-GitHub issues and the Factory composer use the repository’s **Where work items run** setting, then the account setting, then Hosted. You can override the selection in the composer. Any of my machines takes the first compatible online machine with a free slot. If none is ready, the timeline explains the wait or hosted fallback. Plan first uses Windlass to plan and passes the placement preference to the planner for parts that fit.
+GitHub issues and the Factory composer use the repository’s **Where work items run** setting, then the account setting, then Hosted. You can override the selection in the composer. Any of my machines takes the first compatible online machine with a free slot. If none is ready, the timeline explains the wait or hosted fallback. Plan first uses Windlass to plan and passes the placement preference to the planner for parts that fit. A part on the saved agent starts on its saved model and effort unless the planner chose one.
 
 A work item runs in one of two ways:
 
@@ -410,7 +410,7 @@ A subtask on Claude Code or OpenCode runs in the machine's hardened container, o
 
 **Works without asking.** Claude Code and OpenCode work without asking: they run every command and edit in their sandbox without asking you. Wherever such a subtask is shown, it says **works without asking**. The planner reads the item's text, which may come from an issue anyone could file. So its choice of such an agent never runs on approval alone: the approval card lists each such subtask under **Agents that work without asking**, and **Approve version N** stays unavailable until you tick every one. An approval sent any other way that does not name each one is refused. To run one on Windlass instead, choose **Windlass** for it and save.
 
-**Budgets per agent.** A subtask's budget counts the way its agent's does. OpenCode's tokens count against the subtask's token budget, and an OpenCode turn that reports no tokens stops the subtask, because its budget can't be enforced. Claude Code runs on your Claude subscription: its tokens are shown, not counted. Only counted tokens reach the feature's budget.
+**Budgets per agent.** A subtask's budget counts the way its agent's does. OpenCode's tokens count against the subtask's token budget, and an OpenCode turn that reports no tokens stops the subtask, because its budget can't be enforced. Claude Code runs on your Claude subscription: its tokens are shown, not counted. Only counted tokens reach the feature's budget. Such a subtask shows its turns and working time instead of a token meter, and the feature's cost lists them under **on a subscription**.
 
 **Usage limits.** A subtask waits only for its own agent's usage limits. When Claude Code is at its limit on the preferred machine and overflow is allowed, the subtask can run on an approved alternative whose Claude Code account is not.
 
@@ -438,7 +438,9 @@ A subtask's page shows the feature in the bar (repository / feature / subtask) a
 
 On the Factory page, a feature in progress counts its subtasks that are running and asking, and lists the active ones, each with its step and where it runs. The lane's count adds how many subtasks run, for example "2 work items · 3 subtasks running". A subtask that asks you is also listed under **Needs you**, with the first line of its question.
 
-If a subtask fails or is cancelled, the planner revises the plan for the work left. Done subtasks stay as they are, and remaining ones keep their approved agent. You review and approve the revised plan again, and its budgets with it. When the same subtask stops a second time, or two subtasks stop with the same failure, the feature asks you instead: **Revise the plan** or **Give up**.
+If a subtask fails or is cancelled, the planner revises the plan for the work left. Done subtasks stay as they are, and remaining ones keep their approved agent. You review and approve the revised plan again, and its budgets with it. The card says why the feature was planned again, and shows done subtasks greyed, with nothing to change.
+
+After approval, a subtask that has not started yet can still change its agent, model and effort: open **The plan** on the feature's page and choose them on its row. The change applies at once. A subtask that has started keeps the agent it runs. When the same subtask stops a second time, or two subtasks stop with the same failure, the feature asks you instead: **Revise the plan** or **Give up**.
 
 ### The pull request
 

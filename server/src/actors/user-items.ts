@@ -407,6 +407,7 @@ export interface DefaultBuilder {
 	hostedProfile: SandboxProfileId | null;
 	hostedSize?: HostedSize;
 	machineModel?: string;
+	machineEffort?: string;
 	issue?: { number: number; installationId: GithubId };
 }
 
@@ -420,10 +421,11 @@ async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, j
 		const hosted = destination.place.kind === "hosted";
 		const agent = hosted ? "windlass" : destination.harness;
 		const model = agent === "windlass" ? job.model : job.machineModel;
+		const effort = agent === "windlass" ? job.effort : job.machineEffort;
 		const profile = hosted ? await itemProfile(c, job.repository.id, job.hostedProfile, destination.place) : destination.profile!;
 		return makeSession(c, owner, { title: job.title, repository: job.repository, place: destination.place, profile, harness: agent,
 			...(model && { model }), ...(hosted && job.hostedSize && { hostedSize: job.hostedSize }) }, null,
-			{ sessionId, itemId, role: "builder", issue: job.issue, ...(job.effort && (!hosted || !job.machineModel) && { effort: job.effort }) });
+			{ sessionId, itemId, role: "builder", issue: job.issue, ...(effort && { effort }) });
 	};
 	try { return { session: await open(), destination }; }
 	catch (error) {
@@ -486,9 +488,12 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	const sessionId = itemSessionId(itemId);
 	const issue = github && { number: github.origin.issue.number, installationId: github.installationId };
 	const externalModel = source === "web" && policy?.harness && policy.harness !== "windlass" && input.mode === "single";
+	// The machine agent runs the model filed with a Quick item, else the one saved with the place.
+	const machine = externalModel ? { model: input.model, effort: input.effort } : { model: policy?.machineModel, effort: policy?.machineEffort };
 	const job: DefaultBuilder | undefined = policy && { policy, repository: input.repository, mode: input.mode, title: input.title,
-		model: externalModel ? null : input.model, ...(externalModel && input.model && { machineModel: input.model }),
-		hostedProfile: input.profile, hostedSize: input.hostedSize, effort: input.effort, issue };
+		model: externalModel ? null : input.model, effort: externalModel ? null : input.effort,
+		...(machine.model && { machineModel: machine.model }), ...(machine.effort && { machineEffort: machine.effort }),
+		hostedProfile: input.profile, hostedSize: input.hostedSize, issue };
 	let summary: ItemSummary;
 	// Set just before the session is made: a refusal before that made nothing, and leaves the key unused.
 	let begun = false;

@@ -1632,6 +1632,13 @@
 .plan-task[class*="plan-task-is-"] .plan-task-n {
 	box-shadow: none;
 }
+/* A finished subtask in a revised plan: shown as it ran, with nothing to choose. */
+.plan-task-finished {
+	opacity: 0.6;
+}
+.plan-task-finished .plan-unattended {
+	display: none;
+}
 .plan-task-main {
 	min-width: 0;
 }
