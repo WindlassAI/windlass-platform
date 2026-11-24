@@ -1,5 +1,7 @@
 # Development
 
+[AGENTS.md](../AGENTS.md) links the scoped agent guides and the commands for checking changes in each area.
+
 Running the platform from a checkout, the layout of the repository, the checks, and how the public pages
 are built. [CONTRIBUTING.md](../CONTRIBUTING.md) says how to send a change.
 
@@ -43,8 +45,8 @@ Without Docker, `WLP_SANDBOX=fake scripts/dev.sh` runs in-memory sandboxes that 
 | Path | What it holds |
 |---|---|
 | `server/src/contract.ts` | The contract between the actors and the web app: types only |
-| `server/src/actors/` | The actors: `login`, `accountEmail`, `user`, `agentSession`, `machine`, `machinePairing` with `pairingDirectory`, and `workItem`. `user-machines.ts` and `user-items.ts` hold what the `user` actor does for machines and for work items (the index, the turn queue, the API tokens), `session-inbox.ts` what a session does for its item |
-| `server/src/index.ts`, `platform-info.ts`, `runner-routes.ts`, `api-routes.ts` | The server: one Rivet node, and its HTTP routes (`/platform/info`, `/platform/connection`, `/health`, GitHub's callback, the runner's three, the API's two) |
+| `server/src/actors/` | The actors registered in `server/src/registry.ts`, including `login`, `accountEmail`, `user`, `agentSession`, `machine`, `machinePairing` with `pairingDirectory`, and `workItem`. `user-machines.ts` and `user-items.ts` hold what the `user` actor does for machines and for work items (the index, the turn queue, the API tokens), `session-inbox.ts` what a session does for its item |
+| `server/src/index.ts`, `platform-info.ts`, `runner-routes.ts`, `api-routes.ts` | The server: one Rivet node, and its HTTP routes (`/platform/info`, `/platform/connection`, `/health`, GitHub and Linear callbacks and webhooks, the model relay, billing, runner and item routes) |
 | `server/src/web.ts` | The web app's built files, served on the same port where `WLP_WEB_DIR` names them |
 | `server/src/connection-tokens.ts` | The tokens browsers connect with: issued by the engine for the admin token, kept and handed out by each server |
 | `server/Dockerfile` | The server as an image, for the self-host kit, a Rivet Cloud cluster or a machine of your own ([operating.md](operating.md#running-on-several-servers)) |
@@ -62,7 +64,7 @@ Without Docker, `WLP_SANDBOX=fake scripts/dev.sh` runs in-memory sandboxes that 
 | `server/src/verified.ts` | What a session's work was verified with: what a turn's events come to, what is looked for in the work's changes, and the section of a pull request's description ([What a pull request shows was verified](github-and-repositories.md#what-a-pull-request-shows-was-verified)) |
 | `server/src/account-models.ts` | The models a user may choose ([Models](architecture.md#models)): the list of their ChatGPT plan as the `user` actor keeps it, when Windlass is asked again, the stand-in, and how a model and an effort are held against the list |
 | `server/src/account-defaults.ts`, `server/src/personal-servers.ts`, `server/src/account-secrets.ts` | What a user keeps for their account ([Account settings](github-and-repositories.md#account-settings)): the defaults for new sessions; their own MCP servers, what a name and a definition may be and how many are kept; and the secrets those read, whom they reach and how they give way to a repository's |
-| `server/src/windlass-config.ts` | Windlass's own configuration file in a sandbox: what the platform writes into it for a turn (the user's own MCP servers, the tool to publish, the repository's checks), how it is taken out again, and what a repository's own file says about checks, and that wake-ups are off (`wake.enabled: false`) for every session, since nothing delivers one while a sandbox is paused |
+| `server/src/windlass-config.ts` | Windlass's own configuration file in a sandbox: what the platform writes into it for a turn (the user's own MCP servers, the repository's checks), how it is taken out again, and what a repository's own file says about checks, and that wake-ups are off (`wake.enabled: false`) for every session, since nothing delivers one while a sandbox is paused |
 | `server/src/agent-publish.ts` | The agent asking the platform to publish: the tool and its server, what a request may hold, and the words of the question, of the timeline's lines and of what the agent is told |
 | `server/src/repo-secrets.ts` | A repository's secrets: what may be saved, what a scope comes to in each kind of sandbox, the sealing, and taking saved values out of text |
 | `server/src/bucket/`, `server/src/sandbox/backup.ts` | The object store the copies of Windlass's session data go to (S3 protocol, and a stand-in for tests), and what is copied, saved and restored |
@@ -136,12 +138,8 @@ cd server && npx tsx ../scripts/factory-e2e.ts                    # work items t
 cd server && npx tsx ../scripts/runner-check.ts                   # the real runner in real containers, against a stand-in of the platform and the real routes: pairing, outages, refusals, prune
 ```
 
-`pnpm test` at the root runs the fake suite: `claude-relay-check.mjs`, `runner-egress-check.ts`,
-`factory-check.ts`, `orchestrator-check.ts`, the feature part of `webhook-check.ts`, the orchestrator part of
-`factory-e2e.ts`, `fairness-check.ts` (machine scheduling and session persistence), `timeline-write-check.ts`
-(the session recorder, sleep and stop hooks and SQLite, with a clock and a stalled turn), `runner-e2e.ts
-fairness` (which drives `machine-fairness-check.ts`), `web-stage-check.ts`, the web tests and the server's
-`e2e`. Three more need something outside the repository:
+`pnpm test` runs the factory, core, usage and resume shards in sequence. [testing.md](testing.md)
+maps the scripts to CI jobs and branch triggers. The following checks need additional local services or images.
 
 ```sh
 cd server && pnpm exec tsx ../scripts/claude-relay-docker-check.mjs sha256:<local Claude image id>   # the credential relay in real containers (sandbox/relay/README.md)
@@ -183,7 +181,7 @@ tag and remove that tag after use. Run the host-wide `sandbox/cleanup.sh` manual
 
 ## Public pages
 
-Signed-out visitors to `/` get a landing page; everything else in the web app is behind the sign-in. The
+Signed-out visitors can open the landing page and the public routes listed in `PUBLIC_PAGES`. Agent sessions and account pages require sign-in. The
 landing page, and any other public page (the docs, say), is prerendered at build time to static HTML, so a
 visitor, a crawler or an answer engine reads it with no JavaScript at all.
 
@@ -209,7 +207,7 @@ visitor, a crawler or an answer engine reads it with no JavaScript at all.
   JSON-LD is a `<script type="application/ld+json">` data block, which browsers do not run and do not check
   against `script-src`.
 - **Where they are published.** `VITE_WLP_SITE_URL` (build time) is the origin the pages are canonical at,
-  `https://windlass.parthg.dev` when unset. `VITE_WLP_ACCESS_URL` is where "Request access" leads (a form or
+  with the default defined in `web/src/site/config.ts`. `VITE_WLP_ACCESS_URL` is where "Request access" leads (a form or
   a `mailto:` link); unset, the pages offer "Sign in" alone and say that access is by invitation.
 - **Images.** `web/site-assets/og.html` is the source of `og.png` and `web/site-assets/icons.js` of the
   PNG icons and `favicon.ico`; neither is built, and each says how to make its files again.

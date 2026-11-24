@@ -1,14 +1,16 @@
 # Testing
 
-Both GitHub Actions workflows run on pushes to `main`, on pull requests, and on demand.
-Open a PR (a draft works) to get automatic checks on a branch.
+Both workflows run on pushes to `main`, `wip/**` and `windlass/**`, and on demand.
+Pull requests from other branches run both workflows too. A PR from an agent branch skips the
+duplicate jobs because the push already ran them.
 
-- **CI** (`.github/workflows/ci.yml`) runs the typecheck, web build and secret scan. On `main`,
-  PRs into `main`, and manual runs, it also runs the fake suite (`WLP_SANDBOX=fake`) in four
-  parallel jobs. PRs from `wip/**` and `windlass/**` skip those four jobs. The required `test`
-  check reports their combined result.
-- **CI heavy** (`.github/workflows/ci-heavy.yml`) selects groups by the files changed in the PR,
-  including PRs from agent branches. It also runs nightly.
+- **CI** (`.github/workflows/ci.yml`) validates the AGENTS.md guides, typechecks, builds the web app and scans for secrets.
+  Pushes to `main`, PRs from non-agent branches and manual runs also run the four fake test
+  shards in parallel. The `test` check combines their results. A newer branch run cancels a
+  superseded run of the same event and ref; CI on `main` keeps its runs.
+- **CI heavy** (`.github/workflows/ci-heavy.yml`) selects groups by changed paths on agent
+  branch pushes and other PRs, and skips Dependabot. It runs all groups on `main` and nightly.
+  A newer heavy run cancels a superseded run for the same event and ref.
 
 `pnpm test` runs the four shards in sequence locally. Each script can also run on its own.
 
@@ -41,9 +43,6 @@ build. Those jobs set `kernel.apparmor_restrict_unprivileged_userns=0` first: Ub
 unconfined processes out of user namespaces, so bubblewrap cannot start in a container of the Windlass
 profile (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`) until it is off.
 
-A full run takes about a quarter of an hour. Its longest job is `runner-docker/runner` (about 15
-minutes, most of it the outage cases' wall time); a change to one area runs a few jobs of 3 to 9 minutes.
-
 To see what a change would run, before you push:
 
 ```sh
@@ -55,15 +54,15 @@ node scripts/ci-heavy.mjs select --files server/src/usage.ts    # what a change 
 
 | Class | Checks | Where |
 | --- | --- | --- |
-| (a) Fake sandbox, no Docker | access, account, attachments, backup, connection, harness, models, network, repository, review, reviewer-task, runner-control, runner-protocol, secrets, setup, git-config, usage, verified, web-files, github, shot, sizing, start-times, e2b-provider-test, workflow-lint; idempotency, signin, connection-e2e, http-limits; frame-auth, machine, runner-e2e, runner-socket-probe; factory-e2e (all sections), webhook-check (all sections), e2b-snapshot | CI heavy: `rules`, `actors`, `machines`, `factory/*`, `webhook` |
+| (a) Fake sandbox, no Docker | access, account, attachments, backup, connection, harness, models, model-providers, network, repository, review, reviewer-task, runner-control, runner-protocol, runner-signin, secrets, setup, environment, git-config, untrusted, usage, billing, verified, web-files, github, shot, sizing, start-times, model-relay-route, install-script, runner-wizard, e2b-provider-test, workflow-lint; idempotency, signin, connection-e2e, http-limits; frame-auth, machine, runner-e2e, runner-socket-probe; factory-e2e (all sections), webhook-check (all sections), linear-protocol, linear-check and e2b-snapshot | CI heavy: `rules`, `actors`, `machines`, `factory/*`, `webhook`, `linear` |
 | (a) Already in `pnpm test` | e2e.ts (fake), factory-check, orchestrator-check, fairness, machine-fairness (through `runner-e2e.ts fairness`), timeline-write, web-stage, item-feed, keyring, login-handover, revocation, snapshot, container-logs, the relay and setup `.mjs` checks, release-images (which drives release-check.ts), the web vitest suite | CI `test` |
-| (b) Docker, base image (`windlass-platform-sandbox:latest`) | sandbox, mcp, github `--docker`, verified `--docker`, e2b-provider-test `--docker`, e2b-snapshot `--docker`, sizing `docker`; e2e.ts with `WLP_SANDBOX=docker`, and with `--snapshots-only` | CI heavy: `sandbox-docker/*` (sandbox-check in two shards by `WLP_CHECK_SECTIONS`), `e2e-docker/*` |
+| (b) Docker, base image (`windlass-platform-sandbox:latest`) | sandbox, mcp, model-relay-docker, github `--docker`, verified `--docker`, e2b-provider-test `--docker`, e2b-snapshot `--docker`, sizing `docker`; e2e.ts with `WLP_SANDBOX=docker`, and with `--snapshots-only` | CI heavy: `sandbox-docker/*` (sandbox-check in two shards by `WLP_CHECK_SECTIONS`), `e2e-docker/*` |
 | (b) Docker, screenshots image (`:shots`) | shot `--docker`, attachments `--docker`, browser-hello `--docker` | CI heavy: `shots-docker` |
 | (b) Docker, base image; builds its own runner and Claude images | runner-check `--main-only` (the five-minute outage and two-minute sleep are wall time) | CI heavy: `runner-docker/runner` |
 | (b) Docker, base and screenshots images | runner-check `--profiles-only`, `--harness-only`, `--sizing-only`, `--snapshots-only`, `--screenshots-only` | CI heavy: `runner-docker/suites` |
 | (b) Docker, Claude and OpenCode images built on base (`sandbox/harness/build.sh`) | claude-relay-docker, opencode-docker, runner-egress-live, `runner-e2e.ts egress` | CI heavy: `runner-docker/harness` |
 | (b) Docker, the Codex image built on base (`sandbox/harness/build.sh codex`) | codex-docker (the relay, sign-in and modes), codex-sandbox-escape (refusals, a repository's and the user's config, and the platform's tools over MCP); both with a scripted model, no sign-in | CI heavy: `codex-docker` |
-| (c) Real services, local only | e2b-check, e2b-snapshot `--live`, e2b-backup-check, e2b-template (except `--print`), e2b-cleanup (an E2B account); backup-check `--bucket` (a real bucket); connection-check's `cluster` section and runner-socket-probe with `WLP_CHECK_ENGINE` (a real engine and its admin token) | your machine |
+| (c) Real services, local only | e2b-check, model-relay-e2b, e2b-snapshot `--live`, e2b-backup-check, e2b-template (except `--print`), e2b-cleanup (an E2B account); backup-check `--bucket` (a real bucket); connection-check's `cluster` section and runner-socket-probe with `WLP_CHECK_ENGINE` (a real engine and its admin token) | your machine |
 | (c) A running self-hosted stack, local only | selfhost-csp, selfhost-ingress (with cloudflared), selfhost-load | the loopback demo stack of `deploy/selfhost` |
 
 Account and secrets checks compare against Windlass's own source when `WLP_WINDLASS_SOURCE` points at a
@@ -71,18 +70,12 @@ checkout; on CI that comparison is skipped and the rest runs.
 
 ## For agents
 
-1. **Locally, run little.** This host is shared and small. Run `pnpm typecheck` and the one check that
-   covers what you changed (`cd server && npx tsx ../scripts/<name>.ts`), nothing more. Leave the
-   Docker checks, the e2e runs and the full suite to CI.
-2. **Push a `wip/<name>` branch** to `git@github.com:WindlassAI/windlass-platform.git`
-   over SSH (`git push git@github.com:WindlassAI/windlass-platform.git HEAD:wip/<name>`). Open or
-   update a PR to run both workflows. On PRs from `wip/**` and `windlass/**`, CI runs the typecheck,
-   web build and secret scan, and CI heavy runs the path-selected tests. The plan job's summary names
-   the groups and the files that selected them. Each job's summary lists its checks and their times.
-3. **Read the result** with one call per look, no more than once a minute:
-   `gh run list -b wip/<name> -L 2 --json databaseId,name,status,conclusion`, then
-   `gh run view <id> --json jobs` and `gh run view <id> --log-failed` for a failure. Do not use
-   `gh run watch`: it uses up the shared API allowance.
+1. Follow the root [AGENTS.md](../AGENTS.md) and the guide in the area being changed. `node scripts/agents-docs-check.ts` validates their file references and command targets. Run the typecheck first, then the affected check files or cases
+   one at a time. Full suites run in CI.
+2. Push a `wip/<name>` branch to run CI's typecheck, web build and secret scan, plus the path-selected
+   heavy checks. The heavy plan summary names the groups and files that selected them.
+3. Read the branch results with `gh run list -b wip/<name>`. Use `gh run view <id> --log-failed`
+   for the failing job's output.
 4. **Force a full run** when a change reaches further than its paths say (a new shared helper, say):
    `gh workflow run ci-heavy.yml --ref wip/<name> -f full=true`. Every push to `main` and the nightly
    run are full runs already. On a branch stacked on another, `-f base=<parent branch or commit>` chooses

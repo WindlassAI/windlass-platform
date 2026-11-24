@@ -17,6 +17,8 @@ Without the relay, the turn's real access token is written into the sandbox (`to
 `docker-hardened` and `e2b-open` profiles let commands read it, and setup leftovers can read it on
 every profile.
 
+The relay uses the Windlass account’s ChatGPT sign-in. Keys in the account’s model-provider store are checked separately and do not supply the relay or an agent turn.
+
 ## Where the relay runs
 
 | Place | Relay | How the sandbox reaches it | Base URL Windlass gets |

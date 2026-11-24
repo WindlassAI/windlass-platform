@@ -18,7 +18,7 @@ user or a session is kept on a server. Browsers reach the actors through the eng
 server, and so do the machines' runners once they are paired. A server's own port serves `GET /platform/info`,
 `GET /platform/connection`, `/health`, GitHub's callback (`GET /github/callback`), the three routes a
 machine's runner calls (`POST /runner/pair`, `POST /runner/pair/poll`, `POST /runner/connection`) where
-machines are on, the GitHub webhook (`POST /github/webhook`) where configured, and the API (`POST /api/items`, `GET /api/items/<id>`) where work items are, and any
+machines are on, the configured GitHub and Linear webhooks (`POST /github/webhook`, `POST /linear/webhook`), Linear's OAuth callback (`GET /linear/callback`), and the item API including attachment redirects, and any
 server answers each.
 
 What every server needs, the same on all of them:
@@ -43,7 +43,7 @@ What every server needs, the same on all of them:
 | `WLP_ITEMS` | the same value everywhere, where users may file work items ([Work items](work-items.md)): a server without it answers the API's routes as unknown ones |
 | `WLP_MACHINES`, `WLP_PUBLIC_URL`, `WLP_RUNNER_IMAGE` | the same values everywhere, where users may pair machines of their own ([Machines of your own](machines.md)). `WLP_PUBLIC_URL` is required then: it is the address runners are given |
 | `WLP_HTTP_PORT` or `PORT` | the port the load balancer sends `/platform/info` to |
-| `WLP_GITHUB_*`, `WLP_BUCKET_*`, `E2B_API_KEY`, `WLP_E2B_*` | the same values everywhere, where used: see [configuration.md](configuration.md) |
+| `WLP_GITHUB_*`, `WLP_LINEAR_*`, `WLP_BUCKET_*`, `E2B_API_KEY`, `WLP_E2B_*` | the same values everywhere, where used: see [configuration.md](configuration.md) |
 
 **What browsers connect with.** An engine that is shared is one that checks who connects. A Rivet Cloud
 cluster is such an engine, run for one customer, and it has one credential: an admin token, which may do
@@ -183,17 +183,11 @@ agents to the repository's saved size, else small. `WLP_E2B_TEMPLATE_STANDARD`, 
 `WLP_E2B_SHOTS_TEMPLATE_STANDARD`, `_LARGE` override the names. Post-setup snapshots are per template, so per
 size.
 
-**The account's plan.** The account is on E2B's Hobby plan: at most 8 vCPUs and 8 GiB of memory a sandbox, 10 GB of
-disk each, 10 sandboxes running at once and one hour without a pause. Large (4 vCPU, 8 GiB) is the most the platform
-offers, and no size goes beyond 8 GiB: the server refuses to start with one that would, and `sandbox/e2b/build.sh`
-refuses `WLP_E2B_CPU` or `WLP_E2B_MEMORY_MB` beyond the plan. Where E2B refuses a size for the plan anyway, the person
-reads "E2B refused a large sandbox (4 vCPU, 8 GiB) for the account's plan: the Hobby plan allows at most 8 vCPU and
-8 GiB a sandbox, …" with E2B's own words, and the log has `e2b.size_refused`.
-
-The 10 sandboxes running at once are the account's, not one deployment's: every deployment and script on the account
-(`WLP_E2B_DEPLOYMENT`, `scripts/e2b-check.ts`) counts toward it, whatever their sizes. `WLP_E2B_MAX_RUNNING` caps
-one deployment and must stay under 10 less what the others run; at E2B's own ceiling a person reads that the account
-is at its plan's limit. A larger size uses the credit faster, not more of that count.
+**The account's plan.** Large (4 vCPU, 8 GiB) is the largest size the platform offers.
+The E2B template build checks CPU and memory overrides. If the provider refuses a size, the user
+sees the size and the provider's reason, and the server logs `e2b.size_refused`.
+`WLP_E2B_MAX_RUNNING` caps one deployment. Other deployments and scripts sharing the account
+also count toward the provider's concurrency limit.
 
 `sandbox/e2b/build.sh --print` shows what E2B would be asked to build and needs no key. The template is made
 from the Docker image's own `sandbox/Dockerfile`, so a microVM has what a container has: the user `agent`,
@@ -213,7 +207,7 @@ E2B's SDK (`e2b` 2.63.0, loaded only by a server on E2B) needs Node 22.19 or lat
   session with it whatever the browser sends. Windlass runs with `--approval full` and sandboxes no command:
   commands run directly in the microVM, with its network and a writable home directory (package installs,
   tools that write `~/.config`), and nothing asks first. What that gives up: a command can reach any host, and
-  can read the session's access token, which is in a file in the microVM while a turn runs (the sign-in is
+  can read the turn's token file, which holds a placeholder when the model relay is enabled (the sign-in is
   never in the microVM, in this profile too). One thing stays: once something from the web or an MCP server is
   in the conversation, Windlass's taint rule sandboxes commands again and asks before network or a write
   outside the workspace. A sandboxed command then finds a home of the session's own ([Sandboxes](architecture.md#sandbox-profiles) above): what
@@ -232,9 +226,6 @@ E2B's SDK (`e2b` 2.63.0, loaded only by a server on E2B) needs Node 22.19 or lat
   new Windlass session, and the timeline says so. On Docker the data directory is a volume of the user's and
   outlives a sandbox.
 
-Using little of E2B is built in. The free Hobby plan runs on a one-time credit of $100 and allows 10 sandboxes
-at once and one hour of running without a pause; every default is well inside that.
-
 | What | How | Default |
 |---|---|---|
 | Size of a sandbox | the template's, one per size (`WLP_E2B_SIZE` for `sandbox/e2b/build.sh`), offered by `WLP_E2B_SIZES` | small: 1 vCPU, 1024 MiB |
@@ -245,9 +236,9 @@ at once and one hour of running without a pause; every default is well inside th
 | The plan's hour | a sandbox with too little left of `WLP_E2B_MAX_RUNTIME_MS` for a turn is paused and resumed before the turn starts, which starts the hour again | 1 hour |
 | Finding them again | every sandbox carries `wlp_deployment` (`WLP_E2B_DEPLOYMENT`), `wlp_uid`, `wlp_session` and `wlp_profile` in its metadata; only sandboxes with the deployment's mark are ever touched | `default` |
 
-A sandbox of the default size costs about $0.0000185 a second while it runs ($0.067 an hour) and nothing while
-it is paused, by E2B's published prices; with the default cap a deployment cannot spend more than about $0.20
-an hour. Each time a sandbox stops running through a server, a line says how long it ran and what that costs:
+The platform estimates a running small sandbox at $0.0000185 a second (about $0.067 an hour).
+Three running small sandboxes therefore estimate to about $0.20 an hour. Larger sizes cost more.
+Each time a sandbox stops running through a server, a line says how long it ran and what that costs:
 
 ```
 [wlp] e2b.sandbox.paused id=... uid=... session=...: it ran 182 s at 1 vCPU and 1024 MiB, $0.0034 (estimated)
@@ -473,7 +464,7 @@ that installation during redelivery sweeps. The endpoint still accepts `installa
 Then, on the app's page: note the App ID and the Client ID, generate a client secret, and generate a private
 key (a `.pem` file is downloaded).
 
-Issues access lets the Factory file work items from GitHub issues and comment on them. Reading CI uses a token with read access to Checks, Commit statuses and Actions. Actions write access is used to rerun checks that never got a runner or timed out. Publishing `windlass/verified` uses a separate token with Checks write access for the item's repository. Each installation owner must approve a new permission before GitHub grants it. With read-only Checks, work items can read CI and hand over as usual. [Enable the Factory check on GitHub](github-and-repositories.md#enable-the-factory-check-on-github).
+Issues access lets the Factory file work items from GitHub issues and comment on them. Reading CI uses a token with read access to Checks, Commit statuses and Actions. Actions write access is used for eligible infrastructure reruns and to dispatch the combined integration workflow for a two-repository feature. Publishing `windlass/verified` uses a separate token with Checks write access for the item's repository. Each installation owner must approve a new permission before GitHub grants it. With read-only Checks, work items can read CI and hand over as usual. [Enable the Factory check on GitHub](github-and-repositories.md#enable-the-factory-check-on-github).
 
 | Variable | Effect |
 |---|---|

@@ -176,6 +176,7 @@ The App asks for repository permissions only, and no more than the code uses (re
 | Issues: read and write | read: take in an issue filed as a work item; write: the item's link comment and a refusal comment on the issue, and the 👀 reaction on a taken pull request conversation comment | read alone: issues and feedback are still taken in, and nothing is said or reacted at GitHub. None: no issue intake |
 | Checks: read and write | read: a work item reads its commit's CI; write: posting `windlass/verified` | read-only: items read CI and hand over without the check ([Enable the Factory check on GitHub](#enable-the-factory-check-on-github)) |
 | Commit statuses: read, Actions: read | a work item reads CI, a failed job's log, and whether CI runs on pushes (an orchestrated feature's preflight) | the verdict says CI was not read, and orchestration is refused |
+| Actions: write | rerun eligible interrupted jobs and dispatch a cross-repo feature’s combined workflow | CI can still be read with Actions read permission |
 | Workflows | not asked for | GitHub refuses a push that changes `.github/workflows` |
 
 Issues, Checks, Commit statuses and Actions are for work items only. No organization or account permission
@@ -186,7 +187,7 @@ is asked for.
 
 | Event | What the platform does |
 |---|---|
-| Issues, Issue comment | intake: a `windlass` label, or a mention in a comment by an owner, member or collaborator; other issue actions (closing, say) go to the item filed from it. On a work item's pull request, a conversation comment that starts with the App's mention or `/windlass` is feedback |
+| Issues, Issue comment | intake: a `windlass` label, or a mention in a comment by an owner, member or collaborator; other issue actions (closing, say) go to the item filed from it. On a linked PR, a conversation comment starting with the App's mention or `/windlass` can be feedback |
 | Pull request | the item notices a merge or close at once |
 | Pull request review | feedback: a submitted review that requests changes (with its line comments), or a comment-only review addressed to the App; an approval adds a line to the item's log |
 | Pull request review comment | feedback: a line comment addressed to the App |
@@ -207,6 +208,10 @@ installation covers. So install the App with **Only select repositories**, and g
 default branch a ruleset (block force pushes and deletions, require a pull request) with the App off its
 bypass list. The platform pushes only `windlass/…` branches, so it keeps working and cannot write the
 default branch.
+
+A PR opened by an interactive session routes addressed feedback to that session. While a turn is
+running, the feedback waits. A request on an item PR goes to its item. A stand-alone `/windlass review`
+from a writer requests a comment-only review there ([The second review](work-items.md#the-second-review)).
 
 ### Turn on feedback from pull requests
 
@@ -901,21 +906,13 @@ A connected repository is the project; there is no separate object. Its saved th
 `user` actor (setup command, checks, network list, secrets, MCP approvals, defaults), created on first save and gone once
 deleted.
 
-- **The agent list is grouped** (`web/src/lib/repositories.ts`, `web/src/screens/Home.tsx`) by repository, most
-  recently used first, each heading linking to the repository's page; sessions on no repository of the
-  connection (pasted addresses included) are a last group, and with no such repository there are no headings.
-  Within a group, most recent first. A group shows six sessions (twenty when it is the only one), then a line
-  unfolding the rest; a working session or one waiting on its user is never hidden, and a fold hiding only one or
-  two is not made. All of it comes from summaries the `user` actor already broadcasts, asking nothing of GitHub,
-  a provider or a session. Repositories with saved settings and no session are listed below (`savedRepositories`)
-  as links: the only way to their page, and where a secret for a never-launched or vanished repository is
-  deleted.
-- **Work** (`/repositories/<GitHub's id>`, `web/src/screens/Repository.tsx`): its sessions, its work items
-  ([Work items](work-items.md)), and the open pull requests its sessions opened, as each session's summary last
-  had them (a pull request merged or closed at GitHub stays until its session's panel rereads it), each with its
-  verified summary.
+- **Agents** (`web/src/screens/Home.tsx`): the rail groups connected repositories by owner and
+  includes repositories with saved settings. **Everything** shows **Needs you**, **Working now** and
+  **Recent** across repositories. Choosing a repository opens its workspace.
+- **Overview** (`/repositories/<id>`, `web/src/screens/Repository.tsx`): the repository's composer,
+  sessions and work items. The Agents, Work items and Pull requests views have their own routes.
 - **Settings** (`/repositories/<id>/settings`, `web/src/screens/RepositorySettings.tsx`): defaults for new
-  sessions; whether its work items' agents take screenshots ([Work items](work-items.md)); setup command and
+  sessions; work-item placement, approvals, CI mode and environment builds; whether its work items' agents take screenshots ([Work items](work-items.md)); setup command and
   secrets (the panel's `SetupEditor` and `SecretsBlock`); checks (`ChecksEditor`); remembered MCP approvals with
   when given, until when, and "Forget"; and one control deleting everything saved for it. Fragments open a
   section: `#defaults`, `#screenshots`, `#setup`, `#checks`, `#network`, `#secrets`, `#servers`, `#forget`. "New agent" opens
@@ -948,11 +945,18 @@ longer covers with a setup command, secret and approval still saved (`/repositor
 
 ## Account settings
 
-Three things hold whatever the repository, on `/settings` (account menu; `web/src/screens/Settings.tsx`):
+Account settings apply across repositories. On `/settings` (account menu; `web/src/screens/Settings.tsx`) the owner sets
 defaults for new sessions, the user's own MCP servers, and the secrets those read. Each is its own table in the
 `user` actor with its own actions (`account`, `saveAccountDefaults`, `forgetLastStart`, `savePersonalServer`,
 `deletePersonalServer`, `accountSecrets`, `saveAccountSecret`, `deleteAccountSecret`). With work items, the page
-also has the user's API tokens for filing them by script ([Work items](work-items.md)).
+also has the user's API tokens for filing them by script and, when configured, the Linear workspace
+and team mappings ([Linear intake](work-items.md#linear-intake)). **Where work items run** stores the
+place, fallback, and the selected machine agent's profile, model and effort. A repository can override it.
+
+The user actor also exposes `modelProviders`, `saveModelProvider`, `checkModelProvider` and
+`removeModelProvider` (`server/src/model-providers.ts`). It seals one key per provider and account,
+checks the provider's catalog on save or recheck, and returns status with the last four characters
+and up to 32 model IDs. The Settings screen uses these actions to add, check, replace and remove keys. No agent consumes a saved key at this revision.
 
 ### Defaults
 
@@ -971,7 +975,7 @@ also has the user's API tokens for filing them by script ([Work items](work-item
 
 ### MCP servers of the user's own
 
-Defined once, present in every session of the user's (an issue tracker, a docs search), never read from a
+Defined once, available to the user's Windlass sessions (an issue tracker, a docs search), never read from a
 repository (a repository's are in `.windlass/config.json`: [A project's MCP servers](#a-projects-mcp-servers)).
 
 - **A server** is a name and a definition as Windlass takes one (its docs/mcp.md): `command` with `args`, `cwd`,
@@ -994,7 +998,7 @@ repository (a repository's are in `.windlass/config.json`: [A project's MCP serv
   and anything under that name it did not write is removed.
 - **Delivery** (`server/src/windlass-config.ts`, `server/src/sandbox/turn.ts`). Read with the secrets in one
   answer when a turn starts, written into Windlass's configuration file in the sandbox
-  (`~/.config/windlass/config.json`, where the publish tool goes) before the session opens, and removed when the
+  (`~/.config/windlass/config.json`) before the session opens, and removed when the
   turn ends. Other content stays; a same-named definition steps aside for the turn. The platform tracks what it
   wrote in `~/.local/state/windlass-platform-servers.json`. A change applies from each session's next turn,
   existing sandboxes included (each turn first removes leftovers from a turn whose server stopped under it); a

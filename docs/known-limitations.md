@@ -12,7 +12,7 @@ details.
   its own sandbox every command would otherwise need an answer. Two exceptions: it asks before starting a
   project's MCP server, and after an MCP server's first result, which it does not trust, it asks about commands
   again ([A project's MCP servers](github-and-repositories.md#a-projects-mcp-servers)).
-- **A key covers a prompt and the making of an agent, and nothing else.** The other actions set a value,
+- **Prompts, agent creation and work-item creation accept idempotency keys.** For the work-item API, send the key in the `Idempotency-Key` header. Several other actions set a value,
   or go by something the call names (a question's id, a ticket, a secret's name), so a repeat does nothing
   a second time; some of them answer a repeat with a refusal where the first attempt had succeeded
   (`answer`: `no_question`; `deleteSession`: `session_not_found`; a new MCP server: `server_exists`). `stop`
@@ -25,13 +25,13 @@ details.
   the invitation list, or a demo user once the demo is off, is refused at every call (`server/src/access.ts`).
 - **Each demo sign-in leaves a small volume** until `sandbox/cleanup.sh` runs.
 - **A user's limits are per account, and the demo makes accounts.** Every demo sign-in is a user of its
-  own, with a day's allowance and five places of its own, so where the demo is on, the two limits bound
+  own, with its own account limits, so where the demo is on, the two limits bound
   what one account uses and not what a visitor does. What bounds that is the deployment's own cap on
   sandboxes running at once (`WLP_E2B_MAX_RUNNING`).
-- **Sandbox time is counted, not billed.** The count is the session's own measurement, and differs from
+- **Counted sandbox time can differ from the provider’s bill.** The count is the session's own measurement, and differs from
   the provider's bill by seconds in ordinary use and by up to a hold when a server dies ("Usage and
   limits" has the cases). Nothing compares the two by itself: the log has one line per entry, and E2B's
-  usage page has what was billed.
+  usage page has the provider's bill. Where plans are enabled, the platform derives hosted minutes from its own ledger ([billing.md](billing.md#hosted-minutes)).
 - **What a machine reports is what the platform shows.** A session on a user's own machine runs its checks
   there, and its pull request's section says that this is what that machine reported. The platform does
   not control the machine: whoever runs it can change what runs there and what it reports, and can read
@@ -54,7 +54,7 @@ details.
   then, or not marked that was.
 - **A server that stops can leave a sandbox running for a few minutes.** A session has 4 of the shutdown's
   20 seconds to suspend its sandbox ([When a server stops](architecture.md#when-a-server-stops)); one that takes longer is paused by E2B at its
-  own timeout, at most three minutes later, and billed until then (about $0.003 at the default size). A
+  own timeout, at most three minutes later, and billed until then (about $0.003 at the default size). With turn resumption disabled, a
   turn that does not close itself in 10 seconds is ended as interrupted when the session next wakes.
 - **A deleted session's copy can outlive it.** When the bucket refuses its removal for about four hours, the
   platform gives up and names the object in the log; removing it is then the bucket's keeper's to do.
@@ -67,9 +67,7 @@ details.
 - **An access token that was handed out stays valid until it expires.** Forgetting a sign-in removes it and the
   token files of running turns, but a token a command already read in the hardened profile works for the rest of
   its hour.
-- **The test suites never call E2B.** They run the E2B provider on a stand-in for E2B's service. Only
-  `scripts/e2b-check.ts` runs it against the real one ([E2B](operating.md#e2b)): one sandbox for under a minute; and
-  `scripts/e2b-backup-check.ts`, two for under half a minute.
+- **The test suites never call E2B.** They run the E2B provider on a stand-in for E2B's service. Live checks are separate, including `scripts/e2b-check.ts`, `scripts/e2b-backup-check.ts`, the live snapshot check and the E2B model relay check ([testing.md](testing.md#the-checks-by-what-they-need)).
 - **A lost sandbox's files stay lost.** What comes back is the agent's memory of the conversation, not the
   workspace: the agent remembers files that are no longer there, and finds that out when it looks. A
   repository the session was launched with is cloned again.
@@ -96,8 +94,7 @@ details.
   and its agent is told to take the text as a description of what is wanted, not as instructions.
 - **Claude Code, OpenCode and Codex take no marker for outside text.** Windlass is told the source of
   each turn's outside text and taints the session ([Untrusted text](work-items.md#untrusted-text)); these
-  agents only get the labelled prompt, and run every command without asking. On Docker, hardened, the
-  only profile they run items on, someone else's issue or feedback stops their turn as it does
+  agents only get the labelled prompt, and run every command without asking. On Docker, hardened, where commands run directly in the container, someone else's issue or feedback stops their turn as it does
   Windlass's (below); CI logs, findings and reports still go to them labelled only.
 - **On Docker, hardened, no agent is told of outside text.** A tainted Windlass there would refuse every
   command, since its sandbox cannot start under Docker's default seccomp, and the other agents have no
@@ -118,7 +115,7 @@ details.
   Nothing reads the file in between: no Windlass runs between turns. The agent's own tools are not written
   anywhere: they are declared with each session's opening; a server called `windlass_platform` left there by
   a command is taken out (`server/src/windlass-config.ts`).
-- **A user's own MCP server runs unasked, with the network and the session's access token.** Windlass
+- **A user's own local MCP server starts unasked, outside the command sandbox.** With the model relay it can use the turn's placeholder. Without the relay it can read the access token. Windlass
   asks before it starts a project's server and not before one of its user's own configuration, and
   such a server is a process outside Windlass's sandbox around commands in every profile. The settings
   page says so before one is saved; nothing asks again in a session. On Docker with the Windlass
@@ -162,7 +159,7 @@ details.
   in each sandbox the server started in, for 30 days from that start, and has no way to take one back or to
   stop a server. So forgetting holds for the next session and the next sandbox; a sandbox that already
   started the server goes on starting it, and for that reason may do so past the day the panel names. On
-  Docker that record is shared by all of a user's sessions, and forgetting changes nothing until it has run
+  Docker that record is shared by sessions using the same Windlass data volume, and forgetting changes nothing until it has run
   out. Removing a session's sandbox is what ends it sooner.
 - **An approval given in the panel starts nothing by itself.** No Windlass runs between turns, so the server
   starts with the session's next turn. "Not now" is asked again with every message that starts a turn, and a
