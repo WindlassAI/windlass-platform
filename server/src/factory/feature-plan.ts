@@ -139,7 +139,7 @@ const MAX_AGENT_ID = 200;
  * effort of plain id text. Whether its place offers them is placement's (`placement.ts`, `agentFit`).
  * Windlass with nothing chosen is no choice: the subtask inherits the feature's model.
  */
-function agentOf(value: unknown): SubtaskAgent | undefined {
+export function agentOf(value: unknown): SubtaskAgent | undefined {
 	const a = record(value);
 	for (const key of Object.keys(a)) requirePlan(["harness", "model", "effort"].includes(key), "Unknown agent field: " + key);
 	const harness = a.harness === undefined ? "windlass" : knownHarness(a.harness);

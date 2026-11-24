@@ -284,6 +284,8 @@ export interface FactoryItem {
 	singleBudget?: ItemBudget;
 	filedTurn?: string;
 	replans?: number;
+	/** Why the feature was last planned again, as its revised plan's card says it. */
+	replanWhy?: string;
 	featurePlan?: import("../contract.js").FeaturePlan;
 	parent?: NonNullable<import("../contract.js").ItemSummary["parent"]>;
 	id: string;
@@ -453,6 +455,7 @@ export type Fact =
 	/** `agents`: the subtasks whose agent works without asking that the person confirmed (`ItemAction`). */
 	| { kind: "approve_plan"; inventory?: PlacementInventory; at: number; by: string; version: number; agents?: string[]; bases?: Record<string, string> }
 	| { kind: "run_single"; at: number; by: string }
+	| { kind: "set_subtask_agent"; inventory?: PlacementInventory; at: number; by: string; key: string; agent: unknown }
 	| { kind: "start"; at: number; by: Cause }
 	| { kind: "machine_removed"; at: number }
 	| { kind: "cancel"; at: number; by: Cause }

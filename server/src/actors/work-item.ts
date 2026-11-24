@@ -325,6 +325,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		plan: plan ?? null,
 		...(stored.item.jobs && { subtasks: stored.item.jobs.map(j => ({ id: j.id, key: j.task.key, state: j.state, dispatchedAt: j.dispatchedAt ?? null, startedAt: j.startedAt ?? null, wait: j.wait ?? j.placementRefusal ?? null })) }),
 		...(plan && { unattended: unattendedKeys(plan, completed), completedSubtasks: [...completed] }),
+		...(stored.item.replanWhy && { replanWhy: stored.item.replanWhy }),
 		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
 		reviewNone: stored.meta.handoffReview?.reason ?? (stored.item.reviewer && "off" in stored.item.reviewer ? REVIEW_OFF_REASON[stored.item.reviewer.off] : null),
@@ -1720,7 +1721,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					const prefer = typeof chosen === "object" ? inventory.machines.find(m => m.machineId === chosen.machine)?.name
 						: chosen === "hosted" ? "hosted" : parent.kind === "machine" ? parentName : undefined;
 					text += "\nWhen a part fits the owner's preferred place, use it as place.prefer. Choose a different place or agent when that part requires it. Owner preference (data): " +
-						JSON.stringify({ prefer, selection: preferred.place === "any-machine" ? "any compatible machine" : undefined, harness: preferred.harness ?? "windlass", profile: preferred.machineProfile });
+						JSON.stringify({ prefer, selection: preferred.place === "any-machine" ? "any compatible machine" : undefined, harness: preferred.harness ?? "windlass", profile: preferred.machineProfile, model: preferred.machineModel ?? undefined, effort: preferred.machineEffort ?? undefined });
 				}
 				text += "\n\nCurrent runners do not support sizing beyond one slot." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (small 1 vCPU, 1 GiB; standard 2 vCPU, 4 GiB, the default; large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than standard (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
 				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
@@ -1916,6 +1917,7 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 			return { kind: action.kind, version: action.version, by, at, ...agentsOf(action.agents), ...(bases ? { bases: bases as Record<string, string> } : {}) };
 		}
 		case "run_single": return { kind: action.kind, by, at };
+		case "set_subtask_agent": return { kind: action.kind, key: String(action.key), agent: action.agent, by, at };
 		case "update_feature":
 		case "start":
 		case "cancel":
@@ -1948,7 +1950,7 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 const CONFLICT: Record<ItemAction["kind"], string> = {
 	update_feature: "The feature cannot be updated at this step.",
 	cancel_subtask: "This subtask is no longer running.",
-	edit_plan: "That plan has changed. Read the latest version.", approve_plan: "Review the latest plan and answer its questions first.", run_single: "This item cannot switch to single mode.",
+	edit_plan: "That plan has changed. Read the latest version.", approve_plan: "Review the latest plan and answer its questions first.", run_single: "This item cannot switch to single mode.", set_subtask_agent: "That subtask has started or the plan changed.",
 	start: "Only a draft can be started.",
 	cancel: "The item is done or cancelled already.",
 	retry: "Only an item that failed can be retried.",
@@ -2139,6 +2141,11 @@ export const workItem = actor({
 		},
 		internalFilePlan: async (c, input: { key: string; plan: unknown }): Promise<string> => {
 			requireService(c);
+			// A part on the owner's saved machine agent starts on its saved model and effort where the planner named none.
+			const saved = c.vars.stored?.meta.defaultPlace;
+			const parts = (input.plan as { subtasks?: { agent?: { harness?: string; model?: string; effort?: string } }[] } | null)?.subtasks;
+			if (saved?.machineModel && Array.isArray(parts)) for (const agent of parts.map(part => part?.agent))
+				if (agent && agent.harness === saved.harness && !agent.model) Object.assign(agent, { model: saved.machineModel, ...(saved.machineEffort && !agent.effort && { effort: saved.machineEffort }) });
 			try {
 				return await take(c, { ...input, kind: "file_plan", at: Date.now() }) ? "Plan filed. End your turn." : "This planning turn ended.";
 			} catch (error) { return describeError(error); }
@@ -2215,6 +2222,7 @@ export const workItem = actor({
 							token => refHead(hub.app, token, hub.owner, hub.name, branch), { reuse: true });
 					}
 				}
+				if (fact.kind === "set_subtask_agent") fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
 				const approving = stored.item.featurePlan?.status === "proposed" && (fact.kind === "approve_plan" || (fact.kind === "answer" && fact.choice === "approve"));
 				if (approving && (fact.kind === "approve_plan" || fact.kind === "answer")) {
 					fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);

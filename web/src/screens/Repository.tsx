@@ -38,6 +38,7 @@ import { useGithub, type Github } from "../state/github";
 import { useNow, useSessions } from "../state/hooks";
 import { RepositoryItems, type ItemsState } from "./Items";
 import { RepositorySettings } from "./RepositorySettings";
+import { readTwice } from "../lib/retry";
 
 /** Whether new agents can be launched on the repository, as GitHub says now. */
 export type RepositoryAccess =
@@ -85,9 +86,7 @@ export function useRepository(id: GithubId): RepositoryPage {
 
 	const reload = useCallback(() => {
 		const mine = ++reading.current;
-		client
-			.user(auth)
-			.repository(id)
+		readTwice(() => client.user(auth).repository(id))
 			.then(
 				(next) => {
 					if (mine !== reading.current) return;

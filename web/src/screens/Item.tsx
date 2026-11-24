@@ -31,7 +31,7 @@ import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
 import { Inline, PlacementQuestion, PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
 import { ItemSpend } from "../components/ItemSpend";
-import { agentFacts, agentLine } from "../lib/item-agent";
+import { agentFacts, agentLine, subscriptionSpend } from "../lib/item-agent";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown, Output } from "../components/Blocks";
 import { LongText } from "../components/Fold";
@@ -349,9 +349,9 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 						<span>
 							since <When at={view.wait.since} now={now} />
 						</span>
-						{view.wait.retryAt === null ? null : (
+						{view.wait.retryAt === null || view.wait.retryAt <= now ? null : (
 							<span>
-								tried again at <When at={view.wait.retryAt} now={now} />
+								looks again at <When at={view.wait.retryAt} now={now} />
 							</span>
 						)}
 					</>
@@ -715,22 +715,32 @@ function Cost({ view, now }: { view: ItemView; now: number }) {
 	const step = view.run?.step;
 	const rows = budgetFields(view);
 	const hosted = view.place.kind === "hosted";
+	const children = view.children ?? [];
+	const partAgents = [...new Set(children.flatMap((child) => (child.agent ? [agentLine(child.agent)] : [])))];
+	// A part on a subscription agent spends no counted token: its turns and time are what it cost.
+	const subscribed = children.filter((child) => child.agent?.tokens === "subscription");
+	const facts = [
+		...spendFacts(view),
+		...agentFacts(view.agent),
+		...(subscribed.length ? [{ label: `${plural(subscribed.length, "part")} on a subscription`, value: `${subscriptionSpend({ turns: subscribed.reduce((n, child) => n + child.spent.turns, 0), activeSeconds: subscribed.reduce((n, child) => n + child.spent.activeSeconds, 0) })}, not counted: your subscription` }] : []),
+	];
 	return (
 		<section className="usage-section" aria-labelledby="item-cost">
 			<h2 className="usage-title" id="item-cost">
 				Cost so far
 			</h2>
 			<p className="usage-note">
-				Built by <AgentGlyph harness={view.agent?.harness ?? "windlass"} size={11} inline />
-				{agentLine(view.agent)}.
+				{partAgents.length > 0 ? "Planned by" : "Built by"} <AgentGlyph harness={view.agent?.harness ?? "windlass"} size={11} inline />
+				{agentLine(view.agent)}
+				{partAgents.length > 0 ? `; parts built by ${partAgents.join(" and ")}` : ""}.
 			</p>
 			{view.state === "working" && view.spent.turns === 0 && step?.turn === "started" && (
 				<p className="usage-note">Spend is counted when the running turn ends. This step started {sandboxTime((now - step.startedAt) / 1000)} ago.</p>
 			)}
 			<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
-			{[...spendFacts(view), ...agentFacts(view.agent)].length > 0 ? (
+			{facts.length > 0 ? (
 				<dl className="usage-facts item-facts">
-					{[...spendFacts(view), ...agentFacts(view.agent)].map((fact) => (
+					{facts.map((fact) => (
 						<div key={fact.label}>
 							<dt>{fact.label}</dt>
 							<dd className="usage-number">{fact.value}</dd>

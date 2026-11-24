@@ -2,6 +2,7 @@ import type { ItemPlaceDefaults } from "@contract";
 import { type DefaultDestination, defaultPlaceRetryAt, resolveDefaultPlace } from "../../../server/src/factory/default-place";
 import { approvalText, planTokens, singleAfterPlanning, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
 import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
+import { withAgent } from "../lib/subtask-agents";
 import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses.js";
 import { checkItemEffort } from "../../../server/src/account-models.js";
 import { approveRoutes, bindRoute, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
@@ -1701,6 +1702,9 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 	const parser = importChild("parser", { n: 96, state: "done", filed: 63, run: { n: 1, started: 63, ended: 22, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 22 } }, spent: { tokens: 690_000, turns: 2, activeSeconds: 38 * 60, hostedSeconds: 38 * 60 } });
 	const units = importChild("units", { n: 97, state: "working", filed: 21, run: { n: 1, started: 21, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 20, turn: "started" } }, spent: { tokens: 310_000, turns: 2, activeSeconds: 14 * 60, hostedSeconds: 14 * 60 } });
 	const cache = importChild("cache", { n: 98, state: "working", filed: 21, place: { kind: "machine", machineId: "m_studio" }, run: { n: 1, started: 19, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 2, kind: "run_checks", started: 2 } }, spent: { tokens: 480_000, turns: 1, activeSeconds: 17 * 60, hostedSeconds: 0 } });
+	// On studio's Claude Code subscription: its tokens are reported, not counted.
+	cache.agent = { ...newAgent("claude", "opus", "high"), tokens: "subscription", reportedTokens: 480_000 };
+	cache.spent.tokens = 0;
 	cache.placement = { place: { kind: "machine", machineId: "m_studio" }, name: "studio", reason: importPlan.subtasks[2]!.place!.reason, units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
 	importing.children = [parser, units, cache].map(summaryOf);
 	importing.subtasks = [
@@ -1973,6 +1977,11 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (!child) throw conflict("This subtask is no longer running.");
 				return act(auth, child, {kind:"cancel"});
 			}
+			case "set_subtask_agent": {
+				const task = plan?.status === "approved" && !keptOf(auth).items.some(c => c.parent?.itemId === item.id && c.parent.key === action.key) ? plan.subtasks.find(s => s.key === action.key) : undefined;
+				if (!task) throw conflict("That subtask has started or the plan changed.");
+				return change(auth, item, { plan: { ...plan!, subtasks: plan!.subtasks.map(s => s === task ? withAgent(s, action.agent) : s) } }, [`‘${task.title}’ will run ${harnessName(action.agent?.harness ?? "windlass")}${action.agent?.model ? " on " + action.agent.model : ""}.`], "person");
+			}
 			case "run_single":
 				if (!current) throw conflict("The feature no longer has an open plan.");
 				if (plan.questions.some(q => !q.answer)) throw conflict("Answer and save the plan’s questions before approving one implementer.");
@@ -2042,7 +2051,7 @@ export function createMockItems(deps: MockItemsDeps) {
 						const children = keptOf(auth).items.filter(s => s.parent?.itemId === parent.id).map(summaryOf);
 						const exhausted = children.filter(s => s.state === "cancelled").length > 2;
 						const text = exhausted ? "Two re-plans have been used." : "Review the revised plan after the stopped subtask.";
-						change(auth, parent, {children, plan:{...parent.plan,version,status:exhausted ? "superseded" : "proposed"},
+						change(auth, parent, {children, replanWhy: `‘${item.title}’ stopped`, plan:{...parent.plan,version,status:exhausted ? "superseded" : "proposed"},
 							wait:{reason:"person",sentence:text,retryAt:null,since:at}, question:{kind:exhausted ? "rounds" : "replan_approval",id:parent.id+":plan"+version,askedAt:at,text,choices:exhausted ? choices("give_up") : choices("approve","revise","give_up")}},[text],"platform");
 					}
 				}

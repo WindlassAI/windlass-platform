@@ -1080,6 +1080,9 @@ export interface ItemPlaceDefaults {
 	placeFallback?: "wait" | "hosted" | null;
 	harness?: HarnessId | null;
 	machineProfile?: SandboxProfileId | null;
+	/** The machine agent's model and effort, by id; null runs its default. Plan-first subtasks on that agent start with them. */
+	machineModel?: string | null;
+	machineEffort?: string | null;
 }
 
 export interface RepositoryDefaults extends RepositoryAutonomy, ItemPlaceDefaults {
@@ -2286,6 +2289,8 @@ export interface ItemView extends ItemSummary {
 	unattended?: string[];
 	/** With a plan: the keys of its subtasks whose work is integrated, which approval neither places nor confirms again. */
 	completedSubtasks?: string[];
+	/** After a re-plan: why the feature was planned again, in a short sentence ("A pull request comment asked for changes"). */
+	replanWhy?: string;
 	children?: ItemSummary[];
 	/** Dispatched subtasks including placement waits. The start time is null for older jobs. */
 	subtasks?: { id: string; key: string; state: ItemState; dispatchedAt: number | null; startedAt: number | null; wait: string | null }[];
@@ -2531,6 +2536,8 @@ export type ItemAction =
 	 */
 	| { kind: "approve_plan"; version: number; agents?: string[]; bases?: Record<string, string> }
 	| { kind: "run_single" }
+	/** After approval: the agent a subtask that has not started runs; null runs Windlass on the feature's model. */
+	| { kind: "set_subtask_agent"; key: string; agent: SubtaskAgent | null }
 	/** A draft: start it. */
 	| { kind: "start" }
 	| { kind: "cancel" }
