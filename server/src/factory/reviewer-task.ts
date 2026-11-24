@@ -68,7 +68,7 @@ export interface ReviewerTaskReport {
  * person's: someone else's feedback is not a decision of theirs.
  */
 export interface PersonDecision {
-	kind: "send_back" | "answer" | "feedback";
+	kind: "send_back" | "answer" | "feedback" | "note";
 	/** The run the words started or were given in. */
 	run: number;
 	text: string;
@@ -360,6 +360,8 @@ function decisionHead(one: PersonDecision): string {
 	switch (one.kind) {
 		case "send_back":
 			return `${run}: the person sent the work back, saying:`;
+		case "note":
+			return `${run}: the person added a note for the agent:`;
 		case "feedback":
 			return `${run}: the person's own review or comments on the pull request on GitHub:`;
 		case "answer":

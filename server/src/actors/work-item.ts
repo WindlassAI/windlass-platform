@@ -65,7 +65,7 @@ import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
-import { RULES, activeJob, advance, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
+import { RULES, activeJob, advance, personAdds, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, requestedReviewBody, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, RequestedReview, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -1429,6 +1429,14 @@ async function integrationStep(c: Ctx, meta: ItemMeta, item: FactoryItem, effect
 	}
 }
 
+/** A note from the person, into the builder's running turn: false when no builder turn runs to take it, and it waits for the next. */
+async function steerNote(c: Ctx, stored: Stored, note: string): Promise<boolean> {
+	const step = stored.item.run?.step;
+	if (stored.item.state !== "working" || step?.turn !== "started" || step.kind === "review" || step.kind === "plan_review") return false;
+	return await sessionActor(c, stored.meta.uid, stored.meta.sessionId).internalOwnerNote({ itemId: stored.item.id, text: personAdds(note) })
+		.catch((error: unknown) => { if (isSessionGone(error)) return false; throw error; });
+}
+
 /**
  * Performs one effect: what comes of it is taken as a fact. Throws when it could not be done, to be
  * tried again; answers false when the item as it is now does not want it, and nothing was done.
@@ -1966,6 +1974,11 @@ function factOf(action: ItemAction, by: string, at: number): Fact {
 			return { kind: action.kind, at, by };
 		case "send_back":
 			return { kind: "send_back", at, by, note: note(action.note, true) as string };
+		case "note": {
+			// Given to the agent as the person's words: nothing hidden in it may ride along.
+			const text = typeof action.note === "string" ? action.note.replace(HIDDEN, "").trim() : action.note;
+			return { kind: "note", at, by, note: note(text, true) as string };
+		}
 		case "answer": {
 			if (action.choice === "add_secret") throw bad("Use the dedicated secret action to set the value.");
 			if (typeof action.question !== "string" || typeof action.choice !== "string") throw bad("Say which question this answers, and which choice.");
@@ -1996,6 +2009,7 @@ const CONFLICT: Record<ItemAction["kind"], string> = {
 	cancel: "The item is done or cancelled already.",
 	retry: "Only an item that failed can be retried.",
 	send_back: "Only an item in review can be sent back.",
+	note: "This item has ended, or its plan's parts take the notes.",
 	answer: "That question is not open any more, or does not offer that choice.",
 };
 
@@ -2263,6 +2277,7 @@ export const workItem = actor({
 							token => refHead(hub.app, token, hub.owner, hub.name, branch), { reuse: true });
 					}
 				}
+				if (fact.kind === "note") fact.steered = await steerNote(c, stored, fact.note);
 				if (fact.kind === "set_subtask_agent") fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
 				const approving = stored.item.featurePlan?.status === "proposed" && (fact.kind === "approve_plan" || (fact.kind === "answer" && fact.choice === "approve"));
 				if (approving && (fact.kind === "approve_plan" || fact.kind === "answer")) {

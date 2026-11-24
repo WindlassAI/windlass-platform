@@ -5413,6 +5413,8 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
 	}
 	const control = active?.control;
 	const next = (turn: number) => {
+		// An item's steps start its turns: a note that misses this one goes with the item's next.
+		if (meta.origin) throw new UserError("The turn cannot take the note now.", { code: "steer_unavailable" });
 		note(c, turn, "info", "Sent when this turn ends.");
 		return queuePrompt(c, meta, { text: message }, message, submission);
 	};
@@ -6803,6 +6805,21 @@ export const agentSession = actor({
 			// Answered once the queue holds the request too: a request that did not get there fails the delivery, which the item sends again.
 			const answer = await requestTurn(c, meta.uid, row);
 			if (answer.granted) void c.keepAwake(takeDelivered(c, meta, row.key, answer.slot));
+		},
+
+		internalOwnerNote: async (c, input: { itemId: string; text: string }): Promise<boolean> => {
+			requireService(c);
+			const meta = liveMeta(c);
+			if (!meta.origin || meta.origin.itemId !== input?.itemId || meta.origin.role === "reviewer" || meta.origin.planCritic || typeof input.text !== "string") throw new UserError("That note is not this session's.", { code: "bad_input" });
+			const turn = c.vars.turn;
+			if (!turn || turn.closed) return false;
+			try {
+				await steerTurn(c, meta, turn, input.text, null);
+				return true;
+			} catch (error) {
+				if (error instanceof UserError && error.code === "steer_unavailable") return false;
+				throw error;
+			}
 		},
 
 		// --- Windlass's model relay route (model-relay-route.ts), from another server process -----------
