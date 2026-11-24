@@ -573,6 +573,12 @@ function apply(c: Change, fact: Fact): boolean {
 			return true;
 		case "send_back":
 			return sendBack(c, fact.note);
+		case "note":
+			if (item.mode === "orchestrate") return false;
+			c.sayOfItem(fact.steered ? `Note to the running turn: ${fact.note}` : `Note for the next turn: ${fact.note}`);
+			if (!fact.steered) item.ownerNote = item.ownerNote ? `${item.ownerNote}\n\n${fact.note}` : fact.note;
+			if (item.run) decided(item, { kind: "note", run: item.run.n, text: fact.note });
+			return true;
 		case "cancel":
 			// The durable fast-forward may already be at GitHub. Settle it before reporting a terminal child state.
 			if (item.parent && item.run?.step.kind === "subtasks" && !item.question) {
@@ -628,7 +634,7 @@ function apply(c: Change, fact: Fact): boolean {
 }
 
 /** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "request_review" | "default_place_ready" | "default_place_wait" | "update_feature" | "feature_updated" | "parent_update_finished" | "claim_join" | "finish_join" | "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "set_subtask_agent" | "run_single" | "start" | "retry" | "send_back" | "cancel" | "answer" | "claim_secret" | "settle_secret" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
+function stepFact(c: Change, fact: Exclude<Fact, { kind: "request_review" | "default_place_ready" | "default_place_wait" | "update_feature" | "feature_updated" | "parent_update_finished" | "claim_join" | "finish_join" | "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "set_subtask_agent" | "run_single" | "start" | "retry" | "send_back" | "note" | "cancel" | "answer" | "claim_secret" | "settle_secret" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
 	const run = c.item.run;
 	if (run === null || c.item.featureUpdate) return false;
 	const step = run.step;
@@ -979,7 +985,9 @@ function freshPlan(item: FactoryItem): Pick<TurnPlan, "text" | "untrusted"> | nu
 	return first.kind === "refine" ? null : { text: `${FRESH_START}\n\n${first.text}`, ...marked(first.untrusted) };
 }
 
-const withNote = (text: string, note: string | null) => (note === null ? text : `${text}\n\nThe person adds: ${note}`);
+/** The person's own words to the agent, trusted: a note with a turn's prompt, or steered into a running turn. */
+export const personAdds = (note: string) => `The person adds: ${note}`;
+const withNote = (text: string, note: string | null) => (note === null ? text : `${text}\n\n${personAdds(note)}`);
 
 function sendBack(c: Change, note: string, push?: string): boolean {
 	const { item } = c;
@@ -1222,11 +1230,14 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	} else {
 		// One question a turn, which the session holds to; a run asks as often as its turns do, each a stop that waits for the person.
 		const asking = ASKING.has(plan.kind) ? { asksLeft: 1 } : {};
+		// The person's notes go with the builder's next turn, whichever text the session sends.
+		const note = ASKING.has(plan.kind) ? item.ownerNote ?? null : null;
+		if (note !== null) delete item.ownerNote;
 		const untrusted = marked(plan.untrusted);
 		if (plan.kind === "refine" && thirdParty(plan.untrusted).length) run.planInputsTrusted = false;
 		// The whole task goes with its own sources: the session sends one text or the other, with the sources of that one.
-		const freshPrompt = fresh && { fresh: { text: plan.includeInFresh ? fresh.text + "\n\n" + plan.text : fresh.text, untrusted: fresh.untrusted ?? [], ...unsandboxedOf(item, fresh.untrusted) } };
-		c.effects.push({ ...delivery, agent: plan.kind === "run_checks" || plan.kind === "summary" ? plan.kind : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted), ...freshPrompt });
+		const freshPrompt = fresh && { fresh: { text: withNote(plan.includeInFresh ? fresh.text + "\n\n" + plan.text : fresh.text, note), untrusted: fresh.untrusted ?? [], ...unsandboxedOf(item, fresh.untrusted) } };
+		c.effects.push({ ...delivery, text: withNote(delivery.text, note), agent: plan.kind === "run_checks" || plan.kind === "summary" ? plan.kind : plan.kind === "refine" ? "planner" : null, maxSteps: RULES.maxSteps, ...asking, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted), ...freshPrompt });
 	}
 	// From delivery on, not only once started: nothing else would notice a delivery that waits for a slot nobody will give.
 	checkTurn(c);

@@ -2613,6 +2613,22 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 }
 
 {
+	// The person's note: steered into the running turn, or kept for the builder's next turn as their own words.
+	const running = walk(newItem(), [{ kind: "start" }, { kind: "turn_started" }]).item;
+	const steered = walk(running, [{ kind: "note", note: "Use the helper.", steered: true }]);
+	const kept = walk(running, [{ kind: "note", note: "Use the helper." }, { kind: "note", note: "Keep the API." }]);
+	const next = walk(kept.item, [turnEnded("unresolved", FAILING)]);
+	const text = effect(next.last, "deliver")?.text ?? "";
+	expect("a steered note is logged of the item and kept as a decision, not for the next turn",
+		steered.last.events[0]?.said === "Note to the running turn: Use the helper." && steered.item.ownerNote === undefined && steered.item.decisions?.[0]?.kind === "note",
+		JSON.stringify(steered.last.events));
+	expect("a kept note goes with the builder's next turn as the person's words, once",
+		kept.last.events[0]?.said === "Note for the next turn: Keep the API." && text.includes("The person adds: Use the helper.\n\nKeep the API.") && next.item.ownerNote === undefined && !effect(next.last, "deliver")?.untrusted?.length,
+		text.slice(-120));
+	expect("a feature's planner takes no note", walk({ ...running, mode: "orchestrate" }, [{ kind: "note", note: "x" }]).last.events.length === 0);
+}
+
+{
 	// Run 1 passed its gate and CI at H(1); run 2 was sent back, its checks failed twice, and it pushed nothing.
 	const reviewed = walk(newItem(), [...pushedRun(H(1)), { kind: "ci_read", webhooks: false, prHead: null, head: H(1), reading: passedCi, mergeable: true, openItems: 1 }]);
 	const first = effect(reviewed.last, "handoff");

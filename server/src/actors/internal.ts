@@ -224,6 +224,8 @@ export interface SessionInternal {
 	internalFreeSandbox(throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean; sizeUnavailable?: HostedSize }>;
 	/** A work item's message (its `deliver` effect), into the inbox: resolves once it is stored; the same key again adds nothing. */
 	internalDeliver(input: Delivery): Promise<void>;
+	/** The item's person's note, steered into the builder's running turn: false when no turn can take it now. */
+	internalOwnerNote(input: { itemId: string; text: string }): Promise<boolean>;
 	/** The user's turn queue gives the delivery of `key` its slot. */
 	internalGrant(input: { key: string; slot: string }): Promise<void>;
 	/** The session's machine is back, or was removed: a turn paused for it resumes, or ends. */

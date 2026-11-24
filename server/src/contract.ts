@@ -2546,6 +2546,8 @@ export type ItemAction =
 	| { kind: "retry" }
 	/** An item in review: a new run, with the person's note to the agent. */
 	| { kind: "send_back"; note: string }
+	/** A note to the builder: into its running turn, or with its next turn. */
+	| { kind: "note"; note: string }
 	/** The open question: one of its choices, with a note to the agent, and for "raise" on a budget question the new budget. */
 	| { kind: "answer"; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] };
 

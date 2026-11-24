@@ -253,6 +253,8 @@ export interface FactoryItem {
 	 * decisions (reviewer-task.ts), so that it does not ask for one to be undone.
 	 */
 	decisions?: PersonDecision[];
+	/** The person's notes for the builder's next turn, sent while no builder turn ran (`note`); taken by the next one. */
+	ownerNote?: string;
 	/** A cross-repo feature's repositories, the primary first. Absent: the one repository of `task`. */
 	repos?: FeatureRepoState[];
 	integration?: IntegrationRun;
@@ -487,6 +489,8 @@ export type Fact =
 	| { kind: "retry"; at: number; by: Cause }
 	/** "Send back" with a note, from review. */
 	| { kind: "send_back"; at: number; by: Cause; note: string }
+	/** The person's note to the builder: `steered` into its running turn, or kept for its next one. */
+	| { kind: "note"; at: number; by: Cause; note: string; steered?: boolean }
 	| { kind: "claim_secret"; at: number; by: Cause; question: string; name: string }
 	| { kind: "settle_secret"; at: number; by: Cause; question: string; error: string | null }
 	| { kind: "answer"; target?: string; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] }

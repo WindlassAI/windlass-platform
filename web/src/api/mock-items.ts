@@ -2040,6 +2040,12 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (note === "") throw new PlatformError("user", "Say what to change: the note is what the agent is given.", { reason: "bad_input" });
 				return beginRun(auth, item, `Sent back: ${note}`);
 			}
+			case "note": {
+				if (item.mode === "orchestrate" || ["done", "cancelled", "failed"].includes(item.state)) throw conflict(`This item is ${now}: it takes no note.`);
+				const note = action.note.trim();
+				if (note === "") throw new PlatformError("user", "Write a note for the agent.", { reason: "bad_input" });
+				return change(auth, item, {}, [item.state === "working" && item.run?.step.turn === "started" ? `Note to the running turn: ${note}` : `Note for the next turn: ${note}`], "person");
+			}
 			case "cancel":
 				for (const child of keptOf(auth).items.filter(s => s.parent?.itemId === item.id && !["done","cancelled","failed"].includes(s.state))) await act(auth, child, {kind:"cancel"});
 				if (item.children?.length) item.children = keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf);

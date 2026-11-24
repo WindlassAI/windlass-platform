@@ -322,6 +322,36 @@ function SendBackDialog({ view, acting, onClose }: { view: ItemView; acting: Act
 	);
 }
 
+/** The person's note to a running builder: into the turn that runs, or with its next turn. Logged as theirs. */
+function NoteBox({ id, label, onDone }: { id: string; label: string; onDone(view: ItemView): void }) {
+	const [note, setNote] = useState("");
+	const ids = { note: useId() };
+	const acting = useActing(id, onDone);
+	const busy = acting.busy === "note";
+	const send = (event: FormEvent) => {
+		event.preventDefault();
+		if (note.trim() === "" || busy) return;
+		acting.act({ kind: "note", note: note.trim() }).then((done) => done && setNote(""));
+	};
+	return (
+		<form className="item-form item-steer" onSubmit={send}>
+			<label className="label" htmlFor={ids.note}>
+				{label}
+			</label>
+			<textarea id={ids.note} className="input textarea" rows={2} value={note} maxLength={MAX_NOTE_CHARS} onChange={(event) => setNote(event.target.value)} readOnly={busy} />
+			<div className="item-steer-foot">
+				<p className="field-note">Goes into the turn that runs now; with none running, it goes with the next turn.</p>
+				<button type="submit" className="button button-outline" disabled={note.trim() === "" || busy}>
+					{busy ? "Sending…" : "Send note"}
+				</button>
+			</div>
+			<Failure error={acting.error} />
+		</form>
+	);
+}
+
+const TAKES_NOTES = new Set<ItemSummary["state"]>(["queued", "working", "waiting"]);
+
 // ---- where it is --------------------------------------------------------------------------------
 
 /** Where the item is now, in a sentence or two: the server's while it waits, and the log's last line once it ended. */
@@ -1166,6 +1196,13 @@ export function Item({ page }: { page: ItemPage }) {
 					<Now view={view} now={now} />
 				)}
 				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
+				{view.mode !== "orchestrate" && TAKES_NOTES.has(view.state) ? <NoteBox id={view.id} label={view.parent ? "Note to this part" : "Note to the agent"} onDone={page.replace} /> : null}
+				{view.mode === "orchestrate"
+					? view.children?.filter((child) => TAKES_NOTES.has(child.state)).map((child) => {
+							const n = view.plan && child.parent ? partOf(view.plan, child.parent.key)?.n : undefined;
+							return <NoteBox key={child.id} id={child.id} label={`Note to ${n ? `part ${n}` : "the part"}: ${child.title}`} onDone={() => void page.reload()} />;
+						})
+					: null}
 			</section>
 
 			{view.plan ? (
