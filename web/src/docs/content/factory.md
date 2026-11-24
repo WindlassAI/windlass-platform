@@ -354,7 +354,7 @@ When the plan is ready, the item waits under **Needs you**: "Its plan waits for 
 - Choose **Approve version N** to start the subtasks. With answers typed and nothing else changed, the button is **Approve**: it saves your answers as the next version and approves that version in one press.
 - Choose **Ask for a new plan** to have the planner try again, or **Give up**.
 
-If approval is refused because the repository lacks checks or push CI, **Run as a single item** turns the feature into one ordinary item and starts it. The tokens spent on planning stay counted.
+Before you approve, the plan names missing repository checks or push CI and offers **Run as a single item** if you prefer to proceed without adding checks or enabling pushes on `windlass/**`. The tokens spent on planning stay counted.
 
 ### Placement
 
@@ -423,6 +423,8 @@ These stop the feature and ask you:
 - a subtask has no passing checks or no CI on its push: "Orchestration stopped because a subtask lacks passing local checks or push CI. Hand over the feature PR or give up.";
 - two subtasks stopped with the same failure, or one subtask stopped a second time;
 - no CI passed on the whole feature within 10 minutes: "No passing CI reported on the complete feature. Wait for a check or hand over the PR."
+
+If a subtask’s sandbox cannot start, it retries automatically after 2, 5, and 5 minutes before asking you for help.
 
 Cancelling a feature cancels its subtasks too.
 

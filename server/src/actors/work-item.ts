@@ -42,7 +42,7 @@ import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
 import { childItemId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
-import { hasPushCi, repositoryAdmission } from "../github/feature-ci.js";
+import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf } from "../github/publish.js";
 import { subtaskBranch, featureBranch, openFeature, refHead, advanceFeatureRef, readyFeature } from "../github/feature.js";
 import { crossRepo, integrationView, issueReference, linkSection, nextOpening, readyRefusal, repoOf, repoViews, withSection, INPUTS_DIRECTORY } from "../factory/cross-repo.js";
@@ -63,7 +63,7 @@ import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
 import { secretRequestLimit } from "../repo-secrets.js";
-import { activeJob, advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey, upgradeSubtaskQuestion } from "../factory/blueprint.js";
+import { activeJob, advance, canRetry, completedKeys, currentKey, nextPrPoll, prPollKey, singlePlanAlternative, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
@@ -117,6 +117,7 @@ interface Stored {
 }
 
 interface ItemVars {
+	pushCi?: { key: string; eligible: boolean; expires: number };
 	savingSecret?: Promise<void>;
 	/** Null for an actor `user` did not create. */
 	stored: Stored | null;
@@ -216,12 +217,27 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
  * state. Read from memory, a question decided a moment ago could be shown before the log line that led
  * to it was written.
  */
-function viewOf(c: Ctx): Promise<ItemView> {
-	return queued(c, async () => {
+async function viewOf(c: Ctx): Promise<ItemView> {
+	const { stored, view } = await queued(c, async () => {
 		const stored = await load(c.db);
 		if (!stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
-		return await pageOf(c, stored);
+		return { stored, view: await pageOf(c, stored) };
 	});
+	const { item } = stored;
+	const q = view.question;
+	if (q && (q.kind === "plan_approval" || q.kind === "replan_approval") && item.featurePlan?.status === "proposed" && item.filedTurn === currentKey(item) && !crossRepo(item)) {
+		try {
+			await checkFeatureCi(c, stored, {}, true);
+		} catch (error) {
+			const fallback = singlePlanAlternative(item);
+			const block = error instanceof PlanError ? error.message : "The platform could not verify this repository’s push CI. Refresh the item to check again.";
+			q.approvalBlock = block;
+			q.text += "\n" + block;
+			q.choices = q.choices.filter(choice => choice.id !== "approve");
+			if (fallback) q.choices.unshift(fallback);
+		}
+	}
+	return view;
 }
 
 export const FEEDBACK_TABLE = "CREATE TABLE IF NOT EXISTS feedback(id TEXT PRIMARY KEY,data TEXT NOT NULL,at INTEGER NOT NULL,received INTEGER NOT NULL,batch TEXT NOT NULL,ready INTEGER NOT NULL,after_run INTEGER NOT NULL DEFAULT -1,state TEXT NOT NULL DEFAULT 'pending',reason TEXT NOT NULL,run INTEGER,plan INTEGER,saved_plan TEXT)";
@@ -809,18 +825,27 @@ async function checkCrossRepo(c: Ctx, stored: Stored, bases: Readonly<Record<str
 	if (problems.length) throw new PlanError("Approval needs every repository ready first. " + problems.join(" "));
 }
 
-async function checkFeatureCi(c: Ctx, stored: Stored, bases: Readonly<Record<string, string>> = {}) {
+async function checkFeatureCi(c: Ctx, stored: Stored, bases: Readonly<Record<string, string>> = {}, preview = false) {
 	if (crossRepo(stored.item)) return checkCrossRepo(c, stored, bases);
 	const { item, meta } = stored;
 	if (!await userActor(c, meta.uid).internalHasChecks(meta.repository.id))
-		throw new PlanError("Use a single item or add saved repository checks before approving orchestration.");
+		throw new PlanError(item.replans ? "Add saved repository checks before approving the revised plan." : "Use a single item or add saved repository checks before approving orchestration.");
 	const hub = await github(c, meta, "write");
 	const plan = item.featurePlan!;
 	const pending = plan.subtasks.filter(s => !item.jobs?.some(j => j.task.key === s.key && j.state === "done"));
 	const branches = [featureBranch(item.id), ...pending.map(s => subtaskBranch(item.id, s.key, childItemId(item.id, plan.version, s.key)))];
 	const eligible = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "read", actions: "read", checks: "read", statuses: "read", pull_requests: "read" } },
-		token => hasPushCi(hub.app, token, hub.owner, hub.name, item.pr ? featureBranch(item.id) : meta.repository.branch, branches));
-	if (!eligible) throw new PlanError("Use a single item or add CI that reports on pushes to the feature and child branches before approving orchestration.");
+		async token => {
+			const head = await refHead(hub.app, token, hub.owner, hub.name, item.pr ? featureBranch(item.id) : meta.repository.branch);
+			const key = JSON.stringify([head, branches]);
+			const cached = c.vars.pushCi;
+			if (preview && cached?.key === key && cached.expires > Date.now()) return cached.eligible;
+			const eligible = await hasPushCiAt(hub.app, token, hub.owner, hub.name, head, branches);
+			// Enabled workflows and external CI evidence can change even at the same commit.
+			c.vars.pushCi = { key, eligible, expires: Date.now() + 60_000 };
+			return eligible;
+		}, { reuse: true });
+	if (!eligible) throw new PlanError(`This repository’s CI does not report on pushes to the feature and child branches. ${item.replans ? "Add" : "Run as a single item or add"} windlass/** to the workflow’s push branches.`);
 }
 
 function repositoryDirectory(c: Ctx, meta: ItemMeta) {
@@ -1064,6 +1089,7 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 	if (item.question?.kind === "machine_removed" || ENDED.has(item.state) || run === null) return false;
 	const key = currentKey(item);
 	switch (effect.kind) {
+		case "sandbox_retry": return effect.key === key && item.wait?.reason === "capacity" && item.wait.retryAt === effect.at && !item.question && run.step.turn === null;
 		case "provider_retry": return effect.key === key && item.wait?.reason === "provider" && !item.question;
 		case "fresh_sandbox": return effect.key === key && !item.question && run.step.turn === null;
 		case "describe_feature": return effect.key === key && run.step.kind === "publish" && !item.question;
@@ -1270,6 +1296,9 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		return gone;
 	};
 	switch (effect.kind) {
+		case "sandbox_retry":
+			await take(c, { ...effect, at: Date.now() });
+			return true;
 		case "provider_retry":
 			await take(c, { ...effect, at: Date.now(), loginChanged: row.due_at < effect.at });
 			return true;

@@ -279,6 +279,17 @@ describe("a feature's plan on its page", () => {
 		expect(budgetField("index", "tokens").value).toBe("1");
 	});
 
+	it("shows the push CI blocker and single-item choice before approval", async () => {
+		const block = "Add windlass/** to the workflow’s push branches.";
+		make({}, item => item.question ? { ...item, question: { ...item.question, approvalBlock: block,
+			choices: [{ id: "run_single", label: "Run as a single item" }, ...item.question.choices.filter(c => c.id !== "approve")] } } : item);
+		const made = await api().createItem({ repository: { id: 7102 }, title: "Tide charts", body: "Draw the week's tides.", mode: "orchestrate", start: true });
+		await show(`/items/${made.id}`);
+		expect(host.querySelector(".plan-question .callout-warn")?.textContent).toContain(block);
+		expect(button("Approve version 1")?.disabled).toBe(true);
+		expect(button("Run as a single item")?.disabled).toBe(false);
+	});
+
 	it("says the server's refusal on a repository without checks, and offers the feature as one item", async () => {
 		make({});
 		const made = await api().createItem({ repository: { id: 7102 }, title: "Tide charts", body: "Draw the week's tides.", mode: "orchestrate", start: true });

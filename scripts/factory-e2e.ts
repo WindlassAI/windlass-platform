@@ -299,6 +299,32 @@ if (!only.length || only.some(name => name.startsWith("user-limits"))) {
 }
 
 if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
+	const ciServer = new Server();
+	try {
+		await check("orchestrator push CI: the plan shows the blocker and can start one implementer", async () => {
+			const workflow = ".github/workflows/build.yml";
+			const restricted = "on:\n  pull_request:\n  push:\n    branches: [main]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n";
+			const repo = standin.addRepository({ owner: "ada", name: "plan-push-ci", installation, files: { [workflow]: restricted } });
+			const { user, client } = await world(ciServer, standin);
+			try {
+				await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
+				const feature = await user.createItem({ repository: { id: repo.id }, title: "Search documents", body: "Index documents and search the index.", mode: "orchestrate", start: true });
+				const page = await untilItem(user, feature.id, "the plan approval question", v => v.question?.kind === "plan_approval");
+				const q = page.question!;
+				assert(page.plan && q.approvalBlock?.includes("windlass/**") && q.text.includes(q.approvalBlock), "Missing push-branch guidance before approval.");
+				assert(q.choices.some(c => c.id === "run_single" && c.label === "Run as a single item") && !q.choices.some(c => c.id === "approve"), "Wrong choices for a blocked plan.");
+				standin.commit(repo, "main", { [workflow]: restricted.replace("[main]", "[main, 'windlass/**']") }, "Enable branch builds");
+				const ready = await user.item(feature.id);
+				assert(!ready.question?.approvalBlock && ready.question?.choices.some(c => c.id === "approve"), "The new workflow head did not clear the blocker.");
+				standin.commit(repo, "main", { [workflow]: restricted }, "Restrict branch builds");
+				const refusal = await refused(() => user.actOnItem({ id: feature.id, action: { kind: "approve_plan", version: page.plan!.version } }), "bad_input");
+				assert(refusal === q.approvalBlock, "Approval did not freshly check push CI.");
+				const single = await user.actOnItem({ id: feature.id, action: { kind: "answer", question: q.id, choice: "run_single" } });
+				assert(single.mode === "single" && single.run?.step.kind === "implement" && !single.children?.length, stateOf(single));
+				return "main/PR CI blocked upfront, a changed head cleared it, and the fallback started one implementer";
+			} finally { await client.dispose(); }
+		});
+	} finally { await ciServer.stop(); ciServer.remove(); }
 	const singleServer = new Server();
 	try {
 		await check("orchestrator single: Run as single item resumes with builder permissions and passes its saved check", async () => {

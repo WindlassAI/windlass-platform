@@ -32,7 +32,7 @@ process.env.RIVETKIT_STORAGE_PATH = join(scratch, "storage");
 for (const name of Object.keys(process.env)) if (name.startsWith("WLP_GITHUB_")) delete process.env[name];
 mkdirSync(process.env.RIVETKIT_STORAGE_PATH, { recursive: true });
 
-const { advance, createItem, currentKey, upgradeSubtaskQuestion } = await import("../server/src/factory/blueprint.js");
+const { advance, createItem, currentKey, singlePlanAlternative, upgradeSubtaskQuestion } = await import("../server/src/factory/blueprint.js");
 const { admit, budgetStop, FACTORY_DEFAULTS, retryAt } = await import("../server/src/factory/budget.js");
 const { gateResult, verdictOf, verdictWords, verdictCi } = await import("../server/src/factory/verdict.js");
 const { CI_POLLING, readCi, rerunCancelled, ciState, LOG_TAIL_CHARS, LOG_TAIL_LINES } = await import("../server/src/github/ci.js");
@@ -1184,6 +1184,33 @@ drive("a sandbox that cannot be prepared: Try again gets its own retry", newItem
 	{ fact: unprepared, state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "sandbox_failed" && o.item.run?.step.interruptions === 0, `${o.item.question?.kind}, ${o.item.run?.step.interruptions} interruptions`) },
 ]);
 
+// The durable timer for a child's sandbox is part of the failed attempt. Early and repeated
+// receipts leave it waiting, and the fourth failure goes back to the ordinary recovery choices.
+{
+	const child: FactoryItem = { ...newItem(), place: { kind: "machine", machineId: "studio" }, parent: { itemId: "i_feature", key: "first", title: "Feature" } };
+	let timer: Extract<Effect, { kind: "sandbox_retry" }>;
+	const waiting = (retry: number, minutes: number): Row => ({
+		fact: unprepared, state: "waiting", wait: "capacity", effects: ["sandbox_retry"], also: o => {
+			timer = effect(o, "sandbox_retry")!;
+			return holds(!o.item.question && timer.key === currentKey(o.item) && timer.at === o.item.wait?.retryAt
+				&& timer.at === o.item.wait.since + minutes * MINUTE && o.item.run?.step.sandboxFailures === retry, "wrong sandbox retry");
+		},
+	});
+	const fire: Row["fact"] = () => ({ kind: "sandbox_retry", key: timer.key, plan: timer.plan });
+	const start: Row = { fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] };
+	const retry = (minutes: number): Row => ({ fact: fire, after: minutes * MINUTE, state: "queued", effects: ["deliver", "check_turn"] });
+	drive("a child's sandbox backs off three times before asking", child, [
+		start, waiting(1, 2), { fact: fire, state: "waiting", wait: "capacity", effects: [], unchanged: true }, retry(1),
+		waiting(2, 5), retry(5), waiting(3, 5), retry(5),
+		{ fact: unprepared, state: "waiting", wait: "person", effects: ["ask"], also: o => holds(o.item.question?.kind === "sandbox_failed"
+			&& o.item.question.text.includes("after 3 automatic retries") && o.item.question.choices.some(choice => choice.id === "fresh_sandbox"), "missing recovery question") },
+	]);
+	drive("a child resumes normally when its sandbox becomes available", child, [
+		start, waiting(1, 2), retry(2), { fact: started(), state: "working", effects: ["check_turn"] },
+		{ fact: ended("succeeded", PASSED), state: "working", effects: ["publish"] },
+	]);
+}
+
 // The dogfood case: a typecheck ran a 1 GiB hosted sandbox out of memory and the turn did not finish. The item asks with the
 // figures, and "Go on in a larger sandbox" frees the sandbox and names the next size for the new one.
 const outOfMemory: Row["fact"] = (k) => ({ kind: "turn_ended", key: k.key, outcome: "error", verified: null, flags: [], changes: false, report: null, outOfMemory: { usedMiB: 942, totalMiB: 977, size: "small", larger: "standard" }, spend: { tokens: 0, hostedSeconds: 0 } });
@@ -1704,6 +1731,12 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 {
 	const task = (key: string, owns: string[] = [key], dependsOn: string[] = []) => ({ key, title: key, brief: key, owns, dependsOn, acceptance: ["Run npm test"], budget: { tokens: 1000 } });
 	const zero = { tokens: 0, activeSeconds: 0, turns: 0, hostedSeconds: 0 };
+	const split = { subtasks: [task("one"), task("two")], questions: [], spec: { goal: "Build", acceptance: ["Run npm test"], requirements: [], outOfScope: [] } };
+	const proposed = walk(newItem({ mode: "orchestrate", budget: { tokens: 10_000 } }), [{ kind: "start" }, { kind: "file_plan", plan: split }, turnEnded("succeeded", null)]).item;
+	const alternative = singlePlanAlternative(proposed);
+	const single = walk(proposed, [{ kind: "answer", choice: alternative?.id }]);
+	expect("a split plan's CI fallback starts one implementer from the approval question", alternative?.label === "Run as a single item"
+		&& single.item.mode === "single" && !single.item.jobs?.length && single.item.run?.step.kind === "implement" && !!effect(single.last, "deliver"));
 	function start(subtasks: ReturnType<typeof task>[], available?: number, hostedSpent = 0) {
 		const plan = { subtasks, questions: [], spec: { goal: "Build", acceptance: ["Run npm test"], requirements: [], outOfScope: [] } };
 		const approved = walk(newItem({ mode: "orchestrate", budget: { tokens: 10_000 } }), [

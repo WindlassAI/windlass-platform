@@ -91,6 +91,7 @@ export const RULES = {
 	interruptions: 3,
 	/** Turns of one step whose sandbox could not be prepared, tried again on their own before the person is asked. */
 	sandboxRetries: 1,
+	childSandboxRetryMinutes: [2, 5, 5],
 	/** Automatic tries after a provider's usage limit, each waiting for its reset. */
 	providerRetries: 3,
 	publishTries: 3,
@@ -580,6 +581,10 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "claim_join" | "finish_
 				nextTurn(c, { ...IMPLEMENT, kind: "conflict", charge: "conflict", fingerprint: "conflict:" + c.item.task.base, fetchBase: c.item.task.base, text: "Merge origin/" + c.item.task.base + " into your own branch and resolve the conflicts. Checks and CI must pass again." });
 			} else ask(c, "publish_refused", fact.reason, [choice("give_up")], null, null);
 			return true;
+		case "sandbox_retry":
+			if (fact.key !== key || !c.item.parent || c.item.question || step.turn !== null || c.item.wait?.reason !== "capacity" || fact.at < (c.item.wait.retryAt ?? Infinity)) return false;
+			nextTurn(c, fact.plan);
+			return true;
 		case "provider_retry":
 			if (fact.key !== key || c.item.wait?.reason !== "provider" || (!fact.loginChanged && fact.at < (c.item.wait.retryAt ?? Infinity))) return false;
 			nextTurn(c, fact.plan);
@@ -978,19 +983,30 @@ function checkTurn(c: Change): void {
 
 /**
  * The session could not prepare the turn's sandbox (`sandboxFailed`): the agent never ran, so this is not one of the
- * step's cut-offs. Tried once more on its own; after that the person is asked, and may start the step in a new sandbox.
+ * step's cut-offs. A child backs off between attempts so siblings have time to free capacity.
  */
 function sandboxFailed(c: Change, said: string, resume: TurnPlan): void {
 	const step = c.run.step;
 	step.sandboxFailures = (step.sandboxFailures ?? 0) + 1;
 	const reason = said.trim().replace(/[.\s]+$/, "");
-	if (step.sandboxFailures <= RULES.sandboxRetries) {
+	if (c.item.parent) {
+		const minutes = RULES.childSandboxRetryMinutes[step.sandboxFailures - 1];
+		if (minutes !== undefined) {
+			const at = c.at + minutes * MINUTE;
+			const sentence = `The sandbox could not be prepared for the turn (${reason}). Retrying in ${minutes} minutes (retry ${step.sandboxFailures} of ${RULES.childSandboxRetryMinutes.length}).`;
+			c.say(sentence);
+			c.state("waiting", { reason: "capacity", sentence, retryAt: at });
+			c.effects.push({ kind: "sandbox_retry", key: c.key, at, plan: resume });
+			return;
+		}
+	} else if (step.sandboxFailures <= RULES.sandboxRetries) {
 		c.say(`The sandbox could not be prepared for the turn (${reason}); the step is tried again.`);
 		return nextTurn(c, resume);
 	}
-	// "Try again" gets its own retry.
+	// "Try again" gets a fresh retry allowance.
+	const attempts = c.item.parent ? `after ${RULES.childSandboxRetryMinutes.length} automatic retries` : "twice in a row";
 	step.sandboxFailures = 0;
-	const text = `The sandbox could not be prepared for the turn, twice in a row: ${reason}. The agent did not run. Try again in the same sandbox, or start this step on a fresh sandbox: that one starts from the repository on GitHub, and what was not pushed from the old sandbox is lost with it.`;
+	const text = `The sandbox could not be prepared for the turn, ${attempts}: ${reason}. The agent did not run. Try again in the same sandbox, or start this step on a fresh sandbox: that one starts from the repository on GitHub, and what was not pushed from the old sandbox is lost with it.`;
 	ask(c, "sandbox_failed", text, [choice("again"), choice("fresh_sandbox"), ...handOverAny(c.item), choice("give_up")], null, resume);
 }
 
@@ -1839,6 +1855,12 @@ function planQuestion(item: FactoryItem) {
 	return item.mode === "orchestrate" && ["plan_approval", "replan_approval", "single_suggested"].includes(item.question?.kind ?? "");
 }
 
+/** Also accepted on questions filed before the item page offered the single-item fallback. */
+export function singlePlanAlternative(item: FactoryItem) {
+	if (item.mode === "orchestrate" && !item.replans && !crossRepo(item) && item.question?.kind === "plan_approval" && item.featurePlan?.status === "proposed" && item.filedTurn === currentKey(item))
+		return { id: "run_single" as const, label: "Run as a single item" };
+}
+
 function askPlan(c: Change) {
 	const p = c.item.featurePlan;
 	const revise = [choice("revise")];
@@ -2213,7 +2235,8 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	const { item } = c;
 	const question = item.question;
 	if (question === null || question.id !== fact.question) return false;
-	const picked = question.choices.find((option) => option.id === fact.choice);
+	const picked = question.choices.find((option) => option.id === fact.choice)
+		?? (fact.choice === "run_single" ? singlePlanAlternative(item) : undefined);
 	if (picked === undefined) return false;
 	if (question.kind === "secret_needed" && fact.note !== undefined) return false;
 	const note = fact.note?.trim() || null;

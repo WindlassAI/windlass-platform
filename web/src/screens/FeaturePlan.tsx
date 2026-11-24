@@ -181,9 +181,8 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 		return plan ? acting.act({ kind: "approve_plan", version: plan.version, ...(unattended.length > 0 && { agents: unattended.filter((key) => confirmed.includes(key)) }) }) : Promise.resolve(false);
 	};
 	/** Answers only: saved as the next version, which is then approved (one implementer, where the planner suggested that), in one press. */
-	const approveWithAnswers = async () => {
+	const approveWithAnswers = async (single = view?.question?.kind === "single_suggested") => {
 		if (!plan) return false;
-		const single = view?.question?.kind === "single_suggested";
 		const agentsConfirmed = unattended.filter((key) => confirmed.includes(key));
 		if (!(await save())) return false;
 		if (single) return acting.act({ kind: "run_single" });
@@ -267,6 +266,13 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 	const busy = acting.busy !== null;
 	const single = view.question.kind === "single_suggested";
 	const replan = view.question.kind === "replan_approval";
+	const ciBlock = view.question.approvalBlock;
+	const fallback = !single && view.question.choices.find(choice => choice.id === "run_single");
+	const runSingle = () => {
+		if (review.answersOnly) return review.approveWithAnswers(true);
+		if (fallback) return acting.act({ kind: "answer", question: view.question!.id, choice: fallback.id });
+		return acting.act({ kind: "run_single" });
+	};
 	const tasks = plan.subtasks.length;
 	const totalTokens = sumBudgets(Object.values(review.parsed)).tokens;
 	const refused = acting.failed?.kind === "approve_plan" && acting.failed.reason === "bad_input" ? acting.error : null;
@@ -307,7 +313,8 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 					<span>The plan changed while you read it, here or in another tab: version {plan.version} is shown now. Check it, then approve again.</span>
 				</p>
 			) : null}
-			{refused ? (
+			{ciBlock && <p className="callout callout-warn" role="status"><WarnIcon /><span>{ciBlock}</span></p>}
+			{refused && refused !== ciBlock ? (
 				<div className="callout callout-bad plan-refused" role="alert">
 					<WarnIcon />
 					<span>
@@ -315,7 +322,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 						{SINGLE_INSTEAD.test(refused) && !replan ? " A single item needs neither." : null}
 					</span>
 				</div>
-			) : acting.error && !conflicted ? (
+			) : acting.error && !refused && !conflicted ? (
 				<p className="callout callout-bad" role="alert">
 					<WarnIcon />
 					<span>{acting.error}</span>
@@ -333,7 +340,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 						</button>
 					</>
 				) : (
-					<button type="button" className="button button-primary" disabled={busy || blocked !== null || placeBlocked !== null} onClick={() => void (review.answersOnly ? review.approveWithAnswers() : review.approve())} aria-describedby={blocked || placeBlocked ? `${ids.title}-why` : undefined}>
+					<button type="button" className="button button-primary" disabled={busy || !!ciBlock || blocked !== null || placeBlocked !== null} onClick={() => void (review.answersOnly ? review.approveWithAnswers() : review.approve())} aria-describedby={blocked || placeBlocked ? `${ids.title}-why` : undefined}>
 						{acting.busy === "edit_plan" || acting.busy === "approve_plan" || acting.busy === "run_single" ? "Approving…" : single ? "Approve for one implementer" : review.answersOnly ? "Approve" : `Approve version ${plan.version}`}
 					</button>
 				)}
@@ -342,8 +349,8 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 						Ask for subtasks
 					</button>
 				)}
-				{refused && SINGLE_INSTEAD.test(refused) && !replan ? (
-					<button type="button" className="button button-outline" disabled={busy || blocked !== null} onClick={() => void acting.act({ kind: "run_single" })}>
+				{fallback || (refused && SINGLE_INSTEAD.test(refused) && !replan) ? (
+					<button type="button" className="button button-outline" disabled={busy || review.edits || review.unansweredLeft > 0} onClick={() => void runSingle()}>
 						{acting.busy === "run_single" ? "Starting…" : "Run as a single item"}
 					</button>
 				) : null}
