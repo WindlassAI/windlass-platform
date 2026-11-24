@@ -7,8 +7,9 @@ import type { AddressInfo } from "node:net";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { test } from "node:test";
 import { format } from "node:util";
+import { modelKeyCaller } from "../server/src/actors/internal.js";
 import { MODEL_PROVIDERS, type ModelProvider } from "../server/src/contract.js";
-import { MODEL_PROVIDER_TABLES, modelKeyTransitSubject, modelProviderActions as actions } from "../server/src/model-providers.js";
+import { MODEL_PROVIDER_TABLES, openModelKeyTransit, modelProviderActions as actions } from "../server/src/model-providers.js";
 import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import { createSealer, serverSealer } from "../server/src/signin/seal.js";
 import { issueServiceToken, issueUserToken } from "../server/src/tokens.js";
@@ -27,7 +28,7 @@ function account(uid: string) {
 	} };
 	const profile = { uid, email: null, demo: false };
 	const context = { db, key: [uid], vars: { tokenGen: 0 }, conn: { params: { token: issueUserToken(profile, 0) } } };
-	return { sql, context, internal: { ...context, conn: { params: { token: issueServiceToken() } } } };
+	return { sql, context, internal: { ...context, conn: { params: { token: issueServiceToken(modelKeyCaller(uid)) } } } };
 }
 
 test("model provider actions keep keys sealed and check with the provider", async t => {
@@ -82,6 +83,9 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 	const save = (provider: ModelProvider, key: string) => actions.saveModelProvider(c, { provider, key });
 	const nonce = hex();
 	await assert.rejects(actions.internalModelKey(c, "openai", nonce), /internal/);
+	for (const token of [issueServiceToken(), b.internal.conn.params.token]) {
+		await assert.rejects(actions.internalModelKey({ ...c, conn: { params: { token } } }, "openai", nonce), /internal/);
+	}
 	for (const call of [
 		() => actions.modelProviders(a.internal), () => actions.checkModelProvider(a.internal, "google"),
 		() => actions.removeModelProvider(a.internal, "google"), () => actions.saveModelProvider(a.internal, { provider: "google", key: keys.google }),
@@ -115,7 +119,7 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 	assert.equal(requests, before);
 	assert.ok((await actions.saveModelProvider(b.context, { provider: "openai", key: keys.openai })).ok);
 	now += 60_000;
-	a.internal.conn.params.token = issueServiceToken();
+	a.internal.conn.params.token = issueServiceToken(modelKeyCaller(c.key[0]));
 	await save("openai", keys.openai);
 
 	const owner = JSON.stringify([c.key[0], "openai"]);
@@ -124,8 +128,8 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 	const sealed = await actions.internalModelKey(a.internal, "openai", nonce);
 	assert.ok(sealed);
 	clean(sealed);
-	const transit = modelKeyTransitSubject(c.key[0], "openai", nonce);
-	const payload = JSON.parse(serverSealer().open("transit", transit, sealed));
+	now += 59_999;
+	const payload = openModelKeyTransit(c.key[0], "openai", nonce, sealed);
 	const [row] = await c.db.execute<{ sealed: string; generation: string }>("SELECT sealed, generation FROM model_provider WHERE provider = 'openai'");
 	assert.ok(serverSealer().isCurrent(row.sealed) && payload.key === keys.openai && payload.generation === row.generation);
 	assert.ok(serverSealer().open("model-key", owner, row.sealed) === keys.openai);
@@ -133,7 +137,11 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 		assert.throws(() => serverSealer().open("model-key", subject, row.sealed));
 	}
 	assert.throws(() => serverSealer().open("secret", owner, row.sealed));
-	assert.throws(() => serverSealer().open("transit", modelKeyTransitSubject(c.key[0], "openai", hex()), sealed));
+	assert.throws(() => openModelKeyTransit(c.key[0], "openai", hex(), sealed));
+	assert.throws(() => openModelKeyTransit(b.context.key[0], "openai", nonce, sealed));
+	assert.throws(() => openModelKeyTransit(c.key[0], "google", nonce, sealed));
+	now++;
+	assert.throws(() => openModelKeyTransit(c.key[0], "openai", nonce, sealed), /expired/);
 
 	mode = "hold";
 	const started = once(gate, "started");
@@ -152,5 +160,11 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 	const timedOut = await actions.checkModelProvider(c, "openai");
 	clean(timedOut);
 	assert.ok(!timedOut.ok && timedOut.message);
+	const fetch = t.mock.method(globalThis, "fetch", () => { throw new Error("unexpected provider request"); });
+	for (const url of ["http://example.test", "http://localhost.example.test", "ftp://127.0.0.1"]) {
+		process.env.WLP_OPENAI_BASE_URL = url;
+		assert.equal((await actions.checkModelProvider(c, "openai")).ok, false);
+	}
+	assert.equal(fetch.mock.callCount(), 0);
 	assert.ok(!loggedSecret, "credential in logs");
 });

@@ -95,7 +95,6 @@ export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: st
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
-	internalModelKey(provider: ModelProvider, nonce: string): Promise<string | null>;
 	internalLinearHoldsTeam(workspaceId: string, teamId: string): Promise<boolean>;
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
 	internalDefaultBuilder(input: { id: string; job: import("./user-items.js").DefaultBuilder }): ReturnType<typeof import("./user-items.js").itemActions.internalDefaultBuilder>;
@@ -324,6 +323,12 @@ export function sessionActor(c: HasClient, uid: string, sessionId: string): Sess
 
 export function userActor(c: HasClient, uid: string): UserInternal {
 	return c.client().user.get([uid], { params: serviceParams() }) as UserInternal;
+}
+
+export const modelKeyCaller = (uid: string) => `model-key/${uid}`;
+
+export function modelKeyActor(c: HasClient, uid: string): { internalModelKey(provider: ModelProvider, nonce: string): Promise<string | null> } {
+	return c.client().user.get([uid], { params: { token: issueServiceToken(modelKeyCaller(uid)) } });
 }
 
 /** What the service token of a session that asks for its repository's secrets is made for. */

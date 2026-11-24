@@ -1295,7 +1295,7 @@ export const MODEL_PROVIDERS = ["openai", "anthropic", "google", "openrouter"] a
 export type ModelProvider = typeof MODEL_PROVIDERS[number];
 
 export function isModelProvider(value: unknown): value is ModelProvider {
-	return MODEL_PROVIDERS.some(provider => provider === value);
+	return (MODEL_PROVIDERS as readonly unknown[]).includes(value);
 }
 
 const MODEL_KEY_SHAPES: Record<ModelProvider, RegExp> = {

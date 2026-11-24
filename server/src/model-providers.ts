@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { UserError } from "rivetkit";
+import { modelKeyCaller } from "./actors/internal.js";
 import { requireServiceFor, requireUser } from "./auth.js";
 import { MODEL_CHECKS_PER_MINUTE, isModelProvider, validModelKey, type ModelProvider, type ModelProviderCheck, type ModelProviderStatus } from "./contract.js";
 import { MINUTE_MS } from "./http-limits.js";
@@ -17,11 +18,23 @@ export const MODEL_PROVIDER_TABLES = [
 type Context = Parameters<typeof requireUser>[0] & { db: DefaultsDb };
 type StatusRow = { provider: ModelProvider; last4: string; added_at: number; checked_at: number | null; check_ok: number; models: string | null };
 const STATUS_COLUMNS = "provider, last4, added_at, checked_at, check_ok, models";
-const origins: Record<ModelProvider, string> = {
-	openai: "https://api.openai.com",
-	anthropic: "https://api.anthropic.com",
-	google: "https://generativelanguage.googleapis.com",
-	openrouter: "https://openrouter.ai",
+
+type ModelListBody = { data?: { id: unknown }[]; models?: { name: string }[] };
+function* modelIds<T>(entries: T[] | undefined, id: (entry: T) => unknown) {
+	if (!Array.isArray(entries)) throw new Error("Invalid model list");
+	for (const entry of entries) yield id(entry);
+}
+const dataIds = (body: ModelListBody) => modelIds(body.data, entry => entry?.id);
+const bearer = (key: string) => ({ authorization: `Bearer ${key}` });
+const PROVIDERS: Record<ModelProvider, {
+	origin: string; path: string; headers(key: string): Record<string, string>; ids(body: ModelListBody): Iterable<unknown>;
+}> = {
+	openai: { origin: "https://api.openai.com", path: "/v1/models", headers: bearer, ids: dataIds },
+	anthropic: { origin: "https://api.anthropic.com", path: "/v1/models",
+		headers: key => ({ "x-api-key": key, "anthropic-version": "2023-06-01" }), ids: dataIds },
+	google: { origin: "https://generativelanguage.googleapis.com", path: "/v1beta/models",
+		headers: key => ({ "x-goog-api-key": key }), ids: body => modelIds(body.models, entry => entry?.name?.replace(/^models\//, "")) },
+	openrouter: { origin: "https://openrouter.ai", path: "/api/v1/models", headers: bearer, ids: dataIds },
 };
 
 function status(row: StatusRow): ModelProviderStatus {
@@ -35,6 +48,8 @@ function providerOf(raw: unknown): ModelProvider {
 }
 
 async function takeCheck(db: DefaultsDb): Promise<void> {
+	// Saves and rechecks share one per-user budget. The upsert reserves a slot atomically
+	// across concurrent calls and returns no row when the current minute is full.
 	const admitted = await db.execute(`INSERT INTO model_check_budget VALUES (1, ?, 1)
 		ON CONFLICT(id) DO UPDATE SET minute = excluded.minute, used = CASE WHEN minute = excluded.minute THEN used + 1 ELSE 1 END
 		WHERE minute != excluded.minute OR used < ? RETURNING id`, Math.floor(Date.now() / MINUTE_MS), MODEL_CHECKS_PER_MINUTE);
@@ -42,7 +57,13 @@ async function takeCheck(db: DefaultsDb): Promise<void> {
 }
 
 const subject = (uid: string, provider: ModelProvider) => JSON.stringify([uid, provider]);
-export const modelKeyTransitSubject = (uid: string, provider: ModelProvider, nonce: string) => JSON.stringify(["model-key", uid, provider, nonce]);
+const modelKeyTransitSubject = (uid: string, provider: ModelProvider, nonce: string) => JSON.stringify(["model-key", uid, provider, nonce]);
+
+export function openModelKeyTransit(uid: string, provider: ModelProvider, nonce: string, blob: string): { key: string; generation: string } {
+	const { key, generation, exp } = JSON.parse(serverSealer().open("transit", modelKeyTransitSubject(uid, provider, nonce), blob));
+	if (!Number.isSafeInteger(exp) || exp <= Date.now()) throw new Error("Model key transit expired");
+	return { key, generation };
+}
 
 async function savedKey(db: DefaultsDb, uid: string, provider: ModelProvider) {
 	const [row] = await db.execute<{ sealed: string; generation: string }>("SELECT sealed, generation FROM model_provider WHERE provider = ?", provider);
@@ -66,18 +87,20 @@ function safeModelId(id: unknown, key: string): id is string {
 }
 
 async function fetchModels(provider: ModelProvider, key: string): Promise<string[]> {
-	const origin = (process.env[`WLP_${provider.toUpperCase()}_BASE_URL`] ?? origins[provider]).replace(/\/+$/, "");
-	const headers: Record<string, string> = provider === "anthropic" ? { "x-api-key": key, "anthropic-version": "2023-06-01" }
-		: provider === "google" ? { "x-goog-api-key": key } : { authorization: `Bearer ${key}` };
-	const init: RequestInit = { headers, redirect: "error", signal: AbortSignal.timeout(8_000) };
+	const spec = PROVIDERS[provider];
+	const base = new URL(process.env[`WLP_${provider.toUpperCase()}_BASE_URL`] ?? spec.origin);
+	if (base.protocol !== "https:" && !(base.protocol === "http:" && (base.hostname === "127.0.0.1" || base.hostname === "localhost"))) {
+		throw new Error("Model provider URL requires HTTPS");
+	}
+	const origin = base.href.replace(/\/+$/, "");
+	const init: RequestInit = { headers: spec.headers(key), redirect: "error", signal: AbortSignal.timeout(8_000) };
 	// OpenRouter's catalog is public. Verify ownership before using its list.
 	if (provider === "openrouter") {
 		const auth = await fetch(origin + "/api/v1/key", init);
 		await auth.body?.cancel();
 		if (!auth.ok) throw new Error("Key check failed");
 	}
-	const path = provider === "google" ? "/v1beta/models" : provider === "openrouter" ? "/api/v1/models" : "/v1/models";
-	const res = await fetch(origin + path, init);
+	const res = await fetch(origin + spec.path, init);
 	if (!res.ok || !res.body) {
 		await res.body?.cancel();
 		throw new Error("Model list unavailable");
@@ -90,11 +113,8 @@ async function fetchModels(provider: ModelProvider, key: string): Promise<string
 		chunks.push(chunk);
 	}
 	const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-	const entries = provider === "google" ? body.models : body.data;
-	if (!Array.isArray(entries)) throw new Error("Invalid model list");
 	const models = new Set<string>();
-	for (const entry of entries) {
-		const id = provider === "google" ? entry?.name?.replace(/^models\//, "") : entry?.id;
+	for (const id of spec.ids(body)) {
 		if (safeModelId(id, key)) models.add(id);
 		if (models.size === 32) break;
 	}
@@ -141,11 +161,11 @@ export const modelProviderActions = {
 		await c.db.execute("DELETE FROM model_provider WHERE provider = ?", providerOf(raw));
 	},
 	async internalModelKey(c: Context, raw: ModelProvider, nonce: string): Promise<string | null> {
-		requireServiceFor(c, "call");
+		const uid = c.key[0]!;
+		requireServiceFor(c, modelKeyCaller(uid));
 		const provider = providerOf(raw);
 		if (typeof nonce !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(nonce)) throw new UserError("Invalid model key request nonce.", { code: "bad_nonce" });
-		const uid = c.key[0]!;
 		const saved = await savedKey(c.db, uid, provider);
-		return saved && serverSealer().seal("transit", modelKeyTransitSubject(uid, provider, nonce), JSON.stringify(saved));
+		return saved && serverSealer().seal("transit", modelKeyTransitSubject(uid, provider, nonce), JSON.stringify({ ...saved, exp: Date.now() + MINUTE_MS }));
 	},
 };
