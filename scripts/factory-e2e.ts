@@ -393,6 +393,37 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 }
 
 if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
+	const summaryServer = new Server();
+	try {
+		await check("orchestrator summary: the feature files its report after planning and hands over the PR", async () => {
+			const repo = standin.addRepository({ owner: "ada", name: "feature-summary", installation, files: {
+				"README.md": "# Search\n", ".github/workflows/build.yml": "on: [push]\njobs:\n  build:\n    runs-on: ubuntu-latest\n    steps: [{run: 'true'}]\n",
+			} });
+			const { user, client, auth } = await world(summaryServer, standin, { WLP_FACTORY_REVIEWER: "on", WLP_FEATURE_TEST_GIT: join(summaryServer.storage, "git") });
+			await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
+			const feature = await user.createItem({ repository: { id: repo.id }, title: "Search documents", body: "Index documents and search the index.", mode: "orchestrate", start: true });
+			const proposed = await untilItem(user, feature.id, "the feature plan", v => !!v.question);
+			assert(proposed.plan && proposed.question?.kind === "plan_approval", stateOf(proposed));
+			await user.actOnItem({ id: feature.id, action: { kind: "approve_plan", version: proposed.plan.version } });
+			const done = await untilItem(user, feature.id, "the final summary and handoff", v => {
+				for (const child of v.children ?? []) {
+					const head = standin.branchHead(repo, subtaskBranch(feature.id, child.parent!.key, child.id));
+					if (head && !repo.ci.has(head)) setCi(repo, head, "success");
+				}
+				return v.state === "review" || !!v.question || !!v.children?.some(child => child.question);
+			}, 320_000);
+			assert(done.state === "review" && done.report && done.pullRequest, stateOf(done));
+			const { timeline } = await client.agentSession.get([auth.profile.uid, feature.sessionId], { params: { token: auth.token } }).snapshot();
+			const called = timeline.find(e => e.kind === "windlass" && e.event.type === "tool.called" && e.event.data?.name === "report");
+			assert(called && called.turn > 1, "The feature summary did not call report.");
+			const prompt = timeline.find(e => e.turn === called.turn && e.kind === "user");
+			assert(prompt?.kind === "user" && prompt.text.includes("`report`"), "The summary prompt did not name the host tool.");
+			const pr = await waitFor("the ready feature PR", () => standin.pulls.find(p => p.repository === repo.id && p.number === done.pullRequest!.number && !p.draft), 30_000);
+			assert(pr.body.includes("What the fake agent did."), "The ready PR omitted the filed summary.");
+			await client.dispose();
+			return "the summary called report and reached handoff";
+		});
+	} finally { await summaryServer.stop(); summaryServer.remove(); }
 	const server = new Server();
 	try {
 		await check("orchestrator: Orchestrate anyway replans, integrates two checked children and hands over one reviewed PR", async () => {

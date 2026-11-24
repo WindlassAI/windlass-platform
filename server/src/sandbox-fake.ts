@@ -221,6 +221,8 @@ interface FakeSandbox {
 
 /** What the fake Windlass keeps of a session: enough to continue it, and to notice when it is gone. */
 interface FakeSession {
+	/** The model sees the host tool names from its first baseline, even when a resume declares different tools. */
+	hostToolNames?: string[];
 	/** Windlass retains the selected agent when resume omits it. */
 	agent?: string;
 	/** The last `seq` written, so a continued session keeps counting. */
@@ -746,6 +748,9 @@ class FakeWindlass implements Windlass {
 			return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: { reason: "session_not_found", message: `there is no session ${sessionId}` } };
 		}
 		const session: FakeSession = sessions.get(sessionId) ?? { seq: 0, turns: 0, padding: 0 };
+		const offered = turnHostTools(input);
+		const declarations = hostToolsMeta(offered, input.reportScreenshots, input.crossRepoPlan);
+		const visibleTools = session.hostToolNames ??= declarations.hostTools.map(tool => tool.name);
 		const agentMeta = turnAgentMeta(input.planner ? "planner" : input.onReview ? "reviewer" : null, input.clearPlanner);
 		if (agentMeta.agent !== undefined) session.agent = agentMeta.agent;
 		sessions.set(sessionId, session);
@@ -1127,8 +1132,7 @@ class FakeWindlass implements Windlass {
 					if (input.prompt.includes("SERVICE_TOKEN is now set in your environment.") && process.env.WLP_FAKE_REQUEST_VALUE) {
 						emit({ type: "fake.secret_checked", data: { matches: input.secrets?.env.SERVICE_TOKEN === process.env.WLP_FAKE_REQUEST_VALUE }, seq: 0 });
 					}
-					const offered = turnHostTools(input);
-					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...hostToolsMeta(offered, input.reportScreenshots, input.crossRepoPlan) });
+					const params = sessionOpenParams(sandbox.cwd, { ...agentMeta, ...declarations });
 					if (input.onPlan) {
 						if (!input.planner || offered.size !== 1 || input.servers?.length || input.checks?.length) throw new Error("Planner received builder privileges.");
 						const single = text.includes("(suggest-single)");
@@ -1203,15 +1207,16 @@ class FakeWindlass implements Windlass {
 							emit({ type: "fake.review_reply", data: { answer }, seq: 0 });
 						}
 					}
-					for (const [word, name, run] of [
-						["(fetch)", "fetch_base", input.onFetchBase],
-						["(push)", "push", input.onPush],
-						["(report)", "report", input.onReport],
-						["(ask)", "ask_person", input.onAsk],
-						["(secret)", "request_secret", input.onRequestSecret],
+					for (const [word, name] of [
+						["(fetch)", "fetch_base"],
+						["(push)", "push"],
+						["(report)", "report"],
+						["(ask)", "ask_person"],
+						["(secret)", "request_secret"],
 					] as const) {
+						const run = offered.get(name);
 						const retrySkipped = name === "request_secret" && text.includes("continue without service_token.");
-						if (!(text.includes(word) || retrySkipped || name === "report" && input.planner) || run === undefined || signal?.aborted) continue;
+						if (!(text.includes(word) || retrySkipped || name === "report" && input.planner) || !visibleTools.includes(name) || run === undefined || signal?.aborted) continue;
 						const fixture = process.env.WLP_FAKE_ATTACHMENT_PNG;
 						const pictured = name === "report" && text.includes("(screenshot)");
 						if (pictured && fixture) this.sandboxes.all.get(sandbox.id)!.shots.set(".wlp-shots/home.png", Buffer.from(fixture, "base64"));
