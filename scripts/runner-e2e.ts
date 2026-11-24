@@ -152,6 +152,7 @@ async function serverNode(): Promise<void> {
 		const script = JSON.parse(readFileSync(process.env.WLP_TEST_MODEL_SCRIPT, "utf8"));
 		SandboxWindlass.prototype.demoScript = () => script;
 	}
+	const offlineChecks = new Set<string>();
 	if (process.env.WLP_TEST_PAUSED_ITEM) {
 		const { RULES } = await import("../server/src/factory/blueprint.js");
 		Object.assign(RULES, { turnCheckMs: 2_000 });
@@ -159,12 +160,27 @@ async function serverNode(): Promise<void> {
 	const { agentSession } = await import("../server/src/actors/agent-session.js");
 	Object.assign(agentSession.config.actions!, {
 		// Advance only the age of this fixture's paused turn so the item's real due check can repair it.
-		e2eAgePause: (c: { vars: { meta: { run: { paused: { at: number } } } } }) => { c.vars.meta.run.paused.at -= 16 * 60_000; },
+		e2eAgePause: async (c: { key: string[]; vars: { resuming: Promise<void> | null; meta: { run: { paused: { at: number } } } } }) => {
+			await until("this server's wake to register the offline session", () => offlineChecks.has(c.key[1]!));
+			await c.vars.resuming;
+			c.vars.meta.run.paused.at -= 16 * 60_000;
+		},
 		e2eMeta: (c: { vars: { meta: unknown } }) => c.vars.meta,
 		e2eCheckpoint: async (c: { db: { execute<T>(sql: string): Promise<T[]> } }) => (await c.db.execute<{ turn: number }>("SELECT turn FROM turn_checkpoint"))[0]?.turn ?? null,
 	});
 	const { machine } = await import("../server/src/actors/machine.js");
 	const actions = machine.config.actions!;
+	if (process.env.WLP_TEST_LOST_RESUME_WAKE) {
+		const register = actions.internalPausedSession;
+		actions.internalPausedSession = async (c, id, on) => {
+			const online = await register(c, id, on);
+			if (on && !online) offlineChecks.add(id);
+			return online;
+		};
+		// Model both independent session wakes being lost on this replacement server.
+		agentSession.config.actions!.internalMachineBack = async () => {};
+		agentSession.config.actions!.internalResumeTurn = async () => {};
+	}
 	Object.assign(actions, { e2eDestroy: (c: { destroy(): void }) => c.destroy() });
 	const remove = actions.internalRemoveSandbox;
 	const refusal = join(process.env.RIVETKIT_STORAGE_PATH!, "refuse-removal");
@@ -1549,15 +1565,15 @@ async function main(): Promise<void> {
 					await until("the item to learn about its offline machine", async () => (await user.item(item.id)).wait?.sentence.startsWith("Paused:"));
 					if (scenario === "second restart and missed hello") {
 						await server.stop();
-						await server.start(pausedItemEnv);
+						await server.start({ ...pausedItemEnv, WLP_TEST_LOST_RESUME_WAKE: "1" });
+						pausedItemServer = false;
 					}
 					const conn = session.connect();
 					try {
 						await until("the replacement server to see the machine pause", async () => (await conn.snapshot()).summary.paused?.reason === "machine");
 						if (scenario === "second restart and missed hello") {
-							// Lose the machine's callback, and keep the session awake. Only the item's
-							// two-second check is due before the session's own five-minute fallback.
-							await client.machine.get([uid, place.machineId], { params: serviceParams() }).internalPausedSession(id, false);
+							// Keep the session awake after its offline startup check. The item's
+							// two-second due check must recover it without either session wake.
 							await (conn as unknown as { e2eAgePause(): Promise<void> }).e2eAgePause();
 						}
 						const before = enginePrompts.length;
