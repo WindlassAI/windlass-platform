@@ -90,6 +90,10 @@ async function pairing(c: Ctx, input: { code: string }) {
 	return actors(c).machinePairing.get([id], { params: serviceParams() });
 }
 
+export function itemMachines(machines: ReadonlyMap<string, MachineSummary>) {
+	return config.machines ? [...machines.values()] : [];
+}
+
 export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "sessions"> }): Promise<MachineSummary[]> {
 	const rows = await c.db.execute<{ id: string; name: string; os: string; arch: string; facts: string; host: string | null; send: number; details: string | null }>("SELECT m.id, name, os, arch, facts, host, send, d.data AS details FROM machines m LEFT JOIN machine_details d ON m.id=d.id WHERE expires IS NULL ORDER BY m.rowid");
 	const accounts = await providerAccounts(c.db, Date.now());

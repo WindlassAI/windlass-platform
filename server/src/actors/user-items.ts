@@ -21,7 +21,7 @@
  * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
-import { resolveDefaultPlace, savedPlace } from "../factory/default-place.js";
+import { type DefaultDestination, resolveDefaultPlace, savedPlace } from "../factory/default-place.js";
 import { isBranchName } from "../github/git.js";
 import type { ItemPlaceDefaults, SessionRepository } from "../contract.js";
 import { windlassAccountKey } from "../provider-usage.js";
@@ -82,7 +82,7 @@ import { createItem } from "../factory/blueprint.js";
 import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
 import { admit, retryAt } from "../factory/budget.js";
 import { getLayer } from "../layer.js";
-import { reviewerAllowed } from "../factory/review.js";
+import { REVIEW_OFF_REASON, reviewerAllowed } from "../factory/review.js";
 import { readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { hostedSizesForPlan } from "../billing/plans.js";
@@ -90,7 +90,7 @@ import { accountLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } fr
 import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply, keptHolder } from "../usage.js";
 import { createItemActor, isSessionGone, itemActor, sessionActor } from "./internal.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
-import { launchPlace, launchMachineProfiles } from "./user-machines.js";
+import { itemMachines, launchPlace, launchMachineProfiles } from "./user-machines.js";
 import type { ItemMeta } from "./work-item.js";
 
 declare module "./internal.js" { interface UserInternal extends AttachmentLedger {} }
@@ -410,16 +410,15 @@ export interface DefaultBuilder {
 	issue?: { number: number; installationId: GithubId };
 }
 
-async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, job: DefaultBuilder, makeSession: MakeSession) {
+async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, job: DefaultBuilder, makeSession: MakeSession): Promise<{ session: SessionSummary | null; destination: DefaultDestination }> {
 	const sessionId = itemSessionId(itemId);
-	const destination = resolveDefaultPlace(job.policy, config.machines ? [...c.vars.machines.values()] : []);
-	const harness = job.mode === "orchestrate" ? "windlass" : destination.harness;
 	const existing = c.vars.sessions.get(sessionId);
-	if (existing) return { session: existing, destination };
+	if (existing) return { session: existing, destination: { place: existing.place, harness: existing.harness ?? "windlass" } };
+	const destination = resolveDefaultPlace(job.policy, itemMachines(c.vars.machines), job.mode);
 	if (destination.wait) return { session: null, destination };
 	const open = async () => {
 		const hosted = destination.place.kind === "hosted";
-		const agent = hosted ? "windlass" : harness;
+		const agent = hosted ? "windlass" : destination.harness;
 		const model = agent === "windlass" ? job.model : job.machineModel;
 		const profile = hosted ? await itemProfile(c, job.repository.id, job.hostedProfile, destination.place) : destination.profile!;
 		return makeSession(c, owner, { title: job.title, repository: job.repository, place: destination.place, profile, harness: agent,
@@ -440,6 +439,21 @@ async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, j
 		destination.note = error.message + " Using the hosted fallback with Windlass.";
 		return { session: await open(), destination };
 	}
+}
+
+async function bindReviewer(c: ItemsCtx, owner: UserProfile, session: SessionSummary, itemId: string, child: boolean, issue: DefaultBuilder["issue"], makeSession: MakeSession) {
+	const off = (reason: keyof typeof REVIEW_OFF_REASON) => ({ reviewer: { off: reason }, reviewerSessionId: null });
+	if (child) return off("feature");
+	if (!config.factory.reviewer) return off("deployment");
+	if (session.place.kind === "machine") return off("machine");
+	if (!reviewerAllowed(session.place, (await getLayer()).sandboxes.profile(session.profile))) return off("profile");
+	const reviewerSessionId = `s_${hex16(`review\n${itemId}`)}`;
+	if (!c.vars.sessions.has(reviewerSessionId)) {
+		const { id, branch } = session.repository!;
+		await makeSession(c, owner, { title: session.title, profile: session.profile, model: session.model, repository: { id, branch } }, null,
+			{ sessionId: reviewerSessionId, itemId, role: "reviewer", issue, ...(session.hostedSize && { hostedSize: session.hostedSize }) });
+	}
+	return { reviewer: { on: true } as const, reviewerSessionId };
 }
 
 /** Bind the same repository even when the item's machine session cannot be created yet. */
@@ -499,17 +513,11 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const session = placed ? placed.session : existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child?.start && { childBranch: { name: subtaskBranch(child.parent.itemId, child.parent.key, itemId), start: child.start } }), ...(child && { size: child.placement.units }), ...((child?.placement.hostedSize ?? input.hostedSize) && { hostedSize: child?.placement.hostedSize ?? input.hostedSize! }), ...(input.effort && { effort: input.effort }) }));
 		const repository = session?.repository ?? (job ? await waitingRepository(c, job) : null);
 		if (!repository) throw new Error("the item's session has no repository");
-		const reviewer = child ? { off: "feature" } as const : !config.factory.reviewer ? { off: "deployment" } as const :
-			session?.place.kind === "hosted" && reviewerAllowed(session.place, (await getLayer()).sandboxes.profile(session.profile)) ? { on: true } as const : { off: "profile" } as const;
-		const reviewerSessionId = "on" in reviewer ? `s_${hex16(`review\n${itemId}`)}` : null;
-		if (session && reviewerSessionId && !c.vars.sessions.has(reviewerSessionId)) {
-			// The reviewer runs the builder's checks too: in a sandbox of the builder's size.
-			await makeSession(c, profile, { title: input.title, profile: session.profile, model: session.model, repository: { id: repository.id, branch: repository.branch } }, null, { sessionId: reviewerSessionId, itemId, role: "reviewer", issue, ...(session.hostedSize && { hostedSize: session.hostedSize }) });
-		}
+		const review = session && await bindReviewer(c, profile, session, itemId, !!child, issue, makeSession);
 		const now = Date.now();
-		const meta: ItemMeta = { ...(policy && { defaultPlace: policy }), ...(placed && !session && { pendingBuilder: job }), uid, sessionId, reviewerSessionId, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
+		const meta: ItemMeta = { ...(policy && { defaultPlace: policy }), ...(placed && !session && { pendingBuilder: job }), uid, sessionId, reviewerSessionId: review?.reviewerSessionId ?? null, reviewBase: null, handoffReview: null, repository, source, github, createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
 		const limits = accountLimits(c.vars.items.limits).factory;
-		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session?.place ?? placed!.destination.place, budget: child?.budget ?? limits.item, agent: { harness: session ? session.harness ?? "windlass" : input.mode === "orchestrate" ? "windlass" : placed!.destination.harness, model: session?.model ?? "default", effort: input.effort, ...(session?.item?.signIn && { signIn: session.item.signIn }) } });
+		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer: review?.reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session?.place ?? placed!.destination.place, budget: child?.budget ?? limits.item, agent: { harness: session ? session.harness ?? "windlass" : placed!.destination.harness, model: session?.model ?? "default", effort: input.effort, ...(session?.item?.signIn && { signIn: session.item.signIn }) } });
 		if (placed && !session) item.awaitingPlace = placed.destination.wait;
 		if (child) { item.parent = child.parent; item.childBase = child.base; item.placement = child.placement; }
 		// An issue someone else wrote is not the person's own text: every turn that hands the agent the task says where it came from.
@@ -985,9 +993,24 @@ const intakeWrites = new WeakMap<ItemsState, Promise<unknown>>();
 export const itemActions = {
 	async internalDefaultBuilder(c: ItemsCtx, input: { id: string; job: DefaultBuilder }, makeSession: MakeSession) {
 		requireServiceFor(c, "call");
-		if (!c.vars.profile) throw new Error("The item owner is unavailable.");
-		const { session, destination } = await defaultBuilder(c, c.vars.profile, input.id, input.job, makeSession);
-		return session ? { session } : { wait: destination.wait! };
+		return attachmentWrite(c, async () => {
+			const owner = c.vars.profile;
+			if (!owner) throw new Error("The item owner is unavailable.");
+			const item = await itemActor(c, owner.uid, input.id).internalSummary();
+			if (!item.awaitingPlace || item.state !== "waiting") return null;
+			const { session, destination } = await defaultBuilder(c, owner, input.id, input.job, makeSession);
+			if (!session) return { wait: destination.wait! };
+			return { session, ...await bindReviewer(c, owner, session, input.id, false, input.job.issue, makeSession) };
+		});
+	},
+	async internalDiscardPlacement(c: ItemsCtx, itemId: string, remove: (id: string) => Promise<void>) {
+		requireServiceFor(c, "call");
+		// Order cancellation after any builder or reviewer creation already in flight.
+		await attachmentWrite(c, async () => {
+			for (const session of c.vars.sessions.values()) {
+				if (session.item?.id === itemId) await remove(session.id);
+			}
+		});
 	},
 	async internalFeatureChild(c: ItemsCtx, input: { parent: string; child: string; cancel?: boolean }, makeSession: MakeSession, agentModels: () => Promise<AgentModels>): Promise<ItemView | null> {
 		requireServiceFor(c, "call");

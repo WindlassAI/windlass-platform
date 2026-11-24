@@ -1,4 +1,4 @@
-import { changesPlace, changedPlace, placeProblem } from "../factory/default-place.js";
+import { changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
 import type { ItemPlaceDefaults } from "../contract.js";
 import { snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
@@ -85,7 +85,7 @@ import type { MachineUpdate } from "./machine.js";
 import { accountLimits, changeUserLimit, limitsSubject, type LimitAuditRow, type LimitChange } from "../user-limits.js";
 import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage, type AccountLocation } from "./provider-accounts.js";
 import type { UsageObservation } from "../provider-usage.js";
-import { changed as machinesChanged, machineCatalog, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
+import { changed as machinesChanged, machineCatalog, itemMachines, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
 import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { EnvironmentPlace, EnvironmentSchedule, RepositoryEnvironments, SandboxProfileId } from "../contract.js";
 import { ENVIRONMENT_SCHEDULES } from "../contract.js";
@@ -186,7 +186,7 @@ import { sessionWeight } from "../billing/meter.js";
 import { hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
 import type { BillingEvent } from "../billing/provider.js";
 import type { BillingPeriod, BillingView } from "../contract.js";
-import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, type RequestedSecretSave, createSessionActor, isSessionGone, isDuplicateKey, secretsCaller, sessionActor } from "./internal.js";
+import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, type RequestedSecretSave, createSessionActor, isSessionGone, isDuplicateKey, itemActor, secretsCaller, sessionActor } from "./internal.js";
 
 export const DEFAULT_TITLE = "New agent";
 const MAX_REPO_URL_CHARS = 300;
@@ -1352,6 +1352,14 @@ interface EnvironmentCtx extends CreateCtx {
 	schedule: { at(at: number, action: string, ...args: unknown[]): Promise<unknown> };
 }
 
+async function applyPlaceChange(change: DefaultsChange, input: ItemPlaceDefaults, machines: Map<string, MachineSummary>, read: () => Promise<ItemPlaceDefaults>) {
+	if (!changesPlace(input)) return;
+	const policy = changedPlace(await read(), input);
+	const problem = placeProblem(policy, itemMachines(machines));
+	if (problem) throw new UserError(problem, { code: "bad_input" });
+	change.item_place = policy.place ? policy : null;
+}
+
 /** Forget the durable index and its launch and submission keys after the actor is gone. */
 async function forgetSession(c: UserCtx, id: string): Promise<void> {
 	await c.db.execute("DELETE FROM session_secret_grant WHERE session_id = ?", id);
@@ -1846,9 +1854,17 @@ export const user = actor({
 		},
 		internalMachineApproval: (c, id: string): Promise<{ login: string | null } | null> => machineActions.internalMachineApproval(c, id),
 		internalMachineChanged: async (c, id: string, facts: MachineUpdate | null): Promise<void> => {
+			const before = c.vars.machines.get(id);
 			const inventoryChanged = await machineActions.internalMachineChanged(c, id, facts);
 			if (facts === null) await notifyRemovedMachines(c, id);
-			if (inventoryChanged) queueChanged(c);
+			if (!inventoryChanged) return;
+			queueChanged(c);
+			const machine = c.vars.machines.get(id);
+			if (machine?.status === "online" && (before?.status !== "online" || (!hasRoom(before) && hasRoom(machine)))) {
+				for (const item of c.vars.items.items.values()) {
+					if (item.awaitingPlace && item.state === "waiting") await itemActor(c, c.key[0], item.id).internalMachineAvailable();
+				}
+			}
 		},
 		// --- work items, the turn queue and API tokens (user-items.ts) ---
 		internalReserveAttachment: (c, input: import("../sandbox/attach.js").Reservation) => itemActions.internalReserveAttachment(c, input),
@@ -2256,6 +2272,11 @@ export const user = actor({
 
 		// --- checks of repositories (repository-checks.ts) -------------------------------------------
 
+		internalDiscardPlacement: (c, id: string) => itemActions.internalDiscardPlacement(c, id, async session => {
+			try { await sessionActor(c, c.key[0], session).internalDestroy(); }
+			catch (error) { if (!isSessionGone(error)) throw error; }
+			await forgetSession(c, session);
+		}),
 		internalDefaultBuilder: (c, input: { id: string; job: import("./user-items.js").DefaultBuilder }) => itemActions.internalDefaultBuilder(c, input, itemSession(c)),
 		internalPlanCritic: async (c, builderId: string): Promise<void> => {
 			requireServiceFor(c, "call");
@@ -2675,12 +2696,7 @@ export const user = actor({
 			try {
 				const label = await labelFor(c, input.repositoryId, project);
 				const saved = await c.db.transaction(async tx => {
-					if (changesPlace(input)) {
-						const policy = changedPlace(await readDefaults(tx, project), input);
-						const problem = placeProblem(policy, config.machines ? [...c.vars.machines.values()] : []);
-						if (problem) throw new UserError(problem, { code: "bad_input" });
-						change.item_place = policy.place ? policy : null;
-					}
+					await applyPlaceChange(change, input, c.vars.machines, () => readDefaults(tx, project));
 					return saveDefaults(tx, project, label, change, Date.now());
 				});
 				console.log(repositoryDefaultsLog(profile.uid, project, change));
@@ -2771,12 +2787,7 @@ export const user = actor({
 			}
 			try {
 				const saved = await c.db.transaction(async tx => {
-					if (changesPlace(input)) {
-						const policy = changedPlace(await readAccountDefaults(tx), input);
-						const problem = placeProblem(policy, config.machines ? [...c.vars.machines.values()] : []);
-						if (problem) throw new UserError(problem, { code: "bad_input" });
-						change.item_place = policy.place ? policy : null;
-					}
+					await applyPlaceChange(change, input, c.vars.machines, () => readAccountDefaults(tx));
 					return saveAccountDefaults(tx, change, Date.now());
 				});
 				console.log(`[wlp] defaults.saved uid=${profile.uid} project=account${change.profile === undefined ? "" : ` profile=${change.profile ?? "none"}`}${change.model === undefined ? "" : ` model=${change.model ?? "none"}`}`);

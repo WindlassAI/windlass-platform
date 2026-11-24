@@ -98,11 +98,6 @@ async function testNode() {
 			const [r] = await c.db.execute<{ms:number}>("SELECT max(ready)-min(received) AS ms FROM feedback WHERE state='pending'");
 			return r?.ms;
 		},
-		checkPlaceDue: async (c: ItemCtx) => {
-			requireServiceFor(c, "call");
-			await c.db.execute("UPDATE effects SET due_at=0 WHERE id LIKE 'resolve_default_place:%'");
-			await c.schedule.at(Date.now(), "internalDue");
-		},
 		checkPendingWrites: async (c: ItemCtx) => {
 			requireServiceFor(c, "call");
 			return (await c.db.execute("SELECT 1 FROM effects WHERE id LIKE 'verified_check:%' LIMIT 1")).length > 0;
@@ -118,19 +113,34 @@ async function testNode() {
 	});
 	const { user } = await import("../server/src/actors/user.js");
 	type UserCtx = Parameters<NonNullable<typeof user.config.actions>["internalGithubIntake"]>[0];
-	const { changed: machinesChanged } = await import("../server/src/actors/user-machines.js");
+	const { itemActions } = await import("../server/src/actors/user-items.js");
+	const { itemActor } = await import("../server/src/actors/internal.js");
+	const placeBuilder = itemActions.internalDefaultBuilder;
+	let cancelDuringPlacement: string | null = null;
+	itemActions.internalDefaultBuilder = (c, input, makeSession) => placeBuilder(c, input, async (...args) => {
+		const session = await makeSession(...args);
+		if (input.id === cancelDuringPlacement) {
+			cancelDuringPlacement = null;
+			await itemActor(c, c.key[0], input.id).internalAct({ action: { kind: "cancel" }, by: "platform" });
+		}
+		return session;
+	});
 	Object.assign(user.config.actions!, {
+		checkCancelDuringPlacement: (c: UserCtx, id: string) => {
+			requireServiceFor(c, "call");
+			cancelDuringPlacement = id;
+		},
 		checkPlaceMachine: async (c: UserCtx, id: string, state: "online" | "offline" | "full" | "signed-out" | "removed") => {
 			requireServiceFor(c, "call");
-			if (state === "removed") await c.db.execute("DELETE FROM machines WHERE id=?", id);
-			else {
-				const facts = { status: state === "offline" ? "offline" : "online", since: Date.now(), runnerVersion: "0.2.0", warnings: [],
-					turns: { max: 1, running: Number(state === "full"), queued: 0 }, report: {
-						docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], egress: "open",
-						harnesses: [{ id: "claude", signIn: state === "signed-out" ? "none" : "token" }] } };
-				await c.db.execute("INSERT INTO machines (id,name,os,arch,facts) VALUES (?,?,'macOS','arm64',?) ON CONFLICT(id) DO UPDATE SET facts=excluded.facts", id, id, JSON.stringify(facts));
-			}
-			await machinesChanged(c);
+			const update = user.config.actions!.internalMachineChanged;
+			if (state === "removed") return update(c, id, null);
+			await c.db.execute("INSERT OR IGNORE INTO machines (id,name,os,arch,facts) VALUES (?,?,'macOS','arm64','{}')", id, id);
+			await update(c, id, {
+				status: state === "offline" ? "offline" : "online", since: Date.now(), runnerVersion: "0.2.0", warnings: [],
+				turns: { max: 1, running: Number(state === "full"), queued: 0 },
+				report: { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], freeDiskBytes: null, egress: "open",
+					harnesses: [{ id: "claude", adapter: "claude", image: "test", signIn: state === "signed-out" ? "none" : "token" }] },
+			});
 		},
 		// Exercise the real migration on a populated legacy table in a disposable actor.
 		checkMigrateGrant: async (c: UserCtx) => {
@@ -1007,7 +1017,7 @@ async function run() {
 		await check("G3 feature placement defaults bind GitHub filings, wait and fall back", async () => {
 			const writer = standin.addUser("default-places"); projectG2.access.set(writer.login, "write");
 			const { user: account, uid, token } = await connectUser(writer.login);
-			const machine = client.user.get([uid], service()) as unknown as { checkPlaceMachine(id: string, state: string): Promise<void> };
+			const machine = client.user.get([uid], service()) as unknown as { checkPlaceMachine(id: string, state: string): Promise<void>; checkCancelDuringPlacement(id: string): Promise<void> };
 			const mac = "m_0000000000000001", next = "m_0000000000000002";
 			const repo = (change: import("../server/src/contract.js").ItemPlaceDefaults) => account.saveRepositoryDefaults({ repositoryId: projectG2.id, ...change });
 			let number = 810;
@@ -1045,15 +1055,37 @@ async function run() {
 			await machine.checkPlaceMachine(next, "offline");
 			const queued = await file(true);
 			assert.match(queued.wait!.sentence, /free slot/);
+			assert.equal(queued.reviewNone, null);
+			assert.equal(queued.review, null);
 			await machine.checkPlaceMachine(next, "online");
-			await (client.workItem.get([uid, queued.id], service()) as unknown as { checkPlaceDue(): Promise<void> }).checkPlaceDue();
 			await until("waiting item bound to the newly free machine", async () => (await account.item(queued.id)).events.some(e => e.said.includes("has a free slot")));
-			assert.deepEqual((await account.item(queued.id)).place, { kind: "machine", machineId: next });
+			const bound = await account.item(queued.id);
+			assert.deepEqual(bound.place, { kind: "machine", machineId: next });
+			assert.equal(bound.reviewNone, quick.reviewNone);
+			assert.equal(bound.reviewNone, process.env.WLP_FACTORY_REVIEWER === "on" ? "second reviews run only on hosted sandboxes" : "turned off for this deployment");
+			assert.equal(bound.reviewerSessionId, null);
 			await account.actOnItem({ id: queued.id, action: { kind: "cancel" } });
+			await machine.checkPlaceMachine(next, "full");
+			const racing = await file(true);
+			await machine.checkCancelDuringPlacement(racing.id);
+			await machine.checkPlaceMachine(next, "online");
+			await until("free slot starts placement and cancellation removes its session", async () => {
+				if ((await account.item(racing.id)).state !== "cancelled") return false;
+				if ((await account.listSessions()).some(s => s.id === racing.sessionId)) return false;
+				return client.agentSession.get([uid, racing.sessionId], service()).resolve().then(() => false, absent);
+			});
+
 			await repo({ ...policy, placeFallback: "hosted" });
 			await machine.checkPlaceMachine(mac, "signed-out");
 			assert.ok((await file()).events.some(e => /sign-in.*hosted fallback/.test(e.said)));
 			await assert.rejects(repo(policy), /sign-in|supports/i);
+			const draftFeature = make(++number, reader);
+			await applyLabel(draftFeature, "windlass:orchestrate", writer);
+			const [draftPlan] = await items(draftFeature, account);
+			assert.deepEqual(draftPlan.place, { kind: "machine", machineId: mac });
+			const draftPlanner = await client.agentSession.get([uid, draftPlan.sessionId], { params: { token } }).snapshot();
+			assert.equal(draftPlanner.summary.harness ?? "windlass", "windlass");
+			assert.equal(draftPlanner.summary.profile, "docker-windlass-sandbox");
 			await machine.checkPlaceMachine(mac, "removed");
 			assert.ok((await file()).events.some(e => /no longer.*hosted fallback/.test(e.said)));
 			await machine.checkPlaceMachine(next, "full");

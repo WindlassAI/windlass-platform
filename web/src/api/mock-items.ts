@@ -1,6 +1,5 @@
-import type { DefaultDestination } from "../../../server/src/factory/default-place";
 import type { ItemPlaceDefaults } from "@contract";
-import { resolveDefaultPlace } from "../../../server/src/factory/default-place";
+import { type DefaultDestination, defaultPlaceRetryAt, resolveDefaultPlace } from "../../../server/src/factory/default-place";
 import { approvalText, planTokens, singleAfterPlanning, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
 import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
 import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses.js";
@@ -90,8 +89,8 @@ export const MOCK_ITEMS_STATES = ["all", "few", "features", "none", "full", "man
 export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 
 export interface MockItemsDeps {
-	defaultPlace?(auth: AuthResult, repo: GithubId): ItemPlaceDefaults | undefined;
-	waitingRepository?(auth: AuthResult, input: CreateItemInput["repository"]): Promise<SessionRepository>;
+	defaultPlace(auth: AuthResult, repo: GithubId): ItemPlaceDefaults | undefined;
+	waitingRepository(auth: AuthResult, input: CreateItemInput["repository"]): Promise<SessionRepository>;
 	state?: MockItemsState;
 	/** True writes the seeded features' texts at length (`?long=1`, `longFeatures`). */
 	long?: boolean;
@@ -107,6 +106,7 @@ export interface MockItemsDeps {
 	feeds(auth: AuthResult): Iterable<UserFeed>;
 	/** Makes the item's agent, as `createSession` does: on this platform's first sandbox unless `profile` says which. */
 	session(auth: AuthResult, input: Omit<CreateSessionInput, "profile"> & { profile?: SandboxProfileId }): Promise<SessionSummary>;
+	discardSession(auth: AuthResult, id: string): Promise<void>;
 	/** The models an item's new agent would offer: the account's for Windlass, what the machine reported for another harness. */
 	models(auth: AuthResult, harness: HarnessId, machineId: string | null): Promise<ModelList>;
 	/** Makes a seeded item's own agent session, with its turns so far, and answers its id. */
@@ -1244,7 +1244,7 @@ function viewOf(seed: Seed, at: number, uid: string): ItemView {
 		verifiedCheck: seed.n === 24 && last ? { sha: last.head, state: "completed", conclusion: "success", said: "Ready for review" } : null,
 		reviews: [],
 		reviewerSessionId: seed.review ? reviewerSessionOf(id) : null,
-		reviewNone: place.kind === "machine" ? "in this sandbox the reviewer's commands would run with the network" : null,
+		reviewNone: place.kind === "machine" ? MACHINE_REVIEW : null,
 		report: seed.n === 24 ? {
 			by: "builder", sessionId: "", run: 1, key: `${id}:1:1:1`, head: null, at: ago(50),
 			title: "Log the SHA-256 after each upload", records: [], screenshots: [],
@@ -1715,6 +1715,7 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 
 /** Match the server’s reasons when an item has no reviewer session. */
 const FEATURE_REVIEW = "the feature’s combined change is reviewed once its parts are done";
+const MACHINE_REVIEW = "second reviews run only on hosted sandboxes";
 const DEPLOYMENT_OFF = "turned off for this deployment";
 
 /** A seeded item as a deployment without the second review keeps it: none, and that reason. */
@@ -1764,7 +1765,7 @@ export function createMockItems(deps: MockItemsDeps) {
 	const state: MockItemsState = deps.state ?? "all";
 	const kept = new Map<string, Kept>();
 
-	const pendingPlaces = new WeakMap<ItemView, { policy: ItemPlaceDefaults; input: CreateItemInput; resolving?: boolean }>();
+	const pendingPlaces = new WeakMap<ItemView, { policy: ItemPlaceDefaults; input: CreateItemInput; attempts: number; resolving?: boolean }>();
 	let linksAsked = 0;
 
 	function keptOf(auth: AuthResult): Kept {
@@ -1885,18 +1886,31 @@ export function createMockItems(deps: MockItemsDeps) {
 		}
 	}
 
+	function reviewAt(place?: SandboxPlace) {
+		let reviewNone = null;
+		if (place && deps.reviewer === false) reviewNone = DEPLOYMENT_OFF;
+		else if (place?.kind === "machine") reviewNone = MACHINE_REVIEW;
+		return { review: reviewNone ? { state: "off" as const, recommendation: null } : null, reviewNone };
+	}
+
 	async function resolveWaiting(auth: AuthResult, item: ItemView) {
 		const pending = pendingPlaces.get(item);
 		if (!pending || pending.resolving) return;
-		const destination = resolveDefaultPlace(pending.policy, deps.machines(auth)?.list ?? []);
-		const wait = (sentence: string) => change(auth, item, { state: "waiting", wait: { reason: "machine", sentence, since: item.wait?.since ?? deps.now(), retryAt: deps.now() + 30_000 } }, item.events.at(-1)?.said === sentence ? [] : [sentence], "platform");
+		const destination = resolveDefaultPlace(pending.policy, deps.machines(auth)?.list ?? [], pending.input.mode ?? "orchestrate");
+		const wait = (sentence: string) => {
+			const at = deps.now();
+			const retryAt = defaultPlaceRetryAt(at, pending.attempts++);
+			const events = item.events.at(-1)?.said === sentence ? [] : [sentence];
+			change(auth, item, { state: "waiting", wait: { reason: "machine", sentence, since: item.wait?.since ?? at, retryAt } }, events, "platform");
+		};
 		if (destination.wait) return wait(destination.wait);
 		pending.resolving = true;
 		try {
 			const session = await openDefaultSession(auth, pending.input, destination);
-			if (item.state === "cancelled") return;
+			if (item.state === "cancelled") return await deps.discardSession(auth, session.id);
 			pendingPlaces.delete(item);
-			Object.assign(item, { awaitingPlace: false, place: session.place, sessionId: session.id, agent: newAgent(session.harness ?? "windlass", session.model, pending.input.effort) });
+			delete item.awaitingPlace;
+			Object.assign(item, { ...reviewAt(session.place), place: session.place, sessionId: session.id, agent: newAgent(session.harness ?? "windlass", session.model, pending.input.effort) });
 			beginRun(auth, item, "A compatible machine has a free slot.");
 		} catch (error) {
 			if (item.state !== "cancelled") wait(error instanceof Error ? error.message : "Waiting for the selected machine.");
@@ -1905,7 +1919,7 @@ export function createMockItems(deps: MockItemsDeps) {
 
 	function openDefaultSession(auth: AuthResult, input: CreateItemInput, destination: DefaultDestination) {
 		return deps.session(auth, { title: input.title, repository: input.repository, place: destination.place,
-			profile: destination.profile, harness: input.mode === "single" ? destination.harness : "windlass", model: input.model });
+			profile: destination.profile, harness: destination.harness, model: input.model });
 	}
 
 	/** A new run, queued for its first turn; its turn starts a moment later. */
@@ -1931,7 +1945,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		}
 		if (before && before.endedAt === null) Object.assign(before, { endedAt: at, stopReason: "retried" });
 		item.events.push({ at, by: `person:${auth.profile.uid}`, step: null, said });
-		change(auth, item, { state: "queued", wait: null, question: null, run, report: null, review: null, reviewNone: null }, [], "person");
+		change(auth, item, { state: "queued", wait: null, question: null, run, report: null, ...(item.review?.state === "off" ? {} : { review: null, reviewNone: null }) }, [], "person");
 		deps.later(2500, () => {
 			if (item.run !== run || item.state !== "queued") return;
 			startTurn(auth, item);
@@ -2170,11 +2184,11 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (input.body.length > MAX_ITEM_BODY_CHARS) throw new PlatformError("user", `What to do is at most ${MAX_ITEM_BODY_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
 				if (acceptance.length > MAX_ACCEPTANCE_CRITERIA) throw new PlatformError("user", `An item takes at most ${MAX_ACCEPTANCE_CRITERIA} acceptance criteria.`, { reason: "bad_input" });
 				if (acceptance.some((line) => line.length > MAX_NOTE_CHARS)) throw new PlatformError("user", `An acceptance criterion is at most ${MAX_NOTE_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
-				const policy = input.useDefaultPlace && !input.place ? deps.defaultPlace?.(auth, input.repository.id) : undefined;
-				const destination = policy && resolveDefaultPlace(policy, deps.machines(auth)?.list ?? []);
+				const policy = input.useDefaultPlace && !input.place ? deps.defaultPlace(auth, input.repository.id) : undefined;
+				const destination = policy && resolveDefaultPlace(policy, deps.machines(auth)?.list ?? [], input.mode ?? "orchestrate");
 				if (destination) {
 					input.place = destination.place;
-					input.harness = (input.mode ?? "orchestrate") === "orchestrate" ? "windlass" : destination.harness;
+					input.harness = destination.harness;
 					input.profile = destination.profile ?? input.profile;
 				}
 				// On a machine, its first available sandbox unless the one asked for is available (user-items.ts, `itemProfile`).
@@ -2209,8 +2223,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					}
 				}
 				const session = destination?.wait ? null : destination ? await openDefaultSession(auth, input, destination) : await deps.session(auth, { title, repository: input.repository, ...(place.kind === "machine" ? { place, profile } : {}), ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}) });
-				const repository = session?.repository ?? await deps.waitingRepository?.(auth, input.repository);
-				if (!repository) throw new PlatformError("user", "Work items need a repository of your GitHub connection.", { reason: "bad_input" });
+				const repository = session?.repository ?? await deps.waitingRepository(auth, input.repository);
 				const at = deps.now();
 				const id = `it_${fresh(12)}`;
 				const item: ItemView = {
@@ -2242,12 +2255,11 @@ export function createMockItems(deps: MockItemsDeps) {
 					verdicts: [],
 					verifiedCheck: null,
 					report: null,
-					review: place.kind === "machine" || deps.reviewer === false ? { state: "off", recommendation: null } : null,
+					...reviewAt(session?.place),
 					reviews: [],
 					reviewerSessionId: null,
-					reviewNone: deps.reviewer === false ? DEPLOYMENT_OFF : place.kind === "machine" ? "in this sandbox the reviewer's commands would run with the network" : null,
 				};
-				if (policy && destination?.wait) pendingPlaces.set(item, { policy, input });
+				if (policy && destination?.wait) pendingPlaces.set(item, { policy, input, attempts: 0 });
 				if (destination?.note) item.events.push({ at, by: "platform", step: null, said: destination.note });
 				mine.items.unshift(item);
 				if (typeof idempotencyKey === "string") mine.made.set(idempotencyKey, { content, id });

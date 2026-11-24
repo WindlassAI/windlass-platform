@@ -138,6 +138,20 @@ function newItem(more: { reviewer?: FactoryItem["reviewer"]; mode?: FactoryItem[
 	});
 }
 
+{
+	const item = newItem();
+	item.awaitingPlace = "Waiting for a machine.";
+	let at = T0;
+	let outcome = advance(item, { kind: "start", by: "person", at });
+	for (const minutes of [1, 2, 5, 10, 10]) {
+		at += minutes * MINUTE;
+		assert.equal(outcome.item.wait?.retryAt, at);
+		assert.deepEqual(outcome.effects, [{ kind: "resolve_default_place", key: String(at), at }]);
+		outcome = advance(outcome.item, { kind: "default_place_wait", sentence: item.awaitingPlace, at });
+	}
+	expect("default placement backs off to ten minutes", true);
+}
+
 function drive(name: string, start: FactoryItem, rows: Row[]): void {
 	for (const doubled of [false, true]) {
 		let item = start;
@@ -460,7 +474,7 @@ for (const [name, reviewer, reason] of [
 }
 const movedReading: Row["fact"] = ({ key }) => ({ kind: "ci_read", webhooks: false, key, head: reviewHead, reading: { ...emptyCi, head: reviewHead }, mergeable: true, openItems: 1, prHead: H(2) });
 drive("review: a machine item hands over after CI without a reviewer turn", { ...reviewerOn(), place: { kind: "machine", machineId: "local" } }, [
-	...toCi, handoverWithout(freshCi, "in this sandbox the reviewer's commands would run with the network"),
+	...toCi, handoverWithout(freshCi, "second reviews run only on hosted sandboxes"),
 ]);
 drive("review: a rerun that fails during review changes the platform verdict", reviewerOn(), [...reviewing,
 	refresh(endReview({ review: filing("approve") })),

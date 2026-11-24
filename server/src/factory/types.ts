@@ -224,6 +224,7 @@ export interface FeedbackDecision {
 export interface FactoryItem {
 	/** Waiting for the builder to bind to a machine before its first run. */
 	awaitingPlace?: string;
+	placeAttempts?: number;
 	/** A foreign push observed on this PR disqualifies it even if the original head returns. */
 	foreignPush?: true;
 	/** Question claimed by Add it and continue. No continuation is delivered until the save settles. */
@@ -305,8 +306,8 @@ export interface FactoryItem {
 	 * Absent: none.
 	 */
 	unsandboxed?: string[];
-	/** Absent on items persisted before second review was available. */
-	reviewer?: { on: true } | { off: "deployment" | "profile" | "feature" };
+	/** Decided when the builder binds to its place. */
+	reviewer?: { on: true } | { off: "deployment" | "profile" | "machine" | "feature" };
 	place: SandboxPlace;
 	machineRemoved: boolean;
 	budget: ItemBudget;
@@ -420,7 +421,7 @@ export interface AgentTurn {
 }
 
 export type Fact =
-	| { kind: "default_place_ready"; at: number; place: SandboxPlace; agent: NonNullable<FactoryItem["agent"]> }
+	| { kind: "default_place_ready"; reviewer: NonNullable<FactoryItem["reviewer"]>; reviewerSessionId: string | null; at: number; place: SandboxPlace; agent: NonNullable<FactoryItem["agent"]> }
 	| { kind: "default_place_wait"; at: number; sentence: string }
 	| ({ kind: "github_feedback"; at: number } & FeedbackInput)
 	| { kind: "reverify"; at: number; head: string }
@@ -563,6 +564,7 @@ export type VerifiedCheckEffect = {
 } & ({ state: "in_progress"; conclusion: null } | { state: "completed"; conclusion: CheckConclusion });
 
 export type Effect =
+	| { kind: "discard_placement"; key: string }
 	| { kind: "resolve_default_place"; key: string; at: number }
 	| { kind: "auto_merge"; key: string; head: string; baseTip?: string; pr: number }
 	| VerifiedCheckEffect

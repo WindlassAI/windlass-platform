@@ -264,7 +264,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						under={accountChoices}
 						models={models}
 						save={(change) => client.user(auth).saveRepositoryDefaults(page.id, change)}
-						onSaved={(next) => page.replace({ ...view, defaults: { ...view.defaults, place: null, harness: null, machineProfile: null, placeFallback: null, ...next } })}
+						onSaved={(next) => page.replace({ ...view, defaults: { ...view.defaults, ...next } })}
 					/>
 
 					<ScreenshotsSetting page={page} view={view} />

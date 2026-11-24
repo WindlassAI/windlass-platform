@@ -81,7 +81,7 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 
 {
 	const { db, rows } = database();
-	expect("nothing is kept for a repository nobody saved anything for", plain(await readDefaults(db, HARBOR)) === plain({ screenshots: false, profile: null, model: null, hostedSize: null, updatedAt: null }) && rows().length === 0);
+	expect("nothing is kept for a repository nobody saved anything for", plain(await readDefaults(db, HARBOR)) === plain({ place: null, harness: null, machineProfile: null, placeFallback: null, screenshots: false, profile: null, model: null, hostedSize: null, updatedAt: null }) && rows().length === 0);
 	expect("a change that names no field keeps nothing either", values(await saveDefaults(db, HARBOR, "acme/harbor", {}, 1)) === plain([null, null]) && rows().length === 0);
 	expect("screenshot opt-in is stored without other defaults", (await saveDefaults(db, HARBOR, "", cleanDefaults({ screenshots: true }, PROFILES, MODELS), 2)).screenshots && (await readDefaults(db, HARBOR)).screenshots);
 	expect("opting out restores the repository default", (await saveDefaults(db, HARBOR, "", { screenshots: false }, 3)).screenshots === false && rows().length === 0);
@@ -97,7 +97,7 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 	const cleared = await saveDefaults(db, HARBOR, "", { profile: null }, 50);
 	expect("clearing one field keeps the other", values(cleared) === plain([null, "gpt-6.1-sol"]) && rows().length === 2);
 	const gone = await saveDefaults(db, HARBOR, "", { model: null }, 60);
-	expect("clearing the last one leaves no row", plain(gone) === plain({ screenshots: false, profile: null, model: null, hostedSize: null, updatedAt: null }) && rows().length === 1 && rows()[0]?.project === QUAY, plain(rows()));
+	expect("clearing the last one leaves no row", plain(gone) === plain({ place: null, harness: null, machineProfile: null, placeFallback: null, screenshots: false, profile: null, model: null, hostedSize: null, updatedAt: null }) && rows().length === 1 && rows()[0]?.project === QUAY, plain(rows()));
 }
 
 // ---- the hosted size ------------------------------------------------------------------------------

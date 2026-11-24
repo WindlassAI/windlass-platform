@@ -1454,6 +1454,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			const options = machineId ? machinesOf(auth).list.find((one) => one.machineId === machineId)?.harnesses?.find((entry) => entry.id === harness)?.options : undefined;
 			return initialHarnessModels(options);
 		},
+		discardSession: (auth, id) => userApi(auth).deleteSession(id),
 		seededSession: (auth, item) => seedItemSession(auth, item),
 		itemChanged: (auth, item) => {
 			const world = worldOf(auth);
@@ -3166,7 +3167,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const enabled = world.screenshotsEnabled.get(repositoryId);
 		const updatedAt = saved || enabled !== undefined ? Math.max(saved?.updatedAt ?? 0, enabled ?? 0) : null;
 		const size = hostedSizes.get(repositoryId) ?? null;
-		return { ...saved, ...world.autonomy.get(repositoryId), screenshots: enabled !== undefined, profile: saved?.profile ?? null, model: saved?.model ?? null, hostedSize: size, updatedAt: Math.max(updatedAt ?? 0, world.autonomy.get(repositoryId)?.updatedAt ?? 0) || (size ? now() : null) };
+		return { place: null, harness: null, machineProfile: null, placeFallback: null, ...saved, ...world.autonomy.get(repositoryId), screenshots: enabled !== undefined, profile: saved?.profile ?? null, model: saved?.model ?? null, hostedSize: size, updatedAt: Math.max(updatedAt ?? 0, world.autonomy.get(repositoryId)?.updatedAt ?? 0) || (size ? now() : null) };
 	}
 
 	function repositoryViewOf(world: World, repositoryId: GithubId): RepositoryView {

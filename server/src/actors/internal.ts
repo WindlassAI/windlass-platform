@@ -93,7 +93,8 @@ export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: st
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
-	internalDefaultBuilder(input: { id: string; job: import("./user-items.js").DefaultBuilder }): Promise<{ session: import("../contract.js").SessionSummary } | { wait: string }>;
+	internalDefaultBuilder(input: { id: string; job: import("./user-items.js").DefaultBuilder }): ReturnType<typeof import("./user-items.js").itemActions.internalDefaultBuilder>;
+	internalDiscardPlacement(itemId: string): Promise<void>;
 	internalHostedSizes(): Promise<HostedSize[]>;
 	internalDailyTokenWait(): Promise<string | null>;
 	internalRecordTurnTokens(input: { sessionId: string; receipt: import("../usage.js").TokenReceipt }): Promise<void>;
@@ -241,6 +242,7 @@ export interface ItemInternal {
 	internalSecretRequestLimit(key: string, name: string): Promise<string | null>;
 	internalSetRequestedSecret(input: RequestedSecretSave): Promise<void>;
 	internalBlockedNetwork(input: NetworkReceipt): Promise<void>;
+	internalMachineAvailable(): Promise<void>;
 	internalProviderChanged(revision: number): Promise<void>;
 	/** Immutable commit the feature was created from, including for children made before a restart. */
 	internalSetupSeed(source: "child" | "feature", repositoryId?: GithubId): Promise<string | null>;

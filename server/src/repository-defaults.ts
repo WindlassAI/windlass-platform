@@ -126,7 +126,7 @@ export async function migrateDefaults(db: DefaultsDb): Promise<void> {
 /** The defaults saved for a project; none when there is no row. */
 export async function readDefaults(db: DefaultsDb, project: string): Promise<RepositoryDefaults> {
 	const [row] = await db.execute<{ item_place: string | null; profile: string | null; model: string | null; screenshots: number; updated_at: number; hosted_size: string | null; autoApprovePlans: number; autoMergeSingles: number }>("SELECT item_place, autoApprovePlans, autoMergeSingles, profile, model, screenshots, updated_at, hosted_size FROM repository_defaults WHERE project = ?", project);
-	return { ...(row?.item_place && JSON.parse(row.item_place) as ItemPlaceDefaults), ...(row?.autoApprovePlans === 1 && { autoApprovePlans: true }), ...(row?.autoMergeSingles === 1 && { autoMergeSingles: true }), screenshots: row?.screenshots === 1, profile: (row?.profile ?? null) as SandboxProfileId | null, model: row?.model ?? null, hostedSize: isHostedSize(row?.hosted_size) ? row.hosted_size : null, updatedAt: row?.updated_at ?? null };
+	return { place: null, harness: null, machineProfile: null, placeFallback: null, ...(row?.item_place && JSON.parse(row.item_place) as ItemPlaceDefaults), ...(row?.autoApprovePlans === 1 && { autoApprovePlans: true }), ...(row?.autoMergeSingles === 1 && { autoMergeSingles: true }), screenshots: row?.screenshots === 1, profile: (row?.profile ?? null) as SandboxProfileId | null, model: row?.model ?? null, hostedSize: isHostedSize(row?.hosted_size) ? row.hosted_size : null, updatedAt: row?.updated_at ?? null };
 }
 
 /**
