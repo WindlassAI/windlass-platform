@@ -696,7 +696,7 @@ class Turn {
 			scriptPath === null ? undefined : this.sandbox.writeTextFile(scriptPath, JSON.stringify(this.input.script)),
 			agentFile === null ? undefined : this.sandbox.writeTextFile(agentFile, [
 				"---", `name: ${this.reviewerAgent}`, this.input.planner ? "description: Read the repository and plan the feature." : "description: Reviews this pull request independently.",
-				this.input.planner ? "disallowed-tools: write, edit, shell, subagent" : "disallowed-tools: subagent", "---", this.input.planner ? "Read the repository and file the requested artifact." : "Review the change yourself.", "",
+				this.input.planner ? "disallowed-tools: write, edit, shell, subagent" : this.input.reviewDirectory ? "disallowed-tools: write, edit, subagent" : "disallowed-tools: subagent", "---", this.input.planner ? "Read the repository and file the requested artifact." : "Review the change yourself.", "",
 			].join("\n")),
 			// The user's access token, in its file before the engine looks for it. An abort does not wait for it.
 			this.tokenFile === null ? undefined : this.unlessAborted(this.tokenFile.start()),
@@ -972,7 +972,7 @@ class Turn {
 				if (!input.fresh || !(error instanceof AcpError) || this.failureOf(error).reason !== "session_not_found") throw error;
 			}
 		}
-		const made = await peer.request<{ sessionId?: unknown }>("session/new", sessionOpenParams(this.sandbox.cwd, meta), { timeoutMs: OPEN_TIMEOUT_MS });
+		const made = await peer.request<{ sessionId?: unknown }>("session/new", sessionOpenParams(input.reviewDirectory ?? this.sandbox.cwd, meta), { timeoutMs: OPEN_TIMEOUT_MS });
 		if (typeof made?.sessionId !== "string") throw new AcpError("the engine opened a session without naming it", 0, null);
 		if (input.windlassSessionId !== undefined) {
 			this.freshened = true;

@@ -33,7 +33,7 @@ import { networkBody, unionNetwork } from "../blocked-network.js";
 import type { NetworkReceipt } from "./internal.js";
 import { HIDDEN } from "../agent-publish.js";
 import { readFeedback, feedbackId, type FeedbackNotice, type FeedbackSubject } from "./github-inbox.js";
-import { sources, untrustedWords } from "../factory/untrusted.js";
+import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
 import { batchText, feedbackWords, fingerprint, fits, oversizedFeedback, QUIET_MS, MOST_MS } from "../factory/feedback.js";
 import { isAddressed } from "../github/events.js";
 import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
@@ -65,9 +65,9 @@ import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
-import { activeJob, advance, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
-import { feedbackComment, itemComment, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
-import type { Effect as BlueprintEffect, Fact, FactoryItem, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
+import { RULES, activeJob, advance, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
+import { feedbackComment, itemComment, requestedReviewBody, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
+import type { Effect as BlueprintEffect, Fact, FactoryItem, RequestedReview, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { checkBaseFailures } from "../github/ci-base.js";
 import { CI_POLLING, ciState, readCi, rerunJobs, workflowOverdue } from "../github/ci.js";
@@ -444,7 +444,11 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	const handedFiling = fact.kind === "review_ended" && fact.review?.id === outcome.item.run?.ci?.secondReview?.review ? fact.review : null;
 	if (handedFiling) stored.meta.handoffReview = { recommendation: handedFiling.recommendation, reason: null };
 	// Every filing the blueprint took is kept, the rounds that sent the builder back too: the page shows each round.
-	const filing = handedFiling ?? (fact.kind === "review_ended" && fact.review && fact.review.id === outcome.tookReview ? fact.review : null);
+	let filing = handedFiling ?? (fact.kind === "review_ended" && fact.review && fact.review.id === outcome.tookReview ? fact.review : null);
+	if (filing && before.requestedReview?.key === filing.id) {
+		const { owner, name, pr } = before.requestedReview;
+		filing = { ...filing, requestedPull: { owner, name, pr } };
+	}
 	if (handoff && before.run?.n === outcome.item.run?.n) stored.meta.handoffReview = { recommendation: stored.meta.handoffReview?.recommendation ?? null, reason: handoff.reviewNone };
 	// The item, its revision and its data are taken from this decision now: a later decision, made while this
 	// one waits for its write, changes `stored` and must not be written beside this one's data.
@@ -475,6 +479,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 				const [row] = await tx.execute<{ revision: number }>("SELECT revision FROM item WHERE id = 1");
 				if (row?.revision !== before.revision) throw new Error(`the item is at revision ${row?.revision ?? "none"}, not ${before.revision}`);
 				if (issue) await tx.execute("INSERT INTO issue_actions VALUES(?)", issue.subject);
+				if (fact.kind === "request_review") await tx.execute("INSERT INTO issue_actions VALUES(?),(?)", fact.subject, reviewHeadSubject(fact.request));
 				await tx.execute("UPDATE item SET revision = ?, data = ? WHERE id = 1", next.revision, data);
 				// What this decision left behind goes with it: a publish waiting for its retry is not done for a cancelled item.
 				for (const old of await tx.execute<{ id: string; effect: string }>("SELECT id, effect FROM effects")) {
@@ -512,7 +517,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 					)).length) continue;
 					if (effect.kind === "verified_check" && effect.state === "completed" && handoff && effect.verdictId)
 						await prepareCompletedCheck(tx, next, effect, handoff);
-					await tx.execute("INSERT OR REPLACE INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)", rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
+					await tx.execute(`INSERT OR ${effect.kind === "requested_review" ? "IGNORE" : "REPLACE"} INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)`, rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 				}
 				if (fact.kind === "turn_ended") await storeReport(tx, before, stored.meta.sessionId, fact);
 				if (fact.kind === "published" && before.run?.gate && !before.run.updateFromBase) await publishReport(tx, before.run.gate.turn, fact.head);
@@ -670,14 +675,43 @@ async function scheduleFeedback(tx: Pick<RawAccess, "execute">, item: FactoryIte
 	}
 }
 
+function refusedByGithub(error: unknown): error is GithubError {
+	return error instanceof GithubError && !error.rateLimited && [403, 404, 422].includes(error.status);
+}
+
+const reviewHeadSubject = (r: Pick<RequestedReview, "repositoryId" | "pr" | "head">) => `pr-review:${r.repositoryId}:${r.pr}:${r.head}`;
+
 async function receiveFeedback(c: Ctx, notice: FeedbackNotice) {
 	const changed = await queued(c, async () => {
 		const stored = await load(c.db);
-		if (!stored || stored.meta.repository.id !== notice.repositoryId || stored.item.pr?.number !== notice.pr || await binding(c) !== notice.installationId) return false;
+		if (!stored) return false;
+		const primary = stored.meta.repository.id === notice.repositoryId && stored.item.pr?.number === notice.pr && await binding(c) === notice.installationId;
+		const sibling = notice.requestedReview && stored.item.repos?.some(r => r.repositoryId === notice.repositoryId && r.installationId === notice.installationId && r.pr?.number === notice.pr);
+		if (!primary && !sibling) return false;
 		const { item } = stored;
 		if (item.state === "done" || item.state === "cancelled") return false;
 		const now = Date.now();
 		return c.db.transaction(async tx => {
+			if (notice.requestedReview) {
+				const { id, head, base, sender, owner } = notice.requestedReview;
+				if (ENDED.has(item.state)) return false;
+				const subject = reviewHeadSubject({ ...notice, head });
+				if ((await tx.execute("SELECT 1 FROM issue_actions WHERE subject IN (?,?)", id, subject)).length || item.requestedReview) {
+					await tx.execute("INSERT OR IGNORE INTO issue_actions VALUES(?)", id);
+					return false;
+				}
+				if (!stored.meta.reviewerSessionId || !item.run) {
+					await tx.execute("INSERT INTO issue_actions VALUES(?)", id);
+					await tx.execute("INSERT INTO events(at,data) VALUES(?,?)", now, JSON.stringify({ at: now, step: null, by: "platform", said: "The requested PR review could not start because this item has no reviewer." }));
+					return true;
+				}
+				const repo = item.repos?.find(r => r.repositoryId === notice.repositoryId) ?? stored.meta.repository;
+				return { kind: "request_review" as const, at: now, subject: id, request: {
+					key: `${item.id}:${item.run.n}:${subject}`, repositoryId: notice.repositoryId, installationId: notice.installationId,
+					owner: repo.owner, name: repo.name, pr: notice.pr, head, base, sender,
+					untrusted: !owner || !primary || !!item.foreignPush || stored.meta.reviewBase?.head !== head,
+				} };
+			}
 			if (notice.denied || notice.approval) {
 				const subject = notice.denied ? "feedback-denied:" + notice.denied : notice.approval!.id;
 				const added = await tx.execute("INSERT OR IGNORE INTO issue_actions VALUES(?) RETURNING subject", subject);
@@ -703,6 +737,11 @@ async function receiveFeedback(c: Ctx, notice: FeedbackNotice) {
 			return true;
 		});
 	});
+	if (typeof changed === "object") {
+		const admitted = await take(c, changed);
+		if (!admitted) await queued(c, () => c.db.execute("INSERT OR IGNORE INTO issue_actions VALUES(?)", changed.subject));
+		return admitted;
+	}
 	if (changed) await take(c, { kind: "issue_note", at: Date.now() });
 	else await armDue(c); // A duplicate repairs a lost timer after a restart.
 	return changed;
@@ -826,7 +865,7 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 	for (const s of subjects) {
 		const id = feedbackId(s);
 		if ((await c.db.execute("SELECT 1 FROM feedback WHERE id=? UNION ALL SELECT 1 FROM issue_actions WHERE subject IN (?,?) LIMIT 1", id, id, "feedback-denied:" + id)).length) continue;
-		const notice = await readFeedback(c, meta.uid, target, s, githubConfig().webhook ? undefined : hub.connectedUserId);
+		const notice = await readFeedback(c, meta.uid, target, s, { pollingOwner: githubConfig().webhook ? undefined : hub.connectedUserId });
 		if (notice) await receiveFeedback(c, notice);
 	}
 	await c.db.execute("INSERT OR REPLACE INTO feedback_cursor VALUES(1,?)", now);
@@ -1167,6 +1206,8 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
 export function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "discard_placement") return item.state === "cancelled";
 	if (effect.kind === "resolve_default_place") return !!item.awaitingPlace && item.state === "waiting" && item.wait?.retryAt === effect.at;
+	if (effect.kind === "requested_review") return !ENDED.has(item.state) && item.requestedReview?.key === effect.key;
+	if (effect.kind === "post_requested_review") return !ENDED.has(item.state);
 	if (effect.kind === "feedback_ready" || effect.kind === "feedback_ack") return true;
 	if (effect.kind === "feedback_comment") return item.run?.n === effect.run && item.state !== "review" && !ENDED.has(item.state);
 	if (effect.kind === "merge_feature_target") return item.featureUpdate?.key === effect.key && item.joining?.child === item.id && item.joining.key === effect.key;
@@ -1365,7 +1406,7 @@ async function integrationStep(c: Ctx, meta: ItemMeta, item: FactoryItem, effect
 		else await take(c, { ...base, kind: "integration_read", state: reading.state, url: reading.url, said: reading.said, ...(reading.seconds !== undefined && { seconds: reading.seconds }) });
 	} catch (error) {
 		const denied = error instanceof GithubProblem && (error.code === "github_denied" || error.code === "github_gone");
-		if (!denied && !(error instanceof ForeignRun) && !(error instanceof GithubError && [403, 404, 422].includes(error.status))) throw error;
+		if (!denied && !(error instanceof ForeignRun) && !refusedByGithub(error)) throw error;
 		await take(c, { ...base, kind: "integration_read", state: "unavailable", url: null, said: error.message });
 	}
 }
@@ -1415,6 +1456,33 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "provider_retry":
 			await take(c, { ...effect, at: Date.now(), loginChanged: row.due_at < effect.at });
 			return true;
+		case "requested_review":
+			await session.internalDeliver(requestedDelivery(item, effect));
+			return true;
+		case "post_requested_review": {
+			const { key, head, base, pr, repositoryId, installationId } = effect;
+			const [filed] = await c.db.execute<{ data: string }>("SELECT data FROM reviews WHERE id=?", key);
+			const review: ItemReview = JSON.parse(filed.data);
+			const app = githubApp(), connection = await userActor(c, meta.uid).internalGithubConnection();
+			if (!app || !connection) throw new Error("The GitHub connection is unavailable.");
+			let said = `Requested review of PR #${pr} at ${head.slice(0, 7)}`;
+			try {
+				const { repository } = await resolveBoundRepository(app, connection, repositoryId, installationId, "write");
+				await app.withToken(installationId, { repositoryId, permissions: { metadata: "read", contents: "read", pull_requests: "write" } }, token =>
+					app.postRequestedReview(token, repository, pr, base, head, key, requestedReviewBody(item.id, review, repository)));
+				said += " posted on GitHub.";
+			} catch (error) {
+				if (!refusedByGithub(error)) throw error;
+				said += ` filed on the item. GitHub refused the review (HTTP ${error.status}).`;
+			}
+			await queued(c, () => c.db.transaction(async tx => {
+				await tx.execute("DELETE FROM effects WHERE id=?", row.id);
+				const at = Date.now();
+				await tx.execute("INSERT INTO events(at,data) VALUES(?,?)", at, JSON.stringify({ at, step: null, by: "platform", said }));
+			}));
+			await take(c, { kind: "issue_note", at: Date.now() });
+			return true;
+		}
 		case "feedback_ready":
 			await feedbackReady(c);
 			return "deferred";
@@ -1435,7 +1503,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					let body = marker + "\n\n" + feedbackComment(effect.who, effect.run);
 					if (prev) {
 						const verdict: Verdict = JSON.parse(prev.data);
-						const [filed] = await c.db.execute<{data:string}>("SELECT data FROM reviews WHERE run=? AND head=? ORDER BY at DESC LIMIT 1", verdict.run, verdict.head);
+						const [filed] = await c.db.execute<{data:string}>("SELECT data FROM reviews WHERE run=? AND head=? AND json_extract(data,'$.requestedPull') IS NULL ORDER BY at DESC LIMIT 1", verdict.run, verdict.head);
 						body = itemComment(verdict, verdictWords(verdict, null), await latestReport(c.db, verdict.run),
 							{ filed: filed ? JSON.parse(filed.data) : null, reason: null, owner: hub.owner, name: hub.name }, effect);
 					}

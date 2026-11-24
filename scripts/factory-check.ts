@@ -118,15 +118,18 @@ const published = (head: string, pr: { number: number; url: string } | null = { 
 const ci = (head: string, reading: CiReading, mergeable: boolean | null = true): Row["fact"] => (k) => ({ kind: "ci_read", webhooks: false, prHead: null, key: k.key, head, reading: reading.kind === "read" ? { ...reading, head } : reading, mergeable, openItems: 1 });
 const answer = (choice: Extract<Fact, { kind: "answer" }>["choice"], more: { note?: string; budget?: Partial<FactoryItem["budget"]> } = {}): Row["fact"] => (k) => ({ kind: "answer", by: "person:u1", question: k.question, choice, ...more });
 
-const { reviewerAllowed } = await import("../server/src/factory/review.js");
-const { e2bProfile, e2bOpenProfile, PROFILES } = await import("../server/src/sandbox/profiles.js");
-for (const [label, place, profile, allowed] of [
-	["hosted e2b", { kind: "hosted" }, e2bProfile({ windlassSandbox: true }), true],
-	["unconfirmed e2b", { kind: "hosted" }, e2bProfile({ windlassSandbox: false }), false],
-	["e2b-open", { kind: "hosted" }, e2bOpenProfile({ offered: true }), false],
-	["docker-hardened", { kind: "hosted" }, PROFILES.find(p => p.id === "docker-hardened")!, false],
-	["personal machine", { kind: "machine", machineId: "machine" }, e2bProfile({ windlassSandbox: true }), false],
-] as const) expect(`reviewer profile: ${label}`, reviewerAllowed(place, profile) === allowed);
+{
+	const { PlatformMcpServer, PLATFORM_MCP_SERVER_ID, MCP_PROTOCOL_VERSION, platformToolDeclarations, turnPlatformTools } = await import("../server/src/platform-tools.js");
+	const seen: string[] = [];
+	const offered = turnPlatformTools({ prompt: "", onReview: async request => { seen.push(request.via!); return "filed"; } }, "sandbox");
+	assert.deepEqual([...offered.keys()], ["file_review"]);
+	const server = new PlatformMcpServer(offered, platformToolDeclarations(offered, { mcp: true }), () => true);
+	const call = (requestId: string) => server.handle({ serverId: PLATFORM_MCP_SERVER_ID, method: "tools/call", requestId,
+		params: { name: "file_review", arguments: {}, _meta: { "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL_VERSION } } }, new AbortController().signal);
+	await call("1");
+	await call("2");
+	assert.deepEqual(seen, ["mcp"]);
+}
 
 function newItem(more: { reviewer?: FactoryItem["reviewer"]; mode?: FactoryItem["mode"]; budget?: Partial<FactoryItem["budget"]> } = {}): FactoryItem {
 	return createItem({
@@ -469,13 +472,12 @@ function handoverWithout(fact: Row["fact"], reason: string): Row {
 for (const [name, reviewer, reason] of [
 	["deployment off", { off: "deployment" }, "turned off for this deployment"],
 	["feature part", { off: "feature" }, "the feature’s combined change is reviewed once its parts are done"],
-	["profile off", { off: "profile" }, "in this sandbox the reviewer's commands would run with the network"],
 ] as const) {
 	drive(`review: ${name}`, newItem({ reviewer }), [...toCi, handoverWithout(ci(reviewHead, ciPassed), reason)]);
 }
 const movedReading: Row["fact"] = ({ key }) => ({ kind: "ci_read", webhooks: false, key, head: reviewHead, reading: { ...emptyCi, head: reviewHead }, mergeable: true, openItems: 1, prHead: H(2) });
-drive("review: a machine item hands over after CI without a reviewer turn", { ...reviewerOn(), place: { kind: "machine", machineId: "local" } }, [
-	...toCi, handoverWithout(freshCi, "second reviews run only on hosted sandboxes"),
+drive("review: a machine item starts its reviewer after CI", { ...reviewerOn(), place: { kind: "machine", machineId: "local" } }, [
+	...toCi, { ...reviewStarts(ciPassed), state: "queued" },
 ]);
 drive("review: a rerun that fails during review changes the platform verdict", reviewerOn(), [...reviewing,
 	refresh(endReview({ review: filing("approve") })),
@@ -1525,7 +1527,7 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 	const { checkSummary: summaryOf } = await import("../server/src/factory/verified-check.js");
 	const agentItem = (harness: "claude" | "opencode" | "windlass", budget: Partial<FactoryItem["budget"]> = {}) => createItem({
 		id: "i_00000000000000aa", task: { title: "Fix add()", body: "add(1, 2) returns -1.", acceptance: ["add(1, 2) is 3"], base: "main" },
-		reviewer: { off: "profile" }, place: { kind: "machine", machineId: "m1" }, budget: { ...FACTORY_DEFAULTS.item, ...budget }, agent: { harness, model: harness === "claude" ? "sonnet" : "default" },
+		reviewer: { off: "deployment" }, place: { kind: "machine", machineId: "m1" }, budget: { ...FACTORY_DEFAULTS.item, ...budget }, agent: { harness, model: harness === "claude" ? "sonnet" : "default" },
 	});
 	const usage = { inputTokens: 33_000, cachedInputTokens: 30_000, outputTokens: 500, reasoningTokens: 100 };
 	const claudeTurn = agentTurn("claude", usage, { cost: null, fiveHourUsedPct: 41 }, 38);
@@ -1636,7 +1638,7 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 	// A Codex item counts by the sign-in it was filed with: ChatGPT is a subscription; an API key bills by token.
 	const codexItem = (signIn: "chatgpt" | "api-key", budget: Partial<FactoryItem["budget"]> = {}) => createItem({
 		id: "i_00000000000000ab", task: { title: "Fix add()", body: "add(1, 2) returns -1.", acceptance: ["add(1, 2) is 3"], base: "main" },
-		reviewer: { off: "profile" }, place: { kind: "machine", machineId: "m1" }, budget: { ...FACTORY_DEFAULTS.item, ...budget }, agent: { harness: "codex", model: "default", signIn },
+		reviewer: { off: "deployment" }, place: { kind: "machine", machineId: "m1" }, budget: { ...FACTORY_DEFAULTS.item, ...budget }, agent: { harness: "codex", model: "default", signIn },
 	});
 	expect("a Codex item keeps the sign-in it was filed with", itemAgent(codexItem("chatgpt")).signIn === "chatgpt");
 	const chatgpt = afterTurn(codexItem("chatgpt", { tokens: 1000 }), turnSpend(usage, agentTurn("codex", usage, null, undefined, "chatgpt")));
@@ -1766,8 +1768,9 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const feature: FactoryItem = { ...published, mode: "orchestrate" };
 	drive("feature hands over when second reviews are off", { ...feature, reviewer: { off: "deployment" } },
 		[handoverWithout(freshCi, "turned off for this deployment")]);
-	drive("feature on a machine hands over with the skipped review reason", { ...feature, place: { kind: "machine", machineId: "local" } },
-		[handoverWithout(freshCi, "second reviews run only on hosted sandboxes")]);
+	drive("feature on a machine starts the whole-feature review", { ...feature, place: { kind: "machine", machineId: "local" } },
+		[{ fact: freshCi, state: "queued", effects: ["verdict", "verified_check", "deliver", "check_turn", "poll_pr"],
+			also: o => holds(effect(o, "deliver")?.to === "review", "the feature did not reach its reviewer") }]);
 }
 
 // Exercise the actual plan filing, reviewer receipt and handoff transitions, including stale receipts.
@@ -1845,9 +1848,17 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 {
 	const reviewed = walk(reviewerOn(), [...pushedRun(H(1)), ciFact(passedCi)]);
 	const end = { kind: "review_ended", outcome: "succeeded", review: filing("approve", currentKey(reviewed.item)!), said: null, spend: { tokens: 19, hostedSeconds: 7 } };
+	end.review.by.via = "host";
+	end.review.by.commandSandbox = "windlass";
 	end.review.verdictId = reviewed.item.run!.review!.verdictId;
 	const waiting = walk(reviewed.item, [end]).item;
 	const handoff = { ...ciFact(passedCi), baseAhead: 0, baseTip: H(3), autoMergeSingles: true };
+	for (const [via, commandSandbox] of [["mcp", "windlass"], ["host", "none"], ["host", "unknown"]] as const) {
+		const review = { ...end.review, by: { ...end.review.by, via, commandSandbox } };
+		const fallback = walk(reviewed.item, [{ ...end, review }, handoff]);
+		assert.ok(effect(fallback.last, "handoff") && !effect(fallback.last, "auto_merge"));
+		expect(`${via} approval with ${commandSandbox} command sandbox hands over to the person`, true);
+	}
 	const accepted = walk(waiting, [handoff]), merge = effect(accepted.last, "auto_merge");
 	assert.equal(merge?.head, H(1));
 	assert.equal(merge?.baseTip, H(3));
@@ -1883,6 +1894,37 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		assert.ok(effect(fallback.last, "handoff") && !effect(fallback.last, "auto_merge"), change.toString());
 	}
 	expect("automatic squash merge requires every handoff condition; update, refusal and merged receipts use their normal paths", true);
+}
+
+{
+	const { live } = await import("../server/src/actors/work-item.js");
+	const { requestedDelivery } = await import("../server/src/factory/blueprint.js");
+	const item = walk(newItem(), [...pushedRun(H(1)), ciFact(passedCi)]).item;
+	item.reviewer = { on: true };
+	const request = { key: `${item.id}:1:pr-review:1:7:${H(1)}`, head: H(1), base: H(2), repositoryId: 1,
+		installationId: 2, owner: "windlass", name: "project", pr: 7, sender: "alex", untrusted: false };
+	const start = { kind: "request_review" as const, subject: "issue_comment:1", request, at: T0 };
+	const first = advance(item, start), delivery = effect(first, "requested_review");
+	assert.ok(delivery && live(first.item, delivery));
+	assert.equal(advance(first.item, { ...start, subject: "issue_comment:2" }).item, first.item);
+	assert.equal(advance(first.item, { ...start, request: { ...request, head: H(3) } }).effects.length, 0);
+	assert.deepEqual(requestedDelivery({ ...item, foreignPush: true }, request).untrusted, ["GitHub feedback from @alex"]);
+	assert.deepEqual(requestedDelivery(item, { ...request, untrusted: true }).untrusted, ["GitHub feedback from @alex"]);
+	assert.deepEqual(requestedDelivery(item, { ...request, head: H(3) }).untrusted, ["GitHub feedback from @alex"]);
+	const end = { kind: "review_ended" as const, at: T0, key: request.key, outcome: "succeeded" as const, review: filing("approve", request.key),
+		said: null, spend: { tokens: 8, hostedSeconds: 0 } };
+	const finished = advance(first.item, end);
+	assert.ok(effect(finished, "post_requested_review"));
+	assert.deepEqual(finished.item.run, item.run);
+	assert.equal(finished.item.spent.tokens, item.spent.tokens + 8);
+	assert.equal(advance(finished.item, end).item, finished.item);
+	for (const state of ["done", "failed", "cancelled"] as const) {
+		const ended = { ...item, state };
+		assert.equal(advance(ended, start).item, ended);
+		assert.ok(!live({ ...first.item, state }, delivery));
+	}
+	assert.equal(advance({ ...item, budget: { ...item.budget, tokens: item.spent.tokens } }, start).effects.length, 0);
+	expect("repeated requests for a head admit one turn and one receipt; ended and over-budget items skip the review", true);
 }
 
 {

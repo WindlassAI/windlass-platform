@@ -48,7 +48,7 @@
  * publish that came over MCP that any process in the sandbox may have made it (agent-publish.ts,
  * `MCP_CALL_WORDS`). This is the exposure Windlass already has where it does not sandbox commands
  * ("Docker, hardened"), whose commands can write on the engine's own connection (docs/known-limitations.md).
- * The planner's `file_plan` and the reviewer's `file_review` stay host tools (`reach`).
+ * A reviewer may file once over MCP. Auto-merge requires owner-only inputs (factory/autonomy.ts).
  *
  * Why Windlass keeps host tools for these as well. Windlass 0.6.0 takes no MCP server from the client
  * (`session/new`'s `mcpServers` are ignored, its `mcpCapabilities` say neither http nor sse), and an MCP
@@ -80,8 +80,7 @@ export type PlatformToolHandler = (call: TurnPublishRequest, signal: AbortSignal
  *
  *   file_plan    the planner's plan becomes subtasks the owner approves. A rogue plan would reach the
  *                owner's approval as the planner's; the planner runs only on Windlass today.
- *   file_review  the reviewer's verdict, read as a review of the change: a rogue filing could pass or
- *                block a pull request. It stays where only the model files it.
+ *   file_plan_review    the plan critic can approve a plan for automatic execution.
  */
 export const TOOL_REACH: Readonly<Record<PlatformTool, "sandbox" | "asked" | "host">> = Object.freeze({
 	[REPORT_TOOL]: "sandbox",
@@ -92,7 +91,7 @@ export const TOOL_REACH: Readonly<Record<PlatformTool, "sandbox" | "asked" | "ho
 	[FETCH_BASE_TOOL]: "sandbox",
 	[PLAN_TOOL]: "host",
 	[PLAN_REVIEW_TOOL]: "host",
-	[REVIEW_TOOL]: "host",
+	[REVIEW_TOOL]: "sandbox",
 });
 
 /** The tools that can be served over MCP, in the order they are listed. */
@@ -103,7 +102,7 @@ export const MCP_TOOLS = Object.freeze((Object.keys(TOOL_REACH) as PlatformTool[
  * Git in the sandbox, and any process there can make the call: a turn's worth is enough for an agent that
  * pushes after each piece of work, and bounds what a rogue process can make the platform do.
  */
-export const MCP_LIMITS: Readonly<Partial<Record<PlatformTool, number>>> = Object.freeze({ [PUSH_TOOL]: 5, [FETCH_BASE_TOOL]: 3 });
+export const MCP_LIMITS: Readonly<Partial<Record<PlatformTool, number>>> = Object.freeze({ [PUSH_TOOL]: 5, [FETCH_BASE_TOOL]: 3, [REVIEW_TOOL]: 1 });
 
 /** What the agent is told of a call over its turn's limit (`MCP_LIMITS`), and the timeline's line. */
 export function overLimit(tool: PlatformTool, limit: number): { told: string; said: string } {

@@ -933,11 +933,17 @@ export class GithubStandin {
 			const comparison = /^\/compare\/(.+)\.\.\.(.+)$/.exec(rest);
 			if (comparison && method === "GET") {
 				if (!this.allows(token, repository, "contents", "read")) return denied();
-				const base = this.branchHead(repository, decodeURIComponent(comparison[1]));
+				const base = /^[0-9a-f]{40}$/.test(comparison[1]) ? comparison[1] : this.branchHead(repository, decodeURIComponent(comparison[1]));
 				if (!base) return answer(404, { message: "Branch not found" });
 				const head = /^[0-9a-f]{40}$/.test(comparison[2]) ? comparison[2] : this.branchHead(repository, decodeURIComponent(comparison[2]));
 				if (!head) return answer(404, { message: "Branch not found" });
-				try { return answer(200, { base_commit: { sha: base }, behind_by: Number(git(["rev-list", "--count", base, "^" + head], repository.path)) }); }
+				try {
+					const range = base + "..." + head;
+					const files = git(["diff", "--name-only", range], repository.path).split("\n").filter(Boolean).map(filename => ({
+						filename, patch: git(["diff", range, "--", filename], repository.path).split(/(?=^@@ )/m).slice(1).join(""),
+					}));
+					return answer(200, { base_commit: { sha: base }, behind_by: Number(git(["rev-list", "--count", base, "^" + head], repository.path)), files });
+				}
 				catch { return answer(404, { message: "Commit not found" }); }
 			}
 			if (rest === "/merges" && method === "POST") {
@@ -1043,12 +1049,18 @@ export class GithubStandin {
 				if (!this.allows(token, repository, "pull_requests", "write")) return denied();
 				const pull = this.pulls.find(p => p.repository === repository.id && p.number === Number(reviewRoute[1]));
 				if (!pull) return answer(404, {});
-				const fields = body as { event?: string; body?: string; comments?: StandinLine[] };
+				const fields = body as { event?: string; body?: string; comments?: StandinLine[]; commit_id?: string };
 				const states = new Map([["REQUEST_CHANGES", "changes_requested"], ["COMMENT", "commented"], ["APPROVE", "approved"]]);
 				const state = states.get(fields.event ?? "");
 				if (!state || !Array.isArray(fields.comments ?? [])) return answer(422, {});
 				const bot = { id: Number(this.appId), login: this.slug + "[bot]", type: "Bot" as const };
-				return answer(200, this.submitReview(repository, pull, bot, state, fields.body ?? "", fields.comments).review);
+				if (fields.body?.startsWith("<!-- windlass-review:") && !fields.commit_id) return answer(422, {});
+				const posted = this.submitReview(repository, pull, bot, state, fields.body ?? "", fields.comments);
+				if (fields.commit_id) {
+					posted.review.commit_id = fields.commit_id;
+					for (const line of posted.lines) line.commit_id = fields.commit_id;
+				}
+				return answer(200, posted.review);
 			}
 			if (reviewRoute && method === "GET") {
 				if (!this.allows(token, repository, "pull_requests", "read")) return denied();

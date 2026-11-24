@@ -135,7 +135,7 @@ export interface RunReview {
 	/** The fingerprint of the blocking roots a fix was last started for. */
 	lastOpen?: string | null;
 	/** This round's filing, once filed: what "Hand it over as it is" keeps. */
-	filed?: { id: string } & CheckReview;
+	filed?: { id: string; trustedApproval?: boolean } & CheckReview;
 	/** The run's last filing before this round, which this round's head has none of until it files. */
 	before?: { id: string } & CheckReview;
 }
@@ -222,6 +222,7 @@ export interface FeedbackDecision {
 }
 
 export interface FactoryItem {
+	requestedReview?: RequestedReview;
 	/** Waiting for the builder to bind to a machine before its first run. */
 	awaitingPlace?: string;
 	placeAttempts?: number;
@@ -309,7 +310,7 @@ export interface FactoryItem {
 	 */
 	unsandboxed?: string[];
 	/** Decided when the builder binds to its place. */
-	reviewer?: { on: true } | { off: "deployment" | "profile" | "machine" | "feature" };
+	reviewer?: { on: true } | { off: "deployment" | "feature" };
 	place: SandboxPlace;
 	machineRemoved: boolean;
 	budget: ItemBudget;
@@ -422,7 +423,12 @@ export interface AgentTurn {
 	fiveHour: { start: number; end: number } | null;
 }
 
+export type RequestedReview = Pick<FeatureRepository, "repositoryId" | "installationId" | "owner" | "name"> & {
+	key: string; pr: number; head: string; base: string; sender: string; untrusted: boolean;
+};
+
 export type Fact =
+	| { kind: "request_review"; at: number; subject: string; request: RequestedReview }
 	| { kind: "default_place_ready"; reviewer: NonNullable<FactoryItem["reviewer"]>; reviewerSessionId: string | null; at: number; place: SandboxPlace; agent: NonNullable<FactoryItem["agent"]> }
 	| { kind: "default_place_wait"; at: number; sentence: string }
 	| ({ kind: "github_feedback"; at: number } & FeedbackInput)
@@ -567,6 +573,8 @@ export type VerifiedCheckEffect = {
 } & ({ state: "in_progress"; conclusion: null } | { state: "completed"; conclusion: CheckConclusion });
 
 export type Effect =
+	| ({ kind: "requested_review"; to: "review" } & RequestedReview)
+	| ({ kind: "post_requested_review" } & RequestedReview)
 	| { kind: "discard_placement"; key: string }
 	| { kind: "resolve_default_place"; key: string; at: number }
 	| { kind: "auto_merge"; key: string; head: string; baseTip?: string; pr: number }

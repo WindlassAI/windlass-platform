@@ -183,12 +183,12 @@ import { billing } from "../billing/config.js";
 import type { BlockedNetwork, NetworkBlockedItem } from "../contract.js";
 import { blockedHostNote, hostsForTurn } from "../repository-network.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
-import { cloneCommand, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview, materializeInput, removeInputs } from "../github/git.js";
+import { cloneCommand, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview, readOnlyReview, materializeInput, removeInputs } from "../github/git.js";
 import { INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY, isHostName } from "../sandbox/e2b/network.js";
 import { type PublishEvidence, BaseMergeConflict, updateBranchFromBase, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
-import { GithubProblem, problemOf, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
+import { GithubProblem, problemOf, resolveBoundRepository, type StoredConnection } from "../github/repos.js";
 import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
 import type { AccessToken, OutOfMemory, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnCheckpoint, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
@@ -239,7 +239,7 @@ import type { FeedbackNotice } from "./github-inbox.js";
 import { batchText, feedbackWords, fits, oversizedFeedback } from "../factory/feedback.js";
 import { recentSubject } from "../factory/intake.js";
 import { untrustedTurn, unmarkedNote, untrustedWords } from "../factory/untrusted.js";
-import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, REVIEW_PROFILE_REASON, ReviewCommands, reviewerAllowed } from "../factory/review.js";
+import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, ReviewCommands } from "../factory/review.js";
 import type { Fact, ItemProviderRefusal, UntrustedRefusal } from "../factory/types.js";
 import { DeploymentFull, ENVIRONMENT_SLOT_WAIT, PLATFORM_RESTART, observeSandbox } from "../sandbox/api.js";
 import { leaseState } from "../sandbox/relay-leases.js";
@@ -1727,6 +1727,9 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	if (ready) note(c, turn, "info", "Started from a ready sandbox.");
 	const active = c.vars.turn;
 	if (active) active.finishNetwork = await observeNetwork(c, meta, turn, handle, layer);
+
+	// A requested review opens its own read-only tree, without running repository setup.
+	if (active?.item?.row.checkout?.requested) return handle;
 
 	// A repository of the user's GitHub connection is cloned with a token of the platform's own (below).
 	if (meta.repo && !meta.cloned && !signal.aborted && !(await cloneConnected(c, meta, turn, handle, signal))) return handle;
@@ -3993,6 +3996,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	const mode = meta.origin ? itemModeOf(meta.harness, meta.profile) : meta.mode;
 	const reviewer = meta.origin?.role === "reviewer";
 	const checkout = active.item?.row.checkout;
+	const requested = checkout?.requested;
 	const critic = reviewer && active.item?.row.agent === "critic";
 	// Where the outside text of an item's turn came from, and the one rule for every agent of how it goes (factory/untrusted.ts):
 	// marked for Windlass where it can contain commands once told, labelled only otherwise, and on "Docker, hardened" someone
@@ -4121,18 +4125,12 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}, limitMs);
 
 		layer = await layerOf(c, meta);
-		if (reviewer && meta.harness && meta.harness !== "windlass") throw new TurnProblem("A work item's reviewer runs only with Windlass.");
 		// A person's turn is checked when it is sent; nobody sends an item's. Refused before the sandbox opens: the item asks, with the login hint.
 		const signedOut = active.item ? await itemSignInRefusal(c, meta) : null;
 		if (signedOut) {
 			active.item!.refused = signedOut;
 			active.item!.policyRefusal = true;
 			throw new TurnProblem(signedOut);
-		}
-		if (reviewer && ((!checkout && !critic) || !reviewerAllowed(meta.place, layer.sandboxes.profile(meta.profile)))) {
-			const reason = REVIEW_PROFILE_REASON;
-			if (active.item) active.item.refused = reason;
-			throw new TurnProblem(reason);
 		}
 		// Someone else's text where no agent can contain what it talks the agent into ("Docker, hardened"): refused before anything
 		// starts, unless the person chose to run it anyway. The item asks, and can run this very turn ("Run it anyway").
@@ -4141,7 +4139,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		active.secrets ??= await readSecrets(c, meta, turn);
 		for (const text of active.secrets.unopened.splice(0)) note(c, turn, "warn", text);
 		opening = true;
-		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets);
+		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets, !requested);
 		opening = false;
 		clock.opened();
 		// A build's turn ends here: it starts no agent (`buildEnvironment` ran in the setup).
@@ -4169,10 +4167,11 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		});
 		const harness = harnessOf(layer, meta.harness ?? "windlass");
 		const caps = await harness.capabilities(sandbox);
+		const profile = layer.sandboxes.profile(meta.profile);
 		const platformTool = (tool: (typeof caps.platformTools)[number]) => caps.platformTools.includes(tool);
-		// A reviewer runs only in the restricted session with its filing tool: a harness that has not both does not start one.
-		if (reviewer && (!caps.restrictedReview || !platformTool(critic ? "file_plan_review" : "file_review"))) {
-			const reason = REVIEW_PROFILE_REASON;
+		// The plan critic needs the restricted Windlass profile. Every reviewer needs its filing tool.
+		if (reviewer && ((critic && !caps.restrictedReview) || (!critic && !checkout) || !platformTool(critic ? "file_plan_review" : "file_review"))) {
+			const reason = "The reviewer’s filing tool is unavailable.";
 			if (active.item) active.item.refused = reason;
 			throw new TurnProblem(reason);
 		}
@@ -4187,7 +4186,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			meta.summaryConversation = summary || undefined;
 		}
 		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
-		resumed = critic ? null : meta.windlassSessionId;
+		resumed = critic || requested ? null : meta.windlassSessionId;
 		// A turn that resumes after a pause: its agent goes on with a short "carry on" when it has its conversation of the turn,
 		// and is given the whole task when it has not (a new sandbox, a memory that was lost); also when the saved session turns
 		// out to be gone only once the agent is asked for it (`fresh`). The whole task's sources go by the same rule as any turn's.
@@ -4258,7 +4257,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const notes = platformNotes(meta, reviewer);
 		const store = item ? attachmentStore() : null;
 		// A builder can reconnect to a sandbox created before a setting changed.
-		const browser = !!item && caps.reportScreenshots && held.screenshots
+		const browser = !!item && !requested && caps.reportScreenshots && held.screenshots
 			&& (meta.place.kind !== "machine" || sandbox.runnerScreenshots === true)
 			&& (await sandbox.run("test -x /usr/local/bin/wlp-shot", { signal, timeoutMs: 5000 })).exitCode === 0;
 		const unavailable = held.screenshots ? "Screenshots are unavailable in this sandbox. File without screenshots." : NO_REPO_SHOTS;
@@ -4346,6 +4345,101 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const onFetchBase: RunTurnInput["onFetchBase"] = repoTools && platformTool("fetch_base") ? (request) => agentFetchBase(c, meta, active, sandbox, request) : undefined;
 		lossesAtStart ??= c.vars.runner?.channel.losses ?? null;
 		agentStarted = true;
+		const screenshots = browser && !!store;
+		const listed: ReviewRecord[] = [];
+		const commands = new ReviewCommands(held.redactor);
+		let uiChanged = false;
+		let filingFiles: (() => { read(path: string, sha: string): Promise<string>; close(): Promise<void> }) | null = null;
+		let storedBrief: string | null = null;
+		if (reviewer && (checkout || critic) && item) {
+			const repo = meta.repo;
+			const app = githubApp();
+			if (!repo || !app || (!meta.cloned && !requested)) throw new ReviewRefused("the base clone is unavailable");
+			const connection = await githubConnection(c, meta);
+			if (!connection) throw new ReviewRefused("the repository connection is unavailable");
+			const resolved = requested ? await resolveBoundRepository(app, connection, requested.repositoryId, requested.installationId, "read") : await sessionRepository(app, connection, repo, "read");
+			const scope = { repositoryId: resolved.repository.id, permissions: { contents: "read", metadata: "read" } } as const;
+			const { owner, name } = resolved.repository;
+			let directory = meta.cloneDirectory ?? ".";
+			if (checkout && requested) {
+				directory = await app.withToken(resolved.installation.id, scope, token => readOnlyReview(sandbox, app.cloneUrl(owner, name), token, checkout.head, checkout.baseSha, signal), { revokeAfter: true });
+				common.reviewDirectory = directory;
+			} else if (checkout) await app.withToken(resolved.installation.id, scope, token => checkoutReview(sandbox, app.cloneUrl(owner, name), token, directory, checkout.pr, checkout.head, signal), { revokeAfter: true });
+			if (caps.events === "windlass") {
+				// Windlass starts a project server with a remembered grant before it asks the platform.
+				// The private data directory starts empty; fail closed if setup populated its grants.
+				const grants = `${DATA_DIR}/approvals`;
+				const grantCheck = await sandbox.run(`set -eu
+test ! -L '${grants}'
+if test -e '${grants}'; then
+  test -d '${grants}'
+  found=$(find '${grants}' -mindepth 1 -print -quit)
+  test -z "$found"
+fi`, { signal, timeoutMs: 5000 });
+				if (grantCheck.aborted || grantCheck.timedOut) throw new TurnProblem("checking the saved project approvals was interrupted");
+				if (grantCheck.exitCode !== 0) throw new ReviewRefused("could not establish that Windlass has no saved project approvals");
+			}
+			if (critic) {
+				const list = `git -C ${shellQuote(directory)} ls-tree -r --name-only -z HEAD` +
+					(item.crossRepoPlan ? ` && find ${shellQuote(INPUTS_DIRECTORY)} -mindepth 2 -type f -print0` : "");
+				const tree = await sandbox.run(list, { signal, timeoutMs: 10000 });
+				if (tree.exitCode !== 0 || tree.timedOut || tree.aborted || !tree.stdout.endsWith("\0")) throw new TurnProblem("The critic could not read the tracked repository tree.");
+				text += "\n\nTracked repository tree: " + JSON.stringify(tree.stdout.split("\0").slice(0, -1));
+			}
+			if (checkout) {
+				const paths = await changedReviewPaths(sandbox, directory, checkout.baseSha, checkout.head, !!requested);
+				filingFiles = () => {
+					let issued: InstallationToken | undefined;
+					return {
+						async read(path, sha) {
+							issued ??= await app.installationToken(resolved.installation.id, scope);
+							return app.fileAt(issued.token, owner, name, path, sha);
+						},
+						async close() { if (issued) await app.revoke(issued); },
+					};
+				};
+				uiChanged = paths.some(path => /\.(tsx|jsx|vue|svelte|css|scss|html)$|^(web|app|pages|components|src\/ui)\//i.test(path));
+				const manifestsChanged = paths.some(path => /(?:^|\/)(?:package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lock[^/]*|requirements[^/]*\.txt|pyproject\.toml|uv\.lock|poetry\.lock|Cargo\.(?:toml|lock)|go\.(?:mod|sum)|Gemfile[^/]*)$/.test(path));
+				const brief = reviewerTask(held.redactor.deep({ ...checkout, mcp: caps.events === "acp", reviewDirectory: common.reviewDirectory, changed: groupReviewPaths(paths), uiChanged, manifestsChanged, screenshots }), listed, held.redactor.text(text));
+				storedBrief = held.redactor.text(itemPrompt(item.row));
+				text = brief;
+			}
+		}
+		let calls = 0;
+		const onReview: RunTurnInput["onReview"] = reviewer && item && checkout && filingFiles && platformTool("file_review") ? (request, withdrawn) => {
+			const openFiles = filingFiles;
+			const file = async () => {
+				if (!open || withdrawn.aborted) return "The review call ended.";
+				const args = request.arguments;
+				if (request.via !== "mcp" && args?.commands === true) {
+					if (Object.keys(args).length !== 1) return "A command lookup takes only the commands field. No filing was used.";
+					return "Completed shell commands in call order: " + (commands.records().map(r => r.ref).join(", ") || "none");
+				}
+				if (calls >= RULES.reviewFilings) return "No more filings in this turn. The platform keeps the last review it accepted. End your turn.";
+				calls++;
+				const owner = { by: "reviewer" as const, uid: meta.uid, sessionId: meta.sessionId, itemId: item.row.itemId, key: item.row.key };
+				const top = meta.cloneDirectory === "." ? sandbox.cwd : `${sandbox.cwd}/${meta.cloneDirectory}`;
+				const files = openFiles();
+				const result = await fileReview(args, { records: listed, commands: commands.records(), earlier: earlierContext(checkout.earlier), round: checkout.round, redactor: held.redactor }, checkout.baseSha, checkout.head, screenshots, files.read,
+					store ? shots => uploadShots(sandbox, top, shots, owner, userActor(c, meta.uid), store, withdrawn) : null, browser ? undefined : unavailable).finally(files.close);
+				if (result.retryFree) calls--;
+				if (!open || withdrawn.aborted) return "The review call ended.";
+				if (result.filing) {
+					if (uiChanged && !result.filing.screenshots.length) result.filing.notes.push("UI files changed; no screenshots.");
+					meta.review = {
+						...result.filing, id: item.row.key, run: Number(item.row.key.split(":")[1]), round: checkout.round,
+						head: checkout.head, base: checkout.baseSha, verdictId: checkout.verdictId,
+						by: { sessionId: meta.sessionId, model: meta.model, via: request.via ?? (caps.events === "windlass" ? "host" : "mcp"), commandSandbox: commandSandbox(profile) },
+						at: Date.now(), state: "filed", said: null,
+					};
+					await persist(c);
+				}
+				item.said = result.answer;
+				return result.answer;
+			};
+			filings = filings.then(file, file).catch(() => "The platform could not finish filing this review. Try again.");
+			return tracked(filings);
+		} : undefined;
 		if (!signal.aborted && caps.events === "acp") {
 			// These agents take no marker: the text is labelled in the prompt, and the timeline says so once.
 			if (handling.kind === "labelled") unmarked(handling.note);
@@ -4354,6 +4448,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				prompt: notes.text + text,
 				...(fresh && { fresh: { ...fresh, prompt: notes.text + fresh.prompt } }),
 				...(item && { unattended: true }),
+				onReview,
 				onReport,
 				onAsk,
 				onRequestSecret,
@@ -4361,7 +4456,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				onPublish: repoTools && !item && platformTool("publish") ? (request, withdrawn) => tracked(agentPublish(c, meta, active, sandbox, "none", request, withdrawn)) : undefined,
 				onPush,
 				onFetchBase,
-				secrets: { env: Object.fromEntries((meta.repo ? held.opened : held.account)
+				secrets: { env: Object.fromEntries((reviewer ? [] : meta.repo ? held.opened : held.account)
 					.filter(s => s.scope === "agent" && held.requestedNames?.includes(s.name)).map(s => [s.name, s.value])),
 					withholdEnv: [], passEnv: [], redactor: held.redactor },
 				// The checks the user saved for the repository: the platform runs them when the agent ends its prompt (platform-checks.ts),
@@ -4393,8 +4488,6 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			// The agent took the prompt once it answered it.
 			if (result.acp?.stopReason) notes.told();
 		} else if (!signal.aborted) {
-			// What the question about a project's server has to say depends on where this session runs.
-			const profile = layer.sandboxes.profile(meta.profile);
 			// Resume keeps a named agent until explicitly switched. The inbox also records planners from before this handoff was supported.
 			const clearPlanner = !!(resumed && active.item && !planner && !reviewer &&
 				(await c.db.execute("SELECT 1 FROM inbox WHERE agent IN ('planner', 'summary') AND turn IS NOT NULL LIMIT 1")).length);
@@ -4411,62 +4504,6 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			};
 			// What the panel says of the account's secrets goes by this sandbox, as the list of the repository's does.
 			meta.accountSecrets = accountSecretsNote(profile);
-			const screenshots = browser && !!store;
-			const listed: ReviewRecord[] = [];
-			const commands = new ReviewCommands(held.redactor);
-			let uiChanged = false;
-			let filingFiles: (() => { read(path: string, sha: string): Promise<string>; close(): Promise<void> }) | null = null;
-			let storedBrief: string | null = null;
-			if (reviewer && (checkout || critic) && item) {
-				const repo = meta.repo;
-				const app = githubApp();
-				if (!repo || !app || !meta.cloned) throw new ReviewRefused("the base clone is unavailable");
-				const connection = await githubConnection(c, meta);
-				if (!connection) throw new ReviewRefused("the repository connection is unavailable");
-				const resolved = await resolveRepository(app, connection, repo.id, "read");
-				const scope = { repositoryId: repo.id, permissions: { contents: "read", metadata: "read" } } as const;
-				const { owner, name } = resolved.repository;
-				const directory = meta.cloneDirectory ?? ".";
-				if (checkout) await app.withToken(resolved.installation.id, scope, token => checkoutReview(sandbox, app.cloneUrl(owner, name), token, directory, checkout.pr, checkout.head, signal), { revokeAfter: true });
-				// Windlass starts a project server with a remembered grant before it asks the platform.
-				// The private data directory starts empty; fail closed if setup populated its grants.
-				const grants = `${DATA_DIR}/approvals`;
-				const grantCheck = await sandbox.run(`set -eu
-test ! -L '${grants}'
-if test -e '${grants}'; then
-  test -d '${grants}'
-  found=$(find '${grants}' -mindepth 1 -print -quit)
-  test -z "$found"
-fi`, { signal, timeoutMs: 5000 });
-				if (grantCheck.aborted || grantCheck.timedOut) throw new TurnProblem("checking the saved project approvals was interrupted");
-				if (grantCheck.exitCode !== 0) throw new ReviewRefused("could not establish that Windlass has no saved project approvals");
-				if (critic) {
-					const list = `git -C ${shellQuote(directory)} ls-tree -r --name-only -z HEAD` +
-						(item.crossRepoPlan ? ` && find ${shellQuote(INPUTS_DIRECTORY)} -mindepth 2 -type f -print0` : "");
-					const tree = await sandbox.run(list, { signal, timeoutMs: 10000 });
-					if (tree.exitCode !== 0 || tree.timedOut || tree.aborted || !tree.stdout.endsWith("\0")) throw new TurnProblem("The critic could not read the tracked repository tree.");
-					text += "\n\nTracked repository tree: " + JSON.stringify(tree.stdout.split("\0").slice(0, -1));
-				}
-				if (checkout) {
-					const paths = await changedReviewPaths(sandbox, directory, checkout.baseSha, checkout.head);
-					filingFiles = () => {
-						let issued: InstallationToken | undefined;
-						return {
-							async read(path, sha) {
-								issued ??= await app.installationToken(resolved.installation.id, scope);
-								return app.fileAt(issued.token, owner, name, path, sha);
-							},
-							async close() { if (issued) await app.revoke(issued); },
-						};
-					};
-					uiChanged = paths.some(path => /\.(tsx|jsx|vue|svelte|css|scss|html)$|^(web|app|pages|components|src\/ui)\//i.test(path));
-					const manifestsChanged = paths.some(path => /(?:^|\/)(?:package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lock[^/]*|requirements[^/]*\.txt|pyproject\.toml|uv\.lock|poetry\.lock|Cargo\.(?:toml|lock)|go\.(?:mod|sum)|Gemfile[^/]*)$/.test(path));
-					const brief = reviewerTask(held.redactor.deep({ ...checkout, changed: groupReviewPaths(paths), uiChanged, manifestsChanged, screenshots }), listed, held.redactor.text(text));
-					storedBrief = held.redactor.text(itemPrompt(item.row));
-					text = brief;
-				}
-			}
-			let calls = 0;
 			// Told of no source (above): the timeline says once that the text went labelled only.
 			if (handling.kind === "labelled") unmarked(handling.note);
 			result = await harness.runTurn(sandbox, {
@@ -4498,35 +4535,7 @@ fi`, { signal, timeoutMs: 5000 });
 					item.planReview = review;
 					return "Plan review filed. End your turn.";
 				} : undefined,
-				onReview: reviewer && item && checkout && filingFiles && platformTool("file_review") ? (request, withdrawn) => {
-					const openFiles = filingFiles;
-					const file = async () => {
-						if (!open || withdrawn.aborted) return "The review call ended.";
-						const args = request.arguments;
-						if (args?.commands === true) {
-							if (Object.keys(args).length !== 1) return "A command lookup takes only the commands field. No filing was used.";
-							return "Completed shell commands in call order: " + (commands.records().map(r => r.ref).join(", ") || "none");
-						}
-						if (calls >= RULES.reviewFilings) return "No more filings in this turn. The platform keeps the last review it accepted. End your turn.";
-						calls++;
-						const owner = { by: "reviewer" as const, uid: meta.uid, sessionId: meta.sessionId, itemId: item.row.itemId, key: item.row.key };
-						const top = meta.cloneDirectory === "." ? sandbox.cwd : `${sandbox.cwd}/${meta.cloneDirectory}`;
-						const files = openFiles();
-						const result = await fileReview(args, { records: listed, commands: commands.records(), earlier: earlierContext(checkout.earlier), round: checkout.round, redactor: held.redactor }, checkout.baseSha, checkout.head, screenshots, files.read,
-							store ? shots => uploadShots(sandbox, top, shots, owner, userActor(c, meta.uid), store, withdrawn) : null, browser ? undefined : unavailable).finally(files.close);
-						if (result.retryFree) calls--;
-						if (!open || withdrawn.aborted) return "The review call ended.";
-						if (result.filing) {
-							if (uiChanged && !result.filing.screenshots.length) result.filing.notes.push("UI files changed; no screenshots.");
-							meta.review = { ...result.filing, id: item.row.key, run: Number(item.row.key.split(":")[1]), round: checkout.round, head: checkout.head, base: checkout.baseSha, verdictId: checkout.verdictId, by: { sessionId: meta.sessionId, model: meta.model }, at: Date.now(), state: "filed", said: null };
-							await persist(c);
-						}
-						item.said = result.answer;
-						return result.answer;
-					};
-					filings = filings.then(file, file).catch(() => "The platform could not finish filing this review. Try again.");
-					return tracked(filings);
-				} : undefined,
+				onReview,
 				planner,
 				clearPlanner,
 				crossRepoPlan: planning && item?.crossRepoPlan === true,
@@ -4803,7 +4812,7 @@ fi`, { signal, timeoutMs: 5000 });
 		});
 		if (reviewer && layer && meta.sandboxId) {
 			try {
-				if (active.item && (critic || active.item.withdrawn || active.item.refused || meta.review?.id === active.item.row.key)) {
+				if (active.item && (critic || requested || active.item.withdrawn || active.item.refused || meta.review?.id === active.item.row.key)) {
 					await removeSandbox(c, meta, meta.sandboxId, "Removed the reviewer’s checkout at the end of its turn.");
 				} else if (meta.sandbox === "running") {
 					await layer.sandboxes.suspend(meta.sandboxId);
@@ -4853,6 +4862,11 @@ fi`, { signal, timeoutMs: 5000 });
 	await meterAfterTurn(c, meta, active, meterUse);
 	// The idle times count from here.
 	await armIdle(c, meta);
+	// A requested review and a second review share this session. Re-admit a delivery that found it busy.
+	if (reviewer && !c.vars.turn) {
+		const next = (await waitingRows(c.db)).find(row => row.key !== active.item?.row.key);
+		if (next) void c.keepAwake(askForSlot(c, meta, next));
+	}
 }
 
 /**
@@ -5663,7 +5677,7 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 		}
 		if (row.checkout) {
 			const run = Number(row.key.split(":")[1]);
-			if (meta.sandboxId && (meta.reviewRun !== run || meta.reviewBase !== row.checkout.baseSha)) {
+			if (meta.sandboxId && (row.checkout.requested || meta.reviewRun !== run || meta.reviewBase !== row.checkout.baseSha)) {
 				await removeSandbox(c, meta, meta.sandboxId, "Setting up a fresh checkout for the new review.");
 			}
 			meta.reviewRun = run;
@@ -5819,15 +5833,15 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		return;
 	}
 	let fact: EndedFact;
+	const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart, meta.origin?.signIn);
 	if (meta.origin?.role === "reviewer") {
-		fact = { ...reviewEndedFactOf(row.key, ended.outcome, meta.review, item.said ?? null, item.refused ?? null, ended.usage), ...(item.planReview && { planReview: item.planReview }) };
+		fact = { ...reviewEndedFactOf(row.key, ended.outcome, meta.review, item.said ?? null, item.refused ?? null, ended.usage, agent), ...(item.planReview && { planReview: item.planReview }) };
 	} else {
 		const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.baseSha ?? null, ended.checks, ended.verified, meta.origin?.owns).catch(() => []) : [];
 		// Not known (git said nothing): taken as changed, and the push says whether there was anything. What the agent pushed itself in the turn is a change too.
 		const changed = ended.unpushed !== false || (meta.pushedHead ?? null) !== item.pushedAtStart;
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
-		const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart, meta.origin?.signIn);
 		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), ...(meta.secretRequest && { secret: { name: meta.secretRequest.name, why: meta.secretRequest.why, notice: meta.secretRequest.notice } }), pushedHead, ...(row.agent === "summary" && item.said && { reportProblem: item.said }), ...(item.refused ? { refused: item.refused, policyRefusal: item.policyRefusal } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
 	}
 	if (ended.stepLimit !== undefined) fact.stepLimit = ended.stepLimit;
