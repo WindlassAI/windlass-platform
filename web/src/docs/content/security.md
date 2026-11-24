@@ -156,6 +156,10 @@ The platform takes every saved value out of what it shows and keeps of an agent'
 
 Before a push, the platform also looks for saved values in the changes. If it finds one, nothing is pushed.
 
+## GitHub feedback in personal sessions
+
+Feedback from another writer with repository write access is not a request from you. Personal sessions quote and label it; Windlass 0.6.0 or later also receives an outside-text marker where the profile supports it. On **Docker, hardened**, those entries are held until you explicitly consent to the individual subjects. Consent permits labelled text under the existing profile, not extra isolation, and never grants publish permission. Your own linked GitHub feedback does not need this consent. See [session feedback](/docs/sessions#feedback-from-github) for the action, wake limits and other agents' limitations.
+
 ## GitHub access
 
 The agent's sandbox is never given your GitHub access. For a clone or a push, the platform makes a token for that one repository that lasts an hour at most, hands it to that one git command, and revokes it when the command ends. See [What the GitHub App may do](/docs/getting-started#what-the-github-app-may-do).

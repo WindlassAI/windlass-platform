@@ -212,6 +212,8 @@ export class GithubStandin {
 	down = false;
 	/** Simulate a refused comment, or GitHub storing one whose reply never reaches the caller. */
 	commentFault: "refuse" | "lose_reply" | null = null;
+	/** Refuse reaction writes to exercise acknowledgement retries after durable admission. */
+	reactionFault: 403 | 503 | null = null;
 	ciRateLimit: { status: 403 | 429; headers: Record<string, string>; message: string } | null = null;
 	private readonly codes = new Map<string, { user: number; challenge: string | null; used: boolean }>();
 	private nextId = 1000;
@@ -322,6 +324,13 @@ export class GithubStandin {
 		this.commit(repository, defaultBranch, input.files ?? { "README.md": `# ${input.name}\n` }, "Initial commit");
 		input.installation?.repositories.add(repository.id);
 		return repository;
+	}
+
+	/** A human PR conversation comment, available to authoritative webhook subject reads. */
+	pullComment(pull: StandinPull, person: StandinUser & { type?: "Bot" }, body: string, at = Date.now()) {
+		const comment = { id: ++this.nextCommentId, user: { ...person, type: person.type ?? "User" }, body, created_at: new Date(at).toISOString() };
+		pull.comments.push(comment);
+		return comment;
 	}
 
 	private reviewData(repo: StandinRepository, pull: StandinPull, person: StandinUser & { type?: "Bot" }, state: string, body: string, comments: StandinLine[], at: number) {
@@ -1023,6 +1032,7 @@ export class GithubStandin {
 			}
 			const reaction = /^\/(issues|pulls)\/comments\/(\d+)\/reactions$/.exec(rest);
 			if (reaction && method === "POST") {
+				if (this.reactionFault) return answer(this.reactionFault, { message: "Reaction temporarily refused" });
 				if (!this.allows(token, repository, reaction[1] === "issues" ? "issues" : "pull_requests", "write")) return denied();
 				const exists = reaction[1] === "issues" ? this.pulls.some(p => p.repository === repository.id && p.comments.some(c => String(c.id) === reaction[2]))
 					: this.reviews.some(r => r.repository === repository.id && r.lines.some(c => String(c.id) === reaction[2]));
@@ -1074,14 +1084,16 @@ export class GithubStandin {
 				for (const i of this.issues.filter(i => i.repository === repository.id)) {
 					const comment = i.comments.find(one => String(one.id) === commentResource[1]);
 					if (!comment) continue;
-					if (!this.allows(token, repository, "issues", method === "GET" ? "read" : "write")) return denied();
+					const permission = method === "GET" ? "read" : "write";
+					if (!this.allows(token, repository, "issues", permission) && !this.allows(token, repository, "pull_requests", permission)) return denied();
 					if (method === "PATCH") comment.body = (body as { body: string }).body;
 					return answer(200, { ...comment, issue_url: base + "/" + i.number });
 				}
 			}
 			const comments = /^\/issues\/(\d+)\/comments$/.exec(rest);
 			if (comments && (method === "GET" || method === "POST")) {
-				if (!this.allows(token, repository, "pull_requests", method === "GET" ? "read" : "write")) return denied();
+				const permission = method === "GET" ? "read" : "write";
+				if (!this.allows(token, repository, "pull_requests", permission) && !this.allows(token, repository, "issues", permission)) return denied();
 				const pull = this.pulls.find((one) => one.repository === repository.id && one.number === Number(comments[1]));
 				if (!pull) return answer(404, { message: "Not Found" });
 				if (method === "GET") return arrayPage(pull.comments.filter(c => !url.searchParams.has("since") || (c.created_at ?? "") >= url.searchParams.get("since")!));

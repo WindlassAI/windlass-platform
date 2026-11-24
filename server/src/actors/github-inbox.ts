@@ -220,6 +220,38 @@ export async function readFeedback(c: Pick<Ctx, "client">, uid: string, target: 
 	}
 }
 
+/** Separate, durable acknowledgements: retrying a POST never re-admits a prompt.
+ * GitHub deduplicates a user's identical reactions; a reply marker also covers a
+ * lost POST response or a process stop before the local receipt was committed. */
+async function feedbackEffect(c: Ctx, target: Pick<FeedbackNotice, "installationId" | "repositoryId" | "pr">, subject: string, kind: "eyes" | "reply") {
+	const key = JSON.stringify([target.repositoryId, target.pr, subject, kind]);
+	const [done] = await c.db.execute("SELECT 1 FROM feedback_effects WHERE key=?", key);
+	if (done) return;
+	const [count] = await c.db.execute<{ n: number }>("SELECT count(*) AS n FROM feedback_effects");
+	if (count.n >= 20_000) throw new Error("Feedback acknowledgement capacity reached.");
+	const app = githubApp();
+	if (!app) throw new Error("GitHub App unavailable.");
+	const [resource, id] = subject.split(":") as ["issue_comment" | "review_comment", string];
+	await app.withToken(target.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", ...(kind === "reply" ? { pull_requests: "read" as const } : {}), [kind === "reply" || resource === "issue_comment" ? "issues" : "pull_requests"]: "write" } }, async token => {
+		const repo = await app.repositoryById(token, target.repositoryId);
+		if (repo.id !== target.repositoryId) throw new Error("Wrong acknowledgement repository.");
+		if (kind === "eyes") {
+			try { await app.react(token, repo, { kind: resource, id }, "eyes"); }
+			catch (error) { if (!(error instanceof GithubError && [404, 410].includes(error.status))) throw error; }
+		} else {
+			// A webhook's isPullRequest flag is only a routing hint, not proof that
+			// this issue thread is a PR. Never explain session routing on an issue.
+			try { await app.pull(token, repo.owner, repo.name, target.pr); }
+			catch (error) { if (error instanceof GithubError && [404, 410].includes(error.status)) return; throw error; }
+			const marker = "<!-- windlass:unmatched-pr -->";
+			const comments = await app.issueComments(token, repo.owner, repo.name, target.pr, true);
+			if (!comments.some(comment => comment.author === app.settings.slug + "[bot]" && comment.body.includes(marker))) await app.createIssueComment(token, repo.owner, repo.name, target.pr,
+				"No Windlass session or work item is associated with this pull request. " + marker, "explain unmatched pull request feedback");
+		}
+	});
+	await c.db.execute("INSERT OR IGNORE INTO feedback_effects VALUES (?, ?)", key, Date.now());
+}
+
 async function prFeedback(d: Delivery, c: Ctx): Promise<"no item" | void> {
 	if (!d.repositoryId || (d.event !== "pull_request_review" && d.event !== "pull_request_review_comment" && d.event !== "issue_comment")) return "no item";
 	const data = d.data;
@@ -227,14 +259,48 @@ async function prFeedback(d: Delivery, c: Ctx): Promise<"no item" | void> {
 	const subject: FeedbackSubject = { sender: data.sender, association: data.sender.association,
 		kind: "reviewId" in data ? "review" : "pr" in data ? "review_comment" : "issue_comment", id: "reviewId" in data ? data.reviewId : data.commentId };
 	const params = { params: serviceParams() };
-	try {
-		const matches = await c.client().githubRepository.get([String(d.repositoryId)], params).internalFind({ pr: target.pr, installationId: d.installationId });
-		if (!matches.length) return "no item";
-		for (const { itemId, uid } of matches) {
+	const receipt = JSON.stringify([target.repositoryId, target.pr, feedbackId(subject)]);
+	const [taken] = await c.db.execute<{ entries: string }>("SELECT entries FROM feedback_taken WHERE key=?", receipt);
+	if (taken) {
+		for (const id of JSON.parse(taken.entries) as string[]) await feedbackEffect(c, target, id, "eyes");
+		return;
+	}
+	// Creating an empty directory is safe: absence is not a failed lookup. All other
+	// directory/actor failures remain retryable and must never become an unmatched reply.
+	const directory = c.client().githubRepository.getOrCreate([String(d.repositoryId)], params);
+	const matches = await directory.internalFind({ pr: target.pr, installationId: d.installationId });
+	let itemOwned = false;
+	for (const { itemId, uid } of matches) {
+		try {
 			const notice = await readFeedback(c, uid, target, subject);
 			if (notice) await c.client().workItem.get([uid, itemId], params).internalGithubFeedback(notice);
+			itemOwned = true;
+		} catch (error) {
+			if (!missingActor(error) && (error as { code?: string })?.code !== "item_not_found") throw error;
+			await directory.internalForget(itemId);
 		}
-	} catch (e) { if (missingActor(e)) return "no item"; throw e; }
+	}
+	// Item feedback keeps its own batching and acknowledgements. Never also send it
+	// to a personal turn, even if an obsolete competing registration exists.
+	if (itemOwned) return;
+	const sessions = await directory.internalFindSession({ installationId: d.installationId, pr: target.pr });
+	for (const { sessionId, uid } of sessions) {
+		const notice = await readFeedback(c, uid, target, subject);
+		if (!notice || !notice.entries.length) return;
+		const [count] = await c.db.execute<{ n: number }>("SELECT count(*) AS n FROM feedback_taken");
+		if (count.n >= 20_000) throw new Error("Feedback receipt capacity reached.");
+		let taken = false;
+		try { taken = await c.client().agentSession.get([uid, sessionId], params).internalGithubFeedback(notice); }
+		catch (error) { if (!missingActor(error)) throw error; }
+		if (!taken) { await directory.internalForgetSession(sessionId); continue; }
+		const comments = notice.entries.filter(entry => entry.kind === "issue_comment" || entry.kind === "review_comment").map(entry => entry.id);
+		await c.db.execute("INSERT OR IGNORE INTO feedback_taken VALUES (?, ?, ?)", receipt, JSON.stringify(comments), Date.now());
+		for (const id of comments) await feedbackEffect(c, target, id, "eyes");
+		return;
+	}
+	const notice = await readFeedback(c, "", target, subject);
+	if (!notice?.entries.length) return "no item";
+	await feedbackEffect(c, target, "unmatched", "reply");
 }
 
 async function issueDelivery(d: Delivery, c: Ctx): Promise<"no item" | void> {
@@ -291,6 +357,8 @@ async function armInbox(c: Ctx) {
 }
 
 async function drainDue(c: Ctx) {
+	await c.db.execute("DELETE FROM feedback_effects WHERE at <= ?", Date.now() - 7 * DAY);
+	await c.db.execute("DELETE FROM feedback_taken WHERE at <= ?", Date.now() - 7 * DAY);
 	await queued(c, () => c.db.execute("DELETE FROM deliveries WHERE received_at <= ?", Date.now() - 7 * DAY));
 	// Retry the singleton handoff after an engine outage, even if no further delivery arrives.
 	const [start] = await c.db.execute("SELECT 1 FROM hook_start WHERE started = 0 AND next_at <= ?", Date.now());
@@ -358,6 +426,8 @@ export const githubInbox = actor({
 		await db.execute("CREATE INDEX IF NOT EXISTS delivery_due ON deliveries(state, next_at)");
 		await db.execute("CREATE INDEX IF NOT EXISTS delivery_age ON deliveries(received_at)");
 		await db.execute(TIMER);
+		await db.execute("CREATE TABLE IF NOT EXISTS feedback_effects (key TEXT PRIMARY KEY, at INTEGER NOT NULL)");
+		await db.execute("CREATE TABLE IF NOT EXISTS feedback_taken (key TEXT PRIMARY KEY, entries TEXT NOT NULL, at INTEGER NOT NULL)");
 		await db.execute("CREATE TABLE IF NOT EXISTS hook_start (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), started INTEGER NOT NULL, next_at INTEGER NOT NULL)");
 	} }),
 	createVars: vars,

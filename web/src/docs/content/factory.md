@@ -255,7 +255,7 @@ For a missing environment variable, the builder can request a secret by name and
 
 ### Feedback from GitHub
 
-You can ask for changes on the item's pull request at GitHub instead of on its page.
+You can ask for changes on the item's pull request at GitHub instead of on its page. For a personal agent's pull request, see [session feedback](/docs/sessions#feedback-from-github): it starts a session turn, not a Factory run, and has different batching and consent rules.
 
 **What is read.** A review that requests changes is read whole, with its line comments. A conversation comment, a line comment on its own or a comment-only review is read only when it starts with the App's mention or `/windlass`. An approval adds a line to the item's log and starts nothing.
 

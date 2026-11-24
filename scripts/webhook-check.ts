@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { GithubStandin } from "./github-standin.js";
 import { localListeners } from "./check-listeners.js";
 import { edge, isAddressed } from "../server/src/github/events.js";
+import type { SandboxProfileId } from "../server/src/contract.js";
 
 const DAY = 86_400_000;
 const RETRY_INSTALLATION = 91919;
@@ -28,7 +29,12 @@ async function testNode() {
 	const { githubAccount } = await import("../server/src/actors/github-account.js");
 	const { githubRepository } = await import("../server/src/actors/github-repository.js");
 	const registerSession = githubRepository.config.actions!.internalRegisterSession;
-	let registrationFailures = 0;
+	let registrationFailures = 0, sessionLookupFailures = 0;
+	const findSession = githubRepository.config.actions!.internalFindSession;
+	githubRepository.config.actions!.internalFindSession = async (c, key) => {
+		if (sessionLookupFailures > 0) { sessionLookupFailures--; throw new Error("fixture directory unavailable"); }
+		return findSession(c, key);
+	};
 	githubRepository.config.actions!.internalRegisterSession = async (c, row) => {
 		if (registrationFailures > 0) { registrationFailures--; throw new Error("fixture registration unavailable"); }
 		return registerSession(c, row);
@@ -37,6 +43,10 @@ async function testNode() {
 		checkFailSessionRegistration: (c: Parameters<typeof registerSession>[0]) => {
 			requireServiceFor(c, "call");
 			registrationFailures = 1;
+		},
+		checkFailSessionLookup: (c: Parameters<typeof findSession>[0]) => {
+			requireServiceFor(c, "call");
+			sessionLookupFailures = 1;
 		},
 	});
 	// This probe deliberately has no action-level guard, so it observes the connection hook alone.
@@ -318,7 +328,9 @@ async function run() {
 			// Assertion messages can include the actual body or headers. Print only the check location.
 			const location = error instanceof Error ? /webhook-check\.ts:(\d+:\d+)/.exec(error.stack ?? "")?.[1] : undefined;
 			const timeout = error instanceof Error && error.message.startsWith("timed out waiting for ") ? " (" + error.message + ")" : "";
-			console.error("FAIL " + name + timeout + (location ? " at webhook-check.ts:" + location : ""));
+			const detail = error as { name?: string; code?: string; status?: number };
+			const diagnostic = name.startsWith("session feedback") ? [detail.name, detail.code, detail.status].filter(value => typeof value === "number" || typeof value === "string" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)).join("/") : "";
+			console.error("FAIL " + name + timeout + (location ? " at webhook-check.ts:" + location : "") + (diagnostic ? " [" + diagnostic + "]" : ""));
 		}
 	};
 	const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "--node"], {
@@ -511,6 +523,313 @@ async function run() {
 			assert.equal((await directory().internalFindSession({ installationId: installation.id, pr: published.number })).length, 1);
 			await g2User.deleteSession(created.id);
 			await push(); // Its helper asserts no personal registration and rejects direct session feedback.
+		});
+		// These fixtures publish through the normal personal-session API, not directory SQL.
+		// Keep them independent of the G3/G4 checks so WEBHOOK_ONLY='session feedback' is useful.
+		const personalFeedback = async (profile: SandboxProfileId = "docker-windlass-sandbox") => {
+			standin.appPermissions.issues = "write";
+			const created = await g2User.createSession({ profile, repository: { id: projectG2.id }, title: "Signed session feedback" });
+			const panel = client.agentSession.get([uid, created.id], { params: { token: ownerToken } });
+			const target = client.agentSession.get([uid, created.id], service());
+			const rows = () => (target as unknown as { checkFeedbackFixture(op: string): Promise<{ id: string; state: string; turn: number | null }[]> }).checkFeedbackFixture("rows");
+			const users = async () => (await panel.snapshot()).timeline.filter(e => e.kind === "user");
+			const idle = () => until("signed session idle", async () => (await panel.snapshot()).summary.status === "idle", 45_000);
+			await panel.prompt({ text: "Write a short program." }); await idle();
+			const published = await panel.publish({ message: { title: "Signed session target", body: "" } });
+			const pr = published.state.pullRequest!.number;
+			const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === pr)!;
+			assert.ok(pull);
+			assert.deepEqual(await directory().internalFind({ pr }), [], "personal publication leaked into the item directory");
+			return { id: created.id, panel, target, pr, pull, rows, users, idle };
+		};
+		const sessionCommentFields = (pr: number, comment: ReturnType<typeof standin.pullComment>, sender: { id: number; login: string; type?: string } = comment.user) => ({
+			action: "created", issue: { number: pr, pull_request: {} }, sender,
+			comment: { ...comment, body: "/windlass DECOY webhook body", author_association: "OWNER" },
+		});
+		await check("session feedback signed owner comment, duplicate GUID and subject, and busy next turn", async () => {
+			const item = await personalFeedback();
+			const admission = client.user.get([uid], service()) as unknown as { checkSessionAdmission(id: string | null): Promise<number> };
+			try {
+				const comment = standin.pullComment(item.pull, standin.users.get(owner)!, "/windlass Use the fetched words.\u2028Second line.\u200b");
+				const fields = sessionCommentFields(item.pr, comment), guid = randomUUID();
+				assert.equal((await delivered("issue_comment", fields, installation.id, guid)).state, "done");
+				await until("signed owner feedback turn", async () => (await item.users()).length === 2);
+				await item.idle();
+				const prompt = (await item.users())[1];
+				assert.ok(prompt.kind === "user" && !prompt.steer);
+				assert.match(prompt.text, /the session's owner/);
+				assert.match(prompt.text, /> Use the fetched words\.\n> Second line\./);
+				assert.doesNotMatch(prompt.text, /DECOY|\u200b/);
+				assert.ok(!(await item.panel.snapshot()).timeline.some(e => e.kind === "windlass" && e.event.type === "fake.prompt_untrusted"));
+				const replay = await standin.deliver(web, "issue_comment", { installation: { id: installation.id }, repository: { id: projectG2.id }, ...fields }, { secret, guid });
+				assert.deepEqual(await replay.json(), { taken: "duplicate" });
+				await delivered("issue_comment", fields); // A different GUID is still the same durable subject.
+				assert.equal((await item.users()).length, 2);
+				assert.ok(standin.reactions.has("issues:" + comment.id), "accepted personal comment was not acknowledged");
+				assert.equal(standin.requests.filter(r => r.method === "POST" && r.path.endsWith(`/issues/comments/${comment.id}/reactions`)).length, 1);
+				assert.deepEqual((await item.rows()).map(r => [r.id, r.state]), [["issue_comment:" + comment.id, "taken"]]);
+				const mention = standin.pullComment(item.pull, standin.users.get(owner)!, "@windlass-fk4w Follow the owner's App mention.");
+				await delivered("issue_comment", sessionCommentFields(item.pr, mention));
+				await until("signed owner mention turn", async () => (await item.users()).length === 3);
+				await until("owner mention admitted", async () => (await item.rows()).every(r => r.state === "taken")); await item.idle();
+				assert.match((await item.users())[2].text, /Follow the owner's App mention/);
+				const review = standin.submitReview(projectG2, item.pull, standin.users.get(owner)!, "changes_requested", "The owner requests changes without an address.");
+				await delivered("pull_request_review", { action: "submitted", sender: review.review.user, pull_request: { number: item.pr }, review: review.review });
+				await until("signed owner requested-changes turn", async () => (await item.users()).length === 4);
+				await until("owner review admitted", async () => (await item.rows()).every(r => r.state === "taken")); await item.idle();
+				assert.match((await item.users())[3].text, /The owner requests changes without an address/);
+				assert.match((await item.users())[3].text, /the session's owner/);
+				await item.panel.prompt({ text: "Write a long program (slow)" });
+				const next = standin.pullComment(item.pull, standin.users.get(owner)!, "/windlass Follow up after the current turn.");
+				assert.equal((await delivered("issue_comment", sessionCommentFields(item.pr, next))).state, "done");
+				assert.equal((await item.users()).length, 5, "a webhook must not steer the running turn");
+				await until("signed busy feedback next turn", async () => (await item.users()).length === 6, 45_000);
+				await until("signed feedback durable admission", async () => (await item.rows()).every(r => r.state === "taken")); await item.idle();
+				const refused = await admission.checkSessionAdmission(item.id);
+				const pending = standin.pullComment(item.pull, standin.users.get(owner)!, "/windlass Recover this pending signed feedback on wake.");
+				const pendingFields = sessionCommentFields(item.pr, pending);
+				await delivered("issue_comment", pendingFields);
+				await until("signed feedback waiting on admission", async () => (await admission.checkSessionAdmission(item.id)) > refused);
+				const fixture = item.target as unknown as { checkFeedbackFixture(op: string): Promise<unknown> };
+				await fixture.checkFeedbackFixture("hold");
+				assert.ok((await item.rows()).some(r => r.id === "issue_comment:" + pending.id && r.state === "pending"));
+				assert.equal((await item.users()).length, 6);
+				await admission.checkSessionAdmission(null);
+				// Simulated actor restart: rebuild volatile vars and invoke onWake; the process is not restarted.
+				await fixture.checkFeedbackFixture("wake");
+				await until("signed pending feedback recovered on wake", async () => (await item.users()).length === 7, 45_000);
+				await until("recovered signed feedback admitted", async () => (await item.rows()).every(r => r.state === "taken")); await item.idle();
+				await delivered("issue_comment", pendingFields);
+				assert.equal((await item.users()).length, 7);
+			} finally { await admission.checkSessionAdmission(null); await g2User.deleteSession(item.id); }
+		});
+		await check("session feedback signed writer review and standalone line retain attribution and deduplicate", async () => {
+			const person = standin.addUser("session-review-writer");
+			projectG2.access.set(person.login, "write"); // Deliberately not linked to a platform account.
+			const item = await personalFeedback();
+			try {
+				const review = standin.submitReview(projectG2, item.pull, person, "changes_requested", "Fix the fetched review.", [
+					{ path: "src/main.ts", line: 7, body: "/windlass Close this resource." },
+				]);
+				const fields = { action: "submitted", sender: review.review.user, pull_request: { number: item.pr }, review: { ...review.review, body: "/windlass DECOY" } };
+				assert.equal((await delivered("pull_request_review", fields)).state, "done");
+				await until("signed writer review turn", async () => (await item.users()).length === 2);
+				await item.idle();
+				const prompt = (await item.users())[1];
+				assert.match(prompt.text, /Fix the fetched review/); assert.match(prompt.text, /Close this resource/);
+				assert.match(prompt.text, /src\/main\.ts/); assert.match(prompt.text, /session-review-writer/);
+				assert.doesNotMatch(prompt.text, /DECOY|the session's owner\)/);
+				assert.ok((await item.panel.snapshot()).timeline.some(e => e.kind === "windlass" && e.event.type === "fake.prompt_untrusted" && JSON.stringify(e.event.data).includes(person.login)));
+				await delivered("pull_request_review", fields);
+				await delivered("pull_request_review_comment", { action: "created", sender: review.lines[0].user, pull_request: { number: item.pr }, comment: { ...review.lines[0], body: "/windlass payload only" } });
+				assert.equal((await item.users()).length, 2);
+				assert.equal((await item.rows()).length, 2);
+				assert.ok(standin.reactions.has("pulls:" + review.lines[0].id), "bundled review line was not acknowledged");
+				assert.equal(standin.requests.filter(r => r.method === "POST" && r.path.endsWith(`/pulls/comments/${review.lines[0].id}/reactions`)).length, 1);
+				const standalone = standin.submitReview(projectG2, item.pull, person, "commented", "", [{ path: "src/main.ts", line: 12, body: "/windlass Fix the standalone line." }]);
+				await delivered("pull_request_review_comment", { action: "created", sender: standalone.lines[0].user, pull_request: { number: item.pr }, comment: standalone.lines[0] });
+				await until("signed standalone line turn", async () => (await item.users()).length === 3);
+				await item.idle();
+				assert.match((await item.users())[2].text, /Fix the standalone line/);
+				await until("signed feedback durable admission", async () => (await item.rows()).every(r => r.state === "taken"));
+				const commented = standin.submitReview(projectG2, item.pull, person, "commented", "@windlass-fk4w An addressed comment-only review.");
+				await delivered("pull_request_review", { action: "submitted", sender: commented.review.user, pull_request: { number: item.pr }, review: commented.review });
+				await until("signed comment-only review turn", async () => (await item.users()).length === 4);
+				await until("comment-only review admitted", async () => (await item.rows()).every(r => r.state === "taken")); await item.idle();
+				assert.match((await item.users())[3].text, /An addressed comment-only review/);
+			} catch (error) {
+				const snapshot = await item.panel.snapshot().catch(() => null);
+				console.error("Session writer state: " + JSON.stringify({ status: snapshot?.summary.status, rows: await item.rows().catch(() => null), last: snapshot?.timeline.slice(-6).map(e => e.kind === "windlass" ? { kind: e.kind, type: e.event.type } : { kind: e.kind, turn: e.turn }) }));
+				throw error;
+			} finally { await g2User.deleteSession(item.id); }
+		});
+		await check("session feedback signed feedback rejects unauthorized, stale, mismatched and unaddressed subjects", async () => {
+			const item = await personalFeedback();
+			let phase = "setup";
+			try {
+				const noFeedback = async (label: string) => {
+					phase = label;
+					const rows = await item.rows();
+					if (rows.length) console.error("Session exclusion rows: " + JSON.stringify(rows));
+					assert.deepEqual(rows, []);
+				};
+				const writer = standin.addUser("session-negative-writer"), reader = standin.addUser("session-negative-reader");
+				projectG2.access.set(writer.login, "write"); projectG2.access.set(reader.login, "read");
+				const readOnly = standin.pullComment(item.pull, reader, "/windlass Reader cannot send this back.");
+				await delivered("issue_comment", sessionCommentFields(item.pr, readOnly)); // OWNER association is not authorization.
+				await noFeedback("read-only");
+				const wrongAuthor = standin.pullComment(item.pull, reader, "/windlass Wrong fetched author.");
+				await delivered("issue_comment", sessionCommentFields(item.pr, wrongAuthor, writer));
+				await noFeedback("wrong author");
+				const old = standin.pullComment(item.pull, writer, "/windlass Too old.", Date.now() - 8 * DAY);
+				await delivered("issue_comment", sessionCommentFields(item.pr, old));
+				await noFeedback("stale");
+				const plain = standin.pullComment(item.pull, writer, "Not addressed to the app.");
+				await delivered("issue_comment", sessionCommentFields(item.pr, plain));
+				await noFeedback("unaddressed");
+				const otherPull = { ...item.pull, number: item.pr + 10000, comments: [] };
+				standin.pulls.push(otherPull);
+				const foreign = standin.pullComment(otherPull, writer, "/windlass Belongs to a different PR.");
+				await delivered("issue_comment", sessionCommentFields(item.pr, foreign));
+				await noFeedback("foreign PR");
+				const addressed = standin.pullComment(item.pull, writer, "/windlass Wrong binding.");
+				await delivered("issue_comment", sessionCommentFields(item.pr + 10001, addressed));
+				await noFeedback("wrong PR");
+				await delivered("issue_comment", sessionCommentFields(item.pr, addressed), neighbour.id);
+				await noFeedback("wrong installation");
+				await delivered("issue_comment", { ...sessionCommentFields(item.pr, addressed), repository: { id: projectG2.id + 100000 } });
+				await noFeedback("wrong repository");
+				for (const state of ["approved", "commented"]) {
+					const review = standin.submitReview(projectG2, item.pull, writer, state, "Not an addressed request.");
+					await delivered("pull_request_review", { action: "submitted", sender: review.review.user, pull_request: { number: item.pr }, review: { ...review.review, body: "/windlass DECOY" } });
+				}
+				await noFeedback("binding and review exclusions");
+				assert.equal((await item.users()).length, 1);
+				for (const comment of [readOnly, wrongAuthor, old, plain, foreign, addressed]) assert.ok(!standin.reactions.has("issues:" + comment.id));
+				assert.ok(!item.pull.comments.some(c => c.body.includes("<!-- windlass:unmatched-pr -->")));
+				phase = "oversized";
+				const oversized = standin.pullComment(item.pull, writer, "/windlass " + "x".repeat(8100));
+				await delivered("issue_comment", sessionCommentFields(item.pr, oversized));
+				assert.deepEqual((await item.rows()).map(r => [r.id, r.state]), [["issue_comment:" + oversized.id, "declined"]]);
+				assert.equal((await item.users()).length, 1);
+			} catch (error) { console.error("Session exclusion phase: " + phase); throw error; }
+			finally { await g2User.deleteSession(item.id); }
+		});
+		await check("session feedback signed hardened writer feedback waits for explicit owner consent", async () => {
+			const writer = standin.addUser("session-hardened-writer"); projectG2.access.set(writer.login, "write");
+			const item = await personalFeedback("docker-hardened");
+			try {
+				const comment = standin.pullComment(item.pull, writer, "/windlass Held until consent.");
+				const fields = sessionCommentFields(item.pr, comment);
+				await delivered("issue_comment", fields);
+				await until("signed hardened feedback held", async () => (await item.rows()).some(r => r.state === "held"));
+				assert.equal((await item.users()).length, 1);
+				await item.panel.consentSessionFeedback(["issue_comment:" + comment.id]);
+				await until("signed hardened consent turn", async () => (await item.users()).length === 2);
+				await item.idle();
+				assert.match((await item.users())[1].text, /Held until consent/);
+				await delivered("issue_comment", fields);
+				assert.equal((await item.users()).length, 2);
+				await until("signed feedback durable admission", async () => (await item.rows()).every(r => r.state === "taken"));
+			} finally { await g2User.deleteSession(item.id); }
+		});
+		await check("session feedback stale registration is removed and unmatched replies deduplicate", async () => {
+			const item = await personalFeedback(), guid = randomUUID();
+			try {
+				await directory().internalForgetSession(item.id);
+				const reader = standin.addUser("session-unmatched-reader"); projectG2.access.set(reader.login, "read");
+				const readOnly = standin.pullComment(item.pull, reader, "/windlass Read-only unmatched request.");
+				await delivered("issue_comment", sessionCommentFields(item.pr, readOnly));
+				const plain = standin.pullComment(item.pull, standin.users.get(owner)!, "An unaddressed unmatched comment.");
+				await delivered("issue_comment", sessionCommentFields(item.pr, plain));
+				const approved = standin.submitReview(projectG2, item.pull, standin.users.get(owner)!, "approved", "Looks good.");
+				await delivered("pull_request_review", { action: "submitted", sender: approved.review.user, pull_request: { number: item.pr }, review: approved.review });
+				const bot = standin.pullComment(item.pull, { ...standin.users.get(owner)!, type: "Bot" }, "/windlass A bot is not a person.");
+				const botResponse = await standin.deliver(web, "issue_comment", { installation: { id: installation.id }, repository: { id: projectG2.id }, ...sessionCommentFields(item.pr, bot) }, { secret });
+				assert.deepEqual(await botResponse.json(), { taken: false });
+				assert.ok(!item.pull.comments.some(c => c.body.includes("<!-- windlass:unmatched-pr -->")), "silent subjects received an unmatched explanation");
+				const staleId = randomUUID();
+				await directory().internalRegisterSession({ sessionId: staleId, uid, installationId: installation.id, pr: item.pr });
+				const comment = standin.pullComment(item.pull, standin.users.get(owner)!, "/windlass No live session target.");
+				const fields = sessionCommentFields(item.pr, comment);
+				standin.commentFault = "lose_reply";
+				const response = await standin.deliver(web, "issue_comment", { installation: { id: installation.id }, repository: { id: projectG2.id }, ...fields }, { secret, guid });
+				assert.deepEqual(await response.json(), { taken: true });
+				await until("unmatched reply stored but response lost", async () => {
+					const row = await fixture(installation.id).checkRow(guid);
+					return row?.attempts === 1 && row.state === "received" && row.next_at > Date.now();
+				});
+				standin.commentFault = null;
+				await fixture(installation.id).checkFixture("retry", guid);
+				await inbox(installation.id).internalDue();
+				await until("ambiguous unmatched reply recovered", async () => (await fixture(installation.id).checkRow(guid))?.state === "done");
+				assert.deepEqual(await directory().internalFindSession({ installationId: installation.id, pr: item.pr }), []);
+				const replies = () => item.pull.comments.filter(c => c.user.login.endsWith("[bot]") && c.body.includes("<!-- windlass:unmatched-pr -->"));
+				assert.equal(replies().length, 1);
+				await delivered("issue_comment", fields);
+				const another = standin.pullComment(item.pull, standin.users.get(owner)!, "/windlass Another unmatched subject.");
+				await delivered("issue_comment", sessionCommentFields(item.pr, another));
+				assert.equal(replies().length, 1, "unmatched explanation must be once per PR, not per subject");
+				assert.equal((await item.users()).length, 1);
+				assert.deepEqual(await item.rows(), []);
+			} catch (error) {
+				const row = await fixture(installation.id).checkRow(guid).catch(() => null);
+				console.error("Session unmatched state: " + JSON.stringify({ state: row?.state, attempts: row?.attempts, markers: item.pull.comments.filter(c => c.body.includes("<!-- windlass:unmatched-pr -->")).map(c => c.user.login), paths: standin.requests.filter(r => r.path.includes(`/repos/${projectG2.owner}/${projectG2.name}/`)).slice(-6).map(r => r.method + " " + r.path) }));
+				throw error;
+			} finally { standin.commentFault = null; await g2User.deleteSession(item.id); }
+		});
+		await check("session feedback absent repository directory permits one validated unmatched explanation", async () => {
+			standin.appPermissions.issues = "write";
+			const repo = standin.addRepository({ owner, name: "unregistered-feedback", installation });
+			const pull = { number: 1, repository: repo.id, title: "Unmanaged PR", body: "", head: "unmanaged", base: "main", state: "open" as const, merged: false, mergeable: true, draft: false, requestedReviewers: [], comments: [] };
+			standin.pulls.push(pull);
+			const directory = client.githubRepository.get([String(repo.id)], service());
+			await assert.rejects(() => directory.internalFindSession({ installationId: installation.id, pr: 1 }), absent);
+			const comment = standin.pullComment(pull, standin.users.get(owner)!, "/windlass No directory was registered.");
+			const fields = { ...sessionCommentFields(1, comment), repository: { id: repo.id } };
+			try {
+				await delivered("issue_comment", fields);
+				await delivered("issue_comment", fields);
+			} catch (error) {
+				console.error("Absent directory API reads: " + JSON.stringify(standin.requests.slice(-12).map(r => ({ path: r.path, status: r.status }))));
+				throw error;
+			}
+			const replies = standin.pulls.find(p => p.repository === repo.id)!.comments.filter(c => c.body.includes("<!-- windlass:unmatched-pr -->"));
+			assert.equal(replies.length, 1);
+			assert.ok(!replies[0].body.includes("No directory was registered"));
+			assert.ok(!standin.reactions.has("issues:" + comment.id));
+			const issue = standin.addIssue(repo, 2, standin.users.get(owner)!);
+			const spoofed = standin.issueComment(issue, standin.users.get(owner)!, "/windlass This is an issue, not a PR.");
+			await delivered("issue_comment", { ...sessionCommentFields(2, spoofed), repository: { id: repo.id } });
+			assert.equal(issue.comments.length, 1, "a spoofed pull_request flag caused a reply on an issue");
+			assert.ok(!standin.reactions.has("issues:" + spoofed.id));
+		});
+		await check("session feedback transient directory failure retries without a false unmatched reply", async () => {
+			const item = await personalFeedback(), guid = randomUUID();
+			try {
+				await (directory() as unknown as { checkFailSessionLookup(): Promise<void> }).checkFailSessionLookup();
+				const comment = standin.pullComment(item.pull, standin.users.get(owner)!, "/windlass Wait for the registered session.");
+				const response = await standin.deliver(web, "issue_comment", { installation: { id: installation.id }, repository: { id: projectG2.id }, ...sessionCommentFields(item.pr, comment) }, { secret, guid });
+				assert.deepEqual(await response.json(), { taken: true });
+				await until("directory failure remains retryable", async () => {
+					const row = await fixture(installation.id).checkRow(guid);
+					return row?.attempts === 1 && row.state === "received" && row.next_at > Date.now();
+				});
+				assert.equal((await item.users()).length, 1);
+				assert.ok(!item.pull.comments.some(c => c.body.includes("<!-- windlass:unmatched-pr -->")));
+				assert.ok(!standin.reactions.has("issues:" + comment.id));
+				await fixture(installation.id).checkFixture("retry", guid);
+				await inbox(installation.id).internalDue();
+				await until("directory recovery delivery finished", async () => (await fixture(installation.id).checkRow(guid))?.state === "done");
+				await until("directory recovery admitted feedback", async () => (await item.users()).length === 2);
+				await item.idle();
+				assert.ok(!item.pull.comments.some(c => c.body.includes("<!-- windlass:unmatched-pr -->")));
+				assert.ok(standin.reactions.has("issues:" + comment.id));
+			} finally { await g2User.deleteSession(item.id); }
+		});
+		await check("session feedback acknowledgement failure retries without admitting feedback twice", async () => {
+			const item = await personalFeedback();
+			const guid = randomUUID();
+			try {
+				const comment = standin.pullComment(item.pull, standin.users.get(owner)!, "/windlass Admit once even if eyes fail.");
+				standin.reactionFault = 503;
+				const response = await standin.deliver(web, "issue_comment", { installation: { id: installation.id }, repository: { id: projectG2.id }, ...sessionCommentFields(item.pr, comment) }, { secret, guid });
+				assert.deepEqual(await response.json(), { taken: true });
+				await until("reaction failure left delivery retryable", async () => {
+					const row = await fixture(installation.id).checkRow(guid);
+					return row?.attempts === 1 && row.state === "received" && row.next_at > Date.now();
+				});
+				await until("feedback admitted before acknowledgement", async () => (await item.users()).length === 2);
+				await item.idle();
+				assert.equal(standin.reactions.has("issues:" + comment.id), false);
+				standin.reactionFault = null;
+				await fixture(installation.id).checkFixture("retry", guid);
+				await inbox(installation.id).internalDue();
+				await until("retried acknowledgement done", async () => (await fixture(installation.id).checkRow(guid))?.state === "done");
+				assert.ok(standin.reactions.has("issues:" + comment.id));
+				assert.equal((await item.users()).length, 2);
+				assert.equal((await item.rows()).length, 1);
+			} finally { standin.reactionFault = null; await g2User.deleteSession(item.id); }
 		});
 		const hasRepo = async (user: typeof g2User, id: number, fresh = false) =>
 			(await user.githubRepositories("", fresh)).repositories.some(r => r.id === id);
@@ -992,6 +1311,8 @@ async function run() {
 				const timeline = (await client.agentSession.get([uid, view.sessionId], { params: { token: ownerToken } }).snapshot()).timeline;
 				const turn = timeline.find(e => e.kind === "user" && e.turn === 2);
 				assert.ok(turn?.kind === "user" && turn.text.includes("> Fix the empty case.") && turn.text.includes("line three") && !turn.text.includes("decoy"));
+				assert.deepEqual(await directory().internalFindSession({ installationId: installation.id, pr: item.pr }), [], "item feedback registered a competing personal session");
+				assert.equal(timeline.filter(e => e.kind === "user").length, 2, "item feedback also started a personal turn");
 				await item.clock().checkAdvance("poll",0);
 				await until("second handoff", async () => {
 					const v = await item.view();

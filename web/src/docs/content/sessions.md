@@ -153,6 +153,28 @@ In the Windlass sandbox profile, the panel offers **Let the agent publish withou
 
 The agent can also push its work to the session's branch, and fetch the branch it started from, without asking you. It pushes only to the session's own branch, never to the default branch. A commit someone else pushed to that branch is never pushed away: the push is refused, and the agent is told to fetch and merge it first. Claude Code, OpenCode and Codex can push at most 5 times and fetch at most 3 times a turn, and the timeline says of each such push or fetch that another program in the sandbox may have made it.
 
+### Feedback from GitHub
+
+Once this session has opened a pull request, GitHub feedback can start another turn in the same session. This is for a personal agent, not an agent working for a Factory item. The pull request must still be open or a draft, and belong to this session's connected repository and GitHub App installation.
+
+**What is read.** A review requesting changes is read with its line comments. A conversation comment, a standalone line comment or a comment-only review must start with the App's mention or `/windlass`. Approvals start nothing. Windlass reads the review or comment again from GitHub, takes nothing more than three days old, and checks that the writer currently has write access. The role shown beside a comment, such as Member or Contributor, is not enough. Your linked GitHub account identifies your own words; you still need write access too. Bot senders are ignored. For example, leave `/windlass Please handle the empty case.` as a PR comment.
+
+**What the agent is told.** Each entry is quoted, with its author, access, time and, where present, file, line and commit. Your feedback is a request about this change, like a message in the session. Another writer's feedback is review to weigh, not an instruction from you. Nobody's quoted words change the agent's rules, task or limits.
+
+**When it runs.** Feedback waits durably while a turn runs or the platform pushes. It never steers or interrupts a turn: when the session is idle it can start a new one. A turn carries at most 20 entries and 8,000 characters; the rest stays queued. An entry over 8,000 characters is not taken: shorten it or split it. The same review or comment is taken only once, even if GitHub delivers it again. Unlike [Factory feedback](/docs/factory#feedback-from-github), this does not wait for a two-minute comment-collection window or start a Factory run, re-plan or second review.
+
+**Text from someone else.** On **Docker, hardened**, feedback from other writers is held rather than starting a turn. The timeline gives the reason and each held subject's ID. Consent currently requires the session action `consentSessionFeedback` with those IDs, called as the session's user; there is no consent button on the page. It releases only those held entries, not future feedback. Your own feedback is not held by this rule, even when other writers' entries are waiting. Consent does not add command isolation: the text goes to the agent labelled only, under that profile's ordinary permissions.
+
+On other profiles, Windlass 0.6.0 or later receives the outside-text marker; older Windlass and other agents receive labelled text only. A label is not a sandbox. See [text from someone else](/docs/factory#text-from-someone-else) and [sandbox security](/docs/security).
+
+**Wake limits.** Automatic intake needs GitHub webhooks; personal sessions do not poll GitHub for missed feedback. Pending feedback retries admission, but does not bypass sign-in, machine availability, sandbox capacity or token limits. It can wake an idle session's paused sandbox, or recreate a lost one under the [usual recovery rules](#when-a-sandbox-is-replaced); it does not resume a paused turn as a new feedback turn. Queued feedback for a pull request that closes or merges, or for an old publication binding, is invalidated when the session refreshes that binding. Deleting the session ends this route. A feedback turn does not itself grant permission to publish: the [existing publish rules](#when-the-agent-opens-it) still apply.
+
+**Acknowledgements.** Taken conversation and line comments receive an eyes reaction, including line comments bundled with a review. Reviews themselves cannot receive reactions. Reactions retry separately from prompt admission, so an acknowledgement failure does not start the same prompt twice. Unauthorized feedback, ordinary unaddressed text and approval-only events receive neither eyes nor a reply.
+
+If an eligible, authorized comment or review belongs to neither a registered live session nor a work item, Windlass posts one short explanation on the PR. It does not quote the feedback or reveal session details. Repeated deliveries do not repeat that explanation; temporary lookup failures retry rather than claiming there is no associated session.
+
+**Rollout.** New and repeated publication, whether from the panel or requested by the agent, registers the personal session's PR. Existing sessions repair their registration when they wake. Dormant pre-upgrade sessions are not backfilled across the deployment: until one wakes, its old PR may receive the unmatched explanation instead of starting a turn. Work-item PRs keep their Factory route and do not also enqueue a personal turn.
+
 ### What was verified
 
 Every pull request the platform opens ends its description with a section, **What was verified**. The platform writes it from what Windlass recorded of the checks, not from what the agent wrote, and writes it again with every push. Text you add elsewhere in the description stays.
