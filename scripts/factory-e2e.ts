@@ -505,18 +505,13 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 				const part = (key: string) => ahead.children!.find(child => child.parent?.key === key)!;
 				const index = part(plan.subtasks[0].key), search = part(plan.subtasks[1].key);
 				const headOf = (child: ItemSummary) => standin.branchHead(repo, subtaskBranch(feature.id, child.parent!.key, child.id))!;
-				setCi(repo, headOf(search), "failure");
-				const asked = await untilItem(user, search.id, "a part offering the feature update",
-					v => !!v.question?.choices.some(c => c.id === "update_feature"), CI_WAIT_MS);
-				assert(!asked.question!.choices.some(c => c.id === "update_from_base"), "The feature was already ahead of the part");
-
 				let integrating = false;
 				const held = new Promise<void>(done => { release = done; });
 				standin.beforeFastForward = async () => { integrating = true; await held; };
 				const indexHead = headOf(index);
 				setCi(repo, indexHead, "success");
 				await waitFor("the sibling holding the integration grant", () => integrating, CI_WAIT_MS);
-				await user.actOnItem({ id: search.id, action: { kind: "answer", question: asked.question!.id, choice: "update_feature" } });
+				setCi(repo, headOf(search), "failure");
 				await untilItem(user, feature.id, "the queued target update", v => v.wait?.sentence === "Updating the feature from main.");
 				assert(standin.branchHead(repo, branch) === marker, "The update passed the sibling’s grant");
 				release();
@@ -1345,10 +1340,14 @@ async function memoryChecks(): Promise<void> {
 		const m = machine();
 		m.send({ kind: "start" });
 		m.send({ kind: "turn_started" });
+		const noChange = { kind: "turn_ended" as const, outcome: "succeeded" as const, verified: null, flags: [], changes: false, report: null, spend: { tokens: 1, hostedSeconds: 0 } };
+		m.send(noChange);
+		assert(m.item.run?.autoSteps === 1 && !m.item.question, "the first no-change turn should retry");
+		m.send({ kind: "turn_started" });
 		const actor = await itemActor(m.item);
-		// The turn changed nothing: the item asks its person. The page is asked for once that is decided and while it is being written.
+		// The retry also changed nothing: the item asks its person. The page is asked for once that is decided and while it is being written.
 		const release = actor.holdWrites();
-		const asking = actions.internalFact(actor.c, { kind: "turn_ended", at: T + 50, key: currentKey(m.item), outcome: "succeeded", verified: null, flags: [], changes: false, report: null, spend: { tokens: 1, hostedSeconds: 0 } });
+		const asking = actions.internalFact(actor.c, { ...noChange, at: T + 50, key: currentKey(m.item) });
 		for (let wait = 0; wait < 100 && (actor.c.vars as { stored: { item: Item } }).stored.item.question === null; wait += 1) await new Promise((done) => setTimeout(done, 5));
 		const reading = actions.internalView(actor.c);
 		release();

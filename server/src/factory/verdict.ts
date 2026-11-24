@@ -37,6 +37,7 @@ import { createHash } from "node:crypto";
 import type { SandboxPlace, TurnOutcome, Verified } from "../contract.js";
 import type { CiReading } from "../github/ci.js";
 import { flagWords, verifiedHeadline } from "../verified.js";
+import { environmentFailure } from "./check-environment.js";
 import type { CiProgress, GateEvidence, Verdict } from "./types.js";
 
 const CUT_SHORT: ReadonlySet<TurnOutcome> = new Set(["stopped", "failed", "interrupted", "error"]);
@@ -49,9 +50,17 @@ function failingChecks(verified: Verified): Array<{ name: string; output?: strin
 }
 
 /** What the gate makes of a turn by itself, before anything is pushed (§2.1 step 2): "fail" sends the agent back, "pass" and "unverified" publish. */
-export function gateResult(outcome: TurnOutcome, verified: Verified | null): Verdict["result"] {
+export function gateResult(outcome: TurnOutcome, verified: Verified | null, forced = false): Verdict["result"] {
 	if (CUT_SHORT.has(outcome)) return "incomplete";
 	if (verified === null) return "unverified";
+	if (forced) {
+		const run = verified.run;
+		if (verified.state === "passed" && (run?.turn !== verified.turn || verified.unrun.length ||
+			!run.checks.some(check => check.required) || run.checks.some(check => check.required && check.carried))) return "unverified";
+		if (verified.state === "not_needed") return "unverified";
+		if (verified.state === "unresolved" && run?.turn === verified.turn &&
+			run.checks.every(check => check.status === "passed" || check.startError || environmentFailure(check))) return "unverified";
+	}
 	switch (verified.state) {
 		case "passed":
 			return verified.changedAfter || (verified.run !== null && verified.run.turn !== verified.turn) ? "unverified" : "pass";
@@ -97,7 +106,7 @@ export const movedSentence = (head: string, moved: string) => `The pull request 
 
 export function verdictOf(input: VerdictInput): Verdict {
 	const verified = input.gate?.verified ?? null;
-	const gate = input.gate === null ? "unverified" : gateResult(input.gate.outcome, verified);
+	const gate = input.gate === null ? "unverified" : gateResult(input.gate.outcome, verified, input.gate.forcedChecks);
 	// A carried run is evidence for this commit only when the gate attests to its state.
 	const checks = verified?.run && (verified.run.turn === verified.turn || gate === "pass") ? verified.run.checks : [];
 	const usersRan = checks.some((check) => check.whose === "user");
@@ -141,9 +150,11 @@ export function ciSentence(ci: Verdict["ci"]): string {
 		case "cancelled": {
 			const cancelled = ci.runs.filter(run => run.conclusion === "cancelled" || run.conclusion === "stale");
 			const describe = (runs: typeof cancelled) => `${runs.length} ${runs.length === 1 ? "check was" : "checks were"} cancelled (${runs.map(run => run.name).join(", ")})`;
+			const timedOut = ci.runs.filter(run => run.conclusion === "timed_out");
 			const stopped = cancelled.filter(run => run.stopped || run.conclusion === "stale");
 			const other = cancelled.filter(run => !stopped.includes(run));
 			return "CI did not finish: " + [
+				...(timedOut.length ? [`${timedOut.map(run => run.name).join(", ")} timed out.`] : []),
 				...(stopped.length ? [`${describe(stopped)}; not rerun because ${stopped.length === 1 ? "it was" : "they were"} stopped while running.`] : []),
 				...(other.length ? [`${describe(other)}; nothing failed.`] : []),
 			].join(" ");

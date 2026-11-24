@@ -227,6 +227,7 @@ export interface SessionInternal {
 	/** Whether the turn of `turn` still runs (a `turn_running` fact with `check`), how it ended, or null when it has not started. */
 	internalCheckTurn(input: { turn: string; check: string }): Promise<Fact | null>;
 	/** Pushes the item's work and opens or updates its pull request, with the agent's report or else the item's title and body. */
+	internalBaseTests(input: { head: string; base: string; tests: import("../factory/base-tests.js").NamedTests }): Promise<import("../factory/base-tests.js").BaseTestResult | "pending">;
 	internalPublish(input: { key: string; title: string; body: string; blockedNetwork?: import("../contract.js").BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number } }): Promise<ItemPublishAnswer>;
 }
 
@@ -241,7 +242,7 @@ export interface ItemInternal {
 	/** Immutable commit the feature was created from, including for children made before a restart. */
 	internalSetupSeed(source: "child" | "feature", repositoryId?: GithubId): Promise<string | null>;
 	internalFeatureTarget(): Promise<{ head: string; value: number; branch: string; available: boolean } | null>;
-	internalUpdateForChild(child: string, request: string, target: string): Promise<"pending" | "finished">;
+	internalUpdateForChild(child: string, request: string, target: string, automatic?: true): Promise<"pending" | "finished">;
 	internalClaimJoin(child: string, key: string): Promise<"busy" | "claimed" | import("../factory/types.js").JoinResult>;
 	internalFinishJoin(child: string, result: import("../factory/types.js").JoinResult): Promise<void>;
 	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { budget?: ItemSummary["budget"]; integratedHead?: string }): Promise<void>;

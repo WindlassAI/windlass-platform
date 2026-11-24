@@ -222,6 +222,7 @@ import { agentTurn, turnTokens } from "../factory/budget.js";
 import { cutTurnUsage, cutTurnUsageNote, reportedModelUsage, usesPlatformModel, type HoldReport, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, foundStoppedAt, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { judgeChecks } from "../environments.js";
 import { outputExcerpt } from "../factory/check-environment.js";
+import { runBaseTests, type BaseTestResult, type NamedTests } from "../factory/base-tests.js";
 import { PlatformChecks } from "../sandbox/platform-checks.js";
 import { itemActor, grantIsValid, type EnvironmentBuildOrigin, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
@@ -596,7 +597,7 @@ interface ActiveTurn {
 	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
 	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
 	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string; /** The turn's sandbox could not be prepared (`openSandbox` threw): what went wrong. */ sandboxFailed?: string; /** Its sandbox ran out of memory in or before this turn. */ outOfMemory?: OutOfMemory };
+	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; said?: string; pushedAtStart: string | null; policyRefusal?: true; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string; /** The turn's sandbox could not be prepared (`openSandbox` threw): what went wrong. */ sandboxFailed?: string; /** Its sandbox ran out of memory in or before this turn. */ outOfMemory?: OutOfMemory };
 }
 
 /**
@@ -688,6 +689,8 @@ interface SessionVars {
 	 * operation goes with the instance, and so does its count.
 	 */
 	sandboxOps: number;
+	/** The one check of named tests on the item’s base running in this sandbox. */
+	baseTest?: string;
 	/** The copy of the workspace taken when the last turn ended; undefined until it is read from SQLite. */
 	workspace: WorkspaceCopy | null | undefined;
 	/** The tail of the queue that sets the idle check, so two of them cannot cross. */
@@ -2569,6 +2572,33 @@ function machineOf(meta: SessionMeta): { name: string | null } | null {
 	return meta.place.kind === "machine" ? { name: meta.machineName } : null;
 }
 
+/** Test a copy of the pinned base in the builder's existing sandbox, under its ordinary usage hold. */
+async function testSessionBase(c: Ctx, meta: SessionMeta, repo: StoredRepository, input: { base: string; tests: NamedTests }): Promise<BaseTestResult> {
+	const release = takeSandbox(c);
+	try {
+		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
+		if (!meta.sandboxId || c.vars.turn || c.vars.publishing) return "unknown";
+		const { sandboxes } = await layerOf(c, meta);
+		if (!meta.meter || carriedOver(c, meta)) await holdSandbox(c, meta, true);
+		const sandbox = await sandboxes.connect(meta.sandboxId, connectOptions(meta));
+		sandboxChanged(c);
+		if (!sandbox) return "unknown";
+		noteSandbox(c, meta, "running");
+		markUsed(c, meta);
+		const cwd = meta.cloneDirectory && meta.cloneDirectory !== "." ? sandbox.cwd + "/" + meta.cloneDirectory : sandbox.cwd;
+		if ((await sandbox.run(`GIT_NO_REPLACE_OBJECTS=1 git cat-file -e ${input.base}^{commit}`, { cwd, timeoutMs: 10_000 })).exitCode !== 0) {
+			const app = githubApp();
+			if (!app) return "unknown";
+			await fetchBase(app, await githubConnection(c, meta), { ...repo }, sandbox);
+		}
+		const isolated = sandboxes.profile(meta.profile).approval !== "full" || !!meta.tainted || !!machineHarness(meta.harness)?.sandboxedOn.includes(meta.profile);
+		return await runBaseTests(sandbox, cwd, input.base, input.tests, isolated);
+	} finally {
+		release();
+		markUsed(c, meta);
+	}
+}
+
 /** After a push's line in the timeline: what the pull request's description now says was verified, in its few words. */
 const verifiedLine = (pull: PullRequestInfo) => ` Its description reports: ${pull.verified}.`;
 
@@ -4078,6 +4108,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const signedOut = active.item ? await itemSignInRefusal(c, meta) : null;
 		if (signedOut) {
 			active.item!.refused = signedOut;
+			active.item!.policyRefusal = true;
 			throw new TurnProblem(signedOut);
 		}
 		if (reviewer && (!checkout || !reviewerAllowed(meta.place, layer.sandboxes.profile(meta.profile)))) {
@@ -4131,9 +4162,9 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn);
 		// Windlass freezes model-visible tools at the first prompt. Resuming the planner does not
 		// add report to that baseline. Switch conversations at the summary boundary, retaining the workspace
-		// and the platform timeline. A retry or paused segment of that summary can resume its own.
+		// and the platform timeline. Each summary retry starts fresh. A paused segment resumes its conversation.
 		const summary = active.item?.row.agent === "summary";
-		if (summary !== !!meta.summaryConversation) {
+		if (summary !== !!meta.summaryConversation || (summary && !active.resume)) {
 			meta.windlassSessionId = null;
 			meta.summaryConversation = summary || undefined;
 		}
@@ -4227,6 +4258,10 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				}, store && browser ? shots => uploadShots(sandbox, top, shots, owner, userActor(c, meta.uid), store, withdrawn) : null);
 			};
 			filings = filings.then(file, file).catch(() => "The platform could not finish filing this report. File it again.");
+			if (summary) filings = filings.then(answer => {
+				if (!item.report) item.said = held.redactor.text(answer).slice(0, 400);
+				return answer;
+			});
 			return tracked(filings);
 		} : undefined;
 		meta.secretRequestBlocked = outsideText || ((!!resumed || !!active.resume) && !!meta.secretRequestBlocked);
@@ -4518,6 +4553,19 @@ fi`, { signal, timeoutMs: 5000 });
 					if (open) knowServers(c, meta, said);
 				},
 			});
+			// The native engine selects checks from the turn's diff even on a checks-only delivery.
+			// Run all saved commands on the final tree if its own gate did not record them here.
+			if (item?.row.agent === "run_checks" && result.summary?.outcome === "succeeded" && !result.failure && !signal.aborted) {
+				const evidence = active.checks.verified(turn, held.checks, result.checks, meta.verified ?? null);
+				const forced = new VerificationLog();
+				const gate = new PlatformChecks(sandbox, held.checks, (event, said) => {
+					forced.note(event);
+					if (said) note(c, turn, said.level, said.text);
+				}, { agent: "Windlass", redactor: held.redactor, signal, force: true, isolated: profile.approval !== "full" || !!meta.tainted || handling.kind === "marked" });
+				await gate.finishNativeTurn(evidence);
+				if (gate.ended !== null) active.checks = forced;
+				if (signal.aborted) result.aborted = true;
+			}
 			// Windlass took the prompt if it said anything at all; a turn that never reached it is told again.
 			if (events > 0) notes.told();
 		}
@@ -5578,16 +5626,17 @@ async function planningInputs(c: Ctx, meta: SessionMeta, item: NonNullable<Activ
 	meta.planningInputs = true;
 	item.crossRepoPlan = true;
 	const app = githubApp();
-	const refuse = (why: string) => {
+	const refuse = (why: string, policyRefusal = false) => {
+		if (policyRefusal) item.policyRefusal = true;
 		item.refused = `The planner reads every repository of the feature, and ${why}. Nothing was planned.`;
 		throw new TurnProblem(item.refused);
 	};
-	if (!app) return refuse("this deployment has no GitHub App");
+	if (!app) return refuse("this deployment has no GitHub App", true);
 	const connection = await githubConnection(c, meta);
-	if (!connection) return refuse("the GitHub connection is gone");
+	if (!connection) return refuse("the GitHub connection is gone", true);
 	for (const input of asked.inputs) {
 		const label = `${input.owner}/${input.name}`;
-		if (!input.sha) return refuse(`no base commit was recorded for ${label}`);
+		if (!input.sha) return refuse(`no base commit was recorded for ${label}`, true);
 		try {
 			const resolved = await resolveBoundRepository(app, connection, input.repositoryId, input.installationId, "read");
 			const url = app.cloneUrl(resolved.repository.owner, resolved.repository.name);
@@ -5596,7 +5645,8 @@ async function planningInputs(c: Ctx, meta: SessionMeta, item: NonNullable<Activ
 			note(c, turn, "info", `Read ${label} at ${input.sha.slice(0, 7)} into ${asked.directory}/${input.alias}, read-only, for the planner.`);
 		} catch (error) {
 			if (error instanceof TurnProblem) throw error;
-			return refuse(`${label} could not be read: ${error instanceof GithubProblem ? error.message : describeError(error)}`);
+			return refuse(`${label} could not be read: ${error instanceof GithubProblem ? error.message : describeError(error)}`,
+				error instanceof GithubProblem && (error.code === "github_denied" || error.code === "github_gone"));
 		}
 	}
 }
@@ -5651,7 +5701,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
 		const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart, meta.origin?.signIn);
-		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), ...(meta.secretRequest && { secret: { name: meta.secretRequest.name, why: meta.secretRequest.why, notice: meta.secretRequest.notice } }), pushedHead, ...(item.refused ? { refused: item.refused } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
+		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), ...(meta.secretRequest && { secret: { name: meta.secretRequest.name, why: meta.secretRequest.why, notice: meta.secretRequest.notice } }), pushedHead, ...(row.agent === "summary" && item.said && { reportProblem: item.said }), ...(item.refused ? { refused: item.refused, policyRefusal: item.policyRefusal } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
 	}
 	if (ended.stepLimit !== undefined) fact.stepLimit = ended.stepLimit;
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
@@ -6522,12 +6572,12 @@ export const agentSession = actor({
 			const meta = c.vars.meta;
 			const run = meta?.run;
 			const paused = run?.paused;
-			if (!meta || !run || !paused || paused.reason !== "machine" || paused.asked || Date.now() < paused.at + config.turnResume.machineAskMs - 1_000) return;
+			if (!meta || !run || !paused || paused.reason !== "machine" || paused.asked || Date.now() < paused.at + config.turnResume.machineAskMs) return;
 			const row = await rowOfTurn(c.db, run.turn);
 			if (!row) return;
 			paused.asked = true;
 			await serial(c, () => c.db.transaction(async (tx) => {
-				await queueMessage(tx, { to: "item", itemId: row.itemId, fact: { kind: "machine_away", at: Date.now(), key: row.key, since: paused.at, machine: meta.machineName } });
+				await queueMessage(tx, { to: "item", itemId: row.itemId, fact: { kind: "machine_away", deadline: paused.at + config.turnResume.machineAskMs, at: Date.now(), key: row.key, since: paused.at, machine: meta.machineName } });
 				await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
 			}, { name: "inbox.machine_away" }));
 			await flushOutbox(c, meta.uid);
@@ -6631,6 +6681,28 @@ export const agentSession = actor({
 			if ((meta.status === "paused" && meta.run?.paused && row.turn === meta.run.turn) || c.vars.resuming) return { kind: "turn_running", at: Date.now(), key: String(input.check) };
 			// Taken, and no turn of it runs here: the server stopped under it before its end was written.
 			return await closeCutTurn(c, meta, row, row.turn === null ? null : cutTurnUsage(await windlassEventsOf(c, row.turn)));
+		},
+
+		internalBaseTests: async (c, input: { head: string; base: string; tests: NamedTests }): Promise<BaseTestResult | "pending"> => {
+			requireService(c);
+			const meta = liveMeta(c);
+			const repo = meta.repo;
+			if (meta.origin?.role !== "builder" || !repo || meta.pushedHead !== input.head || !/^[0-9a-f]{40}$/.test(input.base)) return "unknown";
+			const key = digest([input.head, input.base, input.tests.runner, ...input.tests.names]);
+			const [known] = await c.db.execute<{ result: BaseTestResult }>("SELECT result FROM base_test WHERE key=?", key);
+			if (c.vars.baseTest === key) return "pending";
+			if (known) return known.result;
+			if (c.vars.baseTest) return "pending";
+			c.vars.baseTest = key;
+			// A sandbox check can outlast an actor RPC. The CI poll collects its receipt on the next reading.
+			const check = async () => {
+				const claimed = await c.db.execute("INSERT OR IGNORE INTO base_test VALUES (?, 'unknown') RETURNING key", key);
+				if (!claimed.length) return;
+				const result = await testSessionBase(c, meta, repo, input);
+				await c.db.execute("UPDATE base_test SET result=? WHERE key=?", result, key);
+			};
+			void c.keepAwake(check().catch(() => { /* A lost attempt keeps its inconclusive receipt. */ }).finally(() => { delete c.vars.baseTest; }));
+			return "pending";
 		},
 
 		internalPublish: async (c, input: { key: string; title: string; body: string; blockedNetwork?: BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number } }): Promise<ItemPublishAnswer> => {

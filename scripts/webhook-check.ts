@@ -648,6 +648,8 @@ async function run() {
 			try {
 				ci(item.head, "pending");
 				await delivered("status", { sha: item.head, state: "success" });
+				await until("automatic wait on pending CI", async () => (await item.view()).run?.autoSteps === 1, 25_000);
+				await delivered("status", { sha: item.head, state: "success" });
 				const q = await until("CI timeout question", async () => (await item.view()).question, 25_000);
 				await g2User.actOnItem({ id: item.id, action: { kind: "answer", question: q.id, choice: "hand_over" } });
 				await until("unfinished handover check", async () => (await item.view()).verifiedCheck?.conclusion === "action_required");

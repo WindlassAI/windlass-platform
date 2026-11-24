@@ -95,9 +95,13 @@ const DESCRIPTION = [
 	"The result says what was published and gives the pull request's address, or says why nothing was published. Tell the user what it says, and do not try another way to publish.",
 ].join(" ");
 
+export const BUILDER_ASSUMPTIONS = 'When the task leaves something open, choose the most reasonable option, record it in your report as "Assumed: …", and go on.';
+export const ASK_WHEN_BLOCKED = "Use ask_person only when blocked on a product decision you cannot settle from the repository, the task or its acceptance criteria.";
+
 const reportDescription = (screenshots: boolean, push: boolean) => [
 	"File your report on this turn's work, for the person who reviews it: a title and a description for the pull request, where the reader should look, and what you are unsure of.",
 	`Call it once, at the end of your turn, after the work is done; a later call replaces the report. The platform opens the pull request itself once your turn has ended, and pushes ${push ? "whatever you did not push with `push`" : "your work"}.`,
+	BUILDER_ASSUMPTIONS,
 	screenshots ? "Screenshots: files you saved with `wlp-shot` under `.wlp-shots/`; they are shown on the item's page to the person, labelled as yours." : "Screenshots are unavailable in this sandbox. File your report without them.",
 	"Whether the work is ready is decided from the checks and CI, not from the report: say plainly what you did not finish or could not verify.",
 ].join(" ");
@@ -120,9 +124,8 @@ const fetchBaseDescription = (fetches?: number) => [
 export const ASK_LIMITS = { questionChars: 1_000, options: 4, optionChars: 120 } as const;
 
 const ASK_DESCRIPTION = [
-	"Ask the person who owns this work item a question you cannot go on without, then end your turn: their answer comes as your next message.",
-	"Ask only for a decision the task leaves open and that you cannot settle from the repository, the task or its acceptance criteria.",
-	"Do not ask for permission, for anything you can find out yourself, or to have your work checked: decide, and say in your report's concerns what you decided.",
+	ASK_WHEN_BLOCKED,
+	BUILDER_ASSUMPTIONS,
 	"Write the question plainly, say what you will do with each answer, and give up to 4 short options when the answer is one of a few.",
 	"The call is answered at once. The question waits on the item's page for as long as the person takes, which can be days; your work stays as it is meanwhile. End your turn right after asking.",
 	"At most one question per turn.",
@@ -334,7 +337,7 @@ export const ASK_TAKEN = "Recorded as a question to the person. End your turn no
 /** A second question in one turn. */
 export const ASK_AGAIN = "You already asked in this turn. End your turn; the answer comes as your next message.";
 /** No question offered to this turn. */
-export const ASK_NONE_LEFT = "This turn may not ask the person. Decide yourself, say what you decided in your report's concerns, and go on.";
+export const ASK_NONE_LEFT = `This turn may not ask the person. ${BUILDER_ASSUMPTIONS}`;
 
 /** What a call of `ask_person` comes to: the question to record (null when none is), what the agent is told, and the timeline's line. */
 export interface AskTaken {

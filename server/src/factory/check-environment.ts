@@ -38,6 +38,7 @@ const PACKAGE_MANAGER: readonly RegExp[] = [
 const NETWORK_REFUSAL = /\b(?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ENETUNREACH|EHOSTUNREACH)\b|getaddrinfo|Temporary failure in name resolution|Could not resolve host|Network is unreachable/;
 /** What fetches a tool: corepack, or a package registry. */
 const TOOL_FETCH = /corepack|registry\.npmjs\.org|registry\.yarnpkg\.com|ERR_PNPM_META_FETCH_FAIL|pypi\.org|files\.pythonhosted\.org|proxy\.golang\.org|crates\.io/i;
+const REGISTRY_OUTAGE = /\b(?:502 Bad Gateway|503 Service Unavailable|504 Gateway Timeout|E50[234]|ERR_PNPM_FETCH_50[234])\b/i;
 const NOT_FOUND = /command not found|: not found|No such file or directory/;
 
 // eslint-disable-next-line no-control-regex
@@ -58,7 +59,7 @@ export function environmentFailure(check: Pick<VerifiedCheck, "status" | "exitCo
 	if (check.status !== "failed" && check.status !== "could_not_start") return null;
 	const out = lines(check.output ?? "");
 	if (out.some((line) => TOOL_FETCH.test(line))) {
-		const refused = out.find((line) => NETWORK_REFUSAL.test(line));
+		const refused = out.find((line) => NETWORK_REFUSAL.test(line) || (TOOL_FETCH.test(line) && REGISTRY_OUTAGE.test(line)));
 		if (refused !== undefined) return { kind: "network", line: cut(refused) };
 	}
 	const refused = out.find((line) => PACKAGE_MANAGER.some((pattern) => pattern.test(line)));

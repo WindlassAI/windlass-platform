@@ -62,12 +62,12 @@ import { budgetStop, itemAgent, newAgent, noSpend, noteAgentTurn, retryAt, spell
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import { environmentFailure, outputExcerpt, type EnvironmentFailure } from "./check-environment.js";
 import type { ChoiceId, CiProgress, EarlierFinding, Fact, FeatureJob, HandoffReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemSpend, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
-import { PUBLISH_SERVER, REPORT_TOOL } from "../agent-publish.js";
+import { ASK_WHEN_BLOCKED, BUILDER_ASSUMPTIONS, PUBLISH_SERVER, REPORT_TOOL } from "../agent-publish.js";
 import { REVIEW_TOOL, type PersonDecision } from "./reviewer-task.js";
 import { runAnywayWords, sources, thirdParty, untrustedWords } from "./untrusted.js";
 import { REVIEW_OFF_REASON, openFindings, openFingerprint, reviewAlsoText, reviewFixText } from "./review.js";
 import { harnessName } from "../sandbox/harnesses.js";
-import { ciFingerprint, ciSentence, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
+import { ciFingerprint, ciSentence, failureFingerprint, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
 
 /**
  * §2.1 and §2.4. Design constants, not settings: none is a limit a person sets. Rounds of fixing are not
@@ -89,9 +89,6 @@ export const RULES = {
 	turnBackstop: 60,
 	/** Cut-off turns of one step (deploys, restarts) before it asks: the infrastructure's, not the agent's. */
 	interruptions: 3,
-	/** Turns of one step whose sandbox could not be prepared, tried again on their own before the person is asked. */
-	sandboxRetries: 1,
-	childSandboxRetryMinutes: [2, 5, 5],
 	/** Automatic tries after a provider's usage limit, each waiting for its reset. */
 	providerRetries: 3,
 	publishTries: 3,
@@ -102,6 +99,54 @@ export const RULES = {
 	/** The person's decisions an item keeps for its reviewer (`FactoryItem.decisions`): the newest. */
 	personDecisions: 12,
 } as const;
+
+type AutoChoice = ChoiceId | "rerun_ci";
+type PolicyStep = { choices: AutoChoice[]; afterMs: number };
+const step = (choice: AutoChoice, afterMs = 0, fallback?: AutoChoice): PolicyStep =>
+	({ choices: fallback ? [choice, fallback] : [choice], afterMs });
+const sixHours = 6 * 60 * MINUTE;
+
+/** One allowance per position per run. Fallbacks share a position. Waiting rows recheck availability until their deadline. */
+const AUTO_POLICY = {
+	sandbox_failed: [step("again"), step("fresh_sandbox", 2 * MINUTE)],
+	turn_start: [step("again", 30_000), step("again", MINUTE)],
+	summary_missing: [step("again"), step("again")],
+	no_change: [step("again")],
+	out_of_memory: [step("larger_sandbox", 0, "again")],
+	check_environment: [step("again")],
+	subtask_checks: [step("run_checks"), step("ci_alone")],
+	ci_timeout: [step("rerun_ci"), step("update_from_base"), step("wait")],
+	feature_ahead: [step("update_feature")],
+	integration: [step("again"), step("again")],
+	feature_update: [step("update_feature"), step("update_feature")],
+	sandboxes: sixHours,
+	placement_refused: sixHours,
+	machine_away: sixHours,
+};
+type Policy = Exclude<keyof typeof AUTO_POLICY, "sandboxes" | "placement_refused" | "machine_away">;
+
+/** Select and charge one eligible choice. Missing positions are skipped, never revisited. */
+function automatic(c: Change, policy: Policy, evidence: string, offered: readonly AutoChoice[], resume?: TurnPlan | null) {
+	if (backstopTurns(c.item) >= RULES.turnBackstop) return null;
+	const history = c.run.autoHistory?.[policy] ?? [];
+	const fingerprint = failureFingerprint([policy, evidence], []);
+	const steps = AUTO_POLICY[policy];
+	// The same failure again is not retried with the same choice; a different next step (a fresh sandbox after a retry) still runs.
+	const triedHere = new Set(history.filter(step => step.fingerprint === fingerprint).flatMap(step => steps[step.position]!.choices));
+	for (let position = (history.at(-1)?.position ?? -1) + 1; position < steps.length; position++) {
+		const { choices, afterMs } = steps[position]!;
+		const choice = choices.find(id => offered.includes(id));
+		if (!choice) continue;
+		if (triedHere.has(choice)) return null;
+		if (resume && turnBudgetStop(c)) return null;
+		(c.run.autoHistory ??= {})[policy] = [...history, { position, fingerprint }];
+		c.run.autoSteps = (c.run.autoSteps ?? 0) + 1;
+		const label = choice === "rerun_ci" ? "Rerun interrupted CI" : CHOICES[choice];
+		c.say(`Retried automatically (${history.length + 1} of ${steps.length}): ${label}. ${evidence.split("\n")[0]!.slice(0, 400)}`);
+		return { choice, afterMs };
+	}
+	return null;
+}
 
 /** Keeps the person's own words to the work, for the second reviewer: they are the person's decisions, which stand over the task. */
 function decided(item: FactoryItem, decision: PersonDecision): void {
@@ -279,7 +324,10 @@ function apply(c: Change, fact: Fact): boolean {
 			return true;
 		}
 		case "update_feature":
-			return requestFeatureUpdate(c, fact.target, fact.request, fact.child);
+			if (fact.automatic && (item.run?.autoHistory?.feature_ahead?.length || backstopTurns(item) >= RULES.turnBackstop)) return false;
+			if (!requestFeatureUpdate(c, fact.target, fact.request, fact.child)) return false;
+			if (fact.automatic) automatic(c, "feature_ahead", fact.target!, ["update_feature"]);
+			return true;
 		case "feature_updated": {
 			const update = item.featureUpdate;
 			if (!update || update.key !== fact.key || item.joining?.child !== item.id || item.joining.key !== fact.key) return false;
@@ -293,7 +341,7 @@ function apply(c: Change, fact: Fact): boolean {
 			}
 			if (FINAL.has(item.state) || item.state === "failed" || item.machineRemoved) return true;
 			if ("problem" in fact.result) {
-				ask(c, "feature_update", fact.result.problem, [{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], null, null);
+				ask(c, "feature_update", fact.result.problem, [{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], null, null, undefined, { target: update.target });
 			} else if (c.run.step.kind === "ci") {
 				c.run.ci = ciProgress(fact.result.head, c.at, null, c.run.ci?.webhooks ?? false);
 				readUpdatedCi(c);
@@ -555,13 +603,14 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "fea
 				if (!job.route || job.placement) return false;
 				const fit = choosePlacement(job.task, job.route, fact.inventory, job.warm, c.at);
 				if (fit.decision) {
+					delete job.placementWaitSince;
 					job.placement = fit.decision;
 					delete job.wait;
 					dispatchJob(c, job);
 					return true;
 				}
-				if (fit.refused !== undefined) return placementRefused(c, job, fit.refused);
-				sentence = fit.wait;
+				if (fit.refused !== undefined && fit.permanent) return placementRefused(c, job, fit.refused);
+				sentence = fit.refused ?? fit.wait;
 				providerUntil = fit.providerUntil;
 				accountKey = fit.accountKey;
 				dailyCap = fit.dailyCap;
@@ -573,7 +622,17 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "fea
 				accountKey = fact.accountKey;
 				dailyCap = fact.dailyCap;
 			}
-			const retry = placementRetryAt(c.at, providerUntil, dailyCap);
+			let retry = placementRetryAt(c.at, providerUntil, dailyCap);
+			if (providerUntil === undefined && !dailyCap) {
+				job.placementWaitSince ??= c.at;
+				const deadline = job.placementWaitSince + AUTO_POLICY.placement_refused;
+				if (c.at >= deadline) {
+					job.placementRefusal = sentence;
+					job.wait = sentence;
+					return askPlacement(c, job);
+				}
+				retry = Math.min(retry, deadline);
+			} else delete job.placementWaitSince;
 			c.state("waiting", { reason: providerUntil !== undefined ? "provider" : dailyCap ? "capacity" : "machine", accountKey, sentence, retryAt: retry });
 			job.wait = sentence;
 			dispatchJob(c, job, retry);
@@ -622,7 +681,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "fea
 			} else ask(c, "publish_refused", fact.reason, [choice("give_up")], null, null);
 			return true;
 		case "sandbox_retry":
-			if (fact.key !== key || !c.item.parent || c.item.question || step.turn !== null || c.item.wait?.reason !== "capacity" || fact.at < (c.item.wait.retryAt ?? Infinity)) return false;
+			if (fact.key !== key || c.item.question || step.turn !== null || c.item.wait?.reason !== "capacity" || fact.at < (c.item.wait.retryAt ?? Infinity)) return false;
 			nextTurn(c, fact.plan);
 			return true;
 		case "provider_retry":
@@ -643,16 +702,8 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "fea
 			const wait = step.kind === "review" && run.review
 				? { ...fact.wait, sentence: `Second review of ${shortSha(run.review.head)}. ${fact.wait.sentence}` }
 				: fact.wait;
-			// The hosted cap on kept sandboxes: not a wait the item sits out unseen. The person is asked once in this step, with what
-			// holds the places; the turn stays queued meanwhile and starts as soon as one is freed.
-			if (wait.reason === "sandboxes") {
-				if (c.item.question?.kind === "sandboxes") return false;
-				if (!step.capAsked) {
-					step.capAsked = true;
-					ask(c, "sandboxes", wait.sentence, [choice("wait"), choice("give_up")], "sandboxes", null);
-					return true;
-				}
-			}
+			if (c.item.question) return false;
+			if (now?.reason === wait.reason && capacityDeadline(c, wait.reason, now.since, wait.sentence)) return true;
 			if (now !== null && now.reason === wait.reason && now.sentence === wait.sentence && now.retryAt === wait.retryAt) return false;
 			if (now?.reason !== wait.reason) c.say(wait.sentence);
 			c.state("waiting", wait);
@@ -667,7 +718,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "fea
 			if (fact.key !== key || step.turn !== "delivered") return false;
 			step.turn = "started";
 			// A place was freed and the turn has its sandbox: the question about the cap is answered by that.
-			if (c.item.question?.kind === "sandboxes") c.item.question = null;
+			if (c.item.question?.kind === "sandboxes" || c.item.question?.kind === "machine_away") c.item.question = null;
 			c.state("working");
 			c.say("The turn started.");
 			checkTurn(c);
@@ -675,6 +726,8 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "fea
 		case "turn_running":
 			// Asked while delivered too: a turn whose slot was granted and never taken (a server stopped in between) is noticed.
 			if (step.turn === null || fact.key !== `${key}/check${step.checks}`) return false;
+			const wait = c.item.wait;
+			if (wait) capacityDeadline(c, wait.reason, wait.since, wait.sentence);
 			checkTurn(c);
 			return true;
 		case "turn_paused": {
@@ -695,7 +748,7 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "fea
 			c.state("working");
 			return true;
 		case "machine_away":
-			if (fact.key !== key || step.turn !== "started" || step.awayAsked || c.item.question) return false;
+			if (fact.key !== key || step.turn !== "started" || step.awayAsked || c.item.question || c.item.wait?.reason !== "machine" || c.at < (fact.deadline ?? fact.since + AUTO_POLICY.machine_away)) return false;
 			step.awayAsked = true;
 			ask(c, "machine_away", `${fact.machine ? `The machine “${fact.machine}”` : "The machine"} has been offline since ${clock(fact.since)} UTC, and this item's turn is paused until it is back. Keep waiting, or give up on the item. To run it elsewhere, give up and start it again on another place.`, [choice("wait"), choice("give_up")], null, null);
 			return true;
@@ -724,12 +777,12 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "update_feature" | "fea
 			// Commit the claim and the next poll before the POST. Replaying the effect cannot request a second run.
 			(c.item.ciReruns ??= {})[fact.head] = { jobs: fact.jobs };
 			step.attempt++;
-			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the cancelled checks.");
+			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the interrupted checks.");
 			return true;
 		case "ci_read":
 			if ((step.kind !== "ci" && step.kind !== "handoff") || fact.key !== key || fact.head !== run.ci?.head) return false;
-			ciRead(c, fact);
-			if (fact.featureTarget && c.item.question && featureCiQuestion(c.item))
+			decideCi(c, fact);
+			if (fact.featureTarget && c.item.question && featureCiQuestion(c.item) && !c.item.question.choices.some(option => option.id === "update_feature"))
 				c.item.question.choices.splice(-1, 0, featureUpdateChoice(fact.featureTarget));
 			return true;
 		case "pr_read":
@@ -772,8 +825,9 @@ function firstPlan(item: FactoryItem, note: string | null): TurnPlan {
 }
 
 function singleFirstPlan({ task, mode, featurePlan, untrusted }: FactoryItem, note: string | null): TurnPlan {
-	const text = withNote(taskText(task), note);
-	if (mode === "orchestrate") return { ...IMPLEMENT, kind: "refine", charge: "plan", text: `Read the repository. File a proposal with file_plan. Suggest a single item for small or unverifiable work. Include open questions and budget each verifiable subtask.\n\n${text}`, ...marked(untrusted) };
+	const taskWithNote = withNote(taskText(task), note);
+	if (mode === "orchestrate") return { ...IMPLEMENT, kind: "refine", charge: "plan", text: `Read the repository. File a proposal with file_plan. Suggest a single item for small or unverifiable work. Include open questions and budget each verifiable subtask.\n\n${taskWithNote}`, ...marked(untrusted) };
+	const text = `${taskWithNote}\n\n${BUILDER_ASSUMPTIONS} ${ASK_WHEN_BLOCKED}`;
 	if (featurePlan?.status === "approved") {
 		const { goal, requirements, acceptance, outOfScope } = featurePlan.spec;
 		const spec = [
@@ -806,6 +860,7 @@ function beginRun(c: Change, plan: TurnPlan): void {
 	}
 	item.run = {
 		n: (before?.n ?? 0) + 1,
+		autoSteps: 0,
 		startedAt: c.at,
 		endedAt: null,
 		stopReason: null,
@@ -967,6 +1022,15 @@ const backstopTurns = (item: FactoryItem): number => (item.mode === "orchestrate
 /** The failures this run already had a fix turn for (the stuck detector): a run stored before they were kept has its last one. */
 const failuresOf = (run: Run): string[] => run.failures ?? (run.lastFailure === null ? [] : [run.lastFailure]);
 
+function turnBudgetStop(c: Change) {
+	const { item } = c;
+	const working = item.workingSince === null ? 0 : Math.max(0, c.at - item.workingSince) / 1000;
+	const spent = { ...item.spent, activeSeconds: item.spent.activeSeconds + working };
+	// A feature's own turns (planning, summary, review) are held to its own allowance; its subtasks hold to theirs.
+	const feature = item.mode === "orchestrate";
+	return budgetStop(feature ? { ...item.budget, tokens: ownTokens(item) } : item.budget, feature ? ownSpent(item, spent) : spent, item.place);
+}
+
 /** Starts the turn of `plan`, unless a stop rule holds: then the person is asked, and the turn is what "go on" resumes. */
 function nextTurn(c: Change, plan: TurnPlan): void {
 	const { item, run } = c;
@@ -979,11 +1043,7 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	if (plan.charge === "interruptions" && run.step.interruptions >= RULES.interruptions) return stop(c, "interruptions", `This step was cut off ${RULES.interruptions} times, by deploys or restarts.`, plan);
 	if (backstopTurns(item) >= RULES.turnBackstop) return stop(c, "turns", `This item has taken ${RULES.turnBackstop} turns without finishing. Look at its log before it goes on.`, plan);
 
-	const working = item.workingSince === null ? 0 : Math.max(0, c.at - item.workingSince) / 1000;
-	const spent = { ...item.spent, activeSeconds: item.spent.activeSeconds + working };
-	// A feature's own turns (planning, summary, review) are held to its own allowance; its subtasks hold to theirs.
-	const feature = item.mode === "orchestrate";
-	const over = budgetStop(feature ? { ...item.budget, tokens: ownTokens(item) } : item.budget, feature ? ownSpent(item, spent) : spent, item.place);
+	const over = turnBudgetStop(c);
 	if (over !== null) return askBudget(c, over.cause, over.sentence, plan);
 
 	if (plan.fingerprint !== null) {
@@ -1023,6 +1083,23 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	checkTurn(c);
 }
 
+/** The queue can keep reporting the same wait even when no new capacity event arrives. */
+function capacityDeadline(c: Change, reason: string, since: number, sentence: string): boolean {
+	const step = c.run.step;
+	if (c.item.question) return false;
+	if (reason === "sandboxes" && !step.capAsked && c.at >= since + AUTO_POLICY.sandboxes) {
+		step.capAsked = true;
+		ask(c, "sandboxes", sentence, [choice("wait"), choice("give_up")], "sandboxes", null);
+		return true;
+	}
+	if (reason === "machine" && step.turn === "delivered" && !step.awayAsked && c.at >= since + AUTO_POLICY.machine_away) {
+		step.awayAsked = true;
+		ask(c, "machine_away", sentence, [choice("wait"), choice("give_up")], null, null);
+		return true;
+	}
+	return false;
+}
+
 function checkTurn(c: Change): void {
 	const step = c.run.step;
 	step.checks += 1;
@@ -1031,30 +1108,11 @@ function checkTurn(c: Change): void {
 
 /**
  * The session could not prepare the turn's sandbox (`sandboxFailed`): the agent never ran, so this is not one of the
- * step's cut-offs. A child backs off between attempts so siblings have time to free capacity.
+ * step's cut-offs. The recovery policy covers the current and fresh sandbox attempts.
  */
 function sandboxFailed(c: Change, said: string, resume: TurnPlan): void {
-	const step = c.run.step;
-	step.sandboxFailures = (step.sandboxFailures ?? 0) + 1;
 	const reason = said.trim().replace(/[.\s]+$/, "");
-	if (c.item.parent) {
-		const minutes = RULES.childSandboxRetryMinutes[step.sandboxFailures - 1];
-		if (minutes !== undefined) {
-			const at = c.at + minutes * MINUTE;
-			const sentence = `The sandbox could not be prepared for the turn (${reason}). Retrying in ${minutes} minutes (retry ${step.sandboxFailures} of ${RULES.childSandboxRetryMinutes.length}).`;
-			c.say(sentence);
-			c.state("waiting", { reason: "capacity", sentence, retryAt: at });
-			c.effects.push({ kind: "sandbox_retry", key: c.key, at, plan: resume });
-			return;
-		}
-	} else if (step.sandboxFailures <= RULES.sandboxRetries) {
-		c.say(`The sandbox could not be prepared for the turn (${reason}); the step is tried again.`);
-		return nextTurn(c, resume);
-	}
-	// "Try again" gets a fresh retry allowance.
-	const attempts = c.item.parent ? `after ${RULES.childSandboxRetryMinutes.length} automatic retries` : "twice in a row";
-	step.sandboxFailures = 0;
-	const text = `The sandbox could not be prepared for the turn, ${attempts}: ${reason}. The agent did not run. Try again in the same sandbox, or start this step on a fresh sandbox: that one starts from the repository on GitHub, and what was not pushed from the old sandbox is lost with it.`;
+	const text = `The sandbox could not be prepared for the turn: ${reason}. The agent did not run. A fresh sandbox starts from the repository on GitHub and loses any unpushed work.`;
 	ask(c, "sandbox_failed", text, [choice("again"), choice("fresh_sandbox"), ...handOverAny(c.item), choice("give_up")], null, resume);
 }
 
@@ -1072,8 +1130,7 @@ function outOfMemory(c: Change, memory: OutOfMemory, resume: TurnPlan): void {
 	}
 	const larger = memory.larger;
 	const text = `${outOfMemoryWords(memory, larger ? [larger] : [])} The agent's turn did not finish. ${larger ? `Go on in a ${larger} sandbox: it starts from the repository on GitHub, and what was not pushed from the old sandbox is lost with it. Or try again in the same one.` : "Try again, or give it up."}`;
-	ask(c, "out_of_memory", text, [...(larger ? [choice("larger_sandbox")] : []), choice("again"), ...handOverAny(c.item), choice("give_up")], null, resume);
-	if (larger && c.item.question) c.item.question.largerSize = larger;
+	ask(c, "out_of_memory", text, [...(larger ? [choice("larger_sandbox")] : []), choice("again"), ...handOverAny(c.item), choice("give_up")], null, resume, undefined, { largerSize: larger });
 }
 
 const OUTCOME_WORDS: Partial<Record<TurnOutcome, string>> = { stopped: "was stopped", failed: "failed", interrupted: "was cut off", error: "could not run" };
@@ -1132,18 +1189,17 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	// The agent asked to leave its sandbox, which this profile never allows: nothing of the turn is judged, and trying again
 	// would most likely ask the same. The person files the work again where commands run unasked, or gives up.
 	if (fact.escaped) return ask(c, "turn_refused", sandboxEscapeQuestion(item, fact.escaped), [...handOver(item), choice("give_up")], null, null);
-	const result = gateResult(fact.outcome, fact.verified);
+	const result = gateResult(fact.outcome, fact.verified, kind === "run_checks");
 	// Refused on "Docker, hardened" for someone else's text: the person may run that very turn anyway, labelled only.
 	if (fact.refused && fact.untrustedRefusal?.sources.length) {
 		const resume: TurnPlan = { ...IMPLEMENT, kind, ...fact.untrustedRefusal.retry, newStep: false };
 		return ask(c, "turn_refused", `The agent's turn could not start. ${fact.refused}`, [...handOver(item), choice("give_up"), choice("run_anyway")], null, resume);
 	}
-	// Refused by the session before the agent ran (an old Windlass, a conversation it cannot open): no cut-off, and no use trying
-	// again on its own. The person is asked, with the session's own sentence.
+	// A startup failure uses its own retry allowance. Sign-in and other policy refusals need the owner.
 	if (fact.refused) {
 		const resume: TurnPlan = { ...IMPLEMENT, kind, text: `Your last turn could not start, so nothing of it reached you. Carry on with the task:\n\n${taskText(item.task)}`, newStep: false, ...marked(item.untrusted) };
 		// Two sentences: the session's own may be several, and starts with a capital.
-		return ask(c, "turn_refused", `The agent's turn could not start. ${fact.refused}`, [choice("again"), ...handOver(item), choice("give_up")], null, resume);
+		return ask(c, "turn_refused", `The agent's turn could not start. ${fact.refused}`, [choice("again"), ...handOver(item), choice("give_up")], null, resume, undefined, { policy: fact.policyRefusal ? undefined : "turn_start" });
 	}
 	// The builder asked its person (`ask_person`) and was told the question is recorded: it is asked, even of a turn cut short.
 	// Nothing of the turn is judged: the workspace and any pushed head stay as they are, and the answer resumes this step.
@@ -1166,7 +1222,7 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		return nextTurn(c, { ...IMPLEMENT, kind, text: "You were interrupted. Continue from where you were.", newStep: false, charge: "interruptions" });
 	}
 	if (kind === "summary") {
-		if (!fact.report) return ask(c, "turn_refused", "The final summary was not filed.", [choice("again"), choice("give_up")], null, { ...IMPLEMENT, kind });
+		if (!fact.report) return ask(c, "turn_refused", ["The final summary was not filed.", fact.reportProblem].filter(Boolean).join(" "), [choice("again"), choice("give_up")], null, { ...IMPLEMENT, kind }, undefined, { policy: "summary_missing" });
 		c.enter("publish"); c.effects.push({ kind: "describe_feature", key: c.key }); return;
 	}
 	// Only an orchestrated feature plans (`singleFirstPlan`): one implementer is given the task.
@@ -1179,7 +1235,7 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	}
 	// A checks-only turn can verify the existing commit. Publish confirms its SHA before CI is read.
 	if (!fact.changes && kind !== "run_checks") {
-		const resume: TurnPlan = { ...IMPLEMENT, kind, text: "Your last turn changed nothing. Look again at what was asked, and make the change." };
+		const resume: TurnPlan = { ...IMPLEMENT, kind, text: "You changed nothing. Finish the task or use report to explain why it needs no change." };
 		return ask(c, "no_change", "The agent ended its turn without changing anything.", [choice("again"), ...handOver(item), choice("give_up")], null, resume);
 	}
 
@@ -1188,7 +1244,7 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		if (run.lastFailure === NO_GATE) run.lastFailure = null;
 	}
 	c.enter("gate");
-	run.gate = { turn: fact.key, outcome: fact.outcome, verified: fact.verified, flags: fact.flags };
+	run.gate = { turn: fact.key, ...(kind === "run_checks" && { forcedChecks: true }), outcome: fact.outcome, verified: fact.verified, flags: fact.flags };
 	if (result === "fail" && fact.verified !== null) {
 		// Every check that failed did so because the sandbox could not run it: that says nothing about the code, and
 		// another turn of fixing would only fail the same way. The person is asked instead.
@@ -1275,7 +1331,7 @@ function askEnvironment(c: Change, kind: TurnStepKind, failed: Array<{ check: Ve
 	c.say(`The checks could not run in the sandbox: ${names}. The agent was not sent back.`);
 	const resume: TurnPlan = {
 		...IMPLEMENT, kind,
-		text: `The platform's checks could not run in your sandbox: ${failed.map(({ check }) => `${check.name} (\`${check.command}\`)`).join(", ")}. That was the environment, not your code, and the person has now fixed it. Run ${failed.length === 1 ? "that command" : "those commands"} yourself; if it fails because of the code, fix the code. Then end your turn.`,
+		text: `The platform's checks could not run in your sandbox: ${failed.map(({ check }) => `${check.name} (\`${check.command}\`)`).join(", ")}. That was the environment, not your code, so the platform is checking again. Run ${failed.length === 1 ? "that command" : "those commands"} yourself; if it fails because of the code, fix the code. Then end your turn.`,
 	};
 	ask(c, "check_environment", environmentQuestion(failed), [{ id: "again", label: "Run the step again" }, ...handOver(c.item), choice("give_up")], null, resume, undefined,
 		{ check: { name: check.name, command: check.command, exitCode: check.exitCode, kind: failure.kind, line: failure.line, excerpt: outputExcerpt(check.output) } });
@@ -1402,7 +1458,8 @@ function conflictPlan(base: string): TurnPlan {
 		charge: "conflict", fingerprint: `conflict:${base}`, fetchBase: base };
 }
 
-function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
+/** Apply the fixed CI rules to one pinned reading, including infrastructure recovery. */
+function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	const { run } = c;
 	const ci = run.ci;
 	if (ci === null) return;
@@ -1441,7 +1498,8 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		return handoff(c, review);
 	}
 
-	if (c.item.mode === "orchestrate" && (fact.mergeable === false || state === "failed" || ci.moved)) {
+	const environmentOnly = state === "failed" && reading.kind === "read" && reading.runs.every(check => check.state !== "failed" || check.environment);
+	if (c.item.mode === "orchestrate" && (fact.mergeable === false || (state === "failed" && !environmentOnly) || ci.moved)) {
 		const reason = ci.moved ? "The feature PR moved after the last verified commit." : fact.mergeable === false ? "The feature PR conflicts with its base." : "CI failed on the complete feature.";
 		const retry = ci.moved ? [] : [{ id: "wait" as const, label: "Check the feature PR again" }];
 		return ask(c, "rounds", reason, [...retry, ...handOver(c.item), choice("give_up")], null, null);
@@ -1455,47 +1513,62 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	const baseAhead = fact.baseAhead ?? 0;
 	const canUpdate = baseAhead > 0 && isSha(ci.head) && ci.head === c.item.head && c.item.mode !== "orchestrate" &&
 		(!failuresOf(run).includes(`conflict:${c.item.task.base}`) || newerPartBase(c.item, ci));
-	const question = (sentence: string, plan: TurnPlan | null = null) => {
+	const ciEvidence = [ci.head, state, ...(reading.kind === "read" ? reading.runs.map(r => [r.app, r.name, r.conclusion, r.jobId].join("/")).sort() : [])].join(" ");
+	const question = (sentence: string, plan: TurnPlan | null = null, infrastructure = false) => {
 		const choices = plan ? [{ id: "again" as const, label: "Have the agent fix CI" }] : [choice("wait")];
 		if (canUpdate) sentence += ` The base branch ${c.item.task.base} is ${baseAhead} commit${baseAhead === 1 ? "" : "s"} ahead of this commit.`;
-		return ask(c, "ci_timeout", sentence, [...choices, ...(canUpdate ? [choice("update_from_base")] : []), ...handOver(c.item), choice("give_up")], null, plan);
+		const feature = fact.featureTarget && c.item.parent ? featureUpdateChoice(fact.featureTarget) : null;
+		const policy = feature && fact.featureTargetHead && isSha(fact.featureTargetHead) && !run.autoHistory?.feature_ahead?.length ? "feature_ahead" : infrastructure ? "ci_timeout" : undefined;
+		return ask(c, "ci_timeout", sentence, [...choices, ...(canUpdate ? [choice("update_from_base")] : []), ...(feature ? [feature] : []), ...handOver(c.item), choice("give_up")], null, plan, undefined,
+			{ policy, target: fact.featureTargetHead, evidence: ciEvidence });
 	};
 	if (fact.mergeable === false && !canUpdate) {
 		c.say(`GitHub says the pull request conflicts with ${c.item.task.base}.`);
 		return nextTurn(c, conflictPlan(c.item.task.base));
 	}
+	if (reading.kind === "read" && (state === "cancelled" || (state === "failed" && reading.runs.some(check => check.environment)))) {
+		const interrupted = reading.runs.filter(check => check.state === "cancelled" || check.environment);
+		const eligible = interrupted.filter(check => check.retryRunId);
+		const sentence = state === "cancelled" ? ciSentence(verdictCi(ci)) : "CI reported an environment failure in " + interrupted.map(check => check.name).join(", ") + ".";
+		if (eligible.length && !rerun && isSha(reading.head) && automatic(c, "ci_timeout", ciEvidence, ["rerun_ci"])) {
+			c.say(sentence);
+			c.effects.push({ kind: "rerun_ci", key: c.key, head: reading.head, openItems: fact.openItems,
+				jobs: eligible.map(({ name, jobId, retryRunId, environment }) => ({ name, jobId, retryRunId, ...(environment && { environment }) })) });
+			return;
+		}
+		if (since < CI_POLLING.timeoutMs && rerun?.some(job => !reading.runs.some(check => check.name === job.name) ||
+			(job.jobId && interrupted.some(check => check.jobId === job.jobId)))) {
+			return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the rerun of the interrupted checks.");
+		}
+		if (state === "cancelled" || environmentOnly) return question(sentence, null, true);
+	}
 	switch (state) {
 		case "passed":
 			c.say("CI passed.");
 			return afterCi(c, ci);
-		case "cancelled": {
-			if (reading.kind !== "read") return;
-			const cancelled = reading.runs.filter(check => check.state === "cancelled");
-			const sentence = ciSentence(verdictCi(ci));
-			const eligible = cancelled.filter(check => check.retryRunId);
-			if (eligible.length && !rerun && isSha(reading.head)) {
-				c.say(sentence);
-				c.effects.push({ kind: "rerun_ci", key: c.key, head: reading.head, openItems: fact.openItems,
-					jobs: eligible.map(({ name, jobId, retryRunId }) => ({ name, jobId, retryRunId })) });
-				return;
-			}
-			if (since < CI_POLLING.timeoutMs && rerun?.some(job => !reading.runs.some(check => check.name === job.name) ||
-				(job.jobId && cancelled.some(check => check.jobId === job.jobId)))) {
-				return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the rerun of the cancelled checks.");
-			}
-			return question(sentence);
-		}
 		case "not_permitted":
 			c.say("CI could not be read: GitHub does not let the platform see it.");
-			if (canUpdate && c.item.parent) return question("CI could not be read on this subtask.");
+			if ((canUpdate || fact.featureTarget) && c.item.parent) return question("CI could not be read on this subtask.");
 			return afterCi(c, ci);
 		case "incomplete":
 			c.say(reading.kind === "read" && reading.runs.length === 0 ? "GitHub cut its list of CI's checks short before any could be read." : "CI has more checks than the platform reads; none of those it read failed.");
-			if (canUpdate && c.item.parent) return question("CI could not be read in full on this subtask.");
+			if ((canUpdate || fact.featureTarget) && c.item.parent) return question("CI could not be read in full on this subtask.");
 			return afterCi(c, ci);
 		case "failed": {
 			if (reading.kind !== "read") return;
-			const plan: TurnPlan = { ...IMPLEMENT, kind: "ci_fix", text: ciFixText(ci.head, reading), charge: "ci", fingerprint: ciFingerprint(reading), ...marked([untrustedWords.ci(ci.head)]) };
+			const failed = reading.runs.filter(check => check.state === "failed" && !check.environment);
+			if (failed.some(check => check.baseResult === "pending") && since < CI_POLLING.timeoutMs)
+				return pollCi(c, fact.openItems, null, `Waiting for the same check to finish on ${c.item.task.base}.`);
+			const inherited = failed.filter(check => check.baseResult === "failed");
+			const actionable = failed.filter(check => !check.baseResult);
+			if (!actionable.length || (canUpdate && inherited.length)) {
+				const sentence = inherited.length ? `This check also fails on ${c.item.task.base}; it is not caused by this change.`
+					: `The platform could not confirm whether this check fails on ${c.item.task.base}.`;
+				return ask(c, "ci_timeout", sentence, [...(canUpdate ? [choice("update_from_base")] : []), ...handOver(c.item), choice("wait"), choice("give_up")],
+					null, null, undefined, canUpdate && inherited.length ? { policy: "ci_timeout", evidence: ciEvidence } : {});
+			}
+			const fixes = { ...reading, runs: actionable, logs: reading.logs.filter(log => actionable.some(check => check.name === log.name)) };
+			const plan: TurnPlan = { ...IMPLEMENT, kind: "ci_fix", text: ciFixText(ci.head, fixes), charge: "ci", fingerprint: ciFingerprint(fixes), ...marked([untrustedWords.ci(ci.head)]) };
 			const sentence = ciSentence(verdictCi(ci));
 			if (canUpdate || fact.featureTarget) return question(sentence, plan);
 			c.say(sentence);
@@ -1504,14 +1577,14 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		case "none":
 			if (since >= CI_POLLING.noneAfterMs) {
 				c.say(`No CI ran within ${spellSeconds(CI_POLLING.noneAfterMs / 1000)} of the push.`);
-				if (canUpdate && c.item.parent) return question("No passing CI reported on the subtask push.");
+				if ((canUpdate || fact.featureTarget) && c.item.parent) return question("No passing CI reported on the subtask push.");
 				return afterCi(c, ci);
 			}
 			break;
 		case "skipped":
 			// Waited for as "no CI" is: a job that needs another may not be listed yet.
 			if (since >= CI_POLLING.noneAfterMs) {
-				if (canUpdate && c.item.parent) return question("CI skipped every check on the subtask push.");
+				if ((canUpdate || fact.featureTarget) && c.item.parent) return question("CI skipped every check on the subtask push.");
 				c.say(`CI ran, and nothing in it passed within ${spellSeconds(CI_POLLING.noneAfterMs / 1000)} of the push: every check was skipped or neutral.`);
 				return afterCi(c, ci);
 			}
@@ -1523,7 +1596,7 @@ function ciRead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		}
 		case "pending":
 		case "retry":
-			if (since >= CI_POLLING.timeoutMs) return question(`CI has not finished ${spellSeconds(since / 1000)} after the push.`);
+			if (since >= CI_POLLING.timeoutMs) return question(`CI has not finished ${spellSeconds(since / 1000)} after the push.`, null, state === "pending");
 			break;
 	}
 	pollCi(c, fact.openItems, reading.kind === "rate_limited" ? reading.retryAt : null, ciWaitSentence(ci.head, reading));
@@ -1573,6 +1646,7 @@ export function upgradeSubtaskQuestion(item: FactoryItem): void {
 	if (item.parent && q?.kind === "rounds" && q.text === OLD_SUBTASK_QUESTION && q.choices.length === 1 && q.choices[0].id === "give_up") {
 		q.text = SUBTASK_CHECK_QUESTION;
 		q.choices = subtaskChoices();
+		q.recommended = "run_checks";
 		if (item.wait?.sentence === OLD_SUBTASK_QUESTION) item.wait.sentence = q.text;
 	}
 }
@@ -1596,13 +1670,17 @@ function afterCi(c: Change, ci: CiProgress): void {
 		}
 		if (ci.moved || ci.head !== item.head || ci.last?.state !== "passed" || !isSha(ci.head))
 			return ask(c, "ci_timeout", "CI must pass on the current subtask commit before integration.", [choice("wait"), choice("give_up")], null, null);
-		const gate = ci.gate ? gateResult(ci.gate.outcome, ci.gate.verified) : "unverified";
-		if (gate === "unverified" && !ci.ciAlone) return nextTurn(c, subtaskCheckPlan(ci));
+		const gate = ci.gate ? gateResult(ci.gate.outcome, ci.gate.verified, ci.gate.forcedChecks) : "unverified";
+		const checked = run.autoCheck?.turn === ci.gate?.turn && run.autoCheck?.head === ci.head;
+		const alone = gate === "unverified" && !ci.ciAlone && checked && automatic(c, "subtask_checks", `Local checks did not run on ${ci.head}.`, ["ci_alone"]);
+		if (gate === "unverified" && !ci.ciAlone && !alone)
+			return ask(c, "rounds", SUBTASK_CHECK_QUESTION, subtaskChoices(), null, subtaskCheckPlan(ci), undefined,
+				{ policy: failuresOf(run).includes(NO_GATE) || run.autoCheck ? undefined : "subtask_checks", evidence: ci.head });
 		if (gate === "fail" || gate === "incomplete")
 			return ask(c, "rounds", "The local gate did not finish successfully.", [choice("run_checks"), choice("give_up")], null, null);
 		const record = verdictAt(c, ci);
 		if (gate === "unverified") {
-			const reason = "The person accepted passing CI alone for integration. Local checks did not verify this commit.";
+			const reason = alone ? "Subtask integrated on CI alone: local checks did not run." : "The person accepted passing CI alone for integration. Local checks did not verify this commit.";
 			record.verdict.said.ci += " " + reason;
 			record.words += " " + reason;
 			c.say(reason);
@@ -1949,7 +2027,7 @@ function askPlacement(c: Change, job: FeatureJob) {
 		{ id: "again", label: "Retry allowed places" },
 		{ id: "give_up", label: "Give up the subtask" },
 	];
-	ask(c, "placement_refused", job.task.title + ": " + job.placementRefusal, choices, null, null);
+	ask(c, "placement_refused", job.task.title + ": " + job.placementRefusal, choices, null, null, undefined, { child: job.id });
 	return true;
 }
 
@@ -2328,10 +2406,31 @@ function askRemoved(c: Change): void {
 	ask(c, "machine_removed", "Your machine was removed. This item can no longer work on it.", [...handOver(c.item), choice("give_up")], null, null);
 }
 
-function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, details: Pick<Question, "asked" | "check" | "secret"> = {}): void {
+type Recovery = { policy?: Policy; evidence?: string; target?: string };
+function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, details: Pick<Question, "asked" | "check" | "secret" | "largerSize" | "child"> & Recovery = {}): void {
 	const { item } = c;
 	// The revision this change gives the item: no two questions of an item share it.
-	const question: Question = { id: `${item.id}:q${item.revision + 1}`, kind, text, choices, askedAt: c.at, cause, resume, ...details };
+	const { policy: explicit, evidence = kind === "integration" && item.integration?.url ? text.replace(item.integration.url, "").trim() : text, target, ...fields } = details;
+	const policy = explicit ?? (kind === "integration" || kind === "feature_update" || kind === "sandbox_failed" ||
+		kind === "no_change" || kind === "out_of_memory" || kind === "check_environment" ? kind : undefined);
+	const suggested = policy && AUTO_POLICY[policy].flatMap(step => step.choices).find(id => choices.some(choice => choice.id === id));
+	let recommended = choices[0]!.id;
+	if (suggested && suggested !== "rerun_ci") recommended = suggested;
+	else if (kind === "placement_refused" && item.jobs?.find(job => job.id === fields.child)?.placementWaitSince !== undefined) recommended = "again";
+	const question: Question = { id: `${item.id}:q${item.revision + 1}`, kind, text, choices, recommended, askedAt: c.at, cause, resume, ...fields };
+	const action = policy && automatic(c, policy, evidence, choices.map(option => option.id), resume);
+	if (action && action.choice !== "rerun_ci") {
+		const { choice: picked, afterMs: delay } = action;
+		if (delay && resume) {
+			const at = c.at + delay;
+			c.state("waiting", { reason: "capacity", sentence: `Retrying after ${spellSeconds(delay / 1000)}. ${text}`, retryAt: at });
+			c.effects.push(picked === "fresh_sandbox"
+				? { kind: "fresh_sandbox", key: c.key, at, plan: resume, ...(resume.to === "review" && { to: "review" }) }
+				: { kind: "sandbox_retry", key: c.key, at, plan: resume });
+			return;
+		}
+		if (takeChoice(c, question, { kind: "answer", by: "platform", at: c.at, question: question.id, choice: picked, target }, null, true)) return;
+	}
 	item.question = question;
 	c.state("waiting", { reason: kind === "budget" ? "budget" : "person", sentence, retryAt: null });
 	// The agent's own words stay in the log beside the platform's sentence, once the question is answered too.
@@ -2353,7 +2452,12 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	c.say(answeredWords(picked, note));
 	// The person's note is theirs whatever they chose, but for giving up: a later review of the work is held to it.
 	if (note !== null && fact.choice !== "give_up" && item.run) decided(item, { kind: "answer", run: item.run.n, text: note, question: question.kind, ...(question.kind === "agent_ask" && question.asked?.text && { asked: question.asked.text }) });
-	const refused = item.jobs?.find(j => j.placementRefusal && activeJob(j)) ?? item.jobs?.at(-1);
+	return takeChoice(c, question, fact, note);
+}
+
+function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "answer" }>, note: string | null, auto = false): boolean {
+	const { item } = c;
+	const refused = item.jobs?.find(j => j.id === question.child) ?? item.jobs?.find(j => j.placementRefusal && activeJob(j)) ?? item.jobs?.at(-1);
 	if (fact.choice === "retry" && item.jobs?.length) {
 		retryFeature(c);
 		return true;
@@ -2381,8 +2485,9 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 		case "run_checks": {
 			if (!item.parent || !run.ci) return false;
 			const plan = subtaskCheckPlan(run.ci, note);
-			raise(c, "repeated", undefined, plan);
+			if (!auto) raise(c, "repeated", undefined, plan);
 			nextTurn(c, plan);
+			if (auto && run.step.kind === "run_checks" && run.step.turn === "delivered") run.autoCheck = { turn: c.key, head: run.ci.head };
 			break;
 		}
 		case "update_feature":
@@ -2391,7 +2496,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			if (run.step.kind !== "ci" || !run.ci) return false;
 			c.enter("ci");
 			c.state("waiting", { reason: "ci", sentence: "Waiting for the feature branch to update.", retryAt: null });
-			c.effects.push({ kind: "update_parent_feature", key: c.key, target: fact.target });
+			c.effects.push({ kind: "update_parent_feature", key: c.key, target: fact.target, ...(auto && { automatic: true }) });
 			break;
 		case "update_from_base": {
 			const head = run.ci?.head;
@@ -2469,6 +2574,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			if (question.kind === "placement_refused") {
 				delete refused!.placement;
 				delete refused!.placementRefusal;
+				delete refused!.placementWaitSince;
 				c.state("waiting", { reason: "children", sentence: "Checking the approved places again.", retryAt: null });
 				dispatchJob(c, refused!);
 			} else if (question.kind === "publish_refused") publish(c);
@@ -2490,7 +2596,7 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 			}
 			if (run.lastFailure === "integration/no-ci") run.lastFailure = null;
 			if (run.ci !== null) run.ci.since = c.at;
-			pollCi(c, 0, null, `Waiting for CI on ${shortSha(run.ci?.head ?? "")}, as you asked.`);
+			pollCi(c, 0, null, `Waiting for CI on ${shortSha(run.ci?.head ?? "")}${auto ? "" : ", as you asked"}.`);
 			break;
 		case "hand_over":
 			if (run.ci !== null && run.ci.head === item.head) readForHandoff(c, run.ci, keptReview(run, run.ci));

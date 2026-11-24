@@ -1764,6 +1764,8 @@ export interface ItemStep {
 
 /** One run of the blueprint: an item has a new one when it is retried or sent back. */
 export interface ItemRun {
+	/** Automatic recovery choices taken in this run (zero on older runs). */
+	autoSteps?: number;
 	n: number;
 	startedAt: number;
 	endedAt: number | null;
@@ -1867,6 +1869,8 @@ export interface ItemQuestion {
 	approvalBlock?: string;
 	text: string;
 	choices: Array<{ id: ChoiceId; label: string }>;
+	/** Suggested answer. Older clients and stored questions may omit it. */
+	recommended?: ChoiceId;
 	askedAt: number;
 	secret?: SecretRequest;
 	/**
