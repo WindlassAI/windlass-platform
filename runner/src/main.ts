@@ -19,7 +19,7 @@ import { setupWizard, wantsWizard } from "./setup-run.js";
 import { relayNotes, removeRelay } from "./claude-relay.js";
 import { withLoginVolume } from "./harness-login.js";
 import { harnessImage, imagePins, prepareImages, shotsImage, type MachineHarness } from "./policy.js";
-import { localSizing, storeFlags } from "./sizing.js";
+import { localSizing, sizingFlags, storeFlags } from "./sizing.js";
 import { Executor } from "./docker-executor.js";
 import { requestPair, requestLoginReport, waitForPair } from "./pair-command.js";
 import { egressFlags } from "./egress-policy.js";
@@ -96,7 +96,7 @@ async function main() {
 	if (!sizingCommand && [values["snapshot-disk"], values["snapshot-user"], values["keep-free"]].some(v => v !== undefined))
 		throw new RunnerError("Use --snapshot-disk, --snapshot-user and --keep-free with run or setup.");
 	if (values.spares !== undefined && (!sizingCommand || !/^[012]$/.test(values.spares))) throw new RunnerError("Give --spares 0, 1 or 2 with run or setup.");
-	const limits = { spares: Number(values.spares ?? 1), slots, maxTurns: slots?.max, maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]), store: storeFlags(values) };
+	const limits = { sandboxMemory: sizingCommand ? sizingFlags(values).sandboxMemory : undefined, spares: Number(values.spares ?? 1), slots, maxTurns: slots?.max, maxSandboxes: limit("max-sandboxes", values["max-sandboxes"]), maxRunning: limit("max-running", values["max-running"]), store: storeFlags(values) };
 	if ((values.quick || values["no-tui"]) && command !== "setup") throw new RunnerError("Use --quick and --no-tui with setup.");
 	if (values.quick && !wizard) throw new RunnerError("Use --quick with setup alone, without --harness.");
 	if (wizard) return setupWizard(positionals.slice(1), values);

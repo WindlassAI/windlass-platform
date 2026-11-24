@@ -76,6 +76,7 @@ const operations = {
 	/** The proxy's cumulative snapshot for this turn. A new turn starts its counters before setup. */
 	blockedNetwork: [object({ ...sandbox, turn: positiveLimit, retained: list(object(endpoint), 50) }), object({ broker: fingerprint, hosts: list(refusalEntry, 50), overflow: count })],
 	create: [object({ spare: optional(spareRecipe), profile: machineProfile, mirrorRepo: optional(snapshotKey.repo), size: optional(is<number>(v => positiveLimit(v) && v <= 4)), harness, screenshots: optional(boolean), prepared: optional(object({ ...snapshotKey, inputs: either(fingerprint, oneOf(DEFERRED_INPUTS)), writer: boolean, privateData: boolean })) }), id],
+	seedSpare: [object({ ...sandbox, spare: spareRecipe, screenshots: optional(boolean) }), boolean],
 	hasSnapshot: [object({ repo: snapshotKey.repo }), boolean],
 	saveMirror: [object({ ...sandbox, stage: is<string>(v => typeof v === "string" && /^[0-9a-f]{32}$/.test(v)), partial: boolean }), boolean],
 	saveSnapshot: [object({ ...sandbox, source: snapshotSource, options: optional(object({ timeoutMs: duration })) }), boolean],
@@ -86,7 +87,7 @@ const operations = {
 		blockedNetwork: optional(oneOf(true)),
 		memoryEvents: optional(oneOf(true)),
 		/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */
-		readyKey: optional(fingerprint), readySetup: optional(spareSetup),
+		needsSpareSeed: optional(oneOf(true)), readyKey: optional(fingerprint), readySetup: optional(spareSetup),
 		startTimes: optional(object({ spare: optional(oneOf(true)), image: count, pulled: optional(oneOf(true)), create: count })),
 		/** The Docker image id it was made from (SandboxHandle.image), said only to a server that named `environment-image`. */
 		image: optional(is<string>(v => typeof v === "string" && /^sha256:[a-f0-9]{64}$/.test(v))) }))],

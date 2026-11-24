@@ -38,7 +38,7 @@ import { type ChannelSocket, type ConversationRecord, ConversationLost, ServerCh
 import { machineProfiles } from "../machines/profiles.js";
 import { PROFILE_DENIED, type Args, type Name, type Value } from "../runner/protocol.js";
 import { AttachTickets } from "../machines/ticket.js";
-import { type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type RunnerStartTimes, type SandboxLayer, type Sandboxes, SandboxUserError } from "./api.js";
+import { type ConnectOptions, type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type RunnerStartTimes, type SandboxLayer, type Sandboxes, SandboxUserError } from "./api.js";
 import { SESSION_VOLUME_PROFILES, findProfile } from "./profiles.js";
 import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnModelRelay, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
 import { SandboxWindlass } from "./turn.js";
@@ -752,9 +752,15 @@ class RunnerSandboxes implements Sandboxes {
 		return this.link.channel.authenticated && this.link.request("saveSnapshot", { id, source, options: { timeoutMs: 15 * 60_000 } });
 	}
 
-	async connect(id: string): Promise<TurnSandbox | undefined> {
+	async connect(id: string, options?: ConnectOptions): Promise<TurnSandbox | undefined> {
 		const { link } = this;
 		const found = await link.again("connect", { id });
+		if (found?.needsSpareSeed && link.channel.authenticated && options?.spareSeed) {
+			// Fetch the authorized base off the turn's path. A later create wins over a late reply.
+			void options.spareSeed().then(spare => {
+				if (spare && link.channel.authenticated) return link.request("seedSpare", { id, spare, screenshots: options.screenshots });
+			}).catch(() => {});
+		}
 		return found ? new RunnerHandle(link, id, found) : undefined;
 	}
 

@@ -1,4 +1,9 @@
+import type { HarnessId, SandboxProfileId } from "../contract.js";
 import { count, is, object, optional, text, type Of } from "./check.js";
+
+export function spareProfile(profile: SandboxProfileId, harness?: HarnessId) {
+	return profile === "docker-hardened" || profile === "docker-windlass-sandbox" && (!harness || harness === "windlass" || harness === "codex");
+}
 
 // A spare recipe carries only the repository and its setup. Connected repositories also
 // have an independently observed GitHub head. URLs with embedded credentials are ineligible.

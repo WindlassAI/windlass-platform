@@ -647,7 +647,7 @@ export class DockerSandboxes implements Sandboxes {
 	 * the data went with the sandbox. Left out: it gets one of its own where the provider makes them
 	 * (`DockerSandboxOptions.ownVolumeName`).
 	 */
-	async create(input: CreateSandboxInput & { ownData?: boolean; reservedId?: string; deferredRelayNonce?: string }): Promise<string> {
+	async create(input: CreateSandboxInput & { ownData?: boolean | "required"; reservedId?: string; deferredRelayNonce?: string }): Promise<string> {
 		assertUid(input.uid);
 		const harness = this.options.sessionRelay ? this.options.harness ?? "claude" : undefined;
 		const agent = machineHarness(input.harness ?? harness) ?? CLAUDE;
@@ -667,7 +667,10 @@ export class DockerSandboxes implements Sandboxes {
 		const name = containerName(id);
 		// The reviewer cannot share transcripts or project-wide MCP approvals with the user's other sessions.
 		// A session whose commands run directly in the container gets a volume of its own.
-		const own = !harness && !input.privateData && SESSION_VOLUME_PROFILES.includes(input.profile) && this.options.ownVolumeName !== undefined && input.ownData !== false;
+		// A spare runs repository setup before claim. Even a bubblewrap spare must never mount the shared data.
+		const own = !harness && !input.privateData && this.options.ownVolumeName !== undefined &&
+			(input.ownData === "required" || SESSION_VOLUME_PROFILES.includes(input.profile) && input.ownData !== false);
+		if (input.ownData === "required" && !own) throw new Error("The sandbox requires a private data volume.");
 		const volume = input.privateData || this.options.sessionRelay !== undefined ? null : await this.options.dataVolume(input.uid, own ? id : undefined);
 		const scope = this.mirrorScope;
 		const mirror = input.mirrorRepo && scope ? await gitMirrorMount(this.helperImage, scope, this.machine, input.uid, input.mirrorRepo, { floor: this.limits().free }).catch(() => null) : null;

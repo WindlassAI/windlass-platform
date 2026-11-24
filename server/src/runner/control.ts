@@ -151,6 +151,7 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  * frame with a key they do not know. A name this runner does not know is ignored, so a later
  * server can name more without a new gate.
  *
+ *   spare-reseed     a connect may request a fresh base recipe after the runner restarts
  *   git-mirrors      the report's `gitMirrors`, and the `mirrorRepo` and `saveMirror` operations
  *   egress-domains   the report's `egressDomains`
  *   session-volumes  the report's `sessionVolumes` and a connect's `ownData`; without it, a runner
@@ -170,7 +171,7 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *                    restarted server resumes, so a graceful stop need not end a machine turn
  *                    (runner/journal.ts)
  */
-export const SERVER_CAPABILITIES = ["warm-spares", "spare-setup-times", "git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
+export const SERVER_CAPABILITIES = ["warm-spares", "spare-reseed", "spare-setup-times", "git-mirrors", "egress-domains", "session-volumes", "model-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a

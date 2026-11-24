@@ -106,7 +106,8 @@ Windlass sandbox a volume of its own, `wlp-machine-<machine id>-<raw id>`, when 
 the `session-volumes` capability. The volume carries the machine and pairing labels plus
 `dev.windlass-platform.sandbox=<raw id>`. The runner makes it right before `docker run` and removes it with
 the container on destroy, also when the container was already gone. `prune` removes it with every other
-volume of the pairing. A `docker-windlass-sandbox` session keeps the shared volume: bubblewrap hides the data
+volume of the pairing. A warm Windlass spare on either Docker profile gets its own data volume before
+setup and keeps it after claim. A cold `docker-windlass-sandbox` session keeps the shared volume: bubblewrap hides the data
 directory from its commands, and the user's sessions there keep sharing Windlass's project-wide MCP approvals.
 The reviewer and the Claude Code, OpenCode and Codex harnesses mount no Windlass data volume at all, as before.
 The hosted Docker provider does the same with `wlp-session-data-<uid>-<id>`, labelled with the user and the

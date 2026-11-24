@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { digest } from "../../server/src/sandbox/snapshot-key.js";
 import { validArgs, type Args } from "../../server/src/runner/protocol.js";
-import { spareRecipe, type SpareRecipe, type SpareSetup } from "../../server/src/runner/spare-recipe.js";
+import { spareProfile, spareRecipe, type SpareRecipe, type SpareSetup } from "../../server/src/runner/spare-recipe.js";
 
 export const SPARE_SESSION = "@ready"; // Outside the session id grammar, including on older runners.
 export const SPARE_TTL = 6 * 60 * 60_000;
@@ -13,7 +13,7 @@ export interface SpareSpec {
 
 export function validSpec(value: unknown): value is SpareSpec {
 	if (!value || typeof value !== "object" || !("context" in value) || typeof value.context !== "string" || !("args" in value)) return false;
-	return validArgs("create", value.args) && (value.args.profile === "docker-hardened" || value.args.harness === "codex") &&
+	return validArgs("create", value.args) && spareProfile(value.args.profile, value.args.harness) &&
 		!(value.args.harness && (value.args.prepared || value.args.screenshots)) &&
 		!value.args.prepared?.privateData && !value.args.prepared?.writer && spareRecipe(value.args.spare) &&
 		value.args.mirrorRepo === value.args.spare.connected?.repo && (!value.args.prepared || value.args.prepared.repo === value.args.mirrorRepo);
@@ -41,6 +41,11 @@ interface Entry {
 
 const RECIPE_TTL = 24 * 60 * 60_000;
 
+/** Only fixed reason codes may reach the service log. Docker and setup errors can contain secrets. */
+export class SpareBuildError extends Error {
+	constructor(readonly reason: "disk" | "bound" | "private-data" | "bubblewrap" | "snapshot" | "clone" | "base" | "setup" | "changed-base") { super(reason); }
+}
+
 export class WarmSpares {
 	private entries = new Set<Entry>();
 	private recent?: { spec: SpareSpec; usedAt: number; failures: number; retryAt: number };
@@ -60,8 +65,9 @@ export class WarmSpares {
 		return this.recent?.spec;
 	}
 
-	private discard(e: Entry) {
+	private discard(e: Entry, reason: string) {
 		if (!e.removal) {
+			console.info(`spare.skip id=${e.raw} reason=${reason}`);
 			e.abort.abort();
 			// A cancelled docker run may still create its container. Remove it after the build settles.
 			e.removal = Promise.resolve(e.build).then(() => this.drop(e.raw)).finally(() => this.entries.delete(e));
@@ -71,23 +77,27 @@ export class WarmSpares {
 	async trim(limit = 0, spec?: SpareSpec) {
 		const removals = [];
 		for (const e of this.entries) {
-			if (e.removal || this.now() - e.started >= SPARE_TTL || (spec && key(spec) !== key(e.spec)) || limit === 0)
-				removals.push(this.discard(e));
+			const expired = this.now() - e.started >= SPARE_TTL;
+			const changed = spec && key(spec) !== key(e.spec);
+			if (e.removal || expired || changed || limit === 0)
+				removals.push(this.discard(e, expired ? "expired" : changed ? "recipe-changed" : "capacity"));
 			else limit--;
 		}
 		await Promise.all(removals);
 	}
 	async foreground(spec?: SpareSpec) {
-		await Promise.all([...this.entries].filter(e => e.removal || !spec || !e.ready || key(spec) !== key(e.spec)).map(e => this.discard(e)));
+		await Promise.all([...this.entries].filter(e => e.removal || !spec || !e.ready || key(spec) !== key(e.spec)).map(e => this.discard(e, "foreground")));
 	}
-	async take(spec: SpareSpec, verify: (raw: string, built: SpareSpec) => Promise<boolean>) {
-		await this.trim(2, spec);
+	async take(spec: SpareSpec, verify: (raw: string, built: SpareSpec) => Promise<boolean>, waitForRemoval = true) {
+		const retiring = this.trim(2, spec);
+		if (waitForRemoval) await retiring;
 		const e = [...this.entries].find(e => e.ready && !e.abort.signal.aborted);
 		if (!e) return;
 		this.entries.delete(e); // A claim consumes the sandbox even when verification fails.
 		if (await verify(e.raw, e.spec).catch(() => false)) return { raw: e.raw, setup: e.setup };
 		this.entries.add(e);
-		await this.discard(e);
+		const rejected = this.discard(e, "verification");
+		if (waitForRemoval) await rejected;
 	}
 	fill(limit: number) {
 		const spec = this.recipe, demand = this.recent;
@@ -101,12 +111,13 @@ export class WarmSpares {
 			e.setup = setup || undefined;
 			e.ready = true;
 			demand.failures = 0;
+			console.info(`spare.build id=${e.raw} reason=ready`);
 			this.changed();
-		}).catch(() => {
+		}).catch(error => {
 			if (e.abort.signal.aborted) return;
 			demand.failures++;
 			demand.retryAt = this.now() + 60_000;
-			void this.discard(e);
+			void this.discard(e, error instanceof SpareBuildError ? error.reason : "build-failed");
 		});
 	}
 }
