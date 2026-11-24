@@ -18,6 +18,8 @@ import { createGrant, isActorGone } from "./internal.js";
 import type { MachineUpdate } from "./machine.js";
 import { asPairingError, pairingGone } from "./machine-pairing.js";
 
+import { savedModelKeys } from "../model-providers.js";
+import { keyProviders, withSettingsKeys } from "../sandbox/harnesses.js";
 import { PROVIDER_TABLE, accountsAt, providerAccounts } from "./provider-accounts.js";
 
 interface Ctx {
@@ -97,6 +99,7 @@ export function itemMachines(machines: ReadonlyMap<string, MachineSummary>) {
 export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "sessions"> }): Promise<MachineSummary[]> {
 	const rows = await c.db.execute<{ id: string; name: string; os: string; arch: string; facts: string; host: string | null; send: number; details: string | null }>("SELECT m.id, name, os, arch, facts, host, send, d.data AS details FROM machines m LEFT JOIN machine_details d ON m.id=d.id WHERE expires IS NULL ORDER BY m.rowid");
 	const accounts = await providerAccounts(c.db, Date.now());
+	const keys = (await savedModelKeys(c.db)).map(k => k.provider);
 	return rows.map(row => {
 		const { report, ...facts }: MachineUpdate = JSON.parse(row.facts);
 		const sessions = [...c.vars.sessions.values()].filter(s => s.place.kind === "machine" && s.place.machineId === row.id);
@@ -104,7 +107,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 		return {
 			whenToUse: "", tags: [], orchestrator: "yes" as const,
 			...(row.details && JSON.parse(row.details) as import("../contract.js").MachineDetails),
-			providerAccounts: accountsAt(accounts, row.id),
+			providerAccounts: accountsAt(accounts, row.id, keys.filter(p => report?.harnesses?.some(h => keyProviders(h.id).includes(p)))),
 			personalRunning: sessions.filter(s => !s.item && s.status !== "idle").length,
 			host: row.host ? JSON.parse(row.host) : undefined, screenshots: report?.screenshots,
 			name: row.name, os: row.os, arch: row.arch, ...facts, machineId: row.id,
@@ -114,7 +117,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 			...(report && { egress: report.egress ?? "open", allowedProfiles: report.allowedProfiles ?? [...MACHINE_PROFILES] }),
 			...(report?.egressDomains && { egressDomains: report.egressDomains }),
 			...(report?.claudeRelay && { claudeRelay: true as const }),
-			...(report?.harnesses ? { harnesses: report.harnesses } : {}),
+			...(report?.harnesses ? { harnesses: report.harnesses.map(h => withSettingsKeys(h, keys)) } : {}),
 			...(report?.warmSpares && { readySandboxes: report.warmSpares.ready }),
 			...(report?.maxRunning !== undefined ? { maxRunning: report.maxRunning } : {}),
 			...(report?.maxSandboxes !== undefined ? { maxSandboxes: report.maxSandboxes } : {}),
@@ -151,7 +154,8 @@ export async function launchMachineProfiles(db: RawAccess, id: string) {
 		throw new UserError(`The runner on "${name}" is older than this platform takes: update it to ${minimum} or later, then start the agent again.`, { code: "runner_outdated" });
 	}
 	if (!report) throw new UserError(`"${name}" has not connected yet. Start its runner, and once the Machines page shows it online, start the agent again.`, { code: "machine_not_connected" });
-	return { name, slots: report.slots, egress: report.egress, allowedProfiles: report.allowedProfiles, harnesses: report.harnesses, profiles: machineProfiles(name, report) };
+	const keys = (await savedModelKeys(db)).map(k => k.provider);
+	return { name, slots: report.slots, egress: report.egress, allowedProfiles: report.allowedProfiles, harnesses: report.harnesses?.map(h => withSettingsKeys(h, keys)), profiles: machineProfiles(name, report) };
 }
 
 /**

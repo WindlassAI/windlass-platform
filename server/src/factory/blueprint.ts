@@ -1322,7 +1322,7 @@ function askProviderRefusal(c: Change, refusal: ItemProviderRefusal, plan: TurnP
 		c.run.step.providerRetries = retries + 1;
 		const at = reset + MINUTE;
 		const place = refusal.placeName ?? c.item.placement?.name ?? (c.item.place.kind === "hosted" ? "hosted" : c.item.place.machineId);
-		const wait = providerWait("windlass", place, at, reset);
+		const wait = providerWait(itemAgent(c.item).harness, place, at, reset);
 		c.state("waiting", { ...wait, accountKey: refusal.accountKey });
 		c.say(wait.sentence);
 		c.effects.push({ kind: "provider_retry", key: c.key, at, plan: { ...plan, ...refusal.retry, newStep: false } });

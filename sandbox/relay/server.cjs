@@ -324,7 +324,7 @@ function notesOf(notesFile) {
 
 exports.createRelay = function createRelay({ publicKey, machine,
 	readToken = () => readFile('/run/wlp-harness/claude/token', 'utf8'), forward = https.request,
-	domain = 'windlass-claude-relay-v2', provider, signedOut = () => existsSync(SIGNED_OUT), limits: overrides, host = '127.0.0.1:17892', notesFile }) {
+	domain = 'windlass-claude-relay-v2', provider, harness = publicKey && !provider ? 'claude' : undefined, signedOut = () => existsSync(SIGNED_OUT), limits: overrides, host = '127.0.0.1:17892', notesFile }) {
 	const limits = { ...exports.limits, ...overrides };
 	const note = notesOf(notesFile);
 	const sessions = new WeakMap();
@@ -401,13 +401,16 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			add(queued, nonce, 1);
 		});
 	}
-	const methodFor = provider?.methodFor ?? (url => (provider ? provider.accepts(url) : messages.has(url)) && 'POST');
+	const machineProvider = provider;
 	const httpServer = http.createServer(async (req, res) => {
+		const key = harness && require('./harness-key.cjs').harnessKeyProvider(harness, machine, req.headers, scrubStream);
+		const provider = key || machineProvider;
+		const methodFor = provider?.methodFor ?? (url => (provider ? provider.accepts(url) : messages.has(url)) && 'POST');
 		// A request arrived: the socket's idle deadline (ingress) no longer applies. Node's own keep-alive one does.
 		req.socket.setTimeout(0);
 		// One request per connection: the session's forwarder then knows, for the request on a connection,
 		// whether the relay had begun to answer it when the relay went away (runner/src/egress-proxy.mjs).
-		if (provider?.closeEachReply) res.setHeader('connection', 'close');
+		if (machineProvider?.closeEachReply) res.setHeader('connection', 'close');
 		try {
 			if (req.headers.host !== host || req.method !== methodFor(req.url))
 				return reject(res, 403);

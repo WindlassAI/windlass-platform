@@ -19,6 +19,8 @@ const relay = await build({ entryPoints: [fileURLToPath(new URL("../sandbox/rela
 	bundle: true, platform: "node", format: "cjs", write: false });
 const windlassRelay = await build({ entryPoints: [fileURLToPath(new URL("../sandbox/relay/windlass.cjs", import.meta.url))],
 	bundle: true, platform: "node", format: "cjs", write: false });
+const claudeRelay = await build({ entryPoints: [fileURLToPath(new URL("../sandbox/relay/server.cjs", import.meta.url))],
+	bundle: true, platform: "node", format: "cjs", write: false });
 const codexRelay = await build({ entryPoints: [fileURLToPath(new URL("../sandbox/relay/codex.cjs", import.meta.url))],
 	bundle: true, platform: "node", format: "cjs", write: false });
 // These two public sandbox conventions also occur in the shared server implementation.
@@ -47,7 +49,7 @@ await build({
 		CODEX_RELAY_SCRIPT: JSON.stringify(codexRelay.outputFiles[0].text),
 		WINDLASS_RELAY_SCRIPT: JSON.stringify(windlassRelay.outputFiles[0].text),
 		OPENCODE_RELAY_SCRIPT: JSON.stringify(relay.outputFiles[0].text),
-		CLAUDE_RELAY_SCRIPT: JSON.stringify(await readFile(new URL("../sandbox/relay/server.cjs", import.meta.url), "utf8")) },
+		CLAUDE_RELAY_SCRIPT: JSON.stringify(claudeRelay.outputFiles[0].text) },
 });
 await copyFile(new URL("../sandbox/seccomp-bwrap.json", import.meta.url), join(dirname(outfile), "seccomp-bwrap.json"));
 await copyFile(new URL("../sandbox/seccomp-bwrap.LICENSE", import.meta.url), join(dirname(outfile), "seccomp-bwrap.LICENSE"));

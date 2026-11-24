@@ -1,3 +1,5 @@
+import { SECRET_FILE_SCRIPT, type ForwardedKeyLease } from "../../server/src/sandbox/provider.js";
+import type { ModelProvider } from "../../server/src/contract.js";
 import { providers } from "./opencode-providers.js";
 import { createHash, createPublicKey, randomBytes, sign } from "node:crypto";
 import { docker, helperFlags, LABEL, LABEL_ARG, RELAY_LOGS, runHelper, tmpName } from "../../server/src/sandbox/docker.js";
@@ -11,8 +13,9 @@ declare const OPENCODE_RELAY_SCRIPT: string;
 export interface ProviderLogin { harness?: "codex"; provider: string; providers?: string[]; generation: string; sessionGeneration?: string }
 // Pre-upgrade metadata used its credential generation as the signing epoch.
 const sessionDomain = (login: ProviderLogin) => "windlass-" + (login.harness ?? "opencode") + "-relay-v1-" + (login.sessionGeneration ?? login.generation);
-export function projection(selected: string | string[], placeholder: string) {
-	const ids = typeof selected === "string" ? [selected] : selected;
+export function projection(selected: string | string[], placeholder: string, keys: Partial<Record<ModelProvider, string>> = {}) {
+	const machine = typeof selected === "string" ? [selected] : selected;
+	const ids = [...machine.filter(id => !Object.hasOwn(keys, id === "chatgpt" ? "openai" : id)), ...Object.keys(keys)];
 	const auth: Record<string, unknown> = {}, config: Record<string, unknown> = {};
 	for (const selected of ids) {
 		const id = selected === "free" ? "opencode" : selected === "chatgpt" ? "openai" : selected;
@@ -24,7 +27,7 @@ export function projection(selected: string | string[], placeholder: string) {
 			...(p?.variants && { models: Object.fromEntries(Object.keys(p.variants).map(model => [model, {headers: {"x-wlp-route":model}}])) }),
 		};
 		if (selected !== "free") auth[id] = selected === "chatgpt" ? { type:"oauth", refresh:"", access:placeholder, expires:Number.MAX_SAFE_INTEGER }
-			: { type:"api", key:placeholder };
+			: { type:"api", key:keys[id as ModelProvider] ?? placeholder };
 	}
 	return ["-e", "WLP_OPENCODE_PROVIDER=" + ids.join(","), "-e", "WLP_SESSION_BEARER=" + placeholder,
 		"-e", "OPENCODE_AUTH_CONTENT=" + JSON.stringify(auth),
@@ -117,15 +120,15 @@ export async function stopLegacyClaude(m: MachineDocker) {
 }
 
 /** Caller holds the pairing login lock through credential and relay setup. */
-export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
-	const harness = login ? login.harness ?? "opencode" : "claude";
-	const script = harness === "codex" ? CODEX_RELAY_SCRIPT : login ? OPENCODE_RELAY_SCRIPT : CLAUDE_RELAY_SCRIPT;
-	const prefix = harness === "codex" ? "WLP_CODEX_RELAY_" : login ? "WLP_OPENCODE_RELAY_" : "WLP_CLAUDE_RELAY_";
-	const credentials = harness === "codex" ? m.codexVolume : login ? m.opencodeVolume : m.claudeVolume;
+export async function ensureRelay(m: MachineDocker, login?: ProviderLogin, harness: MachineHarness = login ? login.harness ?? "opencode" : "claude") {
+	const script = harness === "codex" ? CODEX_RELAY_SCRIPT : harness === "opencode" ? OPENCODE_RELAY_SCRIPT : CLAUDE_RELAY_SCRIPT;
+	const prefix = harness === "codex" ? "WLP_CODEX_RELAY_" : harness === "opencode" ? "WLP_OPENCODE_RELAY_" : "WLP_CLAUDE_RELAY_";
+	const credentials = harness === "codex" ? m.codexVolume : harness === "opencode" ? m.opencodeVolume : m.claudeVolume;
 	const pair = loadPair();
 	if (!pair?.key || pair.current.machineId !== m.identity.machineId || pair.current.uid !== m.identity.uid)
 		throw new Refusal("The machine pairing changed while preparing the credential relay.");
-	if (!await m.ownedVolume(!login, credentials)) throw new Refusal(`Run windlass-runner login ${harness} on this machine.`);
+	const mountLogin = !!login || harness === "claude";
+	if (mountLogin && !await m.ownedVolume(!login, credentials)) throw new Refusal(`Run windlass-runner login ${harness} on this machine.`);
 	await m.ensureImage();
 	const socketVolume = relaySocketVolume(m, harness);
 	await m.ownedVolume(true, socketVolume);
@@ -141,9 +144,10 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 			"--user", "1000:1000", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
 			...RELAY_LOGS, "--memory", "192m", "--pids-limit", "48",
 			"--network", "bridge", "--mount", `type=volume,src=${socketVolume},dst=/workspace`,
-			"--mount", `type=volume,src=${credentials},dst=/run/wlp-harness/${harness},${login ? "" : "readonly,"}volume-nocopy`,
+			"--tmpfs", "/run/wlp-keys:rw,noexec,nosuid,nodev,mode=0700,uid=1000,gid=1000,size=4m",
+			...(mountLogin ? ["--mount", `type=volume,src=${credentials},dst=/run/wlp-harness/${harness},${login ? "" : "readonly,"}volume-nocopy`] : []),
 			"-e", prefix + "PUBLIC_KEY=" + publicKey, "-e", prefix + "MACHINE=" + m.identity.machineId,
-			...(login?.harness === "codex" ? ["-e", "WLP_CODEX_SESSION_DOMAIN=" + sessionDomain(login), "-e", "WLP_CODEX_GENERATION=" + login.generation, "-e", "WLP_CODEX_PROVIDER=" + login.provider] : login ? ["-e", "WLP_OPENCODE_SESSION_DOMAIN=" + sessionDomain(login), "-e", "WLP_OPENCODE_GENERATION=" + login.generation, "-e", "WLP_OPENCODE_PROVIDER=" + (login.providers ?? [login.provider]).join(",")] : []),
+			...(harness === "codex" ? ["-e", "WLP_CODEX_SESSION_DOMAIN=" + (login ? sessionDomain(login) : "settings-key"), "-e", "WLP_CODEX_GENERATION=" + (login?.generation ?? ""), "-e", "WLP_CODEX_PROVIDER=" + (login?.provider ?? "openai")] : harness === "opencode" ? ["-e", "WLP_OPENCODE_SESSION_DOMAIN=" + (login ? sessionDomain(login) : "settings-key"), "-e", "WLP_OPENCODE_GENERATION=" + (login?.generation ?? ""), "-e", "WLP_OPENCODE_PROVIDER=" + (login?.providers ?? (login ? [login.provider] : [])).join(",")] : []),
 			image, "node", "-e", script], { check: true });
 		box = await ownedRelay(m, harness);
 	}
@@ -155,13 +159,25 @@ export async function ensureRelay(m: MachineDocker, login?: ProviderLogin) {
 	return pair.key;
 }
 
-export async function prepareRelay(m: MachineDocker, login?: ProviderLogin, nonce = randomBytes(16).toString("hex")) {
+export async function prepareRelay(m: MachineDocker, login?: ProviderLogin, nonce = randomBytes(16).toString("hex"), keys: Partial<Record<ModelProvider, string>> = {}) {
 	const key = await ensureRelay(m, login);
 	const domain = login ? sessionDomain(login) : "windlass-claude-relay-v2";
 	if (!/^[a-f0-9]{32}$/.test(nonce)) throw new Refusal("Invalid session relay nonce.");
 	const signature = sign(null, Buffer.from(domain + "\n" + m.identity.machineId + "\n" + nonce), key);
+	const placeholder = nonce + "." + signature.toString("base64url");
 	return {
-		env: login?.harness === "codex" ? ["-e", "WLP_SESSION_BEARER=" + nonce + "." + signature.toString("base64url")] : login ? projection(login.providers ?? login.provider, nonce + "." + signature.toString("base64url")) : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=" + nonce + "." + signature.toString("base64url")],
+		env: login?.harness === "codex" ? ["-e", "WLP_SESSION_BEARER=" + placeholder] : login ? projection(login.providers ?? login.provider, placeholder, keys) : ["-e", "ANTHROPIC_BASE_URL=" + relayUrl, "-e", "CLAUDE_CODE_OAUTH_TOKEN=" + placeholder],
 		nonce,
 	};
+}
+
+/** Store only the machine-bound forward lease, in the relay's private tmpfs. */
+export async function openHarnessKey(m: MachineDocker, harness: MachineHarness, nonce: string, forward: ForwardedKeyLease) {
+	if (!/^[a-f0-9]{32}$/.test(nonce) || !forward.proofKey) throw new Refusal("Invalid machine key lease.");
+	const box = await ownedRelay(m, harness);
+	if (!box?.State.Running) throw new Refusal("The machine key relay is unavailable.");
+	const placeholder = "wlp-model." + randomBytes(16).toString("hex");
+	const path = "/run/wlp-keys/" + nonce + "." + placeholder;
+	await docker(["exec", "-i", box.Id, "sh", "-c", SECRET_FILE_SCRIPT, "sh", path], { stdin: JSON.stringify(forward), check: true });
+	return { placeholder, env: {}, close: async () => { await docker(["exec", box.Id, "rm", "-f", path]); } };
 }

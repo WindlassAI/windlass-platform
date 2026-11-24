@@ -1,4 +1,5 @@
 // Run from server with: pnpm exec tsx ../scripts/claude-relay-docker-check.mjs sha256:<local Claude image id>
+import { build } from '../runner/node_modules/esbuild/lib/main.js';
 import { checkIsolation } from '../fixtures/claude-relay/isolation.mjs';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, randomBytes, sign } from 'node:crypto';
@@ -20,7 +21,7 @@ const token = 'sk-ant-oat01-' + randomBytes(32).toString('hex');
 const identity = { uid: 'fixture', machineId };
 const {privateKey} = generateKeyPairSync('ed25519');
 Object.assign(process.env, { WLP_RUNNER_STATE_DIR: dir, F3_DIR: dir, F3_MACHINE: machineId, F3_PREFIX: prefix, PATH: dir + ':' + process.env.PATH });
-const relayScript = await readFile(join(root, 'sandbox/relay/server.cjs'), 'utf8');
+const relayScript = (await build({ entryPoints: [join(root, 'sandbox/relay/server.cjs')], bundle: true, platform: 'node', write: false })).outputFiles[0].text;
 Object.assign(globalThis, { SANDBOX_IMAGE: image, SHOTS_IMAGE_PIN: '', HARNESS_IMAGES: { claude: image }, CLAUDE_RELAY_SCRIPT: relayScript });
 const { docker } = await import('../server/src/sandbox/docker.ts');
 const { Executor } = await import('../runner/src/docker-executor.ts');
@@ -39,18 +40,21 @@ async function create(session, machine = owner) {
 	const name = containerName('claude-' + id.slice(-12));
 	const [box] = JSON.parse(await cmd(['container', 'inspect', name]));
 	assert.equal(box.Mounts.length, 0);
-	const placeholder = box.Config.Env.find(s => s.startsWith('CLAUDE_CODE_OAUTH_TOKEN=')).split('=')[1];
-	saved.set(name, { id, placeholder }); return name;
+	assert.ok(!box.Config.Env.some(s => /^(ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)=/.test(s)));
+	const env = await machine.turnCredentials('claude-' + id.slice(-12), 'claude', {});
+	const placeholder = env.CLAUDE_CODE_OAUTH_TOKEN;
+	saved.set(name, { id, placeholder, env }); return name;
 }
 async function status(name, bearer, host = '127.0.0.1:17892') {
-	return cmd(['exec', name, 'node', '-e', `const r=require('http').request(process.env.ANTHROPIC_BASE_URL+'/v1/messages/count_tokens',
+	return cmd(['exec', name, 'node', '-e', `const r=require('http').request('http://127.0.0.1:17892/v1/messages/count_tokens',
 		{method:'POST', headers:{host:process.argv[2],authorization:'Bearer '+process.argv[1]}},res=>{console.log(res.statusCode);res.resume()});
 		r.on('error',()=>process.exit(1));r.end('{}');`, bearer, host]);
 }
 const isolation = name => checkIsolation(name, cmd, token, 'claude-agent-sdk-linux-', '/run/wlp-harness/claude/token');
+const envFlags = env => Object.entries(env).flatMap(([k,v]) => ['-e', k + '=' + v]);
 let adapter;
-async function turn(first, proxyEnv, checkFirstTurn, text = 'Say relay check passed.') {
-	const child = adapter = spawn('docker', ['exec','-i',...proxyEnv,first,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
+async function turn(first, proxyEnv, checkFirstTurn, text = 'Say relay check passed.', env = saved.get(first).env) {
+	const child = adapter = spawn('docker', ['exec','-i',...envFlags(env),...proxyEnv,first,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
 	child.stderr.resume();
 	let reply = '';
 	const commands = new Set();
@@ -104,7 +108,7 @@ async function toolsTurn(name) {
 		}],
 	]);
 	const server = new PlatformMcpServer(handlers, platformToolDeclarations(handlers, { screenshots: false }), () => running);
-	const child = adapter = spawn('docker', ['exec','-i',name,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
+	const child = adapter = spawn('docker', ['exec','-i',...envFlags(saved.get(name).env),name,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
 	child.stderr.resume();
 	let reply = '';
 	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
@@ -146,7 +150,7 @@ async function pushTurn(name) {
 	const { PLATFORM_MCP_SERVER } = await import('../server/src/platform-tools.ts');
 	const { pushTurnServer, PUSH_PROMPT, PUSH_REPLY } = await import('../fixtures/acp-agent/platform-push.mjs');
 	const turn = await pushTurnServer({ publishWaitMs: 6 * 60_000 });
-	const child = adapter = spawn('docker', ['exec','-i',name,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
+	const child = adapter = spawn('docker', ['exec','-i',...envFlags(saved.get(name).env),name,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
 	child.stderr.resume();
 	let reply = '';
 	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
@@ -174,7 +178,7 @@ async function pushTurn(name) {
 }
 // A turn whose upstream reply carries unified rate-limit headers: what the pinned harness reports from them.
 async function limitTurn(name, text) {
-	const child = adapter = spawn('docker', ['exec','-i',name,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
+	const child = adapter = spawn('docker', ['exec','-i',...envFlags(saved.get(name).env),name,'wlp-claude-acp'], { stdio:['pipe','pipe','pipe'] });
 	child.stderr.resume();
 	const events = [];
 	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
@@ -199,13 +203,13 @@ async function limitTurn(name, text) {
 await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'));
 try {
 	execFileSync('openssl', ['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=api.anthropic.com',
-		'-addext','subjectAltName=DNS:api.anthropic.com','-keyout',join(dir,'key.pem'),'-out',join(dir,'cert.pem')], { stdio:'ignore' });
+		'-addext','subjectAltName=DNS:api.anthropic.com,DNS:relay.fixture.test','-keyout',join(dir,'key.pem'),'-out',join(dir,'cert.pem')], { stdio:'ignore' });
 	await writeFile(join(dir,'expected'),token);
 	await copyFile(join(root,'fixtures/claude-relay/upstream.cjs'),join(dir,'upstream.cjs'));
 	await cmd(['network','create','--internal',uplink]);
 	// Mount individual files; the recording origin has no access to the runner's pairing state.
 	const mounts = ['key.pem','cert.pem','expected','upstream.cjs'].flatMap(file => ['--mount',`type=bind,src=${dir}/${file},dst=/fixture/${file},readonly`]);
-	await cmd(['run','-d','--pull','never','--network',uplink,'--network-alias','api.anthropic.com','--name',upstream,
+	await cmd(['run','-d','--pull','never','--network',uplink,'--network-alias','api.anthropic.com','--network-alias','relay.fixture.test','--name',upstream,
 		'--user',String(process.getuid()),'--cap-drop','ALL',...mounts,image,'node','/fixture/upstream.cjs']);
 	storePair(identity, privateKey, 'https://fixture.invalid');
 	const bundle = join(dir, 'runner.cjs');
@@ -254,13 +258,22 @@ try {
 	assert.ok(input, 'expected repository instructions, language and command in the first model request without bundled extras');
 	assert.ok(Number(input[1]) < 33_000, 'first-turn input grew to ' + input[1] + ' bytes');
 	ok('One-word Sonnet turn sent ' + input[1] + ' bytes of model input including repository instructions and settings.');
+	const forward = { host: 'relay.fixture.test', provider: 'anthropic', placeholder: 'wlpm1.fixture', proofKey: randomBytes(32).toString('base64url'), expiresAt: Date.now() + 60_000 };
+	const keyLease = await owner.openTurnKey('claude-' + one.id.slice(-12), 'claude', forward);
+	try {
+		const env = await owner.turnCredentials('claude-' + one.id.slice(-12), 'claude', { anthropic: keyLease.placeholder });
+		assert.deepEqual(env, { ANTHROPIC_BASE_URL: 'http://127.0.0.1:17892', ANTHROPIC_API_KEY: keyLease.placeholder });
+		await turn(first, [], false, 'Settings key check.', env);
+		assert.match(await cmd(['logs', upstream]), /settings messages authorized=true/);
+	} finally { await keyLease.close(); }
+	ok('The pinned Claude CLI chose the Anthropic Settings lease with a machine subscription present.');
 	await toolsTurn(first);
 	ok('A builder turn on the pinned CLI reached report and ask_person over MCP under the managed policy; a process without the token was refused.');
 	await pushTurn(first);
 	ok("A person's turn in default mode reached push, fetch_base and publish over MCP without Claude's own question; another branch was refused, and a publish answered after 6 minutes reached the model.");
 	await turn(first, ['-e','HTTP_PROXY=http://127.0.0.1:1','-e','HTTPS_PROXY=http://127.0.0.1:1','-e','http_proxy=http://127.0.0.1:1','-e','https_proxy=http://127.0.0.1:1','-e','NO_PROXY=','-e','no_proxy='], false);
 	// What the session itself receives from the relay for a refused request.
-	const limited = JSON.parse(await cmd(['exec', first, 'node', '-e', `const r=require('http').request(process.env.ANTHROPIC_BASE_URL+'/v1/messages?beta=true',
+	const limited = JSON.parse(await cmd(['exec', first, 'node', '-e', `const r=require('http').request('http://127.0.0.1:17892/v1/messages?beta=true',
 		{method:'POST', headers:{authorization:'Bearer '+process.argv[1],'content-type':'application/json'}},res=>{console.log(JSON.stringify({status:res.statusCode,headers:res.headers}));res.resume()});
 		r.on('error',()=>process.exit(1));r.end(JSON.stringify({messages:[{role:'user',content:'Rate limit check.'}]}));`, one.placeholder]));
 	assert.equal(limited.status, 429);
@@ -284,12 +297,12 @@ try {
 	ok('Pinned ACP/CLI completed a streamed turn through production relay TLS. Recorder verified bearer and OAuth beta.');
 	// One request at a time per session: a second turn's request waits at the relay for the first's slot, and the
 	// harness is never refused. A counting proxy inside the session records every status the relay answered.
-	const single = relayScript.replace('const SESSION_REQUESTS = 8,', 'const SESSION_REQUESTS = 1,');
+	const single = relayScript.replace('SESSION_REQUESTS = 8', 'SESSION_REQUESTS = 1');
 	assert.notEqual(single, relayScript);
 	globalThis.CLAUDE_RELAY_SCRIPT = single;
 	await owner.prepareClaudeRelay();
-	assert.ok(JSON.parse(await cmd(['container','inspect',relayName]))[0].Config.Cmd.join(' ').includes('const SESSION_REQUESTS = 1,'));
-	await cmd(['exec','-d',first,'node','-e',`const http=require('http'),base=new URL(process.env.ANTHROPIC_BASE_URL),seen=[];
+	assert.ok(JSON.parse(await cmd(['container','inspect',relayName]))[0].Config.Cmd.join(' ').includes('SESSION_REQUESTS = 1'));
+	await cmd(['exec','-d',first,'node','-e',`const http=require('http'),base=new URL('http://127.0.0.1:17892'),seen=[];
 		http.createServer((q,r)=>{if(q.url==='/statuses')return r.end(seen.join(','));
 		const u=http.request({host:base.hostname,port:base.port,path:q.url,method:q.method,headers:{...q.headers,host:base.host}},v=>{seen.push(v.statusCode);r.writeHead(v.statusCode,v.headers);v.pipe(r)});
 		u.on('error',()=>{seen.push('error');r.destroy()});q.pipe(u)}).listen(19124,'127.0.0.1')`]);

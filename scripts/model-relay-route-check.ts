@@ -458,6 +458,7 @@ const hosts = { openai: "api.openai.com", anthropic: "api.anthropic.com", google
 const paths = { openai: ["/v1/models", "/v1/responses", "/v1/chat/completions"], anthropic: ["/v1/models", "/v1/messages"],
 	google: ["/v1beta/models", "/v1beta/models/gemini-test:generateContent", "/v1beta/models/gemini-test:streamGenerateContent?alt=sse"],
 	openrouter: ["/api/v1/models", "/api/v1/chat/completions"] };
+const { harnessKeyProvider } = createRequire(import.meta.url)("../sandbox/relay/harness-key.cjs");
 const { windlassProvider } = createRequire(import.meta.url)("../sandbox/relay/windlass.cjs");
 for (const provider of MODEL_PROVIDERS) {
 	const uid = "relay-wire", sessionId = "session";
@@ -568,6 +569,26 @@ for (const provider of MODEL_PROVIDERS) {
 			assert.ok(body.includes("[redacted]") && !halves.some(piece => body.includes(piece)), "key fragments in model response");
 			assert.equal(seen.at(-1), path);
 			assert.equal(response.headers.get("x-request-id"), null);
+		}
+		const harnessRoutes = {
+			anthropic: [["claude", "/v1/messages?beta=true"], ["opencode", "/anthropic/messages"]],
+			openai: [["codex", "/codex/v1/responses"], ["codex", "/codex/v1/models?client_version=0.171.0"], ["opencode", "/openai/responses"]],
+			google: [["opencode", "/google/models/gemini-test:streamGenerateContent?alt=sse"]],
+			openrouter: [["opencode", "/openrouter/chat/completions"]],
+		} as const;
+		for (const [harness, url] of harnessRoutes[provider]) {
+			const headers = { [auth]: credential(localPlaceholder), "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14" };
+			const adapter = harnessKeyProvider(harness, machineId, headers, undefined, async (file: string) => {
+				assert.equal(file, "/run/wlp-keys/" + nonce + "." + localPlaceholder);
+				return forward;
+			});
+			assert.ok(await adapter.authorize(adapter.bearer(), nonce));
+			const target = await adapter.target(url, headers, nonce);
+			assert.equal(target.hostname, forward.host);
+			const response = await modelRelayResponse(new Request(origin + target.path, { method: adapter.methodFor(url), headers: target.headers }), d);
+			assert.equal(response.status, 200);
+			assert.ok(!(await response.text()).includes(key));
+			assert.equal(seen.at(-1), target.path.slice("/model-relay".length));
 		}
 		const models = paths[provider][0]!;
 		const signed = readPlaceholder(forward.placeholder)!;

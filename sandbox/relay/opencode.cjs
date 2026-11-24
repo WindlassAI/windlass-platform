@@ -163,6 +163,6 @@ if (process.env.WLP_OPENCODE_RELAY_PUBLIC_KEY) {
 	const socket = '/workspace/relay.sock';
 	rmSync(socket, { force: true });
 	rmSync(SIGNED_OUT, { force: true });
-	const provider = providerFor((process.env.WLP_OPENCODE_PROVIDER || '').split(','), generation);
-	stopOnSignal(createRelay({ publicKey, machine: process.env.WLP_OPENCODE_RELAY_MACHINE, domain, provider, notesFile: NOTES_FILE }).listen(socket), provider);
+	const provider = providerFor((process.env.WLP_OPENCODE_PROVIDER || '').split(',').filter(Boolean), generation);
+	stopOnSignal(createRelay({ harness: 'opencode', publicKey, machine: process.env.WLP_OPENCODE_RELAY_MACHINE, domain, provider, notesFile: NOTES_FILE }).listen(socket), provider);
 }

@@ -17,7 +17,7 @@ export function plannerMachines(machines: MachineSummary[], screenshots = true) 
 		personalRunning: m.personalRunning ?? 0, slots: m.slots,
 		name: machineLabel(m), os: m.os, arch: m.arch, online: m.status === "online", tags: m.tags ?? [], whenToUse: m.whenToUse ?? "",
 		turns: m.turns, host: m.host, freeDiskBytes: m.freeDiskBytes, allowedProfiles: m.allowedProfiles, commandSandbox: m.commandSandbox,
-		egress: m.egress, screenshots: screenshots && m.screenshots, harnesses: m.harnesses?.map(({ id, signIn }) => ({ id, signIn })),
+		egress: m.egress, screenshots: screenshots && m.screenshots, harnesses: m.harnesses?.map(({ id, signIn, platformKeys }) => ({ id, signIn, platformKeys })),
 		sandboxes: { running: m.sandboxes.filter(s => s.state === "running").length, kept: m.sandboxes.length, maxRunning: m.maxRunning, maxSandboxes: m.maxSandboxes },
 	}));
 }

@@ -24,8 +24,8 @@
 import { type DefaultDestination, resolveDefaultPlace, savedPlace } from "../factory/default-place.js";
 import { isBranchName } from "../github/git.js";
 import type { ItemPlaceDefaults, SessionRepository } from "../contract.js";
-import { windlassAccountKey } from "../provider-usage.js";
-import { accountsAt, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
+import { selectedKey } from "../sandbox/harnesses.js";
+import { accountFor, accountKey, loginGeneration, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
 import { choosePlacement, machineSlots, placeKey, type AgentModels, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, HarnessId, HostedSize, ItemFeed, PlanSubtask } from "../contract.js";
@@ -701,7 +701,8 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		const placement = state.items.get(request.item)?.placement;
 		const capacity = machine && placement ? machineSlots(machine) : null;
 		const answer = admit({
-			provider: accountsAt(accounts, placeKey(session.place)).find(a => a.harness === (session.harness ?? "windlass")),
+			provider: accountFor(accounts, { place: placeKey(session.place), harness: session.harness ?? "windlass",
+				provider: selectedKey(session.harness, session.model === "default" ? session.harnessModels?.defaultModel : session.model, machine?.harnesses?.find(h => h.id === session.harness)?.platformKeys ?? []) }),
 			at: now,
 			limits,
 			dailyTokenWait: usesPlatformModel(session.place, session.harness) ? tokenWait : null,
@@ -801,11 +802,18 @@ async function armQueue(c: ItemsCtx): Promise<void> {
 export async function notifyProviderWaits(c: ItemsCtx, items: Iterable<ItemSummary>, adopted = false) {
 	const waits = [...items].filter(item => item.wait?.reason === "provider" && (adopted || item.wait.accountKey));
 	if (!waits.length) return;
-	const [signin] = await c.db.execute<{ generation: number }>("SELECT generation FROM signin WHERE id=1 AND sealed IS NOT NULL");
-	if (!signin) return;
-	const current = windlassAccountKey(String(signin.generation));
+	const active = new Set(limitedAccounts(await providerAccounts(c.db, Date.now())).map(a => a.accountKey));
 	for (const item of waits) {
-		if (item.wait!.accountKey === current) continue;
+		// A placement wait belongs to the prospective child, which can use a different connection from its parent.
+		if (item.step?.kind === "subtasks" && item.wait?.accountKey && active.has(item.wait.accountKey)) continue;
+		const session = c.vars.sessions.get(item.sessionId);
+		if (!session) continue;
+		const machine = session.place.kind === "machine" ? c.vars.machines.get(session.place.machineId) : undefined;
+		const harness = session.harness ?? "windlass";
+		const provider = selectedKey(harness, session.model === "default" ? session.harnessModels?.defaultModel : session.model, machine?.harnesses?.find(h => h.id === harness)?.platformKeys ?? []);
+		const location = { place: placeKey(session.place), harness, provider };
+		const generation = await loginGeneration(c.db, location);
+		if (generation === null || item.wait!.accountKey === accountKey(location, generation)) continue;
 		await itemActor(c, c.key[0]!, item.id).internalProviderChanged(item.revision).catch(error =>
 			c.log.warn({ msg: "Could not advance the item's provider retry", item: item.id, error: String(error) }));
 	}

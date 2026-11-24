@@ -30,7 +30,7 @@ const observe = (value) => {
 		assert.ok(!String(value).includes(secret), 'credential crossed the session boundary');
 };
 Object.assign(process.env, {
-	WLP_RUNNER_STATE_DIR: dir,
+	WLP_SECRET: random(), WLP_RUNNER_STATE_DIR: dir,
 	F3_HARNESS: 'codex',
 	F3_MACHINE: machineId,
 	F3_PREFIX: prefix,
@@ -75,6 +75,11 @@ const runner = new Executor(
 const args = ['--filter', 'label=dev.windlass-platform.machine=' + machineId];
 const boxes = [];
 const boxName = (id) => 'wlp-session-codex-' + id.slice(-12);
+const bearerFlags = new Map();
+async function keepBearer(id) {
+	const env = await runner.turnCredentials('codex-' + id.slice(-12), 'codex', {});
+	bearerFlags.set(boxName(id), ['-e', 'WLP_SESSION_BEARER=' + env.WLP_SESSION_BEARER]);
+}
 const probe =
 	"fetch('http://127.0.0.1:17892/codex/v1/models',{headers:{authorization:'Bearer '+process.env.WLP_SESSION_BEARER}}).then(r=>console.log(r.status))";
 // One keep-alive socket: a model-list request warms it, then a Responses request the upstream holds.
@@ -144,7 +149,7 @@ for path in files:
 print(len(found))`;
 	return Number(await cmd(['exec', '-i', name, 'python3', '-c', code], { stdin: JSON.stringify(markers) }));
 }
-try {
+async function check() {
 	execFileSync(
 		'openssl',
 		[
@@ -158,7 +163,7 @@ try {
 			'-subj',
 			'/CN=fixture',
 			'-addext',
-			'subjectAltName=DNS:auth.openai.com,DNS:api.openai.com,DNS:chatgpt.com',
+			'subjectAltName=DNS:relay.fixture.test,DNS:auth.openai.com,DNS:api.openai.com,DNS:chatgpt.com',
 			'-keyout',
 			join(dir, 'key.pem'),
 			'-out',
@@ -179,6 +184,8 @@ try {
 		net,
 		'--network-alias',
 		'auth.openai.com',
+		'--network-alias',
+		'relay.fixture.test',
 		'--network-alias',
 		'chatgpt.com',
 		'--network-alias',
@@ -202,6 +209,10 @@ try {
 	await runner.loginChanged(false);
 	assert.equal(runner.report().harnesses[0].signIn, 'none');
 	assert.ok(runner.report().harnesses[0].options?.models.length, 'signed-out inventory missing');
+	boxes.push(await runner.create('first', 'docker-hardened', false, 'codex'));
+	await channelTurn(runner, 'first', boxes[0], undefined, undefined, { observe }, ['openai']);
+	assert.match(await cmd(['logs', upstream]), /settings POST \/model-relay\/v1\/responses/);
+	console.log('PASS Codex with a Settings key and no machine login.');
 	const credential = {
 		provider: 'chatgpt',
 		access: markers.access,
@@ -210,9 +221,9 @@ try {
 		accountId: 'fixture-account',
 	};
 	await storeCodexLogin(runner, credential);
-	for (const session of ['first', 'second'])
-		boxes.push(await runner.create(session, 'docker-hardened', false, 'codex'));
-	assert.deepEqual(await Promise.all(boxes.map((id) => cmd(['exec', boxName(id), 'node', '-e', probe]))), [
+	boxes.push(await runner.create('second', 'docker-hardened', false, 'codex'));
+	await Promise.all(boxes.map(keepBearer));
+	assert.deepEqual(await Promise.all(boxes.map((id) => cmd(['exec', ...bearerFlags.get(boxName(id)), boxName(id), 'node', '-e', probe]))), [
 		'200',
 		'200',
 	]);
@@ -222,7 +233,7 @@ try {
 			.filter((line) => line === 'refresh').length,
 		1,
 	);
-	const otherLease = await cmd(['exec', boxName(boxes[1]), 'printenv', 'WLP_SESSION_BEARER']);
+	const otherLease = await cmd(['exec', ...bearerFlags.get(boxName(boxes[1])), boxName(boxes[1]), 'printenv', 'WLP_SESSION_BEARER']);
 	const wrongLeaseProbe = probe.replace('process.env.WLP_SESSION_BEARER', "require('node:fs').readFileSync(0,'utf8')");
 	assert.equal(
 		await cmd(['exec', '-i', boxName(boxes[0]), 'node', '-e', wrongLeaseProbe], { stdin: otherLease }),
@@ -269,8 +280,12 @@ try {
 		assert.notEqual(res.code, 0);
 	}
 	await channelTurn(runner, 'first', boxes[0], undefined, undefined, { observe });
+	await channelTurn(runner, 'first', boxes[0], undefined, undefined, { observe }, ['openai']);
+	assert.match(await cmd(['logs', upstream]), /settings POST \/model-relay\/v1\/responses/);
 	await cmd(['exec', first, 'sh', '-ec', 'test ! -e "$CODEX_HOME/auth.json"']);
 	assert.equal(await scan(first), 0);
+	console.log('PASS Codex used the Settings lease over a machine login and kept the login outside the session.');
+	if (process.argv.includes('--settings-keys')) return;
 	// Positive control proves the scan detects a projected credential. CODEX_HOME is root's (the image's Dockerfile).
 	await cmd(['exec', '-i', '-u', 'root', first, 'sh', '-ec', 'cat > "$CODEX_HOME/auth.json"'], { stdin: JSON.stringify(markers) });
 	assert.equal(await scan(first), Object.keys(markers).length);
@@ -286,15 +301,15 @@ try {
 	await cmd(['exec', upstream, 'touch', '/tmp/hold']);
 	const turn = channelTurn(runner, 'second', boxes[1], undefined, undefined, { observe, signedOut: true });
 	const holding = () => real('logs', upstream).split('\n').filter((line) => line === 'holding').length;
-	await until(() => holding() > 0);
-	const warmed = docker(['exec', boxName(boxes[1]), 'node', '-e', warmProbe], { timeoutMs: 60_000 });
+	await Promise.race([until(() => holding() > 0), turn.then(() => { throw Error('The signed-in turn ended before reaching the held request.'); })]);
+	const warmed = docker(['exec', ...bearerFlags.get(boxName(boxes[1])), boxName(boxes[1]), 'node', '-e', warmProbe], { timeoutMs: 60_000 });
 	await until(() => holding() > 1);
 	const loggingOut = Date.now();
 	observe(execFileSync(process.execPath, [join(dir, 'runner.cjs'), 'logout', 'codex'], { encoding: 'utf8' }));
 	// The relay exits on SIGTERM once no refresh is in flight, well before Docker's stop timeout.
 	assert.ok(Date.now() - loggingOut < 20_000, 'the relay ignored SIGTERM during logout');
 	assert.equal(await runner.ownedVolume(false, runner.codexVolume), false);
-	assert.equal(await cmd(['exec', first, 'node', '-e', probe]), '401');
+	assert.equal(await cmd(['exec', ...bearerFlags.get(first), first, 'node', '-e', probe]), '401');
 	assert.deepEqual((await warmed).stdout.trim().split('\n'), ['200:false', '401:false']);
 	await writeFile(join(dir, 'continue-probe'), '');
 	delete process.env.F3_PAUSE_PROBE;
@@ -303,6 +318,7 @@ try {
 	await terminalLogin();
 	await cmd(['exec', upstream, 'rm', '/tmp/hold']);
 	const third = await runner.create('third', 'docker-hardened', false, 'codex');
+	await keepBearer(third);
 	boxes.push(third);
 	Object.assign(process.env, { WLP_DEMO: '1', WLP_SANDBOX: 'fake', WLP_SECRET: random() });
 	const { timelineFixture } = await import('../fixtures/acp-agent/timeline.ts');
@@ -348,13 +364,14 @@ try {
 	await cmd(['stop', '-t', '1', 'wlp-codex-relay-' + machineId]);
 	observe(execFileSync(process.execPath, [join(dir, 'runner.cjs'), 'logout', 'codex'], { encoding: 'utf8' }));
 	assert.equal(await runner.ownedVolume(false, runner.codexVolume), false);
-	assert.equal(await cmd(['exec', boxName(third), 'node', '-e', probe]), '401', 'a logout without a running relay left sessions retrying');
+	assert.equal(await cmd(['exec', ...bearerFlags.get(boxName(third)), boxName(third), 'node', '-e', probe]), '401', 'a logout without a running relay left sessions retrying');
 	for (const file of (await readdir(dir)).filter((f) => /^audit-.*\.jsonl$/.test(f) || f === 'status.json'))
 		observe(await readFile(join(dir, file), 'utf8'));
 	console.log(
 		'PASS Codex ACP over the runner channel, TLS routes, concurrent refresh, logout during a turn and with the relay stopped, generation invalidation, restricted egress and credential scans.',
 	);
-} finally {
+}
+try { await check(); } finally {
 	delete process.env.F3_PAUSE_PROBE;
 	await writeFile(join(dir, 'continue-probe'), '');
 	for (const id of real('ps', '-aq', ...args)

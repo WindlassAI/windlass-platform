@@ -8,7 +8,13 @@ import { AcpHarness } from '../../server/src/sandbox/acp-harness.ts';
 import { OPENCODE, CODEX } from '../../server/src/sandbox/harnesses.ts';
 import { turnRefusal } from '../../server/src/provider-refusal.ts';
 
-export async function channelTurn(owner, session, id, model, expectedFailure, codex) {
+export async function channelTurn(owner, session, id, model, expectedFailure, codex, providers = []) {
+	if (providers.length) {
+		const { config } = await import('../../server/src/config.ts');
+		config.modelRelay.on = true;
+		config.modelRelay.url = { origin: 'https://relay.fixture.test', host: 'relay.fixture.test' };
+		owner.modelRelays = true;
+	}
 	const runner = new Session(session, owner, () => {});
 	const messages = [new EventEmitter(),new EventEmitter()];
 	const endpoint = side => ({
@@ -37,7 +43,8 @@ export async function channelTurn(owner, session, id, model, expectedFailure, co
 		for (const mode of (codex ? ['agent-full-access'] : session === 'third' ? ['build', 'plan'] : ['plan'])) {
 			let reply = '', selected;
 			const turn = await harness.runTurn(box, {
-				prompt: 'Say relay proof.', mode, model, windlassSessionId: previous,
+				prompt: 'Say relay proof.', mode, model,
+				...(providers.length && { platformKeys: { sessionId: session, keys: providers.map(provider => ({ provider, generation: 'fixture' })) } }), windlassSessionId: previous,
 				signal: AbortSignal.timeout(expectedFailure ? 150000 : 90000),
 				onAcpModes(current, choices) {
 					assert.deepEqual(choices.map(c => c.id), codex ? ['agent-full-access'] : ['build','plan']);

@@ -5,7 +5,7 @@ const wires = {
 		passed: ['content-type', 'session-id'], dropUnknown: true },
 	openai: { base: '/v1', host: 'api.openai.com', models: '/v1/models', posts: ['/v1/responses', '/v1/chat/completions'],
 		passed: ['session-id'], drop: ['openai-organization', 'openai-project'] },
-	anthropic: { base: '', host: 'api.anthropic.com', models: '/v1/models', posts: ['/v1/messages'], auth: 'x-api-key',
+	anthropic: { base: '', host: 'api.anthropic.com', models: '/v1/models', posts: ['/v1/messages', '/v1/messages/count_tokens'], auth: 'x-api-key',
 		fixed: { 'anthropic-version': '2023-06-01' }, betas: ['interleaved-thinking-2025-05-14'], drop: ['anthropic-dangerous-direct-browser-access'] },
 	google: { base: '', host: 'generativelanguage.googleapis.com', models: '/v1beta/models', posts: [], auth: 'x-goog-api-key',
 		postPattern: /^\/v1beta\/models\/[A-Za-z0-9][A-Za-z0-9_.-]{0,159}:(?:generateContent|streamGenerateContent(?:\?alt=sse)?)$/, drop: ['x-goog-api-client'] },

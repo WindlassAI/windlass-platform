@@ -7,6 +7,9 @@ import type { AddressInfo } from "node:net";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { test } from "node:test";
 import { format } from "node:util";
+import { accountFor, PROVIDER_TABLE, providerAccounts, recordProviderUsage } from "../server/src/actors/provider-accounts.js";
+import { recordTurnTokens, TOKEN_USAGE_TABLE, tokensOn } from "../server/src/usage.js";
+import { availableCatalog, selectedKey, withSettingsKeys } from "../server/src/sandbox/harnesses.js";
 import { modelKeyCaller } from "../server/src/actors/internal.js";
 import { MODEL_PROVIDERS, type ModelProvider } from "../server/src/contract.js";
 import { MODEL_PROVIDER_TABLES, openModelKeyTransit, modelProviderActions as actions } from "../server/src/model-providers.js";
@@ -82,6 +85,7 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 
 	const save = (provider: ModelProvider, key: string) => actions.saveModelProvider(c, { provider, key });
 	const nonce = hex();
+	await assert.rejects(actions.internalModelKeys(c), /internal/);
 	await assert.rejects(actions.internalModelKey(c, "openai", nonce), /internal/);
 	for (const token of [issueServiceToken(), b.internal.conn.params.token]) {
 		await assert.rejects(actions.internalModelKey({ ...c, conn: { params: { token } } }, "openai", nonce), /internal/);
@@ -131,6 +135,7 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 	now += 59_999;
 	const payload = openModelKeyTransit(c.key[0], "openai", nonce, sealed);
 	const [row] = await c.db.execute<{ sealed: string; generation: string }>("SELECT sealed, generation FROM model_provider WHERE provider = 'openai'");
+	assert.deepEqual((await actions.internalModelKeys(a.internal)).map(k => [k.provider, k.generation]), [["openai", row.generation]]);
 	assert.ok(serverSealer().isCurrent(row.sealed) && payload.key === keys.openai && payload.generation === row.generation);
 	assert.ok(serverSealer().open("model-key", owner, row.sealed) === keys.openai);
 	for (const subject of [JSON.stringify([b.context.key[0], "openai"]), JSON.stringify([c.key[0], "google"])]) {
@@ -167,4 +172,48 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 	}
 	assert.equal(fetch.mock.callCount(), 0);
 	assert.ok(!loggedSecret, "credential in logs");
+});
+
+test("Settings key usage and refusals follow the provider and key generation across machines", async t => {
+	const { sql, context } = account("usage");
+	t.after(() => sql.close());
+	sql.exec(PROVIDER_TABLE);
+	sql.exec(TOKEN_USAGE_TABLE);
+	sql.exec("INSERT INTO model_provider(provider,generation,sealed,last4,added_at) VALUES ('openai','first','','1234',1)");
+	type Db = Parameters<typeof recordProviderUsage>[0];
+	const db = { ...context.db, transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db) } as Db;
+	const at = Date.now();
+	const key = { provider: "openai" as const, generation: "first" };
+	const receipt = { key, seq: 1, tokens: 12, at };
+	assert.ok(await recordTurnTokens(db, "session", receipt));
+	assert.equal(await recordTurnTokens(db, "session", receipt), false);
+	const location = { place: "machine-a", harness: "codex" as const, provider: key.provider };
+	const other = { place: "machine-b", harness: "opencode" as const, provider: key.provider };
+	const refused = { kind: "refusal" as const, at, resetsAt: at + 60_000 };
+	assert.ok(await recordProviderUsage(db, location, "first", refused));
+	const accounts = await providerAccounts(db, at);
+	assert.equal(accountFor(accounts, other)?.state, "limited");
+	assert.equal(accountFor(accounts, { ...other, provider: "anthropic" }), undefined);
+	assert.equal(accountFor(accounts, { place: location.place, harness: location.harness }), undefined);
+	sql.exec("UPDATE model_provider SET generation='second'");
+	assert.equal(await recordProviderUsage(db, location, "first", refused), false);
+	assert.equal(accountFor(await providerAccounts(db, at), other), undefined);
+	await recordTurnTokens(db, "session", { ...receipt, seq: 2, tokens: 9, key: { ...key, generation: "second" } });
+	assert.deepEqual(sql.prepare("SELECT generation, SUM(tokens) FROM model_key_usage GROUP BY generation").all().map(row => Object.values(row)), [["first", 12], ["second", 9]]);
+	assert.equal(await tokensOn(db, at), 0);
+});
+
+test("machine readiness and the OpenCode model menu use the owner's available providers", () => {
+	const entry = { id: "opencode" as const, signIn: "none" as const, machineProviders: ["chatgpt"] };
+	const saved = ["google" as const];
+	const effective = withSettingsKeys(entry, saved);
+	assert.equal(effective.signIn, "token");
+	assert.equal(withSettingsKeys(entry, saved, "anthropic/claude").signIn, "none");
+	assert.equal(selectedKey("opencode", "google/gemini", saved), "google");
+	const models = ["anthropic/claude", "google/gemini", "openai/gpt"].map(id => ({ id, name: id, efforts: [] }));
+	const catalog = availableCatalog({ models, defaultModel: models[0]!.id, modes: [], checkedAt: 1 }, effective);
+	assert.deepEqual(catalog?.models.map(m => m.id), ["default", "google/gemini", "openai/gpt"]);
+	assert.equal(withSettingsKeys({id: "claude", signIn: "token", method: undefined}, []).method, "subscription");
+	assert.equal(withSettingsKeys({id: "claude", signIn: "token", method: undefined}, ["anthropic"]).method, "api-key");
+	assert.equal(withSettingsKeys({id: "codex", signIn: "none"}, ["google"]).signIn, "none");
 });

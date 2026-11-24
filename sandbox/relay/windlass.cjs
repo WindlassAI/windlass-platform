@@ -58,6 +58,7 @@ function wireTarget(provider, path, incoming, credential) {
 		if (!values.every(value => wire.betas.includes(value))) return;
 		headers['anthropic-beta'] = values.join(',');
 	}
+	if (provider === 'openai' && method === 'POST' && incoming['content-encoding'] === 'zstd') headers['content-encoding'] = 'zstd';
 	for (const [name, value] of Object.entries(incoming)) {
 		if ((name === 'accept' || name === 'user-agent' || (name === 'content-type' && method === 'POST') || wire.passed?.includes(name)) && typeof value === 'string') headers[name] = value;
 		else if (!wire.dropUnknown && !wire.drop?.includes(name) && name !== 'authorization' && !Object.hasOwn(headers, name) && !transport.has(name)

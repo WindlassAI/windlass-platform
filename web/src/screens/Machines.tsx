@@ -379,7 +379,7 @@ function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
 							<span className="machine-agent-state">
 								{" "}
 								<CheckIcon size={13} />
-								signed in{harness.id === "codex" && harness.method ? ` with ${harness.method === "chatgpt" ? "ChatGPT" : "an API key"}` : ""}
+								{signInWords(harness)}{!harness.platformKeys?.length && harness.id === "codex" && harness.method ? ` with ${harness.method === "chatgpt" ? "ChatGPT" : "an API key"}` : ""}
 							</span>
 						) : harness.signIn === "none" ? (
 							<span className="machine-agent-state">: {signInWords(harness)}</span>
@@ -551,7 +551,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				<MachineUse machine={machine} onChanged={onChanged} />
 				<MachineAgents harnesses={machine.harnesses ?? []} />
 				{machine.providerAccounts?.filter(a => a.state === "limited" && (a.limitedUntil ?? 0) > now).map(a =>
-					<p className="field-note" key={a.key}>{HARNESS_NAMES[a.harness]}: limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
+					<p className="field-note" key={a.key}>{a.provider ? `${a.provider} Settings key` : HARNESS_NAMES[a.harness]}: limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
 			</div>
 			<MachineState machine={machine} now={now} />
 			<button type="button" className="button button-outline button-small machine-remove" onClick={() => onRemove(machine)}>

@@ -66,6 +66,20 @@ test("the ACP projection enables every selected provider with separate placehold
 	}
 });
 
+test("Settings keys replace only matching machine logins in the ACP projection", () => {
+	const keys = { openai: "turn-openai", anthropic: "turn-anthropic", google: "turn-google", openrouter: "turn-openrouter" };
+	for (const machines of [[], ["chatgpt", "google", "opencode-go"]]) {
+		const env = projection(machines, "machine-placeholder", keys);
+		const field = (name: string) => JSON.parse(env.find(s => s.startsWith(name + "="))!.slice(name.length + 1));
+		const auth = field("OPENCODE_AUTH_CONTENT"), config = field("OPENCODE_CONFIG_CONTENT");
+		for (const [provider, placeholder] of Object.entries(keys)) {
+			assert.deepEqual(auth[provider], { type: "api", key: placeholder });
+			assert.equal(config.provider[provider].options.baseURL, "http://127.0.0.1:17892/" + provider);
+		}
+		if (machines.length) assert.deepEqual(auth["opencode-go"], { type: "api", key: "machine-placeholder" });
+	}
+});
+
 test("free uses the native anonymous model catalog and authenticates only its loopback transport", () => {
 	const env = projection("free","fixture-placeholder");
 	const value = (key: string) => JSON.parse(env.find(v => v.startsWith(key+"="))!.slice(key.length+1));
@@ -135,6 +149,7 @@ test("one host sample per minute with a 493-model catalog sends only the host de
 		sql.prepare("INSERT INTO machines(id,name,os,arch,facts) VALUES (?, 'Workshop', 'linux', 'arm64', ?)").run(machineId, JSON.stringify({ ...facts, report }));
 		await machineTables(db);
 		await accountTables(db);
+		for (const table of (await import("../server/src/model-providers.js")).MODEL_PROVIDER_TABLES) sql.exec(table);
 		const digest = optionsDigest(options);
 		// The machine actor drops an older runner's stored report in its migration (no nested transaction);
 		// the runner reports again when it connects.

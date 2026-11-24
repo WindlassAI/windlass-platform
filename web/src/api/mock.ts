@@ -1,3 +1,4 @@
+import { withSettingsKeys } from "../../../server/src/sandbox/harnesses.js";
 import { changedPlace, changesPlace, placeProblem, savedPlace } from "../../../server/src/factory/default-place";
 import type { ItemPlaceDefaults } from "@contract";
 import { shiftMonths } from "../../../server/src/billing/meter.js";
@@ -1484,7 +1485,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		},
 		defaultPlace: (auth, repositoryId) => savedPlace(defaultsOf(worldOf(auth), repositoryId), accountDefaultsOf(worldOf(auth))),
 		checks: (auth, repositoryId) => checksOf(worldOf(auth), repositoryId).checks.length,
-		machines: (auth) => (machineState === "off" ? null : { list: machinesOf(auth).list, minRunnerVersion: MOCK_MIN_RUNNER_VERSION }),
+		machines: (auth) => (machineState === "off" ? null : { list: machinesView(auth), minRunnerVersion: MOCK_MIN_RUNNER_VERSION }),
 	});
 
 	// ---- identity -------------------------------------------------------------------------------
@@ -3463,7 +3464,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** The list as the server answers it: each sandbox named by its agent's title now, none for an agent that was deleted. */
 	function machinesView(auth: AuthResult): MachineSummary[] {
 		const world = worldOf(auth);
-		return machinesOf(auth).list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map(({ options, ...entry }) => options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry), warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
+		return machinesOf(auth).list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map(({ options, ...entry }) => withSettingsKeys(options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry, [...world.account.providers.keys()])), warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
 	}
 
 	function machinesChanged(auth: AuthResult): void {
@@ -4033,7 +4034,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			async saveRepositoryDefaults(repositoryId: GithubId, change: ItemPlaceDefaults & RepositoryAutonomy & { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults> {
 				await latency(300);
 				nameAtSave(world(), repositoryId);
-				return saveDefaults(world(), machinesOf(auth).list, repositoryId, change);
+				return saveDefaults(world(), machinesView(auth), repositoryId, change);
 			},
 			async forgetRepositoryApproval(repositoryId: GithubId, name: string): Promise<RepositoryView> {
 				await serversLatency(360);
@@ -4067,7 +4068,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(300);
 				const current = world();
 				// The same rules as a repository's defaults.
-				current.account.defaults = changedDefaults(current.account.defaults, change, modelsFor(current.profile), machinesOf(auth).list);
+				current.account.defaults = changedDefaults(current.account.defaults, change, modelsFor(current.profile), machinesView(auth));
 				return accountDefaultsOf(current);
 			},
 			async forgetLastStart(): Promise<AccountSettings> {
@@ -4107,6 +4108,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const at = now();
 				const status = { provider, last4: key.slice(-4), addedAt: at, checkedAt: at, ok: true, models: [model] };
 				account.providers.set(provider, status);
+				machinesChanged(auth);
 				return structuredClone(status);
 			},
 			async checkModelProvider(provider) {
@@ -4119,6 +4121,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			},
 			async removeModelProvider(provider) {
 				world().account.providers.delete(provider);
+				machinesChanged(auth);
 			},
 			async accountSecrets(profile: SandboxProfileId): Promise<AccountSecrets> {
 				await latency(200);
@@ -4385,7 +4388,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					const name = HARNESS_NAMES[harness];
 					const unreachable = machineUnreachable(auth, session);
 					const place = session.summary.place;
-					const machine = place.kind === "machine" ? machinesOf(auth).list.find((one) => one.machineId === place.machineId) : undefined;
+					const machine = place.kind === "machine" ? machinesView(auth).find((one) => one.machineId === place.machineId) : undefined;
 					const offered = machine?.harnesses?.find((one) => one.id === harness);
 					if (unreachable === null && !offered) throw new PlatformError("user", `This machine does not offer ${name}.`, { reason: "bad_input" });
 					if (unreachable === null && offered?.signIn === "none") throw new PlatformError("user", `${name} on “${machine?.name ?? "your machine"}” is not signed in. Run windlass-runner login ${harness} there.`, { reason: "harness_signed_out" });

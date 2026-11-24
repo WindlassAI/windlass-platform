@@ -1,3 +1,4 @@
+import { MODEL_PROVIDERS, type ModelProvider } from "../contract.js";
 import type { HarnessOptions, HarnessId, ModelList, PlatformToolName, SandboxProfileId, SessionCapabilities } from "../contract.js";
 
 /**
@@ -43,8 +44,8 @@ export interface HarnessCapabilities {
 	usage: "tokens" | "context" | "none";
 	/** Where the models a prompt may name come from: the account's plan, or the harness's own list. */
 	models: "account" | "harness";
-	/** Whose sign-in a turn runs on: the user's ChatGPT sign-in handed in per turn, or one kept on the machine. */
-	signIn: "chatgpt" | "machine";
+	/** Which credential sources can supply this harness. */
+	signIn: readonly ("chatgpt" | "machine" | "platform-key")[];
 	/** Whether its session is copied out of a sandbox that may be lost (`SandboxLayer.backups`). */
 	backups: boolean;
 	/**
@@ -74,7 +75,7 @@ export const WINDLASS_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	platformTools: tools("publish", "report", "ask_person", "request_secret", "push", "fetch_base", "file_review", "file_plan_review"),
 	reportScreenshots: true, restrictedReview: true, userServers: "config-file", projectServerApproval: true,
 	checks: "required", envLists: true, sessionHome: true, usage: "tokens", models: "account",
-	signIn: "chatgpt", backups: true, steps: "engine", untrustedMarker: "taint", planMode: false, demo: true,
+	signIn: ["chatgpt"] as const, backups: true, steps: "engine", untrustedMarker: "taint", planMode: false, demo: true,
 });
 
 /**
@@ -86,7 +87,7 @@ const ACP_BASE: HarnessCapabilities = Object.freeze({
 	events: "acp", resume: "resume", steer: true, cancelCall: false, questions: true,
 	platformTools: tools(), reportScreenshots: false, restrictedReview: false, userServers: "none", projectServerApproval: false,
 	checks: "platform", envLists: false, sessionHome: false, usage: "context", models: "harness",
-	signIn: "machine", backups: false, steps: "platform", untrustedMarker: "none", planMode: false, demo: false,
+	signIn: ["machine", "platform-key"] as const, backups: false, steps: "platform", untrustedMarker: "none", planMode: false, demo: false,
 });
 
 const acpCapabilities = (own: Partial<HarnessCapabilities>): HarnessCapabilities => Object.freeze({ ...ACP_BASE, ...own });
@@ -138,17 +139,17 @@ export interface AcpProfile {
 	limitGiveUp?: RegExp;
 }
 
-/** How a machine's Codex is signed in, as its runner reports it. */
-export type SignInMethod = "api-key" | "chatgpt";
+/** The credential used by a machine agent for a turn. */
+export type SignInMethod = "api-key" | "chatgpt" | "subscription";
 
 export const CLAUDE: AcpProfile = {
 	id: "claude", name: "Claude Code", command: ["wlp-claude-acp"], leftovers: "claude-agent-acp",
 	profiles: ["docker-hardened"], steering: "_session/steering", signedOutCodes: [-32000],
 	// Offered where the adapter is not root (the container's agent user is uid 1000) and the managed settings do not disable it.
-	itemModes: { "docker-hardened": "bypassPermissions" }, sandboxedOn: [], itemTokens: "subscription", items: true, subtasks: true,
+	itemModes: { "docker-hardened": "bypassPermissions" }, sandboxedOn: [], itemTokens: "sign-in", itemSignIns: ["subscription", "api-key"], items: true, subtasks: true,
 	// Its adapter takes the platform's MCP server itself (platform-tools.ts).
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
-	signedInWith: "your Claude subscription",
+	signedInWith: "your Anthropic Settings key or Claude subscription",
 };
 
 export const OPENCODE: AcpProfile = {
@@ -158,7 +159,7 @@ export const OPENCODE: AcpProfile = {
 	itemModes: { "docker-hardened": "build" }, sandboxedOn: [], itemTokens: "budget", items: true, subtasks: true,
 	// Its image's wlp-acp-mcp serves it the platform's MCP server.
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
-	signedInWith: "the provider sign-in kept on this machine",
+	signedInWith: "your Settings key or machine login for the selected provider",
 	// OpenCode 1.19.6 retries a 429 three times, logs this, and never answers the prompt (wlp-opencode-acp prints its errors).
 	limitGiveUp: /AI_RetryError: Failed after \d+ attempts\. Last error: The provider's usage or rate limit was reached\./,
 };
@@ -170,16 +171,45 @@ export const CODEX: AcpProfile = {
 	// refused (codex-modes.ts); Container access asks nothing, the container being the boundary.
 	itemModes: { "docker-windlass-sandbox": "workspace-write", "docker-hardened": "agent-full-access" },
 	sandboxedOn: ["docker-windlass-sandbox"],
-	// ChatGPT is a subscription. An API key bills by token, and Codex reports a turn's tokens (`promptUsage`),
-	// but no API-key turn has been seen through the platform yet: ChatGPT only for now.
-	itemTokens: "sign-in", itemSignIns: ["chatgpt"],
+	itemTokens: "sign-in", itemSignIns: ["chatgpt", "api-key"],
 	items: true, subtasks: false,
 	// Its image's wlp-acp-mcp serves the platform's MCP server on the one URL its requirements.toml allows; an older
 	// image without it says so, and the turn runs without the tools (acp-harness.ts). Its collaboration plan mode is
 	// chosen per prompt.
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, planMode: true }),
-	signedInWith: "the ChatGPT or API-key sign-in kept on this machine",
+	signedInWith: "your OpenAI Settings key or machine login",
 };
+
+export function keyProviders(harness: HarnessId | undefined): readonly ModelProvider[] {
+	switch (harness) {
+		case "claude": return ["anthropic"];
+		case "codex": return ["openai"];
+		case "opencode": return MODEL_PROVIDERS;
+		default: return [];
+	}
+}
+
+export function selectedKey(harness: HarnessId | undefined, model: string | undefined, keys: readonly ModelProvider[]) {
+	return keyProviders(harness).find(provider => keys.includes(provider) && (harness !== "opencode" || model?.startsWith(provider + "/")));
+}
+
+/** OpenCode probes its pinned catalog offline. Offer only the providers available to this owner. */
+export function availableCatalog(options: HarnessOptions | undefined, entry?: { machineProviders?: string[]; platformKeys?: ModelProvider[] }) {
+	if (!options || !entry?.machineProviders) return options;
+	const providers = new Set([...entry.machineProviders.map(p => p === "free" ? "opencode" : p === "chatgpt" ? "openai" : p), ...(entry.platformKeys ?? [])]);
+	const models = options.models.filter(m => providers.has(m.id.split("/")[0]!));
+	if (!models.length) return undefined;
+	if (models.some(m => m.id === options.defaultModel)) return { ...options, models };
+	// The agent chooses its own default among the projected providers on session/new.
+	return { ...options, defaultModel: "default", models: [{ id: "default", name: "Agent default", efforts: [] }, ...models] };
+}
+
+/** Combine a runner report with the owner's current Settings connections. */
+export function withSettingsKeys<T extends { id: AcpProfile["id"]; signIn: "token" | "none" | "unknown"; method?: SignInMethod }>(entry: T, saved: readonly ModelProvider[], model?: string) {
+	const keys = keyProviders(entry.id).filter(provider => saved.includes(provider) && (entry.id !== "opencode" || !model || model === "default" || model.startsWith(provider + "/")));
+	if (keys.length) return { ...entry, signIn: "token" as const, method: "api-key" as const, platformKeys: keys };
+	return entry.id === "claude" && entry.signIn === "token" ? { ...entry, method: "subscription" as const } : entry;
+}
 
 export const machineHarnesses = { claude: CLAUDE, opencode: OPENCODE, codex: CODEX };
 
@@ -224,7 +254,7 @@ export function itemProfileProblem(id: HarnessId, profile: SandboxProfileId): st
 }
 
 /** A sign-in method in words. */
-export const signInWords = (method: SignInMethod | undefined) => method === "api-key" ? "an API key" : method === "chatgpt" ? "ChatGPT" : "a method it did not report";
+export const signInWords = (method: SignInMethod | undefined) => method === "api-key" ? "an API key" : method === "chatgpt" ? "ChatGPT" : method === "subscription" ? "a Claude subscription" : "a method it did not report";
 
 /**
  * Why a work item cannot be filed with the machine's sign-in method: only where its tokens are counted by
@@ -248,7 +278,7 @@ export function itemSignInChanged(profile: AcpProfile, machine: string, filed: S
 /** How an item counts its agent's tokens, by the sign-in method it was filed with where that decides. */
 export function itemTokensOf(profile: AcpProfile, signIn: SignInMethod | undefined): "budget" | "subscription" {
 	if (profile.itemTokens !== "sign-in") return profile.itemTokens;
-	return signIn === "chatgpt" ? "subscription" : "budget";
+	return signIn === "subscription" || signIn === "chatgpt" || (profile.id === "claude" && !signIn) ? "subscription" : "budget";
 }
 
 /** "windlass" or an id of `machineHarnesses`; null for anything else. */

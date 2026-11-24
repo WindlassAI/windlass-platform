@@ -21,7 +21,7 @@ const uplink = prefix + '-uplink', upstream = prefix + '-upstream', native = pre
 const token = 'oc-fixture-' + randomBytes(32).toString('hex');
 const identity = { uid: 'fixture', machineId };
 const {privateKey} = generateKeyPairSync('ed25519');
-Object.assign(process.env, { WLP_RUNNER_STATE_DIR: dir, F3_HARNESS: "opencode", F3_DIR: dir, F3_MACHINE: machineId, F3_PREFIX: prefix, PATH: dir + ':' + process.env.PATH });
+Object.assign(process.env, { WLP_SECRET: randomBytes(32).toString('hex'), WLP_RUNNER_STATE_DIR: dir, F3_HARNESS: "opencode", F3_DIR: dir, F3_MACHINE: machineId, F3_PREFIX: prefix, PATH: dir + ':' + process.env.PATH });
 Object.assign(globalThis, { SANDBOX_IMAGE: image, SHOTS_IMAGE_PIN: '', HARNESS_IMAGES: { opencode: image }, OPENCODE_RELAY_SCRIPT: (await build({
 	entryPoints: [join(root, 'sandbox/relay/opencode.cjs')], bundle:true, platform:'node', format:'cjs', write:false })).outputFiles[0].text,
 	CLAUDE_RELAY_SCRIPT: await readFile(join(root, 'sandbox/relay/server.cjs'), 'utf8') });
@@ -43,12 +43,13 @@ async function create(session, machine = owner) {
 	const name = containerName('opencode-' + id.slice(-12));
 	const [box] = JSON.parse(await cmd(['container', 'inspect', name]));
 	assert.equal(box.Mounts.length, 0);
-	const placeholder = JSON.parse(box.Config.Env.find(s => s.startsWith('OPENCODE_AUTH_CONTENT=')).slice('OPENCODE_AUTH_CONTENT='.length)).openai;
-	saved.set(name, { id, placeholder }); return name;
+	const env = await machine.turnCredentials('opencode-' + id.slice(-12), 'opencode', {});
+	const placeholder = JSON.parse(env.OPENCODE_AUTH_CONTENT).openai;
+	saved.set(name, { id, placeholder, flags: Object.entries(env).flatMap(([k,v]) => ['-e', k + '=' + v]) }); return name;
 }
 let adapter;
 async function turn(first, proxyEnv, scan, model) {
-	const child = adapter = spawn('docker', ['exec','-i',...proxyEnv,first,...(first === native ? ['opencode','acp'] : ['wlp-opencode-acp'])], { stdio:['pipe','pipe','pipe'] });
+	const child = adapter = spawn('docker', ['exec','-i',...(saved.get(first)?.flags ?? []),...proxyEnv,first,...(first === native ? ['opencode','acp'] : ['wlp-opencode-acp'])], { stdio:['pipe','pipe','pipe'] });
 	child.stderr.resume();
 	let reply = '';
 	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
@@ -93,7 +94,7 @@ async function toolsTurn(name, model) {
 		}],
 	]);
 	const server = new PlatformMcpServer(handlers, platformToolDeclarations(handlers, { screenshots: false }), () => running);
-	const child = adapter = spawn('docker', ['exec','-i',name,'wlp-opencode-acp'], { stdio:['pipe','pipe','pipe'] });
+	const child = adapter = spawn('docker', ['exec','-i',...saved.get(name).flags,name,'wlp-opencode-acp'], { stdio:['pipe','pipe','pipe'] });
 	child.stderr.resume();
 	let reply = '';
 	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
@@ -136,7 +137,7 @@ async function pushTurn(name, model) {
 	const { PLATFORM_MCP_SERVER } = await import('../server/src/platform-tools.ts');
 	const { pushTurnServer, PUSH_PROMPT, PUSH_REPLY } = await import('../fixtures/acp-agent/platform-push.mjs');
 	const turn = await pushTurnServer({ publishWaitMs: 70_000 });
-	const child = adapter = spawn('docker', ['exec','-i',name,'wlp-opencode-acp'], { stdio:['pipe','pipe','pipe'] });
+	const child = adapter = spawn('docker', ['exec','-i',...saved.get(name).flags,name,'wlp-opencode-acp'], { stdio:['pipe','pipe','pipe'] });
 	child.stderr.resume();
 	let reply = '';
 	const rpc = new AcpConnection(line => child.stdin.write(line + '\n'), {
@@ -164,16 +165,35 @@ async function pushTurn(name, model) {
 	turn.check(await cmd(['logs',upstream]));
 }
 await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'));
-try {
+async function settingsKeyTurns() {
+	const id = await owner.create('keys', profile, false, 'opencode');
+	const anth = 'anthropic/claude-opus-4-6';
+	await channelTurn(owner, 'keys', id, anth, undefined, undefined, ['anthropic']);
+	await storeProvider(owner, {provider:'anthropic', key:token+'-key'});
+	await storeProvider(owner, {provider:'openai', key:token+'-key'});
+	await channelTurn(owner, 'keys', id, anth, undefined, undefined, ['anthropic','google']);
+	await channelTurn(owner, 'keys', id, 'openai/gpt-5.4', undefined, undefined, ['anthropic','google']);
+	await channelTurn(owner, 'keys', id, anth);
+	const log = await cmd(['logs',upstream]);
+	assert.ok(log.split('settings POST /model-relay/v1/messages').length >= 3);
+	assert.match(log, /authorized api.openai.com \/v1\/responses/);
+	ok('Settings-key turns without and with a machine login, mixed providers and machine-only fallback.');
+	await owner.lifecycle('destroy', id, 'keys');
+	await storeProvider(owner);
+}
+async function check() {
 	execFileSync('openssl', ['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=api.anthropic.com',
-		'-addext','subjectAltName=DNS:auth.openai.com,DNS:chatgpt.com,DNS:api.openai.com,DNS:api.anthropic.com,DNS:opencode.ai,DNS:api.z.ai','-keyout',join(dir,'key.pem'),'-out',join(dir,'cert.pem')], { stdio:'ignore' });
+		'-addext','subjectAltName=DNS:relay.fixture.test,DNS:auth.openai.com,DNS:chatgpt.com,DNS:api.openai.com,DNS:api.anthropic.com,DNS:opencode.ai,DNS:api.z.ai','-keyout',join(dir,'key.pem'),'-out',join(dir,'cert.pem')], { stdio:'ignore' });
 	await writeFile(join(dir,'expected'),token);
 	await copyFile(join(root,'fixtures/opencode/upstream.cjs'),join(dir,'upstream.cjs'));
 	await cmd(['network','create','--internal',uplink]);
 	// Mount individual files; the recording origin has no access to the runner's pairing state.
 	const mounts = ['key.pem','cert.pem','expected','upstream.cjs'].flatMap(file => ['--mount',`type=bind,src=${dir}/${file},dst=/fixture/${file},readonly`]);
-	await cmd(['run','-d','--pull','never','--network',uplink,'--network-alias','auth.openai.com','--network-alias','chatgpt.com','--network-alias','api.openai.com','--network-alias','api.anthropic.com','--network-alias','opencode.ai','--network-alias','api.z.ai','--name',upstream,
+	await cmd(['run','-d','--pull','never','--network',uplink,'--network-alias','relay.fixture.test','--network-alias','auth.openai.com','--network-alias','chatgpt.com','--network-alias','api.openai.com','--network-alias','api.anthropic.com','--network-alias','opencode.ai','--network-alias','api.z.ai','--name',upstream,
 		'--user',String(process.getuid()),'--cap-drop','ALL',...mounts,image,'node','/fixture/upstream.cjs']);
+	storePair(identity, privateKey, 'https://fixture.invalid');
+	await settingsKeyTurns();
+	if (process.argv.includes('--settings-keys')) return;
 	const freeModel = 'opencode/deepseek-v4.1-flash-free';
 	await cmd(['run','-d','--pull','never','--network',uplink,'--name',native,'--cap-drop','ALL',
 		'--mount',`type=bind,src=${dir}/cert.pem,dst=/fixture-ca.pem,readonly`, '-e','NODE_EXTRA_CA_CERTS=/fixture-ca.pem',
@@ -181,7 +201,6 @@ try {
 		'-e','XDG_CONFIG_HOME=/tmp/native-config',image,'sleep','infinity']);
 	await turn(native, [], false, freeModel);
 	ok('Pinned native ACP completed a direct anonymous turn at the private TLS recorder.');
-	storePair(identity, privateKey, 'https://fixture.invalid');
 	await owner.loginChanged(false);
 	const catalog = owner.report().harnesses[0].options;
 	assert.ok(catalog.checkedAt > 0);
@@ -244,7 +263,7 @@ try {
 	execFileSync(process.execPath,[bundle,'login','opencode','--provider','openai'],{input:token+'-key\n'});
 	const open = executor('open');
 	const third = await create('third',open);
-	const revoked = await cmd(['exec',first,'node','-e',`fetch('http://127.0.0.1:17892/openai/responses',{method:'POST',headers:{authorization:'Bearer '+process.env.WLP_SESSION_BEARER}}).then(r=>console.log(r.status))`]);
+	const revoked = await cmd(['exec',...saved.get(first).flags,first,'node','-e',`fetch('http://127.0.0.1:17892/openai/responses',{method:'POST',headers:{authorization:'Bearer '+process.env.WLP_SESSION_BEARER}}).then(r=>console.log(r.status))`]);
 	assert.equal(revoked, '401', 'a placeholder from before full logout must stay revoked');
 	await channelTurn(open, 'third', saved.get(third).id);
 	assert.match(await cmd(['logs',upstream]),/authorized api.openai.com \/v1\/responses/);
@@ -280,7 +299,8 @@ try {
 	ok("A person's turn through wlp-acp-mcp reached push, fetch_base and publish over MCP without asking; another branch was refused, and a publish answered after 70 s reached the model.");
 	ok('Two stored providers, native Go and GLM streaming in one restricted sandbox, blocked direct CONNECT, placeholder scans.');
 	await storeProvider(owner);
-	} catch (error) {
+}
+try { await check(); } catch (error) {
 	const logs = await docker(['logs', upstream]);
 	if (!logs.stderr.includes(token)) process.stderr.write(logs.stderr);
 	throw error;

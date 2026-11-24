@@ -33,8 +33,13 @@ https.createServer({key:fs.readFileSync('/fixture/key.pem'),cert:fs.readFileSync
 		console.log('refresh');
 		return json({access_token:marker+'-rotated', refresh_token:marker+'-second', expires_in:3600});
 	}
-	if (req.headers.host === 'api.anthropic.com') {
-		if (req.url !== '/v1/messages' || req.headers['x-api-key'] !== marker+'-key') return reject();
+	const settings = req.headers.host === 'relay.fixture.test';
+	if (settings) {
+		if (req.url !== '/model-relay/v1/messages' || !req.headers['x-api-key']?.startsWith('wlpm1.') || !req.headers['x-wlp-machine-proof']) return reject();
+		console.log('settings', req.method, req.url);
+	}
+	if (settings || req.headers.host === 'api.anthropic.com') {
+		if (!settings && (req.url !== '/v1/messages' || req.headers['x-api-key'] !== marker+'-key')) return reject();
 		const {model} = JSON.parse(body);
 		res.writeHead(200, { 'content-type': 'text/event-stream' });
 		const chunks = [

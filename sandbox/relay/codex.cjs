@@ -120,7 +120,7 @@ if (process.env.WLP_CODEX_RELAY_PUBLIC_KEY) {
 	const provider = codexProvider(process.env.WLP_CODEX_PROVIDER, process.env.WLP_CODEX_GENERATION);
 	stopOnSignal(
 		createRelay({
-			publicKey,
+			harness: 'codex', publicKey,
 			machine: process.env.WLP_CODEX_RELAY_MACHINE,
 			domain: process.env.WLP_CODEX_SESSION_DOMAIN,
 			provider,

@@ -1,6 +1,6 @@
 ## Why use your own machine
 
-An agent on one of your machines runs in a Docker container there, made by a small program called the runner. Its sandboxes take none of your daily sandbox time, no place among your kept sandboxes and none of the sandboxes running at once on this platform, work items included. You set its limits yourself. On a machine you can also run Claude Code with your Claude subscription, or OpenCode with a model provider of yours.
+An agent on one of your machines runs in a Docker container there, made by a small program called the runner. Its sandboxes take none of your daily sandbox time, no place among your kept sandboxes and none of the sandboxes running at once on this platform, work items included. You set its limits yourself. On a paired machine, Claude Code, Codex and OpenCode can use a provider key saved in Settings or a login on that machine.
 
 The runner connects out to the platform. Nothing needs to reach your machine from outside.
 
@@ -281,9 +281,9 @@ The choice is saved at once. A machine that is not on **Any feature** says so on
 
 On a machine of yours you can run three more agents, each with your own account:
 
-- **Claude Code**, with your Claude subscription;
-- **OpenCode**, with a model provider of your choice, or with OpenCode's free public models;
-- **Codex**, with an OpenAI API key (`windlass-runner login codex` in the machine's terminal).
+- **Claude Code** uses your Anthropic Settings key or Claude subscription.
+- **OpenCode** uses Settings keys for OpenAI, Anthropic, Google and OpenRouter alongside providers configured on the machine.
+- **Codex** uses your OpenAI Settings key or its machine login (ChatGPT or an OpenAI API key).
 
 An agent runs only on a machine whose runner was started with its flag: `--harness claude`, `--harness opencode` or `--harness codex`. Repeat `--harness` to offer more than one. The **Enable** boxes of the setup command add these flags, and the command setup prints keeps them. The runner must be a build that includes that agent's image. If it does not, it says "Use --harness claude with a runner built with the pinned Claude Code image.", "Use --harness opencode with a runner built with the pinned OpenCode image." or "Use --harness codex with a runner built with the pinned Codex image."
 
@@ -302,7 +302,9 @@ None of these agents has a tool to publish: open the pull request from the sessi
 
 ## Sign agents in
 
-Agents are signed in only in a terminal on the machine, never on the platform's pages. The Machines page lists each agent the machine offers, with its state: **signed in**, **sign in needed** or **couldn't check the sign-in**, with the runner's reason when it gives one. The last is the runner's check failing, not a sign-out: turns still run if the agent is signed in, and the runner checks again after 10 s, 30 s and 60 s, then every minute. Beside it is the command that signs it in, with a copy button:
+Each turn prefers a matching key in **Settings → Model providers**. The machine receives a temporary relay credential. The saved key stays on the platform, and the provider bills the key owner. Claude Code and Codex work items count API-key tokens toward their budget. Subscription turns show token usage separately.
+
+With a matching key, the Machines page shows **Settings key**. For a machine login it shows **signed in**, **sign in needed** or **couldn't check the sign-in**, with the runner's reason when it gives one. The last is the runner's check failing, not a sign-out: turns still run if the agent is signed in, and the runner checks again after 10 s, 30 s and 60 s, then every minute. Beside it is the command that signs it in, with a copy button:
 
 ```sh
 docker exec -it windlass-runner windlass-runner login claude
@@ -407,9 +409,9 @@ Runners 0.3.0 and 0.3.1 don't have the relay, and a runner whose sandbox image h
 
 ## Agent logins stay out of the container
 
-No agent's login is ever inside its container. The runner keeps each login in a login volume on the machine that no session mounts. A separate relay container on the machine holds it instead, and is the only one that reads it.
+The runner keeps machine logins in private volumes. Only the agent’s relay can read its login volume. Keys saved in Settings stay on the platform.
 
-Each Claude Code, Codex or OpenCode session gets the relay's address and a placeholder in place of the login. The placeholder is signed by the machine's key and is good only for that session. The relay checks it on every request, then sends the request on to the provider with the real login. For OpenCode it also renews a ChatGPT login when it runs out. It takes only model requests.
+Each turn receives the local relay’s address and a placeholder. For a Settings key, the machine relay forwards model requests to the platform, which checks the turn’s lease and adds the saved key. For a machine login, the relay checks the session’s signed placeholder and sends the request directly to the provider. It also renews an OpenCode ChatGPT login when it expires.
 
 When the relay refuses a request, or the provider answers with an error, the agent gets one of these fixed messages. The relay does not pass the provider's own reason on.
 
@@ -430,7 +432,7 @@ The relay passes on the provider's rate-limit headers, and nothing else from its
 
 ## Limits on model requests
 
-Each relay holds one login for the whole machine, so it limits how hard sessions can use it. A session can have at most 8 model requests in flight and 32 connections open to the relay. All sessions on the machine together can have at most 24 requests in flight through one agent's relay. Claude Code, Codex and OpenCode each have their own relay and their own 24.
+Each agent’s relay limits concurrent requests across its sessions. A session can have at most 8 model requests in flight and 32 connections open to the relay. All sessions on the machine together can have at most 24 requests in flight through one agent's relay. Claude Code, Codex and OpenCode each have their own relay and their own 24.
 
 A request over a limit waits at the relay for up to 90 seconds, in the order it came, and goes on to the provider as soon as one of the requests ahead of it finishes. A waiting request costs nothing at the provider, and one that its agent gives up on leaves the line. A session at its own limit does not hold up other sessions waiting for the machine's. If no slot frees in 90 seconds, or 32 of the session's requests (128 on the machine) are already waiting, the agent gets a 503 with `retry-after: 2`, a busy error it retries a limited number of times: Claude Code up to 10 times over about 3 minutes, Codex for about a minute. Then the turn ends with that error. A connection past the session's 32 is answered with the same kind of 503 and closed, and a connection that sends no request within 10 seconds is closed. The refusal is not a 429: Claude Code does not retry a 429 on a subscription login and would take it as your usage limit being reached. Normal work, including a few subagents at once, stays well under the limits. A runaway command that fires hundreds of requests in parallel gets most of them refused instead of spending your subscription.
 
@@ -440,7 +442,7 @@ In `restricted` mode, commands in an OpenCode session also cannot reach any mode
 
 In `restricted` mode, commands in a Codex session cannot reach `api.openai.com`, `auth.openai.com` or `chatgpt.com` through the proxy. This blocks OpenAI only by hostname. It is a policy, not a security boundary: a command can still reach OpenAI by another route. Your login is safe regardless, because a Codex session holds only a lease for its relay, never the login itself.
 
-Adding a provider or changing a key keeps existing OpenCode sessions working. After `logout opencode`, or after the machine is paired again, the placeholders of existing OpenCode sessions stop working. Start new sessions afterwards.
+OpenCode checks which providers are available at the start of each turn. Adding, changing or removing a Settings key takes effect in existing sessions. Logging out on the machine revokes that login’s placeholders.
 
 Older runners mounted the Claude login volume in Claude sessions. On upgrade, archive any work you need from those stopped sessions, remove them, revoke the old token with Anthropic, and sign in with a fresh token before recreating the sessions.
 

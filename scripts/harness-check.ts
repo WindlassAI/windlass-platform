@@ -100,7 +100,7 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	// What the screens are sent: the same flags, read-only, and nothing of the record that is not theirs.
 	const sent = sessionCapabilities("claude");
 	assert.deepEqual(Object.keys(sent).sort(), ["cancelCall", "checks", "envLists", "models", "planMode", "platformTools", "projectServerApproval", "reportScreenshots", "usage"]);
-	assert.deepEqual(sent, { cancelCall: false, usage: "context", checks: "platform", envLists: false, platformTools: ["report", "ask_person", "request_secret", "publish", "push", "fetch_base"], reportScreenshots: false, models: "harness", planMode: false, projectServerApproval: false });
+	assert.deepEqual(sent, { cancelCall: false, usage: "context", checks: "platform", envLists: false, platformTools: ["report", "ask_person", "request_secret", "publish", "push", "fetch_base", "file_review"], reportScreenshots: false, models: "harness", planMode: false, projectServerApproval: false });
 	assert.deepEqual(sessionCapabilities(undefined), sessionCapabilities("windlass"));
 	assert.ok(sessionCapabilities("windlass").cancelCall && sessionCapabilities("windlass").usage === "tokens" && sessionCapabilities("codex").planMode);
 	assert.equal(harnessName("codex"), "Codex");
@@ -136,7 +136,7 @@ assert.equal(typedField({ sessionUpdate: "plan", entries: [{ content: "Read", pr
 	const { capabilitiesOf } = await import("../server/src/sandbox/harness.js");
 	assert.ok(capabilitiesOf("windlass").platformTools.includes(ASK_TOOL), "Windlass can be given ask_person");
 	// Codex takes them through its image's wlp-acp-mcp (sandbox/harness/codex/requirements.toml).
-	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL, "request_secret", "publish", "push", "fetch_base"], `${acp} can be given every platform tool but the planner's and the reviewer's`);
+	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools], ["report", ASK_TOOL, "request_secret", "publish", "push", "fetch_base", "file_review"], `${acp} can be given the tools available over MCP`);
 	const { MCP_TOOLS } = await import("../server/src/platform-tools.js");
 	for (const acp of ["claude", "opencode", "codex"] as const) assert.deepEqual([...capabilitiesOf(acp).platformTools].sort(), [...MCP_TOOLS].sort(), `${acp}'s tools are exactly those that may be served over MCP`);
 	const builder = platformTools({ publish: false, report: true, push: true, ask: true }, 60_000);
@@ -884,11 +884,12 @@ async function clientCheck(state: string) {
 		assert.equal(subtaskHarnessProblem("codex"), "Plan-first subtasks run Windlass, Claude Code or OpenCode for now. Codex runs Quick items only.");
 		assert.deepEqual([CODEX.items, CODEX.subtasks], [true, false]);
 		assert.deepEqual([itemTokensOf(CODEX, "chatgpt"), itemTokensOf(CODEX, "api-key"), itemTokensOf(CODEX, undefined), itemTokensOf(CLAUDE, "api-key"), itemTokensOf(OPENCODE, undefined)],
-			["subscription", "budget", "budget", "subscription", "budget"]);
+			["subscription", "budget", "budget", "budget", "budget"]);
 		assert.equal(itemSignInMethodProblem(CODEX, "Bench", "chatgpt"), null);
-		assert.match(itemSignInMethodProblem(CODEX, "Bench", "api-key") ?? "", /^Codex on “Bench” signs in with an API key, and its work items run only with ChatGPT sign-in for now\./);
+		assert.equal(itemSignInMethodProblem(CODEX, "Bench", "api-key"), null);
 		assert.match(itemSignInMethodProblem(CODEX, "Bench", undefined) ?? "", /signs in with a method it did not report/);
-		assert.equal(itemSignInMethodProblem(CLAUDE, "Bench", undefined), null);
+		assert.equal(itemSignInMethodProblem(CLAUDE, "Bench", "subscription"), null);
+		assert.equal(itemTokensOf(CLAUDE, "subscription"), "subscription");
 		assert.equal(itemSignInChanged(CODEX, "Bench", "chatgpt", "chatgpt"), null);
 		assert.equal(itemSignInChanged(CODEX, "Bench", "chatgpt", "api-key"), "Codex on “Bench” now signs in with an API key, not ChatGPT as when this item was filed. File the work again.");
 		assert.equal(itemSignInChanged(CLAUDE, "Bench", undefined, undefined), null);
