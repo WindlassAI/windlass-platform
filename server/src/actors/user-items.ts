@@ -15,10 +15,9 @@
  * and released only by that id, when that turn ends (the session's outbox), or when it has been held
  * longer than any turn may run: never by what a session's summary says, which cannot tell "released"
  * from "not reported yet". A person's prompt counts these slots, and the factory counts the person's
- * running sessions, against the same limit; the factory's own share is lower, so a person always has
- * a turn of their own. Requests are admitted oldest first: each item has at most one turn waiting,
- * so oldest first is round-robin over items. A request that waits is tried again when a slot is given
- * back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
+ * running sessions, against the same limit. Requests are admitted oldest first: each item has at most
+ * one turn waiting, so oldest first is round-robin over items. A request that waits is tried again when
+ * a slot is given back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
 import { type DefaultDestination, resolveDefaultPlace, savedPlace } from "../factory/default-place.js";
@@ -80,7 +79,7 @@ import {
 	type Wait,
 	isHostedSize,
 } from "../contract.js";
-import { createItem } from "../factory/blueprint.js";
+import { createItem, RULES } from "../factory/blueprint.js";
 import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
 import { admit, retryAt } from "../factory/budget.js";
 import { getLayer } from "../layer.js";
@@ -652,6 +651,20 @@ export function factorySlots(c: { vars: { items: ItemsState; sessions: ReadonlyM
 	return hosted;
 }
 
+type QueueSession = Pick<SessionSummary, "place" | "sandbox" | "status" | "item">;
+
+function holdsHostedPlace(session: QueueSession): boolean {
+	return hostedLimitsApply(session.place) && (session.sandbox === "running" || (!session.item && session.status !== "idle"));
+}
+
+/** Factory turns share the places left by personal sessions, including places already held by factory turns. */
+export function plannerHostedCapacity(limits: UserLimits, sessions: Iterable<QueueSession>): number {
+	let personal = 0;
+	for (const session of sessions) if (!session.item && holdsHostedPlace(session)) personal++;
+	const remaining = accountLimits(limits).factory.hostedRunning - personal;
+	return Math.max(0, Math.min(RULES.parallelChildren, remaining));
+}
+
 function sessionProvider(session: SessionSummary, machine: MachineSummary | undefined | null, hostedKeys: readonly ModelProvider[]) {
 	const model = session.model === "default" ? session.harnessModels?.defaultModel : session.model;
 	if (!session.harness || session.harness === "windlass") return windlassProvider(model);
@@ -687,7 +700,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 	// What holds the hosted places, in words, for an item told it waits for one (budget.ts `admit`).
 	const holders = c.vars.usage.kept().filter((claim) => !c.vars.usage.shares(claim.session)).map((claim) => keptHolder(c.vars.sessions, claim.session));
 	// The user's hosted sandboxes at work: running ones, and the person's own agents working (`internalAcquireRun` counts those).
-	const hostedRunning = new Set(sessions.filter((session) => hostedLimitsApply(session.place) && (session.sandbox === "running" || (!session.item && session.status !== "idle"))).map((session) => session.id));
+	const hostedRunning = new Set(sessions.filter(holdsHostedPlace).map((session) => session.id));
 	// A session given a slot runs a sandbox from then on, whether or not its summary has said so yet: counted across admissions, not only within one.
 	for (const slot of state.slots.values()) {
 		if (c.vars.sessions.get(slot.session)?.place.kind === "hosted") hostedRunning.add(slot.session);

@@ -111,7 +111,7 @@ export interface UserInternal {
 	internalLimitedAccounts(): Promise<ReturnType<typeof import("./provider-accounts.js").limitedAccounts>>;
 	internalRepositoryAutonomy(repositoryId: GithubId): Promise<Required<RepositoryAutonomy>>;
 	internalPlanCritic(builderId: string): Promise<void>;
-	internalPlannerMachines(): Promise<ReturnType<typeof import("../machines/details.js").plannerMachines>>;
+	internalPlannerCapacity(): Promise<{ machines: ReturnType<typeof import("../machines/details.js").plannerMachines>; hostedCapacity: number }>;
 	internalAgentModels(): Promise<import("../factory/placement.js").AgentModels>;
 	internalSessionChanged(summary: SessionSummary): Promise<void>;
 	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
