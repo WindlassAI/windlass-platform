@@ -1,3 +1,4 @@
+// Executes a pairing's sandbox operations through Docker. Serialize lifecycle changes and act only on pairing-owned resources.
 import { randomBytes } from "node:crypto";
 import { SpareBuildError, WarmSpares, validSpec, SPARE_SESSION, type SpareSpec } from "./warm-spares.js";
 import { cloneCommand, cloneReadyBase, refreshReadyClone, WORKSPACE_HEAD_COMMAND } from "../../server/src/github/git.js";
@@ -38,6 +39,13 @@ import { claudeLoginGeneration, dockerReason, loginFileState, dropDetachedLoginV
 import { open, type Egress } from "./egress-policy.js";
 import { EgressNetwork } from "./egress-network.js";
 import { forget, loadPair, read, Refusal, RunnerError, save, VERSION, type Identity } from "./state.js";
+
+// Stop each relay under its own login-volume lock. The pairing keeps the credentials.
+export async function retirePairingRelays(machine: MachineDocker) {
+	await retireClaudeRelay(machine);
+	if (codexLogin(machine)) await withLoginVolume(machine, () => removeRelay(machine, "codex"));
+	if (currentProvider(machine)) await withLoginVolume(machine, () => removeRelay(machine, "opencode"));
+}
 
 type Lifecycle = Extract<Operation, { name: "connect" | "state" | "suspend" | "destroy" }>;
 // A newly created or rediscovered box holds its slot until its first observed turn ends.
@@ -327,11 +335,9 @@ export class Executor extends MachineDocker {
 	private claudeOptions?: HarnessOptions;
 	private claudeGeneration?: string;
 	private signIn: "none" | "token" | "unknown" = "unknown";
-/** Why the Claude Code sign-in could not be checked, while it could not (`signIn` "unknown"): for the log and the report. */
-private signInReason?: string;
-/** Quick checks again while the sign-in is unknown: 10 s, 30 s, then 60 s; after that the report's refresh, every minute. */
-private signInRetry?: ReturnType<typeof setTimeout>;
-private signInRetries = 0;
+	private signInReason?: string;
+	private signInRetry?: ReturnType<typeof setTimeout>;
+	private signInRetries = 0;
 	private enforceEgress = false;
 	private inventoryStarted = false;
 	private egressError?: string;
@@ -340,55 +346,34 @@ private signInRetries = 0;
 	publishReport?: () => void;
 	private commandSandbox: Report["commandSandbox"] = { ok: false, reason: "The Windlass sandbox probe has not run." };
 	private freeDiskBytes: number | null = null;
-	/**
-	 * The connected server named `session-volumes` in its welcome: it reads the report's `sessionVolumes`
-	 * and a connect's `ownData`, so a new hardened Windlass sandbox gets a data volume of its own. A server
-	 * that did not name it would take the data for shared and fail the next turn with session_not_found,
-	 * so its sandboxes mount the machine volume as before. Set by the control connection on each welcome.
-	 */
+	// A peer without session-volumes expects the shared machine volume and would lose a workspace on the next turn.
 	sessionVolumes = false;
-	/**
-	 * The connected server named `model-relay` in its welcome: its turns may use this machine's model
-	 * relay (docs/model-relay.md), and a connect says so. Set by the control connection on each welcome.
-	 */
 	modelRelays = false;
 	harnessKeyRelays = false;
 	windlassKeyRelays = false;
-	/** The connected server named `start-times`: the first connect after a create says what making the sandbox took (`Box.startTimes`). */
 	startTimes = false;
 	blockedNetwork = false;
 	memoryEvents = false;
-	/** The connected server named `environment-image`: a connect says which image the sandbox was made from (`SandboxHandle.image`). */
 	environmentImage = false;
-	/** Windlass's model relay of this machine: its container and each turn's forwarder. */
 	readonly modelRelay: DockerModelRelay;
-	/**
-	 * The Windlass version of the pinned sandbox image, once looked at after the image is here (`welcome`).
-	 * Windlass 0.7.1 and later route all supported providers through the relay.
-	 */
+	// Read from the pinned image at welcome. Windlass 0.7.1 supports all relay wires.
 	private sandboxWindlass: string | null = null;
-	/** Whether what a runner that died left of the relay was removed in this process (once, at the first welcome). */
 	private relaySwept = false;
-	/** The model relay leases of each sandbox (external id) that its conversations hold: ended when it is suspended or removed. */
 	private readonly relayLeases = new Map<string, Set<() => Promise<void>>>();
 	private nextVolumeSweep = 0;
-	/** The connected platform's caps on the stores (the welcome's `storeLimits`); none from a platform that sends none. */
 	private storeCaps: StoreCaps = {};
-	/** The welcome's `storeLimits`: a platform that sends none leaves the owner's limits as they are. */
 	platformStoreCaps(caps: StoreCaps | undefined) { this.storeCaps = caps ?? {}; }
 	private reportedStoreLimits() {
 		const limits = this.storeLimits(), requested = this.limits.store ?? DEFAULT_STORE_LIMITS;
 		const capped = limits.machine !== requested.machine || limits.user !== requested.user || limits.free !== requested.free;
 		return { ...limits, ...(capped && { capped: true as const }) };
 	}
-	/** The snapshot and Git mirror limits in force: the owner's flags, held to the platform's caps. */
 	storeLimits(): StoreLimits { return clampStoreLimits(this.limits.store ?? DEFAULT_STORE_LIMITS, this.storeCaps); }
 
 	constructor(identity: Identity, private readonly limits: Limits, readonly screenshots = false, readonly claude = false, private readonly allowedProfiles: Profile[] = ["docker-hardened"], policy: Egress = open, readonly opencode = false, readonly codex = false) {
 		super(identity);
 		this.slots = limits.slots === null ? undefined : limits.slots ?? localSizing({ slots: limits.maxTurns?.toString() });
 		this.network = new EgressNetwork(this, policy);
-		// One user's machine: the relay's ceiling is the other machine relays' (sandbox/relay/server.cjs `limits`).
 		this.modelRelay = new DockerModelRelay({ machine: identity.machineId, image, labelFlags: this.pairingLabelFlags, ensureImage: async () => { await this.ensureImage(); } });
 		const network = this.network.sandboxNetwork();
 		const slots = this.slots;
@@ -626,11 +611,7 @@ private signInRetries = 0;
 			await this.sweepVolumes();
 		}
 	}
-	/**
-	 * Removes this pairing's session volumes whose container is gone (`DockerSandboxes.sweepDataVolumes`):
-	 * in the serial order, beside the creates, and only those older than `minAgeMs`, so one a create is
-	 * about to mount stays.
-	 */
+	// Serialize sweeps with creates. The minimum age protects volumes a create is about to mount.
 	async sweepVolumes(minAgeMs?: number) {
 		try { return await this.provider.sweepDataVolumes(minAgeMs, this.labels); }
 		catch { return 0; }
@@ -643,12 +624,7 @@ private signInRetries = 0;
 		if (!this.opencode && currentProvider(this)) await withLoginVolume(this, () => removeRelay(this, "opencode"));
 		const pair = loadPair();
 		if (pair?.current.machineId === this.identity.machineId) {
-			for (const old of pair.previous) {
-				const machine = new MachineDocker(old);
-				await retireClaudeRelay(machine);
-				if (codexLogin(machine)) await withLoginVolume(machine, () => removeRelay(machine,"codex"));
-				if (currentProvider(machine)) await withLoginVolume(machine, () => removeRelay(machine, "opencode"));
-			}
+			for (const old of pair.previous) await retirePairingRelays(new MachineDocker(old));
 		}
 		this.credentialPathChecked = true;
 	}
@@ -738,12 +714,11 @@ private signInRetries = 0;
 			if (!this.commandSandbox.ok) this.commandSandbox = { ok: false, reason: error instanceof RunnerError ? error.message : "The sandbox image could not be checked." };
 		}
 	}
-	/** Whether this machine's Windlass sandboxes can use its model relay: the pinned image's Windlass supports all relay wires. */
 	get modelRelayReady(): boolean {
 		return readsModelRelay(this.sandboxWindlass);
 	}
 
-	/** A lease a conversation holds for sandbox `id`; returns what to call when the conversation ends it itself. */
+	// The returned callback releases only this conversation's claim on the lease.
 	trackRelay(id: string, end: () => Promise<void>): () => void {
 		let ends = this.relayLeases.get(id);
 		if (!ends) this.relayLeases.set(id, (ends = new Set()));
@@ -755,7 +730,7 @@ private signInRetries = 0;
 		};
 	}
 
-	/** Ends every lease of sandbox `id` (its files in the relay, its forwarder, the conversations' entries), also one a process that died left. */
+	// Also clear relay state left by a crashed runner.
 	private async endRelays(id: string, raw: string, harness?: MachineHarness): Promise<void> {
 		const ends = [...(this.relayLeases.get(id) ?? [])];
 		this.relayLeases.delete(id);
@@ -766,7 +741,6 @@ private signInRetries = 0;
 		} else await this.modelRelay.endSandbox(raw).catch(() => {});
 	}
 
-	/** At the first welcome: the pinned image's Windlass, and what a runner that died left of the relay. */
 	private async prepareModelRelay(): Promise<void> {
 		if (this.sandboxWindlass === null) this.sandboxWindlass = await probeImage(image).catch(() => null);
 		if (!this.relaySwept) {
@@ -780,7 +754,7 @@ private signInRetries = 0;
 		if (this.claudePin) harnesses.push({
 			id: "claude", adapter: "claude-agent-acp " + claudePackage.dependencies["@agentclientprotocol/claude-agent-acp"],
 			image: this.claudePin.split("@").at(-1)!, signIn: this.signIn, loginGeneration: this.claudeGeneration,
-...(this.signIn === "unknown" && this.signInReason && { signInReason: this.signInReason.slice(0, 300) }),
+			...(this.signIn === "unknown" && this.signInReason && { signInReason: this.signInReason.slice(0, 300) }),
 			...(this.claudeOptions && { options: this.claudeOptions }),
 		});
 		if (this.codexPin) harnesses.push({
@@ -1016,20 +990,17 @@ private signInRetries = 0;
 			}
 			if (!box.egress) await this.network.migrateOpen(containerName(box.raw));
 			await this.network.attach(box.raw, containerName(box.raw));
+			// Released peers reject unknown keys. Advertise optional fields only after capability negotiation.
 			const answer = { cwd: handle.cwd, profile: box.profile, ...(handle.snapshot && { snapshot: { ...handle.snapshot, ...(box.claim?.attempt && { attempt: box.claim.attempt }) } }), ...(this.warmSpares && box.claim && { readyKey: box.claim.key, ...(this.spareSetupTimes && box.claim.setup && { readySetup: box.claim.setup }) }), ...(box.harness ? { harness: box.harness } : {}), ...(this.screenshots && !box.harness ? { screenshots: true } : {}),
 				...(this.canReseed && { needsSpareSeed: true as const }),
-				// Only to a server that reads it (`sessionVolumes`): an older one refuses a key it does not know.
 				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}),
 				...(!box.harness && this.windlassKeyRelays && { windlassKeyRelay: true as const }),
 				// A harness uses its credential relay for forwarded platform leases.
 				...((box.harness ? this.harnessKeyRelays : this.modelRelays && this.modelRelayReady) ? { modelRelay: true as const } : {}),
-				// Only a reporting restricted proxy on a server that opted in.
 				...(this.blockedNetwork && box.egress === "restricted" ? { blockedNetwork: true as const } : {}),
 				...(this.memoryEvents && { memoryEvents: true as const }),
-				// Once, and only to a server that named `start-times`.
 				...(this.startTimes && box.startTimes ? { startTimes: this.warmSpares ? box.startTimes :
 					{ image: box.startTimes.image, create: box.startTimes.create, ...(box.startTimes.pulled && { pulled: true as const }) } } : {}),
-				// Only to a server that named `environment-image`: an older one refuses a key it does not know.
 				...(this.environmentImage && handle.image ? { image: handle.image } : {}),
 			};
 			delete box.startTimes;
