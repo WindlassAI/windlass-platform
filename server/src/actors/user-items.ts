@@ -525,7 +525,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		if (!repository) throw new Error("the item's session has no repository");
 		const review = session && await bindReviewer(c, profile, session, itemId, !!child, issue, makeSession);
 		const now = Date.now();
-		const meta: ItemMeta = { ...(policy && { defaultPlace: policy }), ...(placed && !session && { pendingBuilder: job }), uid, sessionId, reviewerSessionId: review?.reviewerSessionId ?? null, reviewBase: null, handoffReview: null, repository, source, github, ...(linear && { linear }), createdAt: now, updatedAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
+		const meta: ItemMeta = { ...(policy && { defaultPlace: policy }), ...(placed && !session && { pendingBuilder: job }), uid, sessionId, reviewerSessionId: review?.reviewerSessionId ?? null, reviewBase: null, handoffReview: null, repository, source, github, ...(linear && { linear }), createdAt: now, activityAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
 		const limits = accountLimits(c.vars.items.limits).factory;
 		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer: review?.reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session?.place ?? placed!.destination.place, budget: child?.budget ?? limits.item, agent: { harness: session ? session.harness ?? "windlass" : placed!.destination.harness, model: session?.model ?? "default", effort: input.effort, ...(session?.item?.signIn && { signIn: session.item.signIn }) } });
 		if (placed && !session) item.awaitingPlace = placed.destination.wait;

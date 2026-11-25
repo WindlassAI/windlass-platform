@@ -312,8 +312,10 @@ export interface SessionSummary {
 	/** May bypass publish confirmation only where isolated commands have neither network nor token-file access. Else ask on every request. */
 	publishUnasked?: boolean;
 	createdAt: number;
-	/** Last prompt or turn end. */
+	/** Last session activity, including turns, questions and pull request changes. */
 	updatedAt: number;
+	/** Start of the current turn, for its elapsed clock. */
+	turnStartedAt?: number;
 	status: SessionStatus;
 	/** Machine-paused turns resume on reconnect and deliver any held messages. */
 	paused?: { reason: "restart" | "machine"; since: number; held: number };
@@ -1622,7 +1624,7 @@ export interface ItemSummary {
 	/** The item's agent session, among the user's sessions. */
 	sessionId: string;
 	createdAt: number;
-	/** When the item last changed. */
+	/** Last activity on the item. Background polls can advance its revision independently. */
 	updatedAt: number;
 	/** When it ended (done, failed or cancelled). Absent while it is open, and on an item that ended before the platform kept the time. */
 	endedAt?: number;

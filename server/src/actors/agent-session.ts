@@ -1297,6 +1297,7 @@ async function checkPull(c: Ctx, meta: SessionMeta): Promise<void> {
 	const current = await refreshPull(app, await githubConnection(c, meta), repo, pull);
 	if (meta.pull !== pull || (current.state === pull.state && current.title === pull.title)) return;
 	meta.pull = current;
+	meta.updatedAt = Date.now();
 	publish(c);
 	void persist(c);
 }
@@ -3517,7 +3518,7 @@ async function crashPause(c: Ctx, meta: SessionMeta): Promise<boolean> {
 	if (meta.backup) meta.memoryTurn = turn;
 	note(c, turn, "info", "The server stopped while this turn was running; it will resume by itself.", { code: "turn_paused" });
 	meta.status = "paused";
-	meta.updatedAt = Date.now();
+	meta.updatedAt = Math.max(meta.updatedAt, run.paused.at);
 	return true;
 }
 
@@ -4707,7 +4708,8 @@ export const agentSession = actor({
 				try {
 					const pull = await c.keepAwake(openFromPushed({ app, connection: await githubConnection(c, meta), repository: repo, branch: meta.publishBranch, message, evidence: await evidenceOf(c, meta, c.vars.turn?.number ?? null) }));
 					meta.pull = pull;
-					c.vars.pullCheckedAt = Date.now();
+					meta.updatedAt = Date.now();
+					c.vars.pullCheckedAt = meta.updatedAt;
 					note(c, meta.turns, "info", `Opened pull request #${pull.number} in ${repo.owner}/${repo.name} from ${pull.branch}, from what the agent had pushed; the turn goes on.${verifiedLine(pull)}`);
 					console.log(`[wlp] github.published session=${meta.sessionId} repository=${repo.id} pull=${pull.number} opened=true from=pushed`);
 					publish(c);

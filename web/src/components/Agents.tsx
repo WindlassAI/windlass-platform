@@ -210,9 +210,10 @@ function RowTime({ session, now, working }: { session: SessionSummary; now: numb
 	const tick = useNow(1000, working);
 	const iso = new Date(session.updatedAt).toISOString();
 	if (working) {
-		const clock = clockDuration(Math.max(1000, tick - session.updatedAt));
+		const start = session.turnStartedAt ?? session.updatedAt;
+		const clock = clockDuration(Math.max(1000, tick - start));
 		return (
-			<time className="agent-time agent-time-live" dateTime={iso} title={`Working since ${absoluteTime(session.updatedAt)}`}>
+			<time className="agent-time agent-time-live" dateTime={new Date(start).toISOString()} title={`Working since ${absoluteTime(start)}`}>
 				<span className="visually-hidden">working for </span>
 				{clock}
 			</time>
