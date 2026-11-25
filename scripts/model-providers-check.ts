@@ -7,11 +7,11 @@ import type { AddressInfo } from "node:net";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { test } from "node:test";
 import { format } from "node:util";
-import { accountFor, PROVIDER_TABLE, providerAccounts, recordProviderUsage } from "../server/src/actors/provider-accounts.js";
+import { accountFor, limitedAccounts, PROVIDER_TABLE, providerAccounts, recordProviderUsage } from "../server/src/actors/provider-accounts.js";
 import { recordTurnTokens, TOKEN_USAGE_TABLE, tokensOn } from "../server/src/usage.js";
 import { availableCatalog, hostedCatalog, listedHarness, selectedKey, withSettingsKeys } from "../server/src/sandbox/harnesses.js";
 import { modelKeyCaller } from "../server/src/actors/internal.js";
-import { MODEL_PROVIDERS, validModelKey, type ModelProvider } from "../server/src/contract.js";
+import { MODEL_PROVIDERS, validModelKey, type MachineSummary, type ModelProvider } from "../server/src/contract.js";
 import { MODEL_PROVIDER_TABLES, openModelKeyTransit, modelProviderActions as actions } from "../server/src/model-providers.js";
 import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import { createSealer, serverSealer } from "../server/src/signin/seal.js";
@@ -281,9 +281,9 @@ test("machine credential source lifecycle", async t => {
 	const { sql, context, internal } = account("owner");
 	t.after(() => sql.close());
 	await machineTables(context.db as never);
-	const report = { docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [],
+	const report = { docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], freeDiskBytes: 8e9,
 		harnesses: [{ id: "claude", signIn: "token", keyRelay: true, adapter: "fixture", image: "fixture" }] };
-	sql.prepare("INSERT INTO machines(id,name,os,arch,facts) VALUES ('desk','Desk','linux','x64',?)").run(JSON.stringify({ report }));
+	sql.prepare("INSERT INTO machines(id,name,os,arch,facts) VALUES ('desk','Desk','linux','x64',?)").run(JSON.stringify({ report, status: "online" }));
 	sql.exec("INSERT INTO model_provider(provider,generation,sealed,last4,added_at) VALUES ('anthropic','first','fixture','1234',1)");
 	const until = Date.now() + 60_000;
 	const usage = { backoff: 0, lastRefusal: Date.now(), lastSuccess: -1, account: {
@@ -297,11 +297,19 @@ test("machine credential source lifecycle", async t => {
 	const actions = user.config.actions!;
 	const choice = { machineId: "desk", harness: "claude", source: "key" as const };
 	const set = (input = choice) => actions.setCredentialSource(ctx as never, input);
+	const { plannerMachines } = await import("../server/src/machines/details.js");
+	const { choosePlacement } = await import("../server/src/factory/placement.js");
+	const place = async (machine: MachineSummary) => choosePlacement(
+		{ key: "part", title: "Part", brief: "", acceptance: [], dependsOn: [], owns: [], budget: { tokens: 100 }, agent: { harness: "claude" } },
+		{ preferred: { kind: "machine", machineId: machine.machineId }, alternatives: [] },
+		{ machines: plannerMachines([machine]), hostedProfiles: [], limited: limitedAccounts(await providerAccounts(context.db as never, Date.now())) },
+	);
 	await t.test("only the owner can set a known agent and source on a paired machine", async () => {
 		await assert.rejects(actions.setCredentialSource(internal as never, choice), /for users/);
 		for (const input of [{ ...choice, harness: "constructor" }, { ...choice, harness: "windlass" }, { ...choice, source: "anthropic" }]) {
 			await assert.rejects(set(input as typeof choice), { code: "bad_input" });
 		}
+		await assert.rejects(set({ ...choice, harness: "codex" }), { code: "bad_input" });
 		await assert.rejects(set({ ...choice, machineId: "foreign" }), { code: "machine_not_found" });
 		await assert.rejects(actions.internalCredentialSource(ctx as never, "desk", "claude"), /internal/);
 		await assert.rejects(actions.internalCredentialSource(internal as never, "foreign", "claude"), { code: "machine_not_found" });
@@ -309,11 +317,13 @@ test("machine credential source lifecycle", async t => {
 	await t.test("the machine lists limits only for usable Settings keys", async () => {
 		const [machine] = await listMachines(ctx as never);
 		assert.deepEqual(machine.providerAccounts, []);
+		assert.equal((await place(machine)).decision?.name, "Desk");
 	});
 	await t.test("source changes wake work waiting on its previous account", async () => {
 		const [machine] = await set();
 		assert.equal(machine.providerAccounts?.[0]?.provider, "anthropic");
 		assert.deepEqual(retried, [7]);
+		assert.equal((await place(machine)).accountKey, usage.account.key);
 	});
 	await t.test("deleting the key falls back to the machine and unpairing retires the preference", async () => {
 		sql.exec("DELETE FROM model_provider");

@@ -279,8 +279,13 @@ export const machineActions = {
 		if (!harness) throw new UserError("Unknown agent.", { code: "bad_input" });
 		if (typeof input.machineId !== "string") throw missing();
 		const rows = await c.db.execute(`INSERT OR REPLACE INTO credential_sources (machine, harness, source)
-			SELECT id, ?, ? FROM machines WHERE id=? AND expires IS NULL RETURNING machine`, harness.id, input.source, input.machineId);
-		if (!rows.length) throw missing();
+			SELECT m.id, ?, ? FROM machines m WHERE m.id=? AND m.expires IS NULL
+			AND EXISTS (SELECT 1 FROM json_each(m.facts, '$.report.harnesses') h WHERE json_extract(h.value, '$.id')=?)
+			RETURNING machine`, harness.id, input.source, input.machineId, harness.id);
+		if (!rows.length) {
+			if (await machineSecrets(c.db, input.machineId) === null) throw missing();
+			throw new UserError("This machine does not offer that agent.", { code: "bad_input" });
+		}
 		return changed(c);
 	},
 	async internalMachineCreated(c: Ctx, id: string): Promise<boolean> {
