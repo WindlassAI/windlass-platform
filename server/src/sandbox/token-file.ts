@@ -44,7 +44,8 @@
 
 import { type AccessToken, type AccessTokens, SandboxUserError } from "./api.js";
 import { TOKEN_REPLACE_LEAD_MS, TOKEN_REPLACE_RETRY_MS, type TokenFileState, tokenFileContent } from "./handoff.js";
-import { DATA_DIR, type KeyReference, type KeyTurnRelay, type TurnModelRelay, type TurnSandbox } from "./provider.js";
+import { readsModelRelay, SETTINGS_KEY_WINDLASS } from "../model-relay-url.js";
+import { DATA_DIR, type KeyReference, type KeyTurnRelay, type TakeRelayRequest, type TurnModelRelay, type TurnSandbox } from "./provider.js";
 
 /** Prefix used by both providers and for cleaning pre-upgrade volumes. */
 export const TOKEN_FILE_PREFIX = "access-token-";
@@ -88,9 +89,16 @@ export class TokenFileError extends Error {
 }
 
 /** Settings-key turns get only a relay address and placeholder. */
-export async function openModelKeyRelay(sandbox: TurnSandbox, sessionId: string, key: KeyReference, signal?: AbortSignal): Promise<KeyTurnRelay> {
+export async function openModelKeyRelay(sandbox: TurnSandbox, sessionId: string, key: KeyReference, signal?: AbortSignal, takeRequest?: TakeRelayRequest): Promise<KeyTurnRelay> {
+	if (key.harness === "windlass" && sandbox.windlassKeyProblem) throw new TokenFileError(sandbox.windlassKeyProblem);
 	if (!sandbox.modelKeyRelay) throw new TokenFileError("A saved provider key requires a model relay for this sandbox.");
-	return sandbox.modelKeyRelay(sessionId, key, signal);
+	if (key.harness === "windlass") {
+		// A connected runner or restored snapshot can have an older binary than its current image.
+		const version = await sandbox.ask(["windlass", "--version"], { timeoutMs: 10_000 });
+		if (version?.code !== 0 || !readsModelRelay(/^Windlass\s+(\S+)/.exec(version.stdout.trim())?.[1], SETTINGS_KEY_WINDLASS))
+			throw new TokenFileError(`Windlass needs ${SETTINGS_KEY_WINDLASS} to use Settings keys in this sandbox.`);
+	}
+	return sandbox.modelKeyRelay(sessionId, key, signal, takeRequest);
 }
 
 export class TokenFile {

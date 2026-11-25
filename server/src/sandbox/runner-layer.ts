@@ -567,6 +567,7 @@ class RunnerHandle implements TurnSandbox {
 		markTurnSandbox(this);
 		if (found.memoryEvents) this.memoryEvents = () => link.request("memoryEvents", { id }, { signal: AbortSignal.timeout(5_000) });
 		if (found.blockedNetwork) this.blockedNetwork = (turn, retained) => link.request("blockedNetwork", { id, turn, retained }, { signal: AbortSignal.timeout(5_000) });
+		if (!found.windlassKeyRelay) this.windlassKeyProblem = "Update the runner to use Settings keys with Windlass on this machine.";
 		if (found.modelRelay && config.modelRelay.on) {
 			this.modelRelay = async () => this.relayOf(await link.request("modelRelay", { id }));
 			this.modelKeyRelay = (sessionId, key, signal) => {
@@ -582,6 +583,7 @@ class RunnerHandle implements TurnSandbox {
 	/** `TurnSandbox.modelRelay`, on a runner that offers it. */
 	readonly blockedNetwork?: TurnSandbox["blockedNetwork"];
 	readonly modelRelay?: () => Promise<TurnModelRelay>;
+	readonly windlassKeyProblem?: string;
 	readonly modelKeyRelay?: TurnSandbox["modelKeyRelay"];
 
 	/** `TurnSandbox.resumeRelay`: the runner kept the lease with the conversation; the restarted turn hands it a token again at once. */

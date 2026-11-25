@@ -302,7 +302,7 @@ export interface Sandboxes {
 	sweepDataVolumes?(minAgeMs?: number): Promise<number>;
 	/**
 	 * Windlass's model relay of a provider that runs one itself (hosted Docker, docs/model-relay.md), when
-	 * the server starts: whether its sandboxes use it (the image's Windlass is 0.6.0 or later), and the
+	 * the server starts: whether its sandboxes use it (the image's Windlass is 0.7.1 or later), and the
 	 * forwarders and token files a server that died left removed. Returns the line the server logs.
 	 */
 	prepareModelRelay?(): Promise<string>;
@@ -545,7 +545,7 @@ export interface TurnCheckpoint {
 export const PLATFORM_RESTART = Symbol("platform restart");
 
 export interface RunTurnInput {
-	modelKey?: { sessionId: string; key: import("./provider.js").ModelKeyLease };
+	modelKey?: { sessionId: string; key: import("./provider.js").ModelKeyLease; takeRequest?: import("./provider.js").TakeRelayRequest };
 	/** A requested PR review starts in this transport-owned, read-only checkout. */
 	reviewDirectory?: string;
 	/**

@@ -38,7 +38,7 @@ function ChatgptLine() {
 	const now = useNow(30_000);
 	if (error) return <p className="menu-note tone-bad">{error}</p>;
 	if (!status) return <p className="menu-note">Checking the ChatGPT connection…</p>;
-	if (!status.connected) return <p className="menu-note tone-warn">ChatGPT is not connected. Sign in again to run agents.</p>;
+	if (!status.connected) return <p className="menu-note tone-warn">ChatGPT is not connected. Sign in again to use ChatGPT models.</p>;
 	return (
 		<p className="menu-note">
 			<span className="tone-good">ChatGPT connected</span>

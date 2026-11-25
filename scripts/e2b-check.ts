@@ -23,7 +23,7 @@
  *      by address, over plain HTTP), a lookup, and what 169.254.169.254 answers. `restricted` is paused and
  *      resumed once to see the configuration and the names hold; then its lookup stub must name the host that
  *      was refused, and a host allowed while it runs (a repository's list) must be reached at once.
- *      With WLP_MODEL_RELAY_URL and WLP_E2B_WINDLASS_VERSION=0.6.0 set as on the servers, the model
+ *      With WLP_MODEL_RELAY_URL and WLP_E2B_WINDLASS_VERSION=0.7.1 set as on the servers, the model
  *      relay's network instead (docs/model-relay.md): api.openai.com is not reached, the relay's own
  *      hostname is, and answers a placeholder of no turn with `relay_lease_ended` (so the hostname must be
  *      routed to a server of this version), and WLP_PUBLIC_URL's host, when set, is not reached.

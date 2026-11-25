@@ -127,9 +127,9 @@ export class DockerSandboxHandle implements TurnSandbox {
 		// The user names the lease in the relay, whose ceiling per user counts by it.
 		if (relay) {
 			this.modelRelay = () => relay.open(this.container, this.id, this.uid);
-			this.modelKeyRelay = (sessionId, key, signal) => {
+			this.modelKeyRelay = (sessionId, key, signal, takeRequest) => {
 				if (sessionId !== session) throw new Error("This model relay belongs to another session.");
-				return relay.openKey(this.container, this.id, this.uid, sessionId, key, signal);
+				return relay.openKey(this.container, this.id, this.uid, sessionId, key, signal, takeRequest);
 			};
 		}
 	}
@@ -489,7 +489,7 @@ export type DockerSandboxOptions = {
 	/** Windlass's model relay (docs/model-relay.md) for the Windlass sandboxes of this provider; none: their turns' tokens go into the sandbox. */
 	modelRelay?: DockerModelRelay;
 	hostedKeys?: boolean;
-	/** The Windlass version of the image, which decides whether `modelRelay` is used (0.6.0 or later): the one the layer's `windlass.problem()` reads. */
+	/** The Windlass version of the image, which decides whether `modelRelay` is used (0.7.1 or later): the one the layer's `windlass.problem()` reads. */
 	modelRelayWindlass?: () => Promise<string | null>;
 	/** The sandbox image; windlass-platform-sandbox:latest when left out. */
 	image?: string;
@@ -623,9 +623,7 @@ export class DockerSandboxes implements Sandboxes {
 
 	/**
 	 * Whether this provider's Windlass sandboxes use the model relay: it has one, and the image's Windlass is
-	 * 0.6.0 or later, which reads WINDLASS_MODEL_BASE_URL. An older one would send the placeholder to
-	 * api.openai.com, so its turns get the token file as before. An image that cannot be looked at is
-	 * asked about again next time.
+	 * 0.7.1 or later, which routes every provider through WINDLASS_MODEL_BASE_URL. Retry an unreadable version.
 	 */
 	async modelRelayReady(): Promise<boolean> {
 		if (this.options.modelRelay === undefined) return false;

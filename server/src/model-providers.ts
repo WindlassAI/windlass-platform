@@ -12,31 +12,34 @@ export const MODEL_PROVIDER_TABLES = [
 		tokens INTEGER NOT NULL, provider TEXT NOT NULL, generation TEXT NOT NULL, PRIMARY KEY(day,session,seq))`,
 	`CREATE TABLE IF NOT EXISTS model_provider (
 		provider TEXT PRIMARY KEY, sealed TEXT NOT NULL, generation TEXT NOT NULL, last4 TEXT NOT NULL,
-		added_at INTEGER NOT NULL, checked_at INTEGER, check_ok INTEGER NOT NULL DEFAULT 0, models TEXT
+		added_at INTEGER NOT NULL, checked_at INTEGER, check_ok INTEGER NOT NULL DEFAULT 0, models TEXT, windlass_models TEXT
 	)`,
 	"CREATE TABLE IF NOT EXISTS model_check_budget (id INTEGER PRIMARY KEY CHECK (id = 1), minute INTEGER NOT NULL, used INTEGER NOT NULL)",
 ];
 
 type Context = Parameters<typeof requireUser>[0] & { db: DefaultsDb };
-type StatusRow = { provider: ModelProvider; last4: string; added_at: number; checked_at: number | null; check_ok: number; models: string | null };
-const STATUS_COLUMNS = "provider, last4, added_at, checked_at, check_ok, models";
+type StatusRow = { provider: ModelProvider; last4: string; added_at: number; checked_at: number | null; check_ok: number; models: string | null; windlass_models: string | null };
+const STATUS_COLUMNS = "provider, last4, added_at, checked_at, check_ok, models, windlass_models";
 
-type ModelListBody = { data?: { id: unknown }[]; models?: { name: string }[] };
-function* modelIds<T>(entries: T[] | undefined, id: (entry: T) => unknown) {
-	if (!Array.isArray(entries)) throw new Error("Invalid model list");
-	for (const entry of entries) yield id(entry);
+type ModelEntry = { id?: unknown; name?: string; supported_parameters?: unknown; supportedGenerationMethods?: unknown };
+type ModelListBody = { data?: ModelEntry[]; models?: ModelEntry[] };
+
+function offersWindlass(provider: ModelProvider, entry: ModelEntry, id: string) {
+	if (provider === "openrouter") return Array.isArray(entry.supported_parameters) && entry.supported_parameters.includes("tools");
+	return /^models\/gemini-[^/]+$/.test(entry.name ?? "") && !/-(tts|image|live|audio)(-|$)/.test(id)
+		&& Array.isArray(entry.supportedGenerationMethods) && entry.supportedGenerationMethods.includes("generateContent");
 }
-const dataIds = (body: ModelListBody) => modelIds(body.data, entry => entry?.id);
+
 const bearer = (key: string) => ({ authorization: `Bearer ${key}` });
 const PROVIDERS: Record<ModelProvider, {
-	origin: string; path: string; headers(key: string): Record<string, string>; ids(body: ModelListBody): Iterable<unknown>;
+	origin: string; path: string; headers(key: string): Record<string, string>;
 }> = {
-	openai: { origin: "https://api.openai.com", path: "/v1/models", headers: bearer, ids: dataIds },
+	openai: { origin: "https://api.openai.com", path: "/v1/models", headers: bearer },
 	anthropic: { origin: "https://api.anthropic.com", path: "/v1/models",
-		headers: key => ({ "x-api-key": key, "anthropic-version": "2023-06-01" }), ids: dataIds },
+		headers: key => ({ "x-api-key": key, "anthropic-version": "2023-06-01" }) },
 	google: { origin: "https://generativelanguage.googleapis.com", path: "/v1beta/models",
-		headers: key => ({ "x-goog-api-key": key }), ids: body => modelIds(body.models, entry => entry?.name?.replace(/^models\//, "")) },
-	openrouter: { origin: "https://openrouter.ai", path: "/api/v1/models", headers: bearer, ids: dataIds },
+		headers: key => ({ "x-goog-api-key": key }) },
+	openrouter: { origin: "https://openrouter.ai", path: "/api/v1/models", headers: bearer },
 };
 
 export async function savedProviders(db: DefaultsDb): Promise<ModelProvider[]> {
@@ -45,7 +48,8 @@ export async function savedProviders(db: DefaultsDb): Promise<ModelProvider[]> {
 
 function status(row: StatusRow): ModelProviderStatus {
 	return { provider: row.provider, last4: row.last4, addedAt: row.added_at, checkedAt: row.checked_at, ok: !!row.check_ok,
-		...(row.models !== null && { models: JSON.parse(row.models) as string[] }) };
+		...(row.models !== null && { models: JSON.parse(row.models) as string[] }),
+		...(row.windlass_models !== null && { windlassModels: JSON.parse(row.windlass_models) as string[] }) };
 }
 
 function providerOf(raw: unknown): ModelProvider {
@@ -92,7 +96,7 @@ function safeModelId(id: unknown, key: string): id is string {
 	return true;
 }
 
-async function fetchModels(provider: ModelProvider, key: string): Promise<string[]> {
+async function fetchModels(provider: ModelProvider, key: string) {
 	const spec = PROVIDERS[provider];
 	const base = new URL(process.env[`WLP_${provider.toUpperCase()}_BASE_URL`] ?? spec.origin);
 	if (base.protocol !== "https:" && !(base.protocol === "http:" && (base.hostname === "127.0.0.1" || base.hostname === "localhost"))) {
@@ -118,21 +122,27 @@ async function fetchModels(provider: ModelProvider, key: string): Promise<string
 		if (size > 8 * 1024 * 1024) throw new Error("Model list too large");
 		chunks.push(chunk);
 	}
-	const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+	const body: ModelListBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+	const entries = provider === "google" ? body.models : body.data;
+	if (!Array.isArray(entries)) throw new Error("Invalid model list");
 	const models = new Set<string>();
-	for (const id of spec.ids(body)) {
-		if (safeModelId(id, key)) models.add(id);
-		if (models.size === 32) break;
+	const windlass = provider === "google" || provider === "openrouter" ? new Set<string>() : null;
+	for (const entry of entries) {
+		const id = provider === "google" ? entry?.name?.replace(/^models\//, "") : entry?.id;
+		if (!safeModelId(id, key)) continue;
+		if (models.size < 32) models.add(id);
+		if (windlass && offersWindlass(provider, entry, id)) windlass.add(id);
+		if (models.size === 32 && (!windlass || windlass.size === 32)) break;
 	}
-	return [...models];
+	return { models: [...models], windlass: windlass && [...windlass] };
 }
 
 async function runCheck(db: DefaultsDb, provider: ModelProvider, key: string, generation: string): Promise<ModelProviderCheck> {
 	// Provider bodies, status text and fetch errors can all contain the submitted key.
 	const models = await fetchModels(provider, key).catch(() => null);
-	const [row] = await db.execute<StatusRow>(`UPDATE model_provider SET checked_at = ?, check_ok = ?, models = ?
+	const [row] = await db.execute<StatusRow>(`UPDATE model_provider SET checked_at = ?, check_ok = ?, models = ?, windlass_models = ?
 		WHERE provider = ? AND generation = ? RETURNING ${STATUS_COLUMNS}`,
-		Date.now(), Number(models !== null), models === null ? null : JSON.stringify(models), provider, generation);
+		Date.now(), Number(models !== null), models && JSON.stringify(models.models), models?.windlass ? JSON.stringify(models.windlass) : null, provider, generation);
 	if (!row) throw new UserError("The saved key changed during the check.", { code: "model_key_changed" });
 	return { ...status(row), ...(models === null && { message: "Could not check the key with the provider. Verify the key and try again." }) };
 }

@@ -119,7 +119,9 @@ import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js"
 import { demoScript } from "./demo.js";
 import { ACCESS_TOKEN_FILE_ENV, type Failure, RELAY_REFUSED, handedInFailure, handedInProblem, relayRefused, tokenRanOut, tokenSourceFailure } from "./handoff.js";
 import { sweepSessionProcesses, type ProcessEnd, type SandboxProcess, type TurnSandbox, isTurnSandbox, randomId } from "./provider.js";
-import { TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
+import { hostedKeyEnv, redactKeyLease } from "./hosted-keys.js";
+import { hostedKeyMessage, windlassProvider } from "./harnesses.js";
+import { openModelKeyRelay, TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
 
 /** The platform's tools of a turn (platform-tools.ts): Windlass takes every one as a host tool. */
 export const turnHostTools = (input: RunTurnInput) => turnPlatformTools(input);
@@ -263,6 +265,9 @@ export class SandboxWindlass implements Windlass {
 		if (!isTurnSandbox(sandbox)) throw new Error("runTurn needs a sandbox from this layer's connect()");
 		if (input.windlassSessionId !== undefined && !SESSION_ID.test(input.windlassSessionId)) throw new Error(`invalid Windlass session id: ${input.windlassSessionId}`);
 		if (input.signal?.aborted) return { exitCode: null, aborted: true, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: null };
+		const provider = windlassProvider(input.model);
+		if (provider !== input.modelKey?.key.provider) throw new Error(hostedKeyMessage("windlass", input.model));
+		if (provider) input = { ...input, model: input.model!.slice(provider.length + 1) };
 		return new Turn(sandbox, input, this.options, this.tokens).run();
 	}
 }
@@ -410,6 +415,10 @@ class Turn {
 	private summary: WindlassEvent | null = null;
 	/** Nothing more is passed to `onEvent`: the summary was the last. */
 	private sealed = false;
+	// Windlass looks up a title model for up to 5s and makes at most two 15s attempts.
+	private titleDeadline = 0;
+	private resolveTitle: () => void = () => {};
+	private readonly titled = new Promise<void>(resolve => { this.resolveTitle = resolve; });
 
 	private failure: Failure | null = null;
 	private promptSent = false;
@@ -461,7 +470,7 @@ class Turn {
 	/** The names of the secrets the engine was started with: its environment has them, and their values are not kept here. */
 	private engineSecrets = new Set<string>();
 	/** Takes the repository's saved secrets out of what the engine sends (`RunTurnInput.secrets`). */
-	private readonly redactor: Redactor;
+	private redactor: Redactor;
 	/** The platform's tools this turn declares, by name, each with its callback. */
 	private hostTools: ReadonlyMap<string, PlatformToolHandler> = new Map();
 	/** True while this turn has servers of its own in that file: they are taken out when it ends. */
@@ -498,7 +507,7 @@ class Turn {
 		private readonly tokens: AccessTokens,
 	) {
 		// A scripted turn calls no model: it is handed no token.
-		this.tokenFile = input.script === undefined ? new TokenFile(sandbox, tokens, options.tokenFile) : null;
+		this.tokenFile = input.script === undefined && !input.modelKey ? new TokenFile(sandbox, tokens, options.tokenFile) : null;
 		const mode = input.mode ?? sandbox.approval;
 		if (mode !== "ask" && mode !== sandbox.approval) throw new Error("This sandbox profile does not offer that approval mode.");
 		this.approval = mode;
@@ -545,6 +554,7 @@ class Turn {
 		const onAbort = () => this.abort();
 		/** Ends the hold on the sandbox; null while there is none. */
 		let release: (() => Promise<void>) | null = null;
+		let keyLease: import("./provider.js").KeyTurnRelay | undefined;
 		try {
 			// From the start: getting the token can take a while (a refresh), and a stop must not wait for it.
 			input.signal?.addEventListener("abort", onAbort, { once: true });
@@ -560,10 +570,19 @@ class Turn {
 					await this.end();
 				}
 			} else if (release !== null && (await this.prepare(scriptPath, agentFile)) && !this.abortRequested) {
+				const ref = input.modelKey;
+				let keyEnv: Record<string, string> = {};
+				if (ref) {
+					keyLease = await openModelKeyRelay(sandbox, ref.sessionId, { ...ref.key, harness: "windlass" }, input.signal, ref.takeRequest);
+					input.signal?.throwIfAborted();
+					keyEnv = hostedKeyEnv("windlass", ref.key.provider, keyLease);
+					this.redactor = redactKeyLease(this.redactor, keyLease.placeholder);
+				}
 				const lines = this.lines;
 				const env = {
 					// A server that lives for one turn must not start other sessions' wake-up turns, as the command line's one-prompt runs do not.
 					WINDLASS_WAKE: "off",
+					...(!ref && { WINDLASS_PROVIDER: "chatgpt" }),
 					// A base setup may have written a user config with auto-start MCP servers.
 					...(configHome ? { XDG_CONFIG_HOME: configHome } : {}),
 					// Only warnings and errors on stderr: that is what `stderrTail` is for.
@@ -575,7 +594,7 @@ class Turn {
 					...(tokenFile === null ? {} : tokenFile.env),
 				};
 				// The repository's secrets that Windlass may have, for the MCP servers that name them: never one of the turn's own variables.
-				const secretEnv = Object.fromEntries(Object.entries(input.secrets?.env ?? {}).filter(([name]) => !(name in env)));
+				const secretEnv = { ...Object.fromEntries(Object.entries(input.secrets?.env ?? {}).filter(([name]) => !(name in env))), ...keyEnv };
 				if (tokenFile?.relayMs != null) this.mark("relay", tokenFile.relayMs);
 				this.mark("process");
 				const run = sandbox.start(this.options.engineCommand ?? ["windlass", "acp"], {
@@ -599,6 +618,7 @@ class Turn {
 			const run = this.process;
 			if (run !== null && !run.hasEnded) await this.stopProcess(true);
 			// No more replacements, and none in the middle of being written, before the token file is removed.
+			await keyLease?.close().catch(() => this.notes.push("[platform] could not close the model key relay"));
 			await tokenFile?.stop();
 			if (run !== null) {
 				// Whatever happened above, nothing of the turn stays behind in the sandbox. A process that ended on its own
@@ -651,10 +671,11 @@ class Turn {
 	 */
 	private async told(failure: Failure | null): Promise<Failure | null> {
 		const tokenFile = this.tokenFile;
-		if (failure === null || tokenFile === null) return failure;
+		if (failure === null) return failure;
 		const code = this.failureCode ?? this.stepFailureCode;
 		// The relay's own refusal of the turn's placeholder: never the user's sign-in.
-		if (tokenFile.relayed && relayRefused(code, failure.message, this.stepFailureMessage)) return { ...RELAY_REFUSED };
+		if ((tokenFile?.relayed || this.input.modelKey) && relayRefused(code, failure.message, this.stepFailureMessage)) return { ...RELAY_REFUSED };
+		if (tokenFile === null) return failure;
 		const problem = code === null ? null : handedInProblem(code);
 		if (problem === null) return failure;
 		let state = tokenFile.state;
@@ -679,11 +700,11 @@ class Turn {
 		const stopping = this.sandbox.stopLeftovers("windlass").then(count => {
 			if (count > 0) this.notes.push(`[platform] stopped ${count} Windlass run(s) left over in this sandbox before starting the turn`);
 		});
-		if (this.tokenFile !== null) {
+		if (this.tokenFile !== null || this.input.modelKey) {
 			// Finish both cleanup steps before starting any file writer or requesting a token.
 			try {
 				await stopping;
-				await sweepSessionProcesses(this.sandbox, this.tokenFile.path);
+				await sweepSessionProcesses(this.sandbox, this.tokenFile?.path);
 				if (this.abortRequested) return false;
 			} catch (error) {
 				this.failure = { reason: "engine", message: `the engine could not be started in the sandbox: ${error instanceof Error ? error.message : String(error)}` };
@@ -819,6 +840,8 @@ class Turn {
 	 * once complete values were taken out, and no longer than the longest value could begin.
 	 */
 	private checkpoint(): TurnCheckpoint | null {
+		// A platform key lease ends with its owning process. Start a fresh segment after a restart.
+		if (this.input.modelKey) return null;
 		// Until the process is taken up, what was stored stands: the output kept for it is not in the timeline yet.
 		if (this.input.reattach !== undefined && !this.takenUp) return this.input.reattach;
 		const run = this.process;
@@ -949,6 +972,7 @@ class Turn {
 	private async open(): Promise<void> {
 		const { input, peer } = this;
 		const meta = {
+			...(input.modelKey && { provider: input.modelKey.key.provider }),
 			...(input.model === undefined ? {} : { model: input.model }),
 			...(input.effort === undefined ? {} : { effort: input.effort }),
 			approval: this.approval,
@@ -958,7 +982,7 @@ class Turn {
 			unattended: "deny",
 			sandboxHome: SANDBOX_HOME,
 			// Reviewer commands use the image's read-only ~/.config/pnpm, while the engine uses its private config.
-			withholdEnv: [...(input.secrets?.withholdEnv ?? []), ...(this.reviewerAgent ? ["XDG_CONFIG_HOME"] : [])],
+			withholdEnv: ["WINDLASS_PROVIDER", ...(input.secrets?.withholdEnv ?? []), ...(this.reviewerAgent ? ["XDG_CONFIG_HOME"] : [])],
 			passEnv: input.secrets?.passEnv ?? [],
 			requiredChecks: windlassChecks(input.checks ?? []),
 			...hostToolsMeta(this.hostTools, input.reportScreenshots, input.crossRepoPlan),
@@ -1082,6 +1106,9 @@ class Turn {
 		if (this.sessionSeen === null && typeof event.sessionId === "string") this.sessionSeen = event.sessionId;
 		this.tally.note(event);
 		const data = (event.data ?? {}) as Record<string, unknown>;
+		if (this.input.modelKey && event.type === "inbox.enqueued" && typeof data.titlePrompt === "string" && data.titlePrompt.trim())
+			this.titleDeadline = Date.now() + 35_000;
+		if (event.type === "session.renamed") this.resolveTitle();
 		if ((event.type === "inbox.delivered" || event.type === "inbox.cancelled") && typeof data.messageId === "string") {
 			this.delivered.add(data.messageId);
 			this.undelivered.delete(data.messageId);
@@ -1546,6 +1573,7 @@ class Turn {
 	/** The abort signal fired. */
 	private abort(): void {
 		// Once the turn's work is over there is nothing left to stop: it ended as it ended.
+		this.resolveTitle();
 		if (this.abortRequested || this.over) return;
 		this.abortRequested = true;
 		this.resolveAborted();
@@ -1584,11 +1612,11 @@ class Turn {
 		this.finish();
 		// An approval on its way to Windlass is reported before the turn is: its question was withdrawn above, so this is short.
 		await within(this.serverLine, SERVERS_TIMEOUT_MS);
-		const cutOff = this.tally.running !== null;
-		// A turn that was cut off is closed first: what the engine records of that still belongs before the summary.
-		if (cutOff) await this.closeSession();
+		const titleMs = this.titleDeadline - Date.now();
+		if (titleMs > 0 && !this.abortRequested && this.tally.running === null && !this.failure && this.process)
+			await within(Promise.race([this.titled, this.process.ended]), titleMs);
+		await this.closeSession();
 		this.seal();
-		if (!cutOff) await this.closeSession();
 		await this.stopProcess(false);
 	}
 
@@ -1624,7 +1652,7 @@ class Turn {
 	private async closeSession(): Promise<void> {
 		if (this.closingSession) return this.closingSession;
 		if (this.session === null || this.peer.closed || this.process === null || this.process.hasEnded) return;
-		const shutdown = this.input.signal?.reason === PLATFORM_RESTART;
+		const shutdown = this.input.signal?.reason === PLATFORM_RESTART || (!!this.input.modelKey && this.tally.running === null);
 		this.closingSession = this.peer.request<void>("session/close", {
 			sessionId: this.session,
 			...(shutdown && { _meta: { [NS]: { shutdown: true } } }),

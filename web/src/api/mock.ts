@@ -1,3 +1,4 @@
+import { modelRefusal } from "../../../server/src/account-models.js";
 import { withSettingsKeys } from "../../../server/src/sandbox/harnesses.js";
 import { changedPlace, changesPlace, placeProblem, savedPlace } from "../../../server/src/factory/default-place";
 import type { ItemPlaceDefaults } from "@contract";
@@ -64,7 +65,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
  * The world is rebuilt from the token on every page load, so the seeded sessions keep their IDs
  * across a reload and sessions created by hand do not survive one.
  */
-import { hostedCatalog, hostedKeyMessage, hostedProfiles, hostedProvider, initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
+import { windlassModels, windlassProvider, hostedCatalog, hostedKeyMessage, hostedProfiles, hostedProvider, initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
 import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { mockEnvironments, mockRebuild, mockSchedule } from "./mock-environments";
@@ -2112,7 +2113,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					}
 					emit(session, turn, stamped);
 					const usage = reportedModelUsage(stamped);
-					if (usage && usesPlatformModel(session.summary.harness)) {
+					if (usage && usesPlatformModel(session.summary.harness, session.summary.model)) {
 						const day = dayOf(now());
 						world.modelTokens.set(day, (world.modelTokens.get(day) ?? 0) + usage.inputTokens + usage.outputTokens);
 					}
@@ -3306,14 +3307,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	const listedAt = realNow();
 	function modelsFor(profile: UserProfile): ModelList {
 		if (profile.demo) return mockStandInModels("demo");
-		if (options.models === "unavailable") return mockStandInModels("unavailable");
-		return { source: "account", models: MOCK_PLAN.map((model) => ({ ...model, efforts: [...model.efforts] })), defaultModel: MODELS[0] as string, fetchedAt: listedAt - 12 * MINUTE };
+		const account: ModelList = options.models === "unavailable" ? mockStandInModels("unavailable") : { source: "account", models: MOCK_PLAN.map((model) => ({ ...model, efforts: [...model.efforts] })), defaultModel: MODELS[0] as string, fetchedAt: listedAt - 12 * MINUTE };
+		return windlassModels(account, [...(worlds.get(profile.uid)?.account.providers.values() ?? [])]);
 	}
 	/** A model a client named, held against the user's list as the server holds it. */
 	function checkModel(models: ModelList, model: string): void {
-		if (models.models.some((candidate) => candidate.id === model)) return;
-		const names = models.models.map((candidate) => candidate.id).join(", ");
-		throw new PlatformError("user", models.source === "account" ? `That model is not among the ones your ChatGPT plan offers. Choose one of: ${names}` : `That model is not offered. Choose one of: ${names}`, { reason: "bad_model" });
+		const reason = modelRefusal(models, model);
+		if (reason) throw new PlatformError("user", reason, { reason: "bad_model" });
 	}
 
 	function changedDefaults(before: SavedDefaults | null, change: ItemPlaceDefaults & { profile?: SandboxProfileId | null; model?: string | null }, models: ModelList, machines: MachineSummary[]): SavedDefaults | null {
@@ -4110,7 +4110,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				takeModelCheck(account);
 				const model = { openai: "gpt-4.1", anthropic: "claude-sonnet-4", google: "gemini-2.5-flash", openrouter: "openai/gpt-4.1" }[provider];
 				const at = now();
-				const status = { provider, last4: key.slice(-4), addedAt: at, checkedAt: at, ok: true, models: [model] };
+				const status = { provider, last4: key.slice(-4), addedAt: at, checkedAt: at, ok: true, models: [model], windlassModels: [model] };
 				account.providers.set(provider, status);
 				machinesChanged(auth);
 				return structuredClone(status);
@@ -4408,6 +4408,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					play(session, acpTurn(world, session, { ...input, text }, harness === "claude" ? claudeScript(session, text) : { entries: [{ wait: 200, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `${HARNESS_NAMES[harness]} completed the mock turn.` } } }], stopReason: "end_turn" }));
 					return take({ turn, steered: false });
 				}
+				const requested = input.model || session.summary.model;
+				const provider = windlassProvider(requested);
+				if (provider && !world.account.providers.has(provider))
+					throw new PlatformError("user", hostedKeyMessage("windlass", requested), { reason: "harness_signed_out" });
+				if (session.windlassSessionId && provider !== windlassProvider(session.summary.model))
+					throw new PlatformError("user", "Start a new Windlass session to change providers.", { reason: "bad_model" });
 				const models = modelsFor(world.profile);
 				if (input.model !== undefined) checkModel(models, input.model);
 				// An effort is held against the ones the turn's model accepts; of a model the list does not have nothing is said.

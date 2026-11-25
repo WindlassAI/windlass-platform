@@ -45,7 +45,7 @@ What you send while a turn is paused is **held**: it shows with a **held** chip 
 
 The time a turn is paused does not count toward its time limit. A resumed turn gets what is left of its limit, and at least five minutes. If the server stops three times in a row while a turn resumes, with nothing done in between, the turn is ended as **interrupted**.
 
-A turn is **interrupted** when the server stops while it runs and it cannot be resumed. For a Windlass turn, its tokens are the ones its finished model requests reported before the cut. They count toward the turn, a work item's budget and your daily cap, and the timeline says how many there were. A request still under way at the cut is not counted. Other agents report their tokens only when a turn ends, so an interrupted turn of theirs counts none, and the timeline says so.
+A turn is **interrupted** when the server stops while it runs and it cannot be resumed. For a Windlass turn, its tokens are the ones its finished model requests reported before the cut. They count toward the turn, a work item's budget and the selected provider’s usage. For ChatGPT they also count toward your daily cap, and the timeline says how many there were. A request still under way at the cut is not counted. Other agents report their tokens only when a turn ends, so an interrupted turn of theirs counts none, and the timeline says so.
 
 ## The timeline
 
@@ -78,7 +78,9 @@ When the agent is **idle**, type in **Tell the agent what to do** and press <kbd
 
 A finished session is not closed. Send another prompt to go on from where it stopped. There is no separate resume step.
 
-You can change the model, effort and mode before each prompt. While a turn runs, only the mode can be changed, and the change applies from the next prompt.
+Windlass lists your ChatGPT models and the models found when you checked a provider key in Settings. Choose a provider-prefixed model such as `openai/gpt-5` to use that key on hosted sandboxes or your paired machine. Unprefixed models use ChatGPT. A Windlass session keeps its provider. Start a new session to change providers.
+
+You can change the model within that provider, effort and mode before each prompt. While a turn runs, only the mode can be changed, and the change applies from the next prompt.
 
 A **Codex** session also has **Plan mode** in the composer, beside the effort and the model. Turned on, the next prompt asks Codex for a plan, and it changes nothing; turned off, it does the work. It is set before a prompt that starts a turn, not while one runs. It is not the work items' **Plan first**.
 

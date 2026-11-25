@@ -9,7 +9,7 @@ import { createInterface } from "node:readline";
 import { PassThrough, type Readable } from "node:stream";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { generatedSessionTitle, type AcpUpdate, type CreateItemInput } from "../server/src/contract.js";
+import { MODEL_PROVIDERS, generatedSessionTitle, type AcpUpdate, type CreateItemInput } from "../server/src/contract.js";
 import type { RunTurnInput, SandboxHandle, SandboxLayer } from "../server/src/sandbox/api.js";
 import { markTurnSandbox, type ProcessEnd, type StartOptions } from "../server/src/sandbox/provider.js";
 import { SecretRedactor } from "../server/src/repo-secrets.js";
@@ -21,7 +21,14 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	const machine = {kind:"machine", machineId:"desk"}, hosted = {kind:"hosted"};
 	const keys = [{provider:"openai",generation:"first"}, {provider:"google",generation:"second"}];
 	const calls: string[] = [];
-	const ctx = { client: () => ({user:{get:() => ({internalModelKeys:async () => { calls.push("keys"); return keys; }})}}),
+	const keyActor = {
+		internalModelKeyGeneration: async (provider: string) => {
+			calls.push(provider);
+			return keys.find(k => k.provider === provider)?.generation ?? null;
+		},
+		internalModelKeys: async () => { calls.push("keys"); return keys; },
+	};
+	const ctx = { client: () => ({ user: { get: () => keyActor } }),
 		vars:{runner:{request:async (op: string) => { calls.push(op); return "google/gemini"; }}} };
 	const resolve = (place: typeof machine | typeof hosted, model: string, keyRelay?: true, defaultModel?: string) =>
 		turnCredential(ctx as never, {place, uid:"owner", harness:"opencode", harnessModels:{defaultModel}} as never, {id:"opencode", keyRelay} as never, model);
@@ -40,18 +47,37 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	assert.deepEqual(calls.splice(0), ["keys","openCodeDefault","keys","keys"]);
 	assert.deepEqual(await resolve(machine, "default", true, "anthropic/removed"), {model:"google/gemini",key:keys[1]});
 	assert.deepEqual(calls, ["keys","openCodeDefault"]);
+	for (const place of [hosted, machine]) {
+		const meta = { place, uid: "owner", harness: "windlass" } as never;
+		assert.deepEqual(await turnCredential(ctx as never, meta, undefined, "gpt-5"), { model: "gpt-5" });
+		for (const provider of MODEL_PROVIDERS) {
+			const model = provider + "/vendor/model";
+			const key = { provider, generation: provider + "-generation" };
+			keys.splice(0, keys.length, key);
+			assert.deepEqual(await turnCredential(ctx as never, meta, undefined, model), { model, key });
+			assert.equal(calls.at(-1), provider);
+			const pinned = JSON.parse(JSON.stringify({ model, key }));
+			keys[0] = { ...key, generation: "replacement" };
+			await assert.rejects(turnCredential(ctx as never, meta, undefined, model, undefined, pinned), /changed or was removed/);
+			keys[0] = key;
+			assert.deepEqual(await turnCredential(ctx as never, meta, undefined, model, undefined, pinned), pinned);
+			keys.length = 0;
+			await assert.rejects(turnCredential(ctx as never, meta, undefined, model, undefined, pinned), /changed or was removed/);
+			await assert.rejects(turnCredential(ctx as never, meta, undefined, model), /key in Settings/);
+		}
+	}
 	console.log("ok  selected and default provider generation, legacy runner and hosted placement");
 }
 if (process.argv.includes("--turn-provider")) process.exit(0);
 {
-	const { hostedCatalog } = await import("../server/src/sandbox/harnesses.js");
+	const { hostedCatalog, windlassModels } = await import("../server/src/sandbox/harnesses.js");
 	const openai = ["gpt-5.6-luna", "gpt-5.6-luna-2026-11-01", "o3", "o3-mini-2025-01-31", "gpt-audio", "gpt-realtime", "tts-1",
 		"gpt-image-1", "text-embedding-3-large", "gpt-5-healthcare", "gpt-live-1", "gpt-4o-mini-transcribe", "gpt-4o-search-preview"];
 	const providers = [
 		{ provider: "openai" as const, checkedAt: 10, models: openai },
 		{ provider: "anthropic" as const, checkedAt: 8, models: ["claude-3-5-haiku-20241022", "claude-haiku-5-5", "claude-fable-5-2", "claude-opus-5-5"] },
 		{ provider: "google" as const, checkedAt: 9 },
-		{ provider: "openrouter" as const, checkedAt: 7, models: ["vendor/model"] },
+		{ provider: "openrouter" as const, checkedAt: 7, models: ["vendor/model"], windlassModels: ["vendor/model"] },
 	];
 	const ids = (id: "claude" | "codex" | "opencode") => hostedCatalog(id, providers)?.models.map(m => m.id);
 	assert.deepEqual(ids("codex"), ["default", "gpt-5.6-luna", "o3", "o3-mini-2025-01-31"]);
@@ -60,6 +86,11 @@ if (process.argv.includes("--turn-provider")) process.exit(0);
 	assert.ok(ids("opencode")?.includes("anthropic/claude-haiku-5-5"));
 	assert.ok(!ids("opencode")?.some(id => id.startsWith("google/")));
 	assert.equal(hostedCatalog("codex", providers.slice(1)), undefined);
+	const account = { source: "account", models: [{ id: "gpt-5.6-luna", name: null, efforts: ["low"] }], defaultModel: "gpt-5.6-luna", fetchedAt: 1 } as const;
+	const picker = windlassModels({ ...account, models: [{ ...account.models[0], efforts: ["low"] }] }, providers);
+	assert.equal(picker.defaultModel, account.defaultModel);
+	assert.deepEqual(picker.models.map(m => m.id), [account.defaultModel, "openai/gpt-5.6-luna", "openai/o3", "openai/o3-mini-2025-01-31",
+		...providers[1]!.models!.map(id => "anthropic/" + id), "openrouter/vendor/model"]);
 	console.log("ok  hosted launch catalogs from the owner's provider checks");
 }
 {

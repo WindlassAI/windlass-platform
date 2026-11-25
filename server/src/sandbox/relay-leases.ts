@@ -19,7 +19,7 @@ import { forwardProof, wires } from "../../../sandbox/relay/wires.cjs";
 import type { AccessToken } from "./api.js";
 import { config } from "../config.js";
 import { serverSealer } from "../signin/seal.js";
-import type { ForwardedKeyLease, KeyTurnRelay, KeyReference, TurnModelRelay } from "./provider.js";
+import type { ForwardedKeyLease, KeyTurnRelay, KeyReference, TakeRelayRequest, TurnModelRelay } from "./provider.js";
 import { keyedDigest, readSignedPayload, signedPayload } from "../signatures.js";
 
 /** All model routes live under this prefix on the dedicated relay host. */
@@ -30,6 +30,7 @@ export type RelayToken = (AccessToken & { kind: "access" }) | (KeyReference & { 
 
 interface Lease {
 	remaining?: number;
+	takeRequest?: TakeRelayRequest;
 	machine?: string;
 	uid: string;
 	sessionId: string;
@@ -91,10 +92,12 @@ export function readPlaceholder(bearer: string, now = Date.now()): Placeholder |
 	return typeof machine === "string" && machine ? { ...placeholder, machine } : null;
 }
 
-export function leaseToken(nonce: string, uid: string, sessionId: string, now = Date.now(), consume = false): RelayToken | "limit" | null {
+export async function leaseToken(nonce: string, uid: string, sessionId: string, now = Date.now(), consume = false): Promise<RelayToken | "limit" | null> {
 	const lease = leases.get(nonce);
 	if (!lease || lease.uid !== uid || lease.sessionId !== sessionId || lease.expiresAt <= now) return null;
-	if (consume && lease.remaining !== undefined) {
+	if (consume && lease.takeRequest) {
+		if (!await lease.takeRequest()) return "limit";
+	} else if (consume && lease.remaining !== undefined) {
 		if (lease.remaining <= 0) return "limit";
 		lease.remaining--;
 	}
@@ -111,11 +114,11 @@ export interface RemoteLease {
 export const relayTransitSubject = (uid: string, session: string, lease: string, request: string) =>
 	JSON.stringify(["model-relay", uid, session, lease, request]);
 
-export function remoteLease(nonce: string, uid: string, sessionId: string, request: string, consume = false): RemoteLease {
+export async function remoteLease(nonce: string, uid: string, sessionId: string, request: string, consume = false): Promise<RemoteLease> {
 	if (!/^[a-f0-9]{32}$/.test(request)) throw new Error("Invalid relay request nonce");
 	const lease = leases.get(nonce);
 	if (!lease || lease.uid !== uid || lease.sessionId !== sessionId) return { held: false, token: null };
-	const token = leaseToken(nonce, uid, sessionId, Date.now(), consume);
+	const token = await leaseToken(nonce, uid, sessionId, Date.now(), consume);
 	if (token === "limit") return { held: true, token: null, limited: true };
 	return { held: true, token: token?.kind === "access"
 		? serverSealer().seal("transit", relayTransitSubject(uid, sessionId, nonce, request), JSON.stringify({ ...token, exp: Date.now() + 60_000 }))
@@ -142,7 +145,7 @@ export function trackRequest(nonce: string, controller: AbortController): (() =>
  * A turn's lease. `origin`: WLP_PUBLIC_URL, the address the sandbox reaches the route at. `ttlMs`: how long
  * the placeholder's signature counts, at most; the lease itself ends with the turn, before that.
  */
-type LeaseInput = { uid: string; sessionId: string; origin: string; ttlMs: number; signal?: AbortSignal; requestLimit?: number };
+type LeaseInput = { uid: string; sessionId: string; origin: string; ttlMs: number; signal?: AbortSignal; requestLimit?: number; takeRequest?: TakeRelayRequest };
 
 function closeLease(nonce: string, lease: Lease) {
 	if (!leases.delete(nonce)) return;
@@ -163,7 +166,7 @@ export function openRelayLease(input: LeaseInput & { key?: KeyReference; machine
 	for (const [nonce, lease] of leases) if (lease.expiresAt <= now) closeLease(nonce, lease);
 	const nonce = randomBytes(16).toString("hex");
 	const expiresAt = now + input.ttlMs;
-	const lease: Lease = { remaining: input.requestLimit, machine: input.machine, uid: input.uid, sessionId: input.sessionId, token: input.key ? { ...input.key, kind: "key" } : null, expiresAt, requests: new Set() };
+	const lease: Lease = { remaining: input.requestLimit, takeRequest: input.takeRequest, machine: input.machine, uid: input.uid, sessionId: input.sessionId, token: input.key ? { ...input.key, kind: "key" } : null, expiresAt, requests: new Set() };
 	leases.set(nonce, lease);
 	const close = () => {
 		input.signal?.removeEventListener("abort", close);
@@ -198,13 +201,13 @@ export function verifiedMachine(placeholder: string, machine: string, proof: str
 
 /** Keep the Settings key on the platform. The Docker relay forwards with a second, turn-scoped placeholder. */
 export async function forwardKeyLease(uid: string, sessionId: string, key: KeyReference, machine: string | undefined,
-	open: (forward: ForwardedKeyLease) => Promise<KeyTurnRelay>, signal?: AbortSignal): Promise<KeyTurnRelay> {
+	open: (forward: ForwardedKeyLease) => Promise<KeyTurnRelay>, signal?: AbortSignal, takeRequest?: TakeRelayRequest): Promise<KeyTurnRelay> {
 	signal?.throwIfAborted();
 	const url = config.modelRelay.url;
 	if (!config.modelRelay.on || !url || !sessionId) throw new Error("A saved provider key requires a platform model relay.");
 	const ttlMs = config.turnTimeoutMs + 60_000;
 	const expiresAt = Date.now() + ttlMs;
-	const platform = openRelayLease({ uid, sessionId, key, machine, origin: url.origin, ttlMs, signal });
+	const platform = openRelayLease({ uid, sessionId, key, machine, origin: url.origin, ttlMs, signal, takeRequest, requestLimit: machine ? undefined : config.modelRelay.turnRequests });
 	let local: KeyTurnRelay | undefined;
 	let closing: Promise<void> | undefined;
 	const close = () => {

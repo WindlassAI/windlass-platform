@@ -1,10 +1,15 @@
-import type { AcpProfile } from "./harnesses.js";
+import { SecretRedactor, type Redactor } from "../repo-secrets.js";
+import type { HarnessId } from "../contract.js";
 import type { KeyTurnRelay, ModelKeyLease } from "./provider.js";
 
 /** The hosted CLI receives one turn's placeholder, in the format its adapter expects. */
-export function hostedKeyEnv(id: AcpProfile["id"], provider: ModelKeyLease["provider"], lease: KeyTurnRelay): Record<string, string> {
+export function hostedKeyEnv(id: HarnessId, provider: ModelKeyLease["provider"], lease: KeyTurnRelay): Record<string, string> {
 	const base = lease.env.WINDLASS_MODEL_BASE_URL!;
 	switch (id) {
+		case "windlass": {
+			const variable = { openai: "OPENAI_API_KEY", anthropic: "ANTHROPIC_API_KEY", google: "GEMINI_API_KEY", openrouter: "OPENROUTER_API_KEY" }[provider];
+			return { WINDLASS_MODEL_BASE_URL: base, WINDLASS_MODEL_ALLOWED_ORIGIN: new URL(base).origin, WINDLASS_PROVIDER: provider, [variable]: lease.placeholder };
+		}
 		case "claude":
 			return { ANTHROPIC_BASE_URL: base, ANTHROPIC_API_KEY: lease.placeholder };
 		case "codex":
@@ -18,4 +23,10 @@ export function hostedKeyEnv(id: AcpProfile["id"], provider: ModelKeyLease["prov
 			};
 		}
 	}
+}
+
+export function redactKeyLease(secrets: Redactor, placeholder: string): Redactor {
+	const relay = new SecretRedactor([{ name: "model-relay", value: placeholder }]);
+	return { active: true, text: s => secrets.text(relay.text(s)), deep: v => secrets.deep(relay.deep(v)),
+		held: s => Math.max(secrets.held(s), relay.held(s)) };
 }

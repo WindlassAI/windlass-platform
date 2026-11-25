@@ -6,7 +6,7 @@ import type { ChildPlacement, EgressMode, HostedSize, FeaturePlanEdit, HarnessId
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
-import { type CheckedProvider, hostedCatalog, hostedProvider, hostedKeyMessage, initialHarnessModels, selectedKey, harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
+import { type CheckedProvider, windlassProvider, hostedCatalog, hostedProvider, hostedKeyMessage, initialHarnessModels, selectedKey, harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
 import { checkItemEffort, chosenModel, ModelProblem } from "../account-models.js";
 
 /** A machine harness (Claude Code, OpenCode) runs only in the hardened container. */
@@ -170,13 +170,13 @@ function capabilityFit(machine: Machine, task: PlanSubtask, inventory: Placement
 function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementInventory, preferred: boolean, warm: string[], at: number, name?: string): Candidate {
 	const needs = task.needs ?? {};
 	const harness = subtaskHarness(task);
-	const tokenWait = usesPlatformModel(harness) ? inventory.dailyTokenWait : null;
 	const bonus = (preferred ? 3 : 0) + Number(warm.includes(placeKey(place)));
 	// Usage limits are an account's: only those of the subtask's own agent there hold it back.
 	const machine = place.kind === "machine" ? inventory.machines.find(m => m.machineId === place.machineId) : undefined;
 	const keys = machine?.harnesses?.find(h => h.id === harness)?.platformKeys ?? [];
-	const model = task.agent?.model ?? inventory.models?.machines?.[placeKey(place)]?.[harness]?.defaultModel;
-	const provider = place.kind === "hosted" && harness !== "windlass" ? hostedProvider(harness, model, inventory.hostedKeys?.map(k => k.provider) ?? []) : selectedKey(harness, model, keys);
+	const model = task.agent?.model ?? (harness === "windlass" ? inventory.featureModel : inventory.models?.machines?.[placeKey(place)]?.[harness]?.defaultModel);
+	const tokenWait = usesPlatformModel(harness, model) ? inventory.dailyTokenWait : null;
+	const provider = harness === "windlass" ? windlassProvider(model) : place.kind === "hosted" ? hostedProvider(harness, model, inventory.hostedKeys?.map(k => k.provider) ?? []) : selectedKey(harness, model, keys);
 	const limited = inventory.limited?.find(a => provider ? a.machineId === "settings/" + provider : limitApplies(a, placeKey(place)) && a.harness === harness);
 	const waiting = (limit: NonNullable<typeof limited>, name: string) => {
 		const dailyCap = !!tokenWait;

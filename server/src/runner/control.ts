@@ -159,6 +159,7 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *   model-relay      the report's `modelRelay`, a connect's `modelRelay`, and the `modelRelay`,
  *                    `modelRelayToken` and `modelRelayClose` operations (docs/model-relay.md); without
  *                    it, or from a runner that says neither, a turn's token goes into the sandbox
+ *   windlass-key-relay  a connect's `windlassKeyRelay`: the runner accepts forwarded Settings-key leases for Windlass
  *   start-times      the first connect's `startTimes` after a create (docs/architecture.md, "Start times")
  *   store-limits     the report's `storeLimits`: the snapshot and Git mirror limits in force (docs/machines.md)
  *   memory-events    a connect's `memoryEvents`: the session can read its container's memory limit and OOM kills
@@ -171,7 +172,7 @@ const probe = either(object({ ok: oneOf(true) }), object({ ok: oneOf(false), rea
  *                    restarted server resumes, so a graceful stop need not end a machine turn
  *                    (runner/journal.ts)
  */
-export const SERVER_CAPABILITIES = ["environment-build", "warm-spares", "spare-reseed", "spare-setup-times", "git-mirrors", "egress-domains", "session-volumes", "model-relay", "harness-key-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
+export const SERVER_CAPABILITIES = ["environment-build", "warm-spares", "spare-reseed", "spare-setup-times", "git-mirrors", "egress-domains", "session-volumes", "model-relay", "windlass-key-relay", "harness-key-relay", "start-times", "store-limits", "sign-in-reason", "blocked-network", "environment-image", "resumable-conversation", "memory-events"] as const;
 export type Capability = typeof SERVER_CAPABILITIES[number];
 /**
  * The first runner release whose checks take `capabilities` in a welcome. An older runner refuses a

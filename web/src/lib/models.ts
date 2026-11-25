@@ -5,7 +5,7 @@
  * the platform's stand-in where not; the server says which, and the words here only repeat it.
  */
 import type { HarnessId, MachineSummary, ModelChoice, ModelList, SessionMode } from "@contract";
-import { hostedCatalog, type CheckedProvider } from "../../../server/src/sandbox/harnesses.js";
+import { hostedCatalog, windlassProvider, type CheckedProvider } from "../../../server/src/sandbox/harnesses.js";
 import { localTime } from "./format";
 
 /** The ids of the list's models, in its order; none while the list is not known. */
@@ -20,6 +20,7 @@ export const effortChoices = (efforts: string[]): string[] =>
 
 /** Whose list it is, in a sentence, for under a field. */
 export function modelsNote(list: ModelList): string {
+	if (list.models.some(m => windlassProvider(m.id))) return "Choose a provider-prefixed model to use its Settings key, or an unprefixed model to use ChatGPT.";
 	switch (list.source) {
 		case "harness":
 			return "The models offered by the session’s harness.";
@@ -36,6 +37,7 @@ export function modelsNote(list: ModelList): string {
 
 /** The same in a few words, for beside the composer's pickers. */
 export function modelsNoteShort(list: ModelList): string {
+	if (list.models.some(m => windlassProvider(m.id))) return "ChatGPT and Settings keys";
 	switch (list.source) {
 		case "harness":
 			return "harness models";

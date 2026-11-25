@@ -221,6 +221,7 @@ class Conversation {
 				case "modelRelay": {
 					abort?.signal.throwIfAborted();
 					if (box.harness ? !o.harnessKeyRelays || !op.args.forward : !o.modelRelays || !o.modelRelayReady) throw new Refusal("This sandbox's turns cannot use the model relay.");
+					if (!box.harness && op.args.forward && !o.windlassKeyRelays) throw new Refusal("Windlass Settings keys were not negotiated.");
 					const relay = box.harness ? await o.openTurnKey(box.raw, box.harness, op.args.forward!)
 						: await o.modelRelay.open(containerName(box.raw), box.raw, undefined, op.args.forward);
 					if (!this.active || abort?.signal.aborted) { await relay.close(); throw new Refusal("The session conversation ended."); }

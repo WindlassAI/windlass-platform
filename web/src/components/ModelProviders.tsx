@@ -210,7 +210,7 @@ export function ModelProviders() {
 				Model providers
 			</h2>
 			<p className="usage-lede">
-				On hosted sandboxes and paired machines, Claude Code uses your Anthropic key, Codex uses your OpenAI key, and OpenCode uses the key for its selected provider. A paired machine can also use its own login. Windlass still uses ChatGPT. A saved key stays on the platform.
+				On hosted sandboxes and paired machines, Claude Code uses your Anthropic key, Codex uses your OpenAI key, and OpenCode uses the key for its selected provider. A paired machine can also use its own login. Windlass uses the Settings key for a provider-prefixed model and ChatGPT for an unprefixed model. A saved key stays on the platform.
 			</p>
 			{list === null ? (
 				state.error ? (

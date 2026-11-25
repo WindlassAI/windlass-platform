@@ -405,7 +405,7 @@ Windlass agents use your ChatGPT sign-in, which the platform keeps. A current ru
 
 So commands, MCP servers and anything left running from setup can read only the placeholder. While a turn runs, they can still use the relay to make model requests on your plan, within the limits below. The relay has the same limits as the other relays on the machine: 8 requests at once per turn, with up to 32 more waiting, and 24 at once on the machine. The relay works in every network mode, `none` included.
 
-Runners 0.3.0 and 0.3.1 don't have the relay, and a runner whose sandbox image has a Windlass older than 0.6.0 doesn't offer it. Their Windlass turns get the access token in a file in the container, as before. The machine's sandbox row in the **where** menu says which applies. If the relay can't be started on a runner that has it, the turn fails with "the model relay could not be started". The runner never falls back to putting the token in the container.
+Runners 0.3.0 and 0.3.1 don't have the relay, and a runner whose sandbox image has a Windlass older than 0.7.1 doesn't offer it. Their Windlass turns get the access token in a file in the container, as before. The machine's sandbox row in the **where** menu says which applies. If the relay can't be started on a runner that has it, the turn fails with "the model relay could not be started". The runner never falls back to putting the token in the container.
 
 ## Agent logins stay out of the container
 

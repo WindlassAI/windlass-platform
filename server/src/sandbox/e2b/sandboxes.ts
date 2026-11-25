@@ -50,6 +50,7 @@
  * also not the token file of a turn of the same user.
  */
 
+import { readsModelRelay, SETTINGS_KEY_WINDLASS } from "../../model-relay-url.js";
 import { INIT_WORKSPACE } from "../../github/git-flags.js";
 import { hostedProfiles, machineHarnesses } from "../harnesses.js";
 import type { SandboxProfile, SandboxProfileId } from "../../contract.js";
@@ -223,20 +224,22 @@ export class E2bSandboxHandle implements TurnSandbox {
 		// A sandbox that names no session cannot have a lease any server process finds: its turns fail, and
 		// never get the token in the sandbox in its place.
 		if (relay !== null) {
+			if (!owner.windlassSettingsKeys) this.windlassKeyProblem = `Hosted Windlass needs ${SETTINGS_KEY_WINDLASS} to use Settings keys.`;
 			const leaseInput = () => {
 				if (!session) throw new Error("this sandbox names no session (its wlp_session is empty), so its turns cannot use the model relay");
 				return { uid, sessionId: session, origin: relay, ttlMs: owner.relayLeaseMs };
 			};
 			this.modelRelay = async () => openRelayLease(leaseInput());
-			this.modelKeyRelay = async (sessionId, key, signal) => {
+			this.modelKeyRelay = async (sessionId, key, signal, takeRequest) => {
 				if (sessionId !== session) throw new Error("This model relay belongs to another session.");
-				return openRelayLease({ ...leaseInput(), key, signal, ttlMs: owner.turnLimitMs, requestLimit: config.modelRelay.turnRequests });
+				return openRelayLease({ ...leaseInput(), key, signal, ttlMs: owner.turnLimitMs, requestLimit: config.modelRelay.turnRequests, takeRequest });
 			};
 		}
 	}
 
 	/** `TurnSandbox.modelRelay`, where the deployment's sandboxes reach the relay route. */
 	readonly modelRelay?: () => Promise<TurnModelRelay>;
+	readonly windlassKeyProblem?: string;
 	readonly modelKeyRelay?: TurnSandbox["modelKeyRelay"];
 
 	/** Made from a post-setup snapshot (snapshots.ts): what it was saved from. Set by `E2bSandboxes` before the handle is handed out. */
@@ -637,6 +640,10 @@ export class E2bSandboxes implements Sandboxes {
 		this.log(settings.modelRelayOrigin
 			? `[wlp] e2b.model_relay: Windlass's model requests go through ${settings.modelRelayOrigin}/model-relay/v1, and sandboxes may reach that host instead of api.openai.com; they never hold the access token`
 			: `[wlp] e2b.model_relay: off (${settings.modelRelayOff ?? "not configured"}): each turn's access token is written into its sandbox`);
+	}
+
+	get windlassSettingsKeys(): boolean {
+		return readsModelRelay(this.settings.windlassVersion, SETTINGS_KEY_WINDLASS);
 	}
 
 	/** Where Windlass's model requests go (E2bSettings.modelRelayOrigin), or null. */

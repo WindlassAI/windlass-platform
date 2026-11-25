@@ -24,7 +24,7 @@
 import { type DefaultDestination, resolveDefaultPlace, savedPlace } from "../factory/default-place.js";
 import { isBranchName } from "../github/git.js";
 import type { ItemPlaceDefaults, SessionRepository } from "../contract.js";
-import { hostedProvider, selectedKey } from "../sandbox/harnesses.js";
+import { windlassProvider, hostedProvider, selectedKey } from "../sandbox/harnesses.js";
 import { accountFor, accountKey, loginGeneration, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
 import { choosePlacement, machineSlots, placeKey, type AgentModels, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
@@ -654,7 +654,8 @@ export function factorySlots(c: { vars: { items: ItemsState; sessions: ReadonlyM
 
 function sessionProvider(session: SessionSummary, machine: MachineSummary | undefined | null, hostedKeys: readonly ModelProvider[]) {
 	const model = session.model === "default" ? session.harnessModels?.defaultModel : session.model;
-	if (session.place.kind === "hosted" && session.harness && session.harness !== "windlass") return hostedProvider(session.harness, model, hostedKeys);
+	if (!session.harness || session.harness === "windlass") return windlassProvider(model);
+	if (session.place.kind === "hosted") return hostedProvider(session.harness, model, hostedKeys);
 	return selectedKey(session.harness, model, machine?.harnesses?.find(h => h.id === session.harness)?.platformKeys ?? []);
 }
 
@@ -716,7 +717,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 				provider: sessionProvider(session, machine, hostedKeys) }),
 			at: now,
 			limits,
-			dailyTokenWait: usesPlatformModel(session.harness) ? tokenWait : null,
+			dailyTokenWait: usesPlatformModel(session.harness, session.model) ? tokenWait : null,
 			// The session's own sandbox, running already, is not one more for its turn.
 			place: machine ? {
 				kind: "machine", name: machineLabel(machine), online: machine.status === "online",

@@ -612,23 +612,25 @@ try {
 		}
 	});
 	await checkControl("a runner sends modelRelay, and lets turns use its relay, only for a server whose welcome names model-relay", async () => {
-		for (const [capabilities, sent] of [[undefined, false], [[], false], [["git-mirrors", "session-volumes"], false], [["git-mirrors", "model-relay"], true]] as const) {
+		for (const [capabilities, sent] of [[undefined, false], [[], false], [["git-mirrors", "session-volumes"], false], [["git-mirrors", "model-relay"], true], [["model-relay", "windlass-key-relay"], true]] as const) {
 			await withControl([lease()], async r => {
 				const ws = await r.online(0, capabilities && [...capabilities]);
 				const report = ws.sent.find(f => f.kind === "report");
 				assert.equal(Object.hasOwn(report ?? {}, "modelRelay"), sent, `welcome capabilities ${JSON.stringify(capabilities)}`);
+				assert.equal(r.owner.windlassKeyRelays, capabilities?.some(c => c === "windlass-key-relay") === true);
 				assert.equal(r.owner.modelRelays, sent, `owner.modelRelays after welcome capabilities ${JSON.stringify(capabilities)}`);
 			});
 		}
 	});
 	await checkControl("a connect says modelRelay only to a server that named model-relay, only for Windlass's own sandboxes, and only when the pinned image's Windlass is 0.6.0 or later", async () => {
 		const { Executor } = await import("../runner/src/docker-executor.js");
-		for (const [named, windlass, said] of [[false, "0.6.0", false], [true, "0.6.0", true], [true, "0.5.0", false], [true, null, false]] as const) {
+		for (const [named, windlass, said] of [[false, "0.7.1", false], [true, "0.7.1", true], [true, "0.6.0", true], [true, "0.5.0", false], [true, null, false]] as const) {
 			const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {});
 			owner.modelRelays = named;
+			owner.windlassKeyRelays = named;
 			// What `welcome` probes from the pinned sandbox image.
 			(owner as unknown as { sandboxWindlass: string | null }).sandboxWindlass = windlass;
-			assert.equal(owner.report().modelRelay, windlass === "0.6.0", `the report says modelRelay for Windlass ${windlass}`);
+			assert.equal(owner.report().modelRelay, windlass === "0.7.1" || windlass === "0.6.0", `the report says modelRelay for Windlass ${windlass}`);
 			owner.discover = async () => { (owner as unknown as { dockerHealth: { ok: boolean } }).dockerHealth = { ok: true }; };
 			Object.assign(owner, { disk: async () => 10_000_000_000 });
 			owner.network.prepare = async () => {};
@@ -638,6 +640,7 @@ try {
 			const id = await owner.create("s_relay", "docker-hardened");
 			const found = await owner.lifecycle("connect", id, "s_relay");
 			assert.equal(found && typeof found === "object" && "modelRelay" in found, said, `named ${named}, Windlass ${windlass}`);
+			assert.equal(found && typeof found === "object" && "windlassKeyRelay" in found, named);
 			assert.ok(validValue("connect", found));
 		}
 	});

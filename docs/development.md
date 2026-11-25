@@ -11,11 +11,11 @@ Use Node.js 22.22.2 (or a newer patch in 22.x) and pnpm 11.25.0 (`corepack enabl
 local Rivet engine supports, such as Linux x64 or arm64. The README's quick start runs fake sandboxes, which
 replay recorded Windlass sessions and need no Docker, account or API keys.
 
-For real containers, install Docker as well. The Windlass the platform runs is the released 0.6.0, which the
+For real containers, install Docker as well. The Windlass the platform runs is the released 0.7.1, which the
 build scripts fetch by themselves (`sandbox/fetch-windlass.sh`: the release is pinned there by tag and by the
 SHA-256 of each executable, and a file that does not match is not installed).
 
-The server and Docker image build require Windlass 0.4.0 or later. Each turn checks for host tools in its engine’s `initialize` response before opening the session. Keep the Docker image and E2B template at 0.6.0 or later when rolling back: 0.5.0 cannot open a session that 0.6.0 recorded, and 0.4.0 cannot read one that 0.5.0 gave a generated title.
+The server and Docker image build require Windlass 0.4.0 or later. Each turn checks for host tools in its engine’s `initialize` response before opening the session. Keep the Docker image and E2B template at 0.7.1 or later when rolling back. Windlass 0.6.0 cannot open sessions written by 0.7.x.
 
 ```sh
 pnpm install

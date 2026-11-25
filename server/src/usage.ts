@@ -50,6 +50,7 @@
 
 import type { RawAccess } from "rivetkit/db";
 import type { HarnessId, HostedMonth, PlanId, SandboxPlace, SessionSummary, TurnUsage, WindlassEvent, UsageDay, UsageNumbers, UsageSession } from "./contract.js";
+import { windlassProvider } from "./sandbox/harnesses.js";
 import { USAGE_HISTORY_DAYS } from "./contract.js";
 import { meterPeriod, monthOf, type MeterPeriod, type SubscriptionDates } from "./billing/meter.js";
 
@@ -94,14 +95,14 @@ export function dayOf(ms: number): number {
 
 export function nextUtcDay(at: number) { return (dayOf(at) + 1) * DAY_MS; }
 
-/** All Windlass turns receive their model credential from the platform, including on a paired runner. */
-export function usesPlatformModel(harness: HarnessId = "windlass"): boolean {
-	return harness === "windlass";
+/** Only ChatGPT turns spend the platform’s daily model allowance. */
+export function usesPlatformModel(harness: HarnessId = "windlass", model?: string): boolean {
+	return harness === "windlass" && !windlassProvider(model);
 }
 
-/** Windlass reports spending on these request events. The turn summary and the account ledger use the same figures. */
-export function reportedModelUsage(event: WindlassEvent): TurnUsage | null {
-	if (!["step.ended", "step.failed", "step.refused", "compaction.ended"].includes(event.type)) return null;
+/** Count each child from its durable spawn.ended total. Its streamed child.event copies cover the same requests. */
+export function reportedModelUsage(event: WindlassEvent, includeTitle = false): TurnUsage | null {
+	if (!(includeTitle && event.type === "session.title_usage") && !["step.ended", "step.failed", "step.refused", "compaction.ended", "spawn.ended"].includes(event.type)) return null;
 	const raw = event.data?.usage;
 	if (typeof raw !== "object" || raw === null) return null;
 	const usage = raw as Partial<TurnUsage>;

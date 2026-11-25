@@ -353,6 +353,7 @@ private signInRetries = 0;
 	 */
 	modelRelays = false;
 	harnessKeyRelays = false;
+	windlassKeyRelays = false;
 	/** The connected server named `start-times`: the first connect after a create says what making the sandbox took (`Box.startTimes`). */
 	startTimes = false;
 	blockedNetwork = false;
@@ -363,8 +364,7 @@ private signInRetries = 0;
 	readonly modelRelay: DockerModelRelay;
 	/**
 	 * The Windlass version of the pinned sandbox image, once looked at after the image is here (`welcome`).
-	 * The relay is offered only when it is 0.6.0 or later: an older Windlass ignores the relay's address and
-	 * would send the placeholder to api.openai.com.
+	 * Windlass 0.7.1 and later route all supported providers through the relay.
 	 */
 	private sandboxWindlass: string | null = null;
 	/** Whether what a runner that died left of the relay was removed in this process (once, at the first welcome). */
@@ -738,7 +738,7 @@ private signInRetries = 0;
 			if (!this.commandSandbox.ok) this.commandSandbox = { ok: false, reason: error instanceof RunnerError ? error.message : "The sandbox image could not be checked." };
 		}
 	}
-	/** Whether this machine's Windlass sandboxes can use its model relay: the pinned image's Windlass is 0.6.0 or later. */
+	/** Whether this machine's Windlass sandboxes can use its model relay: the pinned image's Windlass supports all relay wires. */
 	get modelRelayReady(): boolean {
 		return readsModelRelay(this.sandboxWindlass);
 	}
@@ -1020,6 +1020,7 @@ private signInRetries = 0;
 				...(this.canReseed && { needsSpareSeed: true as const }),
 				// Only to a server that reads it (`sessionVolumes`): an older one refuses a key it does not know.
 				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}),
+				...(!box.harness && this.windlassKeyRelays && { windlassKeyRelay: true as const }),
 				// A harness uses its credential relay for forwarded platform leases.
 				...((box.harness ? this.harnessKeyRelays : this.modelRelays && this.modelRelayReady) ? { modelRelay: true as const } : {}),
 				// Only a reporting restricted proxy on a server that opted in.
