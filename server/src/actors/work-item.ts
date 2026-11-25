@@ -143,7 +143,7 @@ const VIEW_EVENTS = 500;
 type IssueCheck = IssueChanges & { kind: "check_issue"; key: "pending"; at: number };
 const ISSUE_CHANGE_WINDOW_MS = 15_000;
 
-type FeedbackEffect = { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string; run: number } | { kind: "feedback_comment"; key: string; run: number; who: string };
+type FeedbackEffect = { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string } | { kind: "feedback_comment"; key: string; run: number; who: string };
 /** `register`'s `repo`: a cross-repo feature's other repository, by alias, registered with that repository's directory. */
 type Effect = ({ kind: "linear_write" } & LinearWrite) | BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
 type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
@@ -511,7 +511,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 					for (const row of await tx.execute<{ data: string }>("SELECT data FROM feedback WHERE id IN (SELECT value FROM json_each(?))", ids)) {
 						const entry: FeedbackEntry = JSON.parse(row.data);
 						writers.add("@" + entry.author);
-						if (entry.kind.endsWith("_comment")) effects.push({ kind: "feedback_ack", key: entry.id, run: decision.run! });
+						if (entry.kind.endsWith("_comment")) effects.push({ kind: "feedback_ack", key: entry.id });
 					}
 					effects.push({ kind: "feedback_comment", key: String(decision.run), run: decision.run!, who: [...writers].join(", ") });
 				}
@@ -2100,6 +2100,7 @@ export const workItem = actor({
 			await c.db.transaction(async (tx) => {
 				if (input.meta.github) {
 					await tx.execute("INSERT INTO github_binding VALUES(1,?)", String(input.meta.github.installationId));
+					if (input.meta.github.reactionTarget) effects.push({ kind: "feedback_ack", key: input.meta.github.reactionTarget });
 					effects.push({ kind: "issue_comment", key: "link", revision: item.revision });
 				}
 				await tx.execute("INSERT INTO item (id, revision, data) VALUES (1, ?, ?)", item.revision, JSON.stringify({ item, meta: input.meta }));

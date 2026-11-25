@@ -83,6 +83,7 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 			const policy = await intakePolicy(c, repo.id);
 			const { defaultPlace } = policy;
 			const binding = { ...(defaultPlace && { defaultPlace }), modeReason, triggerLabel: t.via === "label" ? t.label : undefined, installationId: t.installationId, generation, triggeredAt: subject.at, senderId: subject.author.id, issueId: issue.id, contentDigest: contentDigest(issue),
+				reactionTarget: t.via === "mention" ? "issue_comment:" + t.commentId : "issue:" + issue.number,
 				origin: { issue: { number: issue.number, url: issue.url, author: issue.author.login, trusted }, sender: subject.author.login } };
 			decision = { kind: "file", itemId: itemId(key), filing: { binding, input: intakeInput(task, mode, { id: repo.id, branch: repo.defaultBranch }, policy, trusted, key) } };
 		}

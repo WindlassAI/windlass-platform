@@ -873,10 +873,10 @@ export class GithubApp {
 
 	async acknowledgeFeedback(installationId: GithubId, repo: Pick<Repository, "id" | "owner" | "name">, key: string, reviewNodeId?: string) {
 		const [kind, id = ""] = key.split(":");
-		const permission = kind === "issue_comment" ? "issues" : "pull_requests";
+		const permission = kind === "issue" || kind === "issue_comment" ? "issues" : "pull_requests";
 		await this.withToken(installationId, { repositoryId: repo.id, permissions: { metadata: "read", [permission]: "write" } }, async token => {
-			if (kind === "issue_comment" || kind === "review_comment") return this.react(token, repo, { kind, id: id! }, "eyes");
-			// A review body is a GraphQL Reactable. The REST endpoints take comments only.
+			if (kind === "issue" || kind === "issue_comment" || kind === "review_comment") return this.react(token, repo, { kind, id }, "eyes");
+			// A review body takes reactions through GraphQL.
 			if (kind !== "review" || !reviewNodeId) throw new Error("Missing GitHub review node.");
 			const path = this.settings.apiUrl.endsWith("/api/v3") ? "/../graphql" : "/graphql";
 			const query = "mutation($id:ID!) { addReaction(input:{subjectId:$id,content:EYES}) { reaction { content } } }";
@@ -889,10 +889,10 @@ export class GithubApp {
 		});
 	}
 
-	async react(token: string, repo: Pick<Repository, "owner" | "name">, comment: { kind: "issue_comment" | "review_comment"; id: string }, content: "eyes") {
-		if (decimalId(comment.id) !== comment.id) throw new Error("Invalid comment id.");
-		const resource = comment.kind === "issue_comment" ? "issues" : "pulls";
-		await this.call({ method: "POST", path: `/repos/${repo.owner}/${repo.name}/${resource}/comments/${comment.id}/reactions`, auth: { bearer: token }, body: { content }, what: "acknowledge a taken comment" });
+	async react(token: string, repo: Pick<Repository, "owner" | "name">, target: { kind: "issue" | "issue_comment" | "review_comment"; id: string }, content: "eyes") {
+		if (decimalId(target.id) !== target.id) throw new Error("Invalid reaction target id.");
+		const resource = { issue: "issues", issue_comment: "issues/comments", review_comment: "pulls/comments" }[target.kind];
+		await this.call({ method: "POST", path: `/repos/${repo.owner}/${repo.name}/${resource}/${target.id}/reactions`, auth: { bearer: token }, body: { content }, what: "post an acknowledgement reaction" });
 	}
 
 	// Issue webhooks carry no labeler's event ID. Use the latest relevant transition in the issue's own history.

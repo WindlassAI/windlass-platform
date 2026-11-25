@@ -87,6 +87,7 @@ export interface IssueBinding {
 	defaultPlace?: ItemPlaceDefaults;
 	modeReason?: string | null;
 	triggerLabel?: string;
+	reactionTarget?: string;
 	origin: GithubIssueOrigin;
 	installationId: GithubId;
 	issueId: string;

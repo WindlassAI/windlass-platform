@@ -1083,7 +1083,7 @@ export class GithubStandin {
 			const reaction = /^\/(issues|pulls)\/comments\/(\d+)\/reactions$/.exec(rest);
 			if (reaction && method === "POST") {
 				if (!this.allows(token, repository, reaction[1] === "issues" ? "issues" : "pull_requests", "write")) return denied();
-				const exists = reaction[1] === "issues" ? this.pulls.some(p => p.repository === repository.id && p.comments.some(c => String(c.id) === reaction[2]))
+				const exists = reaction[1] === "issues" ? [...this.issues, ...this.pulls].some(p => p.repository === repository.id && p.comments.some(c => String(c.id) === reaction[2]))
 					: this.reviews.some(r => r.repository === repository.id && r.lines.some(c => String(c.id) === reaction[2]));
 				if (!exists) return answer(404, {});
 				if ((body as { content: string }).content !== "eyes") return answer(422, {});
@@ -1100,11 +1100,16 @@ export class GithubStandin {
 				pull.requestedReviewers = [...new Set([...pull.requestedReviewers, ...logins])];
 				return answer(201, this.pullJson(pull));
 			}
-			const resource = /^\/issues\/(\d+)(?:\/(events|comments))?$/.exec(rest);
+			const resource = /^\/issues\/(\d+)(?:\/(events|comments|reactions))?$/.exec(rest);
 			const issue = resource && this.issues.find(i => i.repository === repository.id && i.number === Number(resource[1]));
 			const base = `${this.apiUrl}/repos/${repository.owner}/${repository.name}/issues`;
 			if (issue) {
 				if (!this.allows(token, repository, "issues", method === "GET" ? "read" : "write")) return denied();
+				if (resource[2] === "reactions" && method === "POST") {
+					if ((body as { content: string }).content !== "eyes") return answer(422, {});
+					this.reactions.add("issue:" + issue.number);
+					return answer(200, { content: "eyes" });
+				}
 				if (!resource[2] && method === "GET" && issue.readResponse) {
 					if (issue.readResponse === "timeout") return;
 					return answer(issue.readResponse.status, issue.readResponse.body ?? {}, issue.readResponse.headers);
