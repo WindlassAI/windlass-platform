@@ -197,7 +197,7 @@ export interface Sandboxes {
 	state(id: string): Promise<"none" | "running" | "paused">;
 	/** State and pause time from one provider observation, where available. This never starts the sandbox. */
 	observe?(id: string): Promise<SandboxObservation>;
-	/** Stop active turns first. Suspension removes their token file, preserves files, and tolerates a missing sandbox. */
+	/** Stop active turns first. Suspension removes their token file, preserves files, and tolerates a missing sandbox. Exceptions on E2B: an environment builder is destroyed, and with WLP_E2B_PAUSE=0 every sandbox is killed. */
 	suspend(id: string): Promise<void>;
 	/** Idempotently remove the sandbox and its private data, including orphaned session volumes. Shared user volumes survive. */
 	destroy(id: string): Promise<void>;
@@ -460,7 +460,7 @@ export interface Windlass {
 	/** Image or template Windlass version. May be null until the first E2B create: looking it up must not start a sandbox. */
 	version(): Promise<string | null>;
 	problem(): Promise<string | null>;
-	/** Run one ACP process per turn. Cancel over ACP first. Real tokens or relay placeholders are session-scoped; redact credentials from outputs and remove the token file at turn end. */
+	/** Run one ACP process per turn. Cancel over ACP first. Redact credentials from outputs and remove the token file at turn end. Lifetimes: the token file belongs to the session, a relay placeholder to the turn; a real ChatGPT bearer stays valid across the user's sessions until it expires, so removing a file does not revoke a disclosed one. */
 	runTurn(sandbox: SandboxHandle, input: RunTurnInput): Promise<RunTurnResult>;
 	/** Scripted model with real tool calls. Turn numbering starts at one. */
 	demoScript(prompt: string, turn: number): ScriptedModel;
