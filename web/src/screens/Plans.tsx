@@ -52,7 +52,7 @@ export function Plans() {
 				)
 			) : !view.enabled ? (
 				<div className="state" role="status">
-					<h2>This deployment has no plans</h2>
+					<h2>{view.exempt ? "Billing doesn't apply to this account." : "This deployment has no plans"}</h2>
 					<p>Its operator sets the limits; the Usage page says what they are.</p>
 				</div>
 			) : (

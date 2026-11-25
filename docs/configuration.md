@@ -94,6 +94,7 @@ Off unless `WLP_BILLING_PROVIDER` is set. With billing off there are no plans, a
 | Variable | Effect |
 |---|---|
 | `WLP_BILLING_PROVIDER` | `dodo` turns billing on with Dodo Payments; unset, empty or `off` leaves it off. Any other value stops the server at start |
+| `WLP_BILLING_EXEMPT_USERS` | comma-separated, case-sensitive account uids (e.g. `u_owner,u_operator`) that use deployment limits and skip checkout and overage reporting. Empty by default |
 | `WLP_BILLING_GRACE_DAYS` | days Pro's limits last after a failed payment before the account falls back to Free (default 7, from 0 to 60) |
 | `WLP_DODO_API_KEY` | the Dodo API key (a secret); required with `dodo` |
 | `WLP_DODO_WEBHOOK_SECRET` | the webhook endpoint's signing secret, `whsec_…` (a secret); required with `dodo` |

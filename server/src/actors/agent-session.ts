@@ -1297,6 +1297,7 @@ async function checkPull(c: Ctx, meta: SessionMeta): Promise<void> {
 	const current = await refreshPull(app, await githubConnection(c, meta), repo, pull);
 	if (meta.pull !== pull || (current.state === pull.state && current.title === pull.title)) return;
 	meta.pull = current;
+	meta.updatedAt = Date.now();
 	publish(c);
 	void persist(c);
 }
@@ -2188,7 +2189,7 @@ function startClock(c: Ctx, meta: SessionMeta, turn: number, waited: number | nu
 }
 
 async function resizeOptions(c: Ctx, meta: SessionMeta, layer: SandboxLayer): Promise<HostedSize[]> {
-	if (meta.place.kind === "hosted" && billing()) return userActor(c, meta.uid).internalHostedSizes();
+	if (meta.place.kind === "hosted" && billing(meta.uid)) return userActor(c, meta.uid).internalHostedSizes();
 	return layer.sandboxes.sizes?.().map(size => size.id) ?? [];
 }
 
@@ -3517,7 +3518,7 @@ async function crashPause(c: Ctx, meta: SessionMeta): Promise<boolean> {
 	if (meta.backup) meta.memoryTurn = turn;
 	note(c, turn, "info", "The server stopped while this turn was running; it will resume by itself.", { code: "turn_paused" });
 	meta.status = "paused";
-	meta.updatedAt = Date.now();
+	meta.updatedAt = Math.max(meta.updatedAt, run.paused.at);
 	return true;
 }
 
@@ -4707,7 +4708,8 @@ export const agentSession = actor({
 				try {
 					const pull = await c.keepAwake(openFromPushed({ app, connection: await githubConnection(c, meta), repository: repo, branch: meta.publishBranch, message, evidence: await evidenceOf(c, meta, c.vars.turn?.number ?? null) }));
 					meta.pull = pull;
-					c.vars.pullCheckedAt = Date.now();
+					meta.updatedAt = Date.now();
+					c.vars.pullCheckedAt = meta.updatedAt;
 					note(c, meta.turns, "info", `Opened pull request #${pull.number} in ${repo.owner}/${repo.name} from ${pull.branch}, from what the agent had pushed; the turn goes on.${verifiedLine(pull)}`);
 					console.log(`[wlp] github.published session=${meta.sessionId} repository=${repo.id} pull=${pull.number} opened=true from=pushed`);
 					publish(c);
@@ -5115,7 +5117,7 @@ export const agentSession = actor({
 			if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 			if (throughReviewRun !== undefined && (meta.origin?.role !== "reviewer" || (meta.reviewRun ?? 0) > throughReviewRun)) return { freed: false };
 			// A stored OOM choice can outlive Pro. Check again before touching the old sandbox.
-			if (meta.place.kind === "hosted" && hostedSize && billing() && !(await userActor(c, meta.uid).internalHostedSizes()).includes(hostedSize)) {
+			if (meta.place.kind === "hosted" && hostedSize && billing(meta.uid) && !(await userActor(c, meta.uid).internalHostedSizes()).includes(hostedSize)) {
 				return { freed: false, sizeUnavailable: hostedSize };
 			}
 			if (c.vars.turn || c.vars.accepting || meta.status !== "idle") throw new UserError(`${meta.title} is working. Stop its turn first, then free its sandbox.`, { code: "sandbox_busy" });

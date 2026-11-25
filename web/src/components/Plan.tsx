@@ -101,7 +101,7 @@ export function PlanSection() {
 	useEffect(() => {
 		if (view !== null && location.hash === "#plan") document.getElementById("plan")?.scrollIntoView({ block: "start" });
 	}, [view]);
-	if (view !== null && !view.enabled) return null;
+	if (view && !view.enabled && !view.exempt) return null;
 	return (
 		<section className="usage-section billing" id="plan" aria-labelledby="settings-plan">
 			<h2 className="usage-title" id="settings-plan">
@@ -125,8 +125,10 @@ export function PlanSection() {
 						<span className="skeleton skeleton-meta" style={{ width: "58%" }} />
 					</div>
 				)
+			) : !view.enabled ? (
+				<p className="usage-lede">Billing doesn't apply to this account.</p>
 			) : (
-				<PlanBody view={view as Enabled} replace={replace} go={go} busy={busy} goError={goError} />
+				<PlanBody view={view} replace={replace} go={go} busy={busy} goError={goError} />
 			)}
 		</section>
 	);

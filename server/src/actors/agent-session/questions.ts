@@ -40,6 +40,7 @@ export function takeQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn): Ask
 	const asked = active.question;
 	if (!asked) return null;
 	active.question = null;
+	meta.updatedAt = Date.now();
 	clearTimeout(asked.timer);
 	if (meta.status === "waiting") meta.status = "running";
 	c.broadcast("question", null);
@@ -138,6 +139,7 @@ export function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, quest
 		withdrawn.addEventListener("abort", onWithdrawn, { once: true });
 		active.unsettled.add(asked);
 		active.question = asked;
+		meta.updatedAt = now;
 		if (meta.status === "running") meta.status = "waiting";
 		c.broadcast("question", pending);
 		publish(c);
@@ -294,6 +296,7 @@ export async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, c
 					settle(false);
 				}, Math.max(0, asked.pending.expiresAt - Date.now()));
 				active.question = asked;
+				meta.updatedAt = Date.now();
 				if (question.holdsTurn && meta.status === "running") meta.status = "waiting";
 				c.broadcast("question", asked.pending);
 				publish(c);

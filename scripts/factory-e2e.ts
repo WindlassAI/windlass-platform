@@ -1216,6 +1216,50 @@ async function memoryChecks(): Promise<void> {
 		return "original run, revision and deployment default survived reload";
 	});
 
+	await check("memory: Recent keeps its activity time on a wake that polls an open PR, then advances on merge", async () => {
+		const { feedOf } = await import("../web/src/lib/feed.js");
+		const m = publishedItem();
+		const review = m.send(cleanCi);
+		const poll = review.effects.find(effect => effect.kind === "poll_pr");
+		assert(m.item.state === "review" && poll, "fixture did not reach review");
+		const actor = await itemActor(m.item);
+		// A stored item from before the fix has a newer poll timestamp than its last note.
+		const noteAt = T + 10;
+		await actor.db.execute("UPDATE item SET data = json_set(data, '$.meta.updatedAt', ?)", T + 50);
+		await actor.db.execute("INSERT INTO events(at, data) VALUES(?, ?)", noteAt, JSON.stringify({ at: noteAt, by: "person:u", step: null, said: "Ready for review." }));
+		await actor.db.execute("INSERT INTO effects VALUES (?, ?, 0, 0)", `poll_pr:${poll.key}`, JSON.stringify(poll));
+		actor.c.vars = await createVars(actor.c, undefined);
+		const wake = async (): Promise<ItemSummary> => {
+			actor.c.conn.params = serviceParams();
+			await workItem.config.onWake!(actor.c as never);
+			await actor.drain();
+			return actions.internalSummary(actor.c);
+		};
+		const { pull, pages } = app;
+		const realNow = Date.now;
+		let state = "open";
+		try {
+			Object.assign(app, { pull: async () => ({ state, headSha: HEAD }), pages: async () => ({ items: [], truncated: false }) });
+			Date.now = () => T + 60_000;
+			const unchanged = await wake();
+			assert(unchanged.state === "review" && unchanged.revision > m.item.revision && unchanged.updatedAt === noteAt, "an unchanged PR poll moved the item in Recent");
+			const other = { ...unchanged, id: "other", updatedAt: T + 30_000 };
+			const newest = (item: ItemSummary) => feedOf({ sessions: [], items: [item, other] }).recent[0]?.at;
+			assert(newest(unchanged) === other.updatedAt, "the polled item overtook newer work");
+			state = "merged";
+			Date.now = () => T + 120_000;
+			await actor.db.execute("UPDATE effects SET due_at = 0 WHERE id LIKE 'poll_pr:%'");
+			const merged = await wake();
+			assert(merged.state === "done" && merged.updatedAt === Date.now() && newest(merged) === merged.updatedAt, "the merge did not move the item in Recent");
+			actor.c.vars = await createVars(actor.c, undefined);
+			assert((await actions.internalSummary(actor.c)).updatedAt === merged.updatedAt, "reload lost the merge time");
+		} finally {
+			Date.now = realNow;
+			Object.assign(app, { pull, pages });
+		}
+		return undefined;
+	});
+
 	await check("memory: a PR delivery during second review advances only its PR poll", async () => {
 		const m = publishedItem();
 		m.item.reviewer = { on: true };

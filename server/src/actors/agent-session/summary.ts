@@ -22,6 +22,7 @@ export function summaryOf(meta: SessionMeta): SessionSummary {
 		...(meta.repo ? { repository: repositoryOf(meta.repo), pullRequest: meta.pull ?? null, publishUnasked: meta.publishUnasked === true } : {}),
 		createdAt: meta.createdAt,
 		updatedAt: meta.updatedAt,
+		...(meta.turnStartedAt != null && { turnStartedAt: meta.turnStartedAt }),
 		status: meta.status,
 		...(meta.status === "paused" && meta.run?.paused ? { paused: { reason: meta.run.paused.reason, since: meta.run.paused.at, held: meta.run.held?.length ?? 0 } } : {}),
 		turns: meta.turns,

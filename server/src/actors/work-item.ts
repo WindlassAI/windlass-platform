@@ -74,7 +74,7 @@ export interface ItemMeta {
 	repository: SessionRepository;
 	source: ItemSummary["source"];
 	createdAt: number;
-	updatedAt: number;
+	activityAt: number;
 	/** The latest verdict's result and flags, for the index. */
 	verdict: ItemSummary["verdict"];
 	/**
@@ -193,7 +193,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		agent: itemAgent(item),
 		sessionId: meta.sessionId,
 		createdAt: meta.createdAt,
-		updatedAt: meta.updatedAt,
+		updatedAt: meta.activityAt,
 		...(item.endedAt !== undefined && ENDED.has(item.state) && { endedAt: item.endedAt }),
 		revision: item.revision,
 		...(item.run && item.run.endedAt === null && !ENDED.has(item.state) && { step: { kind: item.run.step.kind, startedAt: item.run.step.startedAt, turn: item.run.step.turn, rounds: { ...item.run.rounds, review: item.run.rounds.review ?? 0 } } }),
@@ -431,7 +431,13 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	}
 	if (fact.kind === "claim_secret") stored.meta.pendingSecret = secret;
 	if (fact.kind === "settle_secret") delete stored.meta.pendingSecret;
-	stored.meta.updatedAt = fact.at;
+	// Polls advance the revision and retry counters even when nothing happened on the item.
+	const next = outcome.item;
+	if (outcome.events.length || before.state !== next.state || before.run?.n !== next.run?.n ||
+		before.run?.step.n !== next.run?.step.n || before.run?.step.turn !== next.run?.step.turn ||
+		before.question?.id !== next.question?.id || before.pr?.number !== next.pr?.number) {
+		stored.meta.activityAt = Math.max(stored.meta.activityAt, fact.at);
+	}
 	const handoff = outcome.effects.find((effect): effect is Extract<Effect, { kind: "handoff" }> => effect.kind === "handoff");
 	const strip = handoff ?? outcome.storeVerdict;
 	if (strip) stored.meta.verdict = { result: strip.verdict.result, flags: strip.verdict.flags, ci: strip.verdict.ci.state };
@@ -451,7 +457,6 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	if (handoff && before.run?.n === outcome.item.run?.n) stored.meta.handoffReview = { recommendation: stored.meta.handoffReview?.recommendation ?? null, reason: handoff.reviewNone };
 	// The item, its revision and its data are taken from this decision now: a later decision, made while this
 	// one waits for its write, changes `stored` and must not be written beside this one's data.
-	const next = outcome.item;
 	const data = JSON.stringify({ item: next, meta: stored.meta });
 	// An `ask` is the question on the item itself, which reaches the index with the summary: nothing is left to perform.
 	const effects: Effect[] = outcome.effects.filter((effect) => effect.kind !== "ask");
@@ -586,6 +591,13 @@ async function load(db: RawAccess): Promise<Stored | null> {
 	const [row] = await db.execute<{ data: string }>("SELECT data FROM item WHERE id = 1");
 	if (!row) return null;
 	const stored = JSON.parse(row.data) as Stored;
+	// Older rows stamped every poll. Recover their last activity from the event log and recorded transitions.
+	if (stored.meta.activityAt === undefined) {
+		const [last] = await db.execute<{ at: number | null }>("SELECT MAX(at) AS at FROM events");
+		const { run, question, endedAt } = stored.item;
+		stored.meta.activityAt = Math.max(stored.meta.createdAt, last?.at ?? 0, run?.step.startedAt ?? 0,
+			run?.endedAt ?? 0, question?.askedAt ?? 0, endedAt ?? 0);
+	}
 	upgradeSubtaskQuestion(stored.item);
 	if (stored.item.parent && (!stored.item.reviewer || ("off" in stored.item.reviewer && stored.item.reviewer.off === "deployment"))) {
 		stored.item.reviewer = { off: "feature" };

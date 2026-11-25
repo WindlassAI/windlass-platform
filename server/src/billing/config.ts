@@ -2,6 +2,7 @@
  * Whether the deployment takes payment for plans, and with which provider (docs/billing.md).
  *
  *   WLP_BILLING_PROVIDER         unset or empty: billing is off (no plans, the deployment's limits). "dodo": Dodo Payments
+ *   WLP_BILLING_EXEMPT_USERS     comma-separated account uids that use deployment limits
  *   WLP_BILLING_GRACE_DAYS       how long Pro's limits last after a failed payment (7)
  *
  * Dodo Payments:
@@ -18,9 +19,12 @@
 import { DodoProvider } from "./dodo.js";
 import type { BillingProvider } from "./provider.js";
 
+export const BILLING_UID = /^u_[A-Za-z0-9_-]{1,62}$/;
+
 export interface BillingConfig {
 	provider: BillingProvider;
 	graceMs: number;
+	exemptUsers: ReadonlySet<string>;
 }
 
 export function readBillingConfig(env: NodeJS.ProcessEnv = process.env): BillingConfig | null {
@@ -39,8 +43,12 @@ export function readBillingConfig(env: NodeJS.ProcessEnv = process.env): Billing
 	if (environment !== "test_mode" && environment !== "live_mode") throw new Error('WLP_DODO_ENVIRONMENT must be "test_mode" or "live_mode".');
 	const meterEvent = (env.WLP_DODO_METER_EVENT ?? "hosted_minutes").trim();
 	if (!/^[A-Za-z0-9_.:-]{1,100}$/.test(meterEvent)) throw new Error("WLP_DODO_METER_EVENT must be a meter's event name: letters, digits and _ . : -.");
+	const exemptUsers = new Set((env.WLP_BILLING_EXEMPT_USERS ?? "").split(",").map(uid => uid.trim()).filter(Boolean));
+	for (const uid of exemptUsers) {
+		if (!BILLING_UID.test(uid)) throw new Error("WLP_BILLING_EXEMPT_USERS must contain comma-separated account uids (u_...).");
+	}
 	return {
-		graceMs,
+		graceMs, exemptUsers,
 		provider: new DodoProvider({
 			apiKey: need("WLP_DODO_API_KEY"),
 			webhookSecret: need("WLP_DODO_WEBHOOK_SECRET"),
@@ -53,8 +61,8 @@ export function readBillingConfig(env: NodeJS.ProcessEnv = process.env): Billing
 
 let read: { value: BillingConfig | null } | null = null;
 
-/** The deployment's billing, read once. Null: billing is off. */
-export function billing(): BillingConfig | null {
+/** The deployment's billing, or the billing that applies to a particular account. */
+export function billing(uid?: string): BillingConfig | null {
 	read ??= { value: readBillingConfig() };
-	return read.value;
+	return uid !== undefined && read.value?.exemptUsers.has(uid) ? null : read.value;
 }

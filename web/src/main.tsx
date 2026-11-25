@@ -70,7 +70,7 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			github: params.get("github") !== "off",
 			sandbox: params.get("sandbox") === "e2b" ? "e2b" : "docker",
 			usage: usage === "low" || usage === "used" || usage === "full" ? usage : undefined,
-			// `?billing=free|free-low|free-used|pro|pro-capped|pro-past-due` a deployment with plans, the account in that state (`MockBillingState`).
+			// `?billing=exempt|free|free-low|free-used|pro|pro-capped|pro-past-due` a deployment with plans, the account in that state (`MockBillingState`).
 			billing: MOCK_BILLING_STATES.find((state) => state === params.get("billing")),
 			// The user has MCP servers of their own and secrets for them saved, unless the address says `account=empty`.
 			account: params.get("account") === "empty" ? "empty" : "seeded",
