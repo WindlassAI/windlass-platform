@@ -8,6 +8,7 @@
     "server/tsconfig.json",
     "runner/package.json",
     "server/src/contract.ts",
+    "server/src/contract/**",
     ".github/workflows/ci.yml",
     ".github/workflows/ci-heavy.yml",
     "scripts/ci-heavy.mjs",

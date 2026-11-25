@@ -1,21 +1,12 @@
-/**
- * The contract between the server's actors and the web app. Types and constants only: this file
- * imports nothing, so the web app can import it without pulling in server code.
- *
- * Three actors, and one HTTP route:
- *
- *   GET /platform/info                    public facts about this deployment, from any server
- *   login         key [attemptId]         one sign-in attempt (ChatGPT, or the demo user)
- *   user          key [uid]               a user's profile and the index of their sessions
- *   agentSession  key [uid, sessionId]    one agent: its sandbox, its timeline, its runs
- *
- * The route and `login` take no credentials. `user` and `agentSession` require the connection
- * parameter `{ token }` (an AuthToken from `login`), and the token's uid must equal key[0].
- */
+/** Shared wire types and runtime constants for the actors, runner and web app. Keep all runtime imports browser-safe. */
 
-// ---------------------------------------------------------------------------------------------
+import type { UsageNumbers, BillingPeriod, PlanInfo, BillingView, UsageView } from "./contract/usage.js";
+export type { UsageNumbers, HostedMonth, PlanId, BillingPeriod, PlanInfo, BillingView, UsageSession, UsageDay, KeptSandbox, UsagePrice, UsageView } from "./contract/usage.js";
+import type { HostedSize, HostedSizeOption } from "./contract/hosted-sizes.js";
+export type { HostedSize, HostedSizeOption } from "./contract/hosted-sizes.js";
+export { HOSTED_SIZES, HOSTED_SIZE_SPECS, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, hostedSizeWords, hostedSizeFor, largerHostedSize, outOfMemoryWords } from "./contract/hosted-sizes.js";
+
 // Sandboxes
-// ---------------------------------------------------------------------------------------------
 
 /** Whose machine runs the sandbox. A session keeps its place for its whole life. */
 export type SandboxPlace = { kind: "hosted" } | { kind: "machine"; machineId: string };
@@ -49,34 +40,18 @@ export interface SandboxProfile {
 	claudeRelay?: true;
 	/** Hosted ACP agents can reach the Settings-key relay from this profile. */
 	platformKeys?: true;
-	/**
-	 * Whether commands the agent runs can read the turn's token file: the short-lived access token of the
-	 * user's ChatGPT sign-in that each turn is handed, or with the model relay (`modelRelay`) only a
-	 * placeholder for the turn, which still makes model requests through the relay while the turn runs. It
-	 * lasts about an hour, and whoever reads it cannot renew it. The sign-in itself, which is what renews
-	 * tokens, is never in a sandbox: no command can read it in any profile. Rules about what a command can do
-	 * in the agent's name read this; whether the access token itself is readable is `accessTokenReadable`.
-	 */
+	/** Commands can read the turn's token file, including a usable relay placeholder. The renewing sign-in stays outside the sandbox. */
 	commandsCanReadAccessToken: boolean;
-	/**
-	 * Whether commands can read the access token itself: false with the model relay, where the token file
-	 * holds only a placeholder and the token never enters the sandbox. Absent: as `commandsCanReadAccessToken`.
-	 */
+	/** Can commands read the real access token? Defaults to commandsCanReadAccessToken when absent. */
 	accessTokenReadable?: boolean;
-	/**
-	 * Windlass's turns in this sandbox send their model requests through the platform's model relay
-	 * (docs/model-relay.md): the token file holds a placeholder for the turn, and the access token never
-	 * enters the sandbox. Absent: the token file holds the access token itself.
-	 */
+	/** A relayed turn keeps only a per-turn placeholder in the sandbox. Without the relay the file holds the access token. */
 	modelRelay?: true;
 	available: boolean;
 	/** Why it cannot be chosen yet. Set when `available` is false. */
 	unavailableReason?: string;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Platform information (HTTP, `GET PLATFORM_INFO_PATH`; once the `platform` actor)
-// ---------------------------------------------------------------------------------------------
+// Platform information (GET PLATFORM_INFO_PATH)
 
 export interface PlatformInfo {
 	/** True when the server runs with WLP_DEMO=1: the demo sign-in is offered and its model is scripted. */
@@ -84,61 +59,24 @@ export interface PlatformInfo {
 	/** The Windlass version inside the sandbox image, e.g. "0.4.0". */
 	windlassVersion: string | null;
 	profiles: SandboxProfile[];
-	/**
-	 * What this deployment's hosted sandboxes may reach (E2B, WLP_E2B_NETWORK), when it is not `open`:
-	 * `restricted`, only the model API, GitHub and the hosts the operator allows; `none`, only the model
-	 * API, and no repositories. Absent: as before network modes.
-	 */
+	/** Restricted allows the model API, GitHub and approved hosts. None allows only the model API. Absent when no restriction is reported. */
 	hostedEgress?: "restricted" | "none";
-	/**
-	 * The hosted sandbox sizes this deployment offers (E2B, `WLP_E2B_SIZES`), smallest first. Absent where
-	 * hosted sandboxes have one size (Docker): nothing of sizes is shown then.
-	 */
+	/** Smallest first. Omitted when the deployment offers a single fixed size. */
 	hostedSizes?: HostedSizeOption[];
-	/**
-	 * Set when this deployment has a GitHub App: users can connect GitHub, launch agents on their own
-	 * repositories and open pull requests. Absent or null when it has none: the web app then shows
-	 * nothing of it.
-	 */
+	/** Absent or null disables GitHub integration. */
 	github?: GithubInfo | null;
-	/**
-	 * Set when users of this deployment may run agents on machines of their own (WLP_MACHINES=1). Absent
-	 * when not: the web app then shows nothing of it, and /machines is not found.
-	 */
+	/** Absent disables the machines route. */
 	machines?: MachinesInfo;
-	/**
-	 * Set when users of this deployment may file work items (WLP_ITEMS=1). Absent when not: the web app
-	 * then shows nothing of them, and the item and API token actions are refused with `items_off`.
-	 * `reviewer` says whether a second agent reviews each handed-over change (WLP_FACTORY_REVIEWER=on),
-	 * so that the Factory page can say there is none before any item exists. `screenshots` false: the
-	 * deployment turned screenshots off for every work item (WLP_FACTORY_SCREENSHOTS=off), whatever a
-	 * repository's setting says.
-	 */
+	/** Absent disables items and API token actions. A deployment-wide screenshot refusal overrides repository settings. */
 	items?: { reviewer: boolean; orchestrate?: boolean; screenshots?: boolean };
 	/** Set when the deployment takes payment for plans (WLP_BILLING_PROVIDER). Absent: no plans, the deployment's own limits, and nothing of billing shown. */
 	billing?: { plans: PlanInfo[] };
 }
 
-/**
- * What the Machines page needs of the deployment. The install command it shows, with `runnerImage`
- * and `platformUrl` put in (the runner's state, its key among it, is in the `windlass-runner` volume):
- *
- *   docker run -d --name windlass-runner --restart unless-stopped \
- *     --log-driver json-file --log-opt max-size=16m --log-opt max-file=3 \
- *     -v /var/run/docker.sock:/var/run/docker.sock \
- *     -v windlass-runner:/var/lib/windlass-runner \
- *     <runnerImage> --platform <platformUrl> [--name "Build host"]
- *
- * For rootless Docker the socket to mount is `$XDG_RUNTIME_DIR/docker.sock`. To update, the same
- * command after `docker rm -f windlass-runner`: the volume keeps the key, so the machine stays paired across updates within a protocol. The first upgrade to signed connections requires a new pairing.
- * The runner prints its pairing code in `docker logs windlass-runner`.
- */
+/** Published runner capabilities and connection details for pairing. The runner volume preserves the pairing key across updates within a protocol. */
 export interface MachinesInfo {
 	platformFingerprint?: string;
-	/**
-	 * The oldest runner release this deployment serves in its current protocol mode. A machine whose runner is older is
-	 * refused until it is updated (`MachineWarning` "outdated"); a newer one is served.
-	 */
+	/** Oldest compatible runner release for this deployment's protocol. */
 	minRunnerVersion: string;
 	/** The runner image to install, pinned by digest; null while none is published, and the page says it cannot be installed yet. */
 	runnerImage: string | null;
@@ -148,9 +86,7 @@ export interface MachinesInfo {
 	platformUrl: string;
 }
 
-// ---------------------------------------------------------------------------------------------
 // The models a user may choose (`UserActions.models`)
-// ---------------------------------------------------------------------------------------------
 
 /** One model, and the reasoning efforts it accepts: none for a model that takes no effort. */
 export interface ModelChoice {
@@ -160,18 +96,9 @@ export interface ModelChoice {
 	efforts: string[];
 }
 
-/**
- * The models a user may start a session on or switch a turn to, and the efforts each accepts
- * (docs/architecture.md, "Models"). They are no fact of the deployment: they are what the user's ChatGPT plan
- * offers, as Windlass lists them with that user's sign-in, kept in the user's actor for about an hour.
- */
+/** Account-specific model and effort choices, cached by the user actor. */
 export interface ModelList {
-	/**
-	 * Whose list this is. "account": the user's plan's, as it was read at `fetchedAt`. Anything else is
-	 * either the harness's own config options ("harness") or a fixed stand-in: "demo", the demo's scripted model
-	 * answers under any of its names; "signed-out", there is no ChatGPT sign-in to list with;
-	 * "unavailable", the plan's list could not be read and none is kept from before.
-	 */
+	/** An unavailable list has neither a fresh answer nor a cached account list. */
 	source: "account" | "harness" | "demo" | "signed-out" | "unavailable";
 	models: ModelChoice[];
 	/** The model a session starts on where nothing else says: one of `models`. */
@@ -193,29 +120,20 @@ export interface PlatformActions {
 	info(): Promise<PlatformInfo>;
 }
 
-// ---------------------------------------------------------------------------------------------
 // The browser's connection to the actors (HTTP, `GET PLATFORM_CONNECTION_PATH`)
-// ---------------------------------------------------------------------------------------------
 
 /** A token of the Rivet engine's for browsers: good for a while, and for reaching this deployment's actors only. */
 export interface ConnectionToken {
 	token: string;
 	/** When the engine stops accepting it, ms since the epoch, by the engine's clock. */
 	expiresAt: number;
-	/**
-	 * How long it is good for, counted from this answer. A browser's clock may be wrong by more than a
-	 * token lasts, so the web app counts from when the answer arrived and never compares `expiresAt`
-	 * with its own clock.
-	 */
+	/** Count from receipt. The browser clock can differ from the server by more than a token lifetime. */
 	validForMs: number;
 }
 
 /** What a browser needs to reach the actors. */
 export interface PlatformConnection {
-	/**
-	 * The Rivet endpoint browsers connect to, or null when the server was not told one (development):
-	 * the web app then uses the one it was built with, or DEFAULT_ENDPOINT.
-	 */
+	/** Null uses the endpoint built into the web app, falling back to DEFAULT_ENDPOINT. */
 	endpoint: string | null;
 	/** The namespace the actors live in. */
 	namespace: string;
@@ -223,9 +141,7 @@ export interface PlatformConnection {
 	token: ConnectionToken | null;
 }
 
-// ---------------------------------------------------------------------------------------------
 // login actor
-// ---------------------------------------------------------------------------------------------
 
 /** Opaque to the web app: stored and sent back as the `token` connection parameter. */
 export type AuthToken = string;
@@ -255,18 +171,13 @@ export interface LoginStart {
 export interface LoginActions {
 	/** Begins "Sign in with ChatGPT". Calling it again restarts the attempt. */
 	start(): Promise<LoginStart>;
-	/**
-	 * Finishes the attempt from the full address of the page the browser ended on. Throws a UserError
-	 * with a message fit to show (wrong address, expired attempt, OpenAI refused).
-	 */
+	/** Accepts the entire callback URL. Refusals are safe to show to the user. */
 	finish(pastedUrl: string): Promise<AuthResult>;
 	/** Signs in as a fresh demo user. Throws when the server has no demo mode. */
 	demo(): Promise<AuthResult>;
 }
 
-// ---------------------------------------------------------------------------------------------
 // user actor
-// ---------------------------------------------------------------------------------------------
 
 export type SessionStatus =
 	/** Nothing running; ready for a prompt. */
@@ -279,10 +190,7 @@ export type SessionStatus =
 	| "waiting"
 	/** A stop was asked for and Windlass is winding down. */
 	| "stopping"
-	/**
-	 * The turn is not over but nothing runs it: its server restarted, or its machine went away
-	 * (`SessionSummary.paused` says which). It resumes by itself; a message sent meanwhile is held for it.
-	 */
+	/** An unfinished turn resumes when its server or machine returns. Messages wait meanwhile. */
 	| "paused";
 
 /** How a turn ended. The first five are Windlass's own outcomes (`cli.summary.outcome`). */
@@ -300,11 +208,7 @@ export type HarnessId = "windlass" | "claude" | "opencode" | "codex";
 /** One of the platform's tools, by the name the agent calls it (server/src/platform-tools.ts, `PlatformTool`). */
 export type PlatformToolName = "publish" | "report" | "request_secret" | "ask_person" | "push" | "fetch_base" | "file_review" | "file_plan" | "file_plan_review";
 
-/**
- * What a session's agent can do, as the screens need it: a read-only part of its agent's capability record
- * (server/src/sandbox/harnesses.ts, `HarnessCapabilities`, each field as documented there). The screens decide
- * by these, never by the agent's name, so an agent added later needs no screen edited.
- */
+/** Screens choose behavior by capability, so a new harness needs no agent-name checks. */
 export interface SessionCapabilities {
 	/** Stopping one tool call of a running turn; without it, only the turn. */
 	cancelCall: boolean;
@@ -350,12 +254,7 @@ export const CLAUDE_LAUNCH_MODES: readonly SessionMode[] = [
 	{ id: "bypassPermissions", name: "Bypass permissions", description: "Run tools without permission prompts." },
 ];
 
-/**
- * How long each part of one turn's start took, in milliseconds, from the turn's start (after any wait for
- * a free slot on a machine) to the agent's first output (docs/architecture.md, "Start times"). A part that did not happen
- * in that turn is left out: `image` and `setup` only for a new sandbox, `relay` only where Windlass's model
- * relay is used, `runner*` only from a runner that reports them.
- */
+/** Milliseconds from slot admission to first output. Phases that did not run are omitted. */
 export interface StartTimes {
 	turn: number;
 	/** When the turn started. */
@@ -408,33 +307,17 @@ export interface SessionSummary {
 	model: string;
 	/** A git repository cloned into the workspace when the sandbox was created, if any. */
 	repoUrl: string | null;
-	/**
-	 * Set when the session was launched on a repository of the user's GitHub connection, picked in the
-	 * launch form: what it was launched on. `repoUrl` is then that repository's address. Absent or null
-	 * for a session with no repository or with a pasted address.
-	 */
+	/** Absent or null for pasted URLs and sessions without a repository. */
 	repository?: SessionRepository | null;
 	/** The pull request the platform opened for the session's work, once there is one. */
 	pullRequest?: PullRequestInfo | null;
-	/**
-	 * For a session with `repository`: whether the agent may have the platform publish the session's
-	 * work without the user being asked each time. False: every request of the agent's is put to the
-	 * user as a question (`PendingQuestion.publish`). It is the session's own setting: chosen when it is
-	 * launched, changed in its side panel (`setPublishUnasked`), and turned on by answering such a
-	 * question with "Allow for this session". It can be on only in a profile where Windlass sandboxes
-	 * every command the agent runs (`approval` "auto", and neither `commandNetwork` nor
-	 * `commandsCanReadAccessToken`): elsewhere a command could ask in the agent's name, so every request
-	 * is asked about, and the question does not offer "session".
-	 */
+	/** May bypass publish confirmation only where isolated commands have neither network nor token-file access. Else ask on every request. */
 	publishUnasked?: boolean;
 	createdAt: number;
 	/** Last prompt or turn end. */
 	updatedAt: number;
 	status: SessionStatus;
-	/**
-	 * With status "paused": why, since when, and how many messages are held for the resumed turn.
-	 * `machine`: the machine went offline (or its runner restarted) mid-turn, and the turn resumes when it is back.
-	 */
+	/** Machine-paused turns resume on reconnect and deliver any held messages. */
 	paused?: { reason: "restart" | "machine"; since: number; held: number };
 	turns: number;
 	lastOutcome: TurnOutcome | null;
@@ -442,17 +325,9 @@ export interface SessionSummary {
 	startTimes?: StartTimes[];
 	/** Whether the sandbox exists and whether it is running or paused. */
 	sandbox: "none" | "running" | "paused";
-	/**
-	 * Set once Windlass has told the session of MCP servers: those its project's configuration names,
-	 * and its user's own (`PersonalServer`). How many, and when what the session knows of them last
-	 * changed (a server started, failed, came to wait, an approval was remembered or forgotten here). A
-	 * client asks `servers()` again when `changedAt` moves. Absent for a session that has none.
-	 */
+	/** Reload servers() when changedAt advances. Absent when the session has no known MCP servers. */
 	servers?: { count: number; changedAt: number };
-	/**
-	 * Set for the session of a work item: the item it works for (`ItemSummary`). Its prompts come from the item; a person may still read it.
-	 * `signIn`: how its machine agent was signed in when the item was filed, where that decides how the item counts its tokens (Claude Code and Codex).
-	 */
+	/** Item sessions receive prompts from the factory. The recorded sign-in determines token accounting for machine agents. */
 	item?: { id: string; role?: "builder" | "reviewer"; planCritic?: true; reviewer?: { id: string; status: SessionStatus }; signIn?: "api-key" | "chatgpt" | "subscription" };
 	/** Set for a session that only builds a prepared environment (environments.ts): it is not listed, and is deleted when done. */
 	environmentBuild?: true;
@@ -486,15 +361,9 @@ export interface CreateSessionInput {
 	model?: string;
 	/** An https git address to clone into the workspace. */
 	repoUrl?: string;
-	/**
-	 * A repository of the user's GitHub connection to launch on, by GitHub's id for it (`GithubRepository.id`),
-	 * and the branch to start from (default: the repository's default branch). Not together with `repoUrl`.
-	 */
+	/** A connected repository is exclusive with repoUrl. Omit branch to use the repository default. */
 	repository?: { id: GithubId; branch?: string };
-	/**
-	 * With `repository`: the setup command to save for that repository before the session is made
-	 * (`RepositorySetup`), in place of what was saved; "" saves none. Left out, what is saved stays.
-	 */
+	/** Omission preserves the saved command. An empty string clears it before session creation. */
 	setupCommand?: string;
 	/** With `repository`: `SessionSummary.publishUnasked` to start with. Left out: the agent's requests to publish are asked about. Refused (`bad_input`) for a profile it cannot be on in. */
 	publishUnasked?: boolean;
@@ -502,20 +371,8 @@ export interface CreateSessionInput {
 	idempotencyKey?: IdempotencyKey;
 }
 
-/**
- * The key of one submission, named and shaped as the Agent Client Protocol's `idempotencyKey` is.
- * Whoever submits makes it, a random UUID, once for each submission, and sends the same key with
- * every attempt of that submission: when no answer came, when the answer was a failure to reach the
- * server, and when the user sends again what was refused, unchanged. The server takes a key at most
- * once and answers a repeat with what the first attempt was answered, so a message that reaches it
- * twice is one message (docs/architecture.md, "A message sent twice").
- *
- * A string of 1 to MAX_IDEMPOTENCY_KEY_CHARS characters. Left out, or null: no key, and every call
- * is a submission of its own. Anything else is refused with the code `bad_idempotency_key` and is
- * never read as no key. A key that comes again with other content is refused with
- * `idempotency_key_reused`, and stays the key of what it came with first. An attempt that was
- * refused leaves its key unused: the same key is then a new try.
- */
+/** Replay the first accepted answer for the same key and payload. A refused submission leaves the key unused.
+ * Missing or null disables deduplication. Invalid keys fail with bad_idempotency_key; changed payloads with idempotency_key_reused. */
 export type IdempotencyKey = string;
 
 export interface ChatgptStatus {
@@ -525,7 +382,7 @@ export interface ChatgptStatus {
 	accessExpiresAt: number | null;
 }
 
-// --- GitHub ----------------------------------------------------------------------------------
+// GitHub
 
 /** Account, installation and repository IDs are numbers through MAX_SAFE_INTEGER, then decimal strings. */
 export type GithubId = number | string;
@@ -553,11 +410,7 @@ export interface GithubStatus {
 	connection: GithubConnection | null;
 }
 
-/**
- * The Linear integration: an issue in a mapped team that gains the `windlass` label, or is assigned to the
- * Windlass app user, is filed as a work item on the team's repository. Windlass posts item progress on the issue.
- * `UserActions.linear` and the actions after it are the Settings page's.
- */
+/** Mapped teams file work on their repository through a qualifying label or app assignment. */
 export type LinearStatus =
 	/** The deployment has no Linear OAuth client or signing secret (server env): Settings shows nothing to connect. */
 	| { state: "off" }
@@ -650,12 +503,7 @@ export interface PullRequestInfo {
 	base: string;
 	/** When the platform last pushed to it, ms since the epoch. */
 	pushedAt: number;
-	/**
-	 * What the section the platform keeps in its description said when it was last written, in a few
-	 * words (`Verified`; docs/github-and-repositories.md, "What a pull request shows was verified"): "2 checks passed",
-	 * "1 of 2 checks failing", "nothing verified", with "1 thing to look at" where the section lists
-	 * observations.
-	 */
+	/** Short verification summary from the last description the platform wrote. */
 	verified: string;
 }
 
@@ -663,10 +511,7 @@ export interface PullRequestInfo {
 export interface PublishMessage {
 	title: string;
 	body: string;
-	/**
-	 * The commit's whole message, when it is not the title and the body: a request of the agent's names
-	 * the commit's message apart from the pull request's title and description. `publish()` takes none.
-	 */
+	/** Separate commit message for agent requests. Panel publishing uses the title and body. */
 	commit?: string;
 }
 
@@ -677,10 +522,7 @@ export interface PublishState {
 	pullRequest: PullRequestInfo | null;
 	/** The branch the work goes to: named for the session, and kept once something was pushed. */
 	branch: string;
-	/**
-	 * Whether there is something to push: files that differ from the last commit, or commits GitHub
-	 * does not have. Null when that is not known without starting the session's sandbox.
-	 */
+	/** Includes uncommitted files and unpublished commits. Null means checking would require starting the sandbox. */
 	changes: boolean | null;
 	/** A message to start from: the session's title, and the last answer or the changed files. */
 	draft: PublishMessage;
@@ -696,13 +538,7 @@ export interface PublishResult {
 	opened: boolean;
 }
 
-/**
- * A repository's setup command: a shell command its user saved for a repository of their GitHub
- * connection. The platform runs it once in each new sandbox of a session on that repository, after
- * the clone and before the agent's first turn there: in the repository's directory, as the sandbox's
- * user, with the sandbox's network, and outside the sandbox Windlass puts around the agent's own
- * commands. It is the user's and nobody else's: nothing in a repository can set or change it.
- */
+/** Only the owner can set setup. It runs after clone and before the first turn as the sandbox user, outside Windlass command isolation. */
 export interface RepositorySetup {
 	/** The command as it is saved; "" when none is. */
 	command: string;
@@ -712,12 +548,7 @@ export interface RepositorySetup {
 	timeoutMs: number;
 }
 
-/**
- * One of the checks a user saved for a repository of their GitHub connection: a command that tells
- * whether the code is right, which Windlass runs before it calls a turn done and sends the agent back
- * with when it fails (docs/github-and-repositories.md, "A repository's checks"). The first four fields are Windlass's own
- * (`checks[]` in its configuration), with its limits.
- */
+/** Windlass runs these owner-defined checks before accepting a turn. */
 export interface RepositoryCheck {
 	/** Letters, digits, "_", "." and "-", starting with a letter or digit; no two of a list alike. */
 	name: string;
@@ -727,10 +558,7 @@ export interface RepositoryCheck {
 	timeoutSeconds?: number;
 	/** Glob patterns of changed files that make it run; absent: any change does. */
 	when?: string[];
-	/**
-	 * True: the end of what it printed goes into a pull request's description also when it passed. The
-	 * platform's own field, handed to Windlass as `outputTail: "always"`.
-	 */
+	/** Include passing output in the PR too (Windlass outputTail “always”). */
 	showOutput?: boolean;
 }
 
@@ -742,7 +570,7 @@ export interface RepositoryChecks {
 	updatedAt: number | null;
 }
 
-// --- A repository's prepared environments (environments.ts) ---------------------------------
+// A repository's prepared environments (environments.ts)
 
 /** Where an environment is kept: "hosted", or the id of one of the user's machines. */
 export type EnvironmentPlace = string;
@@ -783,10 +611,7 @@ export interface EnvironmentBuild {
 	failure: { kind: EnvironmentFailureKind; check: string | null; line: string; excerpt: string } | null;
 	/** A prepared image was saved. A passing setup under the minimum time keeps none: sessions then start cold, quickly. */
 	snapshot: boolean;
-	/**
-	 * Checks that ran and failed on the base commit's code (main is red), not for the sandbox: they do not keep the
-	 * environment from being promoted, and are shown with it. Absent or empty when none did.
-	 */
+	/** Base-code failures are reported but do not block environment promotion. */
 	codeFailures?: string[];
 }
 
@@ -822,15 +647,9 @@ export interface RepositoryEnvironments {
 	places: { place: EnvironmentPlace; placeName: string }[];
 }
 
-// --- A repository's network list -------------------------------------------------------------
+// A repository's network list
 
-/**
- * A named set of hosts that WLP_E2B_NETWORK_ALLOW and a repository's network list can allow with one
- * entry ("@npm", "@playwright"), shown as a checkbox in the repository's settings. Exact names only:
- * a wildcard cannot be pinned in a sandbox's /etc/hosts. Each list is the hosts the tool's own code or
- * documentation names for its downloads, with the hosts a download is redirected to (docs/operating.md,
- * "E2B", "Network", says where each comes from).
- */
+/** Presets contain exact download and redirect hosts. The sandbox hosts file cannot pin wildcards. */
 export interface NetworkPreset {
 	id: string;
 	/** In words, for the repository's settings: "Playwright browsers". */
@@ -854,19 +673,12 @@ export const NETWORK_PRESETS: readonly NetworkPreset[] = [
 	{ id: "@ubuntu", name: "Ubuntu packages", about: "Ubuntu's apt sources; the sandbox runs Ubuntu", hosts: ["archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com"] },
 ];
 
-/**
- * Hosts that serve far more than what a download needs, with the sentence said wherever someone can
- * allow one: on the timeline's line about it, beside a request, and beside a proposal.
- */
+/** Warnings shared by every surface that offers to allow a broad host. */
 export const WIDE_HOSTS: Readonly<Record<string, string>> = {
 	"storage.googleapis.com": "storage.googleapis.com serves every public Google Cloud Storage bucket, anyone's: allowed, it lets a command send to or fetch from any of them, not only the one a download needs.",
 };
 
-/**
- * A host a command in one of the repository's hosted sandboxes looked up and could not reach, kept for
- * the repository until it is allowed or dismissed: a request, which only the person who changes the
- * repository's settings can grant. Nobody is asked when one is filed.
- */
+/** A blocked lookup is a request only. Granting access requires repository settings permission. */
 export interface NetworkRequest {
 	host: string;
 	/** When a command last asked for it, ms since the epoch. */
@@ -875,13 +687,7 @@ export interface NetworkRequest {
 	sessionId: string | null;
 }
 
-/**
- * The hosts a repository's hosted sandboxes may reach besides the platform's own and the deployment's
- * (docs/github-and-repositories.md, "A repository's network"): exact host names and presets, saved for
- * the repository by GitHub's id, like its setup command. They apply where the deployment runs hosted
- * sandboxes on E2B with WLP_E2B_NETWORK=restricted, from the next command of every hosted session on
- * the repository: a sandbox is changed at once when a host is allowed from its session while a turn runs in it.
- */
+/** Exact hosts and presets extend restricted E2B egress for this repository. An active session can apply an approval immediately. */
 export interface RepositoryNetwork {
 	/** What is saved: preset ids ("@playwright") and exact host names, in the order they were added. */
 	entries: string[];
@@ -893,11 +699,7 @@ export interface RepositoryNetwork {
 	requests: NetworkRequest[];
 	/** The presets that can be chosen. */
 	presets: NetworkPreset[];
-	/**
-	 * What the deployment's hosted sandboxes reach whatever the list says: `mode` is WLP_E2B_NETWORK, and
-	 * `hosts` the model API, the git host, the bucket and the deployment's own list (empty in `open`).
-	 * Null where hosted sandboxes are not on E2B: the list then applies nowhere on this deployment.
-	 */
+	/** Deployment-wide egress before repository additions. In restricted mode hosts include the model API, Git host, bucket and operator allowlist. */
 	hosted: { mode: EgressMode; hosts: string[] } | null;
 	/** How many hosts the list may come to here (MAX_REPOSITORY_HOSTS, less where the deployment's own list leaves less room). */
 	limit: number;
@@ -965,38 +767,10 @@ export interface VerifiedCheck {
 	startError?: string;
 }
 
-/**
- * What a session's work rests on after a turn, from what Windlass recorded of its verification gate:
- * on the turn's closing item in the timeline, and what a pull request's description is given.
- *
- * `state` is how the gate ended in `turn`:
- *
- *   passed          every check that applied passed
- *   unresolved      checks did not pass and the turn ended anyway (`unresolved` says why)
- *   not_needed      checks are set and none was needed: the turn changed nothing they cover
- *                   (`unneeded` records why)
- *   none_set        no check is set, neither by the user nor by the repository's file
- *   off             the repository's file turns verification off
- *   no_sandbox      Windlass could not run checks in this sandbox, and said so; required checks
- *                   are then in `run`, each as one that could not be started
- *   not_in_force    the user has checks, Windlass reported none in force, and nothing says why
- *   stopped         the turn was stopped, or cut off, before the gate decided
- *   failed          the turn failed before the gate decided
- */
+/** Verification is derived from Windlass's recorded gate for the turn and its measured file state. */
 export type Verified = ({
 	state: "not_needed";
-	/**
-	 * For "not_needed", why no check was needed (the ending's `reason`):
-	 *
-	 *   turn_unchanged    the turn changed no file
-	 *   state_unchanged   the turn changed files, and they are again as they were in the state Windlass
-	 *                     measures changes from
-	 *   not_covered       files differ from that state, and no check covers any of them
-	 *
-	 * and, for the last two, which state that is (the ending's `since`): "run", the one `run` passed
-	 * on, give or take files no check covers; "start", what the session started from, which no check
-	 * has verified; null where Windlass does not say, or names a run the platform no longer holds.
-	 */
+	/** A restored state can refer to a prior check run or the state at turn start. */
 	unneeded: { reason: "turn_unchanged" | "state_unchanged" | "not_covered"; on: "run" | "start" | null };
 } | {
 	state: "passed" | "unresolved" | "none_set" | "off" | "no_sandbox" | "not_in_force" | "stopped" | "failed";
@@ -1011,17 +785,9 @@ export type Verified = ({
 	 */
 	unresolved?: { reason: "acknowledged" | "max_rounds" | "report_mode" | "not_started" | "environment"; said: string | null };
 
-	/**
-	 * The checks that did not pass in a run of `turn` whose result does not stand: the agent then put
-	 * the files back, and the turn ended with no check needed (`unneeded`). They are not `run`'s.
-	 */
+	/** Failed checks whose changes were subsequently undone. They are separate from the run that verifies the final state. */
 	putBack?: VerifiedCheck[];
-	/**
-	 * The session's last run of checks that finished, with the turn it was in, when, and where in
-	 * Windlass's log (`seq`, of its `checks.finished`);
-	 * null when none has. After a turn that ended on a state verified earlier (`unneeded`) it is the
-	 * run that state rests on, or null.
-	 */
+	/** Last completed check run supporting this state. seq identifies checks.finished in the Windlass log. */
 	run: { turn: number; at: number; seq: number; checks: VerifiedCheck[] } | null;
 	/** The user's checks, as saved when `turn` started, that are neither among `run`'s nor among `putBack`. */
 	unrun: Array<{ name: string; command: string }>;
@@ -1031,47 +797,17 @@ export type Verified = ({
 	changedAfter: boolean;
 }
 
-/**
- * Something in a pull request's changes that a reviewer would want to look at, as an observation
- * (docs/github-and-repositories.md, "What a pull request shows was verified", says exactly what each one looks for):
- *
- *   tests_removed    test files deleted, or renamed to a path that is not a test's
- *   tests_skipped    tests newly skipped or disabled in test files
- *   checks_changed   the repository's check configuration, or what a check's command runs, changed
- *   exit_ignored     a check's command, or what it runs, came to ignore an exit status
- *
- * That files changed after the checks last ran is one more, known from Windlass's record and not
- * from the changes: `Verified.changedAfter`.
- */
+/** Observations on the changes for a human reviewer. Post-check edits are recorded separately in Verified.changedAfter. */
 export interface VerifiedFlag {
 	kind: "tests_removed" | "tests_skipped" | "checks_changed" | "exit_ignored" | "agent_instructions_changed" | "outside_scope";
 	/** What it was seen in: paths, at most a few. */
 	where: string[];
 }
 
-/**
- * Who a repository's secret is handed to (docs/github-and-repositories.md, "A repository's secrets"). Every secret goes to the
- * repository's setup command. Beyond that:
- *
- *   "setup"   the MCP servers the repository names, and not the commands the agent runs
- *   "agent"   the MCP servers, and the commands the agent runs as well
- *
- * Where Windlass sandboxes the agent's commands, that is what each of them gets. Where it does not,
- * a scope can come to less; `SecretReach` says what.
- * A secret of the account (`AccountSecret`) has the same two, without the setup command.
- */
+/** Repository secrets always reach setup. Agent scope also exposes them to agent commands; account secrets never go to repository setup. */
 export type SecretScope = "setup" | "agent";
 
-/**
- * What a secret reaches in a session whose sandbox has a given profile. Windlass decides what its
- * commands and the MCP servers see: an MCP server gets the variables its definition names from
- * Windlass's own environment, and a command gets that environment by a rule (a command Windlass
- * sandboxes: every variable except those whose names look like credentials; one it does not sandbox:
- * all of them), which whoever opens the session corrects by name. Where commands are sandboxed that
- * makes a scope exact. Where they are not, a variable withheld from a command can still be read by
- * it, so a secret that is not for the commands stays out of Windlass's environment and MCP servers
- * go without it.
- */
+/** Where commands are unisolated, withholding a secret from them also requires withholding it from Windlass and its MCP servers. */
 export interface SecretReach {
 	/** Whether the MCP servers the repository names can be given it (`${NAME}` in their definitions). */
 	servers: boolean;
@@ -1100,15 +836,9 @@ export interface RepositorySecrets {
 	profile: SandboxProfileId;
 }
 
-// --- A repository's page ---------------------------------------------------------------------
+// A repository's page
 
-/**
- * What a new session on a repository starts with, where its user said so (docs/github-and-repositories.md, "A repository's
- * page"): the launch form starts from them when that repository is picked, and its user can still
- * choose otherwise for one session. Kept as they were saved: a default may come to name a sandbox
- * this deployment no longer offers or a model its user's account no longer does, and such a one is
- * not used.
- */
+/** Saved defaults may outlive a model or sandbox. Ignore unavailable choices at launch. */
 export interface RepositoryAutonomy {
 	autoApprovePlans?: boolean;
 	autoMergeSingles?: boolean;
@@ -1152,18 +882,11 @@ export interface RepositoryApproval {
 	definitions: number;
 }
 
-/**
- * What the user's actor keeps for one repository of a GitHub connection, by GitHub's id for it: what
- * the repository's page shows beside the setup command and the secrets, which are read by their own
- * actions. Nothing here is asked of GitHub, and nothing here is a secret's value.
- */
+/** Locally saved repository settings contain no secret values and require no GitHub lookup. */
 export interface RepositoryView {
 	/** GitHub's id for the repository. */
 	id: GithubId;
-	/**
-	 * "owner/name" as the user's sessions on it, or what was saved for it, last had it; null when
-	 * nothing names it. GitHub is not asked: `githubRepository` says what it is called now.
-	 */
+	/** Last known owner/name. Query githubRepository for the current name. */
 	name: string | null;
 	defaults: RepositoryDefaults;
 	/** The remembered approvals that have not run out, the newest first. */
@@ -1181,25 +904,12 @@ export interface SavedRepository {
 	name: string | null;
 }
 
-// --- The account's settings ------------------------------------------------------------------
+// The account's settings
 
-/**
- * What a new session starts with where neither the launch form nor the chosen repository says so
- * (docs/github-and-repositories.md, "Account settings"): a sandbox profile and a model, the user's own, whatever the
- * repository. Kept as they were saved, as a repository's are: one that names a sandbox this
- * deployment no longer offers, or a model the account no longer does, is not used, and whoever reads
- * it says so.
- */
+/** Account defaults apply after explicit launch and repository choices. Ignore unavailable profiles and models. */
 export type AccountDefaults = Omit<RepositoryDefaults, keyof RepositoryAutonomy | "screenshots" | "hostedSize">;
 
-/**
- * Where the user's newest agent was started, with which agent and in which mode, as the server
- * remembered it when that agent was made (account-defaults.ts). Not a saved default: every agent the
- * user starts replaces it, a work item's sessions never do, and it outlives the agent it came from.
- * The start composer starts where it runs, the agent and the mode from it where nothing is chosen; a
- * machine that cannot be used now, or an agent it does not offer, leaves the composer on this
- * platform with Windlass, and it says so. Forgotten (`forgetLastStart`), they start on the platform's.
- */
+/** Last personal launch, retained after deleting the session. Item sessions never replace it. */
 export interface LastStart {
 	place: SandboxPlace;
 	harness: HarnessId;
@@ -1209,13 +919,7 @@ export interface LastStart {
 	startedAt: number;
 }
 
-/**
- * An MCP server of the user's own: Windlass starts it, or reaches it, in every session of theirs,
- * whatever the repository. It is never read from a repository. `definition` is what Windlass's own
- * configuration takes for one server (its docs/mcp.md, "The keys"): `command` with `args`, `cwd` and
- * `env`, or `url` with `headers`, and `tools`, `timeoutSeconds`, `startupTimeoutSeconds`, `untrusted`,
- * `enabled`, `protocol`.
- */
+/** User-owned MCP definition supplied to every session independent of repository configuration. */
 export interface PersonalServer {
 	/** Its key in Windlass's configuration: what the model calls it by. */
 	name: string;
@@ -1226,28 +930,15 @@ export interface PersonalServer {
 	subject: string;
 	/** False when its definition says `enabled: false`: Windlass then leaves it out. */
 	enabled: boolean;
-	/**
-	 * True when its tools run without asking: where Windlass asks before a call of one, the platform
-	 * answers for the user, each call once, and the session's timeline says so. Off unless its user
-	 * said so. It says nothing of what the server returns, which Windlass goes on not trusting unless
-	 * the definition says `untrusted: false`.
-	 */
+	/** Allows tools to run without asking. Trust in their output is controlled separately by the definition. */
 	unasked: boolean;
-	/**
-	 * The variables its definition reads (`${NAME}` in `env` or `headers`), in order, each with whether
-	 * an account secret of that name is saved. Windlass does not start a server that reads a variable
-	 * which is not set.
-	 */
+	/** Variables referenced by env or headers, in order. An unset variable prevents startup. */
 	reads: Array<{ name: string; saved: boolean }>;
 	/** When it was last saved, ms since the epoch. */
 	updatedAt: number;
 }
 
-/**
- * What a personal server can reach where it runs, said for one sandbox this deployment can run, in
- * the words of the question about a project's MCP server (`PendingQuestion.server`): Windlass starts a
- * server of its user's own configuration without asking, so this is said before one is saved.
- */
+/** Show the server's reach before saving because user-owned MCP servers start without project approval. */
 export interface PersonalServerReach {
 	profile: SandboxProfileId;
 	/** The profile's display name. */
@@ -1271,10 +962,7 @@ export interface AccountSettings {
 	limits: { servers: number; definitionBytes: number; secrets: number };
 }
 
-/**
- * A secret of the account, as it is listed: never with its value. It is handed to MCP servers, the
- * user's own and a project's that reads `${NAME}`, and never to a repository's setup command.
- */
+/** Account secrets expose only metadata here and never go to repository setup. */
 export interface AccountSecret {
 	/** The environment variable a server's definition reads it as. */
 	name: string;
@@ -1284,11 +972,7 @@ export interface AccountSecret {
 	updatedAt: number;
 	/** What it reaches in the sandbox the list was asked for. */
 	reach: SecretReach;
-	/**
-	 * The repositories ("owner/name", or GitHub's number for one nothing names) that have a secret of
-	 * their own under this name: in a session on one of them the repository's secret is used, with its
-	 * value and its scope, and this one is not.
-	 */
+	/** Repository-specific value and scope override the account secret in these repositories. */
 	repositories: string[];
 }
 
@@ -1330,201 +1014,9 @@ export interface AccountSecrets {
 	profile: SandboxProfileId;
 }
 
-// --- Usage -----------------------------------------------------------------------------------
+// Paired machines
 
-/**
- * A user's sandbox time today and the sandboxes they keep, in numbers (docs/architecture.md, "Usage and limits").
- *
- * Sandbox time is the time a hosted sandbox runs: from when it is created or resumed, for a turn or
- * to read the workspace, until it is suspended, removed or stops by itself. A sandbox that is paused
- * uses none. A day is a UTC day. While a sandbox runs, its session holds a few minutes of the day's
- * allowance at a time, and what it does not use of a hold comes back when the sandbox stops.
- */
-export interface UsageNumbers {
-	/** The server's clock when this was read, ms since the epoch. */
-	at: number;
-	/** The UTC day the numbers are for, "2026-11-17". */
-	day: string;
-	/** When that day ends and the allowance is whole again: the next midnight UTC, ms since the epoch. */
-	resetsAt: number;
-	/** The sandbox time a user may use in one day, in seconds; null when the deployment sets no limit. */
-	allowanceSeconds: number | null;
-	/** Seconds counted today: what sandboxes that have stopped ran. */
-	usedSeconds: number;
-	/** Seconds held by sandboxes that run now. They count as used until each sandbox stops and its real time is counted. */
-	heldSeconds: number;
-	/** What is left of today's allowance for a turn that starts now, never below 0; null without a limit. */
-	leftSeconds: number | null;
-	/** The least that must be left for a turn to start, or for a paused sandbox to be started to read its workspace. */
-	startSeconds: number;
-	/** How many sandboxes the user keeps, running or paused, and the most they may keep; `limit` is null without one. */
-	sandboxes: { kept: number; limit: number | null };
-	/** The calendar month's hosted minutes, where the account has a monthly allowance (a plan, or the operator's `hostedMinutes`). Absent: only the day counts. */
-	hosted?: HostedMonth;
-}
-
-/**
- * A UTC calendar month of hosted minutes. A hosted minute is one minute of a standard sandbox (2 vCPU, 4 GiB): a small
- * one counts half, a large one twice (billing/meter.ts). Runs on the user's own machines are never in it. All in
- * weighted seconds, so that nothing is rounded before it is shown.
- */
-export interface HostedMonth {
-	/** "2026-11". */
-	month: string;
-	/** End of the hosted allowance period, ms since the epoch. */
-	resetsAt: number;
-	/** What the plan includes. */
-	includedSeconds: number;
-	/** The most that may be used: the included minutes, and on a plan with overage the minutes the spend cap pays for. */
-	limitSeconds: number;
-	/** Counted this month, weighted. */
-	usedSeconds: number;
-	/** Held by sandboxes that run now, weighted. */
-	heldSeconds: number;
-	/** What is left of `limitSeconds`, never below 0. */
-	leftSeconds: number;
-	/** Subscription cadence for Pro. */
-	period?: BillingPeriod;
-	/** The plan these are of, where the deployment has billing; absent where the operator set the allowance. */
-	plan?: PlanId;
-}
-
-/** A plan of the deployment's billing (billing/plans.ts). Team and Enterprise are planned, not offered. */
-export type PlanId = "free" | "pro";
-export type BillingPeriod = "month" | "year";
-
-/** What a plan gives, as the upgrade page compares them. Prices in US cents. */
-export interface PlanInfo {
-	id: PlanId;
-	name: string;
-	/** Per month, billed monthly; and per year, billed yearly (null where the plan has no yearly price). */
-	monthlyCents: number;
-	yearlyCents: number | null;
-	machines: number;
-	hostedMinutes: number;
-	hostedRunning: number;
-	keptSandboxes: number;
-	sizes: Array<"small" | "standard" | "large">;
-	crossRepo: boolean;
-	githubItemsPerDay: number;
-	/** US cents per 1,000 hosted minutes past the included ones; null: a hard stop at the included minutes. */
-	overageCentsPer1000: number | null;
-}
-
-/** The Plan section of Settings and the upgrade page. `enabled` false: the deployment has no billing, and nothing of it is shown. */
-export type BillingView = { enabled: false } | {
-	enabled: true;
-	/** The plan whose limits apply now: Pro while its subscription is active or in its grace period, otherwise Free. */
-	plan: PlanId;
-	/** The subscription's state: "none" without one; "past_due" after a failed payment, until `graceUntil`; "ended" after it ended. */
-	status: "none" | "active" | "past_due" | "paused" | "ended";
-	period: BillingPeriod | null;
-	/** When the subscription renews, or ends where `cancelAtPeriodEnd`. */
-	periodEnd: number | null;
-	cancelAtPeriodEnd: boolean;
-	/** After a failed payment: when the account falls back to Free unless a payment succeeds. Nothing is deleted then. */
-	graceUntil: number | null;
-	/** The most overage may cost in a month, in US cents; `maxCapCents` is the highest it may be set to. */
-	capCents: number;
-	maxCapCents: number;
-	/** Overage minutes counted this month, and what the provider has been told of them. */
-	overageMinutes: number;
-	reportedMinutes: number;
-	/** Whether a customer portal can be opened: there is a customer at the provider. */
-	portal: boolean;
-	plans: PlanInfo[];
-	month: HostedMonth | null;
-};
-
-/** One agent's sandbox time today. */
-export interface UsageSession {
-	sessionId: string;
-	/** Null for an agent that was deleted since. */
-	title: string | null;
-	/** Seconds counted today for this agent's sandbox. */
-	seconds: number;
-	/**
-	 * Of `seconds`, what was counted in full because the agent never reported how long its sandbox
-	 * really ran: the server it was on stopped under it. It ran that long at most.
-	 */
-	unreportedSeconds: number;
-	/** Seconds its sandbox holds now; 0 when it does not run. */
-	heldSeconds: number;
-	/** The size of its sandbox, where the deployment offers sizes: what its seconds are priced at. */
-	hostedSize?: HostedSize;
-}
-
-/** One UTC day of the history. */
-export interface UsageDay {
-	/** "2026-11-17". */
-	day: string;
-	seconds: number;
-}
-
-/** A sandbox the user keeps: it exists for one of their agents, running or paused. */
-export interface KeptSandbox {
-	/** The agent it was made for: what `freeSandbox` takes. */
-	sessionId: string;
-	/** Null when that agent no longer exists and its sandbox was left behind. A work item's reviewer reads "Reviewer of “title”". */
-	title: string | null;
-	/** The work item whose builder or reviewer it is. */
-	item?: { id: string; role: "builder" | "reviewer" };
-	/** A reviewer's sandbox, which shares its item builder's place: it takes none of the cap of its own. */
-	sharesPlace?: true;
-	/** "starting": the agent was given the place and its sandbox is being made. */
-	state: "running" | "paused" | "starting";
-	/** When the agent was last prompted or its last turn ended, ms since the epoch; null without the agent. */
-	usedAt: number | null;
-	/** True while the agent works: its sandbox cannot be freed until the turn has ended or is stopped. */
-	busy: boolean;
-	/** "owner/name" of the repository the agent was launched on through the GitHub connection, when it was. */
-	repository: string | null;
-	/** Whether the platform has pushed work of this agent to GitHub: that much is cloned again into a new sandbox. */
-	pushed: boolean;
-	/** Its size, where the deployment offers sizes. */
-	hostedSize?: HostedSize;
-}
-
-/** What a second of a running sandbox is estimated to cost. */
-export interface UsagePrice {
-	/** US dollars per second. */
-	usdPerSecond: number;
-	/** What that price is of, for a sentence: "1 vCPU and 1,024 MiB of memory at E2B's published prices". */
-	basis: string;
-}
-
-/** What the usage page shows. */
-export interface UsageView extends UsageNumbers {
-	providerTokens?: { provider: ModelProvider; tokens: number }[];
-	/** Model usage reported by requests using the platform credential on this UTC day. */
-	usedModelTokens: number;
-	factoryLimits: FactoryLimits;
-	/** Today's sandbox time by agent, the most first; an agent whose sandbox runs now is among them. */
-	today: UsageSession[];
-	/** The last USAGE_HISTORY_DAYS days, the oldest first and today last. */
-	days: UsageDay[];
-	/** The sandboxes the user keeps, as the provider lists them, the most recently used first. */
-	kept: KeptSandbox[];
-	/** Null where running a sandbox is not billed by the second (local Docker): no cost is estimated then. The smallest size's, where there are sizes. */
-	price: UsagePrice | null;
-	/** The hosted sizes and what an hour of each costs, as `PlatformInfo.hostedSizes`. The allowance is in seconds whatever the size. */
-	hostedSizes?: HostedSizeOption[];
-	/**
-	 * What becomes of an agent's memory of its conversation when its sandbox is freed. "kept": it is
-	 * stored outside the sandbox. "copied": a copy is saved after every turn and put into the next
-	 * sandbox. "lost": it is in the sandbox only, and the agent starts without it.
-	 */
-	memory: "kept" | "copied" | "lost";
-}
-
-// --- The user's own machines (Plans "bring your own computer") ------------------------------
-
-/**
- * Where a machine is, with `MachineSummary.since`. "waiting": it was confirmed and its runner has not
- * connected since (since: when it was confirmed); a runner that lost its key before it connected never
- * will, and the page offers to remove it. "online": its runner is connected (since: when it connected).
- * "offline": its runner was connected before and is not now (since: when it was last heard from).
- */
+/** Waiting means paired but never connected. Offline means previously connected; since records the last contact. */
 export type MachineStatus = "waiting" | "online" | "offline";
 
 /** A probe on the machine: passed, or what it found. */
@@ -1582,69 +1074,6 @@ export interface MachineSlotCapacity {
 	reserve: { cpus: number; memoryBytes: number };
 }
 
-// --- Hosted sandbox sizes ------------------------------------------------------------------------
-
-/**
- * The size of a hosted sandbox (E2B). E2B fixes a sandbox's CPUs and memory when its template is built,
- * so each size is a template of its own (sandbox/e2b/build.sh, `WLP_E2B_SIZE`), and a sandbox keeps its size
- * for life: another size is a new sandbox. Machines have no sizes of this kind: a machine's slot is
- * set by its runner (`--slot-memory`).
- */
-export type HostedSize = "small" | "standard" | "large";
-export const HOSTED_SIZES: readonly HostedSize[] = ["small", "standard", "large"];
-export const HOSTED_SIZE_SPECS: Readonly<Record<HostedSize, { cpus: number; memoryMiB: number }>> = {
-	small: { cpus: 1, memoryMiB: 1024 },
-	standard: { cpus: 2, memoryMiB: 4096 },
-	large: { cpus: 4, memoryMiB: 8192 },
-};
-/** A work item's sandbox, where nothing else is chosen. */
-export const ITEM_HOSTED_SIZE: HostedSize = "standard";
-/** A person's own agent, where neither the launch form nor the repository says. */
-export const SESSION_HOSTED_SIZE: HostedSize = "small";
-
-export function isHostedSize(value: unknown): value is HostedSize {
-	return typeof value === "string" && (HOSTED_SIZES as readonly string[]).includes(value);
-}
-
-/** "Standard · 2 vCPU, 4 GiB". */
-export function hostedSizeWords(size: HostedSize): string {
-	const spec = HOSTED_SIZE_SPECS[size];
-	return `${size.charAt(0).toUpperCase()}${size.slice(1)} · ${spec.cpus} vCPU, ${spec.memoryMiB / 1024} GiB`;
-}
-
-/** The least size that has a plan's `cpus` and `memoryGiB`; null when even the largest has not. */
-export function hostedSizeFor(needs: { cpus?: number; memoryGiB?: number }): HostedSize | null {
-	if (needs.cpus === undefined && needs.memoryGiB === undefined) return null;
-	return HOSTED_SIZES.find((size) => (needs.cpus ?? 0) <= HOSTED_SIZE_SPECS[size].cpus && (needs.memoryGiB ?? 0) * 1024 <= HOSTED_SIZE_SPECS[size].memoryMiB) ?? null;
-}
-
-/** The next size up, or null for the largest. */
-export function largerHostedSize(size: HostedSize, offered: readonly HostedSize[] = HOSTED_SIZES): HostedSize | null {
-	return HOSTED_SIZES.slice(HOSTED_SIZES.indexOf(size) + 1).find(next => offered.includes(next)) ?? null;
-}
-
-/**
- * "The sandbox ran out of memory (942 of 977 MiB). A larger size has more room: Standard · 2 vCPU, 4 GiB." What the
- * turn's row and a work item's question say. `offered`: the deployment's sizes, so that only one it has is named.
- */
-export function outOfMemoryWords(memory: { usedMiB: number; totalMiB: number; size?: HostedSize }, offered: readonly HostedSize[] = HOSTED_SIZES, place: SandboxPlace["kind"] = "hosted"): string {
-	if (place === "machine") return `The machine slot ran out of memory (limit ${memory.totalMiB.toLocaleString("en-US")} MiB). The machine’s owner can give slots more memory with --slot-memory or configure fewer slots to share the available memory.`;
-	const said = `The sandbox ran out of memory (${memory.usedMiB.toLocaleString("en-US")} of ${memory.totalMiB.toLocaleString("en-US")} MiB).`;
-	const from = memory.size ?? HOSTED_SIZES.find((size) => HOSTED_SIZE_SPECS[size].memoryMiB >= memory.totalMiB) ?? "large";
-	const larger = largerHostedSize(from, offered);
-	if (larger) return `${said} A larger size has more room: ${hostedSizeWords(larger)}.`;
-	return `${said} ${memory.size ? "This is the largest size this deployment has" : "No larger size is offered here"}: have the agent's commands use less memory at once (fewer tests or workers in parallel).`;
-}
-
-/** A size this deployment's hosted layer offers, with its estimated price. */
-export interface HostedSizeOption {
-	id: HostedSize;
-	cpus: number;
-	memoryMiB: number;
-	/** Estimated US dollars per hour of running, at the provider's published prices; null when not billed by time. */
-	usdPerHour: number | null;
-}
-
 /** Large sandboxes use two or four slots, limited by the machine's configured capacity. */
 export function sandboxSlots(requested: number, max: number) {
 	return Math.min(max, requested > 2 ? 4 : requested > 1 ? 2 : 1);
@@ -1685,20 +1114,11 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	commandSandbox: MachineProbe | null;
 	/** Free space where Docker keeps the sandboxes, as last reported; null when not known. */
 	freeDiskBytes: number | null;
-	/**
-	 * The caps its owner set on the machine, as its runner last reported: at most this many sandboxes
-	 * running at once (`--max-running`) and kept at once (`--max-sandboxes`). Absent where none is set, and
-	 * before its runner first reported. The platform's own limits do not apply to a machine.
-	 */
+	/** Runner-reported limits. Absent before the first report or when no cap is configured. */
 	readySandboxes?: number;
 	maxRunning?: number;
 	maxSandboxes?: number;
-	/**
-	 * The snapshot and Git mirror limits in force there, in bytes, as its runner last reported: all
-	 * snapshots (`--snapshot-disk`), one user's (`--snapshot-user`), and the free disk kept (`--keep-free`).
-	 * `capped`: the deployment's caps changed what its owner set. `builtIn`: a runner 0.3.1 or older, which
-	 * takes no flags and reports nothing; these are the limits it applies. Absent before its runner first reported.
-	 */
+	/** Snapshot and mirror limits in bytes. capped reflects deployment overrides; builtIn identifies limits inferred for older runners. */
 	storeLimits?: { machine: number; user: number; free: number; capped?: true; builtIn?: true };
 	/** The sandbox profiles this machine offers, for the launch form: every one, available or not; empty until its runner first reported. */
 	profiles: SandboxProfile[];
@@ -1713,16 +1133,13 @@ export interface MachineClaim {
 	os: string;
 	arch: string;
 	runnerVersion: string;
-	/**
-	 * The fingerprint of the key the machine paired with ("K7Q2M-XR4TD"), worked out by the platform from
-	 * the key itself. A runner that prints it (`keyPrinted`) shows the same in its terminal.
-	 */
+	/** Platform-derived fingerprint of the pairing key, comparable with a runner that prints it. */
 	keyFingerprint?: string;
 	/** Whether this runner's version prints the key's fingerprint while it pairs. Older ones show only the code. */
 	keyPrinted?: boolean;
 }
 
-// --- Work items: the software factory (Plans "software factory") ------------------------------
+// Work items
 
 /** How many work items a page holds when it does not say, and at most (`listItems`). */
 export const ITEM_PAGE_DEFAULT = 25;
@@ -1734,11 +1151,7 @@ export interface ItemCursor {
 	id: string;
 }
 
-/**
- * A page of the user's work items (`listItems`), in the list's order: newest filed first. `ended`
- * true keeps done, failed and cancelled ones, false keeps the others, and left out keeps both;
- * `repository` and `source` keep one repository's and one way of filing's, as the Factory's filters do.
- */
+/** Newest first. Omit ended to include open and ended items together. */
 export interface ItemListPage {
 	before?: ItemCursor | null;
 	/** `ITEM_PAGE_DEFAULT` when left out, at most `ITEM_PAGE_MAX`. */
@@ -1751,10 +1164,7 @@ export interface ItemListPage {
 /** How many ended work items the live feed carries (`ItemFeed.ended`): the first page of them. */
 export const ITEM_FEED_ENDED = 25;
 
-/**
- * One repository's work items, filed one way, counted by where they stand (`ItemFeed.counts`). The
- * repository's owner and name are those of its newest filed item there.
- */
+/** Per repository and filing source. Display names come from its newest filed item. */
 export interface ItemCount {
 	repository: GithubId;
 	owner: string;
@@ -1767,12 +1177,7 @@ export interface ItemCount {
 	cancelled: number;
 }
 
-/**
- * What the user's live feed carries of their work items (`UserEvents.items`, `itemFeed`): every open
- * one, the newest filed ended ones, and how many there are of each. The ended ones beyond are read a
- * page at a time (`listItems` with `ended`). Every part holds the items the whole list does: top-level
- * items, and a feature's child while it asks a question.
- */
+/** Every open item, recent ended items and counts. Use listItems for older pages. Child items enter the main list when asking a question. */
 export interface ItemFeed {
 	/** Not done, failed or cancelled; newest filed first. */
 	open: ItemSummary[];
@@ -1784,29 +1189,14 @@ export interface ItemFeed {
 		/** One row for each repository and way of filing that has items. */
 		byRepository: ItemCount[];
 	};
-	/**
-	 * Every open subtask of a feature, asking or not, under its own title: what a feature's page, a
-	 * subtask's page and the lists read to stay current while subtasks run. Absent from servers before it.
-	 */
+	/** All open subtasks, including ones without questions. */
 	children?: ItemSummary[];
 }
-//
-// A work item is a task on one repository that the platform carries through a fixed sequence of
-// steps (the blueprint): an agent implements it, the user's checks gate it, the platform pushes the
-// branch and opens the pull request, waits for CI, gives the agent at most two rounds of fixes, and
-// hands the pull request to the person with a verdict. Each item has one agent session of its own,
-// listed with the user's sessions (`SessionSummary.item`). Nothing is refused for lack of capacity:
-// an item that cannot go on waits, and says for what (`Waiting`). The server's own types for the
-// same things (server/src/factory/types.ts) are these, extended.
 
 /** Where an item is. "waiting" always comes with `ItemSummary.wait`. */
 export type ItemState = "draft" | "queued" | "working" | "waiting" | "review" | "done" | "failed" | "cancelled";
 
-/**
- * What a waiting item waits for. "person" and "budget": a question to the person (`ItemSummary.question`);
- * the others end by themselves: "capacity" a free hosted sandbox, or the day's allowance; "machine" the
- * user's machine; "ci" CI on the pushed commit.
- */
+/** Person and budget waits require an answer. Resource and CI waits can end on their own. */
 export type WaitReason = "provider" | "children" | "capacity" | "machine" | "ci" | "person" | "budget" | "integration" | "sandboxes";
 
 /** A wait as a person reads it: one reason, a sentence with its numbers, and when it is next tried. */
@@ -1825,11 +1215,7 @@ export interface Waiting extends Wait {
 	since: number;
 }
 
-/**
- * A step of the blueprint. "implement", "ci_fix", "conflict", "review_fix" (and "refine", which is not offered yet)
- * are builder turns; "review" is a turn of the second agent; "gate" and "handoff" are the platform's decisions; "publish" is the
- * platform pushing; "ci" and "merged" are waits on GitHub.
- */
+/** Factory step names are persisted and appear on the item timeline. */
 export type StepKind = "plan_review" | "subtasks" | "integration" | "summary" | "refine" | "implement" | "gate" | "publish" | "ci" | "ci_fix" | "run_checks" | "conflict" | "review" | "review_fix" | "handoff" | "merged";
 
 /** The step a run is at. */
@@ -1866,12 +1252,7 @@ export interface ItemRun {
 	/** Why it ended other than by handing over: "cancelled", "retried", or the cause of the question given up on. */
 	stopReason: string | null;
 	step: ItemStep;
-	/**
-	 * The rounds of each kind used in this run, shown on the item's page and never capped: fixing after the checks, after
-	 * CI, merging the base, after the second review; `plan` counts planning turns. A run stops when the same failure comes
-	 * back (the stuck detector), when its budget is used, or at the backstop on an item's turns. `review` is absent on runs
-	 * stored before it was counted.
-	 */
+	/** Observed rounds, uncapped. Repeated failures, the budget and the turn backstop stop the run. */
 	rounds: { plan: number; gate: number; ci: number; conflict: number; review?: number };
 }
 
@@ -1884,22 +1265,13 @@ export interface ItemTask {
 	base: string;
 }
 
-/**
- * An item's budget: what stops it and asks its person when used up. `tokens` are cost-weighted
- * (factory/budget.ts `weightedTokens`: cached input counts at `CACHED_INPUT_WEIGHT`); hosted seconds are a
- * limit only where the item's sandbox is hosted.
- */
+/** Token budgets use cost-weighted input. The time limit applies to hosted sandboxes only. */
 export interface ItemBudget {
 	tokens: number;
 	hostedSeconds: number;
 }
 
-/**
- * What an item has spent: its budget's figures, and what is shown beside them. `rawTokens`: every token as
- * the agent reported it, cached input at full count (absent on items stored before it was kept: `tokens`).
- * `turns` and `activeSeconds` bound nothing a person sets: the turns are held to an internal backstop
- * (blueprint.ts `RULES.turnBackstop`), and active time excludes waiting for a machine, capacity, CI or a person.
- */
+/** Raw tokens count cached input at full weight; use tokens when rawTokens is absent. Active time excludes waits. */
 export interface ItemSpend extends ItemBudget {
 	rawTokens?: number;
 	turns: number;
@@ -1924,19 +1296,7 @@ export interface FactoryLimits {
 /** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
 export type QuestionKind = "push_ci" | "feature_update" | "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
 
-/**
- *   approve     the plan is approved: implement it
- *   revise      plan again, with the person's note
- *   raise       "Raise the limit and go on": the round counter that stopped is reset, or the budget raised
- *   retry       "Retry from scratch": a new run
- *   again       try the same thing again (a turn that changed nothing, a refused push, a check the environment could not run)
- *   wait        keep waiting for CI
- *   hand_over   hand the pull request to the person as it is, with its verdict
- *   give_up     the item fails
- *   reply       "Answer the agent" (an `agent_ask` question): the note is the answer, and is needed
- *   fresh_sandbox  a `sandbox_failed` question: the session's sandbox is removed and the step runs in a new one
- *   larger_sandbox an `out_of_memory` question: the same, in a sandbox of the next hosted size
- */
+/** Stored response IDs. Retry starts a new run. Again retries the failed step. */
 export type ChoiceId = "send_back" | "dismiss" | "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base" | "update_feature";
 
 /** Render the reason as quoted plain text, separately from the platform's own notice. */
@@ -1968,17 +1328,9 @@ export interface ItemQuestion {
 	recommended?: ChoiceId;
 	askedAt: number;
 	secret?: SecretRequest;
-	/**
-	 * An `agent_ask` question's own words, as the builder wrote them (`ask_person`): untrusted text, which
-	 * the agent may have been steered to write by what it read. Shown quoted, as the agent's, in plain
-	 * text; never Markdown, never in `text`, never posted anywhere. `options`: answers it suggests.
-	 */
+	/** Untrusted builder text. Quote as plain text, separate from platform wording, and never post externally. */
 	asked?: { text: string; options: string[] };
-	/**
-	 * A `check_environment` question's check: one of the user's that failed because the sandbox could not run it
-	 * (factory/check-environment.ts), with the first line that shows why and the end of what it printed. The
-	 * output is the command's, shown as output, in plain text.
-	 */
+	/** Show the check's diagnostic and output tail as plain command output. */
 	check?: { name: string; command: string; exitCode: number | null; kind: "package_manager" | "network" | "not_found"; line: string; excerpt: string };
 	/** An `out_of_memory` question's next hosted size: what "Go on in a larger sandbox" makes. */
 	largerSize?: HostedSize;
@@ -1994,10 +1346,7 @@ export interface ItemEvent {
 	/** The step it happened in; null outside a run. */
 	step: { run: number; n: number; kind: StepKind; attempt: number } | null;
 	said: string;
-	/**
-	 * On the entry of an `agent_ask` question: the agent's own words (`Question.asked.text`), kept after the
-	 * question is answered. Untrusted, as there: shown quoted, as the agent's, in plain text; never in `said`.
-	 */
+	/** Retained after answering. Keep untrusted agent text separate from the platform's said field. */
 	asked?: string;
 }
 
@@ -2013,13 +1362,7 @@ export interface VerdictRun {
 	url: string;
 }
 
-/**
- * What the work at a pushed commit rests on, for the person to read: made from what the session's
- * gate recorded (`Verified`), the observations on the changes (`VerifiedFlag`) and CI, never from the
- * agent's words. `result`: "fail" a check or CI failed; "incomplete" the turn did not finish;
- * "unverified" nothing verified this state of the work; "pass" otherwise. A pass with flags needs a
- * look; a verdict never merges anything.
- */
+/** Evidence for this pushed head comes from the recorded gate, change flags and CI. A verdict never merges work. */
 export interface Verdict {
 	id: string;
 	item: string;
@@ -2048,29 +1391,18 @@ export interface Verdict {
 	flags: VerifiedFlag[];
 	acceptance: string[];
 	mergeable: boolean | null;
-	/**
-	 * The commit the pull request held when the verdict was made, when it is not `head`: pushed to its branch after the agent's
-	 * work, and verified by nothing. Such a verdict is never a pass; `said.ci` says so.
-	 */
+	/** A different PR head has no verification from this verdict and cannot pass. */
 	moved: string | null;
 	/** CI, and each of `flags` (in the same order), in a sentence as the server words them for the item's log and the pull request. */
 	said: { ci: string; flags: string[] };
 }
 
-// ---------------------------------------------------------------------------------------------
-// Reviews and reports: what an agent writes for the item's page (Plans "reviewer and its page" §2.2).
-// In R1 the builder's report is the only author; the reviewer files ReviewInput from R3 on.
-// ---------------------------------------------------------------------------------------------
+// Reviews and reports
 
 /** What a reviewer recommends. It never changes `Verdict.result`. */
 export type ReviewRecommendation = "approve" | "changes_requested" | "needs_person";
 
-/**
- * Plain text the web app renders itself: paragraphs (blank lines), lines starting "- " as bullets,
- * `code` spans, and fenced code blocks of at most REVIEW_LIMITS.fenceLines lines. Nothing else is
- * interpreted: no links, no images, no HTML, no headings, no emphasis. Saved secrets and control
- * characters are removed before it is stored.
- */
+/** Redacted text with limited formatting: paragraphs, bullets, inline code and bounded fences. Never interpret HTML, links or images. */
 export type ReviewText = string;
 
 /** A place in the repository: a path at the head (or at the base, for removed lines). */
@@ -2083,12 +1415,7 @@ export interface ReviewLocation {
 	lines?: { start: number; end: number };
 }
 
-/**
- * A record of the platform's, by the id the platform gave it: `check/<n>` (Verdict.gate.required[n]),
- * `ci/<n>` (Verdict.ci.runs[n]), `flag/<kind>` (one of Verdict.flags), `command/<id>` (a command the
- * reviewer ran in its turn, by Windlass's "<message>/<call>"; from R3). `says` is the author's claim
- * of it; the page shows the platform's record beside the claim.
- */
+/** The author's claim references a platform record. Render the observed result separately from the claim. */
 export interface ReviewRef {
 	ref: string;
 	says?: "passed" | "failed" | "ran" | "not_run";
@@ -2144,12 +1471,7 @@ export interface ItemAttachment {
 	state: "kept" | "removed";
 }
 
-/**
- * What the agent that made the change filed with `report`, as the item's page shows it: its own words,
- * labelled as the author's. Turned into blocks by the platform (review.ts `reportBlocks`): a `text`
- * block "What it did" (the description), a `text` block "Where to look" (`look_at`), and a `risk` for
- * what it is unsure of, followed by a `screenshot` block for each verified image.
- */
+/** Builder-authored report, presented separately from platform evidence. */
 export interface ItemReport {
 	screenshots: ItemAttachment[];
 	by: "builder";
@@ -2162,7 +1484,7 @@ export interface ItemReport {
 	at: number;
 	title: string;
 	blocks: ReviewBlock[];
-	/** Referenced platform records at filing time. Builder blocks have no references in R1. */
+	/** Referenced platform records at filing time. */
 	records: ReviewRecord[];
 }
 
@@ -2226,18 +1548,9 @@ export interface ItemAgent {
 	model: string;
 	/** The effort its turns run at (`CreateItemInput.effort`); null or absent: the agent's default. */
 	effort?: string | null;
-	/**
-	 * How the machine's agent was signed in when the item was filed, where that decides whether its tokens
-	 * count against the item budget. Its turns run only while the machine reports the same. Absent elsewhere.
-	 */
+	/** The machine must still report this sign-in method to run. The filing-time method determines accounting. */
 	signIn?: "api-key" | "chatgpt" | "subscription";
-	/**
-	 * How the item's tokens are known.
-	 * - "counted": reported, and counted against `budget.tokens` (Windlass; an agent on an API key).
-	 * - "subscription": reported and shown, never counted: the agent's sign-in is a subscription, not billed
-	 *   by token, so the item's turns and active time bound it.
-	 * - "not_reported": the agent has reported none (yet): `spent.tokens` is not a measurement.
-	 */
+	/** Subscription tokens are shown but do not count toward the budget. Unreported tokens are unknown. */
 	tokens: "counted" | "subscription" | "not_reported";
 	/** Every token the agent reported over the item's turns, counted or not. */
 	reportedTokens: number;
@@ -2250,22 +1563,14 @@ export interface ItemAgent {
 /** How a work item was filed. "github" and "linear" are the two intakes that file from an issue (factory/intake.ts). */
 export type ItemSource = "web" | "api" | "github" | "linear";
 
-/**
- * A work item filed from a GitHub issue. `issue.number` is the issue's own number in `ItemSummary.repository`;
- * the item's pull request closes it. `sender` is the GitHub login that added the label or wrote the command.
- */
+/** The PR closes this issue in the item's repository. The sender added the label or wrote the command. */
 export interface GithubIssueOrigin {
 	issue: { number: number; url: string; author: string; trusted: boolean };
 	sender: string;
 	linear?: undefined;
 }
 
-/**
- * A work item filed from a Linear issue. Linear has no GitHub issue number: nothing here is polled, commented on or closed
- * (the integration is one-way). `identifier` is the issue's own ("ENG-12"), `url` its page, `author` the creator's name and
- * `sender` the name of the person who labelled or assigned it. `trusted` is true when the creator is the Linear user who
- * connected the workspace: otherwise the item is a draft and its text is third-party text.
- */
+/** Linear provenance is separate from the GitHub PR binding. The event sender and issue author may differ. */
 export interface LinearIssueOrigin {
 	linear: { id: string; identifier: string; url: string; author: string; trusted: boolean };
 	sender: string;
@@ -2386,10 +1691,7 @@ export interface ItemView extends ItemSummary {
 	verifiedCheck: { sha: string; state: "in_progress" | "completed" | "not_posted"; conclusion: CheckConclusion | null; said: string } | null;
 	canRetry?: boolean;
 	plan?: FeaturePlan | null;
-	/**
-	 * With a plan: the keys of its subtasks still to run whose agent works without asking, as approval counts
-	 * them (`unattendedKeys`, past the integrated subtasks); approving needs the person's confirmation of each.
-	 */
+	/** Remaining unattended subtask keys that each require confirmation at approval. */
 	unattended?: string[];
 	/** With a plan: the keys of its subtasks whose work is integrated, which approval neither places nor confirms again. */
 	completedSubtasks?: string[];
@@ -2473,11 +1775,7 @@ export interface PlanSubtask {
 	budget: SubtaskBudget;
 }
 
-/**
- * One repository of a cross-repo feature in its merge order: which repositories must merge before it
- * (merge prerequisites, separate from the subtasks' build dependencies), what keeps working between the
- * merges, what shows it, and what to do if a later merge does not happen.
- */
+/** Repository merge prerequisites are separate from subtask build dependencies. */
 export interface MergeStep {
 	repo: string;
 	prerequisite: string[];
@@ -2494,11 +1792,7 @@ export interface EarlyCheck {
 	command: string;
 }
 
-/**
- * The combined run a cross-repo feature needs before it is handed over: every repository at its
- * integrated head, tested together (docs/factory, "Cross-repo features"). `runFrom` is the alias of the
- * repository whose workflow runs it; `command` runs there, with every input checked out beside it.
- */
+/** Cross-repo verification uses each integrated head. Run the command from the named repository beside its checked-out inputs. */
 export interface FinalIntegration {
 	runFrom: string;
 	command: string;
@@ -2519,10 +1813,7 @@ export interface FeaturePlanEdit {
 	earlyChecks?: EarlyCheck[];
 	finalIntegration?: FinalIntegration;
 	overflow?: boolean;
-	/**
-	 * The plan's questions to the owner: `text` one short sentence, `options` short answers to choose from,
-	 * `why` the background in a few sentences (shown folded under the question). Older plans have no `why`.
-	 */
+	/** Optional why supplies background shown separately from the question. */
 	questions: { id: string; text: string; options?: string[]; why?: string; answer?: string }[];
 	spec: { goal: string; requirements: string[]; outOfScope: string[]; acceptance: string[] };
 	subtasks: PlanSubtask[];
@@ -2588,10 +1879,7 @@ export interface CreateItemInput {
 	/** Resolve the saved placement again at filing. An explicit place overrides this. */
 	useDefaultPlace?: boolean;
 	mode?: ItemMode;
-	/**
-	 * Plan first only, and only where the deployment allows cross-repo features (WLP_FACTORY_CROSS_REPO=1):
-	 * the feature's repositories, one or two, the first being `repository`. Left out: the one repository.
-	 */
+	/** Cross-repo plans list one or two repositories, starting with repository. Omission uses that repository alone. */
 	repositories?: FeatureRepoInput[];
 	/** A repository of the user's GitHub connection, by GitHub's id for it, and the base branch (default: the repository's default branch). */
 	repository: { id: GithubId; branch?: string };
@@ -2632,12 +1920,7 @@ export type ItemAction =
 	| { kind: "update_feature" }
 	| { kind: "cancel_subtask"; key: string }
 	| { kind: "edit_plan"; version: number; plan: FeaturePlanEdit }
-	/**
-	 * `agents`: the keys of the subtasks still to run whose agent works without asking (`SubtaskAgent`), each
-	 * one confirmed by the person. Approval is refused (`bad_input`) unless it lists every one of them.
-	 * `bases`: a cross-repo feature's repositories whose base moved since the planner read it, by alias, each
-	 * with the new commit the person reconfirms the plan on; approval names the move and is refused without it.
-	 */
+	/** Approval requires every remaining unattended subtask key. Cross-repo base changes require confirmation at the current heads. */
 	| { kind: "approve_plan"; version: number; agents?: string[]; bases?: Record<string, string> }
 	| { kind: "run_single" }
 	/** After approval: the agent a subtask that has not started runs; null runs Windlass on the feature's model. */
@@ -2657,11 +1940,7 @@ export type ItemAction =
 /** What an API token may do. */
 export type ApiTokenScope = "items:create" | "items:read";
 
-/**
- * A token for the platform's HTTP API (`POST /api/items`, `GET /api/items/<id>`), sent as
- * `Authorization: Bearer wlp_…`. Its value is shown once, when it is made; the platform keeps only a
- * digest of it. It works until it is revoked.
- */
+/** The bearer value is shown once. Only its digest is retained until revocation. */
 export interface ApiToken {
 	id: string;
 	name: string;
@@ -2675,10 +1954,7 @@ export interface UserActions {
 	signOutEverywhere(options?: { revokeApiTokens: boolean }): Promise<void>;
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
-	/**
-	 * The models the user may choose and the efforts of each. Never throws for a list that cannot be
-	 * read: the answer is then the last one that was, or the stand-in, and `source` says which.
-	 */
+	/** On fetch failure return cached or fallback choices and identify their source. */
 	models(): Promise<ModelList>;
 	/** The user's GitHub connection. Throws a UserError with code `github_off` when the deployment has no GitHub App. */
 	github(): Promise<GithubStatus>;
@@ -2691,10 +1967,7 @@ export interface UserActions {
 	 * app only when it is installed nowhere they can reach.
 	 */
 	githubConnect(input: { origin: string; install?: boolean }): Promise<{ url: string }>;
-	/**
-	 * Finishes connecting with the ticket the browser came back with. A ticket is good for a few minutes,
-	 * once, and for the user it was made for: another user's is refused (code `github_ticket`).
-	 */
+	/** Short-lived, single-use ticket bound to the user who started the connection. */
 	githubComplete(ticket: string): Promise<GithubStatus>;
 	/** Forgets the connection. Sessions launched on its repositories stay, and can no longer push. */
 	githubDisconnect(): Promise<GithubStatus>;
@@ -2716,10 +1989,7 @@ export interface UserActions {
 	removeLinearMapping(teamId: string): Promise<LinearTeamList>;
 	/** Forgets the Linear connection and every mapping; nothing is filed from Linear after it. Items already filed stay. */
 	disconnectLinear(): Promise<LinearStatus>;
-	/**
-	 * Repositories of the connection whose `owner/name` contains `query`, the most recently pushed first.
-	 * With `fresh`, GitHub is asked anew: for a repository that was added to an installation a moment ago.
-	 */
+	/** Search owner/name, newest push first. Use fresh after changing an installation's repository access. */
 	githubRepositories(query: string, fresh?: boolean): Promise<GithubRepositoryList>;
 	githubBranches(repositoryId: GithubId): Promise<GithubBranchList>;
 	/** The setup command the user saved for a repository, by GitHub's id for it. Asks GitHub nothing. */
@@ -2752,16 +2022,9 @@ export interface UserActions {
 	saveRepositoryNetwork(input: { repositoryId: GithubId; entries: string[] }): Promise<RepositoryNetwork>;
 	/** Takes a request off the repository's list without allowing it. */
 	dismissNetworkRequest(input: { repositoryId: GithubId; host: string }): Promise<RepositoryNetwork>;
-	/**
-	 * Reads the repository's manifests, lockfiles, install scripts and CI files at its default branch,
-	 * and the saved setup command, and answers with the hosts and presets they name that its sandboxes
-	 * cannot reach yet. A fixed reading: no agent, no command. Nothing is saved. Throws as `githubRepository` does.
-	 */
+	/** Static scan of the default branch and the saved setup command. It executes nothing and persists nothing. */
 	scanRepositoryNetwork(repositoryId: GithubId): Promise<NetworkScan>;
-	/**
-	 * The names, scopes and times of the secrets the user saved for a repository, and what each reaches
-	 * in a sandbox of `profile`. Saved values stay on the server.
-	 */
+	/** Return metadata and profile-dependent reach. Secret values stay on the server. */
 	repositorySecrets(input: { repositoryId: GithubId; profile: SandboxProfileId }): Promise<RepositorySecrets>;
 	/**
 	 * Saves a secret of a repository. With `value`: a new secret, or a new value for the one of that
@@ -2773,11 +2036,7 @@ export interface UserActions {
 	saveRepositorySecret(input: { repositoryId: GithubId; profile: SandboxProfileId; name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
 	/** Deletes a secret of a repository. A sandbox whose setup command already had it keeps what that command made of it. */
 	deleteRepositorySecret(input: { repositoryId: GithubId; profile: SandboxProfileId; name: string }): Promise<RepositorySecrets>;
-	/**
-	 * What is kept for a repository, by GitHub's id for it: the defaults for new sessions and the
-	 * remembered approvals of its MCP servers. Asks GitHub nothing, and answers for a repository the
-	 * user can no longer reach, too: what was saved stays until its user deletes it.
-	 */
+	/** Local settings survive loss of GitHub access. */
 	repository(repositoryId: GithubId): Promise<RepositoryView>;
 	/**
 	 * The repository as GitHub has it now, when the user's connection covers it and the connected user
@@ -2786,30 +2045,17 @@ export interface UserActions {
 	 * for new sessions, `github_unreachable` or `github_failed` when GitHub could not be asked.
 	 */
 	githubRepository(repositoryId: GithubId): Promise<GithubRepository>;
-	/**
-	 * Saves what new sessions on a repository start with. A field that is left out stays as it is;
-	 * null saves none for it. Throws a UserError with code `bad_input` for a sandbox this deployment
-	 * does not offer or cannot run, and `bad_model` for a model that is not among the user's.
-	 */
+	/** Omitted fields keep their values. Explicit null clears a default. */
 	saveRepositoryDefaults(input: ItemPlaceDefaults & RepositoryAutonomy & { repositoryId: GithubId; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
-	/**
-	 * Forgets the user's remembered approvals of that MCP server for a repository, whatever its
-	 * definition was (`RepositoryView.forgetting` says what stays). Resolves when nothing was remembered, too.
-	 */
+	/** Forget all remembered definitions by name. Repeated calls succeed. */
 	forgetRepositoryApproval(input: { repositoryId: GithubId; name: string }): Promise<RepositoryView>;
-	/**
-	 * Deletes everything kept for a repository: its setup command, its checks, its secrets, its defaults
-	 * and the remembered approvals. The user's sessions on it stay, and their next sandbox is made without them.
-	 */
+	/** Drop the repository's saved configuration, secrets and approvals. Existing sessions survive. */
 	forgetRepository(repositoryId: GithubId): Promise<RepositoryView>;
 	/** The repositories something is kept for, by name. Asks GitHub nothing. */
 	savedRepositories(): Promise<SavedRepository[]>;
 	/** The account's settings: the defaults for new sessions and the user's own MCP servers. No secret's value. */
 	account(): Promise<AccountSettings>;
-	/**
-	 * Saves what new sessions start with where neither the launch form nor the repository says. A field
-	 * that is left out stays as it is; null saves none for it. Throws as `saveRepositoryDefaults` does.
-	 */
+	/** Omission preserves a field and null clears it. Repository overrides still take precedence. */
 	saveAccountDefaults(input: ItemPlaceDefaults & { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
 	/** Forgets where the newest agent was started (`AccountSettings.lastStart`): the next agent starts on the platform's defaults. The next agent started is remembered again. */
 	forgetLastStart(): Promise<AccountSettings>;
@@ -2842,42 +2088,23 @@ export interface UserActions {
 	listSessions(): Promise<SessionSummary[]>;
 	createSession(input: CreateSessionInput): Promise<SessionSummary>;
 	renameSession(id: string, title: string): Promise<SessionSummary>;
-	/**
-	 * Destroys the session's actor and its sandbox. Refused with `machine_unreachable`, the session still
-	 * listed, when its sandbox is on one of the user's machines and that machine's removal of it could not
-	 * be recorded: deleting again retries.
-	 */
+	/** On machine_unreachable the session stays listed so deletion can be retried. */
 	deleteSession(id: string): Promise<void>;
 	/** Today's sandbox time and the count of kept sandboxes, as the user's actor has them. Asks no provider. */
 	allowance(): Promise<UsageNumbers>;
-	/**
-	 * The usage page: today's sandbox time against the allowance, by agent, the kept sandboxes, the last
-	 * two weeks and what a second is estimated to cost. The count of kept sandboxes is first held
-	 * against the provider's own list of the user's sandboxes, so what is shown is what exists.
-	 */
+	/** Reconcile kept sandboxes against the provider inventory before returning usage. */
 	usage(): Promise<UsageView>;
 	/** The account's plan, its subscription and this month's hosted minutes; `{ enabled: false }` where the deployment has no billing. */
 	billing(): Promise<BillingView>;
-	/**
-	 * A checkout for Pro at the provider: the address to send the browser to. `origin` is the web app's own (WLP_ORIGINS);
-	 * the provider sends the browser back to its Settings. Throws `billing_off`, `already_subscribed` or `origin_not_allowed`.
-	 */
+	/** The checkout return origin must belong to the web app. */
 	billingCheckout(input: { period: BillingPeriod; origin: string }): Promise<{ url: string }>;
 	/** The provider's customer portal, to change the card or cancel. Throws `billing_off` or `no_customer`. */
 	billingPortal(input: { origin: string }): Promise<{ url: string }>;
 	/** Sets the overage spend cap, US cents from 0 to `maxCapCents`: the server stops hosted sandboxes at it. Throws `bad_input` or `billing_off`. */
 	setOverageCap(input: { cents: number }): Promise<BillingView>;
-	/**
-	 * Removes the sandbox of one of the user's agents, to make room for another: the files in its
-	 * workspace go with it, and the agent and its conversation stay (`UsageView.memory` says what
-	 * becomes of the agent's own memory). The agent's next prompt starts a new sandbox. Throws a
-	 * UserError with code `sandbox_busy` while the agent works. Answers with the page as it is then.
-	 */
+	/** Refuse while busy. Freeing discards the workspace but preserves the session and its conversation. */
 	freeSandbox(sessionId: string): Promise<UsageView>;
-	/**
-	 * The user's machines, the first paired first. The machine actions throw a UserError with code
-	 * `machines_off` when the deployment has no machines (`PlatformInfo.machines`).
-	 */
+	/** Pairing order. Machine actions refuse with machines_off when disabled. */
 	machines(): Promise<MachineSummary[]>;
 	machineCatalog(input: { machineId: string; id: "claude" | "opencode" | "codex"; digest: string }): Promise<HarnessOptions | null>;
 	/**
@@ -2907,13 +2134,7 @@ export interface UserActions {
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
 	setMachineDetails(input: { machineId: string } & MachineDetails): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
-	/**
-	 * The user's work items, the newest first: every one of them, for API clients and scripts (the web
-	 * app reads `itemFeed`). With `page`, at most `page.limit` of them after
-	 * `page.before`, kept to ended ones, one repository or one way of filing where it says so
-	 * (`ItemListPage`); a page shorter than its limit is the last. Throws a UserError with code
-	 * `bad_input` for a page that is not one.
-	 */
+	/** Unpaged calls return every item, newest first. A short page is the last one. */
 	listItems(page?: ItemListPage): Promise<ItemSummary[]>;
 	/** What the live feed carries (`ItemFeed`): every open item, the newest filed ended ones, and the counts. The web app reads this, not the whole list. */
 	itemFeed(): Promise<ItemFeed>;
@@ -2950,9 +2171,7 @@ export interface UserEvents {
 	items: ItemFeed;
 }
 
-// ---------------------------------------------------------------------------------------------
 // agentSession actor
-// ---------------------------------------------------------------------------------------------
 
 /**
  * One of Windlass's own events, passed through untouched: the same JSON `windlass --json` prints. Durable events carry `v`, `data`, `seq`
@@ -3030,10 +2249,7 @@ export function generatedSessionTitle(update: AcpUpdate, owner: { typed?: boolea
 	return safe.match(/^.{1,200}/u)?.[0].trimEnd();
 }
 
-/**
- * An entry of a session's timeline. `seq` is the platform's own numbering, dense and increasing
- * within a session, and has nothing to do with a Windlass event's `seq`.
- */
+/** Session sequence numbers are dense and independent of Windlass event sequence numbers. */
 export type NetworkBlockedItem = { seq: number; at: number; turn: number; kind: "network.blocked"; revision: number } & BlockedNetwork;
 
 export interface ModelKeySpend { provider: ModelProvider; generation: string; tokens: number }
@@ -3049,10 +2265,7 @@ export type TimelineItem =
 			text: string;
 			model: string;
 			effort: string | null;
-			/**
-			 * True for a message sent while the turn was already running: it does not start a turn, the
-			 * model reads it at its next step. Absent or false for the prompt that started the turn.
-			 */
+			/** A steering message joins the running turn at its next step. */
 			steer?: boolean;
 			/** Sources of quoted GitHub feedback, also used when rebuilding the prompt after a pause. */
 			untrusted?: string[];
@@ -3092,12 +2305,7 @@ export type TimelineItem =
 	/** A durable Windlass event, or one of the stored ephemeral ones (`notice`, `workspace.changes`, `cli.summary`). */
 	| { seq: number; at: number; turn: number; kind: "windlass"; event: WindlassEvent; modelKey?: ModelKeySpend }
 	| { seq: number; at: number; turn: number; kind: "acp"; update: AcpUpdate; messageKey?: string; truncated?: boolean }
-	/**
-	 * A run of the repository's setup command (`RepositorySetup`) in the session's new sandbox. Two items
-	 * with one `id`: the first when it starts (`state: "started"`), the second when it has ended. What it
-	 * prints in between is not stored: it arrives as `setup.output` deltas (`LiveDelta`), and the ending
-	 * item carries the end of it. A run with no ending item was cut off with its server.
-	 */
+	/** Setup emits start and finish items with the same ID. Intervening output streams live; only the ending tail persists. */
 	| {
 			seq: number;
 			at: number;
@@ -3145,12 +2353,7 @@ export type TimelineItem =
 			sessionId?: string;
 	  };
 
-/**
- * Streaming output that is broadcast but never stored: `text.delta`, `reasoning.delta`, `tool.input.delta`,
- * `tool.progress`. And one event of the platform's own, in the same shape: `{ type: "setup.output", id, text }`,
- * what a run of the repository's setup command printed since the delta before it (`id` is the run's,
- * as on its `setup` items; `text` is to be appended, and a reader keeps the end of it).
- */
+/** Streaming deltas, including setup.output, are broadcast and never stored. */
 export interface WindlassDelta { turn: number; event: WindlassEvent }
 
 export type LiveDelta =
@@ -3243,11 +2446,7 @@ export interface QuestionServer {
 	remote: boolean;
 	/** The variables its definition reads that are not set in the sandbox: with any, it does not start, approved or not. */
 	unset: string[];
-	/**
-	 * True when the turn's prompt waits for the answer (the session is `waiting`): the question was put
-	 * before Windlass got the prompt. False when Windlass reported the server while the turn was already
-	 * running: the turn goes on, and the question goes when the turn ends.
-	 */
+	/** A pre-prompt approval holds the turn. A request discovered mid-turn expires when that turn ends. */
 	holdsTurn: boolean;
 }
 
@@ -3263,16 +2462,10 @@ export type SessionServerState =
 	| "failed"
 	| "stopped";
 
-/**
- * An MCP server of a session, as the session last heard of it from Windlass: one the configuration of
- * its project names, or one of its user's own (`PersonalServer`).
- */
+/** Last server status Windlass reported in the session. */
 export interface SessionServer {
 	name: string;
-	/**
-	 * "user": one of the user's own, from the account's settings: Windlass starts it without asking, so
-	 * it never waits and has no approval. Absent or "project": the project's configuration names it.
-	 */
+	/** User-owned servers start without project approval. Absent origin means project. */
 	origin?: "project" | "user";
 	/** What approving starts, as a question shows it: the command with its arguments, or the address it is reached at. */
 	subject: string;
@@ -3285,21 +2478,13 @@ export interface SessionServer {
 	tools: number | null;
 	/** Why it could not start, in Windlass's own words. */
 	reason: string | null;
-	/**
-	 * Windlass's mark for the definition the session last saw wait for approval, which is what
-	 * `approveServer` takes. Null when the session never saw the server wait: Windlass started it from a
-	 * record of its own.
-	 */
+	/** Null until the session sees a definition wait for approval. Approval must match its fingerprint. */
 	fingerprint: string | null;
 	/** When the session last heard something new of it, ms since the epoch. */
 	at: number;
 	/** The user's remembered approval of this definition for the session's project: when they approved, and until when it holds. */
 	approval: { approvedAt: number; expiresAt: number } | null;
-	/**
-	 * Set when `approval` is null and the user's newest remembered approval of a server of this name for
-	 * the project is of another definition: the definition changed since they approved, which is why it
-	 * is asked about again. `forgetServer` forgets that one too.
-	 */
+	/** A prior approval for a different fingerprint cannot authorize the changed definition. */
 	earlier?: { approvedAt: number; expiresAt: number } | null;
 	/**
 	 * Set for a server that waits and has no remembered approval: the question about it as the panel
@@ -3438,11 +2623,7 @@ export interface AgentSessionActions {
 	 * it on in a profile whose commands are not held in Windlass's sandbox, with the sentence that says why.
 	 */
 	setPublishUnasked(input: { unasked: boolean }): Promise<SessionSummary>;
-	/**
-	 * The MCP servers the session's project names, each as the session last heard of it, with the
-	 * user's remembered approval where there is one. Never starts a sandbox: it reads what the session
-	 * kept and asks the user's own record.
-	 */
+	/** Reads retained session state and remembered approvals without starting a sandbox. */
 	servers(): Promise<SessionServers>;
 	/**
 	 * Approves a server that waits, by the fingerprint `servers()` gave for it, and remembers that for
@@ -3486,23 +2667,15 @@ export interface AgentSessionEvents {
 	machine: NonNullable<SessionSnapshot["machine"]>;
 }
 
-// ---------------------------------------------------------------------------------------------
 // Constants
-// ---------------------------------------------------------------------------------------------
 
 /** Where the server's Rivet endpoint listens in development. */
 export const DEFAULT_ENDPOINT = "http://localhost:6420";
-/**
- * Where the server's own HTTP routes listen in development. Every server serves them; with several
- * servers the web app is pointed at whatever spreads requests over them.
- */
+/** Origin for the server's own routes in development. */
 export const DEFAULT_PLATFORM_URL = "http://localhost:6440";
 /** `GET` on the platform's HTTP address: this deployment's `PlatformInfo`, as JSON. */
 export const PLATFORM_INFO_PATH = "/platform/info";
-/**
- * `GET` on the same address: this deployment's `PlatformConnection`, as JSON. Asked when the web app
- * starts and again whenever its token runs out.
- */
+/** Fetch at startup and again when the browser connection token expires. */
 export const PLATFORM_CONNECTION_PATH = "/platform/connection";
 
 export const MAX_PROMPT_CHARS = 20_000;
@@ -3547,11 +2720,7 @@ export const MAX_SERVER_DEFINITION_BYTES = 8_192;
 export const MAX_SERVER_NAME_CHARS = 64;
 /** How many secrets one account may keep for its MCP servers. */
 export const MAX_ACCOUNT_SECRETS = 50;
-/**
- * How long a question in a running interactive turn waits for an answer before the platform declines it: the
- * turn holds its sandbox meanwhile, and turns are 45 minutes at most. A work item never asks this way: its
- * questions end the turn and wait for days if need be.
- */
+/** Interactive prompts hold a sandbox while waiting. Work-item questions close the turn and can wait longer. */
 export const QUESTION_TIMEOUT_MS = 10 * 60 * 1000;
 /** How many machines a user may have paired at once. */
 export const MAX_MACHINES = 3;
