@@ -1,15 +1,3 @@
-/**
- * The types the factory's pure modules share (Plans "software factory"): the work item as its actor
- * stores it, the facts that reach it, the effects it asks for, the verdict, budgets and limits.
- *
- *   blueprint.ts   the step machine: (item, fact) → (item, effects, events)
- *   verdict.ts     the verdict of §8, from what the session verified, the flags and CI
- *   budget.ts      an item's budget (§4.3) and whether a turn may start where it runs (§4.2)
- *   github/ci.ts   what GitHub says of a commit's CI
- *
- * None of them reads a clock, stores anything or talks to anything: every time comes in on a fact.
- */
-
 import type { ProviderRefusal } from "../provider-refusal.js";
 import type { PlacementRoute, PlacementInventory } from "./placement.js";
 import type { CheckConclusion, ChildPlacement, FeatureRepository, IntegrationView, ReviewRecommendation } from "../contract.js";
@@ -19,19 +7,12 @@ import type { ChoiceId, HostedSize, ItemBudget, ItemSpend, ItemEvent, ItemQuesti
 import type { PersonDecision, ReviewerTaskInput } from "./reviewer-task.js";
 import type { RerunnableJob, CiReading, CiState } from "../github/ci.js";
 
-// What the web sees of these is in the contract; they are named here as the factory's modules use them.
 export type { ChoiceId, FactoryLimits, ItemBudget, ItemSpend, ItemEvent, ItemState, QuestionKind, StepKind, Verdict, VerdictRun, Wait, WaitReason, Waiting } from "../contract.js";
-
-// ---------------------------------------------------------------------------------------------
-// The item
-// ---------------------------------------------------------------------------------------------
 
 export type TurnStepKind = "summary" | "refine" | "implement" | "ci_fix" | "run_checks" | "conflict" | "review" | "review_fix";
 
-/** A step as the contract has it (`ItemStep`): a turn step's next delivery, a publish's retry and every poll of a wait step is a new attempt, so a fact about an earlier one is recognised by its key and ignored. */
 export type Step = ItemStep;
 
-/** What the gate read from the turn that ended last (§2.1 step 2). */
 export interface GateEvidence {
 	/** The turn explicitly verified an existing commit and needs its own local evidence. */
 	forcedChecks?: true;
@@ -40,7 +21,6 @@ export interface GateEvidence {
 	flags: VerifiedFlag[];
 }
 
-/** CI of the head that was pushed last. */
 export interface CiProgress {
 	autoMergeKey?: string;
 	/** Base branch tip observed when this part was offered a CI update. */
@@ -56,15 +36,9 @@ export interface CiProgress {
 	/** Evidence from the latest poll, cleared when a fresh reading is unavailable or still due. */
 	last: { state: Exclude<CiState, "retry">; runs: VerdictRun[]; said: string | null } | null;
 	mergeable: boolean | null;
-	/**
-	 * What the gate recorded of the work at `head`, kept from when it was pushed: a later turn that
-	 * pushed nothing (a fix whose checks failed again) is not evidence for this commit.
-	 */
+	/** Evidence belongs to the pushed head, even if later unpublished work changes the gate. */
 	gate: (GateEvidence & { turn?: string }) | null;
-	/**
-	 * The commit the pull request's branch was at when GitHub was last asked, when that is not `head`: pushed there by someone
-	 * other than the agent, and verified by nothing. Null while the pull request holds `head`, or GitHub did not say.
-	 */
+	/** A foreign head has no verdict from the agent. Null until GitHub reports a different head. */
 	moved: string | null;
 	reviewPush?: { head: string; failure?: string; asked?: true };
 	/** The id of the verdict handed over for `head`, made again when the pull request moves after it. */
@@ -73,7 +47,6 @@ export interface CiProgress {
 	secondReview: HandoffReview | null;
 }
 
-/** One attempt of the blueprint (§1.2 `runs`): what the contract shows (`ItemRun`), and what the gate and CI read. */
 export interface Run extends ItemRun {
 	/** The PR summaries were published in this run. A retry can inherit a passing integration on the same heads. */
 	confirmFeatureCi?: true;
@@ -85,10 +58,7 @@ export interface Run extends ItemRun {
 	autoCheck?: { turn: string; head: string };
 	/** The fingerprint of the last failure a fix turn was started for. */
 	lastFailure: string | null;
-	/**
-	 * Every failure a fix turn was started for in this run, by fingerprint (the stuck detector, blueprint.ts
-	 * `nextTurn`): the same one again stops the run and asks. Absent on runs stored before: `lastFailure` only.
-	 */
+	/** Older runs keep only lastFailure. */
 	failures?: string[];
 	/** Set while the workspace is pushed for "Hand it over as it is" (blueprint.ts `answer`): it is handed over once pushed. */
 	handOver?: true;
@@ -118,10 +88,7 @@ export interface EarlierFinding {
 	notFixed?: string | null;
 }
 
-/**
- * The second review of the run's pushed head (R4). Fields after `prReads` are absent on rows stored before
- * reviews could send the builder back: read them as round 1, with nothing earlier.
- */
+/** Older reviews default to round one with no earlier findings. */
 export interface RunReview {
 	verdictId: string;
 	head: string;
@@ -143,15 +110,9 @@ export interface RunReview {
 	before?: { id: string } & CheckReview;
 }
 
-/** The work as the item was given it (`ItemTask`). */
 export type Task = ItemTask & { featureBody?: string };
 
-/**
- * A repository of a cross-repo feature as its item keeps it (`FeatureRepoView` on its page): bound at
- * filing, then its seed, its feature branch's draft PR, the head the platform last fast-forwarded it to,
- * and what GitHub said of the PR when it was last read. The primary's seed, PR and head are also the
- * item's own (`seed`, `pr`, `head`).
- */
+/** The primary repository mirrors the item’s seed, pull request and head. */
 export interface FeatureRepoState extends FeatureRepository {
 	featureCi?: FeatureCi;
 	seed?: string;
@@ -348,15 +309,7 @@ export interface FactoryItem {
 	question: Question | null;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Questions (§9)
-// ---------------------------------------------------------------------------------------------
-
-/**
- * What stopped a run (§2.4), for a "rounds" or "budget" question: what "raise" lifts. "repeated": the same
- * failure twice (the stuck detector); "turns": the backstop on an item's turns; "interruptions": a step cut
- * off again and again by deploys or restarts. The others of older stored questions are answered as "repeated".
- */
+/** Stored round-cap causes resume like a repeated failure. */
 export type StopCause = "repeated" | "turns" | "interruptions" | "plan" | "gate" | "ci" | "conflict" | "review" | "sandboxes" | keyof ItemBudget;
 
 /** A question as the contract shows it (`ItemQuestion`), and what answering it goes on with. */
@@ -373,7 +326,6 @@ export type ReviewerInput = Pick<ReviewerTaskInput, "round" | "task" | "pr" | "h
 export type CheckReview = { recommendation: ReviewRecommendation; blocking: number };
 export type HandoffReview = { review: string; reviewNone: null; assessment?: CheckReview } | { review: null; reviewNone: string };
 
-/** A turn the blueprint is about to deliver. */
 export interface TurnPlan {
 	/** Include this continuation’s instructions when the agent needs the whole task again. */
 	includeInFresh?: boolean;
@@ -399,10 +351,6 @@ export interface TurnPlan {
 	 */
 	untrusted?: string[];
 }
-
-// ---------------------------------------------------------------------------------------------
-// Facts and effects
-// ---------------------------------------------------------------------------------------------
 
 /** The owner's explicit retry replays this delivery, including a conflict step's base fetch. */
 export interface ItemProviderRefusal extends ProviderRefusal {
@@ -453,14 +401,10 @@ export type Fact =
 	| { kind: "default_place_wait"; at: number; sentence: string }
 	| ({ kind: "github_feedback"; at: number } & FeedbackInput)
 	| { kind: "reverify"; at: number; head: string }
-	/** `repo`: a cross-repo feature's repository, by alias; absent: the one repository. */
-	| { kind: "feature_seed"; at: number; key: string; sha: string; repo?: string }
-	| { kind: "feature_ready"; waitForCiOnEachPart?: boolean; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]>; repo?: string }
 	/** A cross-repo feature's combined run was asked of GitHub (`runId` once GitHub named it). */
 	| { kind: "integration_started"; at: number; key: string; attempt: number; runId: string | null; url: string | null }
 	/** What the combined run came to, or that it could not be started or read (`unavailable`). `seconds`: how long it ran. */
 	| { kind: "integration_read"; at: number; key: string; attempt: number; state: "queued" | "running" | "passed" | "failed" | "cancelled" | "timed_out" | "unavailable"; url: string | null; said: string | null; seconds?: number }
-	/** A cross-repo feature's pull request in `repo`, as GitHub said it: whether it merged, into which commit. */
 	/** A cross-repo feature's pull request in `repo` cannot be read any more: the App lost access, or the repository or PR is gone. */
 	| { kind: "repo_pr_lost"; at: number; key: string; repo: string; said: string }
 	| { kind: "repo_pr_read"; at: number; key: string; repo: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; mergedCommit: string | null; /** `merged_at` (ms), null when GitHub did not say. */ mergedAt?: number | null }
@@ -471,11 +415,6 @@ export type Fact =
 	| { kind: "claim_join"; at: number; child: string; key: string }
 	| { kind: "finish_join"; at: number; child: string; result: JoinResult }
 	| { kind: "child_notice"; integratedHead?: string; at: number; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget }
-	| { kind: "place_child"; child?: string; at: number; key: string; inventory: PlacementInventory }
-	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
-	| { kind: "child_update"; startedAt?: number; wait?: string; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget; report: string; head: string | null }
-	| { kind: "integrated"; head?: string; at: number; key: string }
-	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean; missingTarget?: boolean }
 	| { kind: "file_plan"; at: number; key: string; plan: unknown }
 	| { kind: "edit_plan"; at: number; by: string; version: number; plan: unknown }
 	/** `agents`: the subtasks whose agent works without asking that the person confirmed (`ItemAction`). */
@@ -485,7 +424,6 @@ export type Fact =
 	| { kind: "start"; at: number; by: Cause }
 	| { kind: "machine_removed"; at: number }
 	| { kind: "cancel"; at: number; by: Cause }
-	/** A failed item, again (§1.3 "person retry"). */
 	| { kind: "retry"; at: number; by: Cause }
 	/** "Send back" with a note, from review. */
 	| { kind: "send_back"; at: number; by: Cause; note: string }
@@ -494,7 +432,21 @@ export type Fact =
 	| { kind: "claim_secret"; at: number; by: Cause; question: string; name: string }
 	| { kind: "settle_secret"; at: number; by: Cause; question: string; error: string | null }
 	| { kind: "answer"; target?: string; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] }
-	/** The turn of `key` cannot start yet (`admit`). Sent again when the reason or its numbers change. */
+	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
+	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
+	| { kind: "spent"; at: number; hostedSeconds: number }
+	| StepFact;
+
+/** Receipts dispatched against the active step or its own poll or child key. */
+export type StepFact =
+	/** `repo`: a cross-repo feature's repository, by alias; absent: the one repository. */
+	| { kind: "feature_seed"; at: number; key: string; sha: string; repo?: string }
+	| { kind: "feature_ready"; waitForCiOnEachPart?: boolean; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]>; repo?: string }
+	| { kind: "place_child"; child?: string; at: number; key: string; inventory: PlacementInventory }
+	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
+	| { kind: "child_update"; startedAt?: number; wait?: string; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget; report: string; head: string | null }
+	| { kind: "integrated"; head?: string; at: number; key: string }
+	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean; missingTarget?: boolean }
 	| { kind: "sandbox_retry"; key: string; at: number; plan: TurnPlan }
 	| { kind: "provider_retry"; key: string; at: number; plan: TurnPlan; loginChanged?: boolean }
 	| { kind: "turn_waiting"; at: number; key: string; wait: Wait }
@@ -526,34 +478,18 @@ export type Fact =
 			secret?: Question["secret"];
 			/** A push made by the host tool can precede the item's publish step. */
 			pushedHead?: string | null;
-			/**
-			 * Set when the session refused the turn before the agent ran, for a reason trying again will not
-			 * cure (today: its sandbox's Windlass is too old for the platform): the session's sentence for a
-			 * person. Absent for a turn that ran, or was cut off.
-			 */
+			/** Session-authored reason the turn could not start. */
 			refused?: string | null;
 			policyRefusal?: true;
 			reportProblem?: string;
-			/**
-			 * With `refused`, when the session refused it on "Docker, hardened" for someone else's text: those
-			 * sources, and the turn as it was delivered, to run anyway.
-			 */
+			/** Retain the refused delivery and its sources for explicit owner approval. */
 			untrustedRefusal?: UntrustedRefusal;
 			providerRefusal?: ItemProviderRefusal;
-			/**
-			 * Set when the agent asked to leave its sandbox and the platform refused it and stopped the turn
-			 * (Codex on "Docker + Windlass sandbox"): the platform's note, never the agent's words.
-			 */
+			/** Platform-authored explanation of a refused sandbox escape. */
 			escaped?: string;
-			/**
-			 * Set when the session could not prepare the turn's sandbox (connect, resume, its network, a clone): the
-			 * session's sentence. The agent never ran, so it is no cut-off: the step is tried once more, then the person is asked.
-			 */
+			/** Sandbox setup failed before the agent ran. */
 			sandboxFailed?: string;
-			/**
-			 * Set when the turn's hosted sandbox ran out of memory (E2B's metrics, or its kernel killed programs for
-			 * memory): how much of how much, in MiB, and the size. The item asks whether to go on in a larger one.
-			 */
+			/** Measured hosted memory and limit in MiB, plus the sandbox size. */
 			outOfMemory?: OutOfMemory;
 			spend: TurnSpend;
 	  }
@@ -568,19 +504,12 @@ export type Fact =
 	| { kind: "publish_failed"; at: number; key: string; said: string; transient: boolean }
 	| { kind: "secret_attempt"; at: number; key: string; previous: number }
 	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
-	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
 	| { kind: "ci_read"; featureHead?: string; repo?: string; paths?: string[]; autoMergeSingles?: boolean; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
 	| { kind: "auto_merge_result"; behind?: boolean; at: number; key: string; head: string; reason: string | null }
-	| { kind: "pr_read"; pushCi?: CiReading; mergedByApp?: boolean; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean }
-	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
-	| { kind: "spent"; at: number; hostedSeconds: number };
+	| { kind: "pr_read"; pushCi?: CiReading; mergedByApp?: boolean; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean };
 
-/**
- * What the item actor does after storing the item. Every effect has a key that names it exactly once:
- * the actor stores the effects with the state in one write and performs each by its key, so one that
- * is performed again after a crash or a deploy is the same request (§2.5). `at`: not before then.
- */
+/** The actor commits effects with state and replays them by key. An effect time is its earliest execution. */
 export type VerifiedCheckEffect = {
 	kind: "verified_check";
 	key: string;

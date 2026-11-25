@@ -89,7 +89,7 @@ const ENDED: Record<string, string> = { failed: "The item has failed.", done: "T
 
 /** The questions, the page's batch states and log lines, and the marked comment's line. */
 export const feedbackWords = {
-	send: "Send it to the agent", plan: "Plan a fix", leave: "Leave it",
+	plan: "Plan a fix",
 	more: (who: string) => `${who} asked for changes. This item has already run three times for feedback from other people on GitHub. Send this feedback to the agent too?`,
 	feature: (who: string) => `${who} asked for changes on the feature's pull request. Plan a fix with their feedback? You approve the revised plan before any subtask runs.`,
 	budget: (who: string) => `${who} asked for changes on the feature's pull request, but the feature budget left cannot cover another subtask. File the fix as a new item instead.`,

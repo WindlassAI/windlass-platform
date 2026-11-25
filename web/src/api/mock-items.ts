@@ -7,7 +7,7 @@ import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses
 import { checkItemEffort } from "../../../server/src/account-models.js";
 import { approveRoutes, bindRoute, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
 import { plannerMachines } from "../../../server/src/machines/details.js";
-import { answeredWords } from "../../../server/src/factory/answered.js";
+import { answeredWords, choice } from "../../../server/src/factory/answered.js";
 /**
  * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
  * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
@@ -138,32 +138,7 @@ const TIDES = { repository: repository(7102, "ada", "tide-tables", false) };
 const ENVIRONMENT_QUESTION = "The check “typecheck” could not run in the sandbox: its package manager refused to run. This is not a code problem, so the agent was not sent back. Fix the environment, then run the step again.";
 const DOCS = { repository: repository(7103, "acme", "lighthouse-docs", false) };
 
-/** The choices' labels (blueprint.ts, `CHOICES`). */
-const CHOICES: Record<ChoiceId, string> = {
-	send_back: "Hand it back", dismiss: "Dismiss",
-	send: "Send it to the agent", leave: "Leave it",
-	run_single: "Approve for one implementer", orchestrate_anyway: "Ask for subtasks",
-	approve: "Approve the plan",
-	revise: "Revise the plan",
-	raise: "Go on",
-	retry: "Start over (discards the sandbox's work)",
-	again: "Try again",
-	wait: "Keep waiting",
-	hand_over: "Hand it over as it is",
-	run_checks: "Run the checks again",
-	ci_alone: "Integrate on CI alone",
-	update_feature: "Update the feature",
-	update_from_base: "Update from the base branch and run CI again",
-	give_up: "Give up",
-	add_secret: "Add it and continue",
-	without_secret: "Continue without it",
-	fix: "Have the agent change it",
-	reply: "Answer the agent",
-	run_anyway: "Run it anyway",
-	fresh_sandbox: "Start on a fresh sandbox",
-	larger_sandbox: "Go on in a larger sandbox",
-};
-const choices = (...ids: ChoiceId[]) => ids.map((id) => ({ id, label: CHOICES[id] }));
+const choices = (...ids: ChoiceId[]) => ids.map(choice);
 /** A budget question's choices, as the server words them (blueprint.ts, `askBudget`): "Give it N more", hand over, give up. */
 const budgetChoices = (more: string, handOver = true) => [{ id: "raise" as const, label: `Give it ${more} more tokens` }, ...(handOver ? choices("hand_over") : []), ...choices("give_up")];
 

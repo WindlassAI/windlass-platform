@@ -88,9 +88,6 @@ export function integrationHeads(item: FactoryItem): Record<string, string> {
 	return Object.fromEntries(item.repos!.map(r => [r.alias, r.head ?? r.marker ?? r.seed ?? ""]));
 }
 
-/** The repository of a subtask: its own, or the primary for a subtask of a plan that names none. */
-export const taskRepo = (item: FactoryItem, repo: string | undefined): FeatureRepoState => repoOf(item, repo);
-
 /**
  * Why the platform will not mark this item's PR ready for review: a cross-repo feature's PRs leave draft
  * only after a review of the whole set, which is not built yet. Null for a one-repository feature.
