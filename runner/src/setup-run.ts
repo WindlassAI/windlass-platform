@@ -1,8 +1,4 @@
-/**
- * `windlass-runner setup` without `--harness`: the wizard (setup-wizard.ts) with what it does on this
- * machine. It runs in the one-off setup container, which has the Docker socket and the state volume,
- * and at the end starts the `windlass-runner` service container itself.
- */
+// Runs the setup wizard in a one-off container with the Docker socket and runner state volume.
 import { statSync } from "node:fs";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
@@ -11,13 +7,12 @@ import { docker } from "../../server/src/sandbox/docker.js";
 import { parseStoreSize } from "../../server/src/sandbox/store-limits.js";
 import { pair } from "./control.js";
 import { codexLogin, changeCodexLogin } from "./codex-login.js";
-import { Executor } from "./docker-executor.js";
+import { Executor, retirePairingRelays } from "./docker-executor.js";
 import { domainList } from "./egress-policy.js";
-import { changeClaudeLogin, claudeSignIn, retireClaudeRelay, withLoginVolume } from "./harness-login.js";
-import { removeRelay } from "./claude-relay.js";
+import { changeClaudeLogin, claudeSignIn } from "./harness-login.js";
 import { resolveMachineName } from "./machine-name.js";
 import { importOpenCode } from "./opencode-import.js";
-import { changeProviderLogin, currentProvider, installedProvider, storeProvider, terminalQuestion } from "./opencode-login.js";
+import { changeProviderLogin, installedProvider, storeProvider, terminalQuestion } from "./opencode-login.js";
 import { requestLoginReport } from "./pair-command.js";
 import { harnessImage, prepareImages, type MachineHarness } from "./policy.js";
 import { laterLogin, setupImageAndMounts, shellCommand } from "./setup.js";
@@ -31,6 +26,15 @@ import { directory, loadPair, origin, pairingEgress, pairingProfiles, read, rele
 type Values = Record<string, string | boolean | string[] | undefined>;
 const SERVICE = "windlass-runner";
 const ONLINE_WAIT_MS = 180_000;
+
+export async function signInForSetup(machine: Executor, agent: MachineHarness, signal: AbortSignal, importFile?: string) {
+	if (agent === "codex") return changeCodexLogin(machine, true, signal);
+	if (agent === "claude") return changeClaudeLogin(machine, true, signal);
+	const login = (provider?: string) => changeProviderLogin(machine, true, signal, provider);
+	if (importFile && await importOpenCode(importFile, q => terminalQuestion(q, signal),
+		(provider, key) => storeProvider(machine, { provider, key }), login)) return;
+	await login();
+}
 
 /** Setup with `--harness` keeps the earlier flow: line prompts, then it prints the start command. */
 export const wantsWizard = (values: Values) => !(values.harness as string[] | undefined)?.length;
@@ -111,13 +115,7 @@ export async function setupWizard(sections: string[], values: Values): Promise<v
 			const prior = loadPair();
 			const result = await pair(address, signal, line => show(pairEvent(line)), name, undefined, true);
 			if (!result.paired) return { ok: false, message: result.idle! };
-			if (prior) {
-				// As setup always has: the former pairing's relays go, its logins stay in their volumes.
-				const old = new Executor(prior.current, { slots: localSizing(sizing) });
-				await retireClaudeRelay(old);
-				if (codexLogin(old)) await withLoginVolume(old, () => removeRelay(old, "codex"));
-				if (currentProvider(old)) await withLoginVolume(old, () => removeRelay(old, "opencode"));
-			}
+			if (prior) await retirePairingRelays(new Executor(prior.current, { slots: localSizing(sizing) }));
 			return { ok: true };
 		},
 		async prepare(agents, update) {
@@ -151,13 +149,7 @@ export async function setupWizard(sections: string[], values: Values): Promise<v
 			const stop = () => abort.abort();
 			process.on("SIGINT", stop);
 			try {
-				if (agent === "codex") await changeCodexLogin(m, true, abort.signal);
-				else if (agent === "claude") await changeClaudeLogin(m, true, abort.signal);
-				else {
-					const login = (provider?: string) => changeProviderLogin(m, true, abort.signal, provider);
-					if (!(launch.importFile && await importOpenCode(launch.importFile, q => terminalQuestion(q, abort.signal),
-						(provider, key) => storeProvider(m, { provider, key }), login))) await login();
-				}
+				await signInForSetup(m, agent, abort.signal, launch.importFile);
 				return { ok: true as const };
 			} catch (error) {
 				if (abort.signal.aborted) return "stopped";

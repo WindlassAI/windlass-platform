@@ -1,3 +1,4 @@
+// Pair a machine and maintain its control socket. Session sockets survive ordinary reconnects.
 import { snapshotMaintenance } from "./snapshot-retention.js";
 import { authFailure, authorizeEndpoint, endpointChanged, fingerprint, FrameAuthError, runnerHandshake, verifyRemoval, type FrameAuth, type Trust } from "../../server/src/runner/frame-auth.js";
 import { reportPublisher } from "../../server/src/runner/catalog.js";
@@ -76,7 +77,6 @@ export async function pair(platform: string, signal: AbortSignal, say: (message:
 		return { idle: `Pairing was refused (HTTP ${response.status}), so ${again}` };
 	const poll = { pairing: started.pairing, pollSecret: started.pollSecret };
 	say(`Open ${platform}/machines/add and enter ${started.code}`);
-	// The page shows the same before Connect, worked out from the key this runner sent: a code someone else gave the person is of another key.
 	say(`Machine key: ${machineKeyFingerprint(request.publicKey)}. Check that the page shows the same before you connect. If someone gave you a code to enter, stop.`);
 	while (!deadline.aborted) {
 		await wait(PAIRING_POLL_MS, undefined, { signal: deadline }).catch(() => {});
@@ -120,6 +120,22 @@ async function openSocket(opening: Promise<WebSocket>, signal: AbortSignal) {
 			ws.addEventListener("open", opened);
 		}, error => { done(); reject(error); });
 	});
+}
+
+// A welcome without named capabilities is valid for released peers.
+function applyCapabilities(owner: Executor, named: readonly string[] | undefined, signed: boolean) {
+	const has = (capability: Capability) => named?.includes(capability) === true;
+	owner.sessionVolumes = has("session-volumes");
+	owner.modelRelays = has("model-relay");
+	owner.windlassKeyRelays = owner.modelRelays && has("windlass-key-relay");
+	owner.harnessKeyRelays = owner.modelRelays && has("harness-key-relay");
+	owner.blockedNetwork = has("blocked-network");
+	owner.memoryEvents = has("memory-events");
+	owner.warmSpares = signed && has("warm-spares");
+	owner.spareReseed = owner.warmSpares && has("spare-reseed");
+	owner.spareSetupTimes = has("spare-setup-times");
+	owner.startTimes = has("start-times");
+	owner.environmentImage = has("environment-image");
 }
 
 export async function control(owner: Executor, key: KeyObject, platform: string, signal: AbortSignal, saveStatus: (connection: string, idleSuspendMs?: number) => void, initialIdle: number | undefined, name: string, trust: Trust | null) {
@@ -257,13 +273,15 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 					else if (phase === "online" && ws.readyState === 1) send({ kind: "heartbeat" });
 				}, CONTROL_HEARTBEAT_MS);
 				active.addEventListener("abort", disconnect);
+				function rejectConnection(frame: Refusal) {
+					refusal = frame;
+					mayMaintain = false;
+					discarding = stopSessions();
+					disconnect();
+				}
 				const message = async (f: ServerFrame) => {
 					heard = Date.now();
-					if (f.kind === "refused") {
-						mayMaintain = false; refusal = f;
-						discarding = stopSessions();
-						disconnect(); return;
-					}
+					if (f.kind === "refused") return rejectConnection(f);
 					if (phase === "challenge" && f.kind === "challenge") {
 						phase = "welcome";
 						const base = { kind: "hello" as const, maxTurns: owner.maxTurns, slots: owner.slots, runnerVersion: VERSION, epoch, time: Date.now() };
@@ -273,22 +291,9 @@ export async function control(owner: Executor, key: KeyObject, platform: string,
 							send(started.hello);
 						} else send({ ...base, signature: proof(key, controlProof(uid, machineId, f.nonce)) });
 					} else if (phase === "welcome" && f.kind === "welcome") {
-						if (trust) {
-							if ("refusal" in f && f.refusal) { refusal = f.refusal; mayMaintain = false; discarding = stopSessions(); disconnect(); return; }
-						}
+						if (trust && "refusal" in f && f.refusal) return rejectConnection(f.refusal);
 						phase = "online"; idle = f.idleSuspendMs; backoff = 1000; named = f.capabilities;
-						// Sandboxes of their own data only for a server that knows they are (Executor.sessionVolumes).
-						owner.sessionVolumes = named?.includes("session-volumes" satisfies Capability) === true;
-						owner.modelRelays = named?.includes("model-relay" satisfies Capability) === true;
-						owner.windlassKeyRelays = owner.modelRelays && named?.includes("windlass-key-relay" satisfies Capability) === true;
-						owner.harnessKeyRelays = owner.modelRelays && named?.includes("harness-key-relay" satisfies Capability) === true;
-						owner.blockedNetwork = named?.includes("blocked-network" satisfies Capability) === true;
-						owner.memoryEvents = named?.includes("memory-events" satisfies Capability) === true;
-						owner.warmSpares = !!trust && named?.includes("warm-spares" satisfies Capability) === true;
-						owner.spareReseed = owner.warmSpares && named?.includes("spare-reseed" satisfies Capability) === true;
-						owner.spareSetupTimes = named?.includes("spare-setup-times" satisfies Capability) === true;
-						owner.startTimes = named?.includes("start-times" satisfies Capability) === true;
-						owner.environmentImage = named?.includes("environment-image" satisfies Capability) === true;
+						applyCapabilities(owner, named, !!trust);
 						owner.platformGitHost(f.gitHost);
 						owner.platformStoreCaps(f.storeLimits);
 						mayMaintain = true;

@@ -1,20 +1,6 @@
-/**
- * A session's conversation with a runner, carried over whichever socket is current.
- *
- * The server names a conversation in `welcome`, and each side keeps it in memory only: the session
- * actor's instance on one end, the runner process on the other. Within one, every message is numbered
- * per direction, kept by its sender until acknowledged and sent again on the next socket, and taken
- * once by its receiver, so a socket that drops loses nothing and runs nothing twice. When one side no
- * longer has the conversation the other names (the actor slept or moved, the runner restarted, either
- * side waited out the grace), both let it go: what was outstanding fails on the server and is left to
- * the orphan rule on the runner, and a new conversation starts on the same socket. Nothing is carried
- * into a new conversation, so an operation runs at most once, and on a lost conversation the server
- * cannot know whether it ran.
- *
- * A replaced socket is not listened to, so frames arrive in order and a gap means a broken peer.
- * Every method is synchronous: an actor's actions and socket handlers interleave around the channel,
- * never inside it.
- */
+// A conversation spans reconnects. Peers replay unacknowledged frames by sequence only within that conversation.
+// On loss, outstanding operations have unknown outcomes and stay behind. A replaced socket cannot deliver frames.
+// Channel methods run synchronously, so actor actions interleave only between calls.
 import { plain } from "./check.js";
 import type { KeyObject } from "node:crypto";
 import { authFailure, FrameAuthError, platformWelcome, runnerHandshake, type FrameAuth, type PlatformIdentity, type Trust } from "./frame-auth.js";
@@ -26,7 +12,6 @@ import {
 	type Args, type Body, type Failure, type Frame, type Hello, type Name, type Operation, type Value, type Welcome,
 } from "./protocol.js";
 
-/** What either side's WebSocket has to offer: RivetKit's raw socket in an actor, the standard one in the runner. */
 export interface ChannelSocket {
 	send(text: string): void;
 	close(): void;
@@ -37,13 +22,8 @@ export interface ChannelSocket {
 /** The conversation an operation was sent in has ended: whether it ran is unknown. */
 export class ConversationLost extends Error {}
 
-/**
- * What the server keeps of its conversation in durable storage, so that a server that restarts within
- * the runner's grace resumes the same conversation (runner/journal.ts writes it in the session actor's
- * SQLite). `received` is what the server has committed, which is all it ever acknowledges: whatever the
- * runner sent past it, the runner still holds and sends again. `frames` are the frames sent and not
- * acknowledged, by seq; one that carried a secret is stored as a harmless stand-in (`storable`).
- */
+// The session journal resumes a conversation within the runner's grace period.
+// Only committed incoming frames may be acknowledged. Unacknowledged outgoing frames replay in sequence.
 export interface ConversationRecord {
 	conversation: string;
 	sent: number;
@@ -52,7 +32,6 @@ export interface ConversationRecord {
 	frames: Array<[number, string]>;
 }
 
-/** What the owner of a durable channel writes next (`ServerChannel.unsaved`). */
 export interface Unsaved {
 	/** Null: the conversation ended, and nothing of it is to be kept. */
 	conversation: string | null;
@@ -64,12 +43,7 @@ export interface Unsaved {
 	frames: Array<[number, string]>;
 }
 
-/**
- * Whether a message carries a secret, so that it is never stored: the token file's content, a relay
- * token, and a process or command started with secret variables. After a restart its frame is sent
- * again as a cancel of the same id, which a runner that never had the operation ignores; whoever wanted
- * it (the token file, the turn) does it again on the restarted server.
- */
+// Persist a cancel with the same id in place of secret-bearing frames. After restart the caller supplies fresh credentials.
 export function carriesSecret(body: Body): boolean {
 	if (body.kind !== "op") return false;
 	if (body.name === "modelRelay" && body.args.forward) return true;
@@ -85,20 +59,11 @@ interface Options {
 }
 /** A UTF-16 unit takes at most 6 bytes once escaped into a part's string. */
 const PART_UNITS = MAX_FRAME_BYTES / 8;
-/**
- * More than an honest peer ever leaves unacknowledged: a full window and every operation in flight
- * at the largest message, each up to twice its size once escaped into parts. A peer that lets more
- * pile up is not acknowledging, so the next message ends the conversation instead of growing it.
- */
+// Allow a full window and all in-flight operations, including escaping overhead. Disconnect a peer that exceeds this budget.
 const HELD_BYTES = 2 * (WINDOW_BYTES + (MAX_OPS_IN_FLIGHT + 1) * MAX_MESSAGE_BYTES);
-/**
- * Sockets that have yet to introduce themselves, at most. Each is a RivetKit connection that keeps the
- * session's actor awake for up to DEAD_MS, and anyone who knows the session's key can open one; the
- * genuine runner introduces itself in its first frame, so the oldest of them is the one to let go.
- */
+// Bound unauthenticated sockets that could hold the actor awake. A runner introduces itself in its first frame.
 const MAX_STRANGERS = 4;
 
-/** The message as JSON. Throws when it is larger than MAX_MESSAGE_BYTES. */
 function measure(body: Body): string {
 	const json = JSON.stringify(body);
 	if (Buffer.byteLength(json) > MAX_MESSAGE_BYTES) throw new Error("The message is larger than the runner channel carries.");
@@ -126,21 +91,12 @@ abstract class Channel {
 	private strangers = new Map<ChannelSocket, ReturnType<typeof setTimeout>>();
 	private clock?: ReturnType<typeof setInterval>;
 	private grace?: ReturnType<typeof setTimeout>;
-	/**
-	 * A durable channel (`durable`): what may be stored of each frame numbered since the last save, the
-	 * highest seq that is stored (only those go out: written ahead), what is committed of what was
-	 * received (only that is acknowledged), and the conversation the storage holds.
-	 */
+	// Write outgoing frames before sending and commit incoming effects before acknowledging.
 	private durable: { frames: Array<[number, string]>; stored: number; committed: number; saved: string | null; onDirty(): void } | null = null;
 
 	constructor(private readonly base: Options & { onDrain?(): void; onDisconnect?(): void }, private readonly graceReason: string) {}
 
-	/**
-	 * Keeps the conversation in storage from now on. `onDirty` says there is something to save: frames
-	 * that wait to go out until they are stored, or more received than is committed. `from` is a
-	 * conversation read back from storage after a restart: the channel takes it up and waits up to the
-	 * grace for the runner to resume it.
-	 */
+	// Restore the journal and give the runner a grace period to reconnect. onDirty wakes the journal writer.
 	protected keep(onDirty: () => void, from: ConversationRecord | null): void {
 		this.durable = { frames: [], stored: 0, committed: 0, saved: null, onDirty };
 		if (!from || this.conversation) return;
@@ -160,7 +116,6 @@ abstract class Channel {
 
 	protected dirty(): void { this.durable?.onDirty(); }
 
-	/** How long a conversation outlasts its socket (RUNNER_GRACE_MS). */
 	protected graceMs(): number {
 		return RUNNER_GRACE_MS;
 	}
@@ -206,7 +161,6 @@ abstract class Channel {
 	private mayGo(seq: number): boolean { return !this.durable || seq <= this.durable.stored; }
 
 	get connected(): boolean { return this.socket !== null; }
-	/** What is held for the peer until it acknowledges it. */
 	get buffered(): { bytes: number; frames: number } { return { bytes: this.bytes, frames: this.backlog.size }; }
 
 	get authenticated(): boolean { return !!this.socket && this.codecs.has(this.socket); }
@@ -216,7 +170,6 @@ abstract class Channel {
 	}
 
 	protected abstract deliver(body: Body): void;
-	/** Lets go of everything outstanding in the conversation. */
 	protected abstract drop(reason: string): void;
 
 	/** The owner lets go of the socket; the conversation waits for the next one, up to the grace. */
@@ -235,11 +188,7 @@ abstract class Channel {
 		this.base.onDisconnect?.();
 	}
 
-	/**
-	 * Lets go of the socket and of everything else without ending the conversation: a server going away
-	 * while its storage keeps the conversation for the next one (runner/journal.ts). Nothing outstanding
-	 * is settled, and nothing more is sent or taken.
-	 */
+	// The actor is stopping. Leave pending work in the journal so another instance can resume it.
 	abandon(): void {
 		if (this.closed) return;
 		this.closed = true;
@@ -295,7 +244,6 @@ abstract class Channel {
 		});
 	}
 
-	/** Closes sockets that have not been adopted: one, or all of them. */
 	protected dismiss(socket?: ChannelSocket): void {
 		for (const s of socket ? [socket] : [...this.strangers.keys()]) {
 			const timer = this.strangers.get(s);
@@ -468,32 +416,22 @@ export class ServerChannel extends Channel {
 	private pending = new Map<string, Pending>();
 	private processes = new Map<string, Process>();
 
-	/**
-	 * `accept` checks a hello's ticket and signature before it can resume anything. `onConnect` is told
-	 * when a hello has made its socket the current one; it must not call the channel.
-	 * `onDisconnect` is told when that socket is lost, including a heartbeat timeout or a failed send.
-	 */
+	// Verify the ticket and signature before resuming. onConnect must never re-enter the channel.
 	constructor(private readonly options: Options & { platform?: { identity: PlatformIdentity; uid: string; machineId: string; sessionId: string }; accept(hello: Hello): boolean; onConnect?(): void; onDisconnect?(): void }) {
 		super(options, "The machine did not come back within ten minutes.");
 	}
 
-	/** Keeps the conversation in storage (`Channel.keep`); `from` is the one read back after a restart. */
 	keepIn(onDirty: () => void, from: ConversationRecord | null): void {
 		this.keep(onDirty, from);
 	}
 
-	/**
-	 * A process the runner still runs for a conversation read back after a restart (`keepIn`): its output
-	 * goes to `onOutput` from here, and its end to `ended`. Null when the channel has no such conversation.
-	 * Taken before the runner's socket is asked for, so that none of its output arrives with nobody to take it.
-	 */
+	// Register the restored process before asking for its socket so replayed output has a listener.
 	adoptProcess(id: string, onOutput: Output): { id: string; ended: Promise<ProcessEnd> } | null {
 		if (this.closed || !this.conversation || this.processes.has(id)) return null;
 		const ended = new Promise<ProcessEnd>((finish) => this.processes.set(id, { output: onOutput, finish, open: true, held: null }));
 		return { id, ended };
 	}
 
-	/** Stops taking a process's output: one nobody took up again after a restart. */
 	forgetProcess(id: string): void {
 		this.processes.delete(id);
 	}
@@ -672,10 +610,7 @@ export class RunnerChannel extends Channel {
 	private serving = new Map<string, Name>();
 	private processes = new Set<string>();
 
-	/**
-	 * `onOperation` must answer each operation once with `respond` or `refuse`, and a `start` before
-	 * that process's output; `onReset` must stop what the ended conversation had running (the orphan rule).
-	 */
+	// Answer each operation once, and accept a start before sending its output. A reset must stop orphan work.
 	constructor(private readonly options: Options & {
 		onOperation(op: Operation): void;
 		onInput(process: string, data: string): void;

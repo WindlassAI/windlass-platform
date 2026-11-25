@@ -1,7 +1,4 @@
-/**
- * The steps of `windlass-runner setup`, in order, with Back and Cancel. It decides; `WizardEffects`
- * (setup-run.ts) does: pairing, sign-ins, Docker. Checks drive it with scripted answers.
- */
+// Setup prompts and navigation. WizardEffects owns pairing, sign-in and Docker operations.
 import { BACK, CANCEL, type Answer, type Prompter } from "./setup-prompt.js";
 import { HARNESS_LABELS, PRESET_DOMAINS, networkLine, startFlags, storeDefaults, type SetupChoices } from "./setup-choices.js";
 import type { MachineHarness } from "./policy.js";
@@ -13,9 +10,7 @@ export type Pairing = { machineId: string; platform: string };
 
 export interface WizardEffects {
 	version: string;
-	/** The harnesses built into this runner image. */
 	offered: MachineHarness[];
-	/** The current pairing with its key, if any. */
 	pairing(): Pairing | undefined;
 	savedName(): string | undefined;
 	defaultName(): Promise<string>;
@@ -36,17 +31,11 @@ export interface WizardEffects {
 	stopService(): Promise<void>;
 	restartService(): Promise<void>;
 	pair(platform: string, name: string, show: (event: PairEvent) => void, signal: AbortSignal): Promise<{ ok: true } | { ok: false; message: string }>;
-	/** Pulls the sandbox image and the images these agents need. `update` gets Docker's progress. */
 	prepare(agents: MachineHarness[], update: (line: string) => void): Promise<void>;
 	signInState(agent: MachineHarness): Promise<SignInState>;
-	/**
-	 * Signs one agent in with the `login` code. A failure is a result, not an error: setup carries on (as the
-	 * line-by-line setup does since 0.3.4); `reason` is safe to show. "stopped": the person stopped it with Ctrl+C.
-	 */
+	/** Setup continues on a failed sign-in. Only a safe reason may be displayed. */
 	signIn(agent: MachineHarness): Promise<{ ok: true } | { ok: false; reason: string } | "stopped">;
-	/** The command that signs an agent in later, in the runner setup starts. */
 	laterLogin(agent: MachineHarness): string;
-	/** The whole `docker run -d …` command, for showing. */
 	startCommand(flags: string[]): string;
 	start(flags: string[], replace: boolean): Promise<void>;
 	waitOnline(signal: AbortSignal, update: (status: string) => void): Promise<{ ok: boolean; message: string }>;
@@ -63,6 +52,63 @@ type Move = "next" | "back" | "cancel" | "skip" | Outcome;
 
 export const WINDLASS_SANDBOX_NOTE = "Its container runs without Docker's AppArmor profile, with the system paths unmasked and a wider seccomp filter, so that Windlass can sandbox every command inside it again, with no network.";
 const DESKTOP_NAMES = new Set(["docker-desktop", "orbstack", "colima", "rancher-desktop"]);
+
+async function chooseNetwork(p: Prompter, fx: WizardEffects, draft: SetupChoices, skipSaved: boolean): Promise<Move> {
+	if (skipSaved && draft.network !== undefined) return "skip";
+	for (;;) {
+		const current = draft.network;
+		const mode = await p.select({ message: "What may the agents' commands reach on the network?", initial: current?.domains?.length ? "domains" : current?.mode === "open" ? "open" : current?.mode === "none" ? "none" : "restricted", options: [
+			{ value: "restricted", label: "Restricted (recommended)", hint: "public sites, through the runner's proxy; not your local network or this computer" },
+			{ value: "domains", label: "Only some public hosts", hint: "a list such as @npm,@pypi,@github,example.com" },
+			{ value: "open", label: "Open", hint: "the internet and your local network, directly" },
+			...(current?.mode === "none" ? [{ value: "none", label: "None", hint: "no network; an agent here cannot have a repository" }] : []),
+		] });
+		if (mode === BACK) return "back";
+		if (mode === CANCEL) return "cancel";
+		if (mode !== "domains") {
+			draft.network = { mode: mode as "restricted" | "open" | "none", ...(mode === "restricted" && current?.allow?.length && { allow: current.allow }) };
+			return "next";
+		}
+		const list = await p.text({ message: "Public hosts commands may reach", initial: current?.domains?.join(",") || PRESET_DOMAINS, validate: fx.checkDomains,
+			hint: "Comma-separated names, *.name for subdomains, or @npm, @pypi, @github, @crates, @go. The platform's git host and model host are always added." });
+		if (list === CANCEL) return "cancel";
+		if (list === BACK) continue;
+		draft.network = { mode: "restricted", ...(current?.allow?.length && { allow: current.allow }), domains: list.split(",").map(s => s.trim()).filter(Boolean) };
+		return "next";
+	}
+}
+
+async function chooseLimits(p: Prompter, fx: WizardEffects, draft: SetupChoices, skipSaved: boolean): Promise<Move> {
+	if (skipSaved && draft.limits !== undefined) return "skip";
+	const auto = fx.slotsDefault();
+	const l = { slots: draft.limits?.slots ?? auto, snapshotDisk: draft.limits?.snapshotDisk ?? storeDefaults.snapshotDisk, keepFree: draft.limits?.keepFree ?? storeDefaults.keepFree };
+	const keep = () => { draft.limits = { ...(l.slots !== auto && { slots: l.slots }), snapshotDisk: l.snapshotDisk, keepFree: l.keepFree }; return "next" as const; };
+	for (;;) {
+		const choice = await p.select({ message: `Limits: ${l.slots} turn slots, ${l.snapshotDisk} for setup snapshots, keep ${l.keepFree} of disk free`, initial: "keep", options: [
+			{ value: "keep", label: "Use these limits" }, { value: "change", label: "Change them" },
+		] });
+		if (choice === BACK) return "back";
+		if (choice === CANCEL) return "cancel";
+		if (choice === "keep") return keep();
+		const fields = [
+			{ message: "Turn slots (1 to 64)", get: () => String(l.slots), set: (v: string) => { l.slots = Number(v); },
+				validate: (v: string) => /^\d+$/.test(v.trim()) && Number(v) >= 1 && Number(v) <= 64 ? fx.checkSlots(Number(v)) : "Give a whole number from 1 to 64.",
+				hint: `Each slot runs one personal turn at a time. ${auto} suits this computer.` },
+			{ message: "Disk for setup snapshots", get: () => l.snapshotDisk, set: (v: string) => { l.snapshotDisk = v.trim(); }, validate: (v: string) => fx.checkSize(v.trim(), false), hint: "A size such as 20GB or 512MB." },
+			{ message: "Disk to keep free", get: () => l.keepFree, set: (v: string) => { l.keepFree = v.trim(); }, validate: (v: string) => fx.checkSize(v.trim(), true), hint: "Below this, snapshots are evicted oldest first. 0GB keeps nothing free." },
+		];
+		let i = 0;
+		while (i >= 0 && i < fields.length) {
+			const f = fields[i]!;
+			const value = await p.text({ message: f.message, initial: f.get(), validate: f.validate, hint: f.hint });
+			if (value === CANCEL) return "cancel";
+			if (value === BACK) { i--; continue; }
+			f.set(value);
+			i++;
+		}
+		if (i === fields.length) return keep();
+	}
+}
 
 export async function runWizard(p: Prompter, fx: WizardEffects, mode: Mode, given: { platform?: string } = {}): Promise<Outcome> {
 	const loaded = fx.choices();
@@ -149,7 +195,7 @@ export async function runWizard(p: Prompter, fx: WizardEffects, mode: Mode, give
 			if (!p.interactive) return { outcome: "failed" };
 			const again = await ask(p.select({ message: "Try again?", options: [{ value: "again", label: "Get a new code" }, { value: "stop", label: "Cancel" }] }),
 				v => v === "again" ? "next" as const : "cancel" as const);
-			if (again !== "next") return again === "back" ? "back" : again;
+			if (again !== "next") return again;
 		}
 	};
 
@@ -228,63 +274,6 @@ export async function runWizard(p: Prompter, fx: WizardEffects, mode: Mode, give
 		] }), v => { draft.windlassSandbox = v; return "next"; });
 	};
 
-	const networkStep = async (): Promise<Move> => {
-		if (quick && loaded.saved && draft.network !== undefined) return "skip";
-		for (;;) {
-			const current = draft.network;
-			const mode = await p.select({ message: "What may the agents' commands reach on the network?", initial: current?.domains?.length ? "domains" : current?.mode === "open" ? "open" : current?.mode === "none" ? "none" : "restricted", options: [
-				{ value: "restricted", label: "Restricted (recommended)", hint: "public sites, through the runner's proxy; not your local network or this computer" },
-				{ value: "domains", label: "Only some public hosts", hint: "a list such as @npm,@pypi,@github,example.com" },
-				{ value: "open", label: "Open", hint: "the internet and your local network, directly" },
-				...(current?.mode === "none" ? [{ value: "none", label: "None", hint: "no network; an agent here cannot have a repository" }] : []),
-			] });
-			if (mode === BACK) return "back";
-			if (mode === CANCEL) return "cancel";
-			if (mode !== "domains") {
-				draft.network = { mode: mode as "restricted" | "open" | "none", ...(mode === "restricted" && current?.allow?.length && { allow: current.allow }) };
-				return "next";
-			}
-			const list = await p.text({ message: "Public hosts commands may reach", initial: current?.domains?.join(",") || PRESET_DOMAINS, validate: fx.checkDomains,
-				hint: "Comma-separated names, *.name for subdomains, or @npm, @pypi, @github, @crates, @go. The platform's git host and model host are always added." });
-			if (list === CANCEL) return "cancel";
-			if (list === BACK) continue;
-			draft.network = { mode: "restricted", ...(current?.allow?.length && { allow: current.allow }), domains: list.split(",").map(s => s.trim()).filter(Boolean) };
-			return "next";
-		}
-	};
-
-	const limitsStep = async (): Promise<Move> => {
-		if (quick && loaded.saved && draft.limits !== undefined) return "skip";
-		const auto = fx.slotsDefault();
-		const l = { slots: draft.limits?.slots ?? auto, snapshotDisk: draft.limits?.snapshotDisk ?? storeDefaults.snapshotDisk, keepFree: draft.limits?.keepFree ?? storeDefaults.keepFree };
-		const keep = () => { draft.limits = { ...(l.slots !== auto && { slots: l.slots }), snapshotDisk: l.snapshotDisk, keepFree: l.keepFree }; return "next" as const; };
-		for (;;) {
-			const choice = await p.select({ message: `Limits: ${l.slots} turn slots, ${l.snapshotDisk} for setup snapshots, keep ${l.keepFree} of disk free`, initial: "keep", options: [
-				{ value: "keep", label: "Use these limits" }, { value: "change", label: "Change them" },
-			] });
-			if (choice === BACK) return "back";
-			if (choice === CANCEL) return "cancel";
-			if (choice === "keep") return keep();
-			const fields = [
-				{ message: "Turn slots (1 to 64)", get: () => String(l.slots), set: (v: string) => { l.slots = Number(v); },
-					validate: (v: string) => /^\d+$/.test(v.trim()) && Number(v) >= 1 && Number(v) <= 64 ? fx.checkSlots(Number(v)) : "Give a whole number from 1 to 64.",
-					hint: `Each slot runs one personal turn at a time. ${auto} suits this computer.` },
-				{ message: "Disk for setup snapshots", get: () => l.snapshotDisk, set: (v: string) => { l.snapshotDisk = v.trim(); }, validate: (v: string) => fx.checkSize(v.trim(), false), hint: "A size such as 20GB or 512MB." },
-				{ message: "Disk to keep free", get: () => l.keepFree, set: (v: string) => { l.keepFree = v.trim(); }, validate: (v: string) => fx.checkSize(v.trim(), true), hint: "Below this, snapshots are evicted oldest first. 0GB keeps nothing free." },
-			];
-			let i = 0;
-			while (i >= 0 && i < fields.length) {
-				const f = fields[i]!;
-				const value = await p.text({ message: f.message, initial: f.get(), validate: f.validate, hint: f.hint });
-				if (value === CANCEL) return "cancel";
-				if (value === BACK) { i--; continue; }
-				f.set(value);
-				i++;
-			}
-			if (i === fields.length) return keep();
-		}
-	};
-
 	const flags = () => startFlags(platform!, draft);
 	const summaryStep = async (): Promise<Move> => {
 		for (const id of draft.agents ?? []) if (!signIns.has(id) && !states.has(id)) states.set(id, await fx.signInState(id));
@@ -314,7 +303,6 @@ export async function runWizard(p: Prompter, fx: WizardEffects, mode: Mode, give
 
 	const startStep = async (): Promise<Move> => {
 		const existing = stopped ? "stopped" : await fx.service();
-		let replace = false;
 		if (existing !== "absent" && !stopped) {
 			const move = await ask(p.select({ message: `A windlass-runner container ${existing === "running" ? "is running" : "exists"}. Replace it with these settings? The windlass-runner volume stays, so the machine stays paired.`, options: [
 				{ value: "replace", label: "Replace it" }, { value: "keep", label: "Keep it and stop here" },
@@ -326,7 +314,7 @@ export async function runWizard(p: Prompter, fx: WizardEffects, mode: Mode, give
 			}
 			if (move !== "next") return move;
 		}
-		replace = existing !== "absent";
+		const replace = existing !== "absent";
 		if (holding) { fx.releaseState(); holding = false; }
 		const started = await p.wait("Starting the runner", async () => { await fx.start(flags(), replace); return true; }).catch((error: unknown) => error instanceof Error ? error : new Error(String(error)));
 		if (started instanceof Error) return { outcome: "failed", message: "The runner did not start: " + started.message };
@@ -343,7 +331,12 @@ export async function runWizard(p: Prompter, fx: WizardEffects, mode: Mode, give
 		return { outcome: "done" };
 	};
 
-	const run: Record<Step, () => Promise<Move>> = { welcome, pair: pairStep, name: nameStep, agents: agentsStep, profile: profileStep, network: networkStep, limits: limitsStep, summary: summaryStep, start: startStep };
+	const run: Record<Step, () => Promise<Move>> = {
+		welcome, pair: pairStep, name: nameStep, agents: agentsStep, profile: profileStep,
+		network: () => chooseNetwork(p, fx, draft, quick && loaded.saved),
+		limits: () => chooseLimits(p, fx, draft, quick && loaded.saved),
+		summary: summaryStep, start: startStep,
+	};
 	p.intro(`Windlass runner ${fx.version} · setup${mode.kind === "quick" ? " (only what is missing)" : mode.kind === "section" ? " · " + mode.section : ""}`);
 	if (await p.wait("Checking the runner's images", (_, update) => fx.prepare([], update)) === CANCEL) return { outcome: "cancelled" };
 	let i = 0, direction = 1;
@@ -358,9 +351,9 @@ export async function runWizard(p: Prompter, fx: WizardEffects, mode: Mode, give
 				p.outro("Setup cancelled. Nothing more was changed." + (paired ? " The pairing is kept: run setup again to carry on." : ""));
 				return { outcome: "cancelled" };
 			}
-			if (move === "skip") { if (i === 0) direction = 1; i += direction; continue; }
-			direction = move === "back" ? -1 : 1;
-			i = move === "back" ? Math.max(0, i - 1) : i + 1;
+			if (move !== "skip") direction = move === "back" ? -1 : 1;
+			else if (i === 0) direction = 1;
+			i = Math.max(0, i + direction);
 		}
 		return { outcome: "done" };
 	} finally {

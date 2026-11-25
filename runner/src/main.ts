@@ -1,3 +1,4 @@
+// Owner CLI for pairing, setup and sandbox inventory. The running service holds the state lock.
 import { createInterface } from "node:readline/promises";
 import { setTimeout as wait } from "node:timers/promises";
 import { parseArgs } from "node:util";
@@ -10,23 +11,22 @@ import { audit, showLog } from "./audit.js";
 import { resolveMachineName } from "./machine-name.js";
 import { category, control, pair } from "./control.js";
 import { cleanClaudeOutput } from "./claude-output.js";
-import { changeClaudeLogin, claudeSignIn, retireClaudeRelay } from "./harness-login.js";
-import { storeProvider, changeProviderLogin, currentProvider, installedProvider, terminalQuestion } from "./opencode-login.js";
+import { changeClaudeLogin, claudeSignIn } from "./harness-login.js";
+import { changeProviderLogin, installedProvider, terminalQuestion } from "./opencode-login.js";
 import { changeCodexLogin, codexLogin } from "./codex-login.js";
-import { importOpenCode } from "./opencode-import.js";
 import { setupAgents, setupImageAndMounts, shellCommand } from "./setup.js";
-import { setupWizard, wantsWizard } from "./setup-run.js";
-import { relayNotes, removeRelay } from "./claude-relay.js";
-import { withLoginVolume } from "./harness-login.js";
-import { harnessImage, imagePins, prepareImages, shotsImage, type MachineHarness } from "./policy.js";
+import { HARNESSES, HARNESS_LABELS, isMachineHarness } from "./setup-choices.js";
+import { setupWizard, signInForSetup, wantsWizard } from "./setup-run.js";
+import { relayNotes } from "./claude-relay.js";
+import { harnessImage, imagePins, prepareImages, shotsImage, type Limits, type MachineHarness } from "./policy.js";
 import { localSizing, sizingFlags, storeFlags } from "./sizing.js";
-import { Executor } from "./docker-executor.js";
+import { Executor, retirePairingRelays } from "./docker-executor.js";
 import { requestPair, requestLoginReport, waitForPair } from "./pair-command.js";
 import { egressFlags } from "./egress-policy.js";
-import { egressNote, pairingEgress, forgetKey, save, loadPair, pairingProfiles, tryLock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
+import { egressNote, pairingEgress, forgetKey, save, loadPair, type Identity, pairingProfiles, tryLock, origin, read, RunnerError, serviceRunning, VERSION } from "./state.js";
 
 const positiveInteger = is<number>(v => count(v) && v > 0);
-// Accept the first C3b snapshot on upgrade. Only harness.json records opt-in on new writes.
+// Released runners may store the Claude opt-in here instead of in harness.json.
 const snapshot = object({ machineId: nullable(text(64)), connection: text(2048), idleSuspendMs: nullable(count), runnerVersion: text(64), protocol: count,
 	claude: optional(boolean), maxTurns: optional(positiveInteger), maxRunning: optional(positiveInteger), maxSandboxes: optional(positiveInteger) });
 function limit(flag: string, value: string | undefined) {
@@ -35,9 +35,36 @@ function limit(flag: string, value: string | undefined) {
 	if (!/^\d+$/.test(value) || !positiveInteger(n)) throw new RunnerError(`Give --${flag} a positive whole number.`);
 	return n;
 }
+function readStatus(machineId: string | null) {
+	const stored = read("status.json");
+	if (stored === undefined) return;
+	if (!snapshot(stored)) throw new RunnerError("Invalid status.json. Repair or restore that file in the runner state volume.");
+	return stored.machineId === machineId ? stored : undefined;
+}
+
+async function showMachineStatus(machine: Identity, limits: Limits, agents: MachineHarness[], current: boolean, offered: boolean) {
+	const executor = new Executor(machine, limits);
+	if (agents.includes("codex") || harnessImage("codex")) console.log("  Codex: " + (codexLogin(executor) ? "signed in" : "not signed in"));
+	if (agents.includes("opencode") || harnessImage("opencode")) {
+		console.log(`  OpenCode${current && read("opencode-offered.json") === true ? " (offered)" : ""}: ${await installedProvider(executor) ? "signed in" : "not signed in"}`);
+	}
+	if (offered || agents.includes("claude") || harnessImage("claude")) {
+		const signIn = await claudeSignIn(executor);
+		console.log(`  Claude Code${offered && current ? " (offered)" : ""}: ${signIn === "token" ? "signed in" : signIn === "none" ? "not signed in" : "unknown"}`);
+	}
+	for (const relay of ["codex", "opencode", "claude"] as const) {
+		const notes = await relayNotes(executor, relay).catch(() => []);
+		if (notes.length) console.log(`  ${HARNESS_LABELS[relay]} relay, latest notes:\n${notes.map(line => "    " + line).join("\n")}`);
+	}
+	try {
+		await executor.discover();
+		for (const [id, b] of executor.boxes) console.log(`  ${id}  ${b.sessionId}  ${b.state}`);
+		if (await executor.ownedVolume(false)) console.log("  Data volume " + executor.volume);
+	} catch (error) { console.log(error instanceof RunnerError ? error.message : "Docker is not reachable. Check the daemon and the socket permissions."); }
+}
+
 async function main() {
-	// An owner piping a token can already have it exported under a shell-specific name.
-	// Keep it out of every child, including Docker clients and the login helper.
+	// Scrub exported login tokens before starting any child, including Docker and the login helper.
 	for (const [key, value] of Object.entries(process.env)) {
 		if (key === "CLAUDE_CODE_OAUTH_TOKEN" || (value && cleanClaudeOutput(value) !== value)) delete process.env[key];
 	}
@@ -51,7 +78,7 @@ async function main() {
 	const command = positionals[0] ?? "run";
 	// A release can publish this report without mounting runner state or a Docker socket.
 	if (command === "capabilities" && positionals.length === 1) {
-		const harnesses = (["claude", "opencode", "codex"] as const).filter(id => harnessImage(id));
+		const harnesses = HARNESSES.filter(id => harnessImage(id));
 		console.log(JSON.stringify({ image: process.env.WLP_RUNNER_IMAGE ?? null, harnesses, capabilities: SERVER_CAPABILITIES }));
 		return;
 	}
@@ -63,14 +90,12 @@ async function main() {
 	const claude = !!values.harness?.includes("claude");
 	const codex = !!values.harness?.includes("codex");
 	const opencode = !!values.harness?.includes("opencode");
-	const agents = [...new Set(values.harness ?? [])] as MachineHarness[];
+	const agents = [...new Set(values.harness ?? [])];
 	const agent = positionals[1] as MachineHarness;
-	const changeLogin = agent === "codex" ? changeCodexLogin : agent === "opencode" ? changeProviderLogin : changeClaudeLogin;
-	const label = agent === "codex" ? "Codex" : agent === "opencode" ? "OpenCode" : "Claude Code";
 	if (values.provider && !(agent === "opencode" && command === "login")) throw new RunnerError("Use --provider with login opencode.");
 	// Setup without --harness is the wizard; it takes one section name, such as setup network.
 	const wizard = command === "setup" && wantsWizard(values);
-	const validCommand = auth ? positionals.length === 2 && ["claude", "opencode", "codex"].includes(agent)
+	const validCommand = auth ? positionals.length === 2 && isMachineHarness(agent)
 		: positionals.length <= (wizard ? 2 : 1) && ["setup", "run", "pair", "status", "log", "prune"].includes(command);
 	if (!validCommand)
 		throw new RunnerError("Use windlass-runner [setup [--quick|--no-tui|name|agents|claude|codex|opencode|profile|network|limits]|run|pair|status|capabilities|log|prune|login <agent>|logout <agent>] [--platform URL] [--name TEXT] [--max-sandboxes N] [--max-running N] [--spares 0|1|2] [--slots N | --max-turns N] [--slot-cpus X] [--slot-memory Nm|Ng] [--sandbox-memory Ng] [--snapshot-disk SIZE] [--snapshot-user SIZE] [--keep-free SIZE] [--screenshots] [--harness claude] [--harness opencode] [--harness codex] [--allow-profile ID ...] [--egress open|restricted|none] [--egress-allow host[,host]] [--egress-domains host|*.host|@preset[,...]].");
@@ -82,11 +107,11 @@ async function main() {
 	if (flags && ((command !== "run" && command !== "setup") || flags.some(id => !machineProfile(id))))
 		throw new RunnerError("Use --allow-profile with setup or run and a profile ID: docker-hardened or docker-windlass-sandbox.");
 	const profiles = flags && MACHINE_PROFILES.filter(id => id === "docker-hardened" || flags.includes(id));
-	if (agents.some(id => id !== "claude" && id !== "opencode" && id !== "codex")) throw new RunnerError("Choose --harness claude, --harness opencode or --harness codex.");
-	if (codex && !harnessImage("codex")) throw new RunnerError("Use --harness codex with a runner built with the pinned Codex image.");
-	if (opencode && !harnessImage("opencode")) throw new RunnerError("Use --harness opencode with a runner built with the pinned OpenCode image.");
-	if (claude && !harnessImage("claude"))
-		throw new RunnerError("Use --harness claude with a runner built with the pinned Claude Code image.");
+	if (!agents.every(isMachineHarness)) throw new RunnerError("Choose --harness claude, --harness opencode or --harness codex.");
+	for (const id of ["codex", "opencode", "claude"] as const) {
+		if (agents.includes(id) && !harnessImage(id))
+			throw new RunnerError(`Use --harness ${id} with a runner built with the pinned ${HARNESS_LABELS[id]} image.`);
+	}
 	if (values.screenshots && !shotsImage) throw new RunnerError("--screenshots requires a runner built with a pinned screenshots sandbox image.");
 	// Owner commands such as status and prune do not need a viable session budget.
 	const sizingCommand = command === "run" || command === "setup";
@@ -106,6 +131,8 @@ async function main() {
 	process.on("SIGINT", stop); process.on("SIGTERM", stop);
 	try {
 		if (auth) {
+			const changeLogin = agent === "codex" ? changeCodexLogin : agent === "opencode" ? changeProviderLogin : changeClaudeLogin;
+			const label = HARNESS_LABELS[agent];
 			const paired = loadPair();
 			if (!paired || (command === "login" && !paired.key)) throw new RunnerError("Pair this machine before signing in to " + label + ".");
 			if (command === "login") {
@@ -137,9 +164,7 @@ async function main() {
 			} while (!tryLock());
 		}
 		let paired = loadPair();
-		const stored = read("status.json");
-		if (stored !== undefined && !snapshot(stored)) throw new RunnerError("Invalid status.json. Repair or restore that file in the runner state volume.");
-		const status = snapshot(stored) && stored.machineId === (paired?.current.machineId ?? null) ? stored : undefined;
+		const status = readStatus(paired?.current.machineId ?? null);
 		const harness = read("harness.json");
 		if (harness !== undefined && !boolean(harness)) throw new RunnerError("Invalid harness.json. Repair or restore that file in the runner state volume.");
 		if (command === "status") {
@@ -152,25 +177,7 @@ async function main() {
 			console.log(`Kept sandbox limit: ${caps.maxSandboxes ?? "no limit"}`);
 			if (paired) for (const machine of [paired.current, ...paired.previous]) {
 				console.log(`${machine.machineId}${machine === paired.current ? "" : " (previous pairing)"}`);
-				const executor = new Executor(machine, limits);
-				if (codex || harnessImage("codex")) console.log("  Codex: " + (codexLogin(executor) ? "signed in" : "not signed in"));
-				if (opencode || harnessImage("opencode")) {
-					console.log(`  OpenCode${machine === paired.current && read("opencode-offered.json") === true ? " (offered)" : ""}: ${await installedProvider(executor) ? "signed in" : "not signed in"}`);
-				}
-				if (offered || claude || harnessImage("claude")) {
-					const signIn = await claudeSignIn(executor);
-					console.log(`  Claude Code${offered && machine === paired.current ? " (offered)" : ""}: ${signIn === "token" ? "signed in" : signIn === "none" ? "not signed in" : "unknown"}`);
-				}
-				// What each relay refused or passed on differently, latest last.
-				for (const [relay, label] of [["codex", "Codex"], ["opencode", "OpenCode"], ["claude", "Claude Code"]] as const) {
-					const notes = await relayNotes(executor, relay).catch(() => []);
-					if (notes.length) console.log(`  ${label} relay, latest notes:\n${notes.map(line => "    " + line).join("\n")}`);
-				}
-				try {
-					await executor.discover();
-					for (const [id, b] of executor.boxes) console.log(`  ${id}  ${b.sessionId}  ${b.state}`);
-					if (await executor.ownedVolume(false)) console.log("  Data volume " + executor.volume);
-				} catch (error) { console.log(error instanceof RunnerError ? error.message : "Docker is not reachable. Check the daemon and the socket permissions."); }
+				await showMachineStatus(machine, limits, agents, machine === paired.current, !!offered);
 			}
 			return;
 		}
@@ -212,25 +219,13 @@ async function main() {
 				const result = await pair(platform, abort.signal, say, name, profiles, command === "setup");
 				if (abort.signal.aborted) { client?.end(); return; }
 				if (result.paired) {
-					if (paired) {
-						const old = new Executor(paired.current, limits);
-						await retireClaudeRelay(old);
-						if (codexLogin(old)) await withLoginVolume(old, () => removeRelay(old, "codex"));
-						if (currentProvider(old)) await withLoginVolume(old, () => removeRelay(old, "opencode"));
-					}
+					if (paired) await retirePairingRelays(new Executor(paired.current, limits));
 					paired = result.paired; resumePlatform = undefined;
 					client?.end(); client = undefined;
 					if (command === "setup") {
 						const machine = new Executor(result.paired.current, limits);
 						await setupAgents(agents, prompt => terminalQuestion(prompt, abort.signal),
-							async id => {
-								if (id === "codex") return changeCodexLogin(machine, true, abort.signal);
-								if (id === "claude") return changeClaudeLogin(machine, true, abort.signal);
-								const login = (provider?: string) => changeProviderLogin(machine, true, abort.signal, provider);
-								if (launch?.importFile && await importOpenCode(launch.importFile, p => terminalQuestion(p, abort.signal),
-									(provider,key) => storeProvider(machine,{provider,key}), login)) return;
-								await login();
-							}, console.log, () => abort.signal.aborted);
+							id => signInForSetup(machine, id, abort.signal, launch?.importFile), console.log, () => abort.signal.aborted);
 						const flags = process.argv.slice(2).filter((_, i) => i !== process.argv.slice(2).indexOf("setup"));
 						if (values["slot-cpus"] === undefined && process.env.WLP_RUNNER_CPUS !== undefined) flags.push("--slot-cpus", String(slots!.unit.cpus));
 						console.log("Start the runner on this machine:\n" + shellCommand([...launch!.command, "run", ...flags]));
@@ -282,7 +277,8 @@ async function main() {
 					continue;
 				}
 				if (!removed) return;
-				try { await retireClaudeRelay(owner); if (codexLogin(owner)) await withLoginVolume(owner, () => removeRelay(owner, "codex")); if (currentProvider(owner)) await withLoginVolume(owner, () => removeRelay(owner, "opencode")); } finally { forgetKey(); }
+				try { await retirePairingRelays(owner); }
+				finally { forgetKey(); }
 				paired = { ...paired, key: null };
 				idle = removed;
 			}
