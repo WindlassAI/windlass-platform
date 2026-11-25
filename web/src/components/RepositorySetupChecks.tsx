@@ -80,6 +80,16 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 				setAnswers({});
 			})}>Apply answers</button>}
 		</div>}
+		{data.diagnosis?.skills && <details className="setup-result">
+			<summary>Skill filings · {data.diagnosis.skills.kept} kept after review</summary>
+			{!data.diagnosis.skills.filings.length && <p>No skill filing was received.</p>}
+			{data.diagnosis.skills.filings.map((f, i) => <div key={i}>
+				<p>{f.phase === "draft" ? "Draft" : "Revision"} filing {i + 1} · {f.proposed} proposed · {f.staticallyRejected.length} rejected by static checks · {f.smokeTested} smoke-tested · {f.droppedBySmoke.length} failed smoke checks · {f.kept} kept</p>
+				{f.refused && <p>Filing refused. {f.refused}</p>}
+				{[...f.staticallyRejected, ...f.droppedBySmoke].map((drop, j) => <p key={j}>{drop.path} · {drop.reason}</p>)}
+			</div>)}
+			{data.diagnosis.skills.droppedByReview.map(drop => <p key={drop.path}>{drop.path} · {drop.reason}</p>)}
+		</details>}
 		{!!data.diagnosis?.leftOut?.length && <div className="setup-result">
 			<strong>Left out</strong>
 			<ul>{data.diagnosis.leftOut.map(note => <li key={note}>{note}</li>)}</ul>

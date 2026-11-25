@@ -1,8 +1,12 @@
 import "./check-secret.js";
+import { privateLine, validateDraft } from "../server/src/repo-setup/filing.js";
+import { setupBodies } from "../server/src/repo-setup/publish.js";
+import { setupGuide } from "./setup-guide-fixture.js";
+import { emptyRow, environmentInputs, ENVIRONMENT_TABLE, writeEnvironment } from "../server/src/environments.js";
 import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { test } from "node:test";
-import { buildProof, claimAssessment, finishAssessment, READINESS_TABLE, repositoryReadiness, scheduleSetup } from "../server/src/actors/user-readiness.js";
+import { buildProof, claimAssessment, finishAssessment, READINESS_TABLE, repositoryReadiness, scheduleSetup, setupInputs } from "../server/src/actors/user-readiness.js";
 import type { EnvironmentBuild } from "../server/src/contract.js";
 import { fileReadiness } from "../server/src/factory/readiness-filing.js";
 import { plannerReadiness, readinessCriteria, readinessItem, scoreReadiness, type CriterionId, type Judgment } from "../server/src/factory/readiness.js";
@@ -107,19 +111,18 @@ test("weekly runs require opting in and share the manual claim", async () => {
 });
 
 test("only verified guide lines get citations, and filenames and reasons stay out of public descriptions", async () => {
-	const { validateDraft, privateLine } = await import("../server/src/repo-setup/filing.js");
-	const { setupBodies } = await import("../server/src/repo-setup/publish.js");
 	const request = { areas: [], later: 0, noteIds: ["team"], previous: null };
 	const ctx = { request, owner: "team", host: "github.com", notes: [{ id: "team", text: "Use the lint script.", label: "local-note.md" }],
-		paths: ["package.json"], read: new Map([["package.json", '{"scripts":{"lint":"eslint ."}}']]), redact: (s: string) => s.replaceAll("saved-value", "[redacted]") };
+		paths: ["README.md", "package.json"], read: new Map([["README.md", "Working here"], ["package.json", '{"scripts":{"lint":"eslint ."}}']]), redact: (s: string) => s.replaceAll("saved-value", "[redacted]") };
 	for (const line of ["/home/alice/tmp", "/Users/ada/work", "C:\\Users\\somebody", "a@test.invalid", "10.0.0.2", "(@personal)", "worker.office.example", "https://internal.example", "db.corp", "password=sample-value", "saved-value"])
 		assert.equal(privateLine(line, ctx), true);
 	const base = { score: answers().slice(0, 3), notes: [{ noteId: "team", verdict: "team", reason: "Found the saved script." }] };
-	const file = { path: "AGENTS.md", kind: "guide", content: "# Guide\n## Terms\nUse `npm run lint`.\nUse `npm run nope`.\nUse `sh unsupported.sh`.\nMissing proof.\n",
-		lines: [3,4,5].map(line => ({ line, noteId: "team", evidence: { file: "package.json", line: 1 } })) };
+	const file = setupGuide("", "# Guide", "Use `npm run lint`.", "Use `npm run nope`.\nUse `sh unsupported.sh`.\nMissing proof.");
+	file.lines[0].evidence.file = "package.json";
+	file.lines.push(...[4, 5].map(line => ({ line, noteId: "team", evidence: { file: "package.json", line: 1 } })));
 	const validate = (f = file) => validateDraft({ ...base, files: [f] }, ctx);
 	const draft = validate();
-	assert.equal(draft.files.get("AGENTS.md"), "# Guide\n## Terms\nUse `npm run lint`.\n");
+	assert.doesNotMatch(draft.files.get("AGENTS.md")!, /nope|unsupported|Missing proof/);
 	assert.deepEqual(draft.decisions[0]?.uses, [{ path: "AGENTS.md", line: 3, evidence: "package.json:1" }]);
 	assert.throws(() => validate({ ...file, path: "../AGENTS.md" }));
 	assert.throws(() => validate({ ...file, content: "x".repeat(13 * 1024) }));
@@ -132,22 +135,19 @@ test("only verified guide lines get citations, and filenames and reasons stay ou
 });
 
 test("reconcile each reviewed guide with the filing its published lines came from", async () => {
-	const { validateDraft } = await import("../server/src/repo-setup/filing.js");
 	const { reconcileReview } = await import("../server/src/repo-setup/review.js");
 	const ctx = {
 		request: { areas: ["fixed", "unchanged", "omitted", "approved", "dropped"], later: 0, noteIds: ["team"], previous: null },
 		notes: [{ id: "team", text: "Read the instructions.", label: "source-note.md" }], owner: "team", host: "github.com",
-		paths: ["README.md"], read: new Map([["README.md", "Read the instructions."]]), redact: (s: string) => s,
+		paths: ["README.md", ...["fixed", "unchanged", "omitted", "approved", "dropped"].flatMap(d => [0,1,2].map(i => d + "/f" + i + ".ts"))],
+		read: new Map([["README.md", "Read the instructions."]]), redact: (s: string) => s,
 	};
-	const file = (area: string, title: string) => ({
-		path: area ? area + "/AGENTS.md" : "AGENTS.md", kind: area ? "area" : "guide",
-		content: title + "\n## Terms\nRead the instructions.\n",
-		lines: [{ line: title.split("\n").length + 2, noteId: "team", evidence: { file: "README.md", line: 1 } }],
-	});
+	const file = (area: string, title: string) => setupGuide(area, title, "Read the instructions.");
 	const args = { score: answers().slice(0, 3), notes: [{ noteId: "team", verdict: "team", reason: "Verified in readme." }] };
 	const original = validateDraft({ ...args, files: ["", ...ctx.request.areas].map(area => file(area, "# Original")) }, ctx);
 	const files = [file("", "# Unexpected\n"), file("fixed", "# Fixed\n"), file("unchanged", "# Original"), file("dropped", "# Revised")];
-	assert.throws(() => validateDraft({ ...args, files }, ctx), /Include the root guide and every chosen area/);
+	assert.equal(validateDraft({ ...args, files }, ctx).files.size, files.length);
+	assert.throws(() => validateDraft({ ...args, files: files.slice(1) }, ctx), /Include the root AGENTS.md/);
 	const revision = validateDraft({ ...args, files }, { ...ctx, revision: true });
 	const verdict = (path: string, verdict: "ok" | "fix" | "drop") => ({ path, verdict, findings: [] });
 	const accepted = reconcileReview(original, revision, [
@@ -164,6 +164,45 @@ test("reconcile each reviewed guide with the filing its published lines came fro
 	const allOmitted = reconcileReview(original, empty, [...original.files.keys()].map(path => verdict(path, "fix")));
 	assert.equal(allOmitted.files.size, 0);
 	assert.equal(allOmitted.leftOut.length, original.files.size);
+});
+
+test("guide minimums and sections are checked after filtering unsupported lines", () => {
+	const ctx = { request: { areas: ["src", "test"], later: 1, noteIds: [], previous: null }, notes: [], owner: "team", host: "github.com",
+		paths: ["README.md", "src/f0.ts", "src/f1.ts", "src/f2.ts"], read: new Map([["README.md", "Working here."]]), redact: (s: string) => s };
+	const args = { score: answers().slice(0, 3), notes: [] };
+	const root = setupGuide("", "# Guide", "A fixture is a test input.");
+	const area = setupGuide("src", "# Source", "Run the targeted check.");
+	for (const f of [root, area]) for (const r of f.lines) r.noteId = undefined;
+	const file = (files: typeof root[]) => validateDraft({ ...args, files }, ctx);
+	assert.equal(file([root, area]).files.size, 2);
+	assert.throws(() => file([{ ...root, lines: root.lines.filter((_, i) => i % 2 === 0) }]), /AGENTS.md: only .*at least 30/);
+	assert.throws(() => file([root, { ...area, lines: area.lines.filter(r => ![4,11].includes(r.line)) }]), /src\/AGENTS.md: only .*at least 12/);
+	assert.throws(() => file([root, { ...area, content: area.content.replace("## See also", "## Other") }]), /include ## See also/);
+	assert.throws(() => file([root, { ...area, lines: area.lines.filter(r => r.line !== 8) }]), /three to five key files/);
+	const turn = { ...ctx, repository: { owner: "team", url: "https://github.com/team/project" } as import("../server/src/github/publish.js").StoredRepository };
+	assert.match(setupBodies(file([root, area]), turn).body, /1 folder covered. 2 more/);
+});
+
+test("older passing build proves setup and checks only for matching inputs", async () => {
+	const sqlite = new DatabaseSync(":memory:");
+	sqlite.exec(READINESS_TABLE); sqlite.exec(ENVIRONMENT_TABLE);
+	const db = { execute: async (q: string, ...args: SQLInputValue[]) => sqlite.prepare(q).all(...args) } as Parameters<typeof setupInputs>[0];
+	const command = "install", checks = [{ name: "tests", command: "test" }];
+	const build = { ...environmentInputs(command, checks), commit: "abcdef0123456789", finishedAt: now, failure: null,
+		checks: [{ name: "tests", status: "passed", durationMs: 300_000 }] } as EnvironmentBuild;
+	await writeEnvironment(db, { ...emptyRow("repo", "hosted"), ready: build });
+	const scan = { commit: "1234567", areas: [], later: 0, at: now, findings: [] };
+	for (const [setup, saved, pass] of [[command, checks, true], ["other", checks, false], [command, [{ name: "tests", command: "changed" }], false]] as const) {
+		const inputs = await setupInputs(db, "repo", scan, setup, [...saved]);
+		await db.execute("INSERT INTO readiness(project, session, at, inputs, judgment) VALUES (?,?,?,?,?)", "repo", inputs.key, now, inputs.key,
+			JSON.stringify({ findings: answers("setup", "checks") }));
+		const view = await repositoryReadiness(db, "repo", inputs, false);
+		for (const f of view.latest!.findings) {
+			assert.equal(f.pass, pass);
+			if (pass) assert.match(f.reason, /passed on abcdef0, setup unchanged since/);
+		}
+	}
+	sqlite.close();
 });
 
 test("split, seal and expire notes within the owner's repository", async () => {

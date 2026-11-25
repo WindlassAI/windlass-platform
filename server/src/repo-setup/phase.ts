@@ -1,10 +1,12 @@
 import { redact } from "../github/redact.js";
 import type { RunTurnInput, RunTurnResult, TurnPublishRequest } from "../sandbox/api.js";
+import { skillPath } from "./guide-check.js";
 import { privateLine } from "./filing.js";
-import type { SetupDiagnosis, SetupNote } from "./types.js";
+import type { SetupDiagnosis, SetupNote, SkillFiling } from "./types.js";
 
 export class SetupPhase {
 	leftOut: string[] = [];
+	readonly skills: SetupDiagnosis["skills"] = { filings: [], kept: 0, droppedByReview: [] };
 	private phase: SetupDiagnosis["phase"] = "draft";
 	private offered = false;
 	private readonly calls = new Map<string, string | null>();
@@ -35,8 +37,18 @@ export class SetupPhase {
 		this.stopReason = null;
 	}
 
+	startSkillFiling(files: unknown, revision: boolean): SkillFiling {
+		const proposed = Array.isArray(files) ? files.filter(f => f?.kind === "skill" || typeof f?.path === "string" && skillPath.test(f.path)).length : 0;
+		const filing: SkillFiling = { phase: revision ? "revision" : "draft", proposed, staticallyRejected: [], smokeTested: 0, droppedBySmoke: [], kept: 0 };
+		this.skills.filings.push(filing);
+		return filing;
+	}
+
 	diagnosis(): SetupDiagnosis {
-		return { phase: this.phase, model: this.clean(this.model), toolOffered: this.offered, attempts: this.calls.size,
+		const cleanDrop = ({ path, reason }: { path: string; reason: string }) => ({ path: this.clean(path), reason: this.clean(reason) });
+		const skills = { kept: this.skills.kept, droppedByReview: this.skills.droppedByReview.map(cleanDrop),
+			filings: this.skills.filings.map(f => ({ ...f, staticallyRejected: f.staticallyRejected.map(cleanDrop), droppedBySmoke: f.droppedBySmoke.map(cleanDrop) })) };
+		return { skills, phase: this.phase, model: this.clean(this.model), toolOffered: this.offered, attempts: this.calls.size,
 			...(this.leftOut.length > 0 && { leftOut: this.leftOut }),
 			rejections: [...this.calls.values()].filter((s): s is string => s !== null),
 			lastMessage: this.lastMessage, outcome: this.outcome, stopReason: this.stopReason };

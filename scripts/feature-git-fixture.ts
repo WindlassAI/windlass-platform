@@ -3,6 +3,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { FakeHandle, FakeWindlass } from "../server/src/sandbox-fake.js";
+import { setupGuide } from "./setup-guide-fixture.js";
 import { getLayer } from "../server/src/layer.js";
 import { hostToolsMeta } from "../server/src/sandbox/turn.js";
 import { getSignIns } from "../server/src/signin/index.js";
@@ -53,7 +54,7 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 		input.onHostTools?.(names);
 		if (input.prompt.includes("ada/setup-no-filing") || input.prompt.includes("ada/setup-refused")) {
 			if (input.prompt.includes("ada/setup-refused")) {
-				for (const [i, args] of [{}, { files: [], notes: [], score: [] }].entries()) {
+				for (const [i, args] of [{}, { files: [{ kind: "skill", path: ".agents/skills/read-source/SKILL.md", lines: [] }], notes: [], score: [] }].entries()) {
 					const reply = await input.onSetup!({ messageId: "draft", callId: "file-" + i, arguments: args }, input.signal!);
 					if (!reply.includes("Correct the filing")) throw Error("Expected a retryable rejection.");
 				}
@@ -70,7 +71,7 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 			readdirSync(join(repo, "notes")).length !== 1 || !readFileSync(join(repo, "notes", readdirSync(join(repo, "notes"))[0]), "utf8").includes("README")) throw Error("Invalid critic inputs.");
 		const files = [...readdirSync(join(repo, "draft"), { recursive: true, encoding: "utf8" })].filter(p => p.endsWith(".md")).map(path =>
 			({ path, verdict: path === "AGENTS.md" ? "fix" : "ok", findings: path === "AGENTS.md" ? ["Name the root guide clearly."] : [] }));
-		if (files.some(f => f.path.includes("bad-read")) || !files.some(f => f.path.includes("read-source"))) throw Error("Draft did not pass the read-only checks.");
+		if (files.some(f => f.path.includes("bad-")) || !files.some(f => f.path.includes("read-source"))) throw Error("Draft did not pass the read-only checks.");
 		const answer = await host.get("file_repo_setup_review")!({ callId: "review", messageId: "review", arguments: { files } }, input.signal!);
 		if (!answer.startsWith("Review filed")) throw Error(answer);
 		return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: "revision-critic", summary: null, stderrTail: "", failure: null };
@@ -93,13 +94,16 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 		const revise = input.prompt.includes("Name the root guide clearly.");
 		if (revise && input.windlassSessionId !== "draft-turn") throw Error("The read-only revision lost the original draft.");
 		const skill = (name: string, file: string) => ({ kind: "skill", path: ".agents/skills/" + name + "/SKILL.md",
-			content: ["---", "name: " + name, "description: Show the starter instructions.", "---", "## When to use", "Before changing the service.", "## Steps", "Read the setup instructions.", "## Check", "test -f " + file].join("\n"),
-			lines: [6, 8].map(line => ({ line, evidence: ref })) });
+			content: ["---", `name: "${name}"`, "description: >-", "  Verify the starter service's source layout.", "---", "",
+				"## When to use", "Use before changing the starter service.", "", "## Steps",
+				"1. Read `README.md` for the service setup.", "2. Inspect `src/f0.ts` before editing its exports.", "",
+				"## Check", "```sh", "test -f " + file, "```"].join("\n"),
+			lines: [8, 11, 12].map(line => ({ line, evidence: line === 12 ? { file: "src/f0.ts", line: 1 } : ref })) });
 		const call = { messageId: "draft", callId: "file", arguments: {
 			score: ["setup", "checks", "guide"].map(id => ({ id, pass: false, reason: "Missing proof." })),
-			files: [{ kind: "guide", path: "AGENTS.md", content: (revise ? "# Read the repository guide" : "# Working here") + "\n## Terms\nSee `README.md`.\nRun `missing.sh`.\nRun `echo hello`.\npassword=fixture-only\n",
-				lines: [{ line: 3, noteId, evidence: ref }, { line: 4, evidence: ref }, { line: 6, evidence: ref }] },
-				{ kind: "area", path: "src/AGENTS.md", content: "# Source files\nSee [the readme](../README.md).\n", lines: [{ line: 2, evidence: ref }] }, skill("read-source", "README.md"), ...(notes.some(n => n.verdict === "question") ? [skill("first-draft", "README.md")] : []), skill("bad-read", "missing"),
+			files: [...[setupGuide("", revise ? "# Read the repository guide" : "# Working here", "See `README.md`.", "Run `missing.sh`.\nRun `echo hello`.\npassword=fixture-only"),
+				setupGuide("src", "# Source files", "Run the check from the root.")].map(f => ({ ...f, lines: f.lines.map(r => ({ ...r, noteId: f.kind === "guide" && r.noteId ? noteId : undefined })) })),
+				skill("read-source", "README.md"), ...(notes.some(n => n.verdict === "question") ? [skill("first-draft", "README.md")] : []), skill("bad-read", "src"), skill("bad-reference", "missing"),
 				...(revise && notes.some(n => n.verdict === "question") ? [skill("unreviewed", "README.md")] : [])],
 			notes,
 		} };

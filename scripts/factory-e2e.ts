@@ -253,6 +253,16 @@ await check("repo-setup: draft guides with imported notes and delete them on clo
 			const leftOut = view.readiness.diagnosis?.leftOut ?? [];
 			const unreviewed = ".agents/skills/unreviewed/SKILL.md";
 			const pull = standin.pulls.find(p => p.repository === repo.id)!;
+			const skills = view.readiness.diagnosis?.skills;
+			assert(skills?.filings.length === 2 && skills.kept === (repeat ? 1 : 2), "Missing draft and revision skill counts.");
+			for (const [i, filing] of skills.filings.entries()) {
+				const candidates = repeat ? 3 : 4 + i;
+				assert(filing.proposed === candidates && filing.smokeTested === candidates - 1 && filing.kept === candidates - 2, "Incorrect skill counts.");
+				assert(filing.staticallyRejected.length === 1 && filing.staticallyRejected[0].reason.includes("missing path missing"), "Missing static drop reason.");
+				assert(filing.droppedBySmoke.length === 1 && filing.droppedBySmoke[0].reason === "Smoke check exited 1.", "Missing smoke failure.");
+			}
+			assert(skills.droppedByReview.length === (repeat ? 0 : 1), "Missing review drop reason.");
+			assert(!pull.body.includes("windlass-platform:verified") && !pull.body.includes("What was verified"), "Setup PR contains session verification.");
 			if (repeat) {
 				assert(!leftOut.length && !pull.body.includes("Left out"), "The matching revision retained earlier omissions.");
 				assert(view.knowledge.publication?.files.length === 3, "The matching revision lost reviewed files.");
@@ -329,6 +339,8 @@ await check("repo-setup: keep the failed phase on the owner's run", async () => 
 			const d = run.diagnosis;
 			const opened = name !== "setup-startup";
 			assert(d?.phase === "draft" && d.toolOffered === opened && d.attempts === rejections.length, "Missing filing diagnostics");
+			assert(d.skills.kept === 0 && d.skills.filings.length === rejections.length, "Failed run lost its skill filings.");
+			if (name === "setup-refused") assert(d.skills.filings[1].proposed === 1 && d.skills.filings[1].refused === rejections[1], "Missing refused skill filing.");
 			assert(JSON.stringify(d.rejections) === JSON.stringify(rejections), "Lost rejection reasons");
 			assert(d.model === (opened ? "account-default" : "saved-choice"), "Wrong setup model");
 			assert(d.outcome === (opened ? "succeeded" : "failed") && d.stopReason === (opened ? "end_turn" : "unknown_model"), "Lost stop reason");

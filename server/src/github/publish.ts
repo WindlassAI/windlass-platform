@@ -24,11 +24,15 @@ export function sessionRepository(app: GithubApp, connection: StoredConnection, 
 	return repo.closesIssue ? resolveBoundRepository(app, connection, repo.id, repo.installationId, need) : resolveRepository(app, connection, repo.id, need);
 }
 
-function pullBody(repo: StoredRepository, body: string, section: string, blocked?: BlockedNetwork, showHosts = false) {
-	if (!repo.closesIssue) return withVerifiedSection(networkBody(body, blocked, showHosts), section);
+function pullBody(repo: StoredRepository, body: string, section: string | null, blocked?: BlockedNetwork, showHosts = false) {
+	const describe = (text: string) => {
+		const description = networkBody(text, blocked, showHosts);
+		return section === null ? description : withVerifiedSection(description, section);
+	};
+	if (!repo.closesIssue) return describe(body);
 	const footer = `\n\nCloses #${repo.closesIssue}.`;
 	const text = body.trimEnd();
-	return withVerifiedSection(networkBody(text.endsWith(footer) ? text.slice(0, -footer.length) : text, blocked, showHosts), section) + footer;
+	return describe(text.endsWith(footer) ? text.slice(0, -footer.length) : text) + footer;
 }
 
 const fullName = (repository: { owner: string; name: string }) => `${repository.owner}/${repository.name}`;
@@ -226,7 +230,7 @@ export interface PublishInput extends PushInput {
 	pull: PullRequestInfo | null;
 	message: PublishMessage;
 	/** What the pull request's description says was verified. */
-	evidence: PublishEvidence;
+	evidence: PublishEvidence | null;
 	/**
 	 * The request is the agent's (agent-publish.ts), which writes the pull request's title and description:
 	 * a pull request that is open already is given them too, where they differ from what it has, and
@@ -428,14 +432,14 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 	const account = installation.account.login;
 
 	// Default the outgoing-commit scan to the PR redactor.
-	const work = await commitAndPush({ ...input, redact: input.redact ?? input.evidence.redact }, resolved, commitMessage(input.message));
+	const work = await commitAndPush({ ...input, redact: input.redact ?? input.evidence?.redact }, resolved, commitMessage(input.message));
 	if (work.workspaceChanged) throw new PullProblem(new GithubProblem("github_failed", `GitHub has ${work.head} on ${branch}. The workspace Git state could not be synchronized after the push. Fetch and reconcile the branch before publishing again.`), work.head);
 	const { pushed, head, committedFiles } = work;
 	const open = isOpen(input.pull) ? input.pull : null;
 	const nothingToPush = () => new GithubProblem("github_failed", `There is nothing to push: ${branch} at GitHub already has everything in the workspace.`);
 	if (!pushed && open && !input.retitle && !input.shownIsEnough) throw nothingToPush();
 	if (!pushed && input.pushed === null) throw new GithubProblem("github_failed", `There is nothing to open a pull request with: the workspace has no changes and no commit that ${repository.branch} does not have.`);
-	const said = evidenceSection(input.evidence, await readWork(sandbox, repository.baseSha ?? null), connection.user.login);
+	const said = input.evidence ? evidenceSection(input.evidence, await readWork(sandbox, repository.baseSha ?? null), connection.user.login) : { section: null, words: "" };
 
 	const now = Date.now();
 	const title = input.message.title.trim();

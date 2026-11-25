@@ -1,6 +1,17 @@
 import type { PullRequestInfo } from "../contract.js";
 
+export interface SkillFiling {
+	phase: "draft" | "revision";
+	proposed: number;
+	staticallyRejected: { path: string; reason: string }[];
+	smokeTested: number;
+	droppedBySmoke: { path: string; reason: string }[];
+	kept: number;
+	refused?: string;
+}
+
 export interface SetupDiagnosis {
+	skills: { filings: SkillFiling[]; kept: number; droppedByReview: { path: string; reason: string }[] };
 	leftOut?: string[];
 	phase: "draft" | "review" | "revision";
 	model: string;
