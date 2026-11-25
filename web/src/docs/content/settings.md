@@ -12,7 +12,7 @@ Each choice saves as soon as you make it. A field you leave unset shows what it 
 
 ### Model providers
 
-**Connect ChatGPT plan** opens a model connection for your signed-in Windlass account. Follow **Authorize your plan at OpenAI**, approve it, then copy the full loopback address from the page that fails to load. Paste it into Settings and choose **Finish connecting** within ten minutes. **Disconnect plan** removes this model connection. Your platform login and sessions stay with your GitHub or Google identity.
+**Connect**, on the ChatGPT plan row under Models, opens a model connection for your signed-in Windlass account. Follow **Authorize your plan at OpenAI**, approve it, then copy the full loopback address from the page that fails to load. Paste it into Settings and choose **Finish connecting** within ten minutes. **Disconnect** removes this model connection. Your platform login and sessions stay with your GitHub or Google identity.
 
 In **Settings → Model keys**, choose **Add key…** for OpenAI, Anthropic, Google (Gemini) or OpenRouter. You can save one key per provider. Windlass stores it encrypted, checks it with the provider and shows its last four characters and the number of models found. Use **Check**, **Replace…** or **Remove…** to manage it later.
 

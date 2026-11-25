@@ -1,0 +1,278 @@
+/*
+ * The settings pages (an account's, a repository's) as a few groups: each group is a title, one quiet
+ * line and one raised card; the parts inside it are parted by hairlines and lay their rows flat, with
+ * no card of their own. On a wide frame the groups are listed beside them and the one in view is
+ * marked with the accent's edge, as a tab is.
+ */
+
+.settings-frame {
+	container-type: inline-size;
+	margin-top: 28px;
+}
+.settings-layout {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	gap: 20px;
+}
+@container (min-width: 860px) {
+	.settings-layout {
+		grid-template-columns: 148px minmax(0, 1fr);
+		gap: 40px;
+	}
+}
+
+/* The groups beside the page: a column that stays in view; above it on a narrow frame, a row that scrolls. */
+.settings-nav {
+	display: flex;
+	gap: 2px;
+	margin: 0 calc(-1 * var(--gutter));
+	padding: 0 var(--gutter) 2px;
+	overflow-x: auto;
+	scrollbar-width: none;
+}
+.settings-nav::-webkit-scrollbar {
+	display: none;
+}
+.settings-nav-link {
+	display: flex;
+	flex: none;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 6px 10px;
+	border-radius: var(--r-item);
+	font-size: var(--text-13);
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+	text-decoration: none;
+	transition: background-color var(--dur-hover) var(--ease), color var(--dur-hover) var(--ease);
+}
+.settings-nav-link:hover {
+	background: var(--bg-hover);
+	color: var(--ink);
+}
+.settings-nav-link[aria-current="true"] {
+	background: var(--bg-hover);
+	box-shadow: inset 0 -2px 0 var(--accent);
+	color: var(--ink);
+}
+.settings-nav-meta {
+	font-family: var(--font-mono);
+	font-size: var(--text-11);
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
+}
+@container (min-width: 860px) {
+	.settings-nav {
+		position: sticky;
+		top: calc(var(--topbar) + 24px);
+		align-self: start;
+		flex-direction: column;
+		margin: 0;
+		padding: 0;
+		overflow: visible;
+	}
+	.settings-nav-link[aria-current="true"] {
+		box-shadow: inset 2px 0 0 var(--accent);
+	}
+}
+
+/* A group: its title, one line, and the card. */
+.settings-group + .settings-group {
+	margin-top: 40px;
+}
+.settings-group {
+	scroll-margin-top: calc(var(--topbar) + 20px);
+}
+.settings-group-title {
+	font-size: var(--text-16);
+	font-weight: var(--weight-strong);
+	letter-spacing: var(--tracking-tight);
+	line-height: 1.3;
+}
+.settings-group-lede {
+	max-width: 74ch;
+	margin-top: 3px;
+	font-size: var(--text-13);
+	line-height: 1.5;
+	color: var(--ink-dim);
+}
+.settings-group-lede .link {
+	text-decoration: none;
+}
+.settings-group-lede .link:hover {
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+.settings-card {
+	margin-top: 12px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-box);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
+}
+
+/* Each part of a card: padded, and parted from the one before by a hairline. */
+.settings-card > * {
+	margin: 0;
+	padding: 18px 20px;
+}
+.settings-card > * + * {
+	border-top: 1px solid var(--line);
+}
+.settings-card > .usage-section {
+	margin-top: 0;
+}
+.settings-card .usage-title {
+	min-height: 26px;
+	align-items: center;
+	font-size: var(--text-14);
+	letter-spacing: -0.01em;
+}
+.settings-card .usage-title + .usage-lede,
+.settings-card .usage-title + p {
+	margin-top: 2px;
+}
+
+/* What used to be a card of its own lies flat in the group's. */
+.settings-card .usage-kept,
+.settings-card .usage-card,
+.settings-card .repo-fields,
+.settings-card .repo-form,
+.usage .settings-card .repo-fields,
+.usage .settings-card .repo-saved > .secrets,
+.usage .settings-card .repo-saved > .servers,
+.settings-card .usage-facts {
+	overflow: visible;
+	border: 0;
+	border-radius: 0;
+	background: none;
+	box-shadow: none;
+}
+.usage .settings-card .repo-fields,
+.settings-card .repo-form {
+	padding: 0;
+}
+.usage .settings-card .repo-fields {
+	margin-top: 0;
+}
+.settings-card .repo-form {
+	margin-top: 12px;
+}
+.usage .settings-card .repo-saved > .secrets,
+.usage .settings-card .repo-saved > .servers,
+.settings-card .usage-kept {
+	margin-top: 8px;
+}
+/* Rows: a hairline between, the hover the width of the card. */
+.settings-card .usage-kept-row,
+.usage .settings-card .repo-saved > .secrets > .secret,
+.usage .settings-card .repo-saved > .servers > .server {
+	margin-inline: -20px;
+	padding: 11px 20px;
+	border-bottom: 0;
+	border-top: 1px solid var(--line);
+}
+.settings-card .usage-kept-row:first-child,
+.usage .settings-card .repo-saved > .secrets > .secret:first-child,
+.usage .settings-card .repo-saved > .servers > .server:first-child {
+	border-top: 0;
+}
+.settings-card .usage-kept-row:first-child {
+	padding-top: 6px;
+}
+/* An empty list says so in a quiet line, not in a dashed box. */
+.settings-card .usage-empty {
+	margin-top: 4px;
+	padding: 0;
+	border: 0;
+	color: var(--ink-faint);
+}
+.settings-card .defaults-group + .defaults-group {
+	margin: 18px -20px 0;
+	padding: 16px 20px 0;
+}
+.settings-card .defaults-title {
+	font-size: var(--text-14);
+}
+.settings-card .state {
+	padding: 8px 0;
+}
+
+/* A one-line part: a name, a quiet fact, and its action at the end. */
+.settings-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px 12px;
+	min-height: 52px;
+	padding-block: 10px !important;
+}
+.settings-row-name {
+	font-size: var(--text-14);
+	font-weight: var(--weight-strong);
+}
+.settings-row-text {
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.settings-row-meta {
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	color: var(--ink-faint);
+}
+.settings-row-end {
+	margin-left: auto;
+}
+.settings-row .link {
+	text-decoration: none;
+}
+.settings-row-notes {
+	display: grid;
+	gap: 4px;
+	min-height: 0;
+}
+.settings-row-notes .field-note {
+	margin: 0;
+}
+
+/* The ChatGPT plan, the first row of the model keys. */
+.chatgpt-plan-form {
+	display: grid;
+	gap: 10px;
+	margin-top: 10px;
+}
+.chatgpt-plan-actions {
+	display: flex;
+	gap: 8px;
+}
+
+@media (max-width: 760px) {
+	.settings-card > * {
+		padding: 14px 16px;
+	}
+	.settings-card .usage-kept-row,
+	.usage .settings-card .repo-saved > .secrets > .secret,
+	.usage .settings-card .repo-saved > .servers > .server {
+		margin-inline: -16px;
+		padding-inline: 16px;
+	}
+	.settings-card .defaults-group + .defaults-group {
+		margin-inline: -16px;
+		padding-inline: 16px;
+	}
+}
+
+/* The account's page is wider than a record page by the list of groups beside it. */
+.home.settings {
+	width: min(calc(var(--measure) + 188px + 2 * var(--gutter)), 100%);
+}
+
+/* A state that is fine says so as the session panel does: a plain tick, in the good ink. */
+.settings-card .machine-used.tone-good::before {
+	content: "✓ ";
+}
+/* A check's file patterns take their own line in the narrower card. */
+.settings-card .verify-option-wide {
+	flex-basis: 100%;
+}

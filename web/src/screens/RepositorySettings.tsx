@@ -9,6 +9,7 @@ import type { RepositoryAutonomy, RepositoryView } from "@contract";
 import { useEffect, useState } from "react";
 import { ChecksEditor } from "../components/Checks";
 import { DefaultsSection } from "../components/Defaults";
+import { SettingsGroup, SettingsLayout, SettingsNav } from "../components/SettingsGroups";
 import { EnvironmentSection } from "../components/Environments";
 import { Dialog } from "../components/Dialog";
 import { WarnIcon } from "../components/Icons";
@@ -54,9 +55,9 @@ export function ScreenshotsSetting({ page, view }: { page: Pick<RepositoryPage, 
 	};
 	return (
 		<section className="usage-section repo-saved repo-screenshots" aria-labelledby="repo-screenshots">
-			<h2 className="usage-title" id="repo-screenshots">
+			<h3 className="usage-title" id="repo-screenshots">
 				Screenshots
-			</h2>
+			</h3>
 			<p className="usage-lede">Builders and reviewers can attach screenshots of the app.</p>
 			<div className="usage-card repo-form">
 				<Check checked={on} disabled={busy || (deploymentOff && !on)} onChange={(on) => set(on)}>
@@ -88,7 +89,7 @@ function AutonomySettings({ page, view }: { page: RepositoryPage; view: Reposito
 		finally { setBusy(false); }
 	}
 	return <section className="usage-section repo-saved" aria-labelledby="repo-autonomy">
-		<h2 className="usage-title" id="repo-autonomy">Work item approvals</h2>
+		<h3 className="usage-title" id="repo-autonomy">Work item approvals</h3>
 		<div className="usage-card repo-form">
 			<Check checked={!!view.defaults.autoApprovePlans} disabled={busy} onChange={on => save("autoApprovePlans", on)}>
 				<span className="check-name">Auto-approve small plans</span>
@@ -197,6 +198,13 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 	const accountChoices = startingChoices(account.settings?.defaults ?? null, info, models.list, "account");
 	const choices = layerChoices(startingChoices(view?.defaults ?? null, info, models.list), accountChoices);
 	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
+	const groups = [
+		{ id: "repo-group-defaults", title: "Defaults" },
+		{ id: "repo-group-items", title: "Work items" },
+		{ id: "repo-group-workspace", title: "Workspace" },
+		{ id: "repo-group-access", title: "Access" },
+		{ id: "repo-group-reset", title: "Reset" },
+	];
 	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.saved.network > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.defaults.place || view.defaults.screenshots || view.defaults.autoApprovePlans || view.defaults.autoMergeSingles || view.defaults.waitForCiOnEachPart || view.approvals.length > 0);
 
 	// Opened at a section: it is gone to once the sections stand, which is when what is saved was read. The sections
@@ -230,7 +238,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 					{page.error ? (
 						<div className="state state-error" role="alert">
 							<WarnIcon size={22} />
-							<h2>What is saved for this repository could not be loaded</h2>
+							<h3>What is saved for this repository could not be loaded</h3>
 							<p>{page.error}</p>
 							<button type="button" className="button button-outline" onClick={page.reload}>
 								Try again
@@ -253,102 +261,113 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						</p>
 					) : null}
 
-					<DefaultsSection
-						key={generation}
-						id="repo-defaults"
-						lede={`New agents and work items on ${name} start from these; a choice made at launch comes first. An agent that exists keeps what it has.`}
-						defaults={view.defaults}
-						whose="repository"
-						under={accountChoices}
-						account={account.settings?.defaults ?? null}
-						models={models}
-						save={(change) => client.user(auth).saveRepositoryDefaults(page.id, change)}
-						onSaved={(next) => page.replace({ ...view, defaults: next })}
-						lastStart={account.settings ? account.settings.lastStart : undefined}
-						forgetLastStart={() => client.user(auth).forgetLastStart()}
-						onForgotten={account.replace}
-					/>
+					<SettingsLayout nav={<SettingsNav label="Repository settings sections" groups={groups} />}>
+						<SettingsGroup id="repo-group-defaults" title="Defaults" lede={`New agents and work items on ${name} start from these. A choice made at launch comes first.`}>
+							<DefaultsSection
+								key={generation}
+								id="repo-defaults"
+								defaults={view.defaults}
+								whose="repository"
+								under={accountChoices}
+								account={account.settings?.defaults ?? null}
+								models={models}
+								save={(change) => client.user(auth).saveRepositoryDefaults(page.id, change)}
+								onSaved={(next) => page.replace({ ...view, defaults: next })}
+								lastStart={account.settings ? account.settings.lastStart : undefined}
+								forgetLastStart={() => client.user(auth).forgetLastStart()}
+								onForgotten={account.replace}
+							/>
+						</SettingsGroup>
 
-					<ScreenshotsSetting page={page} view={view} />
-					<AutonomySettings page={page} view={view} />
+						<SettingsGroup id="repo-group-items" title="Work items" lede="What builders and reviewers may do by themselves.">
+							<ScreenshotsSetting page={page} view={view} />
+							<AutonomySettings page={page} view={view} />
+						</SettingsGroup>
 
-					<section className="usage-section repo-saved" aria-labelledby={ids.setup}>
-						<h2 className="usage-title" id={ids.setup}>
-							Setup command
-						</h2>
-						<div className="usage-card repo-form">
-							<SetupEditor compact key={generation} repositoryId={page.id} name={name} labelledBy={ids.setup} applies="Changes apply to new workspaces." onSaved={page.reload} />
-						</div>
-					</section>
+						<SettingsGroup id="repo-group-workspace" title="Workspace" lede="How an agent's workspace is prepared and checked.">
+							<section className="usage-section repo-saved" aria-labelledby={ids.setup}>
+								<h3 className="usage-title" id={ids.setup}>
+									Setup command
+								</h3>
+								<div className="usage-card repo-form">
+									<SetupEditor compact key={generation} repositoryId={page.id} name={name} labelledBy={ids.setup} applies="Changes apply to new workspaces." onSaved={page.reload} />
+								</div>
+							</section>
 
-					<section className="usage-section repo-saved" aria-labelledby={ids.checks}>
-						<h2 className="usage-title" id={ids.checks}>
-							Checks
-							{view.saved.checks > 0 ? <span className="usage-count">{view.saved.checks}</span> : null}
-						</h2>
-						<div className="usage-card repo-form">
-							<ChecksEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.checks} onSaved={page.reload} />
-						</div>
-					</section>
+							<section className="usage-section repo-saved" aria-labelledby={ids.checks}>
+								<h3 className="usage-title" id={ids.checks}>
+									Checks
+									{view.saved.checks > 0 ? <span className="usage-count">{view.saved.checks}</span> : null}
+								</h3>
+								<div className="usage-card repo-form">
+									<ChecksEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.checks} onSaved={page.reload} />
+								</div>
+							</section>
 
-					<section className="usage-section repo-saved" aria-labelledby="repo-environment">
-						<h2 className="usage-title" id="repo-environment">
-							Environment
-						</h2>
-						<p className="usage-lede">Windlass keeps a ready copy of this repository for faster starts.</p>
-						<EnvironmentSection key={generation} repositoryId={page.id} labelledBy="repo-environment" />
-					</section>
+							<section className="usage-section repo-saved" aria-labelledby="repo-environment">
+								<h3 className="usage-title" id="repo-environment">
+									Environment
+								</h3>
+								<p className="usage-lede">Windlass keeps a ready copy of this repository for faster starts.</p>
+								<EnvironmentSection key={generation} repositoryId={page.id} labelledBy="repo-environment" />
+							</section>
+						</SettingsGroup>
 
-					<section className="usage-section repo-saved repo-network" aria-labelledby={ids.network}>
-						<h2 className="usage-title" id={ids.network}>
-							Network
-							{view.saved.network > 0 ? <span className="usage-count">{view.saved.network}</span> : null}
-						</h2>
-						<NetworkSection key={generation} repositoryId={page.id} name={name} labelledBy={ids.network} onSaved={page.reload} />
-					</section>
+						<SettingsGroup id="repo-group-access" title="Access" lede={`What agents on ${name} can reach.`}>
+							<section className="usage-section repo-saved repo-network" aria-labelledby={ids.network}>
+								<h3 className="usage-title" id={ids.network}>
+									Network
+									{view.saved.network > 0 ? <span className="usage-count">{view.saved.network}</span> : null}
+								</h3>
+								<NetworkSection key={generation} repositoryId={page.id} name={name} labelledBy={ids.network} onSaved={page.reload} />
+							</section>
 
-					<section className="usage-section repo-saved" aria-labelledby="repo-secrets">
-						<SecretsBlock
-							key={generation}
-							repositoryId={page.id}
-							name={name}
-							profile={reachProfile?.id ?? null}
-							onChanged={page.reload}
-							title={(add) => (
-								<h2 className="usage-title" id="repo-secrets">
-									Secrets
-									{view.saved.secrets > 0 ? <span className="usage-count">{view.saved.secrets}</span> : null}
-									{add}
-								</h2>
-							)}
-						/>
-					</section>
+							<section className="usage-section repo-saved" aria-labelledby="repo-secrets">
+								<SecretsBlock
+									key={generation}
+									repositoryId={page.id}
+									name={name}
+									profile={reachProfile?.id ?? null}
+									onChanged={page.reload}
+									title={(add) => (
+										<h3 className="usage-title" id="repo-secrets">
+											Secrets
+											{view.saved.secrets > 0 ? <span className="usage-count">{view.saved.secrets}</span> : null}
+											{add}
+										</h3>
+									)}
+								/>
+							</section>
 
-					<section className="usage-section repo-saved" aria-labelledby="repo-servers">
-						<h2 className="usage-title" id="repo-servers">
-							MCP server approvals
-							{view.approvals.length > 0 ? <span className="usage-count">{view.approvals.length}</span> : null}
-						</h2>
-						<RepositoryApprovals repositoryId={page.id} name={name} approvals={view.approvals} forgetting={view.forgetting} now={now} onChanged={page.replace} />
-					</section>
+							<section className="usage-section repo-saved" aria-labelledby="repo-servers">
+								<h3 className="usage-title" id="repo-servers">
+									MCP server approvals
+									{view.approvals.length > 0 ? <span className="usage-count">{view.approvals.length}</span> : null}
+								</h3>
+								<RepositoryApprovals repositoryId={page.id} name={name} approvals={view.approvals} forgetting={view.forgetting} now={now} onChanged={page.replace} />
+							</section>
+						</SettingsGroup>
 
-					<section className="usage-section" aria-labelledby="repo-forget">
-						<h2 className="usage-title" id="repo-forget">
-							Delete what is saved
-						</h2>
-						<p className="usage-lede">
-							{anything
-								? `Deletes the setup command, the checks, the network list, the secrets, the defaults (screenshots return to off) and the remembered approvals saved for ${name}, all at once. Its agents are not deleted with them.`
-								: `Nothing is saved for ${name}.`}
-						</p>
-						{anything ? (
-							<p className="repo-forget">
-								<button type="button" className="button button-outline button-small" onClick={() => setForgetting(true)}>
-									Delete what is saved…
-								</button>
-							</p>
-						) : null}
-					</section>
+						<SettingsGroup id="repo-group-reset" title="Reset">
+							<section className="usage-section" aria-labelledby="repo-forget">
+								<h3 className="usage-title" id="repo-forget">
+									Delete what is saved
+								</h3>
+								<p className="usage-lede">
+									{anything
+										? `Deletes everything saved for ${name} at once: setup, checks, network, secrets, defaults and approvals. Its agents stay.`
+										: `Nothing is saved for ${name}.`}
+								</p>
+								{anything ? (
+									<p className="repo-forget">
+										<button type="button" className="button button-outline button-small" onClick={() => setForgetting(true)}>
+											Delete what is saved…
+										</button>
+									</p>
+								) : null}
+							</section>
+						</SettingsGroup>
+					</SettingsLayout>
 
 					{forgetting ? <ForgetDialog page={page} view={view} name={name} agents={ownAgents(sessions ?? []).length} items={(sessions ?? []).length - ownAgents(sessions ?? []).length} onClose={() => setForgetting(false)} onDone={() => setGeneration((count) => count + 1)} /> : null}
 				</>

@@ -573,3 +573,215 @@
 	flex: 1 1 200px;
 	min-width: 0;
 }
+
+/*
+ * The page at a glance: one card with today's figures side by side (hosted time with its bar, model
+ * tokens, the estimate), the month where a plan counts by month, and a foot with the kept and running
+ * sandboxes and a fold for how the day is counted. The detail is in tabs under it.
+ */
+.usage-summary {
+	margin-top: 24px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-box);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-box);
+}
+.usage-summary-figures {
+	display: grid;
+	grid-template-columns: minmax(0, 1.5fr) repeat(auto-fit, minmax(150px, 1fr));
+}
+.usage-summary-cell {
+	min-width: 0;
+	padding: 20px 22px 18px;
+}
+.usage-summary-cell + .usage-summary-cell {
+	border-left: 1px solid var(--line);
+}
+.usage-summary-label {
+	font-family: var(--font-mono);
+	font-size: var(--text-11);
+	font-weight: var(--weight-regular);
+	letter-spacing: 0.02em;
+	text-transform: lowercase;
+	color: var(--ink-faint);
+}
+.usage-summary-figure {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0 6px;
+	margin-top: 6px;
+	font-size: var(--text-14);
+	color: var(--ink-dim);
+	font-variant-numeric: tabular-nums;
+}
+.usage-summary-figure strong {
+	font-size: var(--text-32);
+	font-weight: var(--weight-strong);
+	line-height: 1.1;
+	letter-spacing: var(--tracking-display);
+	color: var(--ink);
+}
+.usage-summary-main .usage-meter {
+	height: 6px;
+	margin-top: 14px;
+}
+.usage-summary-sub {
+	margin-top: 8px;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.usage-summary-sub + .usage-summary-sub {
+	margin-top: 2px;
+}
+.usage-summary-month {
+	padding: 16px 22px 18px;
+	border-top: 1px solid var(--line);
+}
+.usage-summary-month .usage-figure {
+	margin-top: 6px;
+}
+.usage-summary-foot {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 6px 20px;
+	padding: 12px 22px;
+	border-top: 1px solid var(--line);
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.usage-summary-foot strong {
+	font-weight: var(--weight-strong);
+	color: var(--ink);
+	font-variant-numeric: tabular-nums;
+}
+.usage-summary-details {
+	margin-left: auto;
+}
+.usage-summary-details summary {
+	cursor: pointer;
+	color: var(--ink-dim);
+}
+.usage-summary-details summary:hover {
+	color: var(--ink);
+}
+.usage-summary-details[open] {
+	flex-basis: 100%;
+	margin-left: 0;
+}
+.usage-summary-more {
+	display: grid;
+	gap: 14px;
+	margin-top: 10px;
+}
+.usage-summary-more .usage-facts {
+	margin: 0;
+	border: 0;
+	background: none;
+	box-shadow: none;
+}
+.usage-summary-more .usage-facts > div {
+	padding-left: 0;
+	padding-right: 0;
+}
+.usage-summary-more .usage-size-list {
+	margin: 0;
+}
+
+/* The tabs under it and the view each shows. */
+.usage-tabs {
+	margin-top: 36px;
+}
+.usage-tabs .tab {
+	border-top: 0;
+	border-left: 0;
+	border-right: 0;
+	background: none;
+	cursor: pointer;
+	font-family: inherit;
+}
+.tab-count {
+	font-family: var(--font-mono);
+	font-size: var(--text-11);
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
+}
+.usage-panel {
+	margin-top: 16px;
+}
+.usage-panel > .usage-lede:first-child {
+	margin: 0 0 12px;
+}
+.usage-panel .usage-table,
+.usage-panel .usage-kept {
+	margin-top: 0;
+}
+.usage-panel .fold-rows-toggle {
+	margin-top: 10px;
+}
+.usage-panel-notes {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 4px 16px;
+}
+.usage-panel-notes .usage-note {
+	margin-top: 10px;
+}
+.usage-panel-toggle {
+	margin-top: 10px;
+	margin-left: auto;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+	text-decoration: none;
+}
+.usage-panel-toggle:hover {
+	color: var(--ink);
+}
+.factory-limits-fold {
+	margin: 0 0 12px;
+}
+.factory-limits-fold .usage-facts {
+	margin-top: 10px;
+}
+
+@media (max-width: 760px) {
+	.usage-summary-figures {
+		grid-template-columns: 1fr 1fr;
+	}
+	.usage-summary-main {
+		grid-column: 1 / -1;
+	}
+	.usage-summary-cell {
+		padding: 16px;
+	}
+	.usage-summary-cell + .usage-summary-cell {
+		border-left: 0;
+		border-top: 1px solid var(--line);
+	}
+	.usage-summary-cell + .usage-summary-cell + .usage-summary-cell {
+		border-left: 1px solid var(--line);
+	}
+	.usage-summary-figure strong {
+		font-size: var(--text-24);
+	}
+	.usage-summary-month,
+	.usage-summary-foot {
+		padding-left: 16px;
+		padding-right: 16px;
+	}
+	.usage-tabs {
+		flex-wrap: nowrap;
+		gap: 0 20px;
+		margin-left: calc(-1 * var(--gutter));
+		margin-right: calc(-1 * var(--gutter));
+		padding: 0 var(--gutter);
+		overflow-x: auto;
+		scrollbar-width: none;
+	}
+	.usage-tabs .tab {
+		flex: none;
+	}
+}

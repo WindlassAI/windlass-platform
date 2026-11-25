@@ -104,10 +104,10 @@ export function PlanSection() {
 	if (view && !view.enabled && !view.exempt) return null;
 	return (
 		<section className="usage-section billing" id="plan" aria-labelledby="settings-plan">
-			<h2 className="usage-title" id="settings-plan">
+			<h3 className="usage-title" id="settings-plan">
 				Plan
 				{view?.enabled ? <span className="usage-count">{view.plan === "pro" ? `Pro${view.period === "year" ? " · yearly" : view.period === "month" ? " · monthly" : ""}` : "Free"}</span> : null}
-			</h2>
+			</h3>
 			{view === null ? (
 				error ? (
 					<p className="callout callout-warn" role="alert">

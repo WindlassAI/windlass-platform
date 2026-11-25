@@ -543,10 +543,10 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 	const host = machineHostNote(machine);
 	return (
 		<li className={`usage-kept-row machine-row machine-row-${machine.warnings.some((warning) => warning.kind === "outdated") ? "outdated" : machine.status}`}>
-			<span className="machine-glyph" aria-hidden="true">
-				<MachineIcon size={17} />
-			</span>
-			<div className="usage-kept-main">
+			<div className="machine-head">
+				<span className="machine-glyph" aria-hidden="true">
+					<MachineIcon size={17} />
+				</span>
 				<div className="machine-name">
 					<h3 className="usage-kept-title">{machineLabel(machine)}</h3>
 					{host === null ? (
@@ -559,42 +559,28 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 							host {host}
 						</span>
 					)}
+					{machine.warnings.some(warning => warning.kind === "outdated") && <span className="machine-update">Update available</span>}
 				</div>
-				<p className="agent-meta">
-					{machine.warnings.some(warning => warning.kind === "outdated") && <span>Update available</span>}
-					{orchestratorNote(machine) ? (
-						<span className={`machine-policy-note machine-policy-note-${orchestratorOf(machine)}`} title={ORCHESTRATOR_CHOICES.find((choice) => choice.id === orchestratorOf(machine))!.means}>
-							{orchestratorNote(machine)}
-						</span>
-					) : null}
-					<span className="machine-sandbox-count">
-						{machine.sandboxes.length === 0 ? "No kept sandboxes" : plural(machine.sandboxes.length, "kept sandbox", "kept sandboxes")}
-						{machine.maxSandboxes ? (
-							<span className="machine-meter" role="img" aria-label={`${machine.sandboxes.length} of at most ${machine.maxSandboxes} kept`}>
-								<span style={{ width: `${Math.min(100, (machine.sandboxes.length / machine.maxSandboxes) * 100)}%` }} />
-							</span>
-						) : null}
-					</span>
+				<MachineState machine={machine} now={now} />
+				<button type="button" className="button button-outline button-small machine-remove" onClick={() => onRemove(machine)}>
+					<TrashIcon size={13} />
 					<span>
-						<button type="button" className="link machine-toggle" aria-expanded={open} aria-controls={details} onClick={() => setOpen((value) => !value)}>
-							<ChevronIcon size={11} className="machine-chevron" />
-							{open ? "Hide details" : "Details"}
-						</button>
+						Remove<span className="visually-hidden"> {machineLabel(machine)}</span>…
 					</span>
-				</p>
-				<MachineUse machine={machine} onChanged={onChanged} />
-				<MachineAgents machine={machine} onChanged={onChanged} />
-				{upgrade && <p className="field-note">{upgrade}</p>}
-				{machine.providerAccounts?.filter(a => a.state === "limited" && (a.limitedUntil ?? 0) > now).map(a =>
-					<p className="field-note" key={a.key}>{a.provider ? `Your ${SOURCE_NAMES[a.provider]} key` : HARNESS_NAMES[a.harness]} is rate-limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
+				</button>
 			</div>
-			<MachineState machine={machine} now={now} />
-			<button type="button" className="button button-outline button-small machine-remove" onClick={() => onRemove(machine)}>
-				<TrashIcon size={13} />
-				<span>
-					Remove<span className="visually-hidden"> {machineLabel(machine)}</span>…
-				</span>
-			</button>
+
+			<div className="machine-part">
+				<MachineUse machine={machine} onChanged={onChanged} />
+			</div>
+			{machine.harnesses?.length || upgrade || machine.providerAccounts?.some(a => a.state === "limited" && (a.limitedUntil ?? 0) > now) ? (
+				<div className="machine-part">
+					<MachineAgents machine={machine} onChanged={onChanged} />
+					{upgrade && <p className="field-note">{upgrade}</p>}
+					{machine.providerAccounts?.filter(a => a.state === "limited" && (a.limitedUntil ?? 0) > now).map(a =>
+						<p className="field-note" key={a.key}>{a.provider ? `Your ${SOURCE_NAMES[a.provider]} key` : HARNESS_NAMES[a.harness]} is rate-limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
+				</div>
+			) : null}
 
 			{machine.status === "waiting" || machine.warnings.length > 0 ? (
 				<div className="machine-notes">
@@ -609,6 +595,27 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				</div>
 			) : null}
 
+			<p className="agent-meta machine-foot">
+				{orchestratorNote(machine) ? (
+					<span className={`machine-policy-note machine-policy-note-${orchestratorOf(machine)}`} title={ORCHESTRATOR_CHOICES.find((choice) => choice.id === orchestratorOf(machine))!.means}>
+						{orchestratorNote(machine)}
+					</span>
+				) : null}
+				<span className="machine-sandbox-count">
+					{machine.sandboxes.length === 0 ? "No kept sandboxes" : plural(machine.sandboxes.length, "kept sandbox", "kept sandboxes")}
+					{machine.maxSandboxes ? (
+						<span className="machine-meter" role="img" aria-label={`${machine.sandboxes.length} of at most ${machine.maxSandboxes} kept`}>
+							<span style={{ width: `${Math.min(100, (machine.sandboxes.length / machine.maxSandboxes) * 100)}%` }} />
+						</span>
+					) : null}
+				</span>
+				<span className="machine-foot-end">
+					<button type="button" className="link machine-toggle" aria-expanded={open} aria-controls={details} onClick={() => setOpen((value) => !value)}>
+						<ChevronIcon size={11} className="machine-chevron" />
+						{open ? "Hide details" : "Details"}
+					</button>
+				</span>
+			</p>
 			<div id={details} className="machine-details" hidden={!open}>
 				<div>
 					<h4 className="eyebrow">Sandboxes</h4>

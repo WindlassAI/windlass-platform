@@ -292,7 +292,7 @@ describe("the repository's screenshots setting", () => {
 		const render = () => act(async () => root.render(createElement(AppProvider, { client, children: createElement(ScreenshotsSetting, { page: { id: 7102, replace }, view }) })));
 		await render();
 		const box = () => host.querySelector<HTMLInputElement>("input.check-input");
-		expect(host.querySelector("h2")?.textContent).toBe("Screenshots");
+		expect(host.querySelector("h3")?.textContent).toBe("Screenshots");
 		expect(host.textContent).toContain("Builders and reviewers can attach screenshots of the app.");
 		expect(box()?.checked).toBe(false);
 		await act(async () => {

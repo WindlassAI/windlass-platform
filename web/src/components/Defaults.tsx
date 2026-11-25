@@ -18,7 +18,6 @@ type Saved = AccountDefaults & { hostedSize?: HostedSize | null };
 
 export function DefaultsSection<T extends Saved>({
 	id,
-	lede,
 	defaults,
 	whose,
 	under,
@@ -30,10 +29,8 @@ export function DefaultsSection<T extends Saved>({
 	forgetLastStart,
 	onForgotten,
 }: {
-	/** The id of the section's heading. */
+	/** The id of the section: its title and lede are the settings group's it sits in. */
 	id: string;
-	/** What these defaults are for, in a sentence. */
-	lede: string;
 	defaults: T;
 	whose: "repository" | "account";
 	/** The account's defaults that can be used, on a repository's page; null on the account's own. */
@@ -126,11 +123,7 @@ export function DefaultsSection<T extends Saved>({
 	const forget = () => persist("forget", async () => onForgotten(await forgetLastStart()));
 
 	return (
-		<section className="usage-section" aria-labelledby={id}>
-			<h2 className="usage-title" id={id}>
-				Defaults
-			</h2>
-			<p className="usage-lede">{lede}</p>
+		<section className="usage-section" id={id} aria-label="Defaults">
 			{info === null ? (
 				<p className="usage-empty" aria-busy={platform.loading}>
 					{platform.loading ? "Asking the server which sandboxes it has…" : (platform.error ?? "The server did not say which sandboxes it has.")}

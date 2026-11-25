@@ -34,27 +34,39 @@ export function ChatgptPlan() {
 		}
 	}
 
+	const connected = Boolean(status?.connected);
+	// A row of the model keys' list: the plan stands where a key would, with its state and one action.
 	return (
-		<div className="field">
-			<h3 className="label">ChatGPT plan</h3>
-			{attempt ? (
-				<form className="field" onSubmit={event => { event.preventDefault(); void change("finish"); }}>
-					<a href={attempt.url} target="_blank" rel="noopener noreferrer">Authorize your plan at OpenAI ↗</a>
-					<label className="field">Paste the full address from the page that ends at {attempt.redirectPrefix}.
-						<input className="input" type="url" autoComplete="off" value={callback} onChange={e => setCallback(e.target.value)} required />
-					</label>
-					<div><button className="button button-primary" disabled={busy || !callback.trim()}>Finish connecting</button>{" "}
-						<button type="button" className="button button-quiet" disabled={busy} onClick={() => setAttempt(null)}>Cancel</button></div>
-				</form>
-			) : (
-				<div>
-					{status?.connected && <p className="field-note">Connected{status.email && " as " + status.email}</p>}
-					<button type="button" className="button button-outline" disabled={busy} onClick={() => void change("start")}>{status?.connected ? "Reconnect plan" : "Connect ChatGPT plan"}</button>
-					{status?.connected && <button type="button" className="button button-quiet" disabled={busy} onClick={() => void change("disconnect")}>Disconnect plan</button>}
-				</div>
-			)}
-			{(error || statusError) && <p className="field-note tone-bad" role="alert">{error || statusError}</p>}
-		</div>
+		<li className="usage-kept-row provider-row chatgpt-plan" data-provider="chatgpt">
+			<div className="usage-kept-main">
+				<span className="usage-kept-title">ChatGPT plan</span>
+				<p className="agent-meta">
+					<span>{connected ? (status?.email ? `Connected as ${status.email}` : "Connected") : "Use your ChatGPT subscription"}</span>
+				</p>
+				{attempt ? (
+					<form className="chatgpt-plan-form" onSubmit={event => { event.preventDefault(); void change("finish"); }}>
+						<a className="link" href={attempt.url} target="_blank" rel="noopener noreferrer">Authorize your plan at OpenAI ↗</a>
+						<label className="field">Paste the full address from the page that ends at {attempt.redirectPrefix}.
+							<input className="input" type="url" autoComplete="off" value={callback} onChange={e => setCallback(e.target.value)} required />
+						</label>
+						<div className="chatgpt-plan-actions"><button className="button button-primary button-small" disabled={busy || !callback.trim()}>Finish connecting</button>
+							<button type="button" className="button button-quiet button-small" disabled={busy} onClick={() => setAttempt(null)}>Cancel</button></div>
+					</form>
+				) : null}
+				{(error || statusError) && <p className="field-note tone-bad" role="alert">{error || statusError}</p>}
+			</div>
+			<span className={`machine-used${connected ? " tone-good" : ""}`}>{connected ? "connected" : "not connected"}</span>
+			<div className="provider-actions">
+				{attempt ? null : connected ? (
+					<>
+						<button type="button" className="button button-outline button-small" disabled={busy} onClick={() => void change("start")}>Reconnect</button>
+						<button type="button" className="button button-outline button-small" disabled={busy} onClick={() => void change("disconnect")}>Disconnect</button>
+					</>
+				) : (
+					<button type="button" className="button button-outline button-small" disabled={busy} onClick={() => void change("start")}>Connect</button>
+				)}
+			</div>
+		</li>
 	);
 }
 

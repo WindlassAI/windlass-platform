@@ -19,6 +19,7 @@ import "./styles/workspace.css";
 import "./styles/feed.css";
 import "./styles/landing.css";
 import "./styles/docs.css";
+import "./styles/settings.css";
 import { QUESTION_TIMEOUT_MS } from "@contract";
 import { StrictMode } from "react";
 import { flushSync } from "react-dom";

@@ -198,13 +198,13 @@ export function ApiTokens() {
 
 	return (
 		<section className="usage-section repo-saved" aria-labelledby="settings-tokens">
-			<h2 className="usage-title" id="settings-tokens">
+			<h3 className="usage-title" id="settings-tokens">
 				API tokens
 				{list && list.length > 0 ? <span className="usage-count">{`${list.length} of ${MAX_API_TOKENS}`}</span> : null}
 				<button type="button" className="link secret-add" onClick={() => setMaking(true)} disabled={list === null || full} title={full ? `An account can keep ${MAX_API_TOKENS} tokens: revoke one first` : undefined}>
 					New token…
 				</button>
-			</h2>
+			</h3>
 			<p className="usage-lede">
 				For scripts that file work items.
 			</p>

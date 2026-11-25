@@ -498,13 +498,13 @@ export function PersonalServers({ settings, onChanged }: { settings: AccountSett
 	const editing = open !== null && open !== "add" ? (servers.find((server) => server.name === open.name) ?? null) : null;
 	return (
 		<section className="usage-section repo-saved" aria-labelledby="settings-servers">
-			<h2 className="usage-title" id="settings-servers">
+			<h3 className="usage-title" id="settings-servers">
 				MCP servers
 				<span className="usage-count">{servers.length} of {settings.limits.servers}</span>
 				<button type="button" className="link secret-add" onClick={() => setOpen("add")} aria-label="Add an MCP server of your own">
 					Add…
 				</button>
-			</h2>
+			</h3>
 			<p className="usage-lede">Tools for every agent. These servers start without asking.</p>
 			{servers.length === 0 ? (
 				<p className="usage-empty">No servers saved.</p>

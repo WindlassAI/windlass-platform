@@ -39,7 +39,8 @@ it("adds, checks, replaces and removes a provider key", async () => {
 	try {
 		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(ModelProviders) })));
 		await settle();
-		expect(host.querySelectorAll(".provider-row")).toHaveLength(4);
+		expect(host.querySelectorAll(".provider-row:not(.chatgpt-plan)")).toHaveLength(4);
+	expect(host.querySelector(".provider-row.chatgpt-plan")?.textContent).toContain("ChatGPT plan");
 		expect(state("openai")).toBe("no key");
 
 		await press(row("openai"), "Add key");

@@ -18,11 +18,10 @@
 	background: none;
 	box-shadow: none;
 }
+/* The card: a head (glyph, name, state, Remove), its parts parted by hairlines as a settings card's are, then a foot. */
 .machine-row {
-	grid-template-columns: 36px minmax(0, 1fr) auto auto;
-	align-items: center;
-	column-gap: 14px;
-	padding: 16px 16px 16px 16px;
+	display: block;
+	padding: 0;
 	border: 1px solid var(--line);
 	border-radius: var(--r-box);
 	background: var(--bg-raised);
@@ -50,11 +49,11 @@
 .machine-row-online .machine-glyph {
 	color: var(--ink);
 }
-.machine-row > .machine-state {
+.machine-head > .machine-state {
 	margin-top: 0;
 }
 /* Its state as one of Helm's chips. */
-.machine-row > .machine-state {
+.machine-head > .machine-state {
 	height: 24px;
 	padding: 0 9px 0 8px;
 	border-radius: var(--r-item);
@@ -63,10 +62,10 @@
 	font-size: 12px;
 	font-weight: var(--weight-medium);
 }
-.machine-row > .machine-state {
+.machine-head > .machine-state {
 	color: var(--ink-dim);
 }
-.machine-row-online > .machine-state .sandbox-state-dot {
+.machine-row-online .machine-head > .machine-state .sandbox-state-dot {
 	border-color: var(--ok);
 	background: var(--ok);
 }
@@ -360,31 +359,33 @@
 }
 
 @media (max-width: 760px) {
-	.machine-row {
+	.machine-head {
 		grid-template-columns: 36px minmax(0, 1fr) auto;
-		/* The card's text takes the whole width; Remove sits beside the state, under it. */
 		grid-template-areas:
-			"glyph main main"
+			"glyph name name"
 			". state remove";
 		row-gap: 10px;
 		column-gap: 12px;
 		padding: 14px;
 	}
-	.machine-row > .machine-glyph {
+	.machine-head > .machine-glyph {
 		grid-area: glyph;
 	}
-	.machine-row > .usage-kept-main {
-		grid-area: main;
+	.machine-head > .machine-name {
+		grid-area: name;
 	}
-	.machine-row > .machine-state {
+	.machine-head > .machine-state {
 		grid-area: state;
 		justify-self: start;
-		margin-top: 0;
 		white-space: normal;
 	}
-	.machine-row > .machine-remove {
+	.machine-head > .machine-remove {
 		grid-area: remove;
-		align-self: center;
+	}
+	.machine-part,
+	.machine-foot {
+		padding-left: 14px !important;
+		padding-right: 14px !important;
 	}
 	.machine-notes,
 	.machine-details {
@@ -712,4 +713,48 @@
 	.usage-machine-sandboxes li > :first-child {
 		grid-column: 1 / -1;
 	}
+}
+
+.machine-head {
+	display: grid;
+	grid-template-columns: 36px minmax(0, 1fr) auto auto;
+	align-items: center;
+	column-gap: 14px;
+	padding: 16px 16px 14px 18px;
+}
+.machine-head .machine-glyph {
+	align-self: center;
+}
+.machine-update {
+	font-size: var(--text-12);
+	color: var(--ink-dim);
+}
+.machine-part {
+	padding: 12px 18px;
+	border-top: 1px solid var(--line);
+}
+.machine-part > :first-child {
+	margin-top: 0;
+}
+.machine-row .machine-foot {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	margin: 0;
+	padding: 10px 18px;
+	border-top: 1px solid var(--line);
+}
+.machine-foot-end {
+	margin-left: auto;
+}
+.machine-row .agent-meta > span.machine-foot-end::after,
+.machine-row .agent-meta > span:nth-last-child(2)::after {
+	content: none;
+}
+.machine-row .machine-notes,
+.machine-row .machine-details {
+	margin: 0 18px 14px;
+}
+.machine-row .machine-notes {
+	margin-top: 12px;
 }

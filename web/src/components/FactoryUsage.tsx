@@ -1,7 +1,7 @@
 /**
  * The usage page's part for work items: the limits for the user, which the deployment's owner sets and
- * nobody can raise from here, and what each item has cost so far against its budget: its tokens
- * cost-weighted, with what was reported beside them.
+ * nobody can raise from here (one line, the rest in a fold), and what each item has spent so far against
+ * its budget, the first rows with the way to the rest.
  * The usage view supplies the effective limits alongside the user's live items: every open one and
  * the newest ended ones (`ItemFeed`), and how many older ended ones there are, which the Factory page lists.
  * Shown only where the deployment offers work items. Hosted sandbox time is a limit only of an item on a
@@ -9,6 +9,7 @@
  */
 import { byteSize, compact, count, plural, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
+import { FoldRows } from "./Fold";
 import { useItems } from "../screens/Items";
 import { useApp } from "../state/app";
 import type { FactoryLimits } from "@contract";
@@ -32,39 +33,38 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 	// The feed carries the newest ended items only; the older ones are on the Factory page.
 	const older = items.feed ? items.feed.counts.ended - items.feed.ended.length : 0;
 	return (
-		<section className="usage-section" aria-labelledby="usage-items">
-			<h2 className="usage-title" id="usage-items">
-				Work items
-			</h2>
-			<p className="usage-lede">Limits for hosted work. Your machines aren’t limited here.</p>
-			<dl className="usage-facts factory-limits">
-				<div>
-					<dt>Hosted sandboxes</dt>
-					<dd className="usage-number">{count(value.hostedRunning)}</dd>
-					<dd className="usage-gloss">running at once on this platform, work items and your own agents together; more wait their turn</dd>
-				</div>
-				<div>
-					<dt>Each item</dt>
-					<dd className="usage-number">{compact(value.item.tokens)} tokens</dd>
-					<dd className="usage-gloss">
-						{sandboxTime(value.item.hostedSeconds)} of hosted time. An item asks before spending more.
-					</dd>
-				</div>
-				<div>
-					<dt>A feature</dt>
-					<dd className="factory-limit-text">Its subtasks' budgets, as you approve them in its plan, and one item's for its planning, summary and review</dd>
-				</div>
-				<div>
-					<dt>Items from GitHub and Linear</dt>
-					<dd className="factory-limit-text">{count(value.githubItemsPerDay)} per UTC day, shared by GitHub and Linear, drafts among them</dd>
-				</div>
-				<div>
-					<dt>Screenshots</dt>
-					<dd className="factory-limit-text">
-						{byteSize(value.attachments.bytes)} each · {count(value.attachments.perItem)} per item · {byteSize(value.attachments.accountBytes)} per account · kept for {plural(value.attachments.days, "day")} after an item ends
-					</dd>
-				</div>
-			</dl>
+		<>
+			<p className="usage-lede">
+				Each item may spend {compact(value.item.tokens)} tokens and {sandboxTime(value.item.hostedSeconds)} of hosted time, then it asks you for more.
+			</p>
+			<details className="usage-note factory-limits-fold">
+				<summary>All limits</summary>
+				<dl className="usage-facts factory-limits">
+					<div>
+						<dt>Hosted sandboxes</dt>
+						<dd className="usage-number">{count(value.hostedRunning)}</dd>
+						<dd className="usage-gloss">running at once on Hosted, work items and your own agents together; more wait their turn</dd>
+					</div>
+					<div>
+						<dt>A feature</dt>
+						<dd className="factory-limit-text">Its subtasks' budgets, as you approve them in its plan, and one item's for its planning, summary and review</dd>
+					</div>
+					<div>
+						<dt>Items from GitHub and Linear</dt>
+						<dd className="factory-limit-text">{count(value.githubItemsPerDay)} per UTC day, shared by GitHub and Linear, drafts among them</dd>
+					</div>
+					<div>
+						<dt>Screenshots</dt>
+						<dd className="factory-limit-text">
+							{byteSize(value.attachments.bytes)} each · {count(value.attachments.perItem)} per item · {byteSize(value.attachments.accountBytes)} per account · kept for {plural(value.attachments.days, "day")} after an item ends
+						</dd>
+					</div>
+					<div>
+						<dt>Your machines</dt>
+						<dd className="factory-limit-text">Not limited here</dd>
+					</div>
+				</dl>
+			</details>
 
 			{list === null ? (
 				items.error ? <p className="usage-empty tone-bad">The work items could not be loaded: {items.error}</p> : null
@@ -73,44 +73,44 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 					<p>No work items yet.</p>
 				</div>
 			) : (
-				<table className="usage-table factory-cost">
-					<thead>
-						<tr>
-							<th scope="col">Item, cost so far</th>
-							<th scope="col" className="usage-number">
-								Tokens
-							</th>
-							<th scope="col" className="usage-number usage-wide">
-								As reported
-							</th>
-							<th scope="col" className="usage-number usage-wide">
-								Working
-							</th>
-							<th scope="col" className="usage-number">
-								Hosted
-							</th>
-						</tr>
-					</thead>
-					<tbody>
-						{list.map((item) => (
-							<tr key={item.id}>
-								<th scope="row">
-									<a className="usage-agent" {...linkProps({ name: "item", id: item.id })}>
-										{item.title}
-									</a>
-								</th>
-								<td className="usage-number">
-									<Of spent={item.spent.tokens} budget={item.budget.tokens} spell={compact} />
-								</td>
-								<td className="usage-number usage-wide tone-dim">{compact(item.spent.rawTokens ?? item.spent.tokens)}</td>
-								<td className="usage-number usage-wide tone-dim">{sandboxTime(item.spent.activeSeconds)}</td>
-								<td className="usage-number">
-									{item.place.kind === "hosted" ? <Of spent={item.spent.hostedSeconds} budget={item.budget.hostedSeconds} spell={sandboxTime} /> : <span className="tone-faint">your machine</span>}
-								</td>
-							</tr>
-						))}
-					</tbody>
-				</table>
+				<FoldRows items={list} shown={10}>
+					{(rows, id) => (
+						<table className="usage-table factory-cost" id={id}>
+							<thead>
+								<tr>
+									<th scope="col">Item, spent so far</th>
+									<th scope="col" className="usage-number">
+										Tokens
+									</th>
+									<th scope="col" className="usage-number usage-wide">
+										Working
+									</th>
+									<th scope="col" className="usage-number">
+										Hosted
+									</th>
+								</tr>
+							</thead>
+							<tbody>
+								{rows.map((item) => (
+									<tr key={item.id}>
+										<th scope="row">
+											<a className="usage-agent" {...linkProps({ name: "item", id: item.id })}>
+												{item.title}
+											</a>
+										</th>
+										<td className="usage-number">
+											<Of spent={item.spent.tokens} budget={item.budget.tokens} spell={compact} />
+										</td>
+										<td className="usage-number usage-wide tone-dim">{sandboxTime(item.spent.activeSeconds)}</td>
+										<td className="usage-number">
+											{item.place.kind === "hosted" ? <Of spent={item.spent.hostedSeconds} budget={item.budget.hostedSeconds} spell={sandboxTime} /> : <span className="tone-faint">your machine</span>}
+										</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+					)}
+				</FoldRows>
 			)}
 			{list !== null && older > 0 ? (
 				<p className="usage-note factory-cost-older">
@@ -121,6 +121,6 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 					.
 				</p>
 			) : null}
-		</section>
+		</>
 	);
 }

@@ -125,3 +125,19 @@ export function PathList({ paths, shown = FOLD_SHOWN, noun = "path" }: { paths: 
 		</span>
 	);
 }
+
+/**
+ * A long table or list cut to its first `shown` rows, then "Show N more": `children` draws the rows it
+ * is given, all of them or the first ones. A list one row longer than that is shown whole.
+ */
+export function FoldRows<T>({ items, shown, children }: { items: readonly T[]; shown: number; children(rows: readonly T[], id: string): ReactNode }) {
+	const [open, setOpen] = useState(false);
+	const id = useId();
+	const folds = listFolds(items.length, shown);
+	return (
+		<>
+			{children(folds && !open ? items.slice(0, shown) : items, id)}
+			{folds ? <FoldToggle open={open} controls={id} label={FOLD_WORDS.more(items.length - shown)} onToggle={() => setOpen((value) => !value)} className="fold-rows-toggle" /> : null}
+		</>
+	);
+}
