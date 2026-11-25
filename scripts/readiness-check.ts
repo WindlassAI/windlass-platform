@@ -131,6 +131,41 @@ test("only verified guide lines get citations, and filenames and reasons stay ou
 	assert.match(privateBody!, /AGENTS.md:3 \| local-note.md \| package.json:1/);
 });
 
+test("reconcile each reviewed guide with the filing its published lines came from", async () => {
+	const { validateDraft } = await import("../server/src/repo-setup/filing.js");
+	const { reconcileReview } = await import("../server/src/repo-setup/review.js");
+	const ctx = {
+		request: { areas: ["fixed", "unchanged", "omitted", "approved", "dropped"], later: 0, noteIds: ["team"], previous: null },
+		notes: [{ id: "team", text: "Read the instructions.", label: "source-note.md" }], owner: "team", host: "github.com",
+		paths: ["README.md"], read: new Map([["README.md", "Read the instructions."]]), redact: (s: string) => s,
+	};
+	const file = (area: string, title: string) => ({
+		path: area ? area + "/AGENTS.md" : "AGENTS.md", kind: area ? "area" : "guide",
+		content: title + "\n## Terms\nRead the instructions.\n",
+		lines: [{ line: title.split("\n").length + 2, noteId: "team", evidence: { file: "README.md", line: 1 } }],
+	});
+	const args = { score: answers().slice(0, 3), notes: [{ noteId: "team", verdict: "team", reason: "Verified in readme." }] };
+	const original = validateDraft({ ...args, files: ["", ...ctx.request.areas].map(area => file(area, "# Original")) }, ctx);
+	const files = [file("", "# Unexpected\n"), file("fixed", "# Fixed\n"), file("unchanged", "# Original"), file("dropped", "# Revised")];
+	assert.throws(() => validateDraft({ ...args, files }, ctx), /Include the root guide and every chosen area/);
+	const revision = validateDraft({ ...args, files }, { ...ctx, revision: true });
+	const verdict = (path: string, verdict: "ok" | "fix" | "drop") => ({ path, verdict, findings: [] });
+	const accepted = reconcileReview(original, revision, [
+		verdict("AGENTS.md", "ok"), verdict("approved/AGENTS.md", "ok"), verdict("fixed/AGENTS.md", "fix"),
+		verdict("unchanged/AGENTS.md", "fix"), verdict("omitted/AGENTS.md", "fix"), verdict("dropped/AGENTS.md", "drop"),
+	]);
+	assert.deepEqual(accepted.files, new Map([
+		["AGENTS.md", original.files.get("AGENTS.md")], ["approved/AGENTS.md", original.files.get("approved/AGENTS.md")],
+		["fixed/AGENTS.md", revision.files.get("fixed/AGENTS.md")],
+	]));
+	assert.deepEqual(accepted.leftOut, ["unchanged", "omitted"].map(area => area + "/AGENTS.md: the reviewer asked for a fix that wasn't made, so it was left out"));
+	assert.deepEqual(accepted.decisions[0].uses.map(u => [u.path, u.line]), [["AGENTS.md", 3], ["approved/AGENTS.md", 3], ["fixed/AGENTS.md", 4]]);
+	const empty = validateDraft({ ...args, files: [] }, { ...ctx, revision: true });
+	const allOmitted = reconcileReview(original, empty, [...original.files.keys()].map(path => verdict(path, "fix")));
+	assert.equal(allOmitted.files.size, 0);
+	assert.equal(allOmitted.leftOut.length, original.files.size);
+});
+
 test("split, seal and expire notes within the owner's repository", async () => {
 	const { addNotes, setupKnowledge, splitNotes, NOTE_LIFETIME, NOTES_TABLE, PUBLICATION_TABLE } = await import("../server/src/repo-setup/notes.js");
 	const db = new DatabaseSync(":memory:");

@@ -99,7 +99,8 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 			score: ["setup", "checks", "guide"].map(id => ({ id, pass: false, reason: "Missing proof." })),
 			files: [{ kind: "guide", path: "AGENTS.md", content: (revise ? "# Read the repository guide" : "# Working here") + "\n## Terms\nSee `README.md`.\nRun `missing.sh`.\nRun `echo hello`.\npassword=fixture-only\n",
 				lines: [{ line: 3, noteId, evidence: ref }, { line: 4, evidence: ref }, { line: 6, evidence: ref }] },
-				{ kind: "area", path: "src/AGENTS.md", content: "# Source files\nSee [the readme](../README.md).\n", lines: [{ line: 2, evidence: ref }] }, skill("read-source", "README.md"), ...(notes.some(n => n.verdict === "question") ? [skill("first-draft", "README.md")] : []), skill("bad-read", "missing")],
+				{ kind: "area", path: "src/AGENTS.md", content: "# Source files\nSee [the readme](../README.md).\n", lines: [{ line: 2, evidence: ref }] }, skill("read-source", "README.md"), ...(notes.some(n => n.verdict === "question") ? [skill("first-draft", "README.md")] : []), skill("bad-read", "missing"),
+				...(revise && notes.some(n => n.verdict === "question") ? [skill("unreviewed", "README.md")] : [])],
 			notes,
 		} };
 		const invoke = host.get("file_repo_setup")!;

@@ -6,6 +6,7 @@ import { checkGuide, guideTree, skillPath } from "./guide-check.js";
 import type { DraftRequest, NoteDecision, SetupNote, Verdict } from "./types.js";
 
 interface DraftContext {
+	revision?: boolean;
 	request: DraftRequest;
 	notes: SetupNote[];
 	paths: string[];
@@ -15,6 +16,7 @@ interface DraftContext {
 	redact(text: string): string;
 }
 export interface AcceptedDraft {
+	leftOut?: string[];
 	score: Judgment; files: Map<string, string>; decisions: NoteDecision[]; skills: Map<string, "ran" | "static only">;
 }
 const verdicts: Verdict[] = ["team", "personal", "private", "secret", "stale", "question", "duplicate"];
@@ -142,7 +144,7 @@ export function validateDraft(args: unknown, ctx: DraftContext): AcceptedDraft {
 		}
 		files.set(path, kept.join("\n").trimEnd() + "\n");
 	}
-	if (allowed.size) throw Error("Include the root guide and every chosen area.");
+	if (allowed.size && !ctx.revision) throw Error("Include the root guide and every chosen area.");
 	const draft = { score, files, decisions, skills };
 	pruneCitations(draft);
 	return draft;

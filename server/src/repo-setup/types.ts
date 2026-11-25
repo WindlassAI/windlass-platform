@@ -1,6 +1,7 @@
 import type { PullRequestInfo } from "../contract.js";
 
 export interface SetupDiagnosis {
+	leftOut?: string[];
 	phase: "draft" | "review" | "revision";
 	model: string;
 	toolOffered: boolean;
