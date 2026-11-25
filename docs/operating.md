@@ -54,7 +54,7 @@ names, and for a limited time.
 
 The servers issue it. `GET /platform/connection`, under the same origin check as `/platform/info`, answers
 with the engine's address for browsers (`WLP_PUBLIC_ENDPOINT`), the namespace, and a token with its expiry. The
-token may create, list and read actors and call them through the gateway (`actor`: `create`, `list`, `read`;
+token may list and read existing actors and call them through the gateway (`actor`: `list`, `read`;
 `actor_gateway`: `read`, `create`), which is what the web app does, and nothing else: no deleting, no nodes, no
 pools. It says only that its holder is a client of this deployment. Who the user is, and what is theirs, is
 still decided by the platform's own token in every actor. A server asks the engine once and hands the same
@@ -117,8 +117,7 @@ and the web app is then built with its address in `VITE_WLP_ENDPOINT`.
 ## Public HTTP rate limits
 
 RivetKit gives these HTTP routes a web `Request` with ordinary headers and no socket peer address.
-With `WLP_CLIENT_IP_HEADER` unset (the default, including on Rivet Cloud), the server skips
-all per-address limits. Client-supplied `Forwarded`, `X-Forwarded-For` and `X-Real-IP` have
+With `WLP_CLIENT_IP_HEADER` unset (the default, including on Rivet Cloud), login requests share one address bucket. Other routes skip per-address limits. Client-supplied `Forwarded`, `X-Forwarded-For` and `X-Real-IP` have
 no authority. With a trusted ingress, set `WLP_CLIENT_IP_HEADER` to the header it writes,
 for example `x-ingress-ip`. Every path to the node must go through an ingress that strips the
 caller's value and writes one verified IP. When configured, missing values, lists and malformed
@@ -127,6 +126,7 @@ addresses identify the same client as their canonical addresses.
 
 | Route and setting | Without a trusted header | With a trusted header |
 |---|---|---|
+| `POST /platform/login/{start,finish,demo}`, `WLP_LOGIN_ADDRESS_PER_MINUTE` (120) and `WLP_LOGIN_TOTAL_PER_MINUTE` (600) | One shared address bucket and the deployment ceiling | Each address has its own allowance within the same deployment ceiling. All nodes share both counters per UTC minute. A provider attempt accepts at most five unsuccessful finishes. |
 | Items API requests, `WLP_API_ADDRESS_PER_MINUTE` (240/min) | No address limit | Each node limits requests per address before body parsing or actor lookup |
 | Items API authorization, `WLP_API_TOKEN_PER_MINUTE` (60/UTC minute) | Each authorized token has one allowance across routes, scopes and nodes, stored in the owning user's database | Same per-token limit |
 | Items API invalid tokens, `WLP_API_FAILURES_PER_MINUTE` (12/min) | Each node counts refusals only after it identifies a missing, malformed, unknown, revoked or out-of-scope token. Excess refusals receive 429. Valid tokens can still proceed | Each node reserves a slot per address before lookup. Concurrent calls wait for pending results. Successful checks release their slots. Once the address exhausts the failure allowance, all its items API calls receive 429 until reset |
@@ -424,6 +424,18 @@ that the lookup stub names a blocked host; `scripts/network-check.ts` holds the 
 reading of a repository's files and the stub; `WLP_E2B_CHECK_NETWORK=1 scripts/e2b-check.ts` proves the modes at
 E2B (two short sandboxes, no turn).
 
+## Recover a platform login
+
+For a signed-out owner, verify ownership independently. Obtain the exact existing Windlass UID from a trusted account record or backup and the provider subject from the owner’s authenticated provider account. For GitHub, verify the numeric user ID on the deployment’s configured GitHub API host. For Google, use the verified ID token’s `sub` for the configured OAuth client. The owner should wait to use provider sign-in until the link is in place.
+
+Run this in the server container, from its default working directory, with its normal engine and signing configuration:
+
+```sh
+node --import tsx src/link-identity.ts --uid "$OWNER_UID" --provider github --id "$GITHUB_NUMERIC_ID"
+```
+
+For Google use `--provider google --id "$GOOGLE_SUB"`. Repeating the same assignment is safe. The command requires an existing user and refuses conflicting assignments. Keep that UID admitted through `WLP_ALLOWED_USERS` when the deployment restricts access. Ask the owner to sign in and compare the UID in the account menu.
+
 ## The GitHub App
 
 What the platform does with GitHub, and why each permission is needed, is in
@@ -442,7 +454,7 @@ platform is served at, `https://<name>.onrivet.dev` below:
 | Webhook | "Active" selected where work items should hear from GitHub at once (issue intake, CI, pull request state): URL `https://<name>.onrivet.dev/github/webhook`, and a secret of at least 32 characters, which is `WLP_GITHUB_WEBHOOK_SECRET`. Without a webhook, items poll GitHub and nothing is taken in from issues |
 | Subscribe to events | Issues, Issue comment, Check run, Check suite, Status, Pull request, Pull request review, Pull request review comment (installation events come by themselves) |
 | Repository permissions | Contents: read and write. Pull requests: read and write. Issues: read and write. Checks: read and write. Commit statuses: read-only. Actions: read and write. Metadata: read-only (GitHub adds it). Nothing else |
-| Account permissions | Email addresses (read-only) for the verified primary email at login |
+| Account permissions | Email addresses (read-only) only for admission through `WLP_ALLOWED_EMAILS`; UID-based admission and linking need no email permission |
 | Organization permissions | none |
 | Where can this GitHub App be installed? | Choose "Only on this account" for a single-owner deployment. Choose "Any account" if other accounts need to install the App. |
 
