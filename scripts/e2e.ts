@@ -188,7 +188,9 @@ function withTimeout<T>(what: string, promise: Promise<T>, timeoutMs: number): P
 
 class Server {
 	private child: ChildProcess | null = null;
+	private startOffset = 0;
 	output = "";
+
 	readonly storage = mkdtempSync(join(process.env.WLP_E2E_DIR ?? tmpdir(), "wlp-e2e-"));
 	readonly logFile = join(this.storage, "server.log");
 	/** The server's WLP_SECRET: a check that calls an internal action signs its service token with it (`serviceUser`). */
@@ -199,7 +201,12 @@ class Server {
 		process.env.WLP_SECRET = this.secret;
 	}
 
+	get outputSinceStart(): string {
+		return this.output.slice(this.startOffset);
+	}
+
 	async start(extraEnv: Record<string, string> = {}): Promise<void> {
+		this.startOffset = this.output.length;
 		const log = createWriteStream(this.logFile, { flags: "a" });
 		const env: Record<string, string | undefined> = {
 			...process.env,
@@ -3793,6 +3800,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 	await check(off, async () => {
 		const info = (await (await platformInfo()).json()) as Info;
 		assert(!("github" in info), `the platform's information has ${plain(info.github)}`);
+		await refused(() => loginHttp(API, ORIGIN).start("github"), "provider_off");
 		const message = await refused(() => userOf(alice).github(), "github_off");
 		await refused(() => userOf(alice).githubConnect({ origin: ORIGIN }), "github_off");
 		await refused(() => userOf(alice).githubRepositories(""), "github_off");
@@ -3804,7 +3812,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 		const state = await sessionOf(alice, plainSession.id).publishState();
 		assert(state.repository === null && state.pullRequest === null, `its publish state is ${plain(state)}`);
 		await userOf(alice).deleteSession(plainSession.id);
-		assert(!server.output.includes("[wlp] github"), "the server said something of GitHub");
+		assert(!server.outputSinceStart.includes("[wlp] github"), "the server said something of GitHub");
 		return `"${message}"; the callback route is 404`;
 	});
 
@@ -3851,7 +3859,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 		await check(on, async () => {
 			const info = (await (await platformInfo()).json()) as Info;
 			assert(plain(info.github) === plain({ slug: standin.slug, url: standin.url }), `github is ${plain(info.github)}`);
-			assert(server.output.includes(`[wlp] github: app ${standin.slug} (id ${standin.appId})`), "the server did not say at its start which GitHub App it has");
+			assert(server.outputSinceStart.includes(`[wlp] github: app ${standin.slug} (id ${standin.appId})`), "the server did not say at its start which GitHub App it has");
 			const status = await userOf(alice).github();
 			assert(status.connection === null, `a user who never connected has ${plain(status)}`);
 			await refused(() => userOf(alice).githubRepositories(""), "github_not_connected");

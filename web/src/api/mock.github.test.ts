@@ -46,6 +46,7 @@ describe("the mock's GitHub", () => {
 		expect((await make().info()).github).toEqual({ slug: "windlass-mock", url: "https://github.com" });
 		const off = make({ github: false });
 		expect((await off.info()).github).toBeUndefined();
+		expect((await refusal(off.login.start("github"))).reason).toBe("provider_off");
 		expect((await refusal(off.user(ada).github())).reason).toBe("github_off");
 		expect((await off.user(ada).listSessions()).every((session) => !session.repository)).toBe(true);
 	});

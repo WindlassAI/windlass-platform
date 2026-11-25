@@ -4277,6 +4277,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		login: {
 			async start(provider = "github", auth): Promise<LoginStart> {
 				await latency(400);
+				if (provider === "github" && !githubOn) throw new PlatformError("user", "This sign-in provider is unavailable.", { reason: "provider_off" });
 				attempt = { owner: auth && worldOf(auth).profile.uid, provider, state: hex(16), expiresAt: now() + 10 * MINUTE };
 				if (typeof sessionStorage !== "undefined") sessionStorage.setItem("wlp.mock.login", JSON.stringify(attempt));
 				const redirectPrefix = origin + "/signin";
@@ -4286,6 +4287,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(500);
 				attempt ??= typeof sessionStorage === "undefined" ? null : JSON.parse(sessionStorage.getItem("wlp.mock.login") ?? "null");
 				if (!attempt || now() > attempt.expiresAt) throw new PlatformError("user", "This sign-in attempt has expired. Start again.");
+				if (attempt.provider === "github" && !githubOn) throw new PlatformError("user", "This sign-in could not be verified. Start again.", { reason: "invalid_callback" });
 				const url = new URL(callback);
 				if (url.origin + url.pathname !== origin + "/signin") throw new PlatformError("user", "That is not the address the sign-in ends on.");
 				if (url.searchParams.has("error")) throw new PlatformError("user", "Sign-in refused: " + url.searchParams.get("error"));
