@@ -67,7 +67,7 @@ export const PLAN_REVIEW_TOOL = "file_plan_review";
 export const PLAN_TOOL = "file_plan";
 
 /** One of the platform's tools. */
-export type PlatformTool = typeof PUBLISH_TOOL | typeof REPORT_TOOL | typeof SECRET_TOOL | typeof ASK_TOOL | typeof PUSH_TOOL | typeof FETCH_BASE_TOOL | typeof REVIEW_TOOL | typeof PLAN_TOOL | typeof PLAN_REVIEW_TOOL | "file_repo_setup";
+export type PlatformTool = typeof PUBLISH_TOOL | typeof REPORT_TOOL | typeof SECRET_TOOL | typeof ASK_TOOL | typeof PUSH_TOOL | typeof FETCH_BASE_TOOL | typeof REVIEW_TOOL | typeof PLAN_TOOL | typeof PLAN_REVIEW_TOOL | "file_repo_setup" | "file_repo_setup_review";
 
 /** What decides and does a call: the agent is told what it resolves with. */
 export type PlatformToolHandler = (call: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;
@@ -84,6 +84,7 @@ export type PlatformToolHandler = (call: TurnPublishRequest, signal: AbortSignal
  */
 export const TOOL_REACH: Readonly<Record<PlatformTool, "sandbox" | "asked" | "host">> = Object.freeze({
 	file_repo_setup: "host",
+	file_repo_setup_review: "host",
 	[REPORT_TOOL]: "sandbox",
 	[ASK_TOOL]: "sandbox",
 	[SECRET_TOOL]: "sandbox",
@@ -132,6 +133,7 @@ export const CALL_UNKNOWN = "This session has no such tool of the platform's.";
  */
 export function turnPlatformTools(input: RunTurnInput, reach: "host" | "sandbox" = "host"): Map<PlatformTool, PlatformToolHandler> {
 	const tools = new Map<PlatformTool, PlatformToolHandler>();
+	if (input.onSetupReview) tools.set("file_repo_setup_review", input.onSetupReview);
 	if (input.onSetup) tools.set("file_repo_setup", input.onSetup);
 	else if (input.onPlanReview) tools.set(PLAN_REVIEW_TOOL, input.onPlanReview);
 	else if (input.onPlan) tools.set(PLAN_TOOL, input.onPlan);
@@ -156,7 +158,7 @@ export function turnPlatformTools(input: RunTurnInput, reach: "host" | "sandbox"
 export function platformToolDeclarations(tools: ReadonlyMap<string, unknown>, options: { screenshots?: boolean; crossRepo?: boolean; mcp?: boolean } = {}): HostToolDeclaration[] {
 	const plan = tools.has(PLAN_TOOL);
 	return platformTools({
-		setup: tools.has("file_repo_setup"), planReview: tools.has(PLAN_REVIEW_TOOL), plan, ...(options.crossRepo && plan && { crossRepo: true }),
+		setup: tools.has("file_repo_setup"), setupReview: tools.has("file_repo_setup_review"), planReview: tools.has(PLAN_REVIEW_TOOL), plan, ...(options.crossRepo && plan && { crossRepo: true }),
 		publish: tools.has(PUBLISH_TOOL), report: tools.has(REPORT_TOOL), push: tools.has(PUSH_TOOL),
 		review: tools.has(REVIEW_TOOL), ask: tools.has(ASK_TOOL), secret: tools.has(SECRET_TOOL), screenshots: options.screenshots,
 		...(options.mcp && { mcp: { pushes: MCP_LIMITS[PUSH_TOOL] ?? 0, fetches: MCP_LIMITS[FETCH_BASE_TOOL] ?? 0 } }),

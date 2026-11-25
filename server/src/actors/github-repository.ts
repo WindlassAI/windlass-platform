@@ -7,6 +7,8 @@ import { actor } from "rivetkit";
 import { db } from "rivetkit/db";
 import { githubIdKey } from "../github/events.js";
 import { internalConnection, requireServiceFor } from "../auth.js";
+import { postGuideCheck } from "../repo-setup/freshness.js";
+import type { GuideCheckStatus } from "../repo-setup/types.js";
 import { githubApp } from "../github/app.js";
 
 type Item = { itemId: string; uid: string; installationId?: GithubId; issue?: number; generation?: number; pr?: number; head?: string; moved?: string | null; live?: boolean };
@@ -30,10 +32,36 @@ export const githubRepository = actor({
 		await db.execute("CREATE TABLE IF NOT EXISTS issue_receipts (subject TEXT PRIMARY KEY, uid TEXT NOT NULL, generation INTEGER NOT NULL, decision TEXT)");
 		await db.execute("CREATE TABLE IF NOT EXISTS issue_access (installation TEXT, user TEXT, level TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(installation,user))");
 		await db.execute("DROP TABLE IF EXISTS access");
+		await db.execute("CREATE TABLE IF NOT EXISTS guide_settings (id INTEGER PRIMARY KEY, enabled INTEGER DEFAULT 1, installation TEXT)");
+		await db.execute("CREATE TABLE IF NOT EXISTS guide_results (head TEXT PRIMARY KEY, result TEXT NOT NULL, at INTEGER NOT NULL)");
 		// The users with prepared environments of this repository, told of pushes to its default branch (github-inbox.ts).
 		await db.execute("CREATE TABLE IF NOT EXISTS environment_users (uid TEXT PRIMARY KEY, at INTEGER NOT NULL)");
 	} }),
 	actions: {
+		internalGuideSettings: async (c, head?: string): Promise<GuideCheckStatus> => {
+			requireServiceFor(c, "call");
+			const [row] = await c.db.execute<{ enabled: number }>("SELECT enabled FROM guide_settings");
+			const [run] = head ? await c.db.execute<{ result: string }>("SELECT result FROM guide_results WHERE head=?", head) : [];
+			return { enabled: row?.enabled !== 0, result: run ? JSON.parse(run.result) : null };
+		},
+		internalSetGuideCheck: async (c, setting: { enabled: boolean } | { installation: GithubId }) => {
+			requireServiceFor(c, "call");
+			if ("enabled" in setting) await c.db.execute("INSERT INTO guide_settings(id,enabled) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled", Number(setting.enabled));
+			else await c.db.execute("INSERT INTO guide_settings(id,installation) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET installation=excluded.installation", String(setting.installation));
+		},
+		internalGuideCheck: async (c, installation: GithubId, base: string, head: string, pull: boolean) => {
+			requireServiceFor(c, "call");
+			const enabled = async () => !!(await c.db.execute("SELECT 1 FROM guide_settings WHERE enabled=1 AND installation=?", String(installation))).length;
+			if (!await enabled() || (await c.db.execute("SELECT 1 FROM guide_results WHERE head=?", head)).length) return;
+			const app = githubApp(), repositoryId = githubId(c.key[0])!;
+			if (!app) throw Error("GitHub is unavailable.");
+			const result = await app.withToken(installation, { repositoryId, permissions: { metadata: "read", contents: "read", checks: "write" } }, async token =>
+				postGuideCheck(app, token, await app.repositoryById(token, repositoryId), base, head, pull, enabled), { revokeAfter: true });
+			if (result) {
+				await c.db.execute("INSERT OR REPLACE INTO guide_results VALUES(?,?,?)", head, JSON.stringify(result), Date.now());
+				await c.db.execute("DELETE FROM guide_results WHERE at<?", Date.now() - 90 * 86400_000);
+			}
+		},
 		internalIssuePermission: async (c, installation: GithubId, user: GithubUser): Promise<"write" | "read" | "none"> => {
 			requireServiceFor(c, "call");
 			const now = Date.now();

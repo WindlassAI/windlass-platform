@@ -405,6 +405,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			saveRepositorySecret: (repositoryId, profile, secret) => act("saveRepositorySecret", { repositoryId, profile, ...secret }),
 			deleteRepositorySecret: (repositoryId, profile, name) => act("deleteRepositorySecret", { repositoryId, profile, name }),
 			repository: (repositoryId) => act("repository", repositoryId),
+			setGuideCheck: (id, enabled) => act("setGuideCheck", id, enabled),
 			setSetupWeekly: (id, enabled) => act("setSetupWeekly", id, enabled),
 			addSetupNotes: (id, files) => act("addSetupNotes", id, files),
 			deleteSetupNote: (id, note) => act("deleteSetupNote", id, note),

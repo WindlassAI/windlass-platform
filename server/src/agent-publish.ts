@@ -189,6 +189,7 @@ export interface PlatformToolOffer {
 	report: boolean;
 	push: boolean;
 	setup?: boolean;
+	setupReview?: boolean;
 	planReview?: boolean;
 	review?: boolean;
 	screenshots?: boolean;
@@ -243,9 +244,13 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		untrustedResult: false,
 		...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
 	});
+	if (offer.setupReview) return [tool("file_repo_setup_review", "Review every drafted file once. For each path give verdict ok, fix or drop and up to three short findings.", {
+		type: "object", required: ["files"], properties: { files: { type: "array", items: { type: "object", required: ["path", "verdict", "findings"],
+			properties: { path: { type: "string" }, verdict: { enum: ["ok", "fix", "drop"] }, findings: { type: "array", items: { type: "string" } } } } } },
+	})];
 	if (offer.setup) {
 		const rows = { type: "array", items: { type: "object" } };
-		return [tool("file_repo_setup", "File score [{id,pass,reason}], files [{kind: guide or area,path,content,lines:[{line,noteId?,evidence:{file,line?} or {command,exit,said}}]}], notes [{noteId,verdict,reason,question?}]. For a question verdict, include the question for that note. Line numbers start at one.", {
+		return [tool("file_repo_setup", "File score [{id,pass,reason}], files [{kind: guide, area or skill,path,content,lines:[{line,noteId?,evidence:{file,line?} or {command,exit,said}}]}], notes [{noteId,verdict,reason,question?}]. For a question verdict, include the question for that note. Line numbers start at one.", {
 			type: "object", required: ["score", "files", "notes"], properties: { score: rows, files: rows, notes: rows },
 		})];
 	}

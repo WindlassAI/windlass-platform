@@ -108,6 +108,12 @@ function missingActor(error: unknown): boolean {
 	return e?.group === "actor" && e.code === "not_found";
 }
 
+async function checkGuides(d: Delivery, c: Ctx) {
+	if (!d.repositoryId || !(d.event === "push" || d.event === "pull_request" && d.action !== "closed") || !d.data.base) return;
+	const repo = c.client().githubRepository.getOrCreate([String(d.repositoryId)], { params: serviceParams() });
+	await repo.internalGuideCheck(d.installationId, d.data.base, d.data.head, d.event === "pull_request");
+}
+
 /**
  * The repository's default branch moved (a push, or a pull request merged into it): each user whose prepared
  * environments of it are watched builds again once the pushes settle (user-environments.ts `pushed`). Never throws:
@@ -321,10 +327,12 @@ export const HANDLERS: Partial<Record<Delivery["event"], (delivery: Delivery, c:
 			const users: string[] = await c.client().githubHooks.get(["app"], params).internalInstallationUsers(d.installationId);
 			for (const uid of users) await c.client().user.get([uid], params).internalSetupPullClosed(d.installationId, d.repositoryId, d.data.pr, d.data.merged);
 		}
+		await checkGuides(d, c);
+		if (d.action === "opened") return;
 		await environmentPush(d, c);
 		return nudgeItems(d, c);
 	},
-	push: environmentPush,
+	push: async (d, c) => { await checkGuides(d, c); return environmentPush(d, c); },
 	installation: refreshInstallation,
 	installation_repositories: refreshInstallation,
 };

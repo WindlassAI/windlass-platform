@@ -15,9 +15,33 @@ A work item runs in one of two ways:
 
 Open a connected repository to see its eight setup checks. The platform reads the default branch and looks for guide files, folder guides, templates, long source files, pull request checks and protection for secrets. It also checks whether a setup command and checks are saved. This first score uses no agent time.
 
-Choose **Finish setup** to draft a root contributor guide with a Terms section and guides for up to eight large folders. One read-only turn reads the default branch and the latest matching build. It checks whether setup worked and saved checks passed within five minutes. The platform checks the proposed guides and opens a pull request for review. Running it again updates the open pull request. Allow up to 26 hosted minutes, including up to 20 minutes of drafting. Running on your machine uses your model allowance and no hosted minutes.
+Choose **Finish setup** to draft a root contributor guide with a Terms section and guides for up to eight large folders. The drafter reads the default branch and the latest matching build. It can also write up to five reusable instructions in `.agents/skills/<name>/SKILL.md`. The platform passes the drafted files and the selected, verified team notes to a separate reviewer. The reviewer can ask for files to be dropped or for one round of changes before the draft goes to the pull request. Running it again updates the open pull request. Allow up to 26 hosted minutes, including up to 20 minutes for drafting and revisions together, up to five for the review, and one minute for publishing. Running on your machine uses your model allowance and no hosted minutes.
 
-Paste notes or upload up to 20 Markdown files (256 KB total). Select the notes to include. The agent checks commands and paths against repository evidence. Personal, private, secret and stale notes stay out of the guides. Review the source notes, where they were used and any questions under **Repo setup**. Choose **Apply answers** to continue the setup session for up to five minutes and update the same pull request. The session releases its sandbox while it waits for you. Public pull requests show counts. Private pull requests also list the sources and evidence.
+Paste notes or upload up to 20 Markdown files (256 KB total). Select the notes to include. The agent checks commands and paths against repository evidence. Personal, private, secret and stale notes stay out of the guides. Review the source notes, where they were used and any questions under **Repo setup**. Choose **Apply answers** to continue the setup session for a further drafting turn (up to five minutes), followed by review and an update to the same pull request. The session releases its sandbox while it waits for you. Public pull requests show counts. Private pull requests also list the sources and evidence.
+
+The pull request shows the check result for each skill. **Ran** means the platform ran the skill’s read-only check against the repository. **Static only** means it checked the references and instructions without running the skill’s command. Failed skill checks leave that skill out of the draft. Repositories with a `.claude/` folder also receive a `.claude/skills` link when that name is available.
+
+**Check pull requests for broken guide references** is on by default. After you finish setup, look for **windlass/guides** on a pull request’s Checks tab. It checks the root and folder guides, and the repository’s shared skills against the build setup and file names for the checkout. It reports new broken references as failures and shows the number of earlier findings separately. The check reads repository files and uses no build, workflow or agent time. Turn the switch off to stop sending setup check results to the repository.
+
+For a check using your own Actions workflow instead, copy the repository checker’s [read-only rules](https://github.com/WindlassAI/windlass-platform/blob/main/server/src/repo-setup/guide-check.ts) and [command](https://github.com/WindlassAI/windlass-platform/blob/main/scripts/agents-docs-check.ts) into the same paths in your repository. In the command, omit the check for binaries if you do not install your dependencies. Add the following workflow to your repo. It checks every current reference against the files it receives.
+
+```yaml
+name: Check contributor guides
+on: [pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 22.22.2
+      - run: node scripts/agents-docs-check.ts
+```
 
 Notes are encrypted for your account and repository. You can delete them here. Selected notes are deleted when their pull request merges or closes, and all notes expire after 30 days. **Run setup checks weekly** repeats the score check each week.
 

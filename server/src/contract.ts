@@ -208,7 +208,7 @@ export type TurnOutcome =
 export type HarnessId = "windlass" | "claude" | "opencode" | "codex";
 
 /** One of the platform's tools, by the name the agent calls it (server/src/platform-tools.ts, `PlatformTool`). */
-export type PlatformToolName = "publish" | "report" | "request_secret" | "ask_person" | "push" | "fetch_base" | "file_review" | "file_plan" | "file_plan_review" | "file_repo_setup";
+export type PlatformToolName = "publish" | "report" | "request_secret" | "ask_person" | "push" | "fetch_base" | "file_review" | "file_plan" | "file_plan_review" | "file_repo_setup" | "file_repo_setup_review";
 
 /** Screens choose behavior by capability, so a new harness needs no agent-name checks. */
 export interface SessionCapabilities {
@@ -899,6 +899,7 @@ export interface RepositoryApproval {
 
 export interface RepositoryView {
 	knowledge: import("./repo-setup/types.js").SetupKnowledge;
+	guideCheck: import("./repo-setup/types.js").GuideCheckStatus;
 	readiness: import("./factory/readiness.js").RepositoryReadiness;
 	/** GitHub's id for the repository. */
 	id: GithubId;
@@ -2071,6 +2072,7 @@ export interface UserActions {
 	deleteRepositorySecret(input: { repositoryId: GithubId; profile: SandboxProfileId; name: string }): Promise<RepositorySecrets>;
 	/** Local settings survive loss of GitHub access. */
 	repository(repositoryId: GithubId): Promise<RepositoryView>;
+	setGuideCheck(repositoryId: GithubId, enabled: boolean): Promise<RepositoryView>;
 	setSetupWeekly(repositoryId: GithubId, enabled: boolean): Promise<void>;
 	addSetupNotes(repositoryId: GithubId, files: import("./repo-setup/types.js").NoteInput[]): Promise<RepositoryView>;
 	deleteSetupNote(repositoryId: GithubId, id: string): Promise<RepositoryView>;

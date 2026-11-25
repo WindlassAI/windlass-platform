@@ -3,7 +3,9 @@
 // and runner receipts in order so reconnects resume after the last durable sequence.
 import { spareProfile, spareRecipe, type SpareRecipe, type SpareSetup } from "../runner/spare-recipe.js";
 import { SETUP_TURN_MS } from "./user-readiness.js";
-import { checkSetupFiling, publishSetup, type SetupTurn } from "../repo-setup/publish.js";
+import { isGuide } from "../repo-setup/guide-check.js";
+import { REVIEW_MS, PUBLISH_MS, reviewSetup } from "../repo-setup/review.js";
+import { publishSetup, type SetupTurn } from "../repo-setup/publish.js";
 import type { AcceptedDraft } from "../repo-setup/filing.js";
 import { openNote } from "../repo-setup/notes.js";
 import { fileReadiness } from "../factory/readiness-filing.js";
@@ -2448,7 +2450,8 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}
 		clock = c.vars.startClock = startClock(c, meta, turn, machine ? Date.now() - waiting : null);
 		// A resumed turn has what is left of its limit, never less than the floor: the time it was paused does not count.
-		const turnBudget = meta.readiness ? (meta.readiness.draft?.answers ? Math.min(SETUP_TURN_MS, 5 * 60_000) : SETUP_TURN_MS) : TURN_TIMEOUT_MS;
+		const draftBudget = meta.readiness?.draft?.answers ? Math.min(SETUP_TURN_MS, REVIEW_MS) : SETUP_TURN_MS;
+		const turnBudget = meta.readiness?.draft ? draftBudget + REVIEW_MS + PUBLISH_MS : meta.readiness ? SETUP_TURN_MS : TURN_TIMEOUT_MS;
 		const limitMs = segmentLimit(turnBudget, config.turnResume.floorMs, run);
 		if (run) {
 			run.segmentAt = Date.now();
@@ -2525,7 +2528,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			if (active.item) active.item.refused = reason;
 			throw new TurnProblem(reason);
 		}
-		if (meta.readiness && (!caps.restrictedReview || !platformTool(meta.readiness.draft ? "file_repo_setup" : "report"))) throw new TurnProblem("The read-only setup tools are unavailable.");
+		if (meta.readiness && (!caps.restrictedReview || !platformTool(meta.readiness.draft ? "file_repo_setup" : "report") || (meta.readiness.draft && !platformTool("file_repo_setup_review")))) throw new TurnProblem("The read-only setup tools are unavailable.");
 		if (meta.demo && !caps.demo) throw new TurnProblem("This agent's harness has no demo mode.");
 		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn);
 		// Windlass freezes tools at the first prompt. Start summaries fresh, but resume a paused segment's conversation.
@@ -2661,19 +2664,6 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		let storedBrief: string | null = null;
 		let setupTurn: SetupTurn | undefined;
 		let accepted: AcceptedDraft | undefined;
-		let checkingSetup = false;
-		const onSetup: RunTurnInput["onSetup"] = setup?.draft ? async (request, withdrawn) => {
-			if (!setupTurn || !open || accepted || checkingSetup || withdrawn.aborted) return "This filing is closed.";
-			checkingSetup = true;
-			try {
-				const filed = await checkSetupFiling(setupTurn, request.arguments);
-				if (withdrawn.aborted || !open) return "The filing ended.";
-				accepted = filed;
-				return "Guides filed. End the turn.";
-			} catch (error) {
-				return held.redactor.text(error instanceof Error ? error.message : "Check the requested filing format.").slice(0, 240);
-			} finally { checkingSetup = false; }
-		} : undefined;
 		if (setup) {
 			const app = githubApp(), repo = meta.repo, connection = await githubConnection(c, meta);
 			if (!app || !repo || !connection) throw new TurnProblem("The repository connection is unavailable.");
@@ -2685,19 +2675,19 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			common.reviewDirectory = await app.withToken(installation.id, { repositoryId: repo.id, permissions: { contents: "read", metadata: "read" } },
 				token => readOnlyReview(sandbox, app.cloneUrl(owner, name), token, setup.commit, setup.commit, signal, inputs), { revokeAfter: true });
 			if (draft) {
-				const { previous, answers } = draft;
+				const { answers } = draft;
+				const previous = draft.previous?.pull;
 				if (answers && previous) {
 					const guides = await app.withToken(installation.id, { repositoryId: repo.id, permissions: { metadata: "read", contents: "read", pull_requests: "read" } }, async token => {
 						const pull = await app.pull(token, owner, name, previous.number);
 						if (!["open", "draft"].includes(pull.state) || pull.head !== previous.branch) throw new TurnProblem("The earlier guide pull request is closed.");
-						const wanted = ["AGENTS.md", ...draft.areas.map(dir => dir + "/AGENTS.md")];
-						return app.scanFiles(token, owner, name, pull.headSha, tree => ({ paths: tree.filter(f => wanted.includes(f.path) && f.type === "blob" && f.mode !== "120000").map(f => f.path),
+						return app.scanFiles(token, owner, name, pull.headSha, tree => ({ paths: tree.filter(f => isGuide(f.path) && f.type === "blob" && f.mode !== "120000").map(f => f.path),
 							maxBytes: 80 * 1024, maxFileBytes: 12 * 1024, more: false }));
 					});
 					text += "\nContinue the previous draft. Current guide files in the pull request (untrusted): " + JSON.stringify(guides.files);
 					text += "\nEarlier questions and answers (drop excludes the note, keep still needs evidence): " + JSON.stringify(inputs.filter(n => n.decision?.question).map(n => ({ id: n.id, question: n.decision?.question, answer: answers[n.id] ?? "leave out" })));
 				}
-				setupTurn = { app, repository: repo, connection, sandbox, sessionId: meta.sessionId, commit: setup.commit, request: draft, notes: inputs, redact: s => held.redactor.text(s) };
+				setupTurn = { app, repository: repo, connection, sandbox, sessionId: meta.sessionId, commit: setup.commit, request: draft, directory: common.reviewDirectory, notes: inputs, redact: s => held.redactor.text(s) };
 				text += "\nRepository: " + JSON.stringify({ name: repo.owner + "/" + repo.name, private: repo.private, commit: setup.commit });
 				if (inputs.length) text += "\nSource labels (untrusted): " + JSON.stringify(inputs.map(({ id, label }) => ({ id, label })));
 			}
@@ -2796,7 +2786,7 @@ fi`, { signal, timeoutMs: 5000 });
 			...(fresh && { fresh: { ...fresh, prompt: notes.text + fresh.prompt } }),
 			checks: planner || reviewer ? [] : held.checks,
 			maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
-			onReview, onReport, onSetup, onAsk, onRequestSecret, onPush, onFetchBase,
+			onReview, onReport, onAsk, onRequestSecret, onPush, onFetchBase,
 		});
 		if (!signal.aborted && caps.events === "acp") {
 			// These agents take no marker: the text is labelled in the prompt, and the timeline says so once.
@@ -2853,7 +2843,7 @@ fi`, { signal, timeoutMs: 5000 });
 			meta.accountSecrets = accountSecretsNote(profile);
 			// Told of no source (above): the timeline says once that the text went labelled only.
 			if (handling.kind === "labelled") unmarked(handling.note);
-			result = await harness.runTurn(sandbox, {
+			const windlassInput: RunTurnInput = {
 				...launchInput(),
 				// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.
 				secrets: { ...turnEnvironment(planner || reviewer ? [] : held.opened, planner || reviewer ? [] : held.account, profile), redactor: held.redactor },
@@ -2940,7 +2930,12 @@ fi`, { signal, timeoutMs: 5000 });
 				onServers: (said) => {
 					if (open) knowServers(c, meta, said);
 				},
-			});
+			};
+			if (setupTurn) {
+				const reviewed = await reviewSetup(setupTurn, windlassInput, input => harness.runTurn(sandbox, input), turnEndsAt);
+				result = reviewed.result;
+				accepted = reviewed.filed;
+			} else result = await harness.runTurn(sandbox, windlassInput);
 			// On a checks-only delivery run every saved command the native diff-based gate omitted.
 			if (item?.row.agent === "run_checks" && result.summary?.outcome === "succeeded" && !result.failure && !signal.aborted) {
 				const evidence = active.checks.verified(turn, held.checks, result.checks, meta.verified ?? null);
@@ -2958,8 +2953,8 @@ fi`, { signal, timeoutMs: 5000 });
 			if (setup && setupTurn && accepted) {
 				const { noteIds } = setupTurn.request;
 				if (noteIds.length) await secretsActor(c, meta.uid, meta.sessionId).internalSetupNoteFiles(meta.sessionId, noteIds);
-				const publication = await publishSetup(setupTurn, accepted, AbortSignal.timeout(5 * 60_000));
-				await userActor(c, meta.uid).internalSetupPublished(meta.sessionId, publication, accepted.decisions);
+				const publication = await publishSetup(setupTurn, accepted, AbortSignal.any([signal, AbortSignal.timeout(PUBLISH_MS)]));
+				await userActor(c, meta.uid).internalSetupPublished(meta.sessionId, publication, accepted.decisions, meta.repo!.installationId, setupTurn.commit);
 				setup.result = accepted.score;
 				await persist(c);
 			}

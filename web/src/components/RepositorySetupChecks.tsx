@@ -9,7 +9,7 @@ import { useApp, useAuth } from "../state/app";
 export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryPage; offersItems: boolean }) {
 	const { client, explain, platform } = useApp();
 	const auth = useAuth();
-	const [busy, setBusy] = useState<"run" | "notes" | "weekly" | CriterionId | null>(null);
+	const [busy, setBusy] = useState<"run" | "notes" | "weekly" | "guides" | CriterionId | null>(null);
 	const [error, setError] = useState("");
 	const [filed, setFiled] = useState<Record<string, string>>({});
 	const data = page.view?.readiness;
@@ -18,6 +18,7 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 	const [answers, setAnswers] = useState<Record<string, "" | "keep" | "drop">>({});
 	const upload = useRef<HTMLInputElement>(null);
 	const { notes = [], publication } = page.view?.knowledge ?? {};
+	const check = page.view?.guideCheck;
 	const questions = notes.filter(n => n.decision?.question);
 	const selected = notes.filter(n => !excluded.includes(n.id)).map(n => n.id);
 	const selectedAnswers: Record<string, "keep" | "drop"> = {};
@@ -61,11 +62,14 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 				if (mounted.current) page.replace(next);
 			})}>{checking ? "Checking…" : data.run === "finished" ? "Run again" : "Finish setup"}</button>
 		</header>
-		<p className="usage-note">Draft contributor guides and check the latest build in one read-only turn. Review the changes in a pull request.</p>
+		<p className="usage-note">Draft contributor guides and skills from the repository and its latest build. A second reviewer checks the files before the pull request opens.</p>
 		<p className="usage-note">Allow up to 26 hosted minutes{cost}, or use your machine for no hosted minutes. Both use your model allowance.</p>
+		{check && <label className="check setup-weekly"><input role="switch" type="checkbox" checked={check.enabled} disabled={disabled} onChange={e => submit("guides", async () =>
+			page.replace(await client.user(auth).setGuideCheck(page.id, e.target.checked)))} /> Check pull requests for broken guide references</label>}
 		{publication && <div className="setup-result">
 			<a className="link" href={publication.pull.url} target="_blank" rel="noreferrer">Review guide changes in pull request #{publication.pull.number}</a>
 			<p>{publication.files.join(" · ")} · {publication.pull.state}</p>
+			{check?.result && <p><a className="link" href={check.result.url} target="_blank" rel="noreferrer">windlass/guides</a> · {check.result.conclusion === "failure" ? "Failed" : "Passed"} · {check.result.title}</p>}
 			{questions.map(n => {
 				const text = n.text.trim().replace(/\s+/g, " ");
 				return <label key={n.id}><strong>“{text.slice(0, 60)}{text.length > 60 && "…"}”</strong> {n.decision?.question} <select value={answers[n.id] ?? ""} onChange={e =>

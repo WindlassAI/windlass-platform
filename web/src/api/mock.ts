@@ -749,6 +749,7 @@ type SavedDefaults = AccountDefaults & { updatedAt: number };
 
 interface World {
 	planConnected: boolean;
+	guideChecks: Map<GithubId, RepositoryView["guideCheck"]>;
 	knowledge: Map<GithubId, RepositoryView["knowledge"]>;
 	readiness: Map<GithubId, { at: number; finished: boolean; weekly: boolean }>;
 	profile: UserProfile;
@@ -957,7 +958,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { knowledge: new Map(), readiness: new Map(), planConnected: recall("wlp.mock.plan." + uid) === "1", profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { providers: new Map(), checks: { minute: 0, used: 0 }, defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
+			world = { guideChecks: new Map(), knowledge: new Map(), readiness: new Map(), planConnected: recall("wlp.mock.plan." + uid) === "1", profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { providers: new Map(), checks: { minute: 0, used: 0 }, defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
 			// The seeded user starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "user"))) world.github = connectionFor(world.profile);
@@ -2718,6 +2719,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		return {
 			id: repositoryId,
 			name: repositoryNameOf(world, repositoryId),
+			guideCheck: world.guideChecks.get(repositoryId) ?? { enabled: true, result: null },
 			knowledge: world.knowledge.get(repositoryId) ?? { notes: [], publication: null },
 			readiness: { latest, weekly: assessment?.weekly ?? false, run: finished ? "finished" : "new", error: null },
 			defaults: defaultsOf(world, repositoryId),
@@ -3543,6 +3545,11 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (world().secrets.get(repositoryId)?.size === 0) world().secrets.delete(repositoryId);
 				return secretsOf(world(), repositoryId, profile);
 			},
+			async setGuideCheck(id, enabled) {
+				const { guideCheck } = repositoryViewOf(world(), id);
+				world().guideChecks.set(id, { ...guideCheck, enabled });
+				return repositoryViewOf(world(), id);
+			},
 			async setSetupWeekly(repositoryId, enabled) {
 				if (enabled) await this.githubRepository(repositoryId);
 				const current = world().readiness.get(repositoryId) ?? { at: now(), finished: false };
@@ -3564,6 +3571,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const k = repositoryViewOf(world(), repositoryId).knowledge;
 				const pull = k.publication?.pull ?? { number: 42, url: `https://github.com/${repo.owner}/${repo.name}/pull/42`, state: "open" as const,
 					title: "Add repository guides", branch: "windlass/repo-setup-" + new Date(now()).toISOString().slice(0,10).replaceAll("-", ""), base: "main", pushedAt: now(), verified: "" };
+				const { guideCheck } = repositoryViewOf(world(), repositoryId);
+				if (guideCheck.enabled) world().guideChecks.set(repositoryId, { enabled: true, result: { conclusion: "success", title: "No new broken guide references", url: pull.url + "/checks" } });
 				world().knowledge.set(repositoryId, { publication: { pull, files: ["AGENTS.md", "src/services/AGENTS.md"] }, notes: k.notes.map(n =>
 					!selected.includes(n.id) ? n : { ...n, decision: answers?.[n.id] ? { noteId: n.id, verdict: "stale", reason: "No matching build record.", uses: [] } :
 						{ noteId: n.id, verdict: "question", question: "Does this note still apply to the current build?", reason: "The saved build does not confirm this note.", uses: [] } }) });

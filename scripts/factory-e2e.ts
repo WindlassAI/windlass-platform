@@ -236,7 +236,7 @@ await check("repo-setup: draft guides with imported notes and delete them on clo
 	const server = new Server();
 	try {
 		const files = Object.fromEntries(Array.from({ length: 50 }, (_, i) => ["src/f" + i + ".ts", "export {};"]));
-		const repo = standin.addRepository({ owner: "ada", name: "guide-fixture", installation, private: false, files: { ...files, "README.md": "# Guide fixture\n" } });
+		const repo = standin.addRepository({ owner: "ada", name: "guide-fixture", installation, private: false, files: { ...files, ".claude/config.json": "{}", "contrib/AGENTS.md": "Read `older.md`.\n", "README.md": "# Guide fixture\n" } });
 		const base = standin.branchHead(repo, "main");
 		const { user } = await world(server, standin, { WLP_FEATURE_TEST_GIT: join(server.storage, "git"), WLP_GITHUB_WEBHOOK_SECRET: server.secret });
 		const saved = await user.addSetupNotes(repo.id, [{ label: "source-note.md", text: "See README.md." }, { label: "hidden.md", text: "password=fixture-only" }, { label: "release.md", text: "Check the release process." }]);
@@ -265,10 +265,31 @@ await check("repo-setup: draft guides with imported notes and delete them on clo
 		assert(guide.includes("## Terms") && guide.includes("README.md") && !/fixture-only|missing.sh|echo hello/.test(guide), "Unverified or sensitive guide content");
 		assert(standin.fileOn(repo, p.head, "src/AGENTS.md")?.includes("../README.md"), "Missing area guide");
 		assert(p.body.includes("1 line from 1 imported note") && !/source-note|hidden.md|fixture-only/.test(p.body), "Public citations disclosed source details");
+		assert(guide.includes("# Read the repository guide") && p.body.includes("— ran"), "The draft must include the revision and publish the skill check result.");
+		assert(standin.fileOn(repo, p.head, ".agents/skills/first-draft/SKILL.md") === null, "The earlier skill survived its removal from the review.");
+		assert(standin.fileOn(repo, p.head, ".agents/skills/bad-read/SKILL.md") === null, "A failing skill escaped review.");
+		assert(standin.fileOn(repo, p.head, ".claude/skills") === "../.agents/skills", "Missing installation link.");
+		const baseline = standin.commit(repo, "main", { "AGENTS.md": "Read `README.md`.\n" }, "Send documentation");
+		const checkHead = async (branch: string, change: Record<string, string | null>) => {
+			const head = standin.commit(repo, branch, change, branch, "main");
+			const reply = await standin.deliver(API + "/github/webhook", "pull_request", { action: "opened", installation: { id: installation.id }, repository: { id: repo.id },
+				pull_request: { number: 15, merged: false, head: { sha: head }, base: { sha: baseline } } }, { secret: server.secret });
+			assert(reply.status === 202, "The setup check event was refused.");
+			return head;
+		};
+		const first = await checkHead("unrelated", { "extra.txt": "Another file" });
+		const passed = await waitFor("an unrelated PR check", () => standin.checks.find(r => r.head_sha === first), 30_000);
+		assert(passed.conclusion === "success" && passed.output.summary.includes("1 older finding"), "An earlier finding should pass.");
+		const broken = await checkHead("broken", { "README.md": null });
+		const failed = await waitFor("the broken guide", () => standin.checks.find(r => r.head_sha === broken), 30_000);
+		assert(failed.conclusion === "failure" && failed.output.summary.includes("README.md"), "The broken guide did not fail.");
+		await user.setGuideCheck(repo.id, false);
+		const disabled = await checkHead("disabled", { "README.md": null });
 		p.state = "closed";
 		await standin.deliver(API + "/github/webhook", "pull_request", { installation: { id: installation.id }, repository: { id: repo.id }, action: "closed", pull_request: { number: p.number, merged: false, head: { ref: p.head, sha: standin.branchHead(repo, p.head) } } }, { secret: server.secret });
 		await waitFor("closed pull cleanup", async () => !(await user.repository(repo.id)).knowledge.notes.length, 30_000);
-		return "two turns, one public pull request, closed notes deleted";
+		assert(!standin.checks.some(r => r.head_sha === disabled), "A check was posted after switching checks off.");
+		return "one draft revision, one skill, two checked PRs and one skipped PR";
 	} finally {
 		await server.stop();
 		execFileSync("chmod", ["-R", "u+w", server.storage]);

@@ -369,7 +369,7 @@ export class GithubStandin {
 	}
 
 	/** Adds a commit to a branch of a repository, as someone pushing to GitHub would. Returns the commit. */
-	commit(repository: StandinRepository, branch: string, files: Record<string, string>, message: string, from?: string): string {
+	commit(repository: StandinRepository, branch: string, files: Record<string, string | null>, message: string, from?: string): string {
 		const work = mkdtempSync(join(this.root, "work-"));
 		try {
 			git(["init", "--quiet", `--initial-branch=${branch}`, work]);
@@ -380,6 +380,7 @@ export class GithubStandin {
 				git(["reset", "--quiet", "--hard", "FETCH_HEAD"], work);
 			}
 			for (const [name, content] of Object.entries(files)) {
+				if (content === null) { rmSync(join(work, name)); continue; }
 				mkdirSync(join(work, name, ".."), { recursive: true });
 				writeFileSync(join(work, name), content);
 			}
@@ -952,7 +953,7 @@ export class GithubStandin {
 					const files = git(["diff", "--name-only", range], repository.path).split("\n").filter(Boolean).map(filename => ({
 						filename, patch: git(["diff", range, "--", filename], repository.path).split(/(?=^@@ )/m).slice(1).join(""),
 					}));
-					return answer(200, { base_commit: { sha: base }, behind_by: Number(git(["rev-list", "--count", base, "^" + head], repository.path)), files });
+					return answer(200, { base_commit: { sha: base }, merge_base_commit: { sha: git(["merge-base", base, head], repository.path) }, behind_by: Number(git(["rev-list", "--count", base, "^" + head], repository.path)), files });
 				}
 				catch { return answer(404, { message: "Commit not found" }); }
 			}
