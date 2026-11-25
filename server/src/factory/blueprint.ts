@@ -1,3 +1,16 @@
+/**
+ * The blueprint: the fixed sequence a work item runs, as a pure function over the item and the facts that reach it.
+ * The model decides only inside a turn; the next step comes from what the platform observed, never from the agent.
+ *
+ *   refine (features) → implement → gate (verification; fail → fix turn) → publish (push, PR) → ci (fail → ci_fix,
+ *   conflict → merge turn) → review (optional; changes → review_fix) → handoff → merged (done or cancelled)
+ *
+ * Stop rules, checked before every turn: a repeated failure fingerprint asks "Try it once more"; a used-up budget
+ * pauses and asks; a turn backstop and 3 cut-off turns per step end loops. Nothing stops silently or discards work.
+ *
+ * The actor stores what `advance` returns in one write, then performs the effects by key. Facts name their attempt
+ * key; a stale key changes nothing. No clock is read: every time is a fact's `at`.
+ */
 import { defaultPlaceRetryAt } from "./default-place.js";
 import { criticPrompt, mergeCandidate, smallPlan } from "./autonomy.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
