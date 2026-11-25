@@ -88,6 +88,7 @@ const operations = {
 	connect: [object(sandbox), nullable(object({ cwd: string, profile: machineProfile, harness, snapshot: optional(snapshotSource), screenshots: optional(boolean), ownData: optional(oneOf(true)),
 		/** Its turns can use the machine's model relay (the three operations below), said only to a server that named `model-relay`. */
 		modelRelay: optional(oneOf(true)),
+		windlassKeyRelay: optional(oneOf(true)),
 		blockedNetwork: optional(oneOf(true)),
 		memoryEvents: optional(oneOf(true)),
 		/** On the first connect after its create, what making it took (SandboxHandle.runnerStart), said only to a server that named `start-times`. */

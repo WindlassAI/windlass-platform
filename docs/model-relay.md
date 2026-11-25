@@ -230,9 +230,9 @@ message. The platform maps a `relay_lease_ended` there to `token_unavailable` ("
 
 | Where | When the relay is used | Otherwise |
 | --- | --- | --- |
-| Hosted Docker | `WLP_MODEL_RELAY` is not `off` (default on), and the sandbox image's Windlass, as `windlass.problem()` reads it, is 0.7.1 or later | today's token file, and the server says so at startup |
-| Machines | the server names `model-relay` in its welcome, and the runner says `modelRelay` in its report and its `connect` answer. The updated runner requires Windlass 0.7.1 or later in the pinned sandbox image. Earlier relay-capable runners may advertise support for ChatGPT alone. | today's token file, as on those runners now |
-| Hosted E2B | `WLP_MODEL_RELAY` is not `off`, `WLP_MODEL_RELAY_URL` is set, and `WLP_E2B_WINDLASS_VERSION` is 0.7.1 or later | today's token file, and the server says which of these is missing at startup |
+| Hosted Docker | `WLP_MODEL_RELAY` is not `off` (default on), and the sandbox image's Windlass, as `windlass.problem()` reads it, is 0.6.0 or later | today's token file, and the server says so at startup |
+| Machines | the server names `model-relay` in its welcome, and the runner says `modelRelay` in its report and its `connect` answer. ChatGPT requires Windlass 0.6.0 or later. Settings keys require Windlass 0.7.1 and a runner that negotiates `windlass-key-relay`. | today's token file, as on those runners now |
+| Hosted E2B | `WLP_MODEL_RELAY` is not `off`, `WLP_MODEL_RELAY_URL` is set, and `WLP_E2B_WINDLASS_VERSION` is 0.6.0 or later | today's token file, and the server says which of these is missing at startup |
 
 The token-file fallback above applies only to ChatGPT. Windlass 0.7.x sessions cannot be opened by 0.6.0. While the relay is on for E2B, `api.openai.com`
 is not in E2B's allow list: the sandbox has no token it would take.

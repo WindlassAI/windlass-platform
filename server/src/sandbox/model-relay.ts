@@ -27,7 +27,7 @@ import { join } from "node:path";
 import type { AccessToken } from "./api.js";
 import { LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, RELAY_LOGS, docker } from "./docker.js";
 import { wires } from "../../../sandbox/relay/wires.cjs";
-import { SECRET_FILE_SCRIPT, type ForwardedKeyLease, type KeyTurnRelay, type KeyReference, type TurnModelRelay } from "./provider.js";
+import { SECRET_FILE_SCRIPT, type ForwardedKeyLease, type KeyTurnRelay, type KeyReference, type TakeRelayRequest, type TurnModelRelay } from "./provider.js";
 
 declare const WINDLASS_RELAY_SCRIPT: string;
 declare const EGRESS_SOURCE: string;
@@ -235,9 +235,9 @@ export class DockerModelRelay {
 			throw new Error(`could not create the model relay's socket volume: ${made.stderr.trim()}`);
 	}
 
-	openKey(container: string, sandbox: string, uid: string, sessionId: string, key: KeyReference, signal?: AbortSignal) {
+	openKey(container: string, sandbox: string, uid: string, sessionId: string, key: KeyReference, signal?: AbortSignal, takeRequest?: TakeRelayRequest) {
 		if (!this.options.forwardKeyLease) throw new Error("A saved provider key requires a platform model relay.");
-		return this.options.forwardKeyLease(uid, sessionId, key, this.options.machine || undefined, forward => this.open(container, sandbox, uid, forward), signal);
+		return this.options.forwardKeyLease(uid, sessionId, key, this.options.machine || undefined, forward => this.open(container, sandbox, uid, forward), signal, takeRequest);
 	}
 
 	/**

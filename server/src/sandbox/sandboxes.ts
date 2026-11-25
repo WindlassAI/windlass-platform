@@ -127,9 +127,9 @@ export class DockerSandboxHandle implements TurnSandbox {
 		// The user names the lease in the relay, whose ceiling per user counts by it.
 		if (relay) {
 			this.modelRelay = () => relay.open(this.container, this.id, this.uid);
-			this.modelKeyRelay = (sessionId, key, signal) => {
+			this.modelKeyRelay = (sessionId, key, signal, takeRequest) => {
 				if (sessionId !== session) throw new Error("This model relay belongs to another session.");
-				return relay.openKey(this.container, this.id, this.uid, sessionId, key, signal);
+				return relay.openKey(this.container, this.id, this.uid, sessionId, key, signal, takeRequest);
 			};
 		}
 	}

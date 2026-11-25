@@ -32,7 +32,9 @@ import { e2bModelRelay, e2bModelRelayOrigin, readE2bNetwork } from "../server/sr
 import { parseModelRelayUrl } from "../server/src/model-relay-url.js";
 import { dayOf, TOKEN_USAGE_TABLE, recordTurnTokens, tokensOn } from "../server/src/usage.js";
 import { checkHostedTurn } from "./hosted-agent-turn.js";
-import { E2bSandboxHandle } from "../server/src/sandbox/e2b/sandboxes.js";
+import { machineLayer } from "../server/src/sandbox/runner-layer.js";
+import { readE2bSettings } from "../server/src/sandbox/e2b/config.js";
+import { E2bSandboxHandle, E2bSandboxes } from "../server/src/sandbox/e2b/sandboxes.js";
 import { DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
 import type { DockerModelRelay } from "../server/src/sandbox/model-relay.js";
 import { RELAY_REFUSED, relayRefused } from "../server/src/sandbox/handoff.js";
@@ -226,7 +228,7 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	expect("before the token is handed the lease is refused, with the relay's own code", early.status === 401 && up.seen.length === 0 && (await code(early)) === "relay_lease_ended");
 	await lease.hand({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 });
 	const { nonce } = readPlaceholder(lease.placeholder)!;
-	const envelope = remoteLease(nonce, "u1", "sess-1", randomBytes(16).toString("hex"));
+	const envelope = await remoteLease(nonce, "u1", "sess-1", randomBytes(16).toString("hex"));
 	expect("the session actor returns the ChatGPT token sealed for transit", typeof envelope.token === "string" && envelope.token.startsWith("wlps1.") && !JSON.stringify(envelope).includes(REAL_A));
 	const streamed = await modelRelayResponse(call(lease.placeholder), deps(up.fetch));
 	const text = await streamed.text();
@@ -256,7 +258,7 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	await lease.close();
 	const over = await modelRelayResponse(call(lease.placeholder), deps(up.fetch));
 	expect("once the turn has ended its placeholder is refused, signature or not, as the relay's own refusal", over.status === 401 && (await code(over)) === "relay_lease_ended"
-		&& leaseToken(readPlaceholder(lease.placeholder)!.nonce, "u1", "sess-1") === null && up.seen.length === count);
+		&& await leaseToken(readPlaceholder(lease.placeholder)!.nonce, "u1", "sess-1") === null && up.seen.length === count);
 }
 {
 	// A lease of another server process that has ended is asked about once: the answer is kept until its placeholder expires.
@@ -450,9 +452,9 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	expect("an E2B sandbox with an empty wlp_session fails the turn and is never handed the token", typeof handle.modelRelay === "function" && error instanceof TokenFileError && /names no session/.test(String(error)) && written.length === 0, String(error));
 }
 {
-	// Hosted Docker: the relay only with the image's Windlass 0.7.1 or later.
+	// Hosted Docker: the relay only with the image's Windlass 0.6.0 or later.
 	const relay = { relayName: "wlp-model-relay", sweep: async () => 0 } as unknown as DockerModelRelay;
-	for (const [version, on] of [["0.7.1", true], ["0.7.1+abc", true], ["0.7.0", false], ["0.6.0", false], [null, false]] as const) {
+	for (const [version, on] of [["0.7.1", true], ["0.7.1+abc", true], ["0.7.0", true], ["0.6.0", true], ["0.5.9", false], [null, false]] as const) {
 		const sandboxes = new DockerSandboxes({ machine: null, modelRelay: relay, modelRelayWindlass: async () => version, dataVolume: async () => "v", dropDataVolume: async () => {} } as never);
 		const ready = await sandboxes.modelRelayReady();
 		const line = await sandboxes.prepareModelRelay();
@@ -515,6 +517,25 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 // ---- Settings-key wires, including the machine's forwarding hop --------------------------------
 
 {
+	const key = { provider: "openai", generation: "first", harness: "windlass" } as const;
+	for (const modelRelay of [true, undefined]) {
+		const calls: string[] = [];
+		const link = { who: { uid: "u", machineId: "m", sessionId: "s" },
+			again: async () => ({ cwd: "/workspace", profile: "docker-hardened", modelRelay }),
+			request: async (op: string) => { calls.push(op); return {}; } };
+		const machine = machineLayer(link as never, {} as never);
+		const handle = (await machine.sandboxes.connect("box"))!;
+		await assert.rejects(openModelKeyRelay(handle as never, "s", key), /Update the runner to use Settings keys with Windlass on this machine/);
+		assert.deepEqual(calls, []);
+		if (modelRelay) {
+			await (handle as import("../server/src/sandbox/provider.js").TurnSandbox).modelRelay!();
+			assert.deepEqual(calls, ["modelRelay"]);
+		}
+	}
+	for (const version of ["0.6.0", "0.7.0"]) {
+		const sandbox = { ask: async () => ({ code: 0, stdout: "Windlass " + version }), modelKeyRelay: () => assert.fail("opened a lease") };
+		await assert.rejects(openModelKeyRelay(sandbox as never, "s", key), /Windlass needs 0.7.1 to use Settings keys/);
+	}
 	const sandbox = { id: "without-relay", uid: "u1", writeSecretFile: () => assert.fail("unexpected credential file") };
 	await assert.rejects(openModelKeyRelay(sandbox as never, "s", { provider: "openai", generation: "g", harness:"codex" }), TokenFileError);
 	const expired = await modelRelayResponse(call(foreignPlaceholder("u1", "expired-transit")), deps(async () => assert.fail("expired token forwarded"), {
@@ -545,7 +566,7 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 	const generation = randomBytes(16).toString("hex");
 	const keyLease = { provider, generation, harness: "opencode" as const };
 	const origin = "https://relay.example.com";
-	const e2b = new E2bSandboxHandle({modelRelayOrigin: origin, relayLeaseMs:60_000, turnLimitMs:60_000} as never, {} as never, "box", uid, "e2b", "auto", undefined, sessionId);
+	const e2b = new E2bSandboxHandle({modelRelayOrigin: origin, relayLeaseMs:60_000, turnLimitMs:60_000, windlassSettingsKeys: true} as never, {} as never, "box", uid, "e2b", "auto", undefined, sessionId);
 	const lease = await openModelKeyRelay(e2b, sessionId, keyLease);
 	assert.ok(!("hand" in lease));
 	const auth = provider === "anthropic" ? "x-api-key" : provider === "google" ? "x-goog-api-key" : "authorization";
@@ -647,6 +668,29 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 		let scoped;
 		try { scoped = await openModelKeyRelay(e2b, sessionId, { ...keyLease, harness: "codex" }, controller.signal); }
 		finally { config.modelRelay.turnRequests = old; }
+		// A resumed E2B segment shares the logical turn's durable budget.
+		const { takeTurnRequest } = await import("../server/src/actors/agent-session.js");
+		sql.exec("CREATE TABLE meta (id INTEGER PRIMARY KEY, data TEXT)");
+		sql.prepare("INSERT INTO meta VALUES (1, ?)").run(JSON.stringify({ run: { credential: { model: "openai/gpt-5", key: { provider, generation } }, remainingRequests: 3 } }));
+		e2b.ask = async () => ({ code: 0, stdout: "Windlass 0.7.1", stderr: "" });
+		for (const expected of [[200], [200, 429]]) {
+			const { data } = sql.prepare("SELECT data FROM meta WHERE id = 1").get()!;
+			const meta = JSON.parse(String(data));
+			const active = { controller: new AbortController() };
+			const ctx = { vars: { turn: active, serial: Promise.resolve() }, db: { execute: async (q: string, n: number) => sql.prepare(q).run(n) } };
+			const consume = () => takeTurnRequest(ctx as never, meta, meta.run, active as never);
+			const segment = await openModelKeyRelay(e2b, sessionId, { ...meta.run.credential.key, harness: "windlass" }, undefined, consume);
+			if (meta.run.remainingRequests === 3) {
+				const nonce = readPlaceholder(segment.placeholder)!.nonce;
+				assert.ok((await remoteLease(nonce, uid, sessionId, randomBytes(16).toString("hex"), true)).token);
+			}
+			for (const status of expected) {
+				const res = await modelRelayResponse(new Request(origin + "/model-relay/v1/models", { headers: { authorization: "Bearer " + segment.placeholder } }), d);
+				assert.equal(res.status, status, "resuming must not renew a turn's budget");
+				await res.body?.cancel();
+			}
+			await segment.close();
+		}
 		const signed = readPlaceholder(scoped.placeholder)!;
 		assert.ok(signed.expiresAt <= Date.now() + 60_000);
 		const send = (path: string, method = "GET") => modelRelayResponse(new Request(origin + "/model-relay" + path, {
@@ -655,7 +699,7 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 		assert.equal((await send("/v1/chat/completions", "POST")).status, 403);
 		assert.equal((await send("/v1/models?client_version=0.171.0")).status, 200);
 		assert.equal(seen.at(-1), "/v1/models");
-		assert.ok(remoteLease(signed.nonce, uid, sessionId, randomBytes(16).toString("hex"), true).token);
+		assert.ok((await remoteLease(signed.nonce, uid, sessionId, randomBytes(16).toString("hex"), true)).token);
 		assert.equal((await send("/v1/models")).status, 429);
 		controller.abort();
 		assert.equal((await send("/v1/models")).status, 401);
@@ -817,7 +861,7 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 		await forwarded.close();
 		assert.ok(localClosed);
 		const signed = readPlaceholder(forward.placeholder)!;
-		assert.equal(leaseToken(signed.nonce, uid, sessionId), null);
+		assert.equal(await leaseToken(signed.nonce, uid, sessionId), null);
 	}
 	console.log("ok    " + provider + " hosted and machine key lease, routes, redaction and revocation");
 }
@@ -832,10 +876,25 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 	expect("with WLP_MODEL_RELAY=off: api.openai.com, no relay host, and the turn's token goes into the sandbox", hosts({ WLP_MODEL_RELAY: "off" }).includes("api.openai.com") && !hosts({ WLP_MODEL_RELAY: "off" }).includes("relay.example.com") && e2bModelRelayOrigin(env({ WLP_MODEL_RELAY: "off" })) === null);
 	const unset = env({ WLP_MODEL_RELAY_URL: "" });
 	expect("without WLP_MODEL_RELAY_URL the relay is off, and the platform's whole public host is never allowed in its place", e2bModelRelayOrigin(unset) === null && !readE2bNetwork(unset).hosts.includes("wlp.example.com") && readE2bNetwork(unset).hosts.includes("api.openai.com"));
-	for (const version of ["0.7.0", "", "0.6.0"]) {
+	for (const version of ["0.5.9", ""]) {
 		const old = env({ WLP_E2B_WINDLASS_VERSION: version });
 		expect(`with the template's Windlass ${version || "unknown"} the relay is off for E2B, and api.openai.com stays`, e2bModelRelayOrigin(old) === null && readE2bNetwork(old).hosts.includes("api.openai.com") && "off" in e2bModelRelay(old));
 	}
+	const settings = readE2bSettings(env({ WLP_E2B_WINDLASS_VERSION: "0.6.0" }));
+	const owner = new E2bSandboxes({} as never, settings, { log() {} });
+	const guest = new E2bSandboxHandle(owner, {} as never, "box", "u1", "e2b", "auto", undefined, "session");
+	let content = "";
+	guest.writeSecretFile = async (_path, data) => { content = data; };
+	const file = new TokenFile(guest, { current: async () => ({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 }) } as never, { log() {} });
+	await file.start();
+	assert.ok(readPlaceholder(JSON.parse(content).accessToken));
+	assert.ok(!content.includes(REAL_A));
+	await file.stop();
+	const key = { provider: "openai", generation: "first" } as const;
+	await assert.rejects(openModelKeyRelay(guest, "session", { ...key, harness: "windlass" }), /Hosted Windlass needs 0.7.1 to use Settings keys/);
+	for (const harness of ["claude", "codex", "opencode"] as const)
+		await (await openModelKeyRelay(guest, "session", { ...key, harness })).close();
+	expect("Windlass 0.6.0 keeps the ChatGPT and ACP relay origin", e2bModelRelayOrigin(env({ WLP_E2B_WINDLASS_VERSION: "0.6.0" })) === "https://relay.example.com");
 	expect("with Windlass 0.7.1 and WLP_MODEL_RELAY_URL the relay's origin is its own host", e2bModelRelayOrigin(env({})) === "https://relay.example.com");
 }
 

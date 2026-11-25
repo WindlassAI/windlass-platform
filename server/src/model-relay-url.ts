@@ -6,15 +6,15 @@
  * port 443, so it is an https address with a DNS name, no port and no path.
  */
 
-/** The first Windlass that relays every provider, including its catalog and titles. */
-export const MODEL_RELAY_WINDLASS = "0.7.1";
+export const MODEL_RELAY_WINDLASS = "0.6.0";
+export const SETTINGS_KEY_WINDLASS = "0.7.1";
 
-/** Whether a Windlass version (`0.7.1`, `0.7.1+build`, `v0.7.2`) is MODEL_RELAY_WINDLASS or later. Null or unreadable: no. */
-export function readsModelRelay(version: string | null | undefined): boolean {
+/** Whether a Windlass version (`0.7.1`, `0.7.1+build`, `v0.7.2`) meets the minimum relay version. Null or unreadable: no. */
+export function readsModelRelay(version: string | null | undefined, minimum = MODEL_RELAY_WINDLASS): boolean {
 	const found = /^v?(\d+)\.(\d+)\.(\d+)/.exec((version ?? "").trim());
 	if (!found) return false;
 	const [major, minor, patch] = found.slice(1).map(Number);
-	const [a, b, c] = MODEL_RELAY_WINDLASS.split(".").map(Number);
+	const [a, b, c] = minimum.split(".").map(Number);
 	return major !== a ? major! > a! : minor !== b ? minor! > b! : patch! >= c!;
 }
 

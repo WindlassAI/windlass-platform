@@ -147,6 +147,7 @@ else process.exitCode=2;
 			const { capabilities } = full;
 			assert.ok(Array.isArray(capabilities) && capabilities.every(value => typeof value === 'string'));
 			assert.ok(capabilities.includes('model-relay'));
+			assert.ok(capabilities.includes('windlass-key-relay'));
 			assert.deepEqual(full, { image:published, harnesses:['claude','opencode','codex'], capabilities });
 			execFileSync(process.execPath,[join(root,'runner/bundle.mjs'),pin,bundle,'claude='+pin]);
 			assert.deepEqual(report(), { image:published, harnesses:['claude'], capabilities });

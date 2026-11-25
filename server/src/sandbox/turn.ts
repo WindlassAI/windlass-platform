@@ -121,7 +121,6 @@ import { ACCESS_TOKEN_FILE_ENV, type Failure, RELAY_REFUSED, handedInFailure, ha
 import { sweepSessionProcesses, type ProcessEnd, type SandboxProcess, type TurnSandbox, isTurnSandbox, randomId } from "./provider.js";
 import { hostedKeyEnv, redactKeyLease } from "./hosted-keys.js";
 import { hostedKeyMessage, windlassProvider } from "./harnesses.js";
-import { readsModelRelay, MODEL_RELAY_WINDLASS } from "../model-relay-url.js";
 import { openModelKeyRelay, TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
 
 /** The platform's tools of a turn (platform-tools.ts): Windlass takes every one as a host tool. */
@@ -570,11 +569,7 @@ class Turn {
 				const ref = input.modelKey;
 				let keyEnv: Record<string, string> = {};
 				if (ref) {
-					// A connected runner or a restored snapshot can still have an older sandbox.
-					const version = await sandbox.ask(["windlass", "--version"], { timeoutMs: 10_000 });
-					if (version?.code !== 0 || !readsModelRelay(/^Windlass\s+(\S+)/.exec(version.stdout.trim())?.[1]))
-						throw new Error(`Settings keys require Windlass ${MODEL_RELAY_WINDLASS} or later in this sandbox.`);
-					keyLease = await openModelKeyRelay(sandbox, ref.sessionId, { ...ref.key, harness: "windlass" }, input.signal);
+					keyLease = await openModelKeyRelay(sandbox, ref.sessionId, { ...ref.key, harness: "windlass" }, input.signal, ref.takeRequest);
 					input.signal?.throwIfAborted();
 					keyEnv = hostedKeyEnv("windlass", ref.key.provider, keyLease);
 					this.redactor = redactKeyLease(this.redactor, keyLease.placeholder);

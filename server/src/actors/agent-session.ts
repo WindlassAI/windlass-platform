@@ -255,7 +255,7 @@ import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js
 import { privateSessionData } from "../sandbox/session-data.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase, sessionRepository } from "../github/publish.js";
-import { CRASHES_ALLOWED, type PauseReason, type TurnRun, addUsage, crashCount, pausedLine, resumePrompt, restartShellResult, resumedLine, segmentLimit, sessionWholeTask } from "./turn-resume.js";
+import { CRASHES_ALLOWED, type PauseReason, type TurnRun, type TurnCredential, addUsage, crashCount, pausedLine, resumePrompt, restartShellResult, resumedLine, segmentLimit, sessionWholeTask } from "./turn-resume.js";
 import { ConversationLost } from "../runner/channel.js";
 import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, itemTurnText, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, settleTokenReceipts, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
 
@@ -547,7 +547,7 @@ type PublishAnswer =
 	| { kind: "withdrawn" };
 
 interface ActiveTurn {
-	credential?: Awaited<ReturnType<typeof turnCredential>>;
+	credential?: TurnCredential;
 	untrusted?: string[];
 	/** The turn is being stopped so that it pauses instead of ending (`pauseTurn`): its server is going away, or its machine went. */
 	pausing?: PauseReason;
@@ -1787,16 +1787,21 @@ const FRESH_WORKSPACE =
 type MachineFacts = import("./machine.js").MachineFacts;
 type OfferedHarness = NonNullable<NonNullable<MachineFacts["report"]>["harnesses"]>[number];
 
-export async function turnCredential(c: Ctx, meta: SessionMeta, offered: OfferedHarness | undefined, model: string, signal?: AbortSignal) {
+export async function turnCredential(c: Ctx, meta: SessionMeta, offered: OfferedHarness | undefined, model: string, signal?: AbortSignal, pinned?: TurnCredential): Promise<TurnCredential> {
+	if (pinned) {
+		const key = pinned.key;
+		if (key && await modelKeyActor(c, meta.uid).internalModelKeyGeneration(key.provider) !== key.generation)
+			throw new UserError("The Settings key for this turn changed or was removed. Start a new turn.", { code: "harness_signed_out" });
+		return pinned;
+	}
 	const hosted = meta.place.kind === "hosted";
 	const harness = meta.harness ?? "windlass";
 	if (harness === "windlass") {
 		const provider = windlassProvider(model);
 		if (!provider) return { model };
-		const keys = await modelKeyActor(c, meta.uid).internalModelKeys();
-		const key = keys.find(k => k.provider === provider);
-		if (!key) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
-		return { model, key };
+		const generation = await modelKeyActor(c, meta.uid).internalModelKeyGeneration(provider);
+		if (!generation) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
+		return { model, key: { provider, generation } };
 	}
 	if (!hosted && !offered?.keyRelay) return { model };
 	const keys = await modelKeyActor(c, meta.uid).internalModelKeys();
@@ -1809,6 +1814,16 @@ export async function turnCredential(c: Ctx, meta: SessionMeta, offered: Offered
 	const provider = hosted ? hostedProvider(harness, model, providers) : selectedKey(harness, model, providers);
 	if (hosted && !provider) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 	return { model, key: keys.find(k => k.provider === provider) };
+}
+
+/** Persist admission before any server forwards the request. A resumed segment inherits the balance. */
+export function takeTurnRequest(c: Ctx, meta: SessionMeta, run: TurnRun, active: ActiveTurn) {
+	return serial(c, async () => {
+		if (active.controller.signal.aborted || meta.run !== run || c.vars.turn !== active || !run.remainingRequests) return false;
+		run.remainingRequests--;
+		await c.db.execute("UPDATE meta SET data = json_set(data, '$.run.remainingRequests', ?) WHERE id = 1", run.remainingRequests);
+		return true;
+	});
 }
 
 function itemSignInRefusal(meta: SessionMeta, facts: MachineFacts, offered: OfferedHarness | undefined, provider?: import("../contract.js").ModelProvider) {
@@ -4150,11 +4165,17 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		// A person's turn is checked when it is sent; nobody sends an item's. Refused before the sandbox opens: the item asks, with the login hint.
 		const facts = meta.place.kind === "machine" && machineHarness(meta.harness) ? await runnerLink(c, meta.place.machineId).facts() : null;
 		const offered = facts?.report?.harnesses?.find(h => h.id === meta.harness);
-		const { model, key } = active.credential ?? await turnCredential(c, meta, offered, meta.model, signal).catch(error => {
+		const { model, key } = active.credential ?? await turnCredential(c, meta, offered, meta.model, signal, run?.credential).catch(error => {
 			if (!(error instanceof UserError) || error.code !== "harness_signed_out") throw error;
 			if (active.item) { active.item.refused = error.message; active.item.policyRefusal = true; }
 			throw new TurnProblem(error.message);
 		});
+		if (run) {
+			run.credential = { model, key };
+			if (key && meta.place.kind === "hosted") run.remainingRequests ??= config.modelRelay.turnRequests;
+			await serial(c, () => c.db.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta)));
+		}
+		const takeRequest = run?.remainingRequests !== undefined ? () => takeTurnRequest(c, meta, run, active) : undefined;
 		const signedOut = active.item && facts ? itemSignInRefusal(meta, facts, offered, key?.provider) : null;
 		if (signedOut) {
 			active.item!.refused = signedOut;
@@ -4257,7 +4278,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			void persist(c);
 		}
 		const common: RunTurnInput = {
-			...(key && { modelKey: { sessionId: meta.sessionId, key } }),
+			...(key && { modelKey: { sessionId: meta.sessionId, key, takeRequest } }),
 			prompt: text, mode, planMode:active.planMode, windlassSessionId: resumed ?? undefined, model, effort: effort ?? undefined, signal,
 			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 			onControl: control => { if (open) active.control = control; },
@@ -5624,6 +5645,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, messag
 		meta.turnStartedAt = now;
 		if (turn === 1 && !meta.titleIsTyped && !meta.origin) meta.title = titleFrom(shown);
 		meta.run = newRun(meta, turn, effort, capabilitiesOf(meta.harness).planMode && input.planMode === true, now, c.vars.nextSeq);
+		if (meta.run && credential) meta.run.credential = credential;
 		let untrusted: string[] | undefined;
 		if (typeof message !== "string") {
 			const reviewers = message.entries.filter(e => e.access !== "owner").map(e => e.author);
@@ -6879,7 +6901,7 @@ export const agentSession = actor({
 		// --- Windlass's model relay route (model-relay-route.ts), from another server process -----------
 
 		/** Whether this actor's process holds a turn's relay lease, and its current token: not held, the turn has ended. */
-		internalModelRelay: (c, input: { nonce: string; request: string; consume?: boolean }): RemoteLease => {
+		internalModelRelay: (c, input: { nonce: string; request: string; consume?: boolean }): Promise<RemoteLease> => {
 			requireService(c);
 			const nonce = typeof input?.nonce === "string" ? input.nonce : "";
 			return remoteLease(nonce, c.key[0], c.key[1], input.request, input.consume);

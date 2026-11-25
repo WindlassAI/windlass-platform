@@ -230,7 +230,7 @@ export class AcpHarness implements Harness {
 		let lease: KeyTurnRelay | undefined;
 		try {
 			input.signal?.throwIfAborted();
-			lease = await openModelKeyRelay(handle, ref.sessionId, { ...ref.key, harness: this.id }, input.signal);
+			lease = await openModelKeyRelay(handle, ref.sessionId, { ...ref.key, harness: this.id }, input.signal, ref.takeRequest);
 			input.signal?.throwIfAborted();
 			const env = this.machine ? { WLP_TURN_KEY_LEASES: lease.placeholder } : hostedKeyEnv(this.id, ref.key.provider, lease);
 			const secrets = input.secrets?.redactor ?? NO_REDACTION;

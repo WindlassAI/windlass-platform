@@ -353,6 +353,7 @@ private signInRetries = 0;
 	 */
 	modelRelays = false;
 	harnessKeyRelays = false;
+	windlassKeyRelays = false;
 	/** The connected server named `start-times`: the first connect after a create says what making the sandbox took (`Box.startTimes`). */
 	startTimes = false;
 	blockedNetwork = false;
@@ -1019,6 +1020,7 @@ private signInRetries = 0;
 				...(this.canReseed && { needsSpareSeed: true as const }),
 				// Only to a server that reads it (`sessionVolumes`): an older one refuses a key it does not know.
 				...(handle.ownData && this.sessionVolumes ? { ownData: true as const } : {}),
+				...(!box.harness && this.windlassKeyRelays && { windlassKeyRelay: true as const }),
 				// A harness uses its credential relay for forwarded platform leases.
 				...((box.harness ? this.harnessKeyRelays : this.modelRelays && this.modelRelayReady) ? { modelRelay: true as const } : {}),
 				// Only a reporting restricted proxy on a server that opted in.

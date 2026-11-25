@@ -21,7 +21,14 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	const machine = {kind:"machine", machineId:"desk"}, hosted = {kind:"hosted"};
 	const keys = [{provider:"openai",generation:"first"}, {provider:"google",generation:"second"}];
 	const calls: string[] = [];
-	const ctx = { client: () => ({user:{get:() => ({internalModelKeys:async () => { calls.push("keys"); return keys; }})}}),
+	const keyActor = {
+		internalModelKeyGeneration: async (provider: string) => {
+			calls.push(provider);
+			return keys.find(k => k.provider === provider)?.generation ?? null;
+		},
+		internalModelKeys: async () => { calls.push("keys"); return keys; },
+	};
+	const ctx = { client: () => ({ user: { get: () => keyActor } }),
 		vars:{runner:{request:async (op: string) => { calls.push(op); return "google/gemini"; }}} };
 	const resolve = (place: typeof machine | typeof hosted, model: string, keyRelay?: true, defaultModel?: string) =>
 		turnCredential(ctx as never, {place, uid:"owner", harness:"opencode", harnessModels:{defaultModel}} as never, {id:"opencode", keyRelay} as never, model);
@@ -48,7 +55,14 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 			const key = { provider, generation: provider + "-generation" };
 			keys.splice(0, keys.length, key);
 			assert.deepEqual(await turnCredential(ctx as never, meta, undefined, model), { model, key });
+			assert.equal(calls.at(-1), provider);
+			const pinned = JSON.parse(JSON.stringify({ model, key }));
+			keys[0] = { ...key, generation: "replacement" };
+			await assert.rejects(turnCredential(ctx as never, meta, undefined, model, undefined, pinned), /changed or was removed/);
+			keys[0] = key;
+			assert.deepEqual(await turnCredential(ctx as never, meta, undefined, model, undefined, pinned), pinned);
 			keys.length = 0;
+			await assert.rejects(turnCredential(ctx as never, meta, undefined, model, undefined, pinned), /changed or was removed/);
 			await assert.rejects(turnCredential(ctx as never, meta, undefined, model), /key in Settings/);
 		}
 	}

@@ -116,7 +116,7 @@ export function allowList(raw: string): string[] {
  * (docs/model-relay.md), and where: the origin of WLP_MODEL_RELAY_URL, a hostname of the relay's own. Off,
  * and the turn's token goes into the sandbox as before, with WLP_MODEL_RELAY=off, without
  * WLP_MODEL_RELAY_URL (never the platform's whole public host instead), or when the template's Windlass
- * (WLP_E2B_WINDLASS_VERSION) is not known to be 0.7.1 or later, the first release that routes every provider through the relay.
+ * (WLP_E2B_WINDLASS_VERSION) is not known to be 0.6.0 or later, the first release that routes ChatGPT through the relay.
  */
 export function e2bModelRelay(env: NodeJS.ProcessEnv = process.env): { origin: string; host: string } | { off: string } {
 	if ((env.WLP_MODEL_RELAY ?? "").trim().toLowerCase() === "off") return { off: "WLP_MODEL_RELAY=off" };

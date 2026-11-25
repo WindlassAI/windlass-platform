@@ -545,7 +545,7 @@ export interface TurnCheckpoint {
 export const PLATFORM_RESTART = Symbol("platform restart");
 
 export interface RunTurnInput {
-	modelKey?: { sessionId: string; key: import("./provider.js").ModelKeyLease };
+	modelKey?: { sessionId: string; key: import("./provider.js").ModelKeyLease; takeRequest?: import("./provider.js").TakeRelayRequest };
 	/** A requested PR review starts in this transport-owned, read-only checkout. */
 	reviewDirectory?: string;
 	/**
