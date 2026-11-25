@@ -30,6 +30,8 @@ import { createServer } from "node:http";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 import { e2bModelRelay, e2bModelRelayOrigin, readE2bNetwork } from "../server/src/sandbox/e2b/network.js";
 import { parseModelRelayUrl } from "../server/src/model-relay-url.js";
+import { dayOf, TOKEN_USAGE_TABLE, recordTurnTokens, tokensOn } from "../server/src/usage.js";
+import { checkHostedTurn } from "./hosted-agent-turn.js";
 import { E2bSandboxHandle } from "../server/src/sandbox/e2b/sandboxes.js";
 import { DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
 import type { DockerModelRelay } from "../server/src/sandbox/model-relay.js";
@@ -49,7 +51,7 @@ const REAL_B = "real-chatgpt-token-B-" + "b".repeat(48);
 
 async function machineKeyChecks() {
 	const uid = "owner", session = "turn", machine = "paired", generation = "first";
-	const key = { provider: "openai" as const, generation };
+	const key = { provider: "openai" as const, generation, harness:"codex" as const };
 	const origin = "https://relay.example.com";
 	const old = config.modelRelay.url;
 	config.modelRelay.url = { origin, host: "relay.example.com" };
@@ -66,7 +68,7 @@ async function machineKeyChecks() {
 				forward = value;
 				await opening;
 				return { placeholder: "local", env: {}, close: async () => { closes++; } };
-			}, { harness: "codex", signal: controller.signal });
+			}, controller.signal);
 			const nonce = readPlaceholder(forward.placeholder)!.nonce;
 			if (name === "abort") {
 				controller.abort();
@@ -409,7 +411,7 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	let held = true;
 	const up = upstream((seen) => new Response(new ReadableStream<Uint8Array>({ start(c) { c.enqueue(new TextEncoder().encode("event: response.created\ndata: {}\n\n")); seen.signal?.addEventListener("abort", () => c.error(new Error("aborted"))); } }), { headers: { "content-type": "text/event-stream" } }));
 	const placeholder = foreignPlaceholder("u7", "far");
-	const d = deps(up.fetch, { remote: async (...args): Promise<RemoteLease> => held ? sealedRemote(...args, { accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 }) : { held: false, token: null } });
+	const d = deps(up.fetch, { remote: async (uid, session, lease, request): Promise<RemoteLease> => held ? sealedRemote(uid, session, lease, request, { accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 }) : { held: false, token: null } });
 	const res = await modelRelayResponse(call(placeholder), d);
 	const reader = res.body!.getReader();
 	await reader.read();
@@ -514,9 +516,9 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 
 {
 	const sandbox = { id: "without-relay", uid: "u1", writeSecretFile: () => assert.fail("unexpected credential file") };
-	await assert.rejects(openModelKeyRelay(sandbox as never, "s", { provider: "openai", generation: "g" }), TokenFileError);
+	await assert.rejects(openModelKeyRelay(sandbox as never, "s", { provider: "openai", generation: "g", harness:"codex" }), TokenFileError);
 	const expired = await modelRelayResponse(call(foreignPlaceholder("u1", "expired-transit")), deps(async () => assert.fail("expired token forwarded"), {
-		remote: async (...args) => sealedRemote(...args, { accessToken: REAL_A, expiresAt: Date.now() + 60_000 }, Date.now() - 1),
+		remote: async (uid, session, lease, request) => sealedRemote(uid, session, lease, request, { accessToken: REAL_A, expiresAt: Date.now() + 60_000 }, Date.now() - 1),
 	}));
 	assert.equal(expired.status, 401);
 }
@@ -541,9 +543,9 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 	const key = randomBytes(24).toString("hex");
 	const halves = [key.slice(0, 24), key.slice(24)];
 	const generation = randomBytes(16).toString("hex");
-	const keyLease = { provider, generation };
+	const keyLease = { provider, generation, harness: "opencode" as const };
 	const origin = "https://relay.example.com";
-	const e2b = new E2bSandboxHandle({modelRelayOrigin: origin, relayLeaseMs:60_000} as never, {} as never, "box", uid, "e2b", "auto", undefined, sessionId);
+	const e2b = new E2bSandboxHandle({modelRelayOrigin: origin, relayLeaseMs:60_000, turnLimitMs:60_000} as never, {} as never, "box", uid, "e2b", "auto", undefined, sessionId);
 	const lease = await openModelKeyRelay(e2b, sessionId, keyLease);
 	assert.ok(!("hand" in lease));
 	const auth = provider === "anthropic" ? "x-api-key" : provider === "google" ? "x-goog-api-key" : "authorization";
@@ -554,6 +556,12 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 		serverSealer().seal("model-key", JSON.stringify([uid, provider]), key), generation, key.slice(-4), Date.now());
 	const internal = { key: [uid], vars: { tokenGen: 0 }, conn: { params: { token: issueServiceToken(modelKeyCaller(uid)) } },
 		db: { async execute<Row>(query: string, ...args: unknown[]) { return sql.prepare(query).all(...args as SQLInputValue[]) as Row[]; } } };
+	sql.exec(TOKEN_USAGE_TABLE);
+	const receipt = { seq: 1, at: Date.now(), tokens: 20, key: keyLease };
+	assert.ok(await recordTurnTokens(internal.db, sessionId, receipt));
+	assert.equal(await recordTurnTokens(internal.db, sessionId, receipt), false);
+	assert.equal(await tokensOn(internal.db, receipt.at), 0);
+	assert.equal(sql.prepare("SELECT tokens FROM model_key_usage WHERE day=? AND provider=?").get(dayOf(receipt.at), provider)?.tokens, 20);
 	assert.equal(await modelProviderActions.internalModelKeyGeneration(internal, provider), generation);
 	await assert.rejects(modelProviderActions.internalModelKeyGeneration({ ...internal, conn:{params:{token:issueServiceToken()}} }, provider));
 	let mode: "ok" | "error" | "redirect" = "ok";
@@ -576,7 +584,7 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 		if (mode === "error") return res.writeHead(429, {"retry-after": key}).end(JSON.stringify({error:{code:key, type:key, param:key, message:key}}));
 		if (provider === "anthropic") {
 			assert.equal(req.headers["anthropic-version"], "2023-06-01");
-			if (req.method === "POST") assert.equal(req.headers["anthropic-beta"], "interleaved-thinking-2025-05-14");
+			if (req.method === "POST") assert.ok(req.headers["anthropic-beta"]?.includes("interleaved-thinking-2025-05-14"));
 		}
 		if (path.endsWith("/models") || path.endsWith(":generateContent")) {
 			res.writeHead(200, {"content-type":"application/json"});
@@ -603,6 +611,31 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 		assert.equal(p, provider);
 		return modelProviderActions.internalModelKey(internal, p, nonce);
 	} });
+	for (const agent of ["claude", "codex", "opencode"] as const) {
+		if (agent === "claude" && provider !== "anthropic" || agent === "codex" && provider !== "openai") continue;
+		await checkHostedTurn(agent, keyLease, key, e2b, sessionId, request => modelRelayResponse(request, d));
+	}
+	if (provider === "openai") {
+		const controller = new AbortController();
+		const old = config.modelRelay.turnRequests;
+		config.modelRelay.turnRequests = 3;
+		let scoped;
+		try { scoped = await openModelKeyRelay(e2b, sessionId, { ...keyLease, harness: "codex" }, controller.signal); }
+		finally { config.modelRelay.turnRequests = old; }
+		const signed = readPlaceholder(scoped.placeholder)!;
+		assert.ok(signed.expiresAt <= Date.now() + 60_000);
+		const send = (path: string, method = "GET") => modelRelayResponse(new Request(origin + "/model-relay" + path, {
+			method, headers: { authorization: "Bearer " + scoped.placeholder },
+		}), d);
+		assert.equal((await send("/v1/chat/completions", "POST")).status, 403);
+		assert.equal((await send("/v1/models?client_version=0.171.0")).status, 200);
+		assert.equal(seen.at(-1), "/v1/models");
+		assert.ok(remoteLease(signed.nonce, uid, sessionId, randomBytes(16).toString("hex"), true).token);
+		assert.equal((await send("/v1/models")).status, 429);
+		controller.abort();
+		assert.equal((await send("/v1/models")).status, 401);
+		await assert.rejects(openModelKeyRelay(e2b, sessionId, keyLease, controller.signal));
+	}
 	const endpoint = (path: string, headers: Record<string,string> = {}) => new Request(origin + "/model-relay" + path, {
 		method: path.split("?")[0]!.endsWith("/models") ? "GET" : "POST", headers: { [auth]: credential(lease.placeholder),
 			...(path === "/v1/messages" && { "anthropic-beta": "interleaved-thinking-2025-05-14" }), ...headers },
@@ -616,7 +649,7 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 	const forwarded = await forwardKeyLease(uid, sessionId, keyLease, machineId, async value => {
 		forward = value;
 		return { placeholder:localPlaceholder, env:{}, close:async () => { localClosed = true; } };
-	}, { harness: "opencode" });
+	});
 	config.modelRelay.url = previousUrl;
 	assert.equal(forwarded.placeholder, localPlaceholder);
 	assert.ok(!JSON.stringify(forward).includes(key));

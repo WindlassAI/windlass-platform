@@ -9,6 +9,7 @@
  * steps there. It starts no sandbox.
  */
 
+import { machineHarness } from "../server/src/sandbox/harnesses.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { HOSTED_SIZES, HOSTED_SIZE_SPECS, isHostedSize } from "../server/src/contract.js";
@@ -31,7 +32,10 @@ async function main(): Promise<number> {
 	const variant = process.env.WLP_SANDBOX_VARIANT ?? "base";
 	if (variant !== "base" && variant !== "shots") throw new Error("WLP_SANDBOX_VARIANT must be base or shots");
 	const shots = variant === "shots";
-	if (context === undefined || !["Dockerfile", "wlp-run", "wlp-pnpm", "windlass", ...(shots ? ["wlp-shot"] : [])].every((file) => existsSync(join(context, file)))) {
+	const harness = machineHarness(process.env.WLP_E2B_HARNESS);
+	const image = process.env.WLP_E2B_HARNESS_IMAGE;
+	if (process.env.WLP_E2B_HARNESS && (!harness || !image || shots)) throw new Error("Choose a harness and set WLP_E2B_HARNESS_IMAGE to its published amd64 image.");
+	if (!harness && (context === undefined || !["Dockerfile", "wlp-run", "wlp-pnpm", "windlass", ...(shots ? ["wlp-shot"] : [])].every((file) => existsSync(join(context, file))))) {
 		console.error("e2b-template: give the build context: a directory with Dockerfile, wlp-run and windlass, plus wlp-shot for the shots variant (sandbox/e2b/build.sh makes one)");
 		return 2;
 	}
@@ -39,14 +43,14 @@ async function main(): Promise<number> {
 	const size = (process.env.WLP_E2B_SIZE ?? "small").trim();
 	if (!isHostedSize(size)) throw new Error(`WLP_E2B_SIZE must be one of ${HOSTED_SIZES.join(", ")}; got "${size}"`);
 	const settings = readE2bSettings();
-	const name = templateFor(settings, size, shots);
+	const name = templateFor(settings, size, shots, harness?.id);
 	// What the Hobby plan allows a sandbox: up to 8 vCPUs and 8 GiB. The size's figures are what the server prices it at, so
 	// WLP_E2B_CPU and WLP_E2B_MEMORY_MB, which override them, are for a test build under another name only.
 	const cpuCount = number("WLP_E2B_CPU", HOSTED_SIZE_SPECS[size].cpus, 1, HOBBY_MAX_CPUS);
 	const memoryMB = number("WLP_E2B_MEMORY_MB", HOSTED_SIZE_SPECS[size].memoryMiB, 512, HOBBY_MAX_MEMORY_MB);
 	if (cpuCount !== HOSTED_SIZE_SPECS[size].cpus || memoryMB !== HOSTED_SIZE_SPECS[size].memoryMiB) console.log(`# Note: ${size} is ${HOSTED_SIZE_SPECS[size].cpus} vCPU and ${HOSTED_SIZE_SPECS[size].memoryMiB} MiB, which the server prices it at; this build differs.`);
 	console.log(`# The ${size} template "${name}": ${cpuCount} vCPU, ${memoryMB} MiB. E2B is asked to build this:`);
-	console.log(describeTemplate(context, shots));
+	console.log(describeTemplate(context ?? ".", shots, harness ? image : undefined));
 	if (print) {
 		console.log("# --print: nothing was sent to E2B.");
 		return 0;
@@ -56,11 +60,12 @@ async function main(): Promise<number> {
 		console.error("e2b-template: E2B_API_KEY is not set, so nothing was built. With --print this prints the template and needs no key.");
 		return 2;
 	}
-	const built = await buildSandboxTemplate(context, { apiKey, name, shots, cpuCount, memoryMB }).catch((error: unknown) => {
+	const built = await buildSandboxTemplate(context ?? ".", { image: harness ? image : undefined, apiKey, name, shots, cpuCount, memoryMB }).catch((error: unknown) => {
 		const said = error instanceof Error ? error.message : String(error);
 		throw new Error(refusesSize(said) ? planRefusal(size, said) : said);
 	});
 	console.log(`# Built: template "${built.name}" (id ${built.templateId}, build ${built.buildId}), ${built.cpuCount} vCPU and ${built.memoryMB} MiB per sandbox.`);
+	if (harness) return 0;
 	const variable = templateVariables(size)[shots ? "shotsTemplate" : "template"];
 	console.log(`# A server finds it by its name: WLP_SANDBOX=e2b ${variable}=${name}${size === "small" ? "" : `, and offers the size once WLP_E2B_SIZES lists ${size}`}. Next: scripts/e2b-check.ts (docs/operating.md, "E2B").`);
 	return 0;

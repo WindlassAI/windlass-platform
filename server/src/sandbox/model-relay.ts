@@ -26,8 +26,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AccessToken } from "./api.js";
 import { LABEL, LABEL_ARG, MACHINE_LABEL, NO_LOGS, RELAY_LOGS, docker } from "./docker.js";
-import { modelBasePath } from "../model-relay-url.js";
-import { SECRET_FILE_SCRIPT, type ForwardedKeyLease, type KeyTurnRelay, type ModelKeyLease, type TurnModelRelay } from "./provider.js";
+import { wires } from "../../../sandbox/relay/wires.cjs";
+import { SECRET_FILE_SCRIPT, type ForwardedKeyLease, type KeyTurnRelay, type KeyReference, type TurnModelRelay } from "./provider.js";
 
 declare const WINDLASS_RELAY_SCRIPT: string;
 declare const EGRESS_SOURCE: string;
@@ -102,6 +102,8 @@ export interface DockerModelRelayOptions {
 	userRequests?: number;
 	/** Called before a container is made, so that the image is there. */
 	ensureImage?: () => Promise<void>;
+	/** Isolate the hosted relay’s Docker names when testing multiple deployments on one daemon. */
+	nameScope?: string;
 	/** The relay's own checks: another network than the bridge, an upstream other than api.openai.com, other caps. */
 	network?: string;
 	upstream?: string;
@@ -124,7 +126,8 @@ export class DockerModelRelay {
 
 	constructor(private readonly options: DockerModelRelayOptions) {
 		if (options.machine !== "" && !/^[A-Za-z0-9_-]+$/.test(options.machine)) throw new Error("invalid machine id");
-		this.suffix = options.machine === "" ? "" : `-${options.machine}`;
+		const scope = options.nameScope ?? options.machine;
+		this.suffix = scope ? `-${scope}` : "";
 	}
 
 	get relayName(): string {
@@ -232,9 +235,9 @@ export class DockerModelRelay {
 			throw new Error(`could not create the model relay's socket volume: ${made.stderr.trim()}`);
 	}
 
-	openKey(container: string, sandbox: string, uid: string, sessionId: string, key: ModelKeyLease) {
+	openKey(container: string, sandbox: string, uid: string, sessionId: string, key: KeyReference, signal?: AbortSignal) {
 		if (!this.options.forwardKeyLease) throw new Error("A saved provider key requires a platform model relay.");
-		return this.options.forwardKeyLease(uid, sessionId, key, this.options.machine || undefined, forward => this.open(container, sandbox, uid, forward));
+		return this.options.forwardKeyLease(uid, sessionId, key, this.options.machine || undefined, forward => this.open(container, sandbox, uid, forward), signal);
 	}
 
 	/**
@@ -281,7 +284,7 @@ export class DockerModelRelay {
 		const lease: DockerKeyRelay = {
 			nonce,
 			placeholder,
-			env: { WINDLASS_MODEL_BASE_URL: new URL(MODEL_RELAY_URL).origin + modelBasePath(forward?.provider) },
+			env: { WINDLASS_MODEL_BASE_URL: new URL(MODEL_RELAY_URL).origin + wires[forward?.provider ?? "chatgpt"].base },
 			// The file first: the relay then stops the turn's requests still running, and the forwarder's removal ends its connections.
 			close: async () => {
 				closed = true;

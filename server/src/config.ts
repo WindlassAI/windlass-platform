@@ -366,7 +366,7 @@ export interface Config {
 	/** How long an approval of a project's MCP server is remembered for its user: Windlass's own 30 days, or less. */
 	serverApprovalTtlMs: number;
 	/** Windlass's model relay (docs/model-relay.md): WLP_MODEL_RELAY, the hosted relay's ceiling, and WLP_MODEL_RELAY_URL (null when unset). */
-	modelRelay: { on: boolean; requests: number; url: ModelRelayUrl | null };
+	modelRelay: { on: boolean; requests: number; turnRequests: number; url: ModelRelayUrl | null };
 	/** A Docker setup must finish successfully and reach this duration to be saved. */
 	snapshots: boolean;
 	/** WLP_E2B_SNAPSHOTS=on: post-setup snapshots of hosted E2B sessions (e2b/snapshots.ts). Docker and machines keep `snapshots`. */
@@ -741,9 +741,11 @@ function readModelRelay(): Config["modelRelay"] {
 	const text = (process.env.WLP_MODEL_RELAY_REQUESTS ?? "").trim();
 	const requests = text === "" ? 64 : Number(text);
 	if (!Number.isInteger(requests) || requests < 1 || requests > 4096) unusable.push("WLP_MODEL_RELAY_REQUESTS must be a whole number from 1 to 4096, or not set for 64");
+	const turnRequests = Number(process.env.WLP_MODEL_RELAY_TURN_REQUESTS?.trim() || 300);
+	if (!Number.isSafeInteger(turnRequests) || turnRequests < 1) unusable.push("WLP_MODEL_RELAY_TURN_REQUESTS must be a positive whole number");
 	const url = parseModelRelayUrl(process.env.WLP_MODEL_RELAY_URL);
 	if (url !== null && "problem" in url) unusable.push(url.problem);
-	return { on: mode !== "off", requests: Number.isInteger(requests) && requests >= 1 && requests <= 4096 ? requests : 64, url: url !== null && "problem" in url ? null : url };
+	return { on: mode !== "off", turnRequests, requests: Number.isInteger(requests) && requests >= 1 && requests <= 4096 ? requests : 64, url: url !== null && "problem" in url ? null : url };
 }
 
 function readStoreLimits(): Config["storeLimits"] {

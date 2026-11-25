@@ -59,12 +59,12 @@ import { clockTime, useMachines } from "../screens/Machines";
 import { useApp, useAuth } from "../state/app";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
-import { allowanceState, useAccount, useAllowance, useModels, useNow } from "../state/hooks";
+import { useHostedProviders, allowanceState, useAccount, useAllowance, useModels, useNow } from "../state/hooks";
 import { ArrowUpIcon, CheckIcon, CloudIcon, LockIcon, MachineIcon, PlusIcon, RepoIcon, SlidersIcon, WarnIcon } from "./Icons";
 import { accessTokenFact, claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
 import { modeMenu } from "./Modes";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
-import { capabilitiesOf, machineAgentLine, machineHarness } from "../../../server/src/sandbox/harnesses.js";
+import { hostedAgentProblem, capabilitiesOf, machineAgentLine, machineHarness } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_PROFILE, itemHarnesses, itemProfilesHere, machineUnusable, offeredHarnesses, onPullRequest } from "./PlaceChoice";
 import { repositoryMenu, useBranches, useRepositorySearch, type PickedRepository } from "./RepositoryMenu";
 import { SecretsField } from "./Secrets";
@@ -109,7 +109,7 @@ export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null
 		claude && (claude.codex || claude.opencode || profile.claudeRelay) && !profile.commandNetwork && profile.available
 			? { text: claude.codex ? "Codex relay" : claude.opencode ? "OpenCode relay" : "Claude relay only", long: commandNetworkFact(profile, claude), open: false }
 			: { text: profile.commandNetwork ? "network on" : "no network", long: commandNetworkFact(profile, claude), open: profile.commandNetwork },
-		claude?.codex ? {text:"credentials on machine", long:"Commands can use the Codex model relay. OpenAI credentials stay on the machine.",open:true} : claude?.opencode
+		claude?.hosted ? { text: "Settings key via relay", long: "The sandbox can use a placeholder for this turn. Your provider key stays on the platform.", open: true } : claude?.codex ? {text:"credentials on machine", long:"Commands can use the Codex model relay. OpenAI credentials stay on the machine.",open:true} : claude?.opencode
 			? { text: "credentials on machine", long: "Commands can use the OpenCode model relay. Provider credentials stay on the machine.", open: true }
 			: claude
 			? { text: profile.claudeRelay ? "Claude login via relay" : "Claude login readable", long: `commands can use your Claude login. ${claudeLoginFact(profile)}`, open: true }
@@ -399,17 +399,20 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				: lastMachine === null
 					? "The machine your last agent ran on is not one of yours any more, so this one runs on this platform."
 					: `Your last agent ran on “${machineLabel(lastMachine)}”, which cannot be used now, so this one runs on this platform. ${why(lastMachine) ?? ""}`.trim());
+	const keys = useHostedProviders();
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
 	// Another harness runs in the hardened container (Codex also in the Windlass sandbox): without one that can be used it cannot be chosen, and a machine that does not offer it leaves Windlass.
 	const hardened = placeProfiles.some((candidate) => candidate.id === HARNESS_PROFILE && candidate.available);
 	// A work item starts on Windlass unless chosen otherwise, and only on an agent its machine is signed into.
 	const wantedHarness = harnessChoice ?? (item ? destination?.harness ?? "windlass" : (started.harness ?? "windlass"));
 	const harnessesHere = (machine: MachineSummary | null) => (item ? itemHarnesses(machine) : offeredHarnesses(machine));
+	const hostedProfile = placeProfiles.find(p => p.available && p.platformKeys);
+	const hostedProblem = (id: Exclude<HarnessId, "windlass">) => hostedAgentProblem(id, keys, !!hostedProfile);
 	const runsHere = (id: HarnessId) => (item ? itemProfilesHere(chosenMachine, id).length > 0 : hardened);
-	const harness: HarnessId = wantedHarness !== "windlass" && runsHere(wantedHarness) && harnessesHere(chosenMachine).some((offered) => offered.id === wantedHarness) ? wantedHarness : "windlass";
+	const harness: HarnessId = wantedHarness !== "windlass" && (chosenMachine ? runsHere(wantedHarness) && harnessesHere(chosenMachine).some((offered) => offered.id === wantedHarness) : !hostedProblem(wantedHarness)) ? wantedHarness : "windlass";
 	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
 	// ---- the hosted size: where the deployment offers more than one, for a hosted sandbox -----------------
-	const sizes = chosenMachine === null && other === null ? (info?.hostedSizes ?? []).filter((size) => planSizes === null || planSizes.includes(size.id)) : [];
+	const sizes = chosenMachine === null ? (info?.hostedSizes ?? []).filter((size) => planSizes === null || planSizes.includes(size.id)) : [];
 	const savedSize = saved.defaults?.hostedSize ?? null;
 	const defaultSize = sizes.length > 1 ? startingSize(sizes, savedSize, item) : null;
 	const hostedSize = defaultSize === null ? null : sizeChoice !== null && sizes.some((size) => size.id === sizeChoice) ? sizeChoice : defaultSize;
@@ -418,7 +421,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const harnessProblem =
 		item || harnessChoice !== null || started.harness === null || started.harness === harness || machinesReading
 			? null
-			: `Your last agent was ${HARNESS_NAMES[started.harness]}, which ${chosenMachine ? `“${machineLabel(chosenMachine)}” does not offer now` : "runs only on a machine of yours"}, so this one is ${HARNESS_NAMES[harness]}.`;
+			: `Your last agent was ${HARNESS_NAMES[started.harness]}, which ${chosenMachine ? `“${machineLabel(chosenMachine)}” does not offer now` : "is unavailable here"}, so this one is ${HARNESS_NAMES[harness]}.`;
 	const catalogs = { codex: useCatalog(chosenMachine, "codex"), claude: useCatalog(chosenMachine, "claude"), opencode: useCatalog(chosenMachine, "opencode") };
 	const selectedCatalog = harness === "windlass" ? null : catalogs[harness];
 	const options = harnessOptions(chosenMachine, harness, selectedCatalog?.options);
@@ -429,7 +432,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// A Codex work item runs in Codex's sandbox unless "Docker, hardened" is picked (server/src/sandbox/harnesses.ts, `itemModes`).
 	const askedProfile = profileChoice ?? (destination?.place.kind === "machine" ? destination.profile ?? null : null);
 	const codexItemSandbox = item && hasCodexSandbox(chosenMachine) && askedProfile !== HARNESS_PROFILE;
-	const profile = hasCodexSandbox(chosenMachine) && (askedProfile === "docker-windlass-sandbox" || codexItemSandbox) ? "docker-windlass-sandbox" : other ? HARNESS_PROFILE : startingProfile(askedProfile, defaults, info ? { profiles: placeProfiles } : null, last.of.windlass?.profile ?? null);
+	const profile = hasCodexSandbox(chosenMachine) && (askedProfile === "docker-windlass-sandbox" || codexItemSandbox) ? "docker-windlass-sandbox" : other ? chosenMachine ? HARNESS_PROFILE : hostedProfile?.id ?? null : startingProfile(askedProfile, defaults, info ? { profiles: placeProfiles } : null, last.of.windlass?.profile ?? null);
 	const modelList = other ? options.models : models.list;
 	const offers = (id: string) => modelList?.models.some((candidate) => candidate.id === id) === true;
 	// Another harness's "" is its own default model, the one its runner reported as that: nothing is sent for it, so the adapter starts on its own.
@@ -442,12 +445,12 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const chosenProfile = placeProfiles.find((candidate) => candidate.id === profile) ?? null;
 	const launch = launchModes(harness, chosenProfile);
 	const reportedModes = harness === "codex" && chosenProfile
-		? codexModes(chosenProfile.id, chosenMachine?.harnesses?.find(h => h.id === "codex")?.modes ?? [])
+		? codexModes(chosenProfile.id, chosenMachine ? chosenMachine.harnesses?.find(h => h.id === "codex")?.modes ?? [] : undefined)
 		: options.modes;
 	// Claude Code's modes as its machine reported them, where it did.
 	const modes = launch && other && reportedModes?.length ? { modes: reportedModes, default: reportedModes.some((mode) => mode.id === launch.default) ? launch.default : (reportedModes[0] as SessionMode).id } : launch;
 	const mode = modes ? (modes.modes.find((candidate) => candidate.id === modeChoice) ?? (started.harness === harness ? modes.modes.find((candidate) => candidate.id === started.mode) : undefined) ?? modes.modes.find((candidate) => candidate.id === lastOf?.mode) ?? modes.modes.find((candidate) => candidate.id === modes.default) ?? null) : null;
-	const claude: ClaudeFacts | null = other ? { codex: harness === "codex", opencode: harness === "opencode", mode: mode ?? { id: "build", name: "Build", description: null } } : null;
+	const claude: ClaudeFacts | null = other ? { hosted: !chosenMachine, codex: harness === "codex", opencode: harness === "opencode", mode: mode ?? { id: "build", name: "Build", description: null } } : null;
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 
 	// Saved defaults that differ from what is chosen, and those that cannot be used.
@@ -462,9 +465,10 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// ---- launching ------------------------------------------------------------------------------
 	const accountReading = account.reading && account.settings === null;
 	// Wait for the selected repository and its inherited place before filing.
-	const reading = item
+	const checkingKeys = !chosenMachine && wantedHarness !== "windlass" && keys === null;
+	const reading = checkingKeys || (item
 		? info === null || (items === null && repositoryId === undefined) || (sessions === null && repositoryId === undefined && newestItem === null) || repoReading || saved.reading || accountReading || (machinesReading && !!policy?.place && policy.place !== "hosted")
-		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || !!selectedCatalog?.reading || (machinesReading && wantedMachine !== null);
+		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || !!selectedCatalog?.reading || (machinesReading && wantedMachine !== null));
 	const canCreate = !item && !reading && profile !== null && !repoInvalid && busy === null;
 	const task = prompt.trim();
 	const maxChars = item ? MAX_ITEM_BODY_CHARS : MAX_PROMPT_CHARS;
@@ -544,7 +548,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			// The agent and its model: Windlass on the account's model unless one was chosen here.
 			...(!usePolicy && other ? { harness } : {}),
 			// Codex runs items in either of its profiles; the other agents only in their hardened container.
-			...(!usePolicy && profile && (chosenMachine || profileChoice) ? { profile } : {}),
+			...(!usePolicy && profile && (chosenMachine || profileChoice || other) ? { profile } : {}),
 			...(model && (other || modelChoice !== "") ? { model } : {}),
 			// Every turn of the item runs at it; left out, at the agent's default.
 			...(effort && effort !== "default" ? { effort } : {}),
@@ -753,14 +757,14 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		</div>
 	);
 	// ---- where it runs, and its sandbox -------------------------------------------------------------
-	const available = placeProfiles.filter((candidate) => candidate.available && (!other || candidate.id === HARNESS_PROFILE || (hasCodexSandbox(chosenMachine) && candidate.id === "docker-windlass-sandbox")));
+	const available = placeProfiles.filter((candidate) => candidate.available && (!other || (!chosenMachine && candidate.platformKeys) || candidate.id === HARNESS_PROFILE || (hasCodexSandbox(chosenMachine) && candidate.id === "docker-windlass-sandbox")));
 	const sandboxWarn = (chosenProfile !== null && sandboxOpen(chosenProfile, claude)) || (!other && ignored.profile !== null) || defaultsErrors.length > 0 || available.length === 0;
 	/** The sandboxes of a place, as rows: choosing one chooses the place too. */
 	const profileRows = (machine: MachineSummary | null): MenuItem[] => {
 		const here = machine === null ? (chosenMachine === null) : chosenMachine?.machineId === machine.machineId;
 		const list = machine ? machine.profiles : (info?.profiles ?? []);
 		return list
-			.filter((candidate) => !other || candidate.id === HARNESS_PROFILE || (hasCodexSandbox(machine) && candidate.id === "docker-windlass-sandbox"))
+			.filter((candidate) => !other || (!machine && candidate.platformKeys) || candidate.id === HARNESS_PROFILE || (hasCodexSandbox(machine) && candidate.id === "docker-windlass-sandbox"))
 			.map((candidate) => {
 				const facts = sandboxFacts(candidate, here ? claude : null);
 				return {
@@ -792,7 +796,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					warn: false,
 				}
 			: null,
-		other && !hasCodexSandbox(chosenMachine) ? { text: `${other} runs in the hardened container only.`, warn: false } : null,
+		other && chosenMachine && !hasCodexSandbox(chosenMachine) ? { text: `${other} runs in the hardened container only.`, warn: false } : null,
 	].filter((note) => note !== null);
 	const whereGroups: MenuGroup[] =
 		mine.length > 0
@@ -905,6 +909,11 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					? [{ id: "windlass:default", label: model && !other ? model : "Your default model", icon: <AgentGlyph harness="Windlass" accent />, description: models.reading ? "Reading your models…" : `${models.error ?? "Your models could not be read."} The agent starts on your default model.`, checked: harness === "windlass", onSelect: () => setHarness("windlass") }]
 					: modelRows("windlass", windlassList),
 		},
+		...(!chosenMachine ? (["claude", "codex", "opencode"] as const).map(id => {
+			const name = HARNESS_NAMES[id], problem = hostedProblem(id);
+			return { id, label: name, note: "hosted", items: [{ id: id + ":default", label: name, icon: <AgentGlyph harness={name} />,
+				description: problem ?? "Use your Settings key", disabled: !!problem, checked: harness === id, onSelect: () => setHarness(id) }] };
+		}) : []),
 		...(chosenMachine && offersOther
 			? harnessesHere(chosenMachine).map((offered) => {
 					const options = harnessOptions(chosenMachine, offered.id, catalogs[offered.id].options);
@@ -923,7 +932,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				})
 			: []),
 		...(["claude", "opencode", "codex"] as const).flatMap(id => {
-			if (harnessesHere(chosenMachine).some(h => h.id === id)) return [];
+			if (!chosenMachine || harnessesHere(chosenMachine).some(h => h.id === id)) return [];
 			const hosts = mine.filter(machine => why(machine) === null && harnessesHere(machine).some(h => h.id === id));
 			if (hosts.length === 0) return [];
 			const name = HARNESS_NAMES[id];
@@ -1000,8 +1009,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		footer: (
 			<>
 				{item && other ? <p className="ui-menu-note">{other} works on the item in the hardened container without asking, and runs Quick: Plan first is Windlass's.{capabilitiesOf(harness).checks === "platform" ? " The platform runs this repository's saved checks when it ends a turn." : capabilitiesOf(harness).checks === "none" ? " It does not run this repository's checks, so CI decides." : ""}</p> : null}
-				{!item && machineHarness(harness) ? <p className="ui-menu-note">{machineAgentLine(machineHarness(harness)!)}{onPullRequest(harness)}</p> : null}
-				<p className="ui-menu-note">{other ? `The models “${chosenMachine ? machineLabel(chosenMachine) : ""}”'s runner reported for ${other}.` : modelList ? modelsNote(modelList) : null}</p>
+				{!item && chosenMachine && machineHarness(harness) ? <p className="ui-menu-note">{machineAgentLine(machineHarness(harness)!)}{onPullRequest(harness)}</p> : null}
+				<p className="ui-menu-note">{other && !chosenMachine ? "The agent reports its available models when the session starts." : other ? `The models “${chosenMachine ? machineLabel(chosenMachine) : ""}”'s runner reported for ${other}.` : modelList ? modelsNote(modelList) : null}</p>
 				{modelChanged ? (
 					<button type="button" className="ui-menu-action start-back" onClick={() => setModel("")}>
 						Back to the default ({whose(defaults.from.model)}: {defaults.model})

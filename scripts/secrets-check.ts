@@ -64,6 +64,11 @@ function refused(clean: () => unknown): string | null {
 /** A made-up value: nothing here is a real credential. */
 const made = (bytes = 18) => `wlpcheck_${randomBytes(bytes).toString("base64url")}`;
 
+if (process.argv.includes("--redaction")) {
+	checkRedaction();
+	process.exit(failed ? 1 : 0);
+}
+
 // Names.
 expect("an environment variable's name is taken as it is", cleanSecretName("NPM_TOKEN") === "NPM_TOKEN" && cleanSecretName("_x9") === "_x9" && cleanSecretName("database_url") === "database_url");
 expect(
@@ -257,8 +262,7 @@ expect("the setup command is handed every secret", sorted(Object.keys(setupEnvir
 	expect("a scope it does not know is listed as the narrower one", listedSecrets([{ name: "X_TOKEN", scope: "everything", updated_at: 1 }], sandboxed).secrets[0]!.scope === "setup");
 }
 
-// Taking values out of text.
-{
+function checkRedaction() {
 	const token = made();
 	const quoted = `pa"ss\\word ${made(6)}`;
 	const key = `-----BEGIN PRIVATE KEY-----\n${made(30)}\n${made(30)}\n-----END PRIVATE KEY-----\n`;
@@ -275,9 +279,9 @@ expect("the setup command is handed every secret", sorted(Object.keys(setupEnvir
 	expect("a value is found as a JSON string holds it, with its quote and backslash escaped", escaped !== quoted && asJson.includes(escaped) && !redactor.text(asJson).includes(escaped) && redactor.text(asJson).includes(secretMark("DB_PASSWORD")));
 	const printed = redactor.text(`cat key.pem\n${key}`);
 	expect("a value of several lines is taken out whole, and line by line when its lines are printed apart", !key.split("\n").filter((line) => line.length >= MIN_SECRET_VALUE_CHARS).some((line) => printed.includes(line)) && !redactor.text(key.split("\n").map((line) => `  | ${line}`).join("\n")).includes(key.split("\n")[1]!));
-	const event = { type: "tool.settled", data: { callId: "c1", output: `token=${token}`, nested: [{ text: `again ${token}` }], count: 3, flag: true, none: null }, [token]: "a key is not text that is shown" };
+	const event = { type: "tool.settled", data: { callId: "c1", output: `token=${token}`, nested: [{ text: `again ${token}` }], count: 3, flag: true, none: null }, [token]: "field name" };
 	const cleaned = redactor.deep(event);
-	expect("every text of an event is cleaned, at any depth, and nothing else of it is touched", cleaned.data.output === `token=${mark}` && cleaned.data.nested[0]!.text === `again ${mark}` && cleaned.data.count === 3 && cleaned.data.flag === true && cleaned.data.none === null && cleaned.type === "tool.settled" && token in cleaned);
+	expect("every text of an event is cleaned, at any depth, and nothing else of it is touched", cleaned.data.output === `token=${mark}` && cleaned.data.nested[0]!.text === `again ${mark}` && cleaned.data.count === 3 && cleaned.data.flag === true && cleaned.data.none === null && cleaned.type === "tool.settled" && !(token in cleaned) && cleaned[mark] === "field name");
 	const untouched = { type: "step.started", data: { step: 1 } };
 	expect("an event without a value is handed on as the same object", redactor.deep(untouched) === untouched && event.data.output.includes(token));
 	expect("a redactor with nothing to take out changes nothing", !new SecretRedactor([]).active && new SecretRedactor([]).text(token) === token && NO_REDACTION.deep(event) === event);
@@ -312,5 +316,6 @@ expect("the setup command is handed every secret", sorted(Object.keys(setupEnvir
 	expect("a long output costs little", !out.includes(token) && performance.now() - began < 500, `${Math.round(performance.now() - began)} ms`);
 }
 
+checkRedaction();
 console.log(failed === 0 ? "\nAll checks passed." : `\n${failed} check(s) failed.`);
 process.exit(failed === 0 ? 0 : 1);

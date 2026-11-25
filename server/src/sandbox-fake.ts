@@ -459,7 +459,7 @@ class FakeSandboxes implements Sandboxes {
 	}
 
 	async create(input: CreateSandboxInput): Promise<string> {
-		if (input.harness) throw new SandboxUserError(`${machineHarnesses[input.harness].name} runs only on a machine of yours.`);
+		if (input.harness) throw new SandboxUserError(`The fake sandbox does not run ${machineHarnesses[input.harness].name}.`);
 		if (!this.profile(input.profile).available) throw new Error(`sandbox profile ${input.profile} is not available`);
 		await delay(20);
 		const id = `fake-${randomBytes(6).toString("hex")}`;

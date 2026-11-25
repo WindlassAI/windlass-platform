@@ -115,16 +115,16 @@ export interface UntrustedTurn {
  * the run's own text (CI logs, findings, reports) goes labelled only, and someone else's (`thirdParty`)
  * stops the turn until the person chooses to run it anyway, then goes labelled only too.
  *
- * On every other profile nothing stops: an agent that takes the marker is told, and one that does not gets
- * the labelled prompt, as before.
+ * ACP agents on the open E2B profile also run commands directly, so the same third-party check applies.
+ * On other profiles an agent that takes the marker is told, and the rest receive the labelled prompt.
  */
 export function untrustedTurn(turn: UntrustedTurn): UntrustedHandling {
 	const list = sources(turn.untrusted);
 	if (!list.length) return { kind: "none" };
 	const marker = takesUntrustedMarker(turn.agent);
-	if (turn.profile === "docker-hardened") {
+	if (turn.profile === "docker-hardened" || (turn.profile === "e2b-open" && !marker)) {
 		const outside = turn.unsandboxed ? [] : thirdParty(turn.currentSources ?? list);
-		if (outside.length) return { kind: "stop", sources: outside, reason: hardenedRefusal(turn.agent, outside) };
+		if (outside.length) return { kind: "stop", sources: outside, reason: turn.profile === "e2b-open" ? `This turn includes text from someone else (${outside.join(", ")}). ${harnessName(turn.agent)} runs commands directly in the microVM. Run it anyway or give up.` : hardenedRefusal(turn.agent, outside) };
 		return { kind: "labelled", sources: list, note: marker ? hardenedUnmarkedNote(list) : agentUnmarkedNote(harnessName(turn.agent), list, machineHarness(turn.agent)?.sandboxedOn.includes(turn.profile) ?? false) };
 	}
 	if (marker) return { kind: "marked", sources: list };

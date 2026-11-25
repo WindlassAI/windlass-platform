@@ -36,6 +36,7 @@
         "sandbox/harness/claude/managed-settings.json",
         "fixtures/acp-agent/**",
         "scripts/acp-agent-fake.ts",
+        "scripts/hosted-agent-turn.ts",
         "scripts/github-standin.ts",
         "scripts/check-image.ts",
         "scripts/e2b-network-standin.mjs",
@@ -259,13 +260,14 @@
       "shards": {
         "1": { "only": ["sandbox-1", "github-docker", "verified-docker"] },
         "2": { "only": ["sandbox-2", "e2b-provider-docker", "e2b-snapshot-docker", "sizing-docker"] },
-        "mcp": { "only": ["mcp", "model-relay-docker"] }
+        "mcp": { "only": ["mcp", "model-relay-docker", "hosted-key-docker"] }
       },
       "checks": {
         "sandbox-1": "WLP_CHECK_SECTIONS='image,screenshot images,profiles,provider,session data volumes,protocol client,seccomp,reviewer commands,profile docker-' tsx ../scripts/sandbox-check.ts",
         "sandbox-2": "WLP_CHECK_SECTIONS='failures,sign-in,token source,session token isolation,hand-off,valid-for,pnpm pins' tsx ../scripts/sandbox-check.ts",
         "mcp": "tsx ../scripts/mcp-check.ts",
         "model-relay-docker": "tsx ../scripts/model-relay-docker-check.ts",
+        "hosted-key-docker": "tsx ../scripts/model-relay-docker-check.ts --hosted-keys",
         "github-docker": "tsx ../scripts/github-check.ts --docker",
         "verified-docker": "tsx ../scripts/verified-check.ts --docker",
         "e2b-provider-docker": "tsx ../scripts/e2b-provider-test.ts --docker",

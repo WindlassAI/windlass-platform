@@ -70,7 +70,7 @@ export interface RelayRouteDeps {
 	/** B1 returns a transit blob bound to this request nonce. */
 	key(uid: string, provider: ModelProvider, request: string): Promise<string | null>;
 	/** The session actor returns a sealed token or a key reference. */
-	remote(uid: string, sessionId: string, nonce: string, request: string): Promise<RemoteLease | null>;
+	remote(uid: string, sessionId: string, nonce: string, request: string, consume?: boolean): Promise<RemoteLease | null>;
 	fetch: typeof fetch;
 	limiter: RelayLimiter;
 	rate: UserRate;
@@ -88,9 +88,9 @@ const defaults: RelayRouteDeps = {
 		catch (error) { if (isActorGone(error)) return false; throw error; }
 	},
 	key: (uid, provider, request) => modelKeyActor({ client: engine }, uid).internalModelKey(provider, request),
-	remote: async (uid, sessionId, nonce, request) => {
+	remote: async (uid, sessionId, nonce, request, consume) => {
 		try {
-			return await engine().agentSession.get([uid, sessionId], { params: serviceParams() }).internalModelRelay({ nonce, request });
+			return await engine().agentSession.get([uid, sessionId], { params: serviceParams() }).internalModelRelay({ nonce, request, consume });
 		} catch (error) {
 			if (isActorGone(error)) return null;
 			throw error;
@@ -142,7 +142,7 @@ export function upstreamFetch(url: string, init: RequestInit): Promise<Response>
 const cached = new Map<string, { token: Extract<RelayToken, { kind: "access" }>; until: number }>();
 
 /** The lease's current token; null when it has none (ended, or not yet handed one). An ended lease is remembered as such until its placeholder expires. */
-async function tokenFor(deps: RelayRouteDeps, placeholder: Placeholder, machine: string | undefined): Promise<RelayToken | null> {
+async function tokenFor(deps: RelayRouteDeps, placeholder: Placeholder, machine: string | undefined, consume = false): Promise<RelayToken | "limit" | null> {
 	const { uid, sessionId, nonce, expiresAt: placeholderExpires } = placeholder;
 	if (machine !== placeholder.machine) return null;
 	const now = deps.now();
@@ -153,11 +153,11 @@ async function tokenFor(deps: RelayRouteDeps, placeholder: Placeholder, machine:
 		return null;
 	}
 	// This process runs the turn: what it holds is the answer, and a lease it no longer holds has ended.
-	if (holdsLease(nonce)) return leaseToken(nonce, uid, sessionId, now);
+	if (holdsLease(nonce)) return leaseToken(nonce, uid, sessionId, now, consume);
 	const hit = cached.get(nonce);
 	if (hit && hit.until > now && hit.token.expiresAt > now) return hit.token;
 	const request = randomBytes(16).toString("hex");
-	const answer = await deps.remote(uid, sessionId, nonce, request);
+	const answer = await deps.remote(uid, sessionId, nonce, request, consume);
 	if (cached.size > 4096) cached.clear();
 	if (answer === null || !answer.held) {
 		// Ended: refused from now on without asking the actor again.
@@ -165,6 +165,7 @@ async function tokenFor(deps: RelayRouteDeps, placeholder: Placeholder, machine:
 		endLease(nonce, placeholderExpires, now);
 		return null;
 	}
+	if (answer.limited) return "limit";
 	if (answer.token === null) {
 		cached.delete(nonce);
 		return null;
@@ -310,10 +311,15 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 	if (!deps.rate.take(placeholder.uid, deps.now())) return refusal(503, `Too many model requests from your sessions (${ROUTE_LIMITS.userPerMinute} a minute).`, { "retry-after": "2" });
 	const machine = placeholder.machine && verifiedMachine(bearer!, placeholder.machine, incoming[proofHeader], method, path, deps.now());
 	if (placeholder.machine) delete incoming[proofHeader];
-	const lookup = () => tokenFor(deps, placeholder, machine);
+	const lookup = async () => {
+		const current = await tokenFor(deps, placeholder, machine);
+		return current === "limit" ? null : current;
+	};
 	let token: RelayToken | null;
 	try {
-		token = await lookup();
+		const admission = await tokenFor(deps, placeholder, machine, true);
+		if (admission === "limit") return refusal(429, "This turn reached its model request limit.");
+		token = admission;
 	} catch {
 		return refusal(503, "The relay could not reach the session. Try again.", { "retry-after": "1" });
 	}
@@ -359,7 +365,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 			token = await lookup();
 			if (token?.kind === "key") {
 				provider = token.provider;
-				if (machine && harnessMethod(token.harness, provider, path) !== method) { release(); return refusal(403, "This request is not allowed by the relay."); }
+				if (harnessMethod(token.harness, provider, path) !== method) { release(); return refusal(403, "This request is not allowed by the relay."); }
 				const nonce = randomBytes(16).toString("hex");
 				const sealed = await deps.key(placeholder.uid, provider, nonce);
 				const saved = sealed && openModelKeyTransit(placeholder.uid, provider, nonce, sealed);

@@ -29,13 +29,13 @@ The relay uses the Windlass account’s ChatGPT sign-in. Keys in the account’s
 
 ### Settings keys
 
-Read the generation through the user-bound `modelKeyActor(...).internalModelKeyGeneration(provider)`.
-A caller opens a key-backed turn with `openModelKeyRelay(sandbox, sessionId, { provider, generation })`
+Resolve the turn’s provider from the model and the owner’s current key generations.
+A caller opens a key-backed turn with `openModelKeyRelay(sandbox, sessionId, { provider, generation, harness }, signal)`
 in `sandbox/token-file.ts`. Start the client with the returned base URL and placeholder in the provider's
 usual credential header or as a Bearer token. Close the lease when the turn ends. Opening fails if the sandbox
 has no key relay. The ChatGPT access-token file fallback is specific to ChatGPT.
 
-The platform lease holds the provider and the generation saved by the user actor. For each admitted
+The platform lease holds the harness, provider and generation saved by the user actor. For each admitted
 request the platform relay calls B1's `internalModelKey` as `model-key/<uid>` with a fresh nonce,
 opens the 60-second transit blob, and checks the generation before sending the request.
 Removing or replacing the key blocks the next request on every lease of the old generation.
@@ -61,7 +61,7 @@ be configured and reachable from the relay container. The container holds a seco
 the platform lease in its private tmpfs. Its sandbox gets only the local placeholder tied to the forwarder.
 A paired machine signs each forwarded request with a per-turn key delivered over its session connection.
 The platform verifies the signature for that machine and path. The forwarding lease expires one minute
-after the turn timeout. The runner never receives the provider key. Agent selection and provider configuration are separate work.
+after the turn timeout. The runner never receives the provider key.
 
 The Docker relay is the program `sandbox/relay/windlass.cjs`, on the shared `createRelay` of
 `sandbox/relay/server.cjs`, the same one the Claude Code, Codex and OpenCode relays of machines use. It
@@ -266,3 +266,32 @@ Turns that are already running keep the mode they started with.
   token while requests run, applies the caps, and shows that the forwarder is gone after the turn. It
   also stops a streaming request at the turn's end, fails a turn whose port a session process holds,
   removes what a stopped server left, and runs the 64-stream memory test.
+
+## Hosted ACP agents
+
+Claude Code uses Anthropic. Codex can list OpenAI models and call Responses. OpenCode receives only the provider for its selected model. Before OpenCode has reported a catalog, its default uses the first saved provider in this order: OpenAI, Anthropic, Google, OpenRouter. The adapter chooses a model from that provider. Each turn pins one key generation before provisioning. Reported tokens are attributed to that provider. Cancellation revokes the platform lease immediately, including while the Docker forwarder is starting.
+
+On hosted Docker the guest receives a local bearer. A separate forwarder listens on loopback in that container’s network namespace and prefixes its connections to the relay socket with the turn’s nonce. The relay matches both nonce and bearer. A different container’s forwarder supplies a different nonce. Only the relay and the forwarders mount the socket volume. The platform placeholder stays in the relay’s private tmpfs.
+
+On E2B the guest receives the platform placeholder directly. Anyone who copies it can use it from outside the microVM and spend the owner’s quota until the turn ends. The lease is bound to the owner, session, turn, one provider generation and the harness’s allowed routes. Its signature expires after at most the configured turn timeout. The session’s lease owner enforces a shared per-turn cap of 300 requests by default (`WLP_MODEL_RELAY_TURN_REQUESTS`), including requests received by another platform process. Each accepted request can still consume provider tokens.
+
+Set `WLP_MODEL_RELAY_URL` to the dedicated relay hostname. E2B also requires `WLP_E2B_OPEN_PROFILE=1` and the template’s Windlass version as described above. Agent commands run directly as the guest’s non-root user.
+
+Build one image per agent from the normal base sandbox image. Hosted Docker defaults to the local tags produced by these commands. Set `WLP_CLAUDE_IMAGE`, `WLP_CODEX_IMAGE` or `WLP_OPENCODE_IMAGE` to use a preloaded image by digest.
+
+```sh
+sandbox/build.sh
+for agent in claude codex opencode; do
+  sandbox/harness/build.sh "$agent"
+done
+```
+
+Approximate local disk sizes reported by `docker image ls` for cached arm64 images are 1.48 GB for the shared base, 2.12 GB each for Claude Code and Codex, and 1.77 GB for OpenCode. The additions are about 640, 640 and 290 MB respectively. Docker shares the base layers. E2B uses amd64 and its snapshot sizes may differ.
+
+For E2B, publish the corresponding amd64 harness image through the normal image release. Point the builder at its immutable registry reference. For example, with `CLAUDE_IMAGE_DIGEST` set to that image's full reference, inspect the small template locally:
+
+```sh
+WLP_E2B_HARNESS=claude WLP_E2B_HARNESS_IMAGE="$CLAUDE_IMAGE_DIGEST" sandbox/e2b/build.sh --print
+```
+
+To build, set `E2B_API_KEY` and omit `--print`. Repeat for codex and opencode and for each offered `WLP_E2B_SIZE`. Templates use that size's configured base template name with `-claude`, `-codex` or `-opencode` appended. ACP sessions use these templates directly and skip Windlass setup snapshots.

@@ -1320,9 +1320,7 @@ const hosted = (left: number) => ({ kind: "hosted" as const, usage: usage(left),
 	expect("a personal session and an item reach one cap and the Factory schedules the exact UTC reset",
 		!held.ok && held.wait.reason === "capacity" && held.wait.sentence.includes("100") && held.wait.retryAt === MIDNIGHT);
 	expect("the next day grants the waiting turn with a fresh balance", (await admission(MIDNIGHT)).ok && await tokensOn(db, MIDNIGHT) === 0);
-	const machine = { kind: "machine", machineId: "mine" } as const;
-	expect("Windlass counts in both places and machine-local subscriptions are exempt", usesPlatformModel({ kind: "hosted" }) &&
-		usesPlatformModel(machine) && !usesPlatformModel(machine, "claude") && !usesPlatformModel(machine, "opencode"));
+	expect("Only Windlass uses the platform model allowance", usesPlatformModel() && !usesPlatformModel("claude") && !usesPlatformModel("opencode"));
 	sqlite.close();
 }
 const allowance = admit({ at: T0 + 3 * MINUTE, limits: FACTORY_DEFAULTS, place: hosted(0), attempt: 0 });

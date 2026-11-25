@@ -39,6 +39,10 @@ const PROVIDERS: Record<ModelProvider, {
 	openrouter: { origin: "https://openrouter.ai", path: "/api/v1/models", headers: bearer, ids: dataIds },
 };
 
+export async function savedProviders(db: DefaultsDb): Promise<ModelProvider[]> {
+	return (await savedModelKeys(db)).map(k => k.provider);
+}
+
 function status(row: StatusRow): ModelProviderStatus {
 	return { provider: row.provider, last4: row.last4, addedAt: row.added_at, checkedAt: row.checked_at, ok: !!row.check_ok,
 		...(row.models !== null && { models: JSON.parse(row.models) as string[] }) };
@@ -166,7 +170,7 @@ export const modelProviderActions = {
 		requireUser(c);
 		await c.db.execute("DELETE FROM model_provider WHERE provider = ?", providerOf(raw));
 	},
-	/** Pin all of a machine turn's available generations in one read, without opening any key. */
+	/** Read available generations so a turn can pin the selected provider without opening a key. */
 	async internalModelKeys(c: Context) {
 		requireServiceFor(c, modelKeyCaller(c.key[0]!));
 		return savedModelKeys(c.db);

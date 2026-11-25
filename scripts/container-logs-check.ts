@@ -57,7 +57,7 @@ function logOptions(args: string[]) {
 }
 const ok = (s: string) => console.log("PASS  " + s);
 
-try {
+async function check() {
 	assert.deepEqual(NO_LOGS, ["--log-driver", "none"]);
 	assert.deepEqual(RUNNER_LOGS, ["--log-driver", "json-file", "--log-opt", "max-size=16m", "--log-opt", "max-file=3"]);
 	assert.deepEqual(logOptions(helperFlags("wlp-tmp-check", "none")), NO_LOGS);
@@ -70,6 +70,18 @@ try {
 	assert.equal(sessions.length, 1);
 	assert.deepEqual(logOptions(sessions[0]), NO_LOGS);
 	ok("A hosted Docker session container keeps no log, so the agent cannot fill the host's disk through it.");
+
+	const acp = new DockerSandboxes({ machine: null, hostedKeys: true,
+		dataVolume: async () => { throw Error("a hosted harness must not mount user data"); }, dropDataVolume: async () => {} });
+	for (const harness of ["claude", "codex", "opencode"] as const) {
+		await acp.create({ uid, sessionId, profile: "docker-hardened", harness });
+		const [args] = started();
+		assert.equal(args.at(-1), process.env[`WLP_${harness.toUpperCase()}_IMAGE`] || `windlass-platform-${harness}:dev`);
+		assert.ok(args.includes("dev.windlass-platform.harness=" + harness));
+		assert.ok(!args.includes("-v") && !args.some(arg => /API_KEY|BEARER|OAUTH/.test(arg)));
+	}
+	ok("Hosted Docker provisions each harness image without credentials or shared volumes.");
+	if (process.argv.includes("--hosted")) return;
 
 	const machine = "m_" + "b".repeat(16);
 	const model = new DockerModelRelay({ machine, image: "fixture" });
@@ -113,6 +125,10 @@ try {
 			assert.ok(at.split("\n").slice(0, 3).join("\n").includes(RUNNER_LOGS.join(" ")), file + " shows a runner command without its log limit");
 	}
 	ok("The Machines page and the docs show the same log limit on the runner command.");
+}
+
+try {
+	await check();
 } finally {
 	rmSync(dir, { recursive: true, force: true });
 }

@@ -301,6 +301,8 @@ export function Usage() {
 				<h2 className="usage-title" id="usage-tokens">Model tokens today</h2>
 				<p className="usage-figure"><strong>{count(view.usedModelTokens)}</strong> {view.factoryLimits.dailyTokens === null ? "used · no daily cap" : `of ${count(view.factoryLimits.dailyTokens)} used`}</p>
 				<p>Counts input and output reported by model requests using the platform’s model sign-in. The day resets at 00:00 UTC.</p>
+				{view.providerTokens?.length ? <dl className="usage-facts">{view.providerTokens.map(row =>
+					<div key={row.provider}><dt>Selected provider · {row.provider} Settings key</dt><dd>{count(row.tokens)} reported tokens</dd></div>)}</dl> : null}
 			</section>
 			<section className="usage-section" aria-labelledby="usage-today">
 				<h2 className="usage-title" id="usage-today">

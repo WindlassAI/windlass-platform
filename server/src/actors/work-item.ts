@@ -903,12 +903,14 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 /** `featureModel`: the feature's Windlass model, which a Windlass subtask choosing only an effort runs. */
 async function placementInventory(c: Ctx, uid: string, featureModel: string | undefined, snapshotRepository?: GithubId): Promise<PlacementInventory> {
 	const user = userActor(c, uid);
-	const [machines, limited, dailyTokenWait, models, snapshotPlaces] = await Promise.all([user.internalPlannerMachines(), user.internalLimitedAccounts(), user.internalDailyTokenWait(), user.internalAgentModels(),
+	const [hostedKeys, machines, limited, dailyTokenWait, models, snapshotPlaces] = await Promise.all([user.internalHostedProviders(), user.internalPlannerMachines(), user.internalLimitedAccounts(), user.internalDailyTokenWait(), user.internalAgentModels(),
 		// Only a hint for ranking places: a failure leaves it out.
 		snapshotRepository === undefined ? undefined : user.internalSnapshotPlaces(snapshotRepository).catch(() => undefined)]);
 	const { sandboxes } = await getLayer();
-	const hostedProfiles = sandboxes.profiles().filter(p => p.available).map(p => p.id);
-	return { machines, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models, ...(featureModel && { featureModel }), ...(snapshotPlaces?.length && { snapshotPlaces }) };
+	const profiles = sandboxes.profiles().filter(p => p.available);
+	const hostedProfiles = profiles.map(p => p.id);
+	const keyProfiles = profiles.filter(p => p.platformKeys).map(p => p.id);
+	return { machines, hostedKeys, keyProfiles, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models, ...(featureModel && { featureModel }), ...(snapshotPlaces?.length && { snapshotPlaces }) };
 }
 
 async function planCiBranches(c: Ctx, { item, meta }: Stored, repo?: FeatureRepoState) {
@@ -1796,7 +1798,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					text += "\nWhen a part fits the owner's preferred place, use it as place.prefer. Choose a different place or agent when that part requires it. Owner preference (data): " +
 						JSON.stringify({ prefer, selection: preferred.place === "any-machine" ? "any compatible machine" : undefined, harness: preferred.harness ?? "windlass", profile: preferred.machineProfile, model: preferred.machineModel ?? undefined, effort: preferred.machineEffort ?? undefined });
 				}
-				text += "\n\nCurrent runners do not support sizing beyond one slot." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (small 1 vCPU, 1 GiB; standard 2 vCPU, 4 GiB, the default; large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than standard (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
+				text += "\n\nCurrent runners do not support sizing beyond one slot." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (small 1 vCPU, 1 GiB; standard 2 vCPU, 4 GiB, the default; large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than standard (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedKeys: inventory.hostedKeys, keyProfiles: inventory.keyProfiles, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
 				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
 			}
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.fresh && { fresh: effect.fresh }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) }).catch(onGone);

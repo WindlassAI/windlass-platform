@@ -1122,7 +1122,25 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 	refused({ harness: "windlass", model: "o9" }, agentMac(), /Windlass: That model is not among the ones your ChatGPT plan offers/);
 	refused({ harness: "codex" }, agentMac(), /Plan-first subtasks run Windlass, Claude Code or OpenCode for now\. Codex runs Quick items only\./);
 	const hosted = choosePlacement(task({ harness: "claude" }), { preferred: { kind: "hosted" }, alternatives: [] }, { machines: [], hostedProfiles: ["docker-hardened"] });
-	assert.match(String(hosted.refused), /this platform runs only Windlass; Claude Code runs on a machine of yours/);
+	assert.match(String(hosted.refused), /Add an Anthropic key in Settings to run Claude Code here/);
+	const keyed = choosePlacement(task({ harness: "claude" }), { preferred: { kind: "hosted" }, alternatives: [] },
+		{ machines: [], hostedProfiles: ["e2b-open"], keyProfiles: ["e2b-open"], hostedKeys: ["anthropic"] });
+	assert.equal(keyed.decision?.harness, "claude");
+	assert.equal(keyed.decision?.profile, "e2b-open");
+	const hostedRoute = { preferred: { kind: "hosted" as const }, alternatives: [] };
+	const inventory = { machines: plannerMachines([agentMac()]), hostedProfiles: ["e2b-open" as const],
+		keyProfiles: ["e2b-open" as const], hostedKeys: ["anthropic" as const], models };
+	const withModel = task({ harness: "claude", model: "sonnet" });
+	assert.match(String(choosePlacement(withModel, hostedRoute, inventory).refused), /model is not offered/);
+	const withScreenshots = { ...task({ harness: "claude" }), needs: { screenshots: true } };
+	assert.match(String(choosePlacement(withScreenshots, hostedRoute, inventory).refused), /cannot take screenshots/);
+	assert.ok(choosePlacement(withScreenshots, { ...hostedRoute, alternatives: [route.preferred] }, {
+		...inventory, machines: plannerMachines([agentMac({ screenshots: true })]),
+	}).refused);
+	assert.equal(choosePlacement(withModel, { ...hostedRoute, alternatives: [route.preferred] }, inventory).decision?.name, "Mac");
+	const microVm = choosePlacement({ ...task({ harness: "windlass" }), needs: { profile: "e2b-open" } },
+		route, { machines: plannerMachines([agentMac()]), hostedProfiles: [] });
+	assert.match(String(microVm.refused), /microVM profile runs only on hosted/);
 	// What the place offers is placed, in the hardened container, naming its agent.
 	const placed = choosePlacement(task({ harness: "claude", model: "sonnet", effort: "high" }), route, { machines: plannerMachines([agentMac()]), hostedProfiles: [], models }).decision;
 	assert.equal(placed?.harness, "claude");
@@ -1193,7 +1211,7 @@ test("a re-plan can't keep a machine agent on a subtask it moves out of the hard
 	delete replan.subtasks[0].agent;
 	replan.subtasks[0].needs = { profile: "docker-windlass-sandbox" };
 	replan.subtasks[0].budget.tokens -= 1000;
-	assert.throws(() => advance(item, { kind: "file_plan", key: currentKey(item)!, plan: replan, at: 8 }), /index: Claude Code runs only in the docker-hardened profile/);
+	assert.throws(() => advance(item, { kind: "file_plan", key: currentKey(item)!, plan: replan, at: 8 }), /index: Claude Code requires docker-hardened or e2b-open/);
 	// Placement refuses such a subtask for good, wherever it came from.
 	const task = { ...mixedPlan().subtasks[0], needs: { profile: "docker-windlass-sandbox" as const } };
 	const fit = choosePlacement(task, { preferred: { kind: "machine", machineId: macId }, alternatives: [] }, inventory);

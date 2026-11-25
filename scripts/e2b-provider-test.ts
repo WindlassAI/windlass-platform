@@ -73,6 +73,7 @@ function expect(name: string, ok: boolean, detail = ""): boolean {
 	return ok;
 }
 async function section(name: string, body: () => Promise<void>): Promise<void> {
+	if (process.env.WLP_CHECK_SECTIONS && !process.env.WLP_CHECK_SECTIONS.split(",").some(prefix => name.startsWith(prefix))) return;
 	console.log(`\n== ${name}`);
 	try {
 		await body();
@@ -219,6 +220,17 @@ await section("create", async () => {
 	let why = "";
 	await broken.make().catch((error: unknown) => (why = error instanceof Error ? error.message : String(error)));
 	expect("a sandbox whose workspace cannot be set up is removed again", /could not set up the workspace: fatal: not a git repository/.test(why) && broken.fake.sandboxes.size === 0 && callsOf(broken.fake, "kill").length === 1, why);
+});
+
+await section("hosted agents", async () => {
+	const { sandboxes, fake } = world({ openProfile: true, modelRelayOrigin: "https://relay.example.com" });
+	for (const harness of ["claude", "codex", "opencode"] as const) {
+		const id = await sandboxes.create({ uid: "u1", sessionId: "test", profile: "e2b-open", harness });
+		const box = fake.sandboxes.get(id)!;
+		expect(`${harness} uses its own E2B template`, box.template === SETTINGS.template + "-" + harness);
+		expect("no credentials on provision", Object.keys(box.envs).every(key => ["LANG", "NO_COLOR"].includes(key)));
+		await sandboxes.destroy(id);
+	}
 });
 
 await section("a profile per session", async () => {

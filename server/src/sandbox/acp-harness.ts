@@ -1,12 +1,14 @@
 import { claudeLimit } from "../provider-usage.js";
 import type { AcpContent, AcpUpdate, TurnUsage } from "../contract.js";
-import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
+import { NO_REDACTION, SecretRedactor, RedactingStream, type Redactor } from "../repo-secrets.js";
 import { configChoices, modeSelection, object, objects, optionsOf, text, type Fields } from "./acp-options.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { SandboxUserError, type RunTurnInput, type RunTurnResult, type SandboxHandle, type StartMark } from "./api.js";
 import type { Harness } from "./harness.js";
-import { type AcpProfile, itemHarnessProblem, machineLoginMessage } from "./harnesses.js";
+import { type AcpProfile, hostedKeyMessage, itemHarnessProblem, machineLoginMessage } from "./harnesses.js";
 import { isTurnSandbox, type KeyTurnRelay, type SandboxProcess } from "./provider.js";
+import { hostedKeyEnv } from "./hosted-keys.js";
+import { openModelKeyRelay } from "./token-file.js";
 import { PLATFORM_MCP_SERVER, PlatformMcpServer, platformToolDeclarations, turnPlatformTools } from "../platform-tools.js";
 import { PlatformChecks } from "./platform-checks.js";
 import { StepCounter } from "./platform-steps.js";
@@ -212,11 +214,35 @@ async function waitForExit(run: SandboxProcess, ms: number) {
 
 export class AcpHarness implements Harness {
 	readonly id;
-	constructor(private readonly profile: AcpProfile, private readonly machine: string) { this.id = profile.id; }
+	constructor(private readonly profile: AcpProfile, private readonly machine?: string) { this.id = profile.id; }
 
 	async capabilities() { return this.profile.capabilities; }
 
 	async runTurn(handle: SandboxHandle, input: RunTurnInput): Promise<RunTurnResult> {
+		const ref = input.modelKey;
+		if (!ref) {
+			if (!this.machine) throw new Error(hostedKeyMessage(this.id, input.model));
+			return this.run(handle, input);
+		}
+		if (!isTurnSandbox(handle)) throw new Error("A Settings key requires a turn sandbox.");
+		input.signal?.throwIfAborted();
+		const release = await handle.holdForTurn();
+		let lease: KeyTurnRelay | undefined;
+		try {
+			input.signal?.throwIfAborted();
+			lease = await openModelKeyRelay(handle, ref.sessionId, { ...ref.key, harness: this.id }, input.signal);
+			input.signal?.throwIfAborted();
+			const env = this.machine ? { WLP_TURN_KEY_LEASES: lease.placeholder } : hostedKeyEnv(this.id, ref.key.provider, lease);
+			const secrets = input.secrets?.redactor ?? NO_REDACTION;
+			const relay = new SecretRedactor([{ name: "model-relay", value: lease.placeholder }]);
+			return await this.run(handle, input, env, { active: true, text: s => secrets.text(relay.text(s)),
+				deep: v => secrets.deep(relay.deep(v)), held: s => Math.max(secrets.held(s), relay.held(s)) });
+		} finally {
+			try { await lease?.close(); } finally { await release(); }
+		}
+	}
+
+	private async run(handle: SandboxHandle, input: RunTurnInput, relayEnv?: Record<string, string>, redactor = input.secrets?.redactor ?? NO_REDACTION): Promise<RunTurnResult> {
 		const profile = this.profile;
 		const acp: NonNullable<RunTurnResult["acp"]> = { stopReason: null, usage: null, models: null };
 		const result: RunTurnResult = { exitCode: null, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: null, acp };
@@ -225,7 +251,6 @@ export class AcpHarness implements Harness {
 			result.failure = { reason: "engine", message: `This turn asked ${profile.name} for ${refused}, which it does not take here.` };
 			return result;
 		}
-		const redactor = input.secrets?.redactor ?? NO_REDACTION;
 		const questions = new AbortController();
 		// The platform's tools this turn is given, served over this connection (MCP over ACP), and only while its prompt runs.
 		const tools = turnPlatformTools(input, "sandbox");
@@ -387,11 +412,9 @@ export class AcpHarness implements Harness {
 				cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
 			} else rpc.end("The turn was stopped.");
 		};
-		let lease: KeyTurnRelay | undefined;
-		const loginHint = () => input.machineKey
-			? "Check the provider key in Settings." : machineLoginMessage(profile, this.machine);
+		const loginHint = () => this.machine && !input.modelKey ? machineLoginMessage(profile, this.machine) : "Check the provider key in Settings.";
 		try {
-			if (!isTurnSandbox(handle) || !profile.profiles.includes(handle.profile)) throw new Error(`${profile.name} requires a supported machine sandbox.`);
+			if (!isTurnSandbox(handle) || !profile.profiles.includes(handle.profile)) throw new Error(`${profile.name} requires a supported sandbox.`);
 			if (input.unattended && !profile.items) throw new Error(itemHarnessProblem(profile.id) ?? `${profile.name} does not run work items.`);
 			if (input.signal?.aborted) return { ...result, aborted: true };
 			input.signal?.addEventListener("abort", cancel, { once: true });
@@ -399,15 +422,7 @@ export class AcpHarness implements Harness {
 			if (input.signal?.aborted) return { ...result, aborted: true };
 			const lines = new LineSplitter(line => { lastHeard = Date.now(); rpc.receive(line); });
 			mark("process");
-			const secretEnv = { ...input.secrets?.env };
-			if (input.machineKey) {
-				input.signal?.throwIfAborted();
-				const { sessionId, key } = input.machineKey;
-				if (!handle.machineKeyRelay) throw new Error("This machine does not support Settings keys.");
-				lease = await handle.machineKeyRelay(sessionId, key, profile.id, input.signal);
-				secretEnv.WLP_TURN_KEY_LEASES = lease.placeholder;
-				input.signal?.throwIfAborted();
-			}
+			const secretEnv = { ...input.secrets?.env, ...relayEnv };
 			run = handle.start(profile.command, { cwd: input.reviewDirectory ?? handle.cwd, env: turnEnv(profile, input), ...(Object.keys(secretEnv).length > 0 && { secretEnv }), onStdout: chunk => lines.push(chunk), onStderr: chunk => keepError(stderr.push(chunk)) });
 			void run.ended.then(end => {
 				lines.flush();
@@ -574,7 +589,6 @@ export class AcpHarness implements Harness {
 				result.timedOut = error instanceof AcpError && error.reason === "timeout";
 			}
 		} finally {
-			await lease?.close();
 			clearTimeout(cancelDeadline);
 			input.signal?.removeEventListener("abort", cancel);
 			phase = "ended";

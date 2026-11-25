@@ -18,6 +18,7 @@
  * offered where it has its own list (`models`), and Plan mode where it has one (`planMode`). Where its
  * machine says it is not signed in, the line above the composer shows the machine terminal command.
  */
+import { hostedAgentProblem } from "../../../server/src/sandbox/harnesses.js";
 import { monthSentence, monthState } from "../lib/hosted";
 import { USAGE_LOW_SHARE, type ItemView, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -38,7 +39,7 @@ import { linkProps } from "../lib/router";
 import type { ToolBlock } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { takeHandover } from "../state/handover";
-import { allowanceState, useAllowance, useModels, useNow, type useSession } from "../state/hooks";
+import { allowanceState, useAllowance, useHostedProviders, useModels, useNow, type useSession } from "../state/hooks";
 import { requestPublish, setPanelHidden, setPublishFeedback, usePanelHidden, usePublishFeedback } from "../state/sessionChrome";
 import { clockTime, useMachines } from "./Machines";
 import { machineLabel } from "../lib/machines";
@@ -289,6 +290,8 @@ function limitNote(numbers: UsageNumbers | null, summary: SessionSummary): strin
 export function Session({ sessionId, state, machine, item = null }: { sessionId: string; state: ReturnType<typeof useSession>; machine?: MachineSummary | null; item?: ItemView | null }) {
 	const { client, explain, platform } = useApp();
 	const models = useModels();
+	const hostedAgent = state.summary?.place.kind === "hosted" && state.summary.harness !== "windlass" ? state.summary.harness : undefined;
+	const keys = useHostedProviders(!!hostedAgent);
 	const auth = useAuth();
 	const api = useMemo(() => client.session(auth, sessionId), [client, auth, sessionId]);
 	const handover = useMemo(() => takeHandover(sessionId), [sessionId]);
@@ -512,6 +515,7 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 						online={online}
 						models={summary.capabilities.models === "harness" ? harnessModelsOf(summary) : models.list}
 						model={summary.model}
+						modelProblem={hostedAgent ? model => hostedAgentProblem(hostedAgent, keys, true, model === "default" ? summary.harnessModels?.defaultModel : model) : undefined}
 						harness={summary.capabilities.models === "harness" ? HARNESS_NAMES[summary.harness ?? "windlass"] : null}
 						modes={sessionModes(summary, profile)}
 						mode={summary.mode}

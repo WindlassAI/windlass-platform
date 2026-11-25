@@ -22,7 +22,7 @@ import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type R
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
 import { PlaceChoice, itemAgentLine, itemHarnesses, itemProfilesHere, machineUnusable } from "../components/PlaceChoice";
-import { itemProfiles } from "../../../server/src/sandbox/harnesses.js";
+import { hostedAgentProblem, itemProfiles } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_NAMES, type ReportedHarness } from "../lib/acp";
 import { AskIcon, ChevronIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRequestIcon, RingIcon, StopIcon, WarnIcon } from "../components/Icons";
 import { absoluteTime, count, plural, relativeTime } from "../lib/format";
@@ -32,7 +32,7 @@ import { submissionOf, type Submission } from "../lib/submission";
 import { RECOMMENDATION_WORD } from "../components/SecondReview";
 import { StatusBadge } from "../components/Status";
 import { useApp, useAuth } from "../state/app";
-import { useAccount, useModels, useNow } from "../state/hooks";
+import { useAccount, useHostedProviders, useModels, useNow } from "../state/hooks";
 import { useDefaults, useCatalog } from "../components/StartComposer";
 import { effortChoices, effortsOf, harnessOptions, modelLabel } from "../lib/models";
 import { clockTime, useMachines } from "./Machines";
@@ -717,9 +717,13 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 		if (destination?.harness === offered.id && destination.profile) return profiles.includes(destination.profile);
 		return profiles[0] === itemProfiles(offered.id)[0];
 	}
-	const agents = itemHarnesses(chosenMachine).filter(fitsDestination);
+	const keys = useHostedProviders();
+	const hostedProfile = platform.info?.profiles.find(p => p.available && p.platformKeys);
+	const agents = chosenMachine
+		? itemHarnesses(chosenMachine).filter(fitsDestination).map(({ id }) => ({ id, reason: null }))
+		: (["claude", "codex", "opencode"] as const).map(id => ({ id, reason: hostedAgentProblem(id, keys, !!hostedProfile) }));
 	const preferredAgent = agentChoice ?? destination?.harness ?? "windlass";
-	const agent: HarnessId = agents.some(offered => offered.id === preferredAgent) ? preferredAgent : "windlass";
+	const agent: HarnessId = agents.some(offered => offered.id === preferredAgent && !offered.reason) ? preferredAgent : "windlass";
 	// Plan first is Windlass's: its planner files the plan with a tool only Windlass has.
 	const mode: ItemMode = agent === "windlass" || usePolicy ? modeChoice : "single";
 	// The model and effort: the account's models for Windlass, what the machine reported for another agent. "" is the agent's default.
@@ -829,7 +833,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 								: "One per line. The agent is given them, and the verdict lists them for you to check: no machine checks them."}
 					</p>
 				</div>
-				{mine.length > 0 ? (
+				{mine.length > 0 || agents.length > 0 ? (
 					<PlaceChoice machines={mine} chosen={chosenMachine} minRunnerVersion={machinesInfo?.minRunnerVersion ?? ""} now={now} purpose="item" onChoose={setPlace}>
 						{chosenMachine ? (
 							<p className="field-note place-note">
@@ -842,9 +846,9 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 							<div className="harness-pick">
 								<span className="label">Agent</span>
 								<div className="segmented" role="radiogroup" aria-label="Agent">
-									{(["windlass", ...agents.map((offered) => offered.id)] as HarnessId[]).map((id) => (
-										<label key={id} className={`segment${id === agent ? " segment-chosen" : ""}`}>
-											<input className="segment-radio" type="radio" name={ids.form + "-agent"} value={id} checked={id === agent} disabled={busy} onChange={() => setAgent(id)} />
+									{[{ id: "windlass" as const, reason: null }, ...agents].map(({ id, reason }) => (
+										<label key={id} title={reason ?? undefined} className={`segment${id === agent ? " segment-chosen" : ""}`}>
+											<input className="segment-radio" type="radio" name={ids.form + "-agent"} value={id} checked={id === agent} disabled={busy || !!reason} onChange={() => setAgent(id)} />
 											{HARNESS_NAMES[id]}
 										</label>
 									))}
@@ -852,7 +856,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 								<p className="field-note">
 									{agent === "windlass"
 										? "Windlass runs your repository's checks before it hands the work over."
-										: itemAgentLine(agent, itemProfiles(agent)[0] ?? "docker-hardened")}
+										: chosenMachine ? itemAgentLine(agent, itemProfiles(agent)[0] ?? "docker-hardened") : `${HARNESS_NAMES[agent]} runs with your Settings key.`}
 								</p>
 							</div>
 						) : null}

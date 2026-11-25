@@ -26,7 +26,7 @@ Yes. Choose `free` in `login opencode` for OpenCode's free public models. Their 
 
 ## Where do I sign Claude Code or OpenCode in?
 
-Only in a terminal on the machine, with `windlass-runner login` and the agent's name. The Machines page shows whether each agent is signed in, and the command to copy. See [Sign agents in](/docs/machines#sign-agents-in).
+For hosted agents, add the provider key in **Settings → Model providers**. Paired machines prefer a matching Settings key and can also use a local login from `windlass-runner login`. The Machines page shows whether each agent is signed in, and the command to copy. See [Sign agents in](/docs/machines#sign-agents-in).
 
 ## Which keys stay on my machine?
 

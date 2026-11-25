@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SessionApi, UserApi } from "../api/client";
 import { createMockClient, type MockClient } from "../api/mock";
 import { saveAuth } from "../lib/authStore";
+import { PROVIDERS_CHANGED } from "../state/hooks";
 import { StartComposer } from "./StartComposer";
 import { NewAgent } from "../screens/NewAgent";
 import { AppProvider } from "../state/app";
@@ -314,6 +315,32 @@ describe("each picker of the start composer", () => {
 		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened" });
 	});
 
+	it("offers hosted agents with a compatible Settings key and explains missing keys", async () => {
+		await show();
+		open("agent");
+		const claudeDisabled = () => pop().querySelector('[data-value="claude:default"]')?.getAttribute("aria-disabled") === "true";
+		expect(claudeDisabled()).toBe(true);
+		const user = client.user(ada);
+		const save = () => user.saveModelProvider({ provider: "anthropic", key: "sk-ant-api03-" + "x".repeat(32) });
+		await save();
+		await act(async () => void window.dispatchEvent(new Event(PROVIDERS_CHANGED)));
+		expect(claudeDisabled()).toBe(false);
+		await user.removeModelProvider("anthropic");
+		await act(async () => void window.dispatchEvent(new Event("focus")));
+		expect(claudeDisabled()).toBe(true);
+		await save();
+		await act(async () => void window.dispatchEvent(new Event(PROVIDERS_CHANGED)));
+		expect(pop().textContent).toContain("Add an OpenAI key in Settings to run Codex here.");
+		expect(pop().querySelector('[data-value="codex:default"]')?.getAttribute("aria-disabled")).toBe("true");
+		expect(pop().querySelector('[data-value="opencode:default"]')).toBeTruthy();
+		pick("claude:default");
+		write("Run the hosted task");
+		await enter();
+		expect(created[0]).toMatchObject({ harness: "claude", profile: "docker-hardened" });
+		expect(created[0]?.place).toBeUndefined();
+		expect(prompted).toHaveLength(1);
+	});
+
 	it("sends Claude Code chosen on a machine that offers it, in the hardened container on its own default model", async () => {
 		await show();
 		open("on");
@@ -518,7 +545,7 @@ describe("what the start composer starts on", () => {
 		expect(value("agent")).toContain("Windlass");
 		expect(pill("on")?.classList.contains("ui-pill-warn")).toBe(true);
 		open("agent");
-		expect(pop().textContent).toContain("Your last agent was Claude Code, which runs only on a machine of yours, so this one is Windlass.");
+		expect(pop().textContent).toContain("Your last agent was Claude Code, which is unavailable here, so this one is Windlass.");
 		act(() => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
 		write("Look around");
 		await enter();

@@ -214,9 +214,9 @@ export function offeredSize(settings: Pick<E2bSettings, "sizes">, wanted: Hosted
 }
 
 /** A size's template: for screenshots, its shots variant. */
-export function templateFor(settings: Pick<E2bSettings, "template" | "shotsTemplate" | "templates">, size: HostedSize, screenshots: boolean): string {
+export function templateFor(settings: Pick<E2bSettings, "template" | "shotsTemplate" | "templates">, size: HostedSize, screenshots: boolean, harness?: string): string {
 	const names = size === "small" ? { template: settings.template, shotsTemplate: settings.shotsTemplate } : (settings.templates?.[size] ?? defaultTemplateNames(size));
-	return screenshots ? names.shotsTemplate : names.template;
+	return harness ? names.template + "-" + harness : screenshots ? names.shotsTemplate : names.template;
 }
 
 /** WLP_E2B_SNAPSHOTS: "on" or "off" (the default), as server/src/config.ts reads it for the session's side. */
