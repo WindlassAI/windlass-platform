@@ -14,7 +14,7 @@
 # builder and installs the dependencies for the target, and the second only copies, so nothing of the
 # target's architecture is run during the build.
 
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS deps
+FROM --platform=$BUILDPLATFORM node:25-bookworm-slim AS deps
 ARG TARGETARCH
 ENV PNPM_HOME=/pnpm \
 	PATH=/pnpm:$PATH
@@ -31,7 +31,7 @@ RUN mkdir -p /app/.data
 
 # The web app's files are the same for every architecture, so they are built on the builder too. Built
 # with nothing set, the web app asks the address it was loaded from for its connection (web/src/api/rivet.ts).
-FROM --platform=$BUILDPLATFORM node:22-bookworm-slim AS web
+FROM --platform=$BUILDPLATFORM node:25-bookworm-slim AS web
 ENV PNPM_HOME=/pnpm \
 	PATH=/pnpm:$PATH
 RUN corepack enable
@@ -48,7 +48,7 @@ COPY fixtures fixtures
 # `vite build` alone: the web app's own `build` type-checks first, tests included, and those reach into the server's sources.
 RUN pnpm --filter @windlass-platform/web exec vite build
 
-FROM node:22-bookworm-slim AS server-base
+FROM node:25-bookworm-slim AS server-base
 ARG TARGETARCH
 ENV NODE_ENV=production
 
