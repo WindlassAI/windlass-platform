@@ -106,7 +106,7 @@ export function LinearSettings() {
 	const unmapped = teams?.filter((team) => !team.mapping) ?? [];
 	return (
 		<section className="usage-section repo-saved" aria-labelledby="settings-linear" data-testid="linear-settings">
-			<h2 className="usage-title" id="settings-linear">
+			<h3 className="usage-title" id="settings-linear">
 				Linear
 				{status?.state === "disconnected" ? (
 					<button type="button" className="link secret-add" onClick={() => void connect()} disabled={busy}>
@@ -117,7 +117,7 @@ export function LinearSettings() {
 						Disconnect…
 					</button>
 				) : null}
-			</h2>
+			</h3>
 			<p className="usage-lede">
 				File work items from Linear issues labelled <code>windlass</code>.
 			</p>
@@ -145,7 +145,7 @@ export function LinearSettings() {
 							<span className="skeleton skeleton-meta" style={{ width: "58%" }} />
 						</div>
 					) : (
-						<ul className="usage-kept" aria-label="Teams">
+						<ul className="settings-list" aria-label="Teams">
 							{teams.map((team) => (
 								<li key={team.id} className="usage-kept-row" data-testid={`linear-team-${team.key}`}>
 									<div className="usage-kept-main">

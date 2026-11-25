@@ -81,22 +81,30 @@ export const FOLD_SHOWN = 3;
 /** Whether a list of `count` folds: one item more than those shown is shown whole, as folding it saves nothing. */
 export const listFolds = (count: number, shown = FOLD_SHOWN) => count > shown + 1;
 
-/** A list, its first `shown` items and then "Show N more". `render` draws one item's content inside its `li`. */
-export function FoldList<T>({ items, render, shown = FOLD_SHOWN, className, label, ordered = false }: { items: readonly T[]; render(item: T, index: number): ReactNode; shown?: number; className?: string; label?: string; ordered?: boolean }) {
+export function FoldRows<T>({ items, shown, children }: { items: readonly T[]; shown: number; children(rows: readonly T[], id: string): ReactNode }) {
 	const [open, setOpen] = useState(false);
 	const id = useId();
 	const folds = listFolds(items.length, shown);
-	const visible = folds && !open ? items.slice(0, shown) : items;
-	const List = ordered ? "ol" : "ul";
+	const rows = folds && !open ? items.slice(0, shown) : items;
 	return (
 		<>
-			<List id={id} className={className} aria-label={label}>
-				{visible.map((item, index) => (
-					<li key={index}>{render(item, index)}</li>
-				))}
-			</List>
-			{folds ? <FoldToggle open={open} controls={id} label={FOLD_WORDS.more(items.length - shown)} onToggle={() => setOpen((value) => !value)} className="fold-list-toggle" /> : null}
+			{children(rows, id)}
+			{folds && <FoldToggle open={open} controls={id} label={FOLD_WORDS.more(items.length - shown)} onToggle={() => setOpen(value => !value)} className="fold-list-toggle" />}
 		</>
+	);
+}
+
+/** A list, its first `shown` items and then "Show N more". `render` draws one item's content inside its `li`. */
+export function FoldList<T>({ items, render, shown = FOLD_SHOWN, className, label, ordered = false }: { items: readonly T[]; render(item: T, index: number): ReactNode; shown?: number; className?: string; label?: string; ordered?: boolean }) {
+	const List = ordered ? "ol" : "ul";
+	return (
+		<FoldRows items={items} shown={shown}>
+			{(rows, id) => (
+				<List id={id} className={className} aria-label={label}>
+					{rows.map((item, index) => <li key={index}>{render(item, index)}</li>)}
+				</List>
+			)}
+		</FoldRows>
 	);
 }
 

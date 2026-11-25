@@ -1,4 +1,4 @@
-import type { AccountDefaults, AccountSettings, RepositoryDefaultsPatch, HostedSize, LastStart, SandboxProfileId } from "@contract";
+import type { AccountDefaults, RepositoryDefaultsPatch, HostedSize, SandboxProfileId } from "@contract";
 import { resolveStartPlace, startProfiles } from "../../../server/src/start-place";
 import { useId, useState } from "react";
 import { HARNESS_NAMES } from "../lib/acp";
@@ -10,15 +10,14 @@ import { CloudIcon, MachineIcon } from "./Icons";
 import { ItemPlaceFields, placeWords } from "./ItemPlaceFields";
 import { ModelSelect, modelDisplay } from "./ModelPicker";
 import { useMachines } from "../screens/Machines";
-import { useApp } from "../state/app";
-import type { ModelsState } from "../state/hooks";
+import { useApp, useAuth } from "../state/app";
+import type { AccountState, ModelsState } from "../state/hooks";
 import { AgentGlyph } from "./ui/Pill";
 
 type Saved = AccountDefaults & { hostedSize?: HostedSize | null };
 
 export function DefaultsSection<T extends Saved>({
 	id,
-	lede,
 	defaults,
 	whose,
 	under,
@@ -26,29 +25,21 @@ export function DefaultsSection<T extends Saved>({
 	models,
 	save,
 	onSaved,
-	lastStart,
-	forgetLastStart,
-	onForgotten,
 }: {
-	/** The id of the section's heading. */
 	id: string;
-	/** What these defaults are for, in a sentence. */
-	lede: string;
 	defaults: T;
 	whose: "repository" | "account";
 	/** The account's defaults that can be used, on a repository's page; null on the account's own. */
 	under: Pick<StartingChoices, "profile" | "model"> | null;
-	/** The account defaults a repository inherits. */
-	account: AccountDefaults | null;
+	account: AccountState;
 	models: ModelsState;
 	save(change: RepositoryDefaultsPatch): Promise<T>;
 	onSaved(next: T): void;
-	/** Where the last agent started. Its place wins until forgotten. Undefined while the account is read. */
-	lastStart: LastStart | null | undefined;
-	forgetLastStart(): Promise<AccountSettings>;
-	onForgotten(next: AccountSettings): void;
 }) {
-	const { platform, explain } = useApp();
+	const { platform, explain, client } = useApp();
+	const auth = useAuth();
+	const lastStart = account.settings?.lastStart;
+	const inheritedDefaults = whose === "repository" ? account.settings?.defaults : null;
 	const ids = { agents: useId(), items: useId(), where: useId(), profile: useId(), model: useId(), size: useId(), itemSize: useId(), modelNote: useId() };
 	const [saving, setSaving] = useState<"profile" | "model" | "hostedSize" | "place" | "forget" | null>(null);
 	const [said, setSaid] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
@@ -107,9 +98,9 @@ export function DefaultsSection<T extends Saved>({
 	const inventory = machinesReading ? null : (info?.machines ? machines.list ?? [] : []);
 	const place = defaults.startPlace;
 	const repositoryPlace = whose === "repository" ? place : null;
-	const accountPlace = whose === "account" ? place : account?.startPlace;
+	const accountPlace = whose === "account" ? place : inheritedDefaults?.startPlace;
 	const start = resolveStartPlace({ last: lastStart?.place, repository: repositoryPlace, account: accountPlace, machines: inventory });
-	const inherited = resolveStartPlace({ account: account?.startPlace, machines: inventory });
+	const inherited = resolveStartPlace({ account: inheritedDefaults?.startPlace, machines: inventory });
 	const remembered = start.source === "last launch" ? lastStart : null;
 	const reading = start.pending || lastStart === undefined;
 	const savedMachine = place?.kind === "machine" ? inventory?.find(m => m.machineId === place.machineId) : null;
@@ -123,20 +114,15 @@ export function DefaultsSection<T extends Saved>({
 	};
 	const inheritedName = inherited.machine ? machineLabel(inherited.machine) : "Hosted";
 	const showHosted = place?.kind === "hosted" || (!place && !inherited.machine && !inherited.pending);
-	const forget = () => persist("forget", async () => onForgotten(await forgetLastStart()));
 
 	return (
-		<section className="usage-section" aria-labelledby={id}>
-			<h2 className="usage-title" id={id}>
-				Defaults
-			</h2>
-			<p className="usage-lede">{lede}</p>
+		<section className="usage-section" id={id} aria-label="Defaults">
 			{info === null ? (
 				<p className="usage-empty" aria-busy={platform.loading}>
 					{platform.loading ? "Asking the server which sandboxes it has…" : (platform.error ?? "The server did not say which sandboxes it has.")}
 				</p>
 			) : (
-				<div className="repo-fields defaults">
+				<div className="defaults">
 					<section className="defaults-group" aria-labelledby={ids.agents}>
 						<h3 className="defaults-title" id={ids.agents}>
 							Agents you start here
@@ -154,7 +140,7 @@ export function DefaultsSection<T extends Saved>({
 									<span className="defaults-start-value">{modeName(remembered.harness, remembered.mode)}</span>
 								</>}
 								{!reading && <span className="ui-tag defaults-start-tag">{start.source}</span>}
-								{lastStart && <button type="button" className="link defaults-start-forget" onClick={() => void forget()} disabled={saving !== null}>
+								{lastStart && <button type="button" className="link defaults-start-forget" onClick={() => void persist("forget", async () => account.replace(await client.user(auth).forgetLastStart()))} disabled={saving !== null}>
 									{saving === "forget" ? "Forgetting…" : "Forget"}
 								</button>}
 							</p>
@@ -220,7 +206,7 @@ export function DefaultsSection<T extends Saved>({
 							<ItemPlaceFields
 								defaults={defaults}
 								machines={machines.list ?? []}
-								inherited={whose === "repository" && account?.place ? `${placeWords(account, machines.list)} (account default)` : "Hosted (deployment default)"}
+								inherited={inheritedDefaults?.place ? `${placeWords(inheritedDefaults, machines.list)} (account default)` : "Hosted (deployment default)"}
 								disabled={saving !== null || (!!info.machines && machines.list === null && !machines.error)}
 								change={(patch) => void change("place", patch)}
 								size={sizes.length > 1 ? sizeField : null}

@@ -1,28 +1,15 @@
-/**
- * Usage: today's sandbox time against the day's allowance and when it resets, what each agent's
- * sandbox ran today, the sandboxes the user keeps with a way to free one, the last two weeks day by
- * day, and what all of it is estimated to cost.
- *
- * Every number is the user's actor's (`UsageView`): the page reads it when it opens, again whenever the
- * actor says something changed, and once a minute. Lengths of time in the tables are written as
- * h:mm:ss so that they line up; a day is a UTC day, and the time it ends is said in the viewer's own
- * time zone.
- *
- * A work item's agent session is part of its item. Its sandbox time today is not listed by agent: the
- * work items' is one row of the day's table, with the way to the items' own costs (FactoryUsage.tsx),
- * which say what each item has spent in all against its budget. Which sessions are items' is read from
- * the summaries the page's own live feed sends.
- */
 import { HostedNotice, MonthFigure } from "../components/Plan";
 import { monthName, monthReset } from "../lib/hosted";
 import { USAGE_HISTORY_DAYS, type HostedSize, type KeptSandbox, type SessionSummary, type UsageView } from "@contract";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Dialog } from "../components/Dialog";
+import { FoldRows } from "../components/Fold";
 import { FactoryUsage } from "../components/FactoryUsage";
 import { MachineUsage } from "../components/MachineUsage";
 import { ArrowLeftIcon, WarnIcon } from "../components/Icons";
+import { moveBetweenTabs } from "../components/Tabs";
 import { SandboxState } from "../components/Status";
-import { absoluteTime, count, localTime, plural, relativeTime, sandboxClock, sandboxTime as spelledTime, usd, utcDay } from "../lib/format";
+import { absoluteTime, compact, count, localTime, plural, relativeTime, sandboxClock, sandboxTime as spelledTime, usd, utcDay } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { perHour, sizeName, sizeSpec } from "../lib/sizes";
 import { useApp, useAuth } from "../state/app";
@@ -32,7 +19,6 @@ import { readTwice } from "../lib/retry";
 /** A length of sandbox time in a sentence: the number and its unit stay on one line. */
 const sandboxTime = (seconds: number) => spelledTime(seconds).replace(/ /g, "\u00a0");
 
-/** What the top bar shows on this page: the way back and where one is. */
 export function UsageCrumb() {
 	return (
 		<nav className="crumb" aria-label="Where you are">
@@ -50,7 +36,6 @@ export function UsageCrumb() {
 	);
 }
 
-/** The page's numbers, read again when the user's actor says they changed and once a minute; and which of the user's sessions are work items', by session. */
 function useUsage(): { view: UsageView | null; error: string | null; items: Map<string, string> | null; reload(): void; replace(view: UsageView): void } {
 	const { client, explain } = useApp();
 	const auth = useAuth();
@@ -94,6 +79,7 @@ function useUsage(): { view: UsageView | null; error: string | null; items: Map<
 		};
 	}, [client, auth, read]);
 
+	// Builder and reviewer sessions are charged to their work item in the daily table.
 	const items = sessions === null ? null : new Map<string, string>();
 	for (const session of sessions ?? []) {
 		if (!session.item) continue;
@@ -198,6 +184,17 @@ export function Usage() {
 	const now = useNow(15_000);
 	const [showHeld, setShowHeld] = useState(false);
 	const [freeing, setFreeing] = useState<KeptSandbox | null>(null);
+	const [tab, setTab] = useState(() => location.hash.slice(1));
+	useEffect(() => {
+		const follow = () => setTab(location.hash.slice(1));
+		addEventListener("hashchange", follow);
+		return () => removeEventListener("hashchange", follow);
+	}, []);
+
+	function chooseTab(id: string) {
+		setTab(id);
+		history.replaceState(history.state, "", id === "usage-agents" ? location.pathname + location.search : `#${id}`);
+	}
 
 	if (view === null) {
 		return (
@@ -230,308 +227,151 @@ export function Usage() {
 	}
 
 	const allowance = view.allowanceSeconds;
-	const spent = view.usedSeconds;
 	const left = view.leftSeconds;
 	const price = view.price;
-	// Where there are hosted sizes, each agent's time is priced at its own size's rate; the allowance counts seconds alike.
+	// Single-size deployments use the rate on the usage view for every row.
 	const sizes = view.hostedSizes && view.hostedSizes.length > 1 ? view.hostedSizes : null;
 	const rate = (size?: HostedSize) => {
-		const hourly = size && sizes?.find((one) => one.id === size)?.usdPerHour;
+		const hourly = size && sizes?.find(one => one.id === size)?.usdPerHour;
 		return typeof hourly === "number" ? hourly / 3600 : (price?.usdPerSecond ?? 0);
 	};
-	const costAt = (seconds: number, size?: HostedSize) => (price === null ? null : usd(seconds * rate(size)));
-	const todayUsd = sizes ? view.today.reduce((sum, row) => sum + row.seconds * rate(row.hostedSize), 0) : null;
-	const cost = (seconds: number) => (price === null ? null : usd(seconds * price.usdPerSecond));
+	const estimatedCost = (rows: UsageView["today"], seconds: number) => {
+		if (price === null) return null;
+		return sizes ? rows.reduce((sum, row) => sum + row.seconds * rate(row.hostedSize), 0) : seconds * price.usdPerSecond;
+	};
+	const todayUsd = estimatedCost(view.today, view.usedSeconds);
 	const running = view.today.filter((row) => row.heldSeconds > 0).length;
-	const unreported = view.today.reduce((sum, row) => sum + row.unreportedSeconds, 0);
-	// The agents' rows, and the work items' sessions' together in one.
-	const agentRows = view.today.filter((row) => !items?.has(row.sessionId));
-	const itemRows = view.today.filter((row) => items?.has(row.sessionId));
-	const itemTotal = itemRows.reduce((sum, row) => ({ seconds: sum.seconds + row.seconds, held: sum.held + row.heldSeconds, unreported: sum.unreported + row.unreportedSeconds }), { seconds: 0, held: 0, unreported: 0 });
 	const { kept, limit } = view.sandboxes;
-	const most = Math.max(allowance ?? 0, ...view.days.map((day) => day.seconds), 1);
 	const historyTotal = view.days.reduce((sum, day) => sum + day.seconds, 0);
 	const resets = localTime(view.resetsAt);
 	// A viewer whose own time is UTC is told the hour once.
 	const abroad = new Date(view.resetsAt).getTimezoneOffset() !== 0;
 	const untilReset = sandboxTime(Math.max(60, Math.ceil((view.resetsAt - now) / 60_000) * 60));
 
-	return (
-		<main className="home usage">
-			<header className="home-head">
-				<div>
-					<p className="eyebrow">usage · the day ends {resets}</p>
-					<h1 className="display">Usage</h1>
-					<p className="home-account">Hosted time counts while an agent’s sandbox runs.</p>
-				</div>
-			</header>
+	const keptCount = limit === null ? count(kept) : `${count(kept)} of ${count(limit)}`;
+	const tabs = [
+		{ id: "usage-agents", label: "Today by agent" },
+		...(platform.info?.items ? [{ id: "usage-items", label: "Work items" }] : []),
+		{ id: "usage-kept", label: "Kept sandboxes", count: keptCount },
+		...(platform.info?.machines ? [{ id: "usage-machines", label: "My machines" }] : []),
+		{ id: "usage-history", label: `Last ${USAGE_HISTORY_DAYS} days` },
+	];
+	const shown = tabs.some((one) => one.id === tab) ? tab : "usage-agents";
+	// The figures at the top in whole cents; the tables keep their finer amounts.
+	const cents = (amount: number) => `$${amount.toFixed(2)}`;
+	const leftWords = left === null ? "No daily limit" : left < view.startSeconds ? (left === 0 ? "None left" : `${sandboxTime(left)} left, too little for a turn`) : `${sandboxTime(left)} left`;
 
-			{error ? (
-				<p className="callout callout-warn" role="status">
-					<WarnIcon />
-					<span>{error} <button className="link" onClick={reload}>Try again</button></span>
-				</p>
-			) : null}
-
-			{view.hosted ? (
-				<section className="usage-section" aria-labelledby="usage-month">
-					<h2 className="usage-title" id="usage-month">
-						Hosted time{view.hosted.plan === "pro" ? "" : " this month"}
-						<span className="usage-count">{monthName(view.hosted)}</span>
-					</h2>
-					<p className="usage-lede">Monthly hosted time depends on sandbox size. The allowance resets on {monthReset(view.hosted)} at {new Date(view.hosted.resetsAt).toISOString().slice(11, 16)} UTC.</p>
-					<HostedNotice numbers={view} pro={platform.info?.billing?.plans.find((plan) => plan.id === "pro") ?? null} />
-					<div className="usage-card billing-card">
-						<div className="billing-month">
-							<MonthFigure month={view.hosted} />
-						</div>
-					</div>
-					{platform.info?.billing ? (
-						<p className="usage-note">
-							Manage your plan in{" "}
-							<a className="link" {...linkProps({ name: "settings" })}>
-								Settings
-							</a>
-							.
-						</p>
-					) : null}
-				</section>
-			) : null}
-
-			<section className="usage-section" aria-labelledby="usage-tokens">
-				<h2 className="usage-title" id="usage-tokens">Model tokens today</h2>
-				<p className="usage-figure"><strong>{count(view.usedModelTokens)}</strong> {view.factoryLimits.dailyTokens === null ? "used · no daily cap" : `of ${count(view.factoryLimits.dailyTokens)} used`}</p>
-				<p>Model tokens on Windlass’s sign-in today.</p>
-				{view.providerTokens?.length ? <dl className="usage-facts">{view.providerTokens.map(row =>
-					<div key={row.provider}><dt>Your {row.provider} API key</dt><dd>{count(row.tokens)} reported tokens</dd></div>)}</dl> : null}
-			</section>
-			<section className="usage-section" aria-labelledby="usage-today">
-				<h2 className="usage-title" id="usage-today">
-					Hosted time today
-				</h2>
-				<div className="usage-card usage-today">
-				<p className="usage-figure">
-					<strong>{sandboxTime(spent)}</strong>
-					{allowance === null ? <span> used. {view.hosted ? "Hosted time is counted by the month, above; there is no daily limit." : "This deployment sets no daily limit."}</span> : <span> of {sandboxTime(allowance)} used</span>}
-					{left !== null ? <span className="usage-figure-left">{left < view.startSeconds ? (left === 0 ? "none left" : `${sandboxTime(left)} left, too little for a turn`) : `${sandboxTime(left)} left`}</span> : null}
-				</p>
-				<Meter view={view} />
-				{price && <p className="usage-note" title="Estimate">≈ {todayUsd !== null ? usd(todayUsd) : cost(view.usedSeconds)} today</p>}
-				<details className="usage-note">
-					<summary>Details</summary>
-					<dl className="usage-facts">
-						<div>
-							<dt>
-								<span className="usage-swatch usage-swatch-used" aria-hidden="true" />
-								Counted
-							</dt>
-							<dd className="usage-number">{sandboxClock(view.usedSeconds)}</dd>
-							<dd className="usage-gloss">what your sandboxes ran today before they stopped</dd>
-						</div>
-						<div>
-							<dt>
-								<span className="usage-swatch usage-swatch-held" aria-hidden="true" />
-								Held
-							</dt>
-							<dd className="usage-number">{sandboxClock(view.heldSeconds)}</dd>
-							<dd className="usage-gloss">
-								{running === 0 ? "no sandbox is running now" : `for ${plural(running, "sandbox", "sandboxes")} running now, a few minutes at a time; what one does not use is free again when it stops`}
-							</dd>
-						</div>
-						{left !== null ? (
-							<div>
-								<dt>
-									<span className="usage-swatch usage-swatch-left" aria-hidden="true" />
-									Left
-								</dt>
-								<dd className="usage-number">{sandboxClock(left)}</dd>
-								<dd className="usage-gloss">{left < view.startSeconds ? "a turn needs more than this to start, and one that is running is stopped when the time it holds is over" : "for turns that start now"}</dd>
-							</div>
-						) : null}
-						{allowance !== null ? (
-							<div>
-								<dt>Resets</dt>
-								<dd className="usage-number">{resets}</dd>
-								<dd className="usage-gloss">
-									in {untilReset}
-									{abroad ? ", at 00:00 UTC" : ""}, when the allowance is whole again
-								</dd>
-							</div>
-						) : null}
-					</dl>
-				</details>
-				{sizes ? (
-					<div className="usage-sizes">
-						<p className="usage-lede">
-							Estimated prices.
-						</p>
-						<ul className="usage-size-list">
-							{sizes.map((size) => (
-								<li key={size.id}>
-									<span className="usage-size-name">{sizeName(size.id)}</span>
-									<span className="tone-dim">{sizeSpec(size.id)}</span>
-									<span className="usage-number">{perHour(size.usdPerHour) ?? "–"}</span>
-								</li>
-							))}
-						</ul>
-					</div>
-				) : null}
-				</div>
-			</section>
-
-			<section className="usage-section" aria-labelledby="usage-agents">
-				<h2 className="usage-title" id="usage-agents">
-					Today by agent
-				</h2>
+	let panel: ReactNode;
+	if (shown === "usage-agents") {
+		const unreported = view.today.reduce((sum, row) => sum + row.unreportedSeconds, 0);
+		const agentRows = view.today.filter((row) => !items?.has(row.sessionId));
+		const itemRows = view.today.filter((row) => items?.has(row.sessionId));
+		const itemTotal = itemRows.reduce((sum, row) => ({ seconds: sum.seconds + row.seconds, held: sum.held + row.heldSeconds, unreported: sum.unreported + row.unreportedSeconds }), { seconds: 0, held: 0, unreported: 0 });
+		const itemCost = estimatedCost(itemRows, itemTotal.seconds);
+		panel = (
+			<>
 				{view.today.length === 0 ? (
 					<p className="usage-empty">No sandbox has run today.</p>
 				) : (
-					<>
-					<details className="usage-note" onToggle={event => setShowHeld(event.currentTarget.open)}>
-						<summary>Details</summary>
-						Running sandboxes hold time in advance. Unused time becomes available when they stop.
-					</details>
 					<table className="usage-table">
 						<thead>
 							<tr>
 								<th scope="col">Agent</th>
-								<th scope="col" className="usage-number">
-									Used
-								</th>
-								<th scope="col" className="usage-number" hidden={!showHeld}>
-									Held
-								</th>
-								{price === null ? null : (
-									<th scope="col" className="usage-number">
-										Est. cost
-									</th>
-								)}
+								<th scope="col" className="usage-number">Used</th>
+								<th scope="col" className="usage-number" hidden={!showHeld}>Held</th>
+								{price && <th scope="col" className="usage-number">Est. cost</th>}
 							</tr>
 						</thead>
 						<tbody>
 							{agentRows.map((row) => (
-								<tr key={row.sessionId}>
-									<th scope="row">
-										{row.title === null ? (
-											<span className="tone-dim">an agent that was deleted</span>
-										) : (
-											<a className="usage-agent" {...linkProps({ name: "session", id: row.sessionId })}>
-												{row.title}
-											</a>
-										)}
-										{sizes && row.hostedSize ? <span className="usage-size-tag">{sizeName(row.hostedSize)}</span> : null}
-										{row.unreportedSeconds > 0 ? (
-											<span className="usage-mark" title="Counted in full: see the note below">
-												{" "}
-												*
-											</span>
-										) : null}
-									</th>
-									<td className="usage-number">{sandboxClock(row.seconds)}</td>
-									<td className="usage-number" hidden={!showHeld}>{row.heldSeconds > 0 ? sandboxClock(row.heldSeconds) : <span className="tone-faint">–</span>}</td>
-									{price === null ? null : <td className="usage-number">{costAt(row.seconds, row.hostedSize)}</td>}
-								</tr>
+								<UsageRow key={row.sessionId} seconds={row.seconds} held={row.heldSeconds} showHeld={showHeld} cost={price ? row.seconds * rate(row.hostedSize) : null} estimated={row.unreportedSeconds > 0}>
+									{row.title === null ? (
+										<span className="tone-dim">an agent that was deleted</span>
+									) : (
+										<a className="usage-agent" {...linkProps({ name: "session", id: row.sessionId })}>
+											{row.title}
+										</a>
+									)}
+									{sizes && row.hostedSize ? <span className="usage-size-tag">{sizeName(row.hostedSize)}</span> : null}
+								</UsageRow>
 							))}
 							{itemRows.length > 0 ? (
-								<tr>
-									<th scope="row">
-										<a className="usage-agent" href="#usage-items">
-											{plural(new Set(itemRows.map(row => items?.get(row.sessionId))).size, "work item")}
-										</a>
-										{itemTotal.unreported > 0 ? (
-											<span className="usage-mark" title="Counted in full: see the note below">
-												{" "}
-												*
-											</span>
-										) : null}
-									</th>
-									<td className="usage-number">{sandboxClock(itemTotal.seconds)}</td>
-									<td className="usage-number" hidden={!showHeld}>{itemTotal.held > 0 ? sandboxClock(itemTotal.held) : <span className="tone-faint">–</span>}</td>
-									{price === null ? null : <td className="usage-number">{sizes ? usd(itemRows.reduce((sum, row) => sum + row.seconds * rate(row.hostedSize), 0)) : cost(itemTotal.seconds)}</td>}
-								</tr>
+								<UsageRow seconds={itemTotal.seconds} held={itemTotal.held} showHeld={showHeld} cost={itemCost} estimated={itemTotal.unreported > 0}>
+									<a className="usage-agent" href="#usage-items" onClick={event => { event.preventDefault(); chooseTab("usage-items"); }}>
+										{plural(new Set(itemRows.map(row => items?.get(row.sessionId))).size, "work item")}
+									</a>
+								</UsageRow>
 							) : null}
 						</tbody>
 						<tfoot>
-							<tr>
-								<th scope="row">Today</th>
-								<td className="usage-number">{sandboxClock(view.usedSeconds)}</td>
-								<td className="usage-number" hidden={!showHeld}>{view.heldSeconds > 0 ? sandboxClock(view.heldSeconds) : <span className="tone-faint">–</span>}</td>
-								{price === null ? null : <td className="usage-number">{todayUsd !== null ? usd(todayUsd) : cost(view.usedSeconds)}</td>}
-							</tr>
+							<UsageRow seconds={view.usedSeconds} held={view.heldSeconds} showHeld={showHeld} cost={todayUsd}>Today</UsageRow>
 						</tfoot>
 					</table>
-					</>
 				)}
-				{itemRows.length > 0 ? <p className="usage-note">Work items are grouped here. See each item’s budget below.</p> : null}
-				{unreported > 0 ? (
-					<p className="usage-note">
-						* Includes up to {sandboxTime(unreported)} estimated.
-					</p>
-				) : null}
-			</section>
-
-			<section className="usage-section" aria-labelledby="usage-kept">
-				<h2 className="usage-title" id="usage-kept">
-					Kept sandboxes
-					<span className="usage-count">{limit === null ? count(kept) : `${count(kept)} of ${count(limit)}`}</span>
-				</h2>
-				<p className="usage-lede">
-					{limit === null ? "Your hosted workspaces, running or paused." : "Free one to make room for more agents."}
-				</p>
+				<div className="usage-panel-notes">
+					{unreported > 0 ? <p className="usage-note">* Includes up to {sandboxTime(unreported)} estimated.</p> : null}
+					{view.today.length > 0 ? (
+						<button type="button" className="link usage-panel-toggle" aria-pressed={showHeld} onClick={() => setShowHeld(on => !on)}>
+							{showHeld ? "Hide held time" : "Show held time"}
+						</button>
+					) : null}
+				</div>
+			</>
+		);
+	} else if (shown === "usage-kept") {
+		panel = (
+			<>
+				<p className="usage-lede">{limit === null ? "Your hosted workspaces, running or paused." : "Free one to make room for more agents."}</p>
 				{view.kept.length === 0 ? (
 					<p className="usage-empty">You keep no sandbox.</p>
 				) : (
-					<ul className="usage-kept">
-						{view.kept.map((sandbox) => (
-							<li key={sandbox.sessionId} className="usage-kept-row">
-								<div className="usage-kept-main">
-									{sandbox.title === null ? (
-										<span className="usage-kept-title tone-dim">Left behind by an agent that no longer exists</span>
-									) : (
-										<a className="usage-kept-title usage-agent" {...linkProps(items?.has(sandbox.sessionId) ? { name: "item", id: items.get(sandbox.sessionId) as string } : { name: "session", id: sandbox.sessionId })}>
-											{sandbox.title}
-										</a>
-									)}
-									<p className="agent-meta">
-										{items?.has(sandbox.sessionId) ? <span>work item</span> : null}
-										{sizes && sandbox.hostedSize ? <span>{`${sizeName(sandbox.hostedSize)}, ${perHour(sizes.find((one) => one.id === sandbox.hostedSize)?.usdPerHour) ?? ""}`.replace(/, $/, "")} while running</span> : null}
-										{sandbox.repository ? <span className="agent-repo">{sandbox.repository}</span> : <span>no repository at GitHub</span>}
-										{sandbox.repository ? <span>{sandbox.pushed ? "work pushed" : "nothing pushed"}</span> : null}
-										{sandbox.usedAt !== null ? <span title={absoluteTime(sandbox.usedAt)}>used {relativeTime(sandbox.usedAt, now)}</span> : null}
-									</p>
-								</div>
-								{sandbox.state === "starting" ? <span className="sandbox-state">being made</span> : <SandboxState state={sandbox.state} />}
-								<button type="button" className="button button-outline button-small" onClick={() => setFreeing(sandbox)} disabled={sandbox.busy || sandbox.state === "starting"} title={sandbox.busy ? "It is working: stop its turn first" : undefined}>
-									{sandbox.busy ? "Working" : "Free…"}
-								</button>
-							</li>
-						))}
-					</ul>
+					<FoldRows items={view.kept} shown={8}>
+						{(rows, id) => (
+							<ul className="usage-kept" id={id}>
+								{rows.map((sandbox) => {
+									const item = items?.get(sandbox.sessionId);
+									return (
+										<li key={sandbox.sessionId} className="usage-kept-row">
+											<div className="usage-kept-main">
+												{sandbox.title === null ? (
+													<span className="usage-kept-title tone-dim">Left behind by an agent that no longer exists</span>
+												) : (
+													<a className="usage-kept-title usage-agent" {...linkProps(item ? { name: "item", id: item } : { name: "session", id: sandbox.sessionId })}>
+														{sandbox.title}
+													</a>
+												)}
+												<p className="agent-meta">
+													{item ? <span>work item</span> : null}
+													{sizes && sandbox.hostedSize ? <span>{`${sizeName(sandbox.hostedSize)}, ${perHour(sizes.find((one) => one.id === sandbox.hostedSize)?.usdPerHour) ?? ""}`.replace(/, $/, "")} while running</span> : null}
+													{sandbox.repository ? <span className="agent-repo">{sandbox.repository}</span> : <span>no repository at GitHub</span>}
+													{sandbox.repository ? <span>{sandbox.pushed ? "work pushed" : "nothing pushed"}</span> : null}
+													{sandbox.usedAt !== null ? <span title={absoluteTime(sandbox.usedAt)}>used {relativeTime(sandbox.usedAt, now)}</span> : null}
+												</p>
+											</div>
+											{sandbox.state === "starting" ? <span className="sandbox-state">being made</span> : <SandboxState state={sandbox.state} />}
+											<button type="button" className="button button-outline button-small" onClick={() => setFreeing(sandbox)} disabled={sandbox.busy || sandbox.state === "starting"} title={sandbox.busy ? "It is working: stop its turn first" : undefined}>
+												{sandbox.busy ? "Working" : "Free…"}
+											</button>
+										</li>
+									);
+								})}
+							</ul>
+						)}
+					</FoldRows>
 				)}
-			</section>
-
-			<MachineUsage />
-
-			<FactoryUsage value={view.factoryLimits} />
-
-			<section className="usage-section" aria-labelledby="usage-history">
-				<h2 className="usage-title" id="usage-history">
-					The last {USAGE_HISTORY_DAYS} days
-				</h2>
-				<p className="usage-lede">A day here is a UTC day{abroad ? `: it ends at ${resets} your time` : ""}.{allowance === null ? "" : ` Each bar is drawn against the daily allowance of ${sandboxTime(allowance)}.`}{sizes && price !== null ? " Earlier days' costs are at the small size's price: what ran larger cost more." : ""}</p>
+			</>
+		);
+	} else if (shown === "usage-history") {
+		const most = Math.max(allowance ?? 0, ...view.days.map(day => day.seconds), 1);
+		panel = (
+			<>
 				<table className="usage-table usage-history">
 					<thead>
 						<tr>
 							<th scope="col">Day</th>
 							<th scope="col" aria-hidden="true" />
-							<th scope="col" className="usage-number">
-								Hosted time
-							</th>
-							{price === null ? null : (
-								<th scope="col" className="usage-number">
-									Est. cost
-								</th>
-							)}
+							<th scope="col" className="usage-number">Hosted time</th>
+							{price && <th scope="col" className="usage-number">Est. cost</th>}
 						</tr>
 					</thead>
 					<tbody>
@@ -558,13 +398,175 @@ export function Usage() {
 							<th scope="row">{USAGE_HISTORY_DAYS} days</th>
 							<td />
 							<td className="usage-number">{sandboxClock(historyTotal)}</td>
-							{price === null ? null : <td className="usage-number">{cost(historyTotal)}</td>}
+							{price === null ? null : <td className="usage-number">{usd(historyTotal * price.usdPerSecond)}</td>}
 						</tr>
 					</tfoot>
 				</table>
+				<p className="usage-note">
+					UTC days{abroad ? `, ending at ${resets} your time` : ""}.{sizes && price !== null ? " Earlier days are priced at the small size." : ""}
+				</p>
+			</>
+		);
+	} else if (shown === "usage-items") {
+		panel = <FactoryUsage value={view.factoryLimits} />;
+	} else {
+		panel = <MachineUsage />;
+	}
+
+	return (
+		<main className="home usage">
+			<header className="home-head">
+				<div>
+					<p className="eyebrow">The day ends {resets}</p>
+					<h1 className="display">Usage</h1>
+				</div>
+			</header>
+
+			{error ? (
+				<p className="callout callout-warn" role="status">
+					<WarnIcon />
+					<span>{error} <button className="link" onClick={reload}>Try again</button></span>
+				</p>
+			) : null}
+
+			{view.hosted ? <HostedNotice numbers={view} pro={platform.info?.billing?.plans.find((plan) => plan.id === "pro") ?? null} /> : null}
+
+			<section className="usage-card usage-summary" aria-label="At a glance">
+				<div className="usage-summary-figures">
+					<div className="usage-summary-cell usage-summary-main">
+						<h2 className="usage-summary-label">Hosted time today</h2>
+						<p className="usage-summary-figure">
+							<strong>{sandboxTime(view.usedSeconds)}</strong>
+							{allowance === null ? null : <span> of {sandboxTime(allowance)}</span>}
+						</p>
+						<Meter view={view} />
+						<p className="usage-summary-sub">
+							{leftWords}
+							{allowance === null ? null : <> · resets in {untilReset}</>}
+						</p>
+					</div>
+					<div className="usage-summary-cell">
+						<h2 className="usage-summary-label">Model tokens today</h2>
+						<p className="usage-summary-figure">
+							<strong>{compact(view.usedModelTokens)}</strong>
+							{view.factoryLimits.dailyTokens === null ? null : <span> of {compact(view.factoryLimits.dailyTokens)}</span>}
+						</p>
+						<p className="usage-summary-sub">{view.factoryLimits.dailyTokens === null ? "No daily cap" : "On Windlass’s sign-in"}</p>
+						{view.providerTokens?.map((row) => (
+							<p key={row.provider} className="usage-summary-sub">
+								Your {row.provider} key: {compact(row.tokens)}
+							</p>
+						))}
+					</div>
+					{price && todayUsd !== null ? (
+						<div className="usage-summary-cell">
+							<h2 className="usage-summary-label">Estimated today</h2>
+							<p className="usage-summary-figure" title="Estimate">
+								<strong>≈ {cents(todayUsd)}</strong>
+							</p>
+							<p className="usage-summary-sub">
+								{cents(historyTotal * price.usdPerSecond)} in {USAGE_HISTORY_DAYS} days
+							</p>
+						</div>
+					) : null}
+				</div>
+				{view.hosted ? (
+					<div className="usage-summary-month">
+						<h2 className="usage-summary-label">
+							Hosted time{view.hosted.plan === "pro" ? "" : " this month"} · {monthName(view.hosted)}
+						</h2>
+						<MonthFigure month={view.hosted} />
+						<p className="usage-summary-sub">
+							Resets on {monthReset(view.hosted)}.
+							{platform.info?.billing ? (
+								<>
+									{" "}
+									<a className="link" {...linkProps({ name: "settings" })}>
+										Manage your plan
+									</a>
+								</>
+							) : null}
+						</p>
+					</div>
+				) : null}
+				<div className="usage-summary-foot">
+					<span>
+						Kept sandboxes <strong>{keptCount}</strong>
+					</span>
+					<span>
+						Running now <strong>{count(running)}</strong>
+					</span>
+					<details className="usage-summary-details">
+						<summary>Details</summary>
+						<div className="usage-summary-more">
+							<dl className="usage-facts">
+								<div>
+									<dt>
+										<span className="usage-swatch usage-swatch-used" aria-hidden="true" />
+										Counted
+									</dt>
+									<dd className="usage-number">{sandboxClock(view.usedSeconds)}</dd>
+									<dd className="usage-gloss">what your sandboxes ran today before they stopped</dd>
+								</div>
+								<div>
+									<dt>
+										<span className="usage-swatch usage-swatch-held" aria-hidden="true" />
+										Held
+									</dt>
+									<dd className="usage-number">{sandboxClock(view.heldSeconds)}</dd>
+									<dd className="usage-gloss">{running === 0 ? "no sandbox is running now" : `for ${plural(running, "sandbox", "sandboxes")} running now; what one does not use is free again when it stops`}</dd>
+								</div>
+								{allowance !== null ? (
+									<div>
+										<dt>Resets</dt>
+										<dd className="usage-number">{resets}</dd>
+										<dd className="usage-gloss">
+											in {untilReset}
+											{abroad ? ", at 00:00 UTC" : ""}
+										</dd>
+									</div>
+								) : null}
+							</dl>
+							{sizes ? (
+								<ul className="usage-size-list" aria-label="Estimated prices">
+									{sizes.map((size) => (
+										<li key={size.id}>
+											<span className="usage-size-name">{sizeName(size.id)}</span>
+											<span className="tone-dim">{sizeSpec(size.id)}</span>
+											<span className="usage-number">{perHour(size.usdPerHour) ?? "–"}</span>
+										</li>
+									))}
+								</ul>
+							) : null}
+						</div>
+					</details>
+				</div>
+			</section>
+
+			<div className="tabs usage-tabs" role="tablist" aria-label="Usage in detail" onKeyDown={moveBetweenTabs}>
+				{tabs.map(({ id, label, count }) => (
+					<button key={id} id={id} type="button" className="tab" role="tab" aria-selected={id === shown} aria-controls={id === shown ? `${id}-panel` : undefined} tabIndex={id === shown ? 0 : -1} onClick={() => chooseTab(id)}>
+						{label}{count && <span className="tab-count">{count}</span>}
+					</button>
+				))}
+			</div>
+
+			<section className="usage-panel" role="tabpanel" id={`${shown}-panel`} aria-labelledby={shown}>
+				{panel}
 			</section>
 
 			{freeing ? <FreeDialog sandbox={freeing} memory={view.memory} onClose={() => setFreeing(null)} onFreed={replace} /> : null}
 		</main>
+	);
+}
+
+function UsageRow({ children, seconds, held, showHeld, cost, estimated }: { children: ReactNode; seconds: number; held: number; showHeld: boolean; cost: number | null; estimated?: boolean }) {
+	return (
+		<tr>
+			<th scope="row">{children}{estimated && <span className="usage-mark" title="Includes estimated time"> *</span>}</th>
+			<td className="usage-number">{sandboxClock(seconds)}</td>
+			<td className="usage-number" hidden={!showHeld}>{held > 0 ? sandboxClock(held) : <span className="tone-faint">–</span>}</td>
+			{cost !== null && <td className="usage-number">{usd(cost)}</td>}
+		</tr>
 	);
 }

@@ -71,7 +71,7 @@ export async function placeFacts(host: EnvironmentHost, project: string): Promis
 	}
 	const machines = await host.machines();
 	return [
-		{ place: HOSTED, name: "This platform", snapshots: host.snapshots.hosted, online: true, featuresLimited: false, lastUsed: used.get(HOSTED) ?? 0 },
+		{ place: HOSTED, name: "Hosted", snapshots: host.snapshots.hosted, online: true, featuresLimited: false, lastUsed: used.get(HOSTED) ?? 0 },
 		...machines.map(m => ({ place: m.machineId, name: `‘${m.name}’`, snapshots: host.snapshots.machines, online: m.status === "online", featuresLimited: (m.orchestrator ?? "yes") !== "yes", lastUsed: used.get(m.machineId) ?? 0 })),
 	];
 }

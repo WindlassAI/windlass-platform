@@ -205,19 +205,12 @@ export function ModelProviders() {
 
 	const { list } = state;
 	return (
-		<section className="usage-section repo-saved" aria-labelledby="settings-providers">
-			<h2 className="usage-title" id="settings-providers">
-				Model keys
-			</h2>
-			<p className="usage-lede">
-				Hosted agents use these keys. Keys stay on Windlass.{" "}<a className="link" href="/docs/settings#model-providers">How keys are used →</a>
-			</p>
-			{!auth.profile.demo && <ChatgptPlan />}
+		<section className="usage-section repo-saved" aria-label="Model keys">
 			{list === null ? (
 				state.error ? (
 					<div className="state state-error" role="alert">
 						<WarnIcon size={22} />
-						<h2>Your model providers could not be loaded</h2>
+						<h3>Your model providers could not be loaded</h3>
 						<p>{state.error}</p>
 						<button type="button" className="button button-outline" onClick={reload}>
 							Try again
@@ -229,7 +222,8 @@ export function ModelProviders() {
 					</p>
 				)
 			) : (
-				<ul className="usage-kept" aria-label="Your model providers">
+				<ul className="settings-list" aria-label="Your model providers">
+					{!auth.profile.demo && <ChatgptPlan />}
 					{MODEL_PROVIDERS.map((provider) => {
 						const { name } = PROVIDERS[provider];
 						const saved = list.find((one) => one.provider === provider);

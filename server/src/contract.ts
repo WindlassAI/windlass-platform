@@ -624,7 +624,7 @@ export interface EnvironmentBuild {
 /** One place's environment of a repository. */
 export interface RepositoryEnvironment {
 	place: EnvironmentPlace;
-	/** "This platform", or the machine's name. */
+	/** "Hosted", or the machine's name. */
 	placeName: string;
 	state: EnvironmentState;
 	/** The last build that passed: the one sessions start from while it is current. */

@@ -279,12 +279,14 @@ function SendBackDialog({ view, acting, onClose }: { view: ItemView; acting: Act
 	);
 }
 
-/** The person's note to a running builder: into the turn that runs, or with its next turn. Logged as theirs. */
-function NoteBox({ id, label, onDone }: { id: string; label: string; onDone(view: ItemView): void }) {
+function NoteBox({ targets, onDone }: { targets: { id: string; label: string }[]; onDone(view: ItemView): void }) {
 	const [note, setNote] = useState("");
-	const ids = { note: useId() };
-	const acting = useActing(id, onDone);
+	const [chosen, setChosen] = useState("");
+	const target = targets.find((one) => one.id === chosen) ?? targets[0];
+	const ids = { note: useId(), to: useId() };
+	const acting = useActing(target?.id ?? "", onDone);
 	const busy = acting.busy === "note";
+	if (!target) return null;
 	const send = (event: FormEvent) => {
 		event.preventDefault();
 		if (note.trim() === "" || busy) return;
@@ -292,12 +294,26 @@ function NoteBox({ id, label, onDone }: { id: string; label: string; onDone(view
 	};
 	return (
 		<form className="item-form item-steer" onSubmit={send}>
-			<label className="label" htmlFor={ids.note}>
-				{label}
+			{targets.length > 1 ? (
+				<div>
+					<label className="label" htmlFor={ids.to}>
+						Note to
+					</label>
+					<select id={ids.to} className="input select" value={target.id} disabled={busy} onChange={(event) => setChosen(event.target.value)}>
+						{targets.map((one) => (
+							<option key={one.id} value={one.id}>
+								{one.label}
+							</option>
+						))}
+					</select>
+				</div>
+			) : null}
+			<label className={targets.length > 1 ? "visually-hidden" : "label"} htmlFor={ids.note}>
+				{targets.length > 1 ? `Note to ${target.label}` : target.label}
 			</label>
 			<textarea id={ids.note} className="input textarea" rows={2} value={note} maxLength={MAX_NOTE_CHARS} onChange={(event) => setNote(event.target.value)} readOnly={busy} />
 			<div className="item-steer-foot">
-				<p className="field-note">Goes into the turn that runs now; with none running, it goes with the next turn.</p>
+				<p className="field-note">Goes into the turn that runs now, or with the next one.</p>
 				<button type="submit" className="button button-outline" disabled={note.trim() === "" || busy}>
 					{busy ? "Sending…" : "Send note"}
 				</button>
@@ -692,17 +708,19 @@ function Cost({ view, now }: { view: ItemView; now: number }) {
 			{view.state === "working" && view.spent.turns === 0 && step?.turn === "started" && (
 				<p className="usage-note">Spend is counted when the running turn ends. This step started {sandboxTime((now - step.startedAt) / 1000)} ago.</p>
 			)}
-			<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
-			{facts.length > 0 ? (
-				<dl className="usage-facts item-facts">
-					{facts.map((fact) => (
-						<div key={fact.label}>
-							<dt>{fact.label}</dt>
-							<dd className="usage-number">{fact.value}</dd>
-						</div>
-					))}
-				</dl>
-			) : null}
+			<div className="usage-card item-cost-card">
+				<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
+				{facts.length > 0 ? (
+					<dl className="item-cost-foot">
+						{facts.map((fact) => (
+							<div key={fact.label}>
+								<dt>{fact.label}</dt>
+								<dd>{fact.value}</dd>
+							</div>
+						))}
+					</dl>
+				) : null}
+			</div>
 			<details className="usage-note">
 				<summary>How this is counted</summary>
 				<p>{compact(view.spent.rawTokens ?? view.spent.tokens)} raw tokens reported. For the budget, cached input tokens count at a tenth.</p>
@@ -964,6 +982,12 @@ export function Item({ page }: { page: ItemPage }) {
 	// A subtask's place in its feature's plan, once the feature is read: "Part 2 of 5 of <feature>".
 	const part = view.parent && feature.view?.plan ? partOf(feature.view.plan, view.parent.key) : null;
 
+	const noteTargets = view.mode === "orchestrate"
+		? (view.children ?? []).filter(child => TAKES_NOTES.has(child.state)).map(child => {
+			const n = view.plan && child.parent ? partOf(view.plan, child.parent.key)?.n : undefined;
+			return { id: child.id, label: `${n ? `Part ${n}` : "The part"}: ${child.title}` };
+		})
+		: TAKES_NOTES.has(view.state) ? [{ id: view.id, label: view.parent ? "Note to this part" : "Note to the agent" }] : [];
 	const moreActions: MenuItem[] = [];
 	if (view.canUpdateFeature && !view.question?.choices.some(choice => choice.id === "update_feature")) {
 		moreActions.push({ id: "update_feature", label: `Update the feature from ${view.task.base}`, onSelect: () => acting.act({ kind: "update_feature" }) });
@@ -1088,13 +1112,9 @@ export function Item({ page }: { page: ItemPage }) {
 					<Now view={view} now={now} />
 				)}
 				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
-				{view.mode !== "orchestrate" && TAKES_NOTES.has(view.state) ? <NoteBox id={view.id} label={view.parent ? "Note to this part" : "Note to the agent"} onDone={page.replace} /> : null}
-				{view.mode === "orchestrate"
-					? view.children?.filter((child) => TAKES_NOTES.has(child.state)).map((child) => {
-							const n = view.plan && child.parent ? partOf(view.plan, child.parent.key)?.n : undefined;
-							return <NoteBox key={child.id} id={child.id} label={`Note to ${n ? `part ${n}` : "the part"}: ${child.title}`} onDone={() => void page.reload()} />;
-						})
-					: null}
+				{!view.question && noteTargets.length > 0 && (
+					<NoteBox key={view.mode === "orchestrate" ? noteTargets.map(target => target.id).join(" ") : undefined} targets={noteTargets} onDone={view.mode === "orchestrate" ? () => void page.reload() : page.replace} />
+				)}
 			</section>
 
 			{view.plan ? (

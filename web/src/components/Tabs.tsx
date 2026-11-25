@@ -6,7 +6,7 @@
  * they reach. The view shown goes in a `TabPanel` with the same `id`.
  */
 import type { KeyboardEvent, ReactNode } from "react";
-import { linkProps, navigate, type Route } from "../lib/router";
+import { linkProps, type Route } from "../lib/router";
 
 export interface TabLink {
 	key: string;
@@ -17,19 +17,25 @@ export interface TabLink {
 const tabId = (id: string, key: string) => `${id}-tab-${key}`;
 const panelId = (id: string) => `${id}-panel`;
 
-/** `label` names the row for a screen reader; `selected` is the key of the tab whose view is shown. */
+export function moveBetweenTabs(event: KeyboardEvent<HTMLDivElement>) {
+	const tabs = [...event.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
+	const at = tabs.findIndex(tab => tab.getAttribute("aria-selected") === "true");
+	let next: HTMLElement | undefined;
+	switch (event.key) {
+		case "ArrowRight": next = tabs[(at + 1) % tabs.length]; break;
+		case "ArrowLeft": next = tabs[(at - 1 + tabs.length) % tabs.length]; break;
+		case "Home": next = tabs[0]; break;
+		case "End": next = tabs[tabs.length - 1]; break;
+		default: return;
+	}
+	event.preventDefault();
+	next?.focus();
+	next?.click();
+}
+
 export function Tabs({ id, label, tabs, selected }: { id: string; label: string; tabs: TabLink[]; selected: string }) {
-	const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-		const at = tabs.findIndex((tab) => tab.key === selected);
-		const to = event.key === "ArrowRight" ? (at + 1) % tabs.length : event.key === "ArrowLeft" ? (at - 1 + tabs.length) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : null;
-		const tab = to === null ? undefined : tabs[to];
-		if (!tab) return;
-		event.preventDefault();
-		document.getElementById(tabId(id, tab.key))?.focus();
-		navigate(tab.route);
-	};
 	return (
-		<div className="tabs" role="tablist" aria-label={label} onKeyDown={onKeyDown}>
+		<div className="tabs" role="tablist" aria-label={label} onKeyDown={moveBetweenTabs}>
 			{tabs.map((tab) => {
 				const chosen = tab.key === selected;
 				return (

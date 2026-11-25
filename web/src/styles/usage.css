@@ -60,28 +60,6 @@
 	margin-top: 36px;
 }
 
-/* The day at a glance: one card, the figure and its bar over the facts the bar is made of. */
-.usage-today {
-	margin-top: 14px;
-	overflow: hidden;
-}
-.usage-today > .usage-figure {
-	margin: 0;
-	padding: 18px 20px 0;
-}
-.usage-today > .usage-meter {
-	margin: 14px 20px 18px;
-	height: 8px;
-	border-radius: 4px;
-}
-.usage-today > .usage-facts {
-	margin: 0;
-	border: 0;
-	border-top: 1px solid var(--line);
-	border-radius: 0;
-	box-shadow: none;
-	background: transparent;
-}
 .usage-swatch {
 	display: inline-block;
 	width: 8px;
@@ -89,16 +67,6 @@
 	margin-right: 8px;
 	border-radius: 2px;
 	vertical-align: 0;
-}
-.usage-swatch-used {
-	background: var(--accent-text);
-}
-.usage-swatch-held {
-	background: repeating-linear-gradient(-45deg, var(--accent-text) 0 2px, color-mix(in srgb, var(--accent-text) 28%, transparent) 2px 4px);
-}
-.usage-swatch-left {
-	background: var(--bg-active);
-	box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 .usage-figure {
 	display: flex;
@@ -136,10 +104,12 @@
 	border-radius: 3px;
 	transition: width 400ms var(--ease-out);
 }
+.usage-swatch-used,
 .usage-meter-used {
 	background: var(--accent-text);
 }
 /* What running sandboxes hold: the same hue in stripes, not counted yet, and as legible as the count in both themes. */
+.usage-swatch-held,
 .usage-meter-held {
 	background: repeating-linear-gradient(-45deg, var(--accent-text) 0 2px, color-mix(in srgb, var(--accent-text) 28%, transparent) 2px 4px);
 }
@@ -401,10 +371,6 @@
 }
 
 @media (max-width: 760px) {
-	.usage-sizes {
-		padding-left: 14px;
-		padding-right: 14px;
-	}
 	/* What each agent's sandbox holds is in the day's figures above; a narrow table leaves it out. */
 	.usage-wide {
 		display: none;
@@ -523,25 +489,10 @@
 	line-height: 1.5;
 	color: var(--ink-dim);
 }
-.usage-today .usage-facts > div {
-	padding-left: 20px;
-	padding-right: 20px;
-}
 
-/* Hosted sizes: one quiet row each, under the day's figures; and an agent's size beside its name. */
-.usage-sizes {
-	padding: 14px 20px 18px;
-	border-top: 1px solid var(--line);
-}
-.usage-sizes .usage-lede {
-	margin-top: 0;
-}
 .usage-size-list {
 	display: grid;
 	gap: 6px;
-	margin: 10px 0 0;
-	padding: 0;
-	list-style: none;
 	max-width: 420px;
 }
 .usage-size-list li {
@@ -572,4 +523,192 @@
 .usage-section .linear-map .select {
 	flex: 1 1 200px;
 	min-width: 0;
+}
+
+.usage-summary {
+	margin-top: 24px;
+}
+.usage-summary-figures {
+	display: grid;
+	grid-template-columns: minmax(0, 1.5fr) repeat(auto-fit, minmax(150px, 1fr));
+}
+.usage-summary-cell {
+	min-width: 0;
+	padding: 20px 22px 18px;
+}
+.usage-summary-cell + .usage-summary-cell {
+	border-left: 1px solid var(--line);
+}
+.usage-summary-label {
+	font-family: var(--font-mono);
+	font-size: var(--text-11);
+	font-weight: var(--weight-regular);
+	letter-spacing: 0.02em;
+	text-transform: lowercase;
+	color: var(--ink-faint);
+}
+.usage-summary-figure {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0 6px;
+	margin-top: 6px;
+	font-size: var(--text-14);
+	color: var(--ink-dim);
+	font-variant-numeric: tabular-nums;
+}
+.usage-summary-figure strong {
+	font-size: var(--text-32);
+	font-weight: var(--weight-strong);
+	line-height: 1.1;
+	letter-spacing: var(--tracking-display);
+	color: var(--ink);
+}
+.usage-summary-main .usage-meter {
+	margin-top: 14px;
+}
+.usage-summary-sub {
+	margin-top: 8px;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.usage-summary-sub + .usage-summary-sub {
+	margin-top: 2px;
+}
+.usage-summary-month {
+	padding: 16px 22px 18px;
+	border-top: 1px solid var(--line);
+}
+.usage-summary-month .usage-figure {
+	margin-top: 6px;
+}
+.usage-summary-foot {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 6px 20px;
+	padding: 12px 22px;
+	border-top: 1px solid var(--line);
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.usage-summary-foot strong {
+	font-weight: var(--weight-strong);
+	color: var(--ink);
+	font-variant-numeric: tabular-nums;
+}
+.usage-summary-details {
+	margin-left: auto;
+}
+.usage-summary-details summary {
+	cursor: pointer;
+	color: var(--ink-dim);
+}
+.usage-summary-details summary:hover {
+	color: var(--ink);
+}
+.usage-summary-details[open] {
+	flex-basis: 100%;
+	margin-left: 0;
+}
+.usage-summary-more {
+	display: grid;
+	gap: 14px;
+	margin-top: 10px;
+}
+.usage-summary-more .usage-facts {
+	margin: 0;
+	border: 0;
+	background: none;
+	box-shadow: none;
+}
+.usage-summary-more .usage-facts > div {
+	padding-inline: 0;
+}
+
+.usage-tabs {
+	margin-top: 36px;
+}
+.usage-tabs .tab {
+	border-width: 0 0 2px;
+	background: none;
+}
+.tab-count {
+	font-family: var(--font-mono);
+	font-size: var(--text-11);
+	font-weight: var(--weight-regular);
+	color: var(--ink-faint);
+}
+.usage-panel {
+	margin-top: 16px;
+}
+.usage-panel > .usage-lede:first-child {
+	margin: 0 0 12px;
+}
+.usage-panel .usage-table,
+.usage-panel .usage-kept {
+	margin-top: 0;
+}
+.usage-panel .fold-list-toggle {
+	margin-top: 10px;
+}
+.usage-panel-notes {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 4px 16px;
+}
+.usage-panel-toggle {
+	margin-top: 10px;
+	margin-left: auto;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+	text-decoration: none;
+}
+.usage-panel-toggle:hover {
+	color: var(--ink);
+}
+.factory-limits-fold {
+	margin: 0 0 12px;
+}
+.factory-limits-fold .usage-facts {
+	margin-top: 10px;
+}
+
+@media (max-width: 760px) {
+	.usage-summary-figures {
+		grid-template-columns: 1fr 1fr;
+	}
+	.usage-summary-main {
+		grid-column: 1 / -1;
+	}
+	.usage-summary-cell {
+		padding: 16px;
+	}
+	.usage-summary-cell + .usage-summary-cell {
+		border-left: 0;
+		border-top: 1px solid var(--line);
+	}
+	.usage-summary-cell + .usage-summary-cell + .usage-summary-cell {
+		border-left: 1px solid var(--line);
+	}
+	.usage-summary-figure strong {
+		font-size: var(--text-24);
+	}
+	.usage-summary-month,
+	.usage-summary-foot {
+		padding-inline: 16px;
+	}
+	.usage-tabs {
+		flex-wrap: nowrap;
+		gap: 0 20px;
+		margin-inline: calc(-1 * var(--gutter));
+		padding: 0 var(--gutter);
+		overflow-x: auto;
+		scrollbar-width: none;
+	}
+	.usage-tabs .tab {
+		flex: none;
+	}
 }

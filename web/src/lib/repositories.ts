@@ -226,7 +226,12 @@ export function startingChoices(defaults: AccountDefaults | null, info: Pick<Pla
 	if (defaults.profile !== null && info !== null) {
 		const saved = info.profiles.find((profile) => profile.id === defaults.profile);
 		if (saved?.available) choices.profile = saved.id;
-		else choices.ignored.profile = "Saved isolation is unavailable here. Using the next available default.";
+		else {
+			// Which one, and what is used in its place: the account's default under a repository's, the deployment's first under the account's.
+			const what = saved ? `${saved.name} isolation isn't available here` : "Your saved isolation is no longer offered";
+			const first = info.profiles.find((profile) => profile.available)?.name;
+			choices.ignored.profile = whose === "account" ? `${what}. New agents use ${first ?? "the default"} instead.` : `${what}. Agents here use your account's default instead.`;
+		}
 	}
 	if (defaults.model !== null && models !== null) {
 		if (models.models.some((model) => model.id === defaults.model)) choices.model = defaults.model;

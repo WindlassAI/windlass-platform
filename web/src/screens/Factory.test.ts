@@ -331,11 +331,14 @@ describe("the live feed's ended items beyond its first page", () => {
 	});
 
 	it("on the usage page: a row for each item the feed carries, and how many older ended ones there are", async () => {
-		await show("/usage", { items: "many" });
+		await show("/usage#usage-items", { items: "many" });
 		const feed = await client.user(ada).itemFeed();
 		expect(feed.counts.ended).toBeGreaterThan(feed.ended.length);
 		const table = host.querySelector(".factory-cost") as HTMLElement;
-		expect(table.querySelectorAll("tbody tr").length).toBe(feed.open.length + feed.ended.length);
+		expect(table.querySelectorAll("tbody tr")).toHaveLength(10);
+		const total = feed.open.length + feed.ended.length;
+		act(() => button(`Show ${total - 10} more`).click());
+		expect(table.querySelectorAll("tbody tr")).toHaveLength(total);
 		const older = feed.counts.ended - feed.ended.length;
 		const note = host.querySelector(".factory-cost-older") as HTMLElement;
 		expect(note.textContent).toBe(`And ${older} older ended items, listed under Ended on the Factory page.`);
