@@ -4658,7 +4658,13 @@ fi`, { signal, timeoutMs: 5000 });
 			else c.log.error({ msg: "turn failed", session: meta.sessionId, turn, error: clean(error instanceof Error ? (error.stack ?? error.message) : String(error)) });
 		}
 	}
-	await active.finishNetwork?.();
+	try {
+		await active.finishNetwork?.();
+	} finally {
+		// The image outlives its source. Dispose of the build here even if its result never reaches the user actor.
+		if (meta.environmentBuild && layer) await destroySessionSandboxes(c, meta).catch(error =>
+			c.log.warn({ msg: "could not remove the environment build sandbox", error: describeError(error) }));
+	}
 	// A turn that ended before its agent's first output keeps what it measured.
 	clock?.finish();
 	if (c.vars.startClock === clock) c.vars.startClock = null;

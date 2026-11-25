@@ -19,7 +19,7 @@
  *                         and every minute while a turn runs (`holdForTurn`: WLP_E2B_TURN_LEASE_MS,
  *                         three minutes, set again every third of it) or a command outside a turn
  *                         takes long (cloning a repository). A server that crashes stops vouching, and
- *                         every sandbox it was using is paused within three minutes.
+ *                         its session sandboxes pause and its disposable environment builders are killed.
  *   The cap               No more than WLP_E2B_MAX_RUNNING sandboxes of the deployment run at once
  *                         (default 3; the Hobby plan itself allows 10). It is counted from E2B's own
  *                         list of the deployment's running sandboxes before a sandbox is created or
@@ -90,7 +90,7 @@ import { DNS_LOG, DNS_LOG_BYTES, type E2bNetwork, blockedLookups, guestDnsArgv, 
 import { type EgressMode, HOSTED_SIZE_SPECS, type HostedSize, type HostedSizeOption, isHostedSize, outOfMemoryWords } from "../../contract.js";
 
 /** The metadata keys of a sandbox of the platform. */
-export const META = { deployment: "wlp_deployment", uid: "wlp_uid", session: "wlp_session", profile: "wlp_profile", network: "wlp_network", size: "wlp_size" } as const;
+export const META = { deployment: "wlp_deployment", uid: "wlp_uid", session: "wlp_session", profile: "wlp_profile", network: "wlp_network", size: "wlp_size", environmentBuild: "wlp_environment_build" } as const;
 
 /** The size a sandbox was made in, from its metadata: none recorded is small, as before sizes. */
 export function sandboxSize(metadata: Record<string, string>): HostedSize {
@@ -687,7 +687,10 @@ export class E2bSandboxes implements Sandboxes {
 		if (!NAME.test(uid)) return [];
 		const found = await this.client.list({ metadata: { [META.deployment]: this.settings.deployment, [META.uid]: uid } });
 		// The filter is E2B's; a sandbox is only taken for this user's when its own metadata says so too.
-		return found.filter((info) => info.metadata[META.deployment] === this.settings.deployment && info.metadata[META.uid] === uid).map((info) => ({ id: info.sandboxId, sessionId: info.metadata[META.session] ?? "", state: info.state }));
+		return found.filter((info) => info.metadata[META.deployment] === this.settings.deployment && info.metadata[META.uid] === uid).map((info) => ({
+			id: info.sandboxId, sessionId: info.metadata[META.session] ?? "", state: info.state,
+			...((info.metadata[META.environmentBuild] === "true" || info.metadata[SNAP_META.candidate]) && { buildStartedAt: info.startedAt }),
+		}));
 	}
 
 	profiles(): SandboxProfile[] {
@@ -869,14 +872,20 @@ export class E2bSandboxes implements Sandboxes {
 		const template = templateFor(this.settings, size, !!input.screenshots, input.harness);
 		// A post-setup snapshot of this user and repository, when the session asks for one and one fits (snapshots.ts). Of this size's template only: a snapshot starts sandboxes of its own size.
 		const selected = !input.harness && input.fromSnapshot && this.snapshotStore ? await this.snapshotStore.select(input.fromSnapshot, input.uid, input.profile, !!input.screenshots, size).catch(() => null) : null;
+		const build = input.environmentBuild || !!selected?.metadata[SNAP_META.candidate];
+		const metadata = {
+			[META.deployment]: this.settings.deployment, [META.uid]: input.uid, [META.session]: input.sessionId.slice(0, 200), [META.profile]: input.profile, [META.size]: size,
+			...(network.mode === "open" ? {} : { [META.network]: network.mode }), ...(selected?.metadata ?? {}),
+			...(build && { [META.environmentBuild]: "true" }),
+		};
 		let connection: E2bConnection;
 		try {
 			connection = await this.client.create({
 				template: selected?.template ?? template,
 				timeoutMs: this.settings.idleTimeoutMs,
-				metadata: { [META.deployment]: this.settings.deployment, [META.uid]: input.uid, [META.session]: input.sessionId.slice(0, 200), [META.profile]: input.profile, [META.size]: size, ...(network.mode === "open" ? {} : { [META.network]: network.mode }), ...(selected?.metadata ?? {}) },
+				metadata,
 				envs: SANDBOX_ENVS,
-				onTimeout: this.settings.pause ? "pause" : "kill",
+				onTimeout: this.settings.pause && !build ? "pause" : "kill",
 				...(config === null ? {} : { network: config }),
 			});
 		} catch (error) {
@@ -1037,7 +1046,14 @@ export class E2bSandboxes implements Sandboxes {
 
 	async suspend(id: string): Promise<void> {
 		const info = await this.ours(id);
-		if (info === undefined || info.state !== "running") return;
+		if (info === undefined) return;
+		if (info.metadata[META.environmentBuild] === "true") {
+			await this.client.kill(id);
+			this.ended(info, "killed", "the environment build has no workspace to keep");
+			this.forget(id);
+			return;
+		}
+		if (info.state !== "running") return;
 		if (!this.settings.pause) {
 			// Said plainly, each time: without a pause there is nothing to come back to.
 			await this.client.kill(id);

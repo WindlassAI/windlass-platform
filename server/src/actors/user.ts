@@ -182,7 +182,7 @@ import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, type 
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/e2b/network.js";
 import { readE2bSettings } from "../sandbox/e2b/config.js";
-import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
+import { BUILD_LOST_MS, ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, type EnvironmentHost } from "./user-environments.js";
 import type { EnvironmentBuildOrigin, EnvironmentBuildReport } from "./internal.js";
 import { customerDirectory } from "../billing/customer-index.js";
@@ -983,6 +983,10 @@ function releaseKept(c: UsageCtx, session: string) {
 	return changeUsage(c, (book) => ({ change: book.release(session) }));
 }
 
+function keepsWorkspace(session: SessionSummary | undefined): boolean {
+	return session !== undefined && !session.environmentBuild;
+}
+
 /**
  * Holds the count of kept sandboxes against the provider's own list of the user's sandboxes (usage.ts,
  * `reconcile`): at most once in KEPT_FRESH_MS, unless `force`. Never throws: when the provider cannot
@@ -994,15 +998,22 @@ async function reconcileKept(c: UsageCtx, force = false): Promise<void> {
 	try {
 		const { sandboxes } = await getLayer();
 		const found = await sandboxes.list(c.key[0]!);
-		// A sandbox whose session this user no longer has (deleted, or lost with an older deployment) is an orphan: nobody
-		// can use or free it from a page, so it is removed, and it holds no place meanwhile. A session's own sandboxes are
-		// the session's to sweep (agent-session.ts `sweepSandboxes`). Reviewers are among the sessions, hidden or not.
-		const orphans = found.filter((sandbox) => sandbox.sessionId !== "" && !c.vars.sessions.has(sandbox.sessionId));
-		const listed = found.filter((sandbox) => !orphans.includes(sandbox));
-		for (const orphan of orphans) {
-			await sandboxes.destroy(orphan.id).then(
-				() => console.warn(`[wlp] sandbox.orphan_removed uid=${c.key[0]} id=${orphan.id} session=${orphan.sessionId} state=${orphan.state}: its session no longer exists`),
-				(error: unknown) => c.log.warn({ msg: "an orphaned sandbox could not be removed", id: orphan.id, session: orphan.sessionId, error: String(error) }),
+		const listed: ListedSandbox[] = [];
+		for (const sandbox of found) {
+			const session = c.vars.sessions.get(sandbox.sessionId);
+			// A session keeps its own workspace, including one that used a snapshot.
+			if (keepsWorkspace(session)) {
+				listed.push(sandbox);
+				continue;
+			}
+			const buildStartedAt = sandbox.buildStartedAt ?? session?.createdAt;
+			if (buildStartedAt !== undefined) {
+				if (Date.now() - buildStartedAt < BUILD_LOST_MS) continue;
+			} else if (!sandbox.sessionId) continue;
+			const why = buildStartedAt === undefined ? "its session no longer exists" : "its environment build expired";
+			await sandboxes.destroy(sandbox.id).then(
+				() => console.warn(`[wlp] sandbox.orphan_removed uid=${c.key[0]} id=${sandbox.id} session=${sandbox.sessionId} state=${sandbox.state}: ${why}`),
+				(error: unknown) => c.log.warn({ msg: "an orphaned sandbox could not be removed", id: sandbox.id, session: sandbox.sessionId, error: String(error) }),
 			);
 		}
 		if (generation !== c.vars.keptGeneration) return reconcileKept(c, force);
@@ -1011,7 +1022,8 @@ async function reconcileKept(c: UsageCtx, force = false): Promise<void> {
 		const done = await changeUsage(c, (book) =>
 			book.reconcile(
 				now,
-				listed.map((sandbox) => sandbox.sessionId).filter((session) => session !== ""),
+				listed.map((sandbox) => sandbox.sessionId),
+				id => keepsWorkspace(c.vars.sessions.get(id)),
 			),
 		);
 		// A count that was wrong means a sandbox was made or removed without this actor being told: worth a look.
@@ -3300,7 +3312,6 @@ export const user = actor({
 			const session = approvalText(input?.sessionId, 200);
 			if (id === "" || session === "") throw new UserError("A hold needs an id and a session.", { code: "bad_input" });
 			const settle = typeof input.settle?.hold === "string" && typeof input.settle.seconds === "number" ? { hold: input.settle.hold, seconds: input.settle.seconds, observedUntil: input.settle.observedUntil } : undefined;
-			const keep = input.keep === true;
 			const renewal = input.fresh !== true && settle !== undefined;
 			if (reserveFault) {
 				if (input.fresh && reserveFault.delayMs) await new Promise((done) => setTimeout(done, reserveFault.delayMs));
@@ -3310,13 +3321,15 @@ export const user = actor({
 					throw new Error("the user's actor is away (WLP_FAKE_RESERVE_FAULT)");
 				}
 			}
-			// A session that is being deleted is given nothing new.
-			if (!c.vars.sessions.has(session)) return { ok: false, reason: "gone", numbers: c.vars.usage.numbers(Date.now()) };
-			if (keep) await reconcileKept(c, c.vars.usage.atCap(session));
+			if (input.keep === true) await reconcileKept(c, c.vars.usage.atCap(session));
 
 			const now = Date.now();
-			const size = isHostedSize(input.hostedSize) ? input.hostedSize : c.vars.sessions.get(session)?.hostedSize;
-			const clampedSize = keep ? clampedSandboxSize(c, size) : undefined;
+			// Recheck the session after the provider listing, in case it was deleted meanwhile.
+			const summary = c.vars.sessions.get(session);
+			if (!summary) return { ok: false, reason: "gone", numbers: c.vars.usage.numbers(now) };
+			const keep = input.keep === true && keepsWorkspace(summary);
+			const size = isHostedSize(input.hostedSize) ? input.hostedSize : summary.hostedSize;
+			const clampedSize = input.keep === true ? clampedSandboxSize(c, size) : undefined;
 			const weight = size ? sessionWeight({ hostedSize: clampedSize ?? size }) : undefined;
 			const done = await changeUsage(c, (book) => book.reserve(now, { id, session, keep, weight, fresh: input.fresh === true, settle }));
 			const numbers = c.vars.usage.numbers(now);
@@ -3341,6 +3354,8 @@ export const user = actor({
 		internalClaimPlace: async (c, sessionId: string, hostedSize?: HostedSize): Promise<{ ok: boolean; clampedSize?: HostedSize; numbers: UsageNumbers } | { ok: false; reason: "gone" }> => {
 			requireService(c);
 			const session = approvalText(sessionId, 200);
+			if (c.vars.sessions.get(session)?.environmentBuild)
+				return { ok: true, clampedSize: clampedSandboxSize(c, hostedSize), numbers: c.vars.usage.numbers(Date.now()) };
 			await reconcileKept(c, c.vars.usage.atCap(session));
 			// From the check to the claim nothing is awaited: a session being deleted is given nothing new.
 			if (!c.vars.sessions.has(session)) return { ok: false, reason: "gone" };
