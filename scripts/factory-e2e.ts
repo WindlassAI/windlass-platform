@@ -1067,6 +1067,7 @@ async function memoryChecks(): Promise<void> {
 	const { FACTORY_DEFAULTS } = await import("../server/src/factory/budget.js");
 	const { serviceParams } = await import("../server/src/auth.js");
 	const { INBOX_TABLES, flushOutbox, inboxRow, queueMessage, receive, sendOutbox, withdrawWaiting } = await import("../server/src/actors/session-inbox.js");
+	const { MODEL_PROVIDER_TABLES } = await import("../server/src/model-providers.js");
 	const { ITEM_TABLES, itemActions, loadItems, queueChanged } = await import("../server/src/actors/user-items.js");
 	const { config } = await import("../server/src/config.js");
 	const { UsageBook } = await import("../server/src/usage.js");
@@ -1685,7 +1686,7 @@ async function memoryChecks(): Promise<void> {
 		const { db } = memory;
 		const previous = { ...config.factory };
 		Object.assign(config.factory, limits);
-		for (const table of ITEM_TABLES) await db.execute(table);
+		for (const table of [...ITEM_TABLES, ...MODEL_PROVIDER_TABLES]) await db.execute(table);
 		const session = (id: string, item: boolean) => ({ id, status: "idle", sandbox: "none", place: { kind: "hosted" }, ...(item ? { item: { id: `i_${id}` } } : {}) });
 		const sessions = new Map([...["a", "b", "c"].map((id) => [id, session(id, true)] as const), ["own", session("own", false)] as const]);
 		const grants: string[] = [];
@@ -2343,7 +2344,9 @@ async function machineChecks(): Promise<void> {
 			setCi(harbor, standin.pulls.find(p => p.repository === harbor.id && p.number === pushed.pullRequest!.number)!.head, "success");
 			const review = await untilItem(user, item.id, "review after reconnection", view => view.state === "review", CI_WAIT_MS);
 			assert([...runner.boxes.values()].some(box => box.sessionId === item.sessionId && box.profile === "docker-windlass-sandbox"), "missing fallback to the machine's first available profile");
-			assert(review.reviewerSessionId === null && review.review?.state === "off" && review.reviews.length === 0, "a machine item admitted a second reviewer");
+			assert(review.reviewerSessionId, "missing machine reviewer");
+			const reviewer = await client.agentSession.get([auth.profile.uid, review.reviewerSessionId], { params: { token: auth.token } }).snapshot();
+			assert(reviewer.summary.place.kind === "machine" && reviewer.summary.place.machineId === place.machineId, "reviewer left the builder’s machine");
 			assert(review.spent.turns === 1 && review.spent.hostedSeconds === 0, JSON.stringify(review.spent));
 			return waiting.wait.sentence;
 		});
