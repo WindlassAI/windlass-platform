@@ -11,11 +11,18 @@ import { createSessionStore, type SessionState } from "./sessionStore";
 /** Refresh the checked model catalogs when returning from Settings. */
 export const PROVIDERS_CHANGED = "wlp-model-providers-changed";
 
-function watchModelChanges(refresh: () => void) {
+function watchModelChanges(read: (isCurrent: () => boolean) => void) {
+	// Ignore replies superseded by a refresh or by unmounting.
+	let version = 0;
+	const refresh = () => {
+		const request = ++version;
+		read(() => request === version);
+	};
 	refresh();
 	window.addEventListener("focus", refresh);
 	window.addEventListener(PROVIDERS_CHANGED, refresh);
 	return () => {
+		version++;
 		window.removeEventListener("focus", refresh);
 		window.removeEventListener(PROVIDERS_CHANGED, refresh);
 	};
@@ -27,22 +34,16 @@ export function useHostedProviders(enabled = true) {
 	const [providers, setProviders] = useState<ModelProviderStatus[] | null>(null);
 	useEffect(() => {
 		if (!enabled) return;
-		let version = 0;
-		const refresh = () => {
-			const mine = ++version;
-			client.user(auth).modelProviders().then(rows => { if (mine === version) setProviders(rows); },
-				() => { if (mine === version) setProviders([]); });
-		};
-		const stop = watchModelChanges(refresh);
-		return () => {
-			version++;
-			stop();
-		};
+		return watchModelChanges(isCurrent => {
+			client.user(auth).modelProviders().then(
+				rows => { if (isCurrent()) setProviders(rows); },
+				() => { if (isCurrent()) setProviders([]); },
+			);
+		});
 	}, [client, auth, enabled]);
 	return providers;
 }
 
-/** The current time, refreshed every `intervalMs` while mounted. */
 export function useNow(intervalMs: number, active = true): number {
 	const [now, setNow] = useState(() => Date.now());
 	useEffect(() => {
@@ -64,20 +65,17 @@ export interface SessionsState {
 export interface AccountState {
 	/** Null until it was read, and when it could not be. */
 	settings: AccountSettings | null;
-	/** Why it could not be read. */
 	error: string | null;
 	reading: boolean;
-	/** Reads it again. */
 	reload(): void;
-	/** Takes the settings as an action answered them. */
 	replace(settings: AccountSettings): void;
 }
 
-/** What the user keeps for their account, whatever the repository: read when the screen opens. */
 export function useAccount(): AccountState {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const [state, setState] = useState<{ settings: AccountSettings | null; error: string | null; reading: boolean }>({ settings: null, error: null, reading: true });
+	const [state, setState] = useState<Pick<AccountState, "settings" | "error" | "reading">>({ settings: null, error: null, reading: true });
+	// A saved replacement also invalidates reads already in flight.
 	const asked = useRef(0);
 
 	const reload = useCallback(() => {
@@ -109,39 +107,26 @@ export function useAccount(): AccountState {
 export interface ModelsState {
 	/** Null until it was read, and when it could not be. */
 	list: ModelList | null;
-	/** Why it could not be read. */
 	error: string | null;
 	reading: boolean;
 }
 
-/**
- * The models the user may choose and the efforts of each: read when a screen that offers them opens.
- * The server keeps the list for an hour and answers within a few seconds whatever ChatGPT does, with
- * the plan's list or a stand-in, and says which.
- */
 export function useModels(): ModelsState {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [state, setState] = useState<ModelsState>({ list: null, error: null, reading: true });
 	useEffect(() => {
-		let version = 0;
 		setState({ list: null, error: null, reading: true });
-		const stop = watchModelChanges(() => {
-			const mine = ++version;
+		return watchModelChanges(isCurrent => {
 			client.user(auth).models().then(
-				list => mine === version && setState({ list, error: null, reading: false }),
-				(failure: unknown) => mine === version && setState({ list: null, error: explain(failure), reading: false }),
+				list => isCurrent() && setState({ list, error: null, reading: false }),
+				(failure: unknown) => isCurrent() && setState({ list: null, error: explain(failure), reading: false }),
 			);
 		});
-		return () => {
-			version++;
-			stop();
-		};
 	}, [client, auth, explain]);
 	return state;
 }
 
-/** The user's sessions, live. */
 export function useSessions(): SessionsState {
 	const { client, explain } = useApp();
 	const auth = useAuth();
@@ -204,7 +189,6 @@ export function useFactoryLimits(enabled = true): { value: FactoryLimits | null;
 	return limits;
 }
 
-/** One session, live: its store is opened on mount and closed on unmount. */
 export function useSession(sessionId: string): SessionState {
 	const { client, explain } = useApp();
 	const auth = useAuth();
@@ -217,14 +201,9 @@ export function useSession(sessionId: string): SessionState {
 	return state;
 }
 
-/** How often the numbers are asked for again while they are shown: a running sandbox moves them. */
 const ALLOWANCE_EVERY_MS = 60_000;
 
-/**
- * Today's sandbox time and the count of kept sandboxes: asked when the screen opens, every minute
- * after that, and whenever `key` changes (a turn ended, a prompt was refused). Null until they are
- * known and when they cannot be read: the screens then say nothing rather than something stale.
- */
+/** Refresh after a turn or refusal, and while running time accrues. Hide stale figures after a failed read. */
 export function useAllowance(key: unknown = 0, enabled = true): UsageNumbers | null {
 	const { client } = useApp();
 	const auth = useAuth();
@@ -251,7 +230,6 @@ export function useAllowance(key: unknown = 0, enabled = true): UsageNumbers | n
 	return numbers;
 }
 
-/** What is left of today's allowance for a new turn, as the screens say it. */
 export type AllowanceState =
 	/** No limit, or enough left to say nothing. */
 	| "plenty"
@@ -269,10 +247,7 @@ export function allowanceState(numbers: UsageNumbers | null, lowShare: number): 
 	return numbers.leftSeconds < numbers.allowanceSeconds * lowShare ? "low" : "plenty";
 }
 
-/**
- * The catalogs of every agent the user's machines report, fetched once per digest: the models and
- * efforts a subtask's agent may choose there, as the server checks a child's session against them.
- */
+/** Fetch each machine catalog once per digest. */
 export function useCatalogs(machines: readonly MachineSummary[] | null): Catalogs {
 	const { client } = useApp();
 	const auth = useAuth();
