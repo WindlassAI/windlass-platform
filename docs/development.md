@@ -80,66 +80,25 @@ Without Docker, `WLP_SANDBOX=fake scripts/dev.sh` runs in-memory sandboxes that 
 | `web/` | The web app (Vite, React); `src/api/rivet.ts` is the real client, `src/api/connection.ts` where it gets its connection and renews its token, `src/api/mock.ts` the mock; `src/site/` the public pages, prerendered by `site-build.ts` ([Public pages](#public-pages)) |
 | `fixtures/windlass-events/` | Recorded Windlass events, used by the fake layer, the mock and the reducer's tests |
 | `fixtures/mcp-repo/` | A small repository whose `.windlass/config.json` names an MCP server, and the server (Python, nothing else), for `scripts/mcp-check.ts` |
-| `scripts/` | `dev.sh`, `e2e.ts` (the actors), `sandbox-check.ts` (the sandbox layer), `signin-check.ts` (the sign-ins), `connection-check.ts` and `connection-e2e.ts` (what browsers connect with, and its renewal), the stand-ins the checks use (`github-standin.ts`; `runner-fake.ts` and `runner-stub-server.ts` for a runner and for the platform), `readme-shots.mjs` (the README's screenshots, from the mock), and the checks listed under "Checks" |
+| `scripts/` | `dev.sh`, `e2e.ts` (the actors), `sandbox-check.ts` (the sandbox layer), `signin-check.ts` (the sign-ins), `connection-check.ts` and `connection-e2e.ts` (what browsers connect with, and its renewal), the stand-ins the checks use (`github-standin.ts`; `runner-fake.ts` and `runner-stub-server.ts` for a runner and for the platform), `readme-shots.mjs` (the README's screenshots, from the mock), and the [check catalogue](testing.md#the-checks-by-what-they-need) |
 
 ## Checks
 
-Run each TypeScript check from the project root with `cd server && npx tsx ../scripts/<name>.ts [flags]`.
-Existing commands using `../scripts/locked.sh <check>.ts` from `server/` still run the same check directly.
-The `pnpm e2e` and `pnpm e2e:docker` commands in `server/` are shortcuts for the actor checks.
+Start with [AGENTS.md](../AGENTS.md#if-you-change-x-run-y) for the typechecks and case selectors.
+[Testing](testing.md#the-checks-by-what-they-need) lists the checks, CI groups and prerequisites.
+For example, check the repository setup-command rules from the repository root:
 
 ```sh
-pnpm -r typecheck
-pnpm --filter @windlass-platform/web test                         # the timeline reducer against every fixture; the connection and its renewal
-cd server && npx tsx ../scripts/e2e.ts                            # the actors, fake sandboxes
-cd server && WLP_SANDBOX=docker npx tsx ../scripts/e2e.ts         # the actors, real containers
-cd server && npx tsx ../scripts/sandbox-check.ts                  # the sandbox layer on its own
-cd server && npx tsx ../scripts/mcp-check.ts                      # the question about a project's MCP server, against a real Windlass
-cd server && npx tsx ../scripts/setup-check.ts                    # a repository's setup command: its rules, no server and no Docker
-cd server && npx tsx ../scripts/usage-check.ts                    # sandbox time and kept sandboxes: their rules, no server and no Docker
-cd server && npx tsx ../scripts/secrets-check.ts                  # a repository's secrets: its rules, no server and no Docker
-cd server && npx tsx ../scripts/repository-check.ts               # a repository's defaults: its rules and saves that interleave, no server and no Docker
-cd server && npx tsx ../scripts/verified-check.ts                 # a repository's checks and what a pull request says was verified: the rules, no server and no Docker
-cd server && npx tsx ../scripts/verified-check.ts --docker        # and the same against a real Windlass
-cd server && npx tsx ../scripts/account-check.ts                  # the account's settings: defaults, own MCP servers and their secrets, no server and no Docker
-cd server && npx tsx ../scripts/idempotency-check.ts              # a message sent twice: with and without a key, through the actors on fake sandboxes, on ports of its own
-cd server && npx tsx ../scripts/models-check.ts                   # a user's models: the list's rules, and the real `windlass --models` against a stand-in for the provider
-cd server && npx tsx ../scripts/signin-check.ts                   # the sign-in machinery without Docker, against a stand-in for OpenAI; its last section starts a server of its own on OS-assigned ports
-cd server && npx tsx ../scripts/connection-check.ts               # the tokens browsers connect with: a stand-in for the engine
-cd server && npx tsx ../scripts/access-check.ts                   # who may sign in: the invitation list and the demo
-cd server && npx tsx ../scripts/web-stage-check.ts                # the image's web stage copies every shared file Vite loads
-cd server && npx tsx ../scripts/web-files-check.ts                # the web app's files as the server serves them
-cd server && npx tsx ../scripts/connection-e2e.ts                 # the web app's client through an engine whose tokens run out
-cd server && npx tsx ../scripts/harness-check.ts                  # recorded ACP agent interactions
-cd server && npx tsx ../scripts/attachments-check.ts              # work item attachments
-cd server && npx tsx ../scripts/review-check.ts                   # the report tool
-cd server && npx tsx ../scripts/reviewer-task-check.ts            # reviewer task text
-cd server && npx tsx ../scripts/shot-check.ts                     # screenshot helper; --docker exercises the browser
-cd server && npx tsx ../scripts/github-check.ts                   # GitHub stand-in and git operations
-cd server && npx tsx ../scripts/webhook-check.ts                  # GitHub webhook delivery and retries
-cd server && npx tsx ../scripts/backup-check.ts                   # backup and restore with a stand-in bucket
-cd server && npx tsx ../scripts/e2b-provider-test.ts              # E2B provider with its in-memory client
-cd server && npx tsx ../scripts/e2b-check.ts                      # live E2B; requires E2B_API_KEY
-cd server && npx tsx ../scripts/e2b-backup-check.ts               # live E2B and bucket; requires both configurations
+cd server && npx tsx ../scripts/setup-check.ts
 ```
 
-The machine and work item checks use the same command. `runner-check.ts` builds its own runner from
-the pinned sandbox, or uses the image named by `WLP_RUNNER_CHECK_IMAGE`.
+From `server/`, `pnpm e2e` targets fake sandboxes and `pnpm e2e:docker` uses real containers.
+`../scripts/locked.sh <check>.ts` also runs an individual check directly.
+For image-backed checks, `verified-check.ts --docker` and `shot-check.ts --docker` exercise real sandboxes.
+`runner-check.ts` builds from the pinned sandbox unless `WLP_RUNNER_CHECK_IMAGE` supplies the image.
+Live E2B checks require `E2B_API_KEY`, and `e2b-backup-check.ts` also requires bucket configuration.
 
-```sh
-cd server && npx tsx ../scripts/runner-protocol-check.ts          # the runner channel under the failures it will meet, on loopback sockets and a clock moved by hand
-cd server && npx tsx ../scripts/runner-control-check.ts           # the control socket's frames: input that is not a frame, every refusal readable by a runner, a second runner with one key
-cd server && npx tsx ../scripts/http-limits-check.ts               # public HTTP limits, two nodes, real tokens and signed deliveries
-cd server && npx tsx ../scripts/machine-check.ts                  # pairing, keys, removal and the 90-day expiry, through the real routes and actors, a second node and the runner's own control loop
-cd server && npx tsx ../scripts/runner-e2e.ts                     # sessions on a machine through the real server and actors, with a runner stood in for in the process; no Docker
-cd server && npx tsx ../scripts/runner-socket-probe.ts            # one throwaway actor on a local engine
-cd server && npx tsx ../scripts/factory-check.ts                  # work items' sequence, verdicts and budgets as tables of facts, and the reader of CI against the GitHub stand-in
-cd server && npx tsx ../scripts/factory-e2e.ts                    # work items through the real actors on fake sandboxes and the GitHub stand-in
-cd server && npx tsx ../scripts/runner-check.ts                   # the real runner in real containers, against a stand-in of the platform and the real routes: pairing, outages, refusals, prune
-```
-
-`pnpm test` runs the factory, core, usage and resume shards in sequence. [testing.md](testing.md)
-maps the scripts to CI jobs and branch triggers. The following checks need additional local services or images.
+The following checks need additional local services or images.
 
 ```sh
 cd server && pnpm exec tsx ../scripts/claude-relay-docker-check.mjs sha256:<local Claude image id>   # the credential relay in real containers (sandbox/relay/README.md)
