@@ -1,55 +1,6 @@
-/**
- * Sandboxes on E2B: one microVM per agent session, made from the template sandbox/e2b/ builds from the
- * Docker image's own Dockerfile. Any server machine of a deployment reaches any of them by its id, so
- * nothing here is kept on one machine that another would need: what a sandbox is, whose it is and
- * whether it runs is asked of E2B every time (`E2bClient`, client.ts).
- *
- * Commands run through E2B's command API as `wlp-run exec <tag> …`, the same helper as in a container
- * (sandbox/wlp-run): every process of a run carries its tag, so a stop reaches all of them with a
- * second command. E2B's API takes a command as one string for a shell, so an argv is quoted
- * (`shellQuote`), and a value never becomes part of the string: it goes in as an argument or in the
- * environment.
- *
- * Keeping the use of E2B small is part of the provider, not an afterthought:
- *
- *   The dead-man switch   A sandbox has a timeout of its own, kept at E2B, and when it runs out E2B
- *                         pauses the sandbox by itself (`onTimeout: "pause"`: files and memory are
- *                         kept, nothing is billed). The timeout is short (WLP_E2B_IDLE_TIMEOUT_MS, two
- *                         minutes) and is only ever pushed out by a server that is alive: on `connect`,
- *                         and every minute while a turn runs (`holdForTurn`: WLP_E2B_TURN_LEASE_MS,
- *                         three minutes, set again every third of it) or a command outside a turn
- *                         takes long (cloning a repository). A server that crashes stops vouching, and
- *                         its session sandboxes pause and its disposable environment builders are killed.
- *   The cap               No more than WLP_E2B_MAX_RUNNING sandboxes of the deployment run at once
- *                         (default 3; the Hobby plan itself allows 10). It is counted from E2B's own
- *                         list of the deployment's running sandboxes before a sandbox is created or
- *                         resumed, and again after: one that turns out to be one too many (two servers
- *                         looked at the same moment) is taken back at once. So the cap holds however
- *                         many servers there are, with no state shared between them.
- *   Metadata              Every sandbox carries `wlp_deployment`, `wlp_uid`, `wlp_session` and
- *                         `wlp_profile`. A sandbox without this deployment's mark is not one of ours:
- *                         it is never connected to, paused or killed (scripts/e2b-cleanup.ts lists and
- *                         removes the deployment's by the same mark).
- *   Suspend and destroy   `suspend` pauses (E2B keeps a paused sandbox without limit and bills nothing
- *                         for it, on the Hobby plan too), `destroy` kills. With WLP_E2B_PAUSE=0, for an
- *                         account that cannot pause, both the timeout and `suspend` kill instead, and
- *                         the session's files and its Windlass session are lost each time: a log line
- *                         says so when it happens.
- *   The plan's hour       A Hobby sandbox may run one hour without a pause (WLP_E2B_MAX_RUNTIME_MS). A
- *                         turn may take 45 minutes, so before a turn starts in a sandbox that has not
- *                         enough of its hour left, the sandbox is paused and resumed, which starts the
- *                         hour again (https://docs.e2b.dev/sandbox/persistence.md, "Continuous runtime limits").
- *   What it cost          When a sandbox stops running through this server (paused, killed), one line
- *                         says how long it ran and what that costs by E2B's published prices
- *                         (pricing.ts). An estimate: the time is this server's measurement.
- *
- * Windlass's data directory (session logs, memory, the turn's access token file) is on the microVM's
- * own disk, at the same path as in a container. No volume: E2B's volumes are a private beta in which
- * file locks can hang, and Windlass keeps SQLite databases there. So a session's Windlass state lives
- * and dies with its sandbox (`sessionsLiveInSandbox`), and nothing of one session is visible to another,
- * also not the token file of a turn of the same user.
- */
+/** E2B owns the session disk and enforces its idle lease. Only manage sandboxes tagged for this deployment; hold the lease while a turn or long command runs. */
 
+import { runCommand } from "../command.js";
 import { readsModelRelay, SETTINGS_KEY_WINDLASS } from "../../model-relay-url.js";
 import { INIT_WORKSPACE } from "../../github/git-flags.js";
 import { hostedProfiles, machineHarnesses } from "../harnesses.js";
@@ -108,8 +59,6 @@ export function sandboxNetwork(metadata: Record<string, string>): EgressMode {
 
 /** E2B's sandbox ids are short strings of letters and digits; anything else was never one. */
 const SANDBOX_ID = /^[A-Za-z0-9_-]{1,64}$/;
-const STDOUT_CAP = 4 * 1024 * 1024;
-const STDERR_CAP = 256 * 1024;
 /** A template's own environment is only set while it is built, so what the Dockerfile's ENV gives a container is given here to every command. */
 const SANDBOX_ENVS = { LANG: "C.UTF-8", NO_COLOR: "1" };
 /** How often a refused pause is tried, and how long apart (E2B: "retry the pause after a short wait"). */
@@ -149,11 +98,6 @@ const METRICS_LOOKBACK_MS = 24 * 60 * 60_000;
 const METRICS_LAST = 20;
 /** The guest's own count of processes its kernel killed for memory, and its memory: read as root, a fixed script. */
 const GUEST_MEMORY_SCRIPT = `awk '/^oom_kill /{k=$2} END{print "oom_kill", k+0}' /proc/vmstat; awk '/^MemTotal:/{print "total_kib", $2}' /proc/meminfo`;
-
-function within<T>(promise: Promise<T>, ms: number): Promise<boolean> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	return Promise.race([promise.then(() => true), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), ms)))]).finally(() => clearTimeout(timer));
-}
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
 
@@ -384,88 +328,20 @@ export class E2bSandboxHandle implements TurnSandbox {
 		};
 	}
 
-	/** Runs argv under wlp-run to its end, with stdin, streaming, timeout and a stop that reaches the sandbox. The same steps as on Docker (sandboxes.ts). */
 	exec(argv: string[], options: ExecOptions = {}): Promise<InternalExecResult> {
-		if (options.signal?.aborted) return Promise.resolve({ exitCode: null, timedOut: false, aborted: true, stdout: "", stderr: "", killed: false, stopLog: [], leftovers: 0 });
-		let stdout = "";
-		let stderr = "";
-		const run = this.start(argv, {
-			gitUser: options.gitUser,
-			cwd: options.cwd,
-			env: options.env,
-			secretEnv: options.secretEnv,
-			onStdout: (text) => {
-				if (stdout.length < STDOUT_CAP) stdout += text.slice(0, STDOUT_CAP - stdout.length);
-				options.onStdout?.(text);
-			},
-			onStderr: (text) => {
-				stderr = (stderr + text).slice(-STDERR_CAP);
-				options.onStderr?.(text);
-			},
-		});
-		if (options.stdin !== undefined && options.stdin !== "") run.write(options.stdin);
-		run.closeStdin();
-		// A command that takes long (cloning a repository) would outlast the sandbox's short timeout, which only a
-		// `connect` or a turn pushes out. One that is still running after a third of that timeout is vouched for like
-		// a turn, until it ends. Short commands, which are nearly all, cost E2B no extra request.
+		return runCommand(this, argv, options, "stopped listening to the command", () => this.holdLongCommand());
+	}
+
+	private holdLongCommand(): () => Promise<void> {
+		// Short commands finish before the first hold and cost no extra E2B request.
 		let holding: Promise<() => Promise<void>> | null = null;
-		const holdTimer = setTimeout(() => {
+		const timer = setTimeout(() => {
 			holding = this.owner.holdFor(this, { refresh: false }).catch(() => async () => {});
 		}, this.owner.holdCommandsAfterMs);
-		const letGo = async () => {
-			clearTimeout(holdTimer);
-			if (holding !== null) await (await holding)();
+		return async () => {
+			clearTimeout(timer);
+			if (holding) await (await holding)();
 		};
-
-		let stopping: Promise<void> | null = null;
-		let timedOut = false;
-		let aborted = false;
-		let killed = false;
-		const stopLog: string[] = [];
-		// SIGTERM to every process of the run, then SIGKILL after a grace period.
-		const stop = () => {
-			if (stopping !== null) return;
-			const began = Date.now();
-			const note = (text: string) => stopLog.push(`${text} at +${Date.now() - began}ms`);
-			stopping = (async () => {
-				note("SIGTERM to every process of the run");
-				await run.signal("TERM", "all");
-				if (await within(run.ended, 2000)) return;
-				note("SIGKILL to every process of the run");
-				killed = true;
-				await run.signal("KILL", "all");
-				if (await within(run.ended, 3000)) return;
-				note("stopped listening to the command");
-				run.killClient();
-			})();
-		};
-		const onAbort = () => {
-			aborted = true;
-			stop();
-		};
-		options.signal?.addEventListener("abort", onAbort, { once: true });
-		const timer =
-			options.timeoutMs === undefined
-				? undefined
-				: setTimeout(() => {
-						timedOut = true;
-						stop();
-					}, options.timeoutMs);
-
-		return run.ended
-			.then(async (end) => {
-				if (timer) clearTimeout(timer);
-				options.signal?.removeEventListener("abort", onAbort);
-				if (end.error !== null) throw end.error;
-				if (stopping !== null) await stopping;
-				const stopped = stopping !== null;
-				// What a stopped run left behind is given a moment to go, then killed.
-				const leftovers = await this.sweep(run.tag, { waitMs: stopped ? 2000 : 0 });
-				// Killed by a signal: no exit code.
-				const exitCode = killed || end.signal !== null || (stopped && end.code !== null && end.code > 128) ? null : end.code;
-				return { exitCode, timedOut, aborted, stdout, stderr, killed, stopLog, leftovers };
-			})
-			.finally(letGo);
 	}
 
 	/**
