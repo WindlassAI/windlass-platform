@@ -831,16 +831,15 @@ a.agent-group-name:hover .agent-group-owner {
 .setup-weekly input:checked {
 	background: radial-gradient(circle at 19px center, var(--ink) 4.5px, var(--bg) 5.5px);
 }
-.setup-score {
+.setup-summary {
+	display: grid;
+	gap: 4px;
 	padding-block: 8px;
 }
 .readiness-group {
 	margin-block: 10px;
 }
-.readiness-group h3 {
-	color: var(--ink-dim);
-	font: 500 var(--size-mono-small) var(--font-mono);
-}
+.setup-summary p { margin: 0; }
 .readiness-group li {
 	display: grid;
 	grid-template-columns: 7ch 1fr auto;

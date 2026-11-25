@@ -115,3 +115,9 @@ describe("user-facing words of the web app", () => {
 		expect(files.flatMap(offences)).toEqual([]);
 	});
 });
+
+it("keeps the retired levels and percentage rule out of repo setup", () => {
+	for (const path of ["../components/RepositorySetupChecks.tsx", "../docs/content/factory.md", "../../../server/src/factory/readiness.ts"]) {
+		expect(readFileSync(join(__dirname, path), "utf8"), path).not.toMatch(/\b(?:functional|documented|standardized)\b|80[%]/i);
+	}
+});

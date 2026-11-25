@@ -15,7 +15,7 @@ A work item runs in one of two ways:
 
 ## Repo setup
 
-Open a connected repository to see its eight setup checks. The platform reads the default branch and looks for guide files, folder guides, templates, long source files, pull request checks and protection for secrets. It also checks whether a setup command and checks are saved. This first score uses no agent time.
+Open a connected repository to see its eight setup checks. The platform reads the default branch and looks for guide files, folder guides, templates, long source files, pull request checks and protection for secrets. It also checks whether a setup command and checks are saved. **Setup N of 8** counts the checks that pass. These first checks use no agent time.
 
 Choose **Finish setup** to draft a root contributor guide with a Terms section and guides for up to eight large folders. The drafter reads the default branch and the latest matching build. It can also write up to five reusable instructions in `.agents/skills/<name>/SKILL.md`. The platform passes the drafted files and the selected, verified team notes to a separate reviewer. The reviewer can ask for files to be dropped or for one round of changes before the draft goes to the pull request. Running it again updates the open pull request. It runs where the repository's agents usually run; on your machine it uses no hosted minutes.
 
@@ -45,9 +45,13 @@ jobs:
       - run: node scripts/agents-docs-check.ts
 ```
 
-Notes are encrypted for your account and repository. You can delete them here. Selected notes are deleted when their pull request merges or closes, and all notes expire after 30 days. **Run setup checks weekly** repeats the score check each week.
+Notes are encrypted for your account and repository. You can delete them here. Selected notes are deleted when their pull request merges or closes, and all notes expire after 30 days. **Run setup checks weekly** repeats the setup checks and refreshes CI history.
 
-Each level needs at least 80% of its checks and every earlier level. The levels are Functional, Documented and Standardized. Below Documented, the planner asks for smaller, independently checkable parts. Use **File as work item** beside a failed check to create a draft with its reason.
+**CI history (30 days)** shows how often finished checks and commit statuses passed on the default branch, including CI outside GitHub Actions. The scan reads up to 200 commits and 100 workflow runs. A flaky job failed and then passed on the same commit when its workflow ran again. The summary also counts reverts and commits that failed checks after a merge. If GitHub is unavailable, the last successful result and its read time stay visible. Use **File as work item** beside a failed setup check or a flaky job to create a draft.
+
+The level is **Ask first** once Finish setup confirms the saved setup command and checks pass, at least four in five checked default-branch commits are green, and no job was flaky more than three times. Until then the level is **Not ready**, including when there is no finished CI result. At both levels the planner asks for smaller, independently checkable parts.
+
+The next levels depend on verified work in this repository. **Small plans** needs small items with passing checks and no reverts. **Full plans** needs larger features that rarely need CI fixes. **Earned merge** needs a clean record for a particular kind of work.
 
 ## File a work item
 

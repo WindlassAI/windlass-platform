@@ -6,28 +6,82 @@ import { emptyRow, environmentInputs, ENVIRONMENT_TABLE, writeEnvironment } from
 import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { test } from "node:test";
-import { buildProof, claimAssessment, finishAssessment, READINESS_TABLE, repositoryReadiness, scheduleSetup, setupInputs } from "../server/src/actors/user-readiness.js";
+import { buildProof, cachedScan, saveSetupScan, claimAssessment, finishAssessment, READINESS_TABLE, repositoryReadiness, scheduleSetup, setupInputs } from "../server/src/actors/user-readiness.js";
 import type { EnvironmentBuild } from "../server/src/contract.js";
 import { fileReadiness } from "../server/src/factory/readiness-filing.js";
-import { plannerReadiness, readinessCriteria, readinessItem, scoreReadiness, type CriterionId, type Judgment } from "../server/src/factory/readiness.js";
-import { GithubError, type GithubApp, type Repository } from "../server/src/github/app.js";
+import { plannerReadiness, readinessCriteria, readinessItem, setupReport, type CiHistory, type CriterionId, type Judgment } from "../server/src/factory/readiness.js";
+import { GithubError, GithubApp, type Repository } from "../server/src/github/app.js";
+import { scanCiHistory } from "../server/src/github/ci-history.js";
 import { scanRepoSetup } from "../server/src/github/setup-checks.js";
 
 const now = Date.now();
 const answers = (...fail: CriterionId[]) => readinessCriteria.map(({ id }) => ({ id, pass: !fail.includes(id), reason: "Evidence for " + id }));
 
-test("levels require all earlier levels, and only failures can be filed", () => {
-	for (const [fails, expected] of [[[], "Standardized"], [["ci"], "Documented"], [["areas"], "Functional"], [["checks"], "not reached yet"]] as const) {
-		const report = scoreReadiness(answers(...fails).reverse(), now);
-		assert.equal(report.level, expected);
-		assert.equal(report.passed, 8 - fails.length);
-	}
-	const partial = scoreReadiness([{ id: "guide", pass: null, reason: "Pending" }, { id: "areas", pass: false, reason: "Missing guide" }], now);
+const history: CiHistory = { at: now, branch: "trunk", green: 4, checked: 5, flaky: [{ name: "test", count: 3 }], hasCi: true, reverts: 1, redMerges: 1 };
+
+test("working setup and passing CI earn Ask first at both boundaries", () => {
+	const report = setupReport(answers("guide", "areas", "templates"), now, history);
+	assert.equal(report.level, "Ask first");
+	assert.equal(report.passed, 5);
+	for (const ci of [null, { ...history, green: 0, checked: 0 }, { ...history, green: 159, checked: 200 }, { ...history, flaky: [{ name: "test", count: 4 }] }])
+		assert.equal(setupReport(answers(), now, ci).level, "Not ready");
+	for (const id of ["setup", "checks"] as const) assert.equal(setupReport(answers(id), now, history).level, "Not ready");
+	const partial = setupReport([{ id: "guide", pass: null, reason: "Pending" }, { id: "areas", pass: false, reason: "Missing guide" }], now, history);
 	assert.throws(() => readinessItem(7, partial, "guide"));
 	assert.deepEqual(readinessItem(7, partial, "areas"), readinessItem(7, partial, "areas"));
-	assert.match(plannerReadiness("Functional"), /smaller/);
-	assert.doesNotMatch(plannerReadiness("Documented"), /smaller/);
+	assert.match(plannerReadiness("Not ready"), /smaller/);
+	assert.match(plannerReadiness("Ask first"), /smaller/);
 	assert.equal(plannerReadiness(null), "");
+});
+
+test("CI history reads default-branch checks and statuses, merge results and rerun attempts", async () => {
+	const app = new GithubApp({ appId: "1", slug: "ci", clientId: "", apiUrl: "https://api.example", webUrl: "" }, { clientSecret: () => null, privateKey: () => null });
+	const repo = { owner: "team", name: "repo", defaultBranch: "trunk" } as Repository;
+	const since = new Date(now - 30 * 86_400_000).toISOString();
+	const revert = { number: 7, title: "Revert the change", baseRefName: "trunk", mergedAt: new Date(now).toISOString(), mergeCommit: { oid: "merge" } };
+	const commit = (oid: string, parent: string, state: string | null, message = "", pulls: typeof revert[] = [], parents = 1) => ({
+		oid, message, parents: { totalCount: parents, nodes: [{ oid: parent }] }, statusCheckRollup: state && { state }, associatedPullRequests: { nodes: pulls },
+	});
+	const job = (name: string, run_attempt: number, conclusion: string, head_sha = "head") => ({ name, run_attempt, conclusion, head_sha });
+	const run = { id: "12", run_attempt: 2, head_sha: "head", head_branch: "work", event: "pull_request" };
+	let limited = false;
+	app.call = async call => {
+		assert.deepEqual(call.auth, { bearer: "install" });
+		let body: unknown;
+		if (call.path === "/graphql") {
+			const { variables, query } = call.body as { variables: { after: string | null; since: string; head: string }; query: string };
+			assert.match(query, /statusCheckRollup/);
+			assert.deepEqual([variables.head, variables.since], ["head", since]);
+			const nodes = variables.after ? [commit("old", "none", "ERROR"), commit("side", "old", "FAILURE", 'Revert "bad change"', [revert])]
+				: [commit("head", "merge", "SUCCESS", "Tidy up\n\nThis reverts commit abc."), commit("merge", "pending", "FAILURE", "", [revert], 2), commit("pending", "old", "PENDING")];
+			body = { data: { repository: { object: { history: { nodes, pageInfo: { endCursor: "next", hasNextPage: !variables.after } } } } } };
+		} else if (call.path.endsWith("/actions/runs")) {
+			assert.deepEqual(call.query, { per_page: 100, created: ">=" + since });
+			if (limited) throw new GithubError(429, "rate limit", "read runs");
+			body = { workflow_runs: [run, { ...run, id: "13", head_branch: "trunk", event: "push" }, { ...run, id: "14", event: "push" }] };
+		} else {
+			assert.match(call.path, /runs\/(12|13)\/jobs$/);
+			assert.equal(call.query?.filter, "all");
+			body = { jobs: [job("e2e", 2, "success"), job("e2e", 1, "failure"), job("lint", 1, "failure"), job("lint", 2, "success", "other"), job("build", 1, "success"), job("build", 2, "failure")] };
+		}
+		return { status: 200, next: false, link: "", body };
+	};
+	const actual = await scanCiHistory(app, "install", repo, "head", now);
+	assert.deepEqual(actual, { ...history, green: 1, checked: 3, reverts: 2, redMerges: 1, flaky: [{ name: "e2e", count: 2 }] });
+	assert.equal((await scanCiHistory(app, "install", repo, null, now)).hasCi, false);
+	limited = true;
+	await assert.rejects(scanCiHistory(app, "install", repo, "head", now), GithubError);
+});
+
+test("an unreadable CI scan keeps the previous history and its read time", async () => {
+	const sqlite = new DatabaseSync(":memory:");
+	sqlite.exec("CREATE TABLE setup_scan (project TEXT PRIMARY KEY, at INTEGER, scan TEXT)");
+	const db = { execute: async (q: string, ...args: SQLInputValue[]) => sqlite.prepare(q).all(...args) } as Parameters<typeof cachedScan>[0];
+	const files = { commit: "head", findings: [], areas: [], later: 0 };
+	await saveSetupScan(db, "repo", now, files, history);
+	await saveSetupScan(db, "repo", now + 1, files, null);
+	assert.deepEqual(await cachedScan(db, "repo"), { ...files, at: now + 1, ciReadFailed: true, ci: history });
+	sqlite.close();
 });
 
 test("server reads default-branch paths and bounded blob contents without an agent", async () => {
@@ -92,7 +146,7 @@ test("weekly runs require opting in and share the manual claim", async () => {
 	const db = { execute: async (q: string, ...args: SQLInputValue[]) => sqlite.prepare(q).all(...args) } as Parameters<typeof claimAssessment>[0];
 	assert.equal(await claimAssessment(db, "repo", "scheduled", now), true);
 	assert.equal(await claimAssessment(db, "repo", "manual", now), false);
-	const inputs = { key: "base", at: now, evidence: { hasSavedSetup: true, savedChecks: ["test"], buildCommit: null, ...buildProof(undefined, []) },
+	const inputs = { key: "base", ci: history, at: now, evidence: { hasSavedSetup: true, savedChecks: ["test"], buildCommit: null, ...buildProof(undefined, []) },
 		findings: answers("areas").map(f => ({ ...f, pass: ["setup", "checks", "guide"].includes(f.id) ? null : f.pass })) };
 	await db.execute("UPDATE readiness SET inputs='base'");
 	const view = () => repositoryReadiness(db, "repo", inputs, false);
@@ -191,7 +245,7 @@ test("older passing build proves setup and checks only for matching inputs", asy
 	const build = { ...environmentInputs(command, checks), commit: "abcdef0123456789", finishedAt: now, failure: null,
 		checks: [{ name: "tests", status: "passed", durationMs: 300_000 }] } as EnvironmentBuild;
 	await writeEnvironment(db, { ...emptyRow("repo", "hosted"), ready: build });
-	const scan = { commit: "1234567", areas: [], later: 0, at: now, findings: [] };
+	const scan = { ci: history, ciReadFailed: false, commit: "1234567", areas: [], later: 0, at: now, findings: [] };
 	for (const [setup, saved, pass] of [[command, checks, true], ["other", checks, false], [command, [{ name: "tests", command: "changed" }], false]] as const) {
 		const inputs = await setupInputs(db, "repo", scan, setup, [...saved]);
 		await db.execute("INSERT INTO readiness(project, session, at, inputs, judgment) VALUES (?,?,?,?,?)", "repo", inputs.key, now, inputs.key,

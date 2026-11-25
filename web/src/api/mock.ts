@@ -12,7 +12,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
 import { listedHarness, windlassModels, windlassProvider, hostedCatalog, hostedKeyMessage, hostedProfiles, hostedProvider, initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
 import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
-import { scoreReadiness } from "../../../server/src/factory/readiness";
+import { setupReport } from "../../../server/src/factory/readiness";
 import { mockEnvironments, mockRebuild, mockSchedule } from "./mock-environments";
 import { PROFILES, initialSessionModes, offeredProfiles, profilesFor } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
@@ -2709,7 +2709,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const hasSetup = world.setups.has(repositoryId);
 		const hasChecks = !!world.checks.get(repositoryId)?.checks.length;
 		const finished = assessment?.finished;
-		const latest = assessment ? scoreReadiness([
+		const latest = assessment ? setupReport([
 			{ id: "setup", pass: hasSetup ? finished || null : false, reason: !hasSetup ? "No setup command is saved." : finished ? "The latest build installed the project with one command." : "Setup command saved. Finish setup to check that it works." },
 			{ id: "checks", pass: hasChecks ? finished || null : false, reason: !hasChecks ? "No checks are saved." : finished ? "Both saved checks passed in 43 seconds." : "Checks saved. Finish setup to check their results and time." },
 			{ id: "guide", pass: finished || null, reason: finished ? "The root guide names the working setup and check commands." : "AGENTS.md found. Finish setup to check its instructions." },
@@ -2718,7 +2718,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			{ id: "size", pass: true, reason: "The largest source file has 680 lines." },
 			{ id: "ci", pass: true, reason: "The test workflow runs on pull requests." },
 			{ id: "secrets", pass: false, reason: "Environment files are ignored. No secret scan was found." },
-		], assessment.at) : null;
+		], assessment.at, { at: assessment.at, branch: "main", checked: 50, green: 47, flaky: [{ name: "e2e (macos)", count: 2 }], reverts: 0, redMerges: 1, hasCi: true }) : null;
 		return {
 			id: repositoryId,
 			name: repositoryNameOf(world, repositoryId),
