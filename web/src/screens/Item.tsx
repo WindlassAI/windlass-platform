@@ -890,6 +890,7 @@ export function Item({ page }: { page: ItemPage }) {
 	const { view } = page;
 	// A plan action refused because the plan moved on: the page reads the item again, and its card says so until the next action.
 	const [conflicted, setConflicted] = useState(false);
+	const [approvalSettingFailed, setApprovalSettingFailed] = useState(false);
 	// The name of the secret just added for the builder's request, said until the item asks something else.
 	const [secretSaved, setSecretSaved] = useState<string | null>(null);
 	// The last save's error for the builder's request, kept for the question it reopens under a new id; dropped once the item asks something else.
@@ -906,6 +907,7 @@ export function Item({ page }: { page: ItemPage }) {
 		view?.id ?? "",
 		(next) => {
 			setConflicted(false);
+			setApprovalSettingFailed(false);
 			page.replace(next);
 		},
 		(kind) => {
@@ -1053,9 +1055,10 @@ export function Item({ page }: { page: ItemPage }) {
 						</span>
 					</p>
 				) : null}
+				{approvalSettingFailed && <Failure error="Plan approved. The automatic approval setting wasn’t saved." />}
 				{/* A question is where the item is: its own block says so, with when it was asked. */}
 				{view.question && review.open ? (
-					<PlanQuestion view={view} review={review} acting={acting} conflicted={conflicted} when={<When at={view.question.askedAt} now={now} />} />
+					<PlanQuestion key={view.question.id} onSettingError={() => setApprovalSettingFailed(true)} view={view} review={review} acting={acting} conflicted={conflicted} when={<When at={view.question.askedAt} now={now} />} />
 				) : view.question?.kind === "placement_refused" && view.plan ? (
 					<PlacementQuestion key={view.question.id} view={view} question={view.question} review={review} acting={acting} when={<When at={view.question.askedAt} now={now} />} />
 				) : view.question?.kind === "secret_needed" && view.question.secret ? (

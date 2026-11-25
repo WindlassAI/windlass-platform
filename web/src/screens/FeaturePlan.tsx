@@ -1,7 +1,7 @@
 import { MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemBudget, type SubtaskBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
-import { ChevronIcon, WarnIcon } from "../components/Icons";
+import { ChevronIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { ItemSpend } from "../components/ItemSpend";
 import { FOLD_WORDS, FoldList, FoldToggle, LongText, PathList } from "../components/Fold";
 import { showsSubtasks } from "./Subtasks";
@@ -22,6 +22,9 @@ import type { PlanActing, PlanReview } from "./usePlanReview";
 import { linkProps } from "../lib/router";
 import { ItemGlyph, ItemTrack, itemTrack, STATE_WORD } from "./Items";
 import { Check } from "../components/ui/Check";
+import { Tooltip } from "../components/ui/Tooltip";
+import { useDefaults } from "../components/StartComposer";
+import { useApp, useAuth } from "../state/app";
 
 function unplaceableOf(view: ItemView, plan: FeaturePlan, machines: MachineSummary[] | null, models?: AgentModels): { task: PlanSubtask; reason: string }[] {
 	if (!machines) return [];
@@ -43,9 +46,23 @@ function approvalProblem(review: PlanReview, unconfirmed: number): string | null
 	return null;
 }
 
-export function PlanQuestion({ view, review, acting, when, conflicted }: { view: ItemView; review: PlanReview; acting: PlanActing; when: ReactNode; conflicted: boolean }) {
+export function PlanQuestion({ view, review, acting, when, conflicted, onSettingError }: { view: ItemView; review: PlanReview; acting: PlanActing; when: ReactNode; conflicted: boolean; onSettingError(): void }) {
 	const { plan } = review;
 	const title = useId();
+	const { client } = useApp();
+	const auth = useAuth();
+	const { defaults } = useDefaults(view.repository.id);
+	const offerAutoApprove = defaults !== null && !defaults.autoApprovePlans;
+	const [autoApprove, setAutoApprove] = useState(false);
+	const approve = async (choice?: Parameters<PlanReview["approve"]>[0]) => {
+		const approved = await review.approve(choice);
+		if (!approved || !offerAutoApprove || !autoApprove) return;
+		try {
+			await client.user(auth).saveRepositoryDefaults(view.repository.id, { autoApprovePlans: true });
+		} catch {
+			onSettingError();
+		}
+	};
 	if (!plan || !view.question) return null;
 	const busy = acting.busy !== null;
 	const single = view.question.kind === "single_suggested";
@@ -121,9 +138,17 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 						</button>
 					</>
 				) : (
-					<button type="button" className="button button-primary" disabled={busy || !!ciBlock || blocked !== null || placeBlocked !== null} onClick={() => void review.approve(single ? singleAnswer : undefined)} aria-describedby={blocked || placeBlocked ? `${title}-why` : undefined}>
+					<button type="button" className="button button-primary" disabled={busy || !!ciBlock || blocked !== null || placeBlocked !== null} onClick={() => void approve(single ? singleAnswer : undefined)} aria-describedby={blocked || placeBlocked ? `${title}-why` : undefined}>
 						{acting.busy === "edit_plan" || acting.busy === "approve_plan" || acting.busy === "run_single" ? "Approving…" : single ? "Approve for one implementer" : review.answersOnly ? "Approve" : `Approve version ${plan.version}`}
 					</button>
+				)}
+				{offerAutoApprove && !review.edits && (
+					<div className="plan-auto-approve">
+						<Check checked={autoApprove} disabled={busy} onChange={setAutoApprove} label={`Approve small plans automatically in ${view.repository.owner}/${view.repository.name}`} />
+						<Tooltip content="Up to 3 parts, no open questions, and at most 3× a Quick item's budget. An independent reviewer checks each one; anything bigger still comes to you.">
+							<button type="button" className="icon-button icon-button-small" aria-label="Which plans can be approved automatically?"><InfoIcon size={15} /></button>
+						</Tooltip>
+					</div>
 				)}
 				{single && !review.edits && view.question.choices.some(option => option.id === "orchestrate_anyway") && (
 					<button type="button" className="button button-outline" disabled={busy} onClick={() => void acting.act({ kind: "answer", question: view.question!.id, choice: "orchestrate_anyway" })}>
@@ -131,7 +156,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 					</button>
 				)}
 				{fallback || (refused && SINGLE_INSTEAD.test(refused) && !replan) ? (
-					<button type="button" className="button button-outline" disabled={busy || review.edits || review.unansweredLeft > 0} onClick={() => void review.approve(fallback ? singleAnswer : { kind: "run_single" })}>
+					<button type="button" className="button button-outline" disabled={busy || review.edits || review.unansweredLeft > 0} onClick={() => void approve(fallback ? singleAnswer : { kind: "run_single" })}>
 						{acting.busy === "run_single" ? "Starting…" : "Run as a single item"}
 					</button>
 				) : null}
@@ -266,6 +291,12 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 					v{plan.version} · {plan.status}
 				</span>
 			</h2>
+			{plan.approvedBy === "critic" && (
+				<p className="field-note">
+					Plan approved automatically by an independent reviewer.{" "}
+					<a className="link" aria-label="Change work item approvals" {...linkProps({ name: "repository", id: view.repository.id, section: "autonomy" })}>Change</a>
+				</p>
+			)}
 			{folds && !opened ? (
 				<>
 

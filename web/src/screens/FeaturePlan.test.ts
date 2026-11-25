@@ -174,6 +174,60 @@ describe("the Factory composer's mode choice", () => {
 });
 
 describe("a feature's plan on its page", () => {
+	const autoApprove = () => host.querySelector<HTMLInputElement>('.plan-auto-approve input[type="checkbox"]');
+
+	it("saves automatic approval for the repository only after approving the plan", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Search the docs from the command line");
+		await show(`/items/${feature.id}`);
+		const checkbox = autoApprove()!;
+		expect(checkbox.checked).toBe(false);
+		expect(checkbox.labels?.[0]?.textContent).toBe("Approve small plans automatically in acme/harbor");
+		act(() => checkbox.click());
+		expect((await api().repository(feature.repository.id)).defaults.autoApprovePlans).toBeFalsy();
+		act(() => host.querySelector<HTMLInputElement>(".plan-ask-options input")!.click());
+		await act(async () => button("Approve")!.click());
+		await settle();
+		expect((await api().item(feature.id)).plan?.status).toBe("approved");
+		expect((await api().repository(feature.repository.id)).defaults.autoApprovePlans).toBe(true);
+	});
+
+	it("hides the checkbox when automatic approval is already on", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Search the docs from the command line");
+		await api().saveRepositoryDefaults(feature.repository.id, { autoApprovePlans: true });
+		await show(`/items/${feature.id}`);
+		expect(host.querySelector(".plan-question")).not.toBeNull();
+		expect(autoApprove()).toBeNull();
+	});
+
+	it("keeps the single run approved and reports a failed settings save", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Round tide heights to centimetres");
+		const user = api();
+		const saveRepositoryDefaults = vi.fn().mockRejectedValue(new Error("Save failed"));
+		vi.spyOn(client, "user").mockReturnValue({ ...user, saveRepositoryDefaults });
+		await show(`/items/${feature.id}`);
+		act(() => autoApprove()!.click());
+		act(() => host.querySelector<HTMLInputElement>(".plan-ask-options input")!.click());
+		type(host.querySelector('.plan-asks input:not([type="radio"])')!, "Keep the raw readings.");
+		await act(async () => button("Approve for one implementer")!.click());
+		await settle();
+		expect(saveRepositoryDefaults).toHaveBeenCalledExactlyOnceWith(feature.repository.id, { autoApprovePlans: true });
+		expect(await api().item(feature.id)).toMatchObject({ mode: "single", plan: { status: "approved" } });
+		expect(host.querySelector(".plan-question")).toBeNull();
+		expect(host.querySelector('[role="alert"]')?.textContent).toContain("The automatic approval setting wasn’t saved.");
+	});
+
+	it("links a reviewer-approved plan to the repository's work item approvals", async () => {
+		make({ items: "features" }, item => item.plan ? { ...item, plan: { ...item.plan, approvedBy: "critic" } } : item);
+		const feature = await featureNamed("Export the release manifest as CSV");
+		await show(`/items/${feature.id}`);
+		const change = host.querySelector('.feature-plan a[aria-label="Change work item approvals"]');
+		expect(change?.textContent).toBe("Change");
+		expect(change?.getAttribute("href")).toBe(`/repositories/${feature.repository.id}/settings#autonomy`);
+	});
+
 	it("asks its questions first, and approves with the answers in one press, as the next version", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Search the docs from the command line");

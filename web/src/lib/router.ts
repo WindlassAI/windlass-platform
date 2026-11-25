@@ -51,7 +51,7 @@ export const REPOSITORY_VIEWS = ["agents", "items", "pulls", "settings"] as cons
 export type RepositoryPaneView = (typeof REPOSITORY_VIEWS)[number];
 
 /** The sections of a repository's settings a link can open at, in the order the page has them. */
-export const REPOSITORY_SECTIONS = ["defaults", "screenshots", "setup", "checks", "network", "secrets", "servers", "forget"] as const;
+export const REPOSITORY_SECTIONS = ["defaults", "screenshots", "autonomy", "setup", "checks", "network", "secrets", "servers", "forget"] as const;
 export type RepositorySection = (typeof REPOSITORY_SECTIONS)[number];
 
 /** The section the address's fragment names, on a repository's settings; null when it names none. */
