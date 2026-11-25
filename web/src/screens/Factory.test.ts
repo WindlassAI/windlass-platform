@@ -288,18 +288,20 @@ describe("the live feed's ended items beyond its first page", () => {
 		await show("/factory", { items: "many" });
 		const one = (await listed()).find((item) => isEnded(item) && item.endedAt !== undefined) as ItemSummary;
 		const open = (await listed()).find((item) => !isEnded(item)) as ItemSummary;
-		const facts = async (id: string) => {
+		const headerTimes = async (id: string) => {
 			act(() => {
 				history.pushState(null, "", `/items/${id}`);
 				window.dispatchEvent(new PopStateEvent("popstate"));
 			});
 			await settle();
-			return [...host.querySelectorAll(".repo-fact")].map((fact) => fact.textContent ?? "");
+			return [...host.querySelectorAll<HTMLTimeElement>(".item-meta time")];
 		};
-		const ended = await facts(one.id);
-		expect(ended.some((fact) => fact.startsWith("filed "))).toBe(true);
-		expect(ended.some((fact) => fact.startsWith("ended "))).toBe(true);
-		expect((await facts(open.id)).some((fact) => fact.startsWith("ended "))).toBe(false);
+		const ended = await headerTimes(one.id);
+		expect(ended.map((time) => time.dateTime)).toEqual([new Date(one.createdAt).toISOString(), new Date(one.endedAt!).toISOString()]);
+		expect(ended.map((time) => time.textContent)).toEqual([expect.stringMatching(/^filed .+/), expect.stringMatching(/^ended .+/)]);
+		const active = await headerTimes(open.id);
+		expect(active.map((time) => time.dateTime)).toEqual([new Date(open.createdAt).toISOString()]);
+		expect(active[0]?.textContent).toMatch(/^filed .+/);
 	});
 
 	it("on a repository's Work items tab: the fold is said from the counts, and unfolded reads a page at a time", async () => {
@@ -372,13 +374,11 @@ describe("filing a work item from the Factory page", () => {
 		await show("/factory");
 		act(() => (pill("agent") as HTMLButtonElement).click());
 		act(() => (pop()?.querySelector('[data-value="windlass:gpt-6.1-sol"]') as HTMLElement).click());
-		// The effort is chosen in the same menu, under the models; the pill shows it as bars.
-		act(() => (pill("agent") as HTMLButtonElement).click());
-		expect([...(pop()?.querySelectorAll(".ui-menu-group-label b") ?? [])].map((label) => label.textContent)).toContain("Effort");
+		act(() => (pill("effort") as HTMLButtonElement).click());
 		act(() => (pop()?.querySelector('[data-value="high"]') as HTMLElement).click());
-		expect(pill("agent")?.getAttribute("data-value")).toBe("Windlass · gpt-6.1-sol");
-		expect(pill("agent")?.getAttribute("data-effort")).toBe("high");
-		expect(pill("agent")?.querySelectorAll(".effort-bars .effort-bar-on").length).toBeGreaterThan(0);
+		expect(pill("agent")?.getAttribute("data-value")).toBe("Windlass · GPT-6.1 Sol");
+		expect(pill("effort")?.getAttribute("data-effort")).toBe("high");
+		expect(pill("effort")?.querySelectorAll(".effort-bars .effort-bar-on").length).toBeGreaterThan(0);
 		write("Rename the tide table columns");
 		await act(async () => void field().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
 		await settle();
@@ -406,10 +406,10 @@ describe("filing a work item from the Factory page", () => {
 		expect(host.querySelector(".start-status")?.textContent).toBe("A work item needs a repository: choose one under “where”.");
 	});
 
-	it("has the same tray as the Agents page: agent, where (the place and the repository), options and File, on one line", async () => {
+	it("has the same tray as the Agents page: agent, effort, where (the place and the repository), options and File, on one line", async () => {
 		await show("/factory");
 		const tray = host.querySelector(".start-tools") as HTMLElement;
-		expect([...tray.querySelectorAll("[data-picker]")].map((control) => (control as HTMLElement).dataset.picker)).toEqual(["agent", "where", "options"]);
+		expect([...tray.querySelectorAll("[data-picker]")].map((control) => (control as HTMLElement).dataset.picker)).toEqual(["agent", "effort", "where", "options"]);
 		expect(tray.querySelector(".start-launch")).not.toBeNull();
 		expect(pill("where")?.dataset.repo).toMatch(/ @ main$/);
 		// A work item chooses its agent and model too; it starts on Windlass.
