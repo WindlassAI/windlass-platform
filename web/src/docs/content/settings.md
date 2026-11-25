@@ -48,7 +48,7 @@ A token works until you revoke it. Choose **Revoke token** to stop it at once. W
 
 Where the platform has plans, **Plan** at the top of Settings shows your plan, the hosted minutes you've used since your last reset, and **Upgrade to Pro** or **Manage billing**.
 
-A **hosted minute** is one minute of a standard sandbox on the platform (2 vCPU, 4 GiB). A small one counts half and a large one twice. Agents on your own machines are never counted, on any plan.
+A **hosted minute** is one minute of a Medium sandbox on the platform (2 vCPU, 4 GiB). A small one counts half and a large one twice. Agents on your own machines are never counted, on any plan.
 
 | | Free | Pro |
 | --- | --- | --- |
@@ -56,7 +56,7 @@ A **hosted minute** is one minute of a standard sandbox on the platform (2 vCPU,
 | Your own machines | Unlimited runs, up to 3 machines | Unlimited runs, up to 10 machines |
 | Hosted minutes | 120 a month | 1,800 a month |
 | Hosted at once | 1 | 5 |
-| Sandbox sizes | Small, standard | Small, standard, large |
+| Sandbox sizes | Small, Medium | Small, Medium, Large |
 | Features over two repositories | No | Yes |
 | Items filed from GitHub and Linear together | 20 a day | 100 a day |
 | Past the included minutes | Hosted agents stop until the month resets | Monthly Pro bills $0.006 a minute up to your spend cap. Yearly Pro stops at 1,800 minutes a month. |
@@ -83,7 +83,7 @@ Choose a repository in the rail of **Agents**, then **Saved settings**. Sections
 
 The same two groups as in account settings, for this repository: unset fields show your account's default. You can still change any of them when you launch an agent. An agent that exists keeps what it was launched with.
 
-Where the platform offers more than one, **Hosted size** sets the CPUs and memory of the repository's hosted sandboxes, for its agents and its work items. Each choice shows its estimated price an hour. It shows where it applies: beside the agents' sandbox, and under work items that run hosted or fall back to hosted (**Hosted size if it falls back**). Without a saved size, agents start on **Small** and work items on **Standard**. A size chosen when you launch an agent or file an item wins over the saved one. See [Hosted sizes](/docs/start-an-agent#hosted-sizes).
+Where the platform offers more than one, **Hosted size** sets the CPUs and memory of the repository's hosted sandboxes, for its agents and its work items. Each choice shows its estimated price an hour. It shows where it applies: beside the agents' sandbox, and under work items that run hosted or fall back to hosted (**Hosted size if it falls back**). Without a saved size, agents start on **Small** and work items on **Medium**. A size chosen when you launch an agent or file an item wins over the saved one. See [Hosted sizes](/docs/start-an-agent#hosted-sizes).
 
 ### Work item approvals
 
@@ -137,7 +137,7 @@ It is rebuilt:
 - 2 minutes after you save the setup command or the checks;
 - when you choose **Rebuild** for a place, or **Rebuild all**.
 
-A build takes sandbox time like an agent, counts as one of your running agents while it runs, and is held to the same limits. When a limit is reached it waits, says why, and tries again later. It is built only on machines left on **Any feature** under [Let features use it](/docs/machines#let-features-use-it), never on one set to **When named** or **Never**, and waits while a machine is offline. A repository with saved secrets has no environment. Only Windlass sessions start from one. On this platform an environment is built in one [hosted size](/docs/start-an-agent#hosted-sizes), that of the repository's latest agent or work item here (else its saved size, else **Standard**), and only sandboxes of that size start from it: one of another size starts cold.
+A build takes sandbox time like an agent, counts as one of your running agents while it runs, and is held to the same limits. When a limit is reached it waits, says why, and tries again later. It is built only on machines left on **Any feature** under [Let features use it](/docs/machines#let-features-use-it), never on one set to **When named** or **Never**, and waits while a machine is offline. A repository with saved secrets has no environment. Only Windlass sessions start from one. On this platform an environment is built in one [hosted size](/docs/start-an-agent#hosted-sizes), that of the repository's latest agent or work item here (else its saved size, else **Medium**), and only sandboxes of that size start from it: one of another size starts cold.
 
 ### Network
 

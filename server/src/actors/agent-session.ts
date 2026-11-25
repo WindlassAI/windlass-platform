@@ -66,6 +66,7 @@ import {
 	WIDE_HOSTS,
 	largerHostedSize,
 	type HostedSize,
+	HOSTED_SIZE_NAMES,
 	isHostedSize,
 	outOfMemoryWords,
 } from "../contract.js";
@@ -477,7 +478,7 @@ export async function observeNetwork(c: Ctx, meta: SessionMeta, turn: number, sa
 export function applySandboxClamp(meta: Pick<SessionMeta, "hostedSize">, size: HostedSize | undefined, notify: (text: string) => void): boolean {
 	if (!size || meta.hostedSize === size) return false;
 	meta.hostedSize = size;
-	notify(`This agent's next sandbox is ${size}: large sandboxes are part of Pro.`);
+	notify(`This agent's next sandbox is ${HOSTED_SIZE_NAMES[size]}: Large sandboxes are part of Pro.`);
 	return true;
 }
 

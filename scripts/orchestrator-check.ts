@@ -1110,7 +1110,7 @@ test("a subtask's agent: the planner may propose Claude Code or OpenCode, never 
 	}
 	const profile = proposal();
 	Object.assign(profile.subtasks[0], { agent: { harness: "claude" }, needs: { profile: "docker-windlass-sandbox" } });
-	assert.throws(() => proposed(profile), /docker-hardened/);
+	assert.throws(() => proposed(profile), /Claude Code requires Open isolation/);
 });
 
 test("approval names each agent that works without asking, and needs the person's confirmation of every one", () => {
@@ -1164,7 +1164,7 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 	assert.equal(choosePlacement(withModel, { ...hostedRoute, alternatives: [route.preferred] }, inventory).decision?.name, "Mac");
 	const microVm = choosePlacement({ ...task({ harness: "windlass" }), needs: { profile: "e2b-open" } },
 		route, { machines: plannerMachines([agentMac()]), hostedProfiles: [] });
-	assert.match(String(microVm.refused), /microVM profile runs only on hosted/);
+	assert.match(String(microVm.refused), /profile runs only on hosted/);
 	// What the place offers is placed, in the hardened container, naming its agent.
 	const placed = choosePlacement(task({ harness: "claude", model: "sonnet", effort: "high" }), route, { machines: plannerMachines([agentMac()]), hostedProfiles: [], models }).decision;
 	assert.equal(placed?.harness, "claude");
@@ -1235,7 +1235,7 @@ test("a re-plan can't keep a machine agent on a subtask it moves out of the hard
 	delete replan.subtasks[0].agent;
 	replan.subtasks[0].needs = { profile: "docker-windlass-sandbox" };
 	replan.subtasks[0].budget.tokens -= 1000;
-	assert.throws(() => advance(item, { kind: "file_plan", key: currentKey(item)!, plan: replan, at: 8 }), /index: Claude Code requires docker-hardened or e2b-open/);
+	assert.throws(() => advance(item, { kind: "file_plan", key: currentKey(item)!, plan: replan, at: 8 }), /index: Claude Code requires Open isolation/);
 	// Placement refuses such a subtask for good, wherever it came from.
 	const task = { ...mixedPlan().subtasks[0], needs: { profile: "docker-windlass-sandbox" as const } };
 	const fit = choosePlacement(task, { preferred: { kind: "machine", machineId: macId }, alternatives: [] }, inventory);

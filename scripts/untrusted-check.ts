@@ -180,9 +180,9 @@ if (stop.kind === "stop") expect(`${name}, docker-hardened: the refusal names wh
 		expect(`${name}, docker-hardened: the run's own text goes labelled only`, decide(agent, "docker-hardened", ciRow).kind === "labelled");
 		for (const profile of PROFILES.map(p => p.id).filter(id => id !== "docker-hardened")) {
 			const got = decide(agent, profile, issueRow);
-			if (agent !== "windlass" && profile === "e2b-open") {
-				expect(`${name} on the hosted microVM asks before accepting outside text`, got.kind === "stop" && got.reason.includes(ISSUE));
-				expect(`${name} can run in the microVM after confirmation`, decide(agent, profile, anywayRow).kind === "labelled");
+			if (agent !== "windlass" && (profile === "e2b-open" || profile === "daytona")) {
+				expect(`${name} on ${profile} asks before accepting outside text`, got.kind === "stop" && got.reason.includes(ISSUE));
+				expect(`${name} can run on ${profile} after confirmation`, decide(agent, profile, anywayRow).kind === "labelled");
 				continue;
 			}
 			const ok = agent === "windlass" ? got.kind === "marked" : got.kind === "labelled" && got.note === agentUnmarkedNote(name, [ISSUE], machineHarness(agent)?.sandboxedOn.includes(profile) ?? false);

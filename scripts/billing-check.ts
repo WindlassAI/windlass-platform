@@ -539,7 +539,7 @@ async function memoryDbWithTables() {
 	expect("both a fresh hold and a replacement discovered at create clamp to standard and announce it once",
 		fresh.ok && fresh.clampedSize === "standard" && claim.ok && claim.clampedSize === "standard" &&
 		next.hostedSize === "standard" && vars.usage.holdOf("agent")?.weight === 1 &&
-		notes.length === 1 && notes[0] === "This agent's next sandbox is standard: large sandboxes are part of Pro.");
+		notes.length === 1 && notes[0] === "This agent's next sandbox is Medium: Large sandboxes are part of Pro.");
 	vars.items.limits.billing = null;
 	next.hostedSize = "large";
 	const offHold = await reserve("off-large", true);

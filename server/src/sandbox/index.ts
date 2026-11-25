@@ -1,10 +1,11 @@
 /**
  * The sandbox layer, put together: `createSandboxLayer` for a server on Docker, `createHostedLayer` for
- * one on E2B (server/src/layer.ts chooses by WLP_SANDBOX).
+ * one on E2B or Daytona (server/src/layer.ts chooses by WLP_SANDBOX).
  *
  * Docker mounts the user's data volume in session containers. The user's actor holds the ChatGPT sign-in.
  */
 
+import { hostedLayer } from "./hosted.js";
 import { mirrorDeployment, snapshotDeployment } from "./snapshot-deployment.js";
 import { config } from "../config.js";
 import type { SandboxLayer } from "./api.js";
@@ -97,15 +98,15 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 }
 
 export async function createHostedLayer(settings: NonNullable<typeof config.hosted>): Promise<SandboxLayer> {
-	// Load the vendor SDK only on servers configured for E2B.
-	const { createE2bSandboxLayer } = await import("./e2b/index.js");
 	const { backupsFromConfig } = await import("./backup.js");
-	const signIns = actorSignIns();
-	return createE2bSandboxLayer({
-		logins: signIns.logins,
-		tokens: signIns.tokens,
-		backups: await backupsFromConfig(),
-	}, { settings });
+	const parts = { ...actorSignIns(), backups: await backupsFromConfig() };
+	if (settings.provider === "daytona") {
+		const { createDaytonaProvider } = await import("./daytona/provider.js");
+		const provider = createDaytonaProvider(settings, process.env.DAYTONA_API_KEY);
+		return hostedLayer(parts, provider, async () => provider.version);
+	}
+	const { createE2bSandboxLayer } = await import("./e2b/index.js");
+	return createE2bSandboxLayer(parts, { settings });
 }
 
 export { SandboxUserError } from "./api.js";

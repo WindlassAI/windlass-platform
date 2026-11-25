@@ -128,12 +128,12 @@ Where the platform offers more than one, **Options**, the sliders icon, lists th
 | Size | CPUs | Memory |
 | --- | --- | --- |
 | Small | 1 vCPU | 1 GiB |
-| Standard | 2 vCPU | 4 GiB |
+| Medium | 2 vCPU | 4 GiB |
 | Large | 4 vCPU | 8 GiB |
 
 A new agent starts on the repository's saved size (**Saved settings**, **Hosted size**), else on **Small**. The foot of **Options** says the size and its price. A sandbox keeps its size for its life: an agent that exists keeps the size it was launched with, and another size means a new sandbox. The daily sandbox time counts every size the same; a larger one costs more.
 
-A sandbox that runs out of memory stops answering, and every command in it hangs. The timeline then says "The sandbox ran out of memory (942 of 977 MiB)", restarts it from its disk, and names the next size up. Large builds, type checks and test suites of a big repository need **Standard** or more.
+A sandbox that runs out of memory stops answering, and every command in it hangs. The timeline then says "The sandbox ran out of memory (942 of 977 MiB)", restarts it from its disk, and names the next size up. Large builds, type checks and test suites of a big repository need **Medium** or more.
 
 A machine has no hosted sizes: the runner sets the memory of each slot (`--slot-memory`, see [Runner reference](/docs/runner#run-options)), and a slot that is too small runs out of memory the same way.
 

@@ -264,7 +264,7 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 				} },
 				needs: { type: "object", additionalProperties: false, properties: {
 					tags: { type: "array", items: { type: "string" } }, screenshots: { type: "boolean" },
-					egress: { enum: ["open", "restricted"] }, profile: { enum: ["docker-hardened", "docker-windlass-sandbox", "e2b-open"] },
+					egress: { enum: ["open", "restricted"] }, profile: { enum: ["docker-hardened", "docker-windlass-sandbox", "e2b-open", "daytona"] },
 					cpus: { type: "number", description: "More than 0." }, memoryGiB: { type: "number", description: "More than 0." },
 				} },
 				agent: { type: "object", additionalProperties: false, required: ["harness"], properties: {

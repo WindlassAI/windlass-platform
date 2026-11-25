@@ -1,6 +1,6 @@
 /* The ids of a feature's children are in feature-ids.ts: this file is shared with the web mock and stays free of Node modules. */
 import type { EarlyCheck, FeaturePlan, FeaturePlanEdit, FinalIntegration, ItemBudget, MergeStep, PlanSubtask, SubtaskAgent, SubtaskBudget } from "../contract.js";
-import { harnessName, knownHarness, subtaskHarnessProblem, worksWithoutAsking } from "../sandbox/harnesses.js";
+import { harnessName, hostedProfiles, knownHarness, subtaskHarnessProblem, worksWithoutAsking } from "../sandbox/harnesses.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
 
 /** The figures a budget has (`ItemBudget`). A subtask's plan budget has `tokens` only. */
@@ -158,7 +158,7 @@ export function agentOf(value: unknown): SubtaskAgent | undefined {
 /** A subtask's agent must support its requested sandbox profile at some place. */
 export function agentProfileProblem(task: Pick<PlanSubtask, "agent" | "needs">): string | null {
 	const agent = task.agent, profile = task.needs?.profile;
-	return agent && worksWithoutAsking(agent.harness) && profile !== undefined && profile !== "docker-hardened" && profile !== "e2b-open" ? `${harnessName(agent.harness)} requires docker-hardened or e2b-open.` : null;
+	return agent && worksWithoutAsking(agent.harness) && profile !== undefined && !hostedProfiles.includes(profile) ? `${harnessName(agent.harness)} requires Open isolation.` : null;
 }
 
 function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" | "needs" | "agent"> {
@@ -183,7 +183,7 @@ function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" 
 			needs.egress = n.egress;
 		}
 		if (n.profile !== undefined) {
-			requirePlan(n.profile === "docker-hardened" || n.profile === "docker-windlass-sandbox" || n.profile === "e2b-open", "Choose a supported sandbox profile.");
+			requirePlan(n.profile === "docker-hardened" || n.profile === "docker-windlass-sandbox" || n.profile === "e2b-open" || n.profile === "daytona", "Choose a supported sandbox profile.");
 			needs.profile = n.profile;
 		}
 		// Before subtasks named their agent, a need named its harness: read as the agent.

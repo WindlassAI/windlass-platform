@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { HOSTED_SIZES, type HostedSize, isHostedSize } from "../contract.js";
 
 const warned = new Set<string>();
@@ -22,6 +23,20 @@ export function wholeNumber(env: NodeJS.ProcessEnv, name: string, fallback: numb
 	return value;
 }
 
+export function readHostedRates<T extends object>(env: NodeJS.ProcessEnv, provider: string, kind: string, defaults: T): T {
+	const file = env.WLP_HOSTED_RATE_CARD_FILE?.trim();
+	if (!file) return defaults;
+	const input = JSON.parse(readFileSync(file, "utf8"))[provider]?.[kind];
+	const rates = { ...defaults };
+	for (const key in rates) {
+		const rate = input?.[key];
+		if (!Number.isFinite(rate) || rate < 0)
+			throw new Error(`WLP_HOSTED_RATE_CARD_FILE needs a finite nonnegative ${provider}.${kind}.${key}`);
+		rates[key] = rate;
+	}
+	return rates;
+}
+
 export const DEFAULT_SNAPSHOT_LIMITS = { maxTotal: 10, maxPerUser: 3, maxBytes: 4 * 2 ** 30, ttlMs: 14 * 86_400_000 };
 export type SnapshotLimits = typeof DEFAULT_SNAPSHOT_LIMITS;
 
@@ -32,8 +47,7 @@ function flag(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean 
 	throw new Error(`${name} must be 1 or 0; got "${raw}"`);
 }
 
-function enabledSizes(env: NodeJS.ProcessEnv): HostedSize[] {
-	const name = hostedName(env, "SIZES");
+function enabledSizes(env: NodeJS.ProcessEnv, name: string): HostedSize[] {
 	const named = (env[name] ?? "").split(",").map(part => part.trim()).filter(Boolean);
 	const wrong = named.find(part => !isHostedSize(part));
 	if (wrong !== undefined) throw new Error(`${name} must list sizes among ${HOSTED_SIZES.join(", ")}, separated by commas; got "${wrong}"`);
@@ -44,13 +58,13 @@ export function offeredSize(settings: { sizes: readonly HostedSize[] }, wanted: 
 	return [...settings.sizes].reverse().find(size => HOSTED_SIZES.indexOf(size) <= HOSTED_SIZES.indexOf(wanted)) ?? "small";
 }
 
-export function readHostedSettings(env: NodeJS.ProcessEnv) {
-	const name = (suffix: string, old = suffix) => hostedName(env, suffix, old);
+export function readHostedSettings(env: NodeJS.ProcessEnv, provider: "e2b" | "daytona" = "e2b") {
+	const name = (suffix: string, old = suffix) => provider === "e2b" ? hostedName(env, suffix, old) : "WLP_HOSTED_" + suffix;
 	const deployment = (env[name("DEPLOYMENT")] ?? "default").trim();
 	if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(deployment)) throw new Error(`${name("DEPLOYMENT")} must be 1 to 64 letters, digits, "_" or "-"; got "${deployment}"`);
 	const idleName = name("IDLE_ACTION", "PAUSE");
 	const idleAction = idleName === "WLP_E2B_PAUSE" ? (flag(env, idleName, true) ? "pause" : "destroy") : (env[idleName]?.trim() || "pause");
-	if (idleAction !== "pause" && idleAction !== "destroy") throw new Error(`${idleName} must be pause or destroy for E2B`);
+	if (idleAction !== "pause" && idleAction !== "destroy") throw new Error(`${idleName} must be pause or destroy for ${provider}`);
 	const switchName = name("SNAPSHOTS");
 	const snapshotSwitch = env[switchName]?.trim() || "off";
 	if (snapshotSwitch !== "on" && snapshotSwitch !== "off") throw new Error(`${switchName} must be on or off`);
@@ -62,15 +76,13 @@ export function readHostedSettings(env: NodeJS.ProcessEnv) {
 	};
 	const turnLimit = Math.floor(Number(env.WLP_TURN_TIMEOUT_MS));
 	return {
-		deployment, sizes: enabledSizes(env), snapshots,
+		deployment, sizes: enabledSizes(env, name("SIZES")), snapshots,
 		maxRunning: wholeNumber(env, name("MAX_RUNNING"), 3, 1),
 		idleTimeoutMs: wholeNumber(env, name("IDLE_TIMEOUT_MS"), 120_000, 30_000, 30 * 60_000),
-		turnLeaseMs: wholeNumber(env, name("TURN_LEASE_MS"), 180_000, 60_000, 30 * 60_000),
-		maxRuntimeMs: wholeNumber(env, name("MAX_CONTINUOUS_MS", "MAX_RUNTIME_MS"), 3_600_000, 10 * 60_000),
 		turnLimitMs: Number.isFinite(turnLimit) && turnLimit >= 1000 ? turnLimit : 45 * 60_000,
 		pause: idleAction === "pause",
 		windlassSandbox: flag(env, name("INNER_SANDBOX", "WINDLASS_SANDBOX"), false),
-		openProfile: flag(env, name("OPEN_PROFILE"), false),
+		openProfile: flag(env, name("OPEN_PROFILE"), provider === "daytona"),
 		windlassVersion: env[name("WINDLASS_VERSION")]?.trim() || null,
 	};
 }

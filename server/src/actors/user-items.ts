@@ -296,7 +296,7 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 	const repositories = cleanRepositories(input.repositories, repository.id as GithubId, input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate"), bad);
 	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 	if (input.effort !== undefined && input.effort !== null && (typeof input.effort !== "string" || input.effort.length > 64)) throw new UserError("Choose one of the efforts the item's agent offers.", { code: "bad_effort" });
-	if (input.hostedSize !== undefined && input.hostedSize !== null && !isHostedSize(input.hostedSize)) throw bad("Choose a hosted size: small, standard or large.");
+	if (input.hostedSize !== undefined && input.hostedSize !== null && !isHostedSize(input.hostedSize)) throw bad("Choose a hosted size: Small, Medium or Large.");
 	if (isHostedSize(input.hostedSize) && place.kind !== "hosted") throw bad("A hosted size is for an item that runs hosted.");
 	return {
 		mode: input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate"),

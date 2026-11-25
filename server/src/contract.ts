@@ -1752,7 +1752,7 @@ export interface PlacementNeeds {
 	tags?: string[];
 	screenshots?: boolean;
 	egress?: "open" | "restricted";
-	profile?: "docker-hardened" | "docker-windlass-sandbox" | "e2b-open";
+	profile?: "docker-hardened" | "docker-windlass-sandbox" | "e2b-open" | "daytona";
 	cpus?: number;
 	memoryGiB?: number;
 }

@@ -1,6 +1,6 @@
-import type { ChatgptLogins, SandboxLayer } from "../api.js";
-import { HostedSandboxes } from "../hosted.js";
-import { SandboxWindlass, type TurnOptions } from "../turn.js";
+import type { SandboxLayer } from "../api.js";
+import { hostedLayer } from "../hosted.js";
+import type { TurnOptions } from "../turn.js";
 import type { E2bClient } from "./client.js";
 import { type E2bSettings, readE2bKey, readE2bSettings } from "./config.js";
 import { E2bProvider, type E2bProviderOptions } from "./sandboxes.js";
@@ -19,18 +19,5 @@ export function createE2bSandboxLayer(parts: LayerParts, options: E2bLayerOption
 	const settings = options.settings ?? readE2bSettings();
 	let version = settings.windlassVersion;
 	const provider = new E2bProvider(client, settings, { ...options, onVersion: value => { version ??= value; } });
-	const windlass = new SandboxWindlass(parts.tokens, { version: async () => version, problem: async () => null }, options.turn);
-	const logins: ChatgptLogins = {
-		start: (...args) => parts.logins.start(...args),
-		finish: (...args) => parts.logins.finish(...args),
-		adopt: (...args) => parts.logins.adopt(...args),
-		status: uid => parts.logins.status(uid),
-		ensureUserVolume: uid => parts.logins.ensureUserVolume(uid),
-		async logout(uid) {
-			await parts.logins.logout(uid);
-			// Each running microVM holds its own token file after the sign-in is forgotten.
-			await provider.forgetTokenFiles(uid).catch((error: unknown) => console.warn(`[wlp] e2b.token_files_left uid=${uid}: the access token files of the user's running turns could not be removed (${error instanceof Error ? error.message : String(error)}); each expires within the hour`));
-		},
-	};
-	return { sandboxes: new HostedSandboxes(provider), windlass, logins, tokens: parts.tokens, backups: parts.backups ?? null };
+	return hostedLayer(parts, provider, async () => version, options.turn);
 }

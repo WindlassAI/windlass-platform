@@ -34,6 +34,7 @@ import { dayOf, TOKEN_USAGE_TABLE, recordTurnTokens, tokensOn } from "../server/
 import { checkHostedTurn } from "./hosted-agent-turn.js";
 import { machineLayer } from "../server/src/sandbox/runner-layer.js";
 import { readE2bSettings } from "../server/src/sandbox/e2b/config.js";
+import { FakeE2b } from "../server/src/sandbox/e2b/fake.js";
 import { E2bSandboxHandle, E2bProvider } from "../server/src/sandbox/e2b/sandboxes.js";
 import { DockerSandboxes } from "../server/src/sandbox/sandboxes.js";
 import type { DockerModelRelay } from "../server/src/sandbox/model-relay.js";
@@ -50,6 +51,15 @@ function expect(what: string, ok: boolean, detail = ""): void {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const REAL_A = "real-chatgpt-token-A-" + "a".repeat(48);
 const REAL_B = "real-chatgpt-token-B-" + "b".repeat(48);
+
+async function relayGuest(uid: string, session: string, settings = readE2bSettings({
+	WLP_MODEL_RELAY_URL: "https://relay.example.com", WLP_HOSTED_WINDLASS_VERSION: "0.7.1", WLP_TURN_TIMEOUT_MS: "60000",
+})) {
+	const client = new FakeE2b();
+	const owner = new E2bProvider(client, settings, { log() {} });
+	const connection = await client.create({ template: "test", timeoutMs: 60_000, metadata: {}, envs: {}, onTimeout: "kill" });
+	return new E2bSandboxHandle(owner, connection, connection.sandboxId, uid, "e2b", "auto", undefined, session);
+}
 
 async function machineKeyChecks() {
 	const uid = "owner", session = "turn", machine = "paired", generation = "first";
@@ -443,8 +453,7 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 }
 {
 	// An E2B sandbox with an empty wlp_session refuses the relay, and its turn gets nothing.
-	const owner = { modelRelayOrigin: "https://relay.example.com", relayLeaseMs: 60_000 };
-	const handle = new E2bSandboxHandle(owner as never, {} as never, "sbx", "u1", "e2b", "auto", undefined, "");
+	const handle = await relayGuest("u1", "");
 	const written: string[] = [];
 	(handle as unknown as { writeSecretFile: (p: string, c: string) => Promise<void> }).writeSecretFile = async (_p, c) => { written.push(c); };
 	const file = new TokenFile(handle, { current: async () => ({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 }) } as never, { log: () => {} });
@@ -566,7 +575,7 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 	const generation = randomBytes(16).toString("hex");
 	const keyLease = { provider, generation, harness: "opencode" as const };
 	const origin = "https://relay.example.com";
-	const e2b = new E2bSandboxHandle({modelRelayOrigin: origin, relayLeaseMs:60_000, turnLimitMs:60_000, windlassSettingsKeys: true} as never, {} as never, "box", uid, "e2b", "auto", undefined, sessionId);
+	const e2b = await relayGuest(uid, sessionId);
 	const lease = await openModelKeyRelay(e2b, sessionId, keyLease);
 	assert.ok(!("hand" in lease));
 	const auth = provider === "anthropic" ? "x-api-key" : provider === "google" ? "x-goog-api-key" : "authorization";
@@ -881,8 +890,7 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 		expect(`with the template's Windlass ${version || "unknown"} the relay is off for E2B, and api.openai.com stays`, readE2bSettings(old).modelRelayOrigin === null && readE2bNetwork(old).hosts.includes("api.openai.com") && "off" in e2bModelRelay(old));
 	}
 	const settings = readE2bSettings(env({ WLP_E2B_WINDLASS_VERSION: "0.6.0" }));
-	const owner = new E2bProvider({} as never, settings, { log() {} });
-	const guest = new E2bSandboxHandle(owner, {} as never, "box", "u1", "e2b", "auto", undefined, "session");
+	const guest = await relayGuest("u1", "session", settings);
 	let content = "";
 	guest.writeSecretFile = async (_path, data) => { content = data; };
 	const file = new TokenFile(guest, { current: async () => ({ accessToken: REAL_A, expiresAt: Date.now() + 3_600_000 }) } as never, { log() {} });

@@ -113,7 +113,7 @@ Hobby plan. [operating.md, "E2B"](operating.md#e2b) explains each.
 | `WLP_E2B_TEMPLATE`, `WLP_E2B_SHOTS_TEMPLATE` | the small size's templates (defaults `windlass-platform-sandbox` and `windlass-platform-sandbox-shots`), for the build scripts and the server |
 | `WLP_E2B_TEMPLATE_STANDARD`, `WLP_E2B_TEMPLATE_LARGE`, `WLP_E2B_SHOTS_TEMPLATE_STANDARD`, `WLP_E2B_SHOTS_TEMPLATE_LARGE` | the other sizes' templates (defaults `windlass-platform-sandbox-standard`, `-large`, and the same with `-shots`) |
 | `WLP_E2B_NETWORK`, `WLP_E2B_NETWORK_ALLOW` | E2B egress mode (`open` by default, `restricted` or `none`). In restricted mode the allow list accepts comma-separated exact hosts and presets. See [E2B](operating.md#e2b). |
-| `WLP_E2B_SIZES` | the hosted sizes whose templates are built, comma-separated: `small`, `standard`, `large` (default `small`; small is always offered). Work items default to standard |
+| `WLP_E2B_SIZES` | the hosted sizes whose templates are built, comma-separated: `small`, `standard`, `large` (default `small`; small is always offered). Work items default to Medium |
 | `WLP_E2B_SIZE` | `sandbox/e2b/build.sh` only: which size to build (default `small`): 1 vCPU and 1 GiB, 2 and 4 GiB, 4 and 8 GiB. |
 | `WLP_E2B_DEPLOYMENT` | marks every sandbox of this deployment in its metadata (default `default`); different for another deployment that shares the E2B account |
 | `WLP_E2B_MAX_RUNNING` | how many of the deployment's sandboxes may run at the same time (default 3); allow for other deployments sharing the account’s provider quota |

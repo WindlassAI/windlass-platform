@@ -76,7 +76,8 @@
 											"enum": [
 												"docker-hardened",
 												"docker-windlass-sandbox",
-												"e2b-open"
+												"e2b-open",
+												"daytona"
 											]
 										},
 										"cpus": {

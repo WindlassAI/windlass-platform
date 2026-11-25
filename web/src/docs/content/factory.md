@@ -31,7 +31,7 @@ Each level needs at least 80% of its checks and every earlier level. The levels 
 6. Where the platform offers orchestration, the **File** button says how the item runs: **File · Plan first** or **File · Quick**. Its menu switches between them: **Plan first**, where a planner splits it into subtasks you approve, then they run; or **Quick**, where one agent goes straight to a pull request. Your browser remembers the last choice.
 7. Press <kbd>Enter</kbd>, or choose **File**, to file it and start it.
 
-To file it without starting it, choose **File as a draft** in the **File** menu, or press <kbd>Alt</kbd>+<kbd>Enter</kbd>. Start a draft later from its page. **Options**, the sliders icon, leads to the repository's saved settings, such as screenshots. Where the platform offers [hosted sizes](/docs/start-an-agent#hosted-sizes), it also lists them with their price an hour: a hosted work item runs on **Standard** (2 vCPU, 4 GiB) unless you choose another here or the repository saved one. Its reviewer runs on the same size. An item's hosted time and the daily allowance are in seconds, whatever the size.
+To file it without starting it, choose **File as a draft** in the **File** menu, or press <kbd>Alt</kbd>+<kbd>Enter</kbd>. Start a draft later from its page. **Options**, the sliders icon, leads to the repository's saved settings, such as screenshots. Where the platform offers [hosted sizes](/docs/start-an-agent#hosted-sizes), it also lists them with their price an hour: a hosted work item runs on **Medium** (2 vCPU, 4 GiB) unless you choose another here or the repository saved one. Its reviewer runs on the same size. An item's hosted time and the daily allowance are in seconds, whatever the size.
 
 ### From a repository
 
@@ -402,7 +402,7 @@ The plan says what the feature is for, what it must do, what is left out of it a
 
 On the item's page the plan's goal comes first, then **Requirements**, **Done when** and **Not in it** as short lists. A long list shows its first three lines and **Show N more**. A plan that was set aside, for example after its revisions were used, is marked **superseded** and folded into one line. Choose it to read the plan.
 
-A subtask can request up to four slots on a runner that reports per-slot CPU and memory. Older runners support one slot per subtask. On hosted, the CPUs and memory a subtask names choose the least [hosted size](/docs/start-an-agent#hosted-sizes) that has them, up to 4 vCPU and 8 GiB; a subtask that names none runs on the feature's size, **Standard** by default. A feasible machine that is busy or offline can be approved, and the subtask waits for capacity.
+A subtask can request up to four slots on a runner that reports per-slot CPU and memory. Older runners support one slot per subtask. On hosted, the CPUs and memory a subtask names choose the least [hosted size](/docs/start-an-agent#hosted-sizes) that has them, up to 4 vCPU and 8 GiB; a subtask that names none runs on the feature's size, **Medium** by default. A feasible machine that is busy or offline can be approved, and the subtask waits for capacity.
 
 The planner may ask you questions with the plan. It may also say that one item is enough. The item shows the planner’s reason and offers **Approve for one implementer** or **Ask for subtasks**.
 

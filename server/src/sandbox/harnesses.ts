@@ -245,7 +245,7 @@ export function listedHarness<T extends KeyHarness & ReportedSignIn & { method?:
 
 export const machineHarnesses = { claude: CLAUDE, opencode: OPENCODE, codex: CODEX };
 
-export const hostedProfiles: SandboxProfileId[] = ["docker-hardened", "e2b-open"];
+export const hostedProfiles: SandboxProfileId[] = ["docker-hardened", "e2b-open", "daytona"];
 
 export function hostedHarness(id: AcpProfile["id"]): AcpProfile {
 	const agent = machineHarnesses[id];
@@ -335,7 +335,7 @@ export function itemProfiles(id: HarnessId): SandboxProfileId[] {
 
 /** The mode an item's session of a machine harness runs in on a profile; undefined for Windlass or a profile it has none for. */
 export function itemModeOf(id: HarnessId | undefined, profile: SandboxProfileId): string | undefined {
-	return machineHarness(id)?.itemModes[profile === "e2b-open" ? "docker-hardened" : profile];
+	return machineHarness(id)?.itemModes[(profile === "e2b-open" || profile === "daytona") ? "docker-hardened" : profile];
 }
 
 /** Why a work item cannot run this agent in this profile, or null when it can. Windlass is the profile's to judge. */
