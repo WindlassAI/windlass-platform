@@ -1,11 +1,5 @@
-// Windlass's model relay (docs/model-relay.md). A Settings-key record holds a scoped platform
-// placeholder; only the platform relay resolves the saved key. This container runs outside every
-// session's namespaces. Each turn's ChatGPT access token is written into this container's private tmpfs,
-// one file per turn's nonce: `{"accessToken", "expiresAt", "lease", "user"}`. The session gets only the
-// lease (`wlp-model.<32 hex>`) as the bearer in its token file. The trusted forwarder in the session's
-// network namespace prefixes each connection with the turn's nonce, so the bearer counts only on that
-// turn's connections, and only while its file is here. When the file goes (the turn ended) or its token
-// expires, the turn's requests still running are stopped, and an expired file is deleted.
+// The relay binds the session's placeholder to its forwarder's nonce and checks its private lease file.
+// ChatGPT tokens stay in relay tmpfs. Settings-key requests carry a scoped proof to the platform.
 const { timingSafeEqual } = require('node:crypto');
 const { readFile, readdir, unlink } = require('node:fs/promises');
 const { rmSync, watch } = require('node:fs');
@@ -20,7 +14,7 @@ const SOCKET = '/workspace/relay.sock';
 const HOST = '127.0.0.1:17893';
 const LEASE = /^wlp-model\.[a-f0-9]{32}$/;
 const NONCE = /^[a-f0-9]{32}$/;
-const { wires, wirePath, wireMethod: methodFor, forwardHost, forwardPlaceholder, validProofKey, forwardProof, proofHeader } = require('./wires.cjs');
+const { wires, allowedBetas, wirePath, wireMethod: methodFor, forwardHost, forwardPlaceholder, validProofKey, forwardProof, proofHeader } = require('./wires.cjs');
 function anyMethod(path) {
 	for (const provider of Object.keys(wires)) {
 		const method = methodFor(provider, path);
@@ -49,9 +43,8 @@ function wireTarget(provider, path, incoming, credential) {
 	if (wire.betas && incoming['anthropic-beta'] !== undefined) {
 		const beta = incoming['anthropic-beta'];
 		if (method !== 'POST' || typeof beta !== 'string') return;
-		// Like the machine relay: a beta the relay does not know is dropped, not the request.
-		const values = beta.split(',').map(value => value.trim()).filter(value => wire.betas.includes(value));
-		if (values.length) headers['anthropic-beta'] = values.join(',');
+		const values = allowedBetas(beta, wire.betas);
+		if (values) headers['anthropic-beta'] = values;
 	}
 	if (provider === 'openai' && method === 'POST' && incoming['content-encoding'] === 'zstd') headers['content-encoding'] = 'zstd';
 	for (const [name, value] of Object.entries(incoming)) {

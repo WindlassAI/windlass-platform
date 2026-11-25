@@ -49,12 +49,12 @@ const { errorBody, LEASE_ENDED, wireTarget, anyMethod, placeholderOf } = require
 	anyMethod(path: string): "GET" | "POST" | undefined;
 	placeholderOf(headers: Record<string, string>): string | undefined;
 };
-/** The answers the relay can decode itself, in Windlass's order: what of the client's `accept-encoding` is passed on. */
+/** Preserve Windlass's encoding preference among codecs the relay can decode. */
 const DECODERS = new Map<string, () => NodeJS.ReadWriteStream>([
 	["gzip", createGunzip], ["deflate", createInflate], ["br", createBrotliDecompress],
 	...((typeof (zlib as { createZstdDecompress?: unknown }).createZstdDecompress === "function" ? [["zstd", (zlib as unknown as { createZstdDecompress: () => NodeJS.ReadWriteStream }).createZstdDecompress]] : []) as [string, () => NodeJS.ReadWriteStream][]),
 ]);
-/** How long a token fetched from another server process's lease is used before it is asked again; also how often a request of such a lease looks whether it has ended. */
+/** Remote leases share a token-cache and revocation-poll interval. */
 const REMOTE_CACHE_MS = 5_000;
 const UPSTREAM_TIMEOUT_MS = 600_000;
 
@@ -62,12 +62,12 @@ function refusal(status: number, message: string, headers: Record<string, string
 	const type = status === 401 ? "authentication_error" : status === 403 ? "permission_error" : status === 429 ? "rate_limit_error" : "api_error";
 	return Response.json({ error: { type, code, message } }, { status, headers: { ...headers, "cache-control": "no-store" } });
 }
-/** The relay has no live lease for the placeholder: never the provider's refusal of the user's token. */
+/** Distinguish an ended lease from an upstream authentication error. */
 const leaseEnded = (message = "The session placeholder is no longer valid: its turn has ended.") => refusal(401, message, {}, LEASE_ENDED);
 
 export interface RelayRouteDeps {
 	paired(uid: string, machine: string): Promise<boolean>;
-	/** B1 returns a transit blob bound to this request nonce. */
+	/** Returns a sealed key bound to this request nonce. */
 	key(uid: string, provider: ModelProvider, request: string): Promise<string | null>;
 	/** The session actor returns a sealed token or a key reference. */
 	remote(uid: string, sessionId: string, nonce: string, request: string, consume?: boolean): Promise<RemoteLease | null>;
@@ -103,12 +103,7 @@ const defaults: RelayRouteDeps = {
 	now: () => Date.now(),
 };
 
-/**
- * The request to api.openai.com as Windlass sends it there itself: the headers it is given and no others
- * (fetch's own `sec-fetch-mode`, `accept-language` and `accept-encoding` are not added), the body with its
- * length, and no redirect followed. The answer is decoded here when it was compressed, and comes back as a
- * Response whose headers no longer name an encoding.
- */
+/** Use Node HTTP to send only approved headers, avoid redirects, and decode compressed replies. */
 export function upstreamFetch(url: string, init: RequestInit): Promise<Response> {
 	const target = new URL(url);
 	const body = init.body === undefined || init.body === null ? undefined : Buffer.from(init.body as Uint8Array);
@@ -141,7 +136,7 @@ export function upstreamFetch(url: string, init: RequestInit): Promise<Response>
 
 const cached = new Map<string, { token: Extract<RelayToken, { kind: "access" }>; until: number }>();
 
-/** The lease's current token; null when it has none (ended, or not yet handed one). An ended lease is remembered as such until its placeholder expires. */
+/** Revoked nonces stay invalid until their placeholders expire. */
 async function tokenFor(deps: RelayRouteDeps, placeholder: Placeholder, machine: string | undefined, consume = false): Promise<RelayToken | "limit" | null> {
 	const { uid, sessionId, nonce, expiresAt: placeholderExpires } = placeholder;
 	if (machine !== placeholder.machine) return null;
@@ -182,11 +177,7 @@ async function tokenFor(deps: RelayRouteDeps, placeholder: Placeholder, machine:
 	return access;
 }
 
-/**
- * Requests of leases another server process holds: that process's `close` cannot reach them, so each such
- * lease is looked at every REMOTE_CACHE_MS while it has a request running, and its requests are aborted
- * once it has ended.
- */
+/** A remote owner cannot abort local requests directly. Poll its lease while requests are active. */
 const watched = new Map<string, { lookup: () => Promise<RelayToken | null>; expires: number; requests: Set<AbortController> }>();
 let watching: NodeJS.Timeout | null = null;
 function watchRemote(nonce: string, expires: number, lookup: () => Promise<RelayToken | null>, controller: AbortController): () => void {
@@ -212,11 +203,7 @@ function watchRemote(nonce: string, expires: number, lookup: () => Promise<Relay
 	};
 }
 
-/**
- * The relay's answer to a request of the server's port, or null when it is not the relay's. On
- * WLP_MODEL_RELAY_URL's host only the relay's model routes are answered, and everything else is refused; on
- * any other host the relay's paths are not served. Without WLP_MODEL_RELAY_URL there is no relay route.
- */
+/** The relay host serves only relay routes. Other hosts reject those paths. */
 export function modelRelayRoute(request: Request, pathname: string, relayHost: string | null, deps: RelayRouteDeps = defaults): Promise<Response> | Response | null {
 	const onRelayHost = relayHost !== null && requestHost(request.headers.get("host") ?? new URL(request.url).host) === relayHost;
 	const relayPath = pathname.startsWith(RELAY_PREFIX + "/");
@@ -225,13 +212,7 @@ export function modelRelayRoute(request: Request, pathname: string, relayHost: s
 	return null;
 }
 
-/**
- * The request body, read as it comes and counted: past `max` in this request, or past the budget of all
- * bodies in flight, reading stops and the request is refused. It is sent upstream whole, with its length,
- * as Windlass sends it to api.openai.com itself: the server's HTTP listener (RivetKit's) has the whole body
- * in memory before the route runs, so streaming it on saved nothing, and a chunked upload with no length
- * is a request shape api.openai.com was never sent by Windlass (docs/model-relay.md, "Limits").
- */
+/** RivetKit already buffers uploads. Apply both budgets and send the body upstream with its length. */
 async function readBody(request: Request, max: number, budget: BodyBudget): Promise<{ body: Uint8Array; taken: number } | { over: "large" | "busy"; taken: number }> {
 	const parts: Uint8Array[] = [];
 	let size = 0;
@@ -259,7 +240,7 @@ async function readBody(request: Request, max: number, budget: BodyBudget): Prom
 	return { body: Buffer.concat(parts), taken: size };
 }
 
-/** At most 60 lines a minute, so that requests nobody's turn sent cannot fill the log; the next line says how many were left out. */
+/** Bound log volume for unsolicited requests and report dropped entries. */
 const logged = { minute: 0, lines: 0, dropped: 0 };
 function relayLog(line: string): void {
 	const minute = Math.floor(Date.now() / 60_000);
