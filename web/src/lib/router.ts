@@ -141,6 +141,31 @@ export function href(route: Route): string {
 	return pathOf(route) + (search ? `?${search}` : "") + fragment;
 }
 
+const LAST_APP_PAGE = "wlp.lastAppPage";
+
+export function rememberAppPage(): void {
+	const page = parseRoute(location.pathname).name;
+	if (page === "docs" || page === "notfound" || page === "mock-authorize") return;
+	try {
+		// Login and integration callbacks can carry one-time credentials.
+		const search = page === "signin" ? new URL(href({ name: "signin" }), location.origin).search : location.search;
+		const hash = /^#(?:github|linear)(?:-error)?=/.test(location.hash) ? "" : location.hash;
+		sessionStorage.setItem(LAST_APP_PAGE, location.pathname + search + hash);
+	} catch {
+		// Storage may be disabled.
+	}
+}
+
+export function lastAppHref(): string {
+	try {
+		const saved = sessionStorage.getItem(LAST_APP_PAGE);
+		if (saved?.startsWith("/") && new URL(saved, location.origin).origin === location.origin) return saved;
+	} catch {
+		// A fresh tab or unavailable storage falls back to the app's home.
+	}
+	return href({ name: "home" });
+}
+
 const listeners = new Set<() => void>();
 
 function subscribe(listener: () => void): () => void {
@@ -155,8 +180,9 @@ function subscribe(listener: () => void): () => void {
 export function navigate(route: Route, options: { replace?: boolean } = {}): void {
 	const target = href(route);
 	if (target === location.pathname + location.search + location.hash) return;
+	if (route.name === "docs") rememberAppPage();
 	if (options.replace) history.replaceState(null, "", target);
-	else history.pushState(null, "", target);
+	else history.pushState({ fromPage: parseRoute(location.pathname).name }, "", target);
 	for (const listener of listeners) listener();
 }
 

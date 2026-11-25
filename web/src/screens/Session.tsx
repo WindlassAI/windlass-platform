@@ -22,6 +22,7 @@ import { hostedAgentProblem } from "../../../server/src/sandbox/harnesses.js";
 import { monthSentence, monthState } from "../lib/hosted";
 import { USAGE_LOW_SHARE, type ItemView, type MachineSummary, type SandboxPlace, type SessionSnapshot, type SessionSummary, type UsageNumbers } from "@contract";
 import { useCallback, useMemo, useRef, useState } from "react";
+import { MissingPageLinks } from "../components/MissingPageLinks";
 import { HarnessStatus } from "../components/HarnessStatus";
 import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
@@ -385,13 +386,14 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 	);
 
 	if (state.phase === "missing") {
+		const from = history.state?.fromPage;
+		const fromItem = from === "item" || from === "factory";
+		const section = state.missingSection ?? (fromItem ? "factory" : platform.info?.items ? "both" : "home");
 		return (
 			<main className="state state-page">
 				<Mark size={56} />
 				<h1 className="display display-small">This agent was deleted</h1>
-				<a className="button button-outline" {...linkProps({ name: "home" })}>
-					Back to your agents
-				</a>
+				<MissingPageLinks section={section} />
 			</main>
 		);
 	}

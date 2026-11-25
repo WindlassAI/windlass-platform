@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { ArrowLeftIcon, ChevronIcon, CrossIcon, SearchIcon } from "../components/Icons";
 import { ThemeToggle, Wordmark } from "../components/TopBar";
-import { href, navigate, useHash, useRoute } from "../lib/router";
+import { href, lastAppHref, navigate, useHash, useRoute } from "../lib/router";
 import { useTheme, type Theme } from "../lib/theme";
 import { docsSource } from "./content";
 import { DOCS_PAGES, DOCS_SECTIONS, docsPage, docsPath, docsTitle, type DocsPage } from "./pages";
@@ -356,11 +356,12 @@ export interface DocsViewProps {
 	onToggleTheme(): void;
 	/** The heading you are reading, for the contents. */
 	activeHeading?: string;
+	returnHref?: string;
 	/** What was typed into the static page's search before the app started. */
 	initialSearch?: StaticSearch;
 }
 
-export function DocsView({ slug, theme, onToggleTheme, activeHeading = "", initialSearch }: DocsViewProps) {
+export function DocsView({ slug, theme, onToggleTheme, activeHeading = "", returnHref = "/", initialSearch }: DocsViewProps) {
 	const page = docsPage(slug);
 	const rendered = useMemo(() => (page ? renderDocs(docsSource(page)) : null), [page]);
 	const [menu, setMenu] = useState<"closed" | "nav" | "search">("closed");
@@ -430,7 +431,7 @@ export function DocsView({ slug, theme, onToggleTheme, activeHeading = "", initi
 						<SearchIcon />
 					</button>
 					<ThemeToggle theme={theme} onToggle={onToggleTheme} />
-					<a className="button button-outline button-small docs-open" href={appHref()}>
+					<a className="button button-outline button-small docs-open" href={returnHref}>
 						Open Windlass
 					</a>
 					<button type="button" className="icon-button docs-bar-narrow" aria-label="Menu" aria-expanded={menu === "nav"} aria-controls="docs-drawer" onClick={() => setMenu(menu === "nav" ? "closed" : "nav")}>
@@ -451,7 +452,7 @@ export function DocsView({ slug, theme, onToggleTheme, activeHeading = "", initi
 				</div>
 				{menu !== "closed" ? <DocsSearch autoFocus={menu === "search"} onDone={() => setMenu("closed")} /> : null}
 				<DocsNav current={page} onFollow={() => setMenu("closed")} />
-				<a className="button button-outline docs-drawer-open" href={appHref()}>
+				<a className="button button-outline docs-drawer-open" href={returnHref}>
 					Open Windlass
 				</a>
 			</div>
@@ -611,6 +612,6 @@ export function DocsApp({ theme: given, onToggleTheme: givenToggle, initialSearc
 		first.current = false;
 	}, [slug, hash]);
 
-	return <DocsView slug={slug} theme={theme} onToggleTheme={onToggleTheme} activeHeading={active} initialSearch={initialSearch} />;
+	return <DocsView slug={slug} theme={theme} onToggleTheme={onToggleTheme} activeHeading={active} returnHref={lastAppHref()} initialSearch={initialSearch} />;
 }
 

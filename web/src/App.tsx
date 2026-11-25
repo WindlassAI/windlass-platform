@@ -1,8 +1,9 @@
 /** The shell: which screen the address asks for, behind the sign-in where it has to be. */
 import { lazy, Suspense, useEffect, useState } from "react";
+import { MissingPageLinks } from "./components/MissingPageLinks";
 import { Mark } from "./components/Icons";
 import { TopBar } from "./components/TopBar";
-import { linkProps, navigate, useRoute, type Route } from "./lib/router";
+import { navigate, rememberAppPage, useRoute, type Route } from "./lib/router";
 import { useTheme } from "./lib/theme";
 import { Factory } from "./screens/Factory";
 import { Item, ItemCrumb, useItem } from "./screens/Item";
@@ -124,6 +125,13 @@ export function App() {
 	const { auth, client, platform } = useApp();
 	const [theme, toggleTheme] = useTheme();
 
+	useEffect(() => {
+		if (route.name === "docs") return;
+		rememberAppPage();
+		window.addEventListener("pagehide", rememberAppPage);
+		return () => window.removeEventListener("pagehide", rememberAppPage);
+	}, [route]);
+
 	// Home is the landing page for someone who is not signed in, so it is the one list that does not send them to sign in.
 	const needsAuth = (route.name === "home" && route.scope === "none") || route.name === "factory" || route.name === "new" || route.name === "usage" || route.name === "settings" || route.name === "plans" || route.name === "machines" || route.name === "session" || route.name === "item" || route.name === "repository";
 	/** A deployment that does not offer machines has no such page. While its information loads, the page says it is loading. */
@@ -164,10 +172,7 @@ export function App() {
 					<Mark size={56} />
 					<p className="eyebrow">404</p>
 					<h1 className="display display-small">Nothing at this address</h1>
-					<p>The page you asked for does not exist. Agents live under <code>/agents/…</code>.</p>
-					<a className="button button-outline" {...linkProps(auth ? { name: "home" } : { name: "signin" })}>
-						{auth ? "Back to your agents" : "Go to sign in"}
-					</a>
+					<MissingPageLinks section={!auth ? "signin" : platform.info?.items ? "both" : "home"} />
 				</main>
 			</div>
 		);

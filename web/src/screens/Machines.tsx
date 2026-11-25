@@ -1029,12 +1029,20 @@ export function Machines({ adding }: { adding: boolean }) {
 	const maxMachines = useMachineLimit();
 	const full = list !== null && list.length >= maxMachines;
 	const add = () => navigate({ name: "machines", add: true });
-	const closeAdd = () => navigate({ name: "machines" }, { replace: true });
+	const closingAdd = useRef(false);
+	const closeAdd = useCallback(() => {
+		// Pairing the last allowed machine can also close the dialog through the limit check below.
+		if (closingAdd.current) return;
+		closingAdd.current = true;
+		if (history.state?.fromPage) history.back();
+		else navigate({ name: "machines" }, { replace: true });
+	}, []);
 	// The address a runner prints opens the dialog once what it needs is known; an account that cannot add another goes to its list.
 	const canAdd = (list !== null || machines.error !== null) && !full;
 	useEffect(() => {
-		if (adding && full) navigate({ name: "machines" }, { replace: true });
-	}, [adding, full]);
+		if (!adding) closingAdd.current = false;
+		else if (full) closeAdd();
+	}, [adding, full, closeAdd]);
 
 	return (
 		<main className="home usage repo machines">

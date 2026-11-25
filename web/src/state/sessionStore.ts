@@ -6,6 +6,8 @@ import { applyDelta, applyItem, emptyView, fromSnapshot, type SessionView } from
 export interface SessionState {
 	/** "loading" until the first snapshot; "missing" when there is no such session; "failed" when it cannot be opened. */
 	phase: "loading" | "ready" | "missing" | "failed";
+	/** The last known owner of a deleted agent, when its summary was available. */
+	missingSection?: "factory" | "home";
 	connection: ConnectionState;
 	error: PlatformError | null;
 	summary: SessionSummary | null;
@@ -93,8 +95,12 @@ export function createSessionStore(api: SessionApi): SessionStore {
 						set({ connection });
 						return;
 					}
-					const missing = error?.code === "not_found";
-					set({ connection, error: error ?? null, ...(missing && { summary: null, question: null }), phase: missing ? "missing" : state.phase === "ready" ? "ready" : "failed" });
+					if (error?.code === "not_found") {
+						const missingSection = state.summary?.item ? "factory" : state.summary ? "home" : state.missingSection;
+						set({ connection, error, phase: "missing", missingSection, summary: null, question: null });
+					} else {
+						set({ connection, error: error ?? null, phase: state.phase === "ready" ? "ready" : "failed" });
+					}
 				},
 			});
 		},
