@@ -989,6 +989,7 @@ require("node:module").syncBuiltinESMExports();`);
 			srv.cut(link);
 			await wait(30_000);
 			const attempts = srv.state.connectionRequests - connectionRequests;
+			const reports = srv.state.reports;
 			const restored = performance.now();
 			srv.restore();
 			// The longest wait the runner allows itself (runner/src/control.ts): an attempt begun just before the
@@ -997,6 +998,8 @@ require("node:module").syncBuiltinESMExports();`);
 			await until(() => srv.state.connections > connections, "Runner took over 25s to reconnect.", 25_000);
 			assert.ok(attempts >= 3 && attempts <= 5, `Made ${attempts} attempts during the cut.`);
 			ok(`Runner reconnected ${((performance.now() - restored) / 1000).toFixed(2)}s after a 30s ${link} cut, with ${attempts} attempts during the cut.`);
+			// The server counts a hello before the runner receives its welcome and resets its backoff.
+			await until(() => srv.state.reports > reports, "Runner did not report after reconnecting.");
 		}
 
 		const missing = join(tmp, "missing.cjs");
