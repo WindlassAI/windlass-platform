@@ -5077,6 +5077,12 @@ export const agentSession = actor({
 			if (answer.granted) void c.keepAwake(takeDelivered(c, meta, row.key, answer.slot));
 		},
 
+		internalSandboxReclaimed: async (c, said: string): Promise<void> => {
+			requireService(c);
+			note(c, liveMeta(c).turns, "info", said);
+			await persist(c);
+		},
+
 		internalOwnerNote: async (c, input: { itemId: string; text: string }): Promise<boolean> => {
 			requireService(c);
 			const meta = liveMeta(c);
@@ -5253,11 +5259,12 @@ export const agentSession = actor({
 		 * that was not used for long is, the timeline says who did it and what became of the agent's
 		 * memory, and the next prompt starts a new sandbox. Refused while the session works.
 		 */
-		internalFreeSandbox: async (c, throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean; sizeUnavailable?: HostedSize }> => {
+		internalFreeSandbox: async (c, throughReviewRun?: number, hostedSize?: HostedSize, automatic?: { reason: string; cutoff?: number }): Promise<{ freed: boolean; sizeUnavailable?: HostedSize }> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			if (c.vars.idling) await c.vars.idling.catch(() => undefined);
-			if (throughReviewRun !== undefined && (meta.origin?.role !== "reviewer" || (meta.reviewRun ?? 0) > throughReviewRun)) return { freed: false };
+			if (automatic?.cutoff !== undefined && Math.max(meta.updatedAt, meta.lastUsedAt) >= automatic.cutoff) return { freed: false };
+			if (throughReviewRun != null && (meta.origin?.role !== "reviewer" || (meta.reviewRun ?? 0) > throughReviewRun)) return { freed: false };
 			// A stored OOM choice can outlive Pro. Check again before touching the old sandbox.
 			if (meta.place.kind === "hosted" && hostedSize && billing(meta.uid) && !(await userActor(c, meta.uid).internalHostedSizes()).includes(hostedSize)) {
 				return { freed: false, sizeUnavailable: hostedSize };
@@ -5271,7 +5278,7 @@ export const agentSession = actor({
 				const layer = await layerOf(c, meta);
 				if (id) {
 					const memory = !meta.windlassSessionId ? null : !(await privateSessionData(meta, layer.sandboxes, id)) ? "kept" : layer.backups && meta.backup?.windlassSessionId === meta.windlassSessionId ? "copied" : "lost";
-					await removeSandbox(c, meta, id, throughReviewRun === undefined ? freedNote(memory) : "Released the reviewer’s sandbox for the finished run.");
+					await removeSandbox(c, meta, id, throughReviewRun == null ? freedNote(memory, automatic?.reason) : "Released the reviewer’s sandbox for the finished run.");
 					console.log(`[wlp] sandbox.freed id=${id} session=${meta.sessionId}`);
 				}
 				// Under the same exclusion: what the provider still has for the session goes with it, by the session's

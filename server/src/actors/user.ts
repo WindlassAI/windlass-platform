@@ -15,6 +15,7 @@ import { accountLimits, changeUserLimit, limitsSubject, type LimitAuditRow, type
 import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage, type AccountLocation } from "./provider-accounts.js";
 import type { UsageObservation } from "../provider-usage.js";
 import { changed as machinesChanged, machineCatalog, itemMachines, launchPlace, listMachines, launchMachineProfiles, machineActions, machineSecrets, machineTables, credentialSource } from "./user-machines.js";
+import { keptFull, makeSandboxRoom } from "./user/kept-sandboxes.js";
 import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, plannerHostedCapacity, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { EnvironmentPlace, EnvironmentSchedule, RepositoryEnvironments, SandboxProfileId } from "../contract.js";
 import { ENVIRONMENT_SCHEDULES } from "../contract.js";
@@ -2598,6 +2599,7 @@ export const user = actor({
 			if (until !== null) await c.schedule.at(until, "internalCheckLaunch", sessionId, until);
 			await c.db.execute("UPDATE sessions SET summary = ?, launch_until = ?, launch_claim = ? WHERE id = ?", JSON.stringify(claimed), until, claim, sessionId);
 			broadcastSessions(c);
+			if (entry.place.kind === "machine" && keptFull(c, entry)) await makeSandboxRoom(c, entry);
 			return { ok: true, running: running + factorySlots(c) + 1, known: true, until, claim };
 		},
 

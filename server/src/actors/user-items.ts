@@ -81,6 +81,7 @@ import {
 } from "../contract.js";
 import { createItem, RULES } from "../factory/blueprint.js";
 import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
+import { keptFull, makeSandboxRoom, nextSandboxRelease, releaseAt, releaseDueSandboxes } from "./user/kept-sandboxes.js";
 import { admit, retryAt } from "../factory/budget.js";
 import { getLayer } from "../layer.js";
 import { REVIEW_OFF_REASON } from "../factory/review.js";
@@ -161,6 +162,8 @@ export interface ItemsState {
 	requests: Map<string, Request>;
 	slots: Map<string, Slot>;
 	queueAt: { id: string; at: number } | null;
+	arming?: Promise<void>;
+	sandboxRetries?: Map<string, number>;
 }
 
 /** A slot is held at most this long: longer than any turn may run, and the time a lost release costs. */
@@ -255,6 +258,7 @@ async function noteItem(c: ItemsCtx, given: ItemSummary): Promise<void> {
 	if (ended(summary)) await c.db.execute("UPDATE attachments SET ended_at=COALESCE(ended_at, ?) WHERE item=?", summary.updatedAt, summary.id);
 	else if (ended(held)) await c.db.execute("UPDATE attachments SET ended_at=NULL WHERE item=? AND ended_at>0", summary.id);
 	c.broadcast("items", feedOf(c.vars.items));
+	if (releaseAt(summary) !== releaseAt(held)) queueChanged(c);
 }
 
 function knownItem(c: ItemsCtx, id: unknown): ItemSummary {
@@ -707,6 +711,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 	}
 	const granted: Slot[] = [];
 	const waits: Request[] = [];
+	const capped: Request[] = [];
 	const dropped: string[] = [];
 	const removed: Request[] = [];
 	for (const request of [...state.requests.values()].sort((a, b) => a.at - b.at || (a.key < b.key ? -1 : 1))) {
@@ -738,7 +743,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 				attachRetryAt: machine.since <= request.at ? request.deferUntil : null,
 				running: machine.sandboxes.filter(box => box.state === "running" && box.sessionId !== session.id).length,
 				max: machine.maxRunning ?? Infinity,
-				keptFull: machine.maxSandboxes !== undefined && machine.sandboxes.length >= machine.maxSandboxes && !machine.sandboxes.some(box => box.sessionId === session.id),
+				keptFull: keptFull(c, session),
 			} : { kind: "hosted", usage, running: hostedRunning.size - (hostedRunning.has(session.id) ? 1 : 0), needsSandbox: session.sandbox === "none" && !c.vars.usage.keeps(session.id) && !c.vars.usage.shares(session.id), holders, deploymentFull: (request.deferUntil ?? 0) > now ? request.full : null },
 			attempt: request.attempt,
 		});
@@ -751,6 +756,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			if (hostedLimitsApply(session.place)) hostedRunning.add(session.id);
 			continue;
 		}
+		if (answer.keptCap) capped.push(request);
 		const before = request.wait;
 		// A try that was due counts as one more wait: the next one is further off.
 		if (retrying && before !== null && before.retryAt !== null && before.retryAt <= now) request.attempt += 1;
@@ -798,21 +804,44 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 		state.requests.delete(request.key);
 		await c.db.execute("DELETE FROM turn_request WHERE key = ?", request.key);
 	}
+	let room = false;
+	for (const request of capped) {
+		const session = c.vars.sessions.get(request.session);
+		if (state.requests.get(request.key) !== request || !session) continue;
+		if (await makeSandboxRoom(c, session)) {
+			request.wait = null;
+			room = true;
+			break;
+		}
+	}
 	for (const request of waits) {
-		if (request.wait === null) continue;
+		if (request.wait === null || state.requests.get(request.key) !== request) continue;
 		const fact = { kind: "turn_waiting" as const, at: now, key: request.key, wait: request.wait };
 		await itemActor(c, uid, request.item)
 			.internalFact(fact)
 			.catch((error: unknown) => c.log.warn({ msg: "could not tell an item why its turn waits", item: request.item, error: String(error) }));
+	}
+	if (room) {
+		const retry = await runQueue(c, answering);
+		return mine ?? retry ?? [...state.slots.values()].find(slot => slot.key === answering) ?? null;
 	}
 	await armQueue(c);
 	return mine;
 }
 
 /** One schedule, at the earliest time a waiting request is to be tried again. */
-async function armQueue(c: ItemsCtx): Promise<void> {
+function armQueue(c: ItemsCtx): Promise<void> {
+	const state = c.vars.items;
+	const work = (state.arming ?? Promise.resolve()).then(() => scheduleQueue(c));
+	state.arming = work.catch(() => {});
+	return work;
+}
+
+async function scheduleQueue(c: ItemsCtx): Promise<void> {
 	const state = c.vars.items;
 	const times = [...state.requests.values()].map((request) => request.wait?.retryAt ?? null).filter((at): at is number => at !== null);
+	const due = nextSandboxRelease(c);
+	if (Number.isFinite(due)) times.push(due);
 	if (times.length === 0) return;
 	const at = Math.max(Date.now(), Math.min(...times));
 	if (state.queueAt !== null && state.queueAt.at <= at && state.queueAt.at > Date.now()) return;
@@ -862,7 +891,10 @@ export async function notifyRemovedMachines(c: ItemsCtx, machineId?: string): Pr
 /** Something that frees capacity happened (a person's session went idle), or the actor woke: the waiting requests are tried, and the schedule armed again. Never throws. */
 export function queueChanged(c: ItemsCtx): void {
 	const { requests, slots } = c.vars.items;
-	if (requests.size === 0 && [...slots.values()].every((slot) => slot.told)) return;
+	if (requests.size === 0 && [...slots.values()].every(slot => slot.told)) {
+		void c.keepAwake(armQueue(c).catch(error => c.log.warn({ msg: "Could not schedule sandbox expiry", error: String(error) })));
+		return;
+	}
 	void c.keepAwake(runQueue(c).catch((error) => c.log.error({ msg: "the turn queue could not be run", error: String(error) })));
 }
 
@@ -1393,6 +1425,7 @@ export const itemActions = {
 		if (!fire) throw new UserError("This action is internal.", { code: "forbidden" });
 		console.log(`[wlp] schedule.fired action=${QUEUE_ACTION} uid=${c.key[0]} waiting=${c.vars.items.requests.size} late_ms=${fire.firedAt - fire.scheduledAt}`);
 		if (c.vars.items.queueAt?.id === fire.id) c.vars.items.queueAt = null;
+		await releaseDueSandboxes(c);
 		await runQueue(c, null, true);
 	},
 };

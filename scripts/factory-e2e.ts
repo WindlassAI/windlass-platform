@@ -1805,6 +1805,7 @@ async function memoryChecks(): Promise<void> {
 		const session = (id: string, item: boolean) => ({ id, status: "idle", sandbox: "none", place: { kind: "hosted" }, ...(item ? { item: { id: `i_${id}` } } : {}) });
 		const sessions = new Map([...["a", "b", "c"].map((id) => [id, session(id, true)] as const), ["own", session("own", false)] as const]);
 		const grants: string[] = [];
+		const freed: string[] = [], notes: Fact[] = [];
 		let grantFails = false;
 		const jobs: Promise<unknown>[] = [];
 		const c = {
@@ -1820,14 +1821,21 @@ async function memoryChecks(): Promise<void> {
 			schedule: { at: async () => "alarm", cancel: async () => true },
 			vars: { tokenGen: 0, items: await loadItems(db as never), machines: new Map<string, { name: string; since: number; status: string; sandboxes: unknown[] }>(), sessions, usage: new UsageBook({ dailySeconds: 100_000, holdSeconds: 60, maxKept: 20 }), profile: null },
 			client: () => ({
-				agentSession: { get: ([, id]: string[]) => ({ internalGrant: async () => (grantFails ? Promise.reject(new Error("the reply was lost")) : void grants.push(id as string)) }) },
-				workItem: { get: () => ({ internalFact: async () => undefined }) },
+				agentSession: { get: ([, id]: string[]) => ({ internalFreeSandbox: async () => {
+					const session = sessions.get(id)!;
+					assert(session.status === "idle", "tried to free a running turn");
+					session.sandbox = "none";
+					c.vars.usage.release(id);
+					freed.push(id);
+					return { freed: true };
+				}, internalGrant: async () => (grantFails ? Promise.reject(new Error("the reply was lost")) : void grants.push(id as string)) }) },
+				workItem: { get: ([, id]: string[]) => ({ internalSummary: () => c.vars.items.items.get(id), internalFact: async (fact: Fact) => { notes.push(fact); } }) },
 			}),
 		};
 		return {
 			c,
 			db,
-			grants,
+			grants, freed, notes,
 			failOnce: memory.failOnce,
 			loseGrants: (lost: boolean) => void (grantFails = lost),
 			request: (id: string) => itemActions.internalRequestTurn(c as never, { sessionId: id, itemId: `i_${id}`, key: `i_${id}:1:1:1`, title: id, startsRun: true }),
@@ -1843,6 +1851,49 @@ async function memoryChecks(): Promise<void> {
 			},
 		};
 	};
+
+	for (const machine of [false, true]) await check("memory: kept cap reclaims the oldest idle " + (machine ? "runner" : "hosted") + " sandbox", async () => {
+		const q = await queue({});
+		try {
+			const { sessions, items, usage, machines } = q.c.vars;
+			const now = Date.now();
+			const place = machine ? { kind: "machine", machineId: "m" } : { kind: "hosted" };
+			const kept = ["running", "own", "c", "b"];
+			machines.set("m", { name: "Runner", status: "online", since: now, maxSandboxes: 4,
+				sandboxes: kept.map(sessionId => ({ sessionId, state: "paused", usedAt: 0 })) } as never);
+			usage.limits.maxKept = 4;
+			Object.assign(sessions.get("a")!, { place });
+			for (const [i, id] of kept.entries()) {
+				const used = now - (5 - i) * 60_000;
+				sessions.set(id, { ...sessions.get("b")!, id, place, sandbox: "paused", updatedAt: used,
+					item: id === "own" ? undefined : { id: "i_" + id }, status: id === "running" ? "running" : "idle" } as never);
+				items.items.set("i_" + id, { id: "i_" + id, title: id, state: "review", updatedAt: used } as ItemSummary);
+				if (!machine) usage.claim(now, id);
+			}
+			assert((await q.request("a")).granted, "the turn still waited at the cap");
+			assert(q.freed.join() === "c", "wrong eviction: " + q.freed);
+			assert(q.notes.some(f => f.kind === "sandbox_reclaimed" && f.said === "Freed the sandbox of “c” to make room."), "missing eviction note");
+			return "the running turn and recent personal agent stayed; c made room before b";
+		} finally { q.close(); }
+	});
+
+	await check("memory: kept sandboxes of ended features, reviewers and parts are released on wake", async () => {
+		const q = await queue({});
+		try {
+			const { sessions, items, usage } = q.c.vars;
+			for (const [id, state] of [["feature", "cancelled"], ["reviewer", "cancelled"], ["part", "done"], ["other", "failed"]] as const) {
+				const itemId = id === "reviewer" ? "feature" : id;
+				items.items.set(itemId, { id: itemId, state, updatedAt: Date.now() } as ItemSummary);
+				sessions.set(id, { ...sessions.get("a")!, id, sandbox: "paused", item: { id: itemId } });
+				usage.claim(Date.now(), id);
+			}
+			const fire = { id: "alarm", scheduledAt: Date.now(), firedAt: Date.now() };
+			await itemActions.internalTurnQueue({ ...q.c, scheduledFire: fire } as never);
+			await itemActions.internalTurnQueue({ ...q.c, scheduledFire: fire } as never);
+			assert(q.freed.join() === "feature,reviewer,part,other" && usage.places() === 0, "unexpected releases " + q.freed);
+			return "existing claims released once for every ended item's session";
+		} finally { q.close(); }
+	});
 
 	await check("memory: a daily token wait keeps an admitted slot and the midnight schedule grants the next", async () => {
 		const clock = Date.now;

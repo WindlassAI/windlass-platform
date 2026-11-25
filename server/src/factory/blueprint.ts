@@ -521,6 +521,9 @@ function apply(c: Change, fact: Fact): boolean {
 			c.say(fact.said);
 			return true;
 		}
+		case "sandbox_reclaimed":
+			c.say(fact.said);
+			return true;
 		case "spent":
 			if (item.place.kind !== "hosted" || !(fact.hostedSeconds > item.spent.hostedSeconds)) return false;
 			item.spent.hostedSeconds = fact.hostedSeconds;

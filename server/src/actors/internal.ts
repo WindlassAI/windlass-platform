@@ -235,7 +235,8 @@ export interface SessionInternal {
 	/** Destroys the sandbox, then the actor. */
 	internalDestroy(): Promise<void>;
 	/** Removes the session's sandbox for its user, who is making room: the session and its timeline stay. `freed` is false when it had none. */
-	internalFreeSandbox(throughReviewRun?: number, hostedSize?: HostedSize): Promise<{ freed: boolean; sizeUnavailable?: HostedSize }>;
+	internalFreeSandbox(throughReviewRun?: number, hostedSize?: HostedSize, automatic?: { reason: string; cutoff?: number }): Promise<{ freed: boolean; sizeUnavailable?: HostedSize }>;
+	internalSandboxReclaimed(said: string): Promise<void>;
 	/** A work item's message (its `deliver` effect), into the inbox: resolves once it is stored; the same key again adds nothing. */
 	internalDeliver(input: Delivery): Promise<void>;
 	/** The item's person's note, steered into the builder's running turn: false when no turn can take it now. */
