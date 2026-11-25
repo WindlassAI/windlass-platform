@@ -101,7 +101,7 @@ describe("pages rendered with the mock", () => {
 		vi.useRealTimers();
 	});
 
-	it("keeps the verdict's word back on the item's page while its reviewer runs, and says when it is given", async () => {
+	it("keeps the verdict's word back on the item's page while its reviewer runs, and shows it after handover", async () => {
 		client = createMockClient({ pace: 0 });
 		saveAuth("mock", auth);
 		for (const [title, reviewing] of [
@@ -114,7 +114,7 @@ describe("pages rendered with the mock", () => {
 			const strip = host.querySelector('section[aria-labelledby="item-checks"]') as HTMLElement;
 			expect(strip.querySelector(".item-verdict") === null, title).toBe(reviewing);
 			expect(strip.querySelector(reviewing ? ".checks-summary .item-row-review" : ".checks-summary .item-verdict")?.textContent, title).toBe(reviewing ? "being reviewed" : "Ready for review");
-			expect(strip.textContent?.includes("Its word is given when the second review is filed and the work is handed over."), title).toBe(reviewing);
+			expect(strip.querySelector(".checks-summary-main")?.textContent?.includes("the second review"), title).toBe(reviewing);
 			if (!reviewing) expect(strip.textContent).toContain("On GitHub as windlass/verified: Success");
 			// The facts the verdict rests on are there either way.
 			expect(strip.querySelector(".item-facts"), title).not.toBeNull();
