@@ -1010,8 +1010,19 @@ export function plannerBudgetText(item: FactoryItem): string {
 	].join("\n");
 }
 
-export function plannerCapacityText(place: FactoryItem["place"], machines: PlacementInventory["machines"]): string {
-	if (place.kind === "hosted") return `Hosted parts run up to ${RULES.parallelChildren} at once.`;
+export function plannerCapacityText(place: FactoryItem["place"], machines: PlacementInventory["machines"], hostedCapacity: number): string {
+	if (place.kind === "hosted") {
+		if (hostedCapacity > 1) return `Hosted parts run up to ${hostedCapacity} at once. Additional parts wait.`;
+		if (hostedCapacity === 0) return "All hosted places are in use on this account. Hosted parts wait for a slot.";
+		const available = [];
+		for (const machine of machines) {
+			if (!machine.online || machine.orchestrator === "never") continue;
+			const free = freeMachineSlots(machineSlots(machine));
+			if (free > 0) available.push(`${machine.name} (${free} free slot${free === 1 ? "" : "s"})`);
+		}
+		const guidance = "Hosted parts run one at a time on this account. Prefer fewer, larger parts";
+		return available.length ? `${guidance}; independent parts can run in parallel on these online machines: ${available.join(", ")}.` : `${guidance}.`;
+	}
 	const machine = machines.find(m => m.machineId === place.machineId);
 	const parts = machine?.online ? Math.min(RULES.parallelChildren, freeMachineSlots(machineSlots(machine))) : 0;
 	return `Your machine '${machine?.name ?? place.machineId}' can run ${parts} part${parts === 1 ? "" : "s"} at once. Additional parts wait for a slot.`;

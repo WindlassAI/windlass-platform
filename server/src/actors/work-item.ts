@@ -888,16 +888,16 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 }
 
 /** `featureModel`: the feature's Windlass model, which a Windlass subtask choosing only an effort runs. */
-async function placementInventory(c: Ctx, uid: string, featureModel: string | undefined, snapshotRepository?: GithubId): Promise<PlacementInventory> {
+async function placementInventory(c: Ctx, uid: string, featureModel: string | undefined, snapshotRepository?: GithubId): Promise<PlacementInventory & { hostedCapacity: number }> {
 	const user = userActor(c, uid);
-	const [hostedKeys, machines, limited, dailyTokenWait, models, snapshotPlaces] = await Promise.all([user.internalHostedProviders(), user.internalPlannerMachines(), user.internalLimitedAccounts(), user.internalDailyTokenWait(), user.internalAgentModels(),
+	const [hostedKeys, capacity, limited, dailyTokenWait, models, snapshotPlaces] = await Promise.all([user.internalHostedProviders(), user.internalPlannerCapacity(), user.internalLimitedAccounts(), user.internalDailyTokenWait(), user.internalAgentModels(),
 		// Only a hint for ranking places: a failure leaves it out.
 		snapshotRepository === undefined ? undefined : user.internalSnapshotPlaces(snapshotRepository).catch(() => undefined)]);
 	const { sandboxes } = await getLayer();
 	const profiles = sandboxes.profiles().filter(p => p.available);
 	const hostedProfiles = profiles.map(p => p.id);
 	const keyProfiles = profiles.filter(p => p.platformKeys).map(p => p.id);
-	return { machines, hostedKeys, keyProfiles, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models, ...(featureModel && { featureModel }), ...(snapshotPlaces?.length && { snapshotPlaces }) };
+	return { ...capacity, hostedKeys, keyProfiles, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models, ...(featureModel && { featureModel }), ...(snapshotPlaces?.length && { snapshotPlaces }) };
 }
 
 async function planCiBranches(c: Ctx, { item, meta }: Stored, repo?: FeatureRepoState) {
@@ -1827,7 +1827,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const selected = preferred?.place;
 				const defaultPlace = selected && typeof selected === "object" ? { kind: "machine" as const, machineId: selected.machine }
 					: selected === "hosted" ? { kind: "hosted" as const } : parent;
-				text += "\n" + plannerCapacityText(defaultPlace, inventory.machines);
+				text += "\n" + plannerCapacityText(defaultPlace, inventory.machines, inventory.hostedCapacity);
 				if (preferred?.place) {
 					const chosen = preferred.place;
 					// A hosted fallback runs this planner only. Its parts still prefer a compatible machine.

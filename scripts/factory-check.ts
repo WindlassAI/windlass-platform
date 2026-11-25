@@ -29,6 +29,7 @@ import { GithubStandin } from "./github-standin.js";
 const scratch = mkdtempSync(join(tmpdir(), "wlp-factory-check-"));
 // Set before the server's modules are loaded: they read their configuration when they are.
 process.env.WLP_SECRET = `check-secret-${randomBytes(16).toString("hex")}`;
+process.env.WLP_FACTORY_HOSTED_RUNNING = "3";
 process.env.RIVETKIT_STORAGE_PATH = join(scratch, "storage");
 for (const name of Object.keys(process.env)) if (name.startsWith("WLP_GITHUB_")) delete process.env[name];
 mkdirSync(process.env.RIVETKIT_STORAGE_PATH, { recursive: true });
@@ -1759,14 +1760,38 @@ function walk(item: FactoryItem, facts: Array<Record<string, unknown>>, from = T
 {
 	const place = { kind: "machine" as const, machineId: "local" };
 	const mac = { machineId: "local", name: "mac", online: true, turns: { max: 4, running: 2, queued: 0 } };
-	const line = (max: number, busy: number, online = true) => plannerCapacityText(place,
-		[{ ...mac, online, slots: { max, busy, queued: 0, unit: { cpus: 1, memoryBytes: 1000 } } }] as Parameters<typeof plannerCapacityText>[1]);
+	const machine = (max: number, busy: number, online = true) => ({
+		...mac, online, slots: { max, busy, queued: 0, unit: { cpus: 1, memoryBytes: 1000 } },
+	}) as Parameters<typeof plannerCapacityText>[1][number];
+	const line = (max: number, busy: number, online = true) => plannerCapacityText(place, [machine(max, busy, online)], 1);
 	assert.match(line(4, 2), /'mac' can run 2 parts/);
 	assert.match(line(8, 0), new RegExp("run " + RULES.parallelChildren + " parts"));
 	assert.match(line(2, 3), /run 0 parts/);
 	assert.match(line(2, 0, false), /run 0 parts/);
-	assert.match(plannerCapacityText({ kind: "hosted" }, []), new RegExp("up to " + RULES.parallelChildren));
-	expect("planner capacity uses free machine slots and the hosted parallel limit", true);
+	expect("planner capacity uses free machine slots", true);
+
+	const { NO_SUBSCRIPTION } = await import("../server/src/billing/plans.js");
+	const { plannerHostedCapacity } = await import("../server/src/actors/user-items.js");
+	const hosted = { kind: "hosted" as const };
+	const exempt = { id: 0, overrides: {}, billing: null };
+	const free = { ...exempt, billing: NO_SUBSCRIPTION };
+	const single = "Hosted parts run one at a time on this account. Prefer fewer, larger parts";
+	const freeCapacity = plannerHostedCapacity(free, []);
+	assert.equal(plannerCapacityText(hosted, [], freeCapacity), single + ".");
+	const machines = [machine(4, 2), machine(1, 1), machine(3, 0, false), { ...machine(2, 0), orchestrator: "never" as const }];
+	assert.equal(plannerCapacityText(hosted, machines, freeCapacity),
+		single + "; independent parts can run in parallel on these online machines: mac (2 free slots).");
+	assert.equal(plannerCapacityText(hosted, [], plannerHostedCapacity(exempt, [])), "Hosted parts run up to 3 at once. Additional parts wait.");
+	expect("hosted planner guidance reflects Free and exempt limits and names online machines with free slots", true);
+
+	const starting = { place: hosted, status: "starting" as const, sandbox: "none" as const };
+	const running = { place: hosted, status: "idle" as const, sandbox: "running" as const };
+	const competing = [starting, running, { ...running, item: { id: "planner" } }, { ...starting, place }];
+	assert.equal(plannerCapacityText(hosted, [], plannerHostedCapacity(exempt, [starting])), "Hosted parts run up to 2 at once. Additional parts wait.");
+	assert.equal(plannerHostedCapacity(exempt, competing), 1);
+	assert.equal(plannerHostedCapacity({ ...exempt, overrides: { hostedRunning: 10 } }, competing), RULES.parallelChildren);
+	assert.equal(plannerCapacityText(hosted, [], plannerHostedCapacity(free, competing)), "All hosted places are in use on this account. Hosted parts wait for a slot.");
+	expect("hosted planning counts personal hosted sessions against the account limit and caps parts at the feature limit", true);
 }
 
 const turnEnded = (outcome: "succeeded" | "unresolved", evidence: Verified | null) => ({ kind: "turn_ended", outcome, verified: evidence, flags: [], changes: true, report: null, spend: { tokens: 1, hostedSeconds: 0 } });

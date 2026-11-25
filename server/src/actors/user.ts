@@ -13,7 +13,7 @@ import { accountLimits, changeUserLimit, limitsSubject, type LimitAuditRow, type
 import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage, type AccountLocation } from "./provider-accounts.js";
 import type { UsageObservation } from "../provider-usage.js";
 import { changed as machinesChanged, machineCatalog, itemMachines, launchPlace, listMachines, launchMachineProfiles, machineActions, machineSecrets, machineTables, credentialSource } from "./user-machines.js";
-import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
+import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, plannerHostedCapacity, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { EnvironmentPlace, EnvironmentSchedule, RepositoryEnvironments, SandboxProfileId } from "../contract.js";
 import { ENVIRONMENT_SCHEDULES } from "../contract.js";
 import { HOSTED_SIZES, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, type HostedSize } from "../contract.js";
@@ -1251,7 +1251,13 @@ export const user = actor({
 				queueChanged(c);
 			}
 		},
-		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()], config.factory.screenshots); },
+		internalPlannerCapacity: (c) => {
+			requireService(c);
+			return {
+				machines: plannerMachines([...c.vars.machines.values()], config.factory.screenshots),
+				hostedCapacity: plannerHostedCapacity(c.vars.items.limits, c.vars.sessions.values()),
+			};
+		},
 		internalAgentModels: (c): Promise<AgentModels> => { requireService(c); return agentModels(c); },
 		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
 		setMachineSecrets: machineActions.setMachineSecrets,
