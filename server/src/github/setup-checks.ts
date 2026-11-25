@@ -1,10 +1,10 @@
 import { minimatch } from "minimatch";
 import { parse } from "yaml";
 import type { Finding } from "../factory/readiness.js";
-import type { GithubApp, Repository } from "./app.js";
+import { GithubError, type GithubApp, type Repository } from "./app.js";
 
 type Entry = { path: string; type: string; size: number | null };
-export interface SetupScan { commit: string; findings: Finding[] }
+export interface SetupScan { commit: string | null; findings: Finding[] }
 const guide = /^(AGENTS|CLAUDE)\.md$/;
 const workflow = /^\.github\/workflows\/[^/]+\.ya?ml$/i;
 const source = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|kts|swift|c|cc|cpp|h|hpp|cs|rb|php|scala|sh|vue|svelte|dart|exs?|hs|lua)$/i;
@@ -34,6 +34,10 @@ export async function scanRepoSetup(app: GithubApp, token: string, repo: Reposit
 		const sources = entries.filter(f => isSource(f.path) && (f.size ?? Infinity) > 1500).sort((a, b) => (b.size ?? 0) - (a.size ?? 0));
 		const paths = [...config, ...sources].filter(f => f.size === null || f.size <= bytesPerFile).slice(0, 96).map(f => f.path);
 		return { paths, more: false, maxBytes: 6 * bytesPerFile, maxFileBytes: bytesPerFile };
+	}).catch((error: unknown) => {
+		if (error instanceof GithubError && error.status === 409 && /repository is empty/i.test(error.said))
+			return { commit: null, files: [] };
+		throw error;
 	});
 	const files = new Map(scan.files.map(f => [f.path, f.text]));
 	const paths = new Set(entries.map(f => f.path));
@@ -66,7 +70,7 @@ export async function scanRepoSetup(app: GithubApp, token: string, repo: Reposit
 			if (!Object.keys(config?.jobs ?? {}).length || !events.length) continue;
 			pullChecks ||= events.includes("pull_request") || events.includes("pull_request_target");
 			for (const job of Object.values(config.jobs) as { steps?: { uses?: string; run?: string }[] }[])
-				scanner ||= (job.steps ?? []).some(step => /^(?:gitleaks\/gitleaks-action|trufflesecurity\/trufflehog)@/i.test(step.uses ?? "") || /^\s*(?:gitleaks|trufflehog)\s/m.test(step.run ?? ""));
+				scanner ||= (job.steps ?? []).some(step => /^(?:gacts\/gitleaks|gitleaks\/gitleaks-action|trufflesecurity\/trufflehog)@/i.test(step.uses ?? "") || /^\s*(?:gitleaks|trufflehog)\s/m.test(step.run ?? ""));
 		} catch { /* Invalid workflows cannot run. */ }
 	}
 	const ignore = files.get(".gitignore");

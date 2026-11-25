@@ -798,6 +798,7 @@ async function assessRepository(c: CreateCtx, profile: UserProfile, id: GithubId
 	if (!await claimAssessment(c.db, project, session, Date.now())) return;
 	try {
 		const scan = await refreshSetupScan(c, id, project);
+		if (!scan.commit) throw new UserError("Add a first commit before finishing setup.", { code: "bad_input" });
 		const inputs = await setupInputs(c.db, project, scan, (await readSetup(c.db, project)).command, (await readChecks(c.db, project)).checks);
 		const repoDefaults = await readDefaults(c.db, project), account = await readAccountDefaults(c.db);
 		const destination = resolveDefaultPlace(savedPlace(repoDefaults, account) ?? {}, itemMachines(c.vars.machines), "orchestrate");

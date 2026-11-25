@@ -6,7 +6,7 @@ import { buildProof, claimAssessment, finishAssessment, READINESS_TABLE, reposit
 import type { EnvironmentBuild } from "../server/src/contract.js";
 import { fileReadiness } from "../server/src/factory/readiness-filing.js";
 import { plannerReadiness, readinessCriteria, readinessItem, scoreReadiness, type CriterionId, type Judgment } from "../server/src/factory/readiness.js";
-import type { GithubApp, Repository } from "../server/src/github/app.js";
+import { GithubError, type GithubApp, type Repository } from "../server/src/github/app.js";
 import { scanRepoSetup } from "../server/src/github/setup-checks.js";
 
 const now = Date.now();
@@ -29,7 +29,7 @@ test("levels require all earlier levels, and only failures can be filed", () => 
 test("server reads default-branch paths and bounded blob contents without an agent", async () => {
 	const files = new Map<string, string>([
 		["CLAUDE.md", ""], [".github/ISSUE_TEMPLATE/bug.yml", ""], ["docs/pull_request_template.md", ""],
-		[".github/workflows/tests.yml", "on: [push, pull_request]\njobs:\n  test:\n    steps:\n      - uses: gitleaks/gitleaks-action@v2"],
+		[".github/workflows/tests.yml", "on: [push, pull_request]\njobs:\n  test:\n    steps:\n      - uses: gacts/gitleaks@v1"],
 		[".gitignore", ".env*\n!.env.example"], ["src/long.ts", "x\n".repeat(1501)], ["vendor/large.ts", "x\n".repeat(2000)],
 	]);
 	for (let i = 1; i < 50; i++) files.set(`src/f${i}.ts`, "x");
@@ -50,6 +50,9 @@ test("server reads default-branch paths and bounded blob contents without an age
 	assert.deepEqual(await scan(), { guide: false, areas: true, templates: false, size: true, ci: false, secrets: false });
 	truncated = true;
 	assert.equal((await scan()).size, null);
+	const empty = await scanRepoSetup({ scanFiles: async () => { throw new GithubError(409, "Git Repository is empty.", "read"); } } as unknown as GithubApp, "read", { defaultBranch: "trunk" } as Repository);
+	assert.equal(empty.commit, null);
+	assert.equal(empty.findings.find(f => f.id === "guide")?.pass, false);
 });
 
 test("only the three judgments may be filed, with short redacted reasons", () => {
