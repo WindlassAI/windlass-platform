@@ -100,7 +100,7 @@ WLP_DODO_PRODUCT_PRO_YEARLY=pdt_...
   - **Applied once.** Each delivery is applied once: its id is written in the same transaction as the change. An older event that arrives late changes nothing.
   - **Mismatches are logged and ignored.** This covers another customer's event, and a second subscription while one runs. Watch for the warning `billing.double_subscription`. Use its customer and subscription ids to identify the duplicate, cancel it in Dodo, and refund its charge.
   - **Retries.** 5xx means "send it again"; Dodo retries with backoff for about a day and a half.
-- **Checkout links.** An open link is reused for its billing interval. Switching intervals waits for settlement or expiry. Dodo provides a status lookup and a 24-hour lifetime for these sessions. A processing or successful payment keeps the account from opening a second checkout while its webhook is pending.
+- **Checkout links.** Each retry checks the saved session with Dodo. A failed or cancelled payment allows a fresh checkout immediately. An untouched checkout expires after 24 hours. While a checkout is usable, a processing or successful payment awaits its webhook, or the status lookup fails, retries reuse the saved link and switching billing intervals is blocked.
 - **Event mapping.**
 
   | Dodo event | What it does |

@@ -140,8 +140,6 @@ export async function setCapCents(db: TxDb, cents: unknown): Promise<BillingStat
 	}, { name: "billing.cap" });
 }
 
-const CHECKOUT_WINDOW_MS = 30 * 60_000;
-
 export class CheckoutBlocked extends Error {}
 export class CheckoutEmailRequired extends Error {}
 
@@ -173,15 +171,13 @@ export class AccountCheckout {
 	private async openOrReuse(db: TxDb, provider: BillingProvider, input: OpenCheckout, now: number): Promise<{ url: string }> {
 		const { state, saved } = await db.transaction(async tx => {
 			const state = await checkoutState(tx);
-			const [saved] = await tx.execute<{ session: string; url: string; period: string; opened_at: number }>("SELECT session, url, period, opened_at FROM billing_checkout WHERE id = 1");
+			const [saved] = await tx.execute<{ session: string; url: string; period: string }>("SELECT session, url, period FROM billing_checkout WHERE id = 1");
 			return { state, saved };
 		}, { name: "billing.checkout.read" });
-		if (saved) {
-			const recentlyOpened = saved.opened_at > now - CHECKOUT_WINDOW_MS;
-			if (recentlyOpened || !await provider.checkoutExpired(saved.session, now)) {
-				if (saved.period !== input.period) throw new CheckoutBlocked("You have a checkout open; finish or cancel it first.");
-				return { url: saved.url };
-			}
+		// Keep the saved checkout if the provider cannot confirm that a replacement is safe.
+		if (saved && !await provider.checkoutReplaceable(saved.session, now).catch(() => false)) {
+			if (saved.period !== input.period) throw new CheckoutBlocked("You have a checkout open; finish or cancel it first.");
+			return { url: saved.url };
 		}
 		let customerId = state.customerId;
 		if (!customerId) {

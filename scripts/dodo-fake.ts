@@ -22,8 +22,10 @@ export const FAKE_KEY = "dodo_test_fake";
 
 export interface FakeCall { method: string; path: string; query: URLSearchParams; body: any; auth: string | null }
 
+type PaymentStatus = "failed" | "cancelled" | "processing" | "succeeded";
+
 export class FakeDodo {
-	readonly checkouts = new Map<string, { id: string; created_at: string; payment_id: string | null; payment_status: string | null }>();
+	readonly checkouts = new Map<string, { id: string; created_at: string; payment_id: string | null; payment_status: PaymentStatus | null }>();
 	readonly calls: FakeCall[] = [];
 	/** Event ids taken by /events/ingest, and the minutes each carried. */
 	readonly ingested = new Map<string, number>();
@@ -55,6 +57,13 @@ export class FakeDodo {
 		if (init.method === "POST" && parsed.pathname === "/events/ingest") return Response.json({ ingested_count: this.take(body) });
 		return Response.json({ code: "NOT_FOUND" }, { status: 404 });
 	};
+
+	setPayment(session: string, status: PaymentStatus | null): void {
+		const checkout = this.checkouts.get(session);
+		if (!checkout) throw new Error(`Unknown checkout ${session}`);
+		checkout.payment_id = status === null ? null : `pay_${session}`;
+		checkout.payment_status = status;
+	}
 
 	private take(body: { events: Array<{ event_id: string; metadata: { minutes: number } }> }): number {
 		let count = 0;

@@ -518,24 +518,46 @@ async function memoryDbWithTables() {
 	expect("simultaneous checkouts and a retry after reload return one provider link", one.url === two.url && one.url === retry.url && calls() === before + 1);
 	const [row] = await db.execute<{ session: string; opened_at: number }>("SELECT session, opened_at FROM billing_checkout");
 	expect("the open checkout records its provider id and opening time", !!row && one.url.endsWith(row.session) && row.opened_at >= now);
-	await db.execute("UPDATE billing_checkout SET opened_at = ?", Date.now() - 30 * 60_000);
+	const lookupStart = fake.calls.length;
+	fake.failNext = { status: 503, count: 2 };
+	expect("a status lookup error reuses the recent link and blocks switching intervals",
+		(await checkout()).url === one.url && String(await rejects(checkout("year"))).includes("You have a checkout open"));
+	const lookupCalls = fake.calls.slice(lookupStart);
+	expect("each retry of the saved link made just one status lookup",
+		lookupCalls.length === 2 && lookupCalls.every(call => call.method === "GET" && call.path === `/checkouts/${row!.session}`));
+	const remote = fake.checkouts.get(row!.session)!;
+	const opened = Date.now() - 30 * 60_000;
+	remote.created_at = new Date(opened).toISOString();
+	await db.execute("UPDATE billing_checkout SET opened_at = ?", opened);
 	expect("after 30 minutes the same interval reuses its link and the other interval is refused",
 		(await checkout()).url === one.url && String(await rejects(checkout("year"))).includes("You have a checkout open; finish or cancel it first.") && calls() === before + 1);
-	const remote = fake.checkouts.get(row!.session)!;
 	remote.created_at = new Date(Date.now() - DAY_MS).toISOString();
-	for (const status of ["processing", "succeeded"]) {
-		remote.payment_id = "pay_1";
-		remote.payment_status = status;
-		expect(`a ${status} payment still blocks a second interval after link expiry`,
-			String(await rejects(checkout("year"))).includes("You have a checkout open") && calls() === before + 1);
+	for (const status of ["processing", "succeeded"] as const) {
+		fake.setPayment(remote.id, status);
+		expect(`a ${status} payment reuses the link and blocks a second interval even after expiry`,
+			(await checkout()).url === one.url && String(await rejects(checkout("year"))).includes("You have a checkout open") && calls() === before + 1);
 	}
-	remote.payment_id = remote.payment_status = null;
-	expect("an unpaid checkout past Dodo's lifetime can be replaced with the other interval", (await checkout("year")).url !== one.url && calls() === before + 2);
+	fake.setPayment(remote.id, null);
+	let yearly = await checkout("year");
+	expect("an unpaid checkout past Dodo's lifetime can be replaced with the other interval", yearly.url !== one.url && calls() === before + 2);
+	for (const status of ["failed", "cancelled"] as const) {
+		const [saved] = await db.execute<{ session: string }>("SELECT session FROM billing_checkout");
+		fake.setPayment(saved!.session, status);
+		const start = fake.calls.length;
+		const fresh = await checkout("year");
+		const requests = fake.calls.slice(start);
+		expect(`a ${status} payment opens a fresh checkout immediately for the same interval`,
+			fresh.url !== yearly.url && requests.length === 2 &&
+			requests[0]?.method === "GET" && requests[0].path === `/checkouts/${saved!.session}` &&
+			requests[1]?.method === "POST" && requests[1].path === "/checkouts");
+		yearly = fresh;
+	}
+	const beforeActivation = calls();
 	await applyBillingEvent(db, event({ occurredAt: now - 4 }), now - 4, GRACE);
 	expect("an activation settles the checkout", (await db.execute("SELECT id FROM billing_checkout")).length === 0);
 	await applyBillingEvent(db, event({ kind: "payment_failed", occurredAt: now - 3 }), now - 3, 0);
 	personal.vars = await reload();
-	expect("a past-due subscription after grace directs checkout to Manage billing", /Manage billing/.test(String(await rejects(checkout()))) && calls() === before + 2);
+	expect("a past-due subscription after grace directs checkout to Manage billing", /Manage billing/.test(String(await rejects(checkout()))) && calls() === beforeActivation);
 	const pause = delivery("subscription.paused", subscriptionData({ productId: PRODUCTS.month, status: "paused" }), { at: now - 3 });
 	const pausedEvent = dodo.parseWebhook(pause.headers, pause.body, now)![0]!;
 	const paused = (await applyBillingEvent(db, pausedEvent, now, GRACE)).state;
@@ -548,11 +570,11 @@ async function memoryDbWithTables() {
 	expect("unpaused restores the same subscription to Pro", effectivePlan(resumed, now) === "pro" && resumed.subscriptionId === paused.subscriptionId && resumed.graceUntil === null);
 	await applyBillingEvent(db, event({ kind: "ended", occurredAt: now - 2 }), now - 2, GRACE);
 	personal.vars = await reload();
-	expect("a provider-ended subscription permits a fresh checkout", (await checkout()).url !== retry.url && calls() === before + 3);
+	expect("a provider-ended subscription permits a fresh checkout", (await checkout()).url !== retry.url && calls() === beforeActivation + 1);
 	await applyBillingEvent(db, event({ type: "subscription.on_hold", kind: "payment_failed", subscriptionId: "sub_new", occurredAt: now - 1 }), now - 1, GRACE);
 	personal.vars = await reload();
 	expect("a new subscription first seen on hold blocks checkout without granting Pro", effectivePlan(await readBilling(db), now) === "free" &&
-		/Manage billing/.test(String(await rejects(checkout()))) && calls() === before + 3);
+		/Manage billing/.test(String(await rejects(checkout()))) && calls() === beforeActivation + 1);
 
 	// A report from two renewals ago reached Dodo but its acknowledgement was lost.
 	const oldStart = shiftMonths(now, -3);
