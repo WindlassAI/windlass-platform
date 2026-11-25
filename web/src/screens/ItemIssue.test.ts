@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 /**
- * Work items filed from a GitHub issue: the page says which issue, who filed it and, where someone else
- * wrote it, who wrote it; the row links to the issue; and a draft of someone else's issue shows its task
- * first, as plain text, with whose words they are, and Start under it.
+ * The page credits the issue author, and the list row links to the issue. On a draft from an
+ * outside author, the page shows the original text and an author warning before Start.
  */
 import type { AuthResult, ItemAction, ItemSummary, ItemView } from "@contract";
 import { act, createElement } from "react";
@@ -80,29 +79,29 @@ afterEach(() => {
 });
 
 describe("an item from a GitHub issue", () => {
-	it("says on its page which issue it came from and who filed it, and who wrote it when that is someone else", async () => {
+	it("links the issue and credits its author when someone else filed it", async () => {
 		await render(itemPage(() => fromIssue(false)));
 		const draft = fromIssue(false);
 		expect(draft.origin).toMatchObject({ issue: { number: 42, author: "harbor-user" }, sender: "ada" });
-		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toBe("Quick · from GitHub");
+		expect(host.querySelector(".item-meta")?.textContent).toContain("Quick");
 		const line = host.querySelector(".item-origin") as HTMLElement;
-		expect(line.textContent).toBe("From issue #42, written by @harbor-user and filed by @ada.");
+		expect(line.textContent).toBe("from #42 by @harbor-user");
 		const link = line.querySelector("a") as HTMLAnchorElement;
 		expect(link.getAttribute("href")).toBe("https://github.com/acme/harbor/issues/42");
 		expect(link.target).toBe("_blank");
 		expect(link.rel).toBe("noreferrer");
 	});
 
-	it("names only who filed it when they wrote the issue themselves, and nothing of an issue on an item from the web", async () => {
+	it("credits a trusted issue author and shows the filing source for web items", async () => {
 		await render(itemPage(() => fromIssue(true)));
-		expect(host.querySelector(".item-origin")?.textContent).toBe("From issue #37, filed by @ada.");
+		expect(host.querySelector(".item-origin")?.textContent).toBe("from #37 by @ada");
 		expect(host.querySelector(".item-origin a")?.getAttribute("href")).toBe("https://github.com/acme/harbor/issues/37");
 		act(() => root.unmount());
 		client.dispose();
 		root = createRoot(host);
 		await render(itemPage(() => items.find((item) => item.source === "web") as ItemSummary));
 		expect(host.querySelector(".item-origin")).toBeNull();
-		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toBe("Quick · from the web");
+		expect(host.querySelector(".item-meta")?.textContent).toContain("from the web");
 	});
 
 	it("links to its issue from its row in the work list, and a row from the web has no such link", async () => {
@@ -174,9 +173,8 @@ describe("an item from a Linear issue", () => {
 
 	it("links ENG-123 to its Linear URL, names the source, and warns of the outside author", async () => {
 		await render(itemPage(fromLinear));
-		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toBe("Quick · from Linear");
 		const line = host.querySelector(".item-origin") as HTMLElement;
-		expect(line.textContent).toBe("From ENG-123, written by Grace Hopper and filed by Ada Lovelace.");
+		expect(line.textContent).toBe("from ENG-123 by Grace Hopper");
 		const link = line.querySelector("a") as HTMLAnchorElement;
 		expect(link.textContent).toBe("ENG-123");
 		expect(link.getAttribute("href")).toBe("https://linear.app/acme/issue/ENG-123/show-the-release-channel");

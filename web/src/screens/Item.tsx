@@ -7,6 +7,7 @@ import { Inline, PlacementQuestion, PlanQuestion, PlanSection } from "./FeatureP
 import { usePlanReview, type PlanActing as Acting } from "./usePlanReview";
 import { ItemSpend } from "../components/ItemSpend";
 import { agentFacts, agentLine, subscriptionSpend } from "../lib/item-agent";
+import { Menu, type MenuItem } from "../components/ui/Menu";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown, Output } from "../components/Blocks";
 import { LongText } from "../components/Fold";
@@ -368,7 +369,7 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 export function ValidatedEnvironment({ environment, now }: { environment: SessionSummary["environment"] | undefined; now: number }) {
 	if (!environment) return null;
 	return (
-		<span className="repo-fact tone-dim" title={`Setup and ${environment.checks === 1 ? "the saved check" : `${environment.checks} saved checks`} passed at ${environment.commit.slice(0, 12)}, ${absoluteTime(environment.validatedAt)}`}>
+		<span title={`Setup and ${environment.checks === 1 ? "the saved check" : `${environment.checks} saved checks`} passed at ${environment.commit.slice(0, 12)}, ${absoluteTime(environment.validatedAt)}`}>
 			from a validated environment ({relativeTime(environment.validatedAt, now)})
 		</span>
 	);
@@ -803,18 +804,11 @@ function Log({ view, now }: { view: ItemView; now: number }) {
 const readFirst = (item: Pick<ItemView, "state" | "origin">) => item.state === "draft" && item.origin !== null && item.origin !== undefined && !originIssue(item.origin).trusted;
 
 function IssueOrigin({ origin }: { origin: NonNullable<ItemView["origin"]> }) {
-	const { url, label, trusted, author, sender } = originIssue(origin);
+	const { url, author, tracker } = originIssue(origin);
 	return (
-		<p className="home-account item-origin">
-			<span>
-				From{" "}
-				<a className="item-link" href={url} target="_blank" rel="noreferrer">
-					{label}
-					<ExternalIcon size={10} />
-				</a>
-				, {trusted ? `filed by ${sender}.` : `written by ${author} and filed by ${sender}.`}
-			</span>
-		</p>
+		<span className="item-origin">
+			from <a href={url} target="_blank" rel="noreferrer" title={tracker}>{origin.issue ? `#${origin.issue.number}` : origin.linear.identifier}</a> by {author}
+		</span>
 	);
 }
 
@@ -969,86 +963,70 @@ export function Item({ page }: { page: ItemPage }) {
 	// A subtask's place in its feature's plan, once the feature is read: "Part 2 of 5 of <feature>".
 	const part = view.parent && feature.view?.plan ? partOf(feature.view.plan, view.parent.key) : null;
 
+	const moreActions: MenuItem[] = [];
+	if (view.canUpdateFeature && !view.question?.choices.some(choice => choice.id === "update_feature")) {
+		moreActions.push({ id: "update_feature", label: `Update the feature from ${view.task.base}`, onSelect: () => acting.act({ kind: "update_feature" }) });
+	}
+	if (view.mode !== "orchestrate" && view.state === "review" && machine !== null) {
+		moreActions.push({ id: "send_back", label: "Send back…", onSelect: () => setDialog("send_back") });
+	}
+	if (!ended) moreActions.push({ id: "cancel", label: "Cancel…", onSelect: () => setDialog("cancel") });
+
 	return (
 		<main className="home usage repo item">
-			<header className="home-head">
-				<div className="repo-head">
-					<p className="eyebrow">
-						{view.parent ? (
-							<>
-								{part ? `Part ${part.n} of ${part.of} of` : "subtask of"}{" "}
-								<a className="eyebrow-link" {...linkProps({ name: "item", id: view.parent.itemId })}>
-									{view.parent.title}
-								</a>
-							</>
-						) : (
-							<>
-								{view.mode === "orchestrate" ? "Plan first" : view.plan ? "Plan first · one implementer" : "Quick"} · {view.source === "github" ? "from GitHub" : view.source === "linear" ? "from Linear" : view.source === "api" ? "from the API" : "from the web"}
-							</>
-						)}
-					</p>
-					<h1 className="display display-small item-title">{view.title}</h1>
-					{view.parent && feature.view?.plan ? <SubtaskStrip plan={feature.view.plan} children={feature.view.children ?? []} jobs={feature.view.subtasks} current={view.parent.key} /> : null}
-					<p className="home-account repo-facts">
-						<a className="repo-link" {...linkProps({ name: "repository", id: repository.id })}>
-							{repository.owner}/{repository.name}
+			<header className="item-header">
+				<h1 className="display display-small item-title">{view.title}</h1>
+				<div className="item-actions" role="group" aria-label="Item actions">
+					{view.pullRequest ? (
+						<a className="button button-outline button-small" href={view.pullRequest.url} target="_blank" rel="noreferrer">
+							PR #{view.pullRequest.number} <ExternalIcon size={12} />
 						</a>
-						<span className="repo-fact">into {view.task.base}</span>
-						{view.awaitingPlace ? <span className="repo-fact">awaiting machine placement</span> : view.place.kind === "machine" ? <span className="repo-fact">{machine === null ? "on a machine that was removed" : machine ? `on your machine “${machineLabel(machine)}”` : "on your machine"}</span> : view.placement ? <span className="repo-fact">runs on {view.placement.name}</span> : null}
-						{view.pullRequest ? (
-							<a className="repo-link" href={view.pullRequest.url} target="_blank" rel="noreferrer">
-								Pull request #{view.pullRequest.number}
-								<ExternalIcon size={11} />
-							</a>
-						) : null}
-						{!view.awaitingPlace && <a className="repo-link" {...linkProps({ name: "session", id: view.sessionId })} title="What its agent did, turn by turn">
-							Open the agent
-						</a>}
-						<ValidatedEnvironment environment={sessions?.find((s) => s.id === view.sessionId)?.environment} now={now} />
-						{view.reviewerSessionId ? (
-							<a className="repo-link" {...linkProps({ name: "session", id: view.reviewerSessionId })}>
-								Open the reviewer
-							</a>
-						) : null}
-						<span className="repo-fact tone-dim" title={absoluteTime(view.createdAt)}>
-							filed {relativeTime(view.createdAt, now)}
-						</span>
-						{view.endedAt !== undefined ? (
-							<span className="repo-fact tone-dim" title={absoluteTime(view.endedAt)}>
-								ended {relativeTime(view.endedAt, now)}
-							</span>
-						) : null}
-					</p>
-					{!view.parent && !view.plan ? <p className="field-note">{ITEM_MODE_WORDS[view.mode ?? "single"].description}</p> : null}
-					{view.origin ? <IssueOrigin origin={view.origin} /> : null}
-				</div>
-				<div className="item-actions">
-					{view.canUpdateFeature && !view.question?.choices.some(choice => choice.id === "update_feature") ? (
-						<button type="button" className="button button-outline" onClick={() => acting.act({ kind: "update_feature" })} disabled={busy}>
-							Update the feature from {view.task.base}
-						</button>
+					) : null}
+					{!view.awaitingPlace ? (
+						<a className="button button-outline button-small" {...linkProps({ name: "session", id: view.sessionId })} title="What its agent did, turn by turn">Agent</a>
+					) : null}
+					{view.reviewerSessionId ? (
+						<a className="button button-outline button-small" {...linkProps({ name: "session", id: view.reviewerSessionId })}>Reviewer</a>
 					) : null}
 					{view.state === "draft" && !reading ? (
-						<button type="button" className="button button-primary" onClick={() => acting.act({ kind: "start" })} disabled={busy}>
+						<button type="button" className="button button-outline button-small" onClick={() => acting.act({ kind: "start" })} disabled={busy}>
 							{acting.busy === "start" ? "Starting…" : "Start"}
 						</button>
 					) : null}
 					{view.state === "failed" && (view.canRetry ?? (!view.parent && view.mode !== "orchestrate")) && machine !== null ? (
-						<button type="button" className="button button-primary" onClick={() => acting.act({ kind: "retry" })} disabled={busy}>
+						<button type="button" className="button button-outline button-small" onClick={() => acting.act({ kind: "retry" })} disabled={busy}>
 							{acting.busy === "retry" ? "Starting…" : "Retry"}
 						</button>
 					) : null}
-					{view.mode !== "orchestrate" && view.state === "review" && machine !== null ? (
-						<button type="button" className="button button-outline" onClick={() => setDialog("send_back")} disabled={busy}>
-							Send back…
-						</button>
+					{moreActions.length > 0 ? (
+						<Menu
+							align="end"
+							spec={{ label: "More item actions", groups: [{ id: "actions", items: moreActions }], hints: false, width: 224 }}
+							trigger={props => (
+								<button type="button" className="icon-button item-more" aria-label="More item actions" title="More item actions" disabled={busy} {...props}>⋯</button>
+							)}
+						/>
 					) : null}
-					{ended ? null : (
-						<button type="button" className="button button-quiet" onClick={() => setDialog("cancel")} disabled={busy}>
-							Cancel…
-						</button>
-					)}
 				</div>
+				<p className="item-meta">
+					<span><a {...linkProps({ name: "repository", id: repository.id })}>{repository.owner}/{repository.name}</a> → {view.task.base}</span>
+					{view.origin ? <IssueOrigin origin={view.origin} /> : (
+						<span>from {view.source === "api" ? "the API" : view.source === "github" ? "GitHub" : view.source === "linear" ? "Linear" : "the web"}</span>
+					)}
+					<time dateTime={new Date(view.createdAt).toISOString()} title={absoluteTime(view.createdAt)}>filed {relativeTime(view.createdAt, now)}</time>
+					{view.endedAt !== undefined ? <time dateTime={new Date(view.endedAt).toISOString()} title={absoluteTime(view.endedAt)}>ended {relativeTime(view.endedAt, now)}</time> : null}
+					{view.parent ? (
+						<span>
+							{part ? `Part ${part.n} of ${part.of} of` : "subtask of"}{" "}
+							<a {...linkProps({ name: "item", id: view.parent.itemId })}>{view.parent.title}</a>
+						</span>
+					) : (
+						<span title={ITEM_MODE_WORDS[view.mode ?? "single"].description}>{view.mode === "orchestrate" ? "Plan first" : view.plan ? "Plan first · one implementer" : "Quick"}</span>
+					)}
+					{view.awaitingPlace ? <span>awaiting machine placement</span> : view.place.kind === "machine" ? <span>{machine === null ? "on a machine that was removed" : machine ? `on your machine “${machineLabel(machine)}”` : "on your machine"}</span> : view.placement ? <span>runs on {view.placement.name}</span> : null}
+					<ValidatedEnvironment environment={sessions?.find((s) => s.id === view.sessionId)?.environment} now={now} />
+				</p>
+				{view.parent && feature.view?.plan ? <SubtaskStrip plan={feature.view.plan} children={feature.view.children ?? []} jobs={feature.view.subtasks} current={view.parent.key} /> : null}
 			</header>
 
 			{page.error ? (

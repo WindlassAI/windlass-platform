@@ -141,7 +141,7 @@ describe("a work item's agent session", () => {
 		});
 		const draft = items.find((one) => one.state === "draft") as ItemSummary;
 		expect(host.textContent).not.toContain("Spend is counted when the running turn ends.");
-		expect(linksTo(host, `/agents/${draft.sessionId}`).map((link) => link.textContent)).toEqual(["Open the agent"]);
+		expect(linksTo(host, `/agents/${draft.sessionId}`).map((link) => link.textContent)).toEqual(["Agent"]);
 	});
 
 	it("has its sandbox time today in the usage page's one row for work items, not in a row of its own", async () => {

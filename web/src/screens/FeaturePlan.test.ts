@@ -300,7 +300,7 @@ describe("a feature's plan on its page", () => {
 		await act(async () => button("Run as a single item")?.click());
 		await settle();
 		expect((await api().item(made.id)).mode).toBe("single");
-		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toContain("Plan first · one implementer");
+		expect(host.querySelector(".item-meta")?.textContent).toContain("Plan first · one implementer");
 		expect(host.querySelector(".plan-total")).toBeNull();
 	});
 
@@ -313,8 +313,11 @@ describe("a feature's plan on its page", () => {
 		const feature = await featureNamed("Export the release manifest as CSV");
 		await show(`/items/${feature.id}`);
 		expect(Boolean(button("Retry"))).toBe(retry);
-		expect(button("Send back…")).toBeUndefined();
-		expect(host.querySelector(".repo-head .eyebrow")?.textContent).toContain("Plan first");
+		const more = host.querySelector<HTMLButtonElement>('button[aria-label="More item actions"]')!;
+		act(() => more.click());
+		expect(document.querySelector('[role="menuitem"][data-value="cancel"]')).toBeTruthy();
+		expect(document.querySelector('[role="menuitem"][data-value="send_back"]')).toBeNull();
+		expect(host.querySelector(".item-meta")?.textContent).toContain("Plan first");
 	});
 
 	it("hides handover on a subtask with an older stored CI question", async () => {
