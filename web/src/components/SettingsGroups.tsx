@@ -1,4 +1,5 @@
 import { useEffect, useState, type MouseEvent, type ReactElement, type ReactNode } from "react";
+import { useHash } from "../lib/router";
 import { WarnIcon } from "./Icons";
 
 interface GroupProps {
@@ -22,6 +23,12 @@ export function SettingsLayout({ label, children }: { label: string; children: (
 	const groups = children.filter(group => group !== null);
 	const ids = groups.map(group => group.props.id).join(" ");
 	const [current, setCurrent] = useState(groups[0]?.props.id);
+	// A link from elsewhere (the account menu) names a section in the address: it opens there.
+	const hash = useHash();
+	useEffect(() => {
+		const node = hash.length > 1 ? document.getElementById(decodeURIComponent(hash.slice(1))) : null;
+		if (node?.closest(".settings-frame")) node.scrollIntoView({ block: "start" });
+	}, [hash]);
 	useEffect(() => {
 		if (typeof IntersectionObserver === "undefined") return;
 		const order = ids.split(" ");

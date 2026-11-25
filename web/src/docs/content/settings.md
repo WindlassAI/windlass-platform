@@ -1,6 +1,6 @@
 ## Account settings
 
-Open the account menu and choose **Settings**. What you save here holds for every agent of yours, whatever the repository. What you save for one repository is under **Saved settings** when you choose it in **Agents**.
+Choose **Settings** in the top bar (in the account menu on a phone). What you save here holds for every agent of yours, whatever the repository. What you save for one repository is under **Saved settings** when you choose it in **Agents**.
 
 ### Defaults
 

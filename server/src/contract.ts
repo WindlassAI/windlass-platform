@@ -170,6 +170,9 @@ export interface LinkedLogin {
 	provider: LoginProvider;
 	/** Provider login or email for display. Older links may have no label until the next sign-in. */
 	display: string | null;
+	/** The provider's name for the person, and an https picture address, captured at the last sign-in. */
+	name: string | null;
+	avatar: string | null;
 }
 
 export interface LoginStart {

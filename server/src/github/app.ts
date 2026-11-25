@@ -93,9 +93,17 @@ export interface InstallationToken {
 	expiresAt: number;
 }
 
+/** Only an https picture address is kept: the web app shows it as an image. */
+export function picture(value: unknown): string | null {
+	const url = typeof value === "string" && value.length <= 2048 ? URL.parse(value) : null;
+	return url?.protocol === "https:" ? url.href : null;
+}
+
 export interface GithubUser {
 	id: GithubId;
 	login: string;
+	name?: string | null;
+	avatar?: string | null;
 }
 
 export interface Installation {
@@ -435,7 +443,7 @@ export class GithubApp {
 		const id = githubId(fields.id);
 		const login = text(fields.login);
 		if (id === null || login === "") throw new GithubError(answer.status, "the answer names no user", "could not read who authorized");
-		return { id, login };
+		return { id, login, name: text(fields.name) || null, avatar: picture(fields.avatar_url) };
 	}
 
 	async verifiedPrimaryEmail(userToken: string): Promise<string | null> {

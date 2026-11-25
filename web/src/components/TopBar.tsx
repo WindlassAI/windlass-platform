@@ -1,15 +1,16 @@
 /**
- * The bar across the top: the wordmark, the app's places (Agents · Factory · Machines), where you are
- * on a page further in, the docs, the theme toggle and the account, whose menu opens from its initial.
+ * The bar across the top: the wordmark, the app's places (Agents · Factory · Machines · Settings), where you are
+ * on a page further in, the docs, the theme toggle and the account, whose menu opens from its picture.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { absoluteTime, duration } from "../lib/format";
-import { linkProps } from "../lib/router";
+import { useIdentity, type Identity } from "../lib/identity";
+import { linkProps, useRoute } from "../lib/router";
 import type { Theme } from "../lib/theme";
 import { useApp } from "../state/app";
 import { useGithub } from "../state/github";
-import { useChatgpt, useNow } from "../state/hooks";
-import { ExternalIcon, Mark, MoonIcon, SunIcon } from "./Icons";
+import { useChatgpt } from "../state/hooks";
+import { shownInSettings } from "./GithubSettings";
+import { CheckIcon, Mark, MoonIcon, SunIcon, UserIcon, WarnIcon } from "./Icons";
 import { PickerPanel } from "./ui/Menu";
 import { Tooltip } from "./ui/Tooltip";
 
@@ -33,87 +34,42 @@ export function ThemeToggle({ theme, onToggle }: { theme: Theme; onToggle(): voi
 	);
 }
 
-function ChatgptLine() {
-	const { status, error } = useChatgpt();
-	const now = useNow(30_000);
-	if (error) return <p className="menu-note tone-bad">{error}</p>;
-	if (!status) return <p className="menu-note">Checking the ChatGPT connection…</p>;
-	if (!status.connected) return <p className="menu-note tone-warn">ChatGPT is not connected. Connect your plan in Settings to use ChatGPT models.</p>;
+type Tone = "good" | "warn" | "quiet";
+
+/** One line of the account menu: a connection, how it stands, and the way to its Settings section. */
+function StatusRow({ name, section, tone, state, onFollow }: { name: string; section: "settings-models" | "settings-github"; tone: Tone; state: string; onFollow(): void }) {
 	return (
-		<p className="menu-note">
-			<span className="tone-good">ChatGPT connected</span>
-			{status.email ? ` as ${status.email}` : ""}
-			{status.accessExpiresAt !== null ? (
-				<span title={absoluteTime(status.accessExpiresAt)}>
-					{status.accessExpiresAt > now ? `. The access token renews itself in ${duration(status.accessExpiresAt - now)}.` : ". The access token renews itself on the next turn."}
-				</span>
-			) : null}
-		</p>
+		<a className={`menu-status menu-status-${tone}`} {...linkProps({ name: "settings", section })} onClickCapture={onFollow}>
+			<span className="menu-status-name">{name}</span>
+			<span className="menu-status-state">
+				{tone === "good" ? <CheckIcon size={12} /> : tone === "warn" ? <WarnIcon size={12} /> : null}
+				{state}
+			</span>
+		</a>
 	);
 }
 
-/** The GitHub connection in the account menu: what it is, the accounts it covers, and the way to change it. */
-function GithubBlock({ github }: { github: ReturnType<typeof useGithub> }) {
-	const connection = github.status?.connection ?? null;
-	const busy = github.busy !== null;
+function chatgptRow({ status, error }: ReturnType<typeof useChatgpt>): { tone: Tone; state: string } {
+	if (error) return { tone: "warn", state: "Check" };
+	if (!status) return { tone: "quiet", state: "checking…" };
+	return status.connected ? { tone: "good", state: "connected" } : { tone: "warn", state: "Connect" };
+}
+
+function githubRow(github: ReturnType<typeof useGithub>): { tone: Tone; state: string } {
+	if (github.busy === "finishing") return { tone: "quiet", state: "finishing…" };
+	if (github.error || (github.notice?.where === "account" && github.notice.tone === "bad")) return { tone: "warn", state: "Check" };
+	if (github.status === null) return { tone: "quiet", state: "checking…" };
+	return github.status.connection ? { tone: "good", state: "connected" } : { tone: "quiet", state: "Connect" };
+}
+
+/** The account's picture: the GitHub one where there is one, else the first letter of the name. */
+function Avatar({ identity, size }: { identity: Identity; size: "small" | "large" }) {
+	const [broken, setBroken] = useState<string | null>(null);
+	const picture = identity.avatar && identity.avatar !== broken ? identity.avatar : null;
 	return (
-		<div className="menu-github">
-			<p className="menu-heading">GitHub</p>
-			{github.notice?.where === "menu" && github.notice.tone === "bad" ? (
-				<p className="menu-note tone-bad" role="alert">
-					{github.notice.text}
-				</p>
-			) : null}
-			{github.busy === "finishing" ? (
-				<p className="menu-note" aria-busy="true">
-					Finishing the GitHub connection…
-				</p>
-			) : github.error ? (
-				<p className="menu-note tone-bad">
-					{github.error}{" "}
-					<button type="button" className="link" onClick={github.reload}>
-						Try again
-					</button>
-				</p>
-			) : github.status === null ? (
-				<p className="menu-note">Checking the GitHub connection…</p>
-			) : connection ? (
-				<>
-					<p className="menu-note">
-						<span className="tone-good">GitHub connected</span> as {connection.login}. Agents can work on the repositories the app may see in:
-					</p>
-					<ul className="gh-accounts">
-						{connection.accounts.map((account) => (
-							<li key={account.installationId}>
-								<span className="gh-account-name" title={account.login}>
-									{account.login}
-								</span>
-								{account.kind === "organization" ? <span className="chip">organization</span> : null}
-								<a className="gh-account-link" href={account.manageUrl} target="_blank" rel="noreferrer" aria-label={`Choose the repositories of ${account.login} at GitHub`}>
-									repositories
-									<ExternalIcon size={11} />
-								</a>
-							</li>
-						))}
-					</ul>
-					<div className="gh-menu-actions">
-						<button type="button" className="button button-quiet button-small" onClick={() => github.connect({ where: "menu", install: true })} disabled={busy && github.busy !== "popup"}>
-							{github.busy === "leaving" ? "Opening GitHub…" : github.busy === "popup" ? "In the GitHub window…" : "Add an account"}
-						</button>
-						<button type="button" className="button button-quiet button-small" onClick={() => void github.disconnect()} disabled={busy}>
-							{github.busy === "disconnecting" ? "Disconnecting…" : "Disconnect"}
-						</button>
-					</div>
-				</>
-			) : (
-				<>
-					<p className="menu-note">Not connected. Connect it to launch agents on your own repositories, private ones included, and get their work as pull requests.</p>
-					<button type="button" className="button button-outline button-small gh-menu-connect" onClick={() => github.connect({ where: "menu" })} disabled={busy && github.busy !== "popup"}>
-						{github.busy === "leaving" ? "Opening GitHub…" : github.busy === "popup" ? "In the GitHub window…" : "Connect GitHub"}
-					</button>
-				</>
-			)}
-		</div>
+		<span className={`account-avatar account-avatar-${size}`} aria-hidden="true">
+			{picture ? <img src={picture} alt="" referrerPolicy="no-referrer" onError={() => setBroken(picture)} /> : (identity.initial ?? <UserIcon size={size === "large" ? 16 : 13} />)}
+		</span>
 	);
 }
 
@@ -125,15 +81,19 @@ function AccountMenu() {
 
 function SignedInMenu() {
 	const { auth, signOut, client, platform } = useApp();
+	const identity = useIdentity();
 	const github = useGithub();
+	const chatgpt = useChatgpt();
+	const route = useRoute();
 	const [open, setOpen] = useState(false);
 	const button = useRef<HTMLButtonElement>(null);
 	const { notice, dismiss } = github;
+	const onSettings = route.name === "settings";
 
-	// Back from GitHub, when the connection was started here: the menu opens and says what came of it.
+	// Back from GitHub, started from the account: Settings says what came of it; elsewhere the menu opens.
 	useEffect(() => {
-		if (notice?.where === "menu") setOpen(true);
-	}, [notice]);
+		if (notice?.where === "account" && !onSettings && !shownInSettings.has(notice)) setOpen(true);
+	}, [notice, onSettings]);
 	// Said once: closing the menu puts it away.
 	const wasOpen = useRef(false);
 	useEffect(() => {
@@ -142,22 +102,35 @@ function SignedInMenu() {
 	}, [open, dismiss]);
 
 	if (!auth) return null;
-	const name = auth.profile.demo ? "Demo user" : (auth.profile.email ?? auth.profile.uid);
-	const initial = (auth.profile.demo ? "D" : (auth.profile.email ?? auth.profile.uid).replace(/^u_/, "")).slice(0, 1).toUpperCase();
 	const close = () => setOpen(false);
+	const header = (
+		<span className="menu-who">
+			<Avatar identity={identity} size="large" />
+			<span className="menu-who-text">
+				<span className="menu-who-name">{identity.name}</span>
+				{identity.detail ? <span className="menu-who-detail">{identity.detail}</span> : null}
+			</span>
+		</span>
+	);
+	const problem = notice?.where === "account" && notice.tone === "bad" ? notice.text : null;
 	return (
 		<div className="account">
-			<button ref={button} type="button" className="account-button" aria-haspopup="dialog" aria-expanded={open} aria-label={`Account: ${name}`} onClick={() => setOpen((value) => !value)}>
-				<span className="account-initial" aria-hidden="true">
-					{initial}
-				</span>
+			<button ref={button} type="button" className="account-button" aria-haspopup="dialog" aria-expanded={open} aria-label={`Account: ${identity.name}`} onClick={() => setOpen((value) => !value)}>
+				<Avatar identity={identity} size="small" />
 			</button>
-			<PickerPanel open={open} onClose={close} anchor={button} title={name} width={320} id="account-menu">
+			<PickerPanel open={open} onClose={close} anchor={button} title="Account" header={header} width={296} id="account-menu">
 				<div className="menu" role="group" aria-label="Account">
-					<p className="menu-id">{auth.profile.uid}</p>
-					{auth.profile.demo ? <p className="menu-note">The demo runs a scripted model with real tool calls. It has no ChatGPT account.</p> : <ChatgptLine />}
+					{auth.profile.demo ? <p className="menu-note">The demo runs a scripted model with real tool calls.</p> : null}
 					{client.kind === "mock" ? <p className="menu-note">Mock backend: nothing leaves this page.</p> : null}
-					{github.enabled ? <GithubBlock github={github} /> : null}
+					<div className="menu-statuses">
+						{auth.profile.demo ? null : <StatusRow name="ChatGPT plan" section="settings-models" onFollow={close} {...chatgptRow(chatgpt)} />}
+						{github.enabled ? <StatusRow name="GitHub" section="settings-github" onFollow={close} {...githubRow(github)} /> : null}
+						{problem ? (
+							<p className="menu-note tone-bad" role="alert">
+								{problem}
+							</p>
+						) : null}
+					</div>
 					{/* The account's own pages: closing the menu is the link's doing, the way there is the router's. */}
 					<div className="menu-actions">
 						{platform.info?.machines ? (
@@ -168,7 +141,7 @@ function SignedInMenu() {
 						<a className="menu-action" {...linkProps({ name: "usage" })} onClickCapture={close}>
 							Usage
 						</a>
-						<a className="menu-action" {...linkProps({ name: "settings" })} onClickCapture={close}>
+						<a className="menu-action menu-action-phone" {...linkProps({ name: "settings" })} onClickCapture={close}>
 							Settings
 						</a>
 						<a className="menu-action menu-action-phone" {...linkProps({ name: "docs", slug: "" })} onClickCapture={close}>
@@ -185,11 +158,13 @@ function SignedInMenu() {
 }
 
 /**
- * The app's places: Agents, the Factory where the deployment offers work items, and Machines where it
- * offers them. `current` is the one you are on; `asking`, how many work items ask their person
+ * The app's places: Agents, the Factory where the deployment offers work items, Machines where it
+ * offers them, and Settings. `current` is the one you are on; `asking`, how many work items ask their person
  * something, said beside "Factory" when there are any.
  */
-export function ListTabs({ current, asking = 0 }: { current?: "home" | "factory" | "machines"; asking?: number }) {
+export type Place = "home" | "factory" | "machines" | "settings";
+
+export function ListTabs({ current, asking = 0 }: { current?: Place; asking?: number }) {
 	const { platform } = useApp();
 	return (
 		<nav className="topbar-tabs" aria-label="Main">
@@ -215,12 +190,16 @@ export function ListTabs({ current, asking = 0 }: { current?: "home" | "factory"
 					Machines
 				</a>
 			) : null}
+			{/* On a phone there is no room for it: it is in the account menu there. */}
+			<a className="topbar-tab topbar-tab-wide" aria-current={current === "settings" ? "page" : undefined} {...linkProps({ name: "settings" })}>
+				Settings
+			</a>
 		</nav>
 	);
 }
 
 /** `current`: the place in the bar's tabs you are on; `children`, where you are further in (a breadcrumb). */
-export function TopBar({ theme, onToggleTheme, current, asking, children }: { theme: Theme; onToggleTheme(): void; current?: "home" | "factory" | "machines"; asking?: number; children?: ReactNode }) {
+export function TopBar({ theme, onToggleTheme, current, asking, children }: { theme: Theme; onToggleTheme(): void; current?: Place; asking?: number; children?: ReactNode }) {
 	const { auth, client } = useApp();
 	return (
 		<header className={`topbar${children ? " topbar-deep" : ""}`}>

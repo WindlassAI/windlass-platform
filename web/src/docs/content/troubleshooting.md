@@ -20,8 +20,8 @@ The platform could not get a ChatGPT token for the turn. Reconnect your ChatGPT 
 
 ## GitHub
 
-**"GitHub is not connected any more. Connect GitHub again from the account menu, then try once more."**\
-Open the account menu and choose **Connect GitHub**.
+**"GitHub is not connected any more. Connect GitHub again in Settings, then try once more."**\
+Open **Settings**, and under **Integrations** choose **Connect GitHub…**.
 
 **windlass/verified never appears**\
 Look under **Verdict** on the item. If the installation still has read-only Checks access, its owner must accept **Checks: Read and write**. Open the installed GitHub App's **Configure** page in account or organization settings and approve the pending permissions. Windlass can post the next verification when access is granted.
@@ -30,7 +30,7 @@ Look under **Verdict** on the item. If the installation still has read-only Chec
 An owner of the organization approves the App at GitHub. Then connect GitHub again.
 
 **"That repository is not among the ones your GitHub connection covers. Add it to the GitHub App's installation at GitHub, then choose it again."**\
-Follow the **repositories** link in the account menu, add the repository at GitHub, then choose it again.
+Choose **Repositories** beside the account in **Settings → Integrations → GitHub**, add the repository at GitHub, then choose it again.
 
 **"… can read … on GitHub but not write to it, so the platform cannot push there for you. Ask an owner of … for write access, then push again."**\
 You can work on the repository, but not push to it. Ask for write access.

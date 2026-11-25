@@ -140,6 +140,9 @@ import { sandboxTime } from "../lib/format";
 import { dayOf, reportedModelUsage, usesPlatformModel } from "../../../server/src/usage";
 import { createMockItems, MOCK_FACTORY_LIMITS, type MockItemsState } from "./mock-items";
 
+/** The mock GitHub picture: drawn here, so nothing leaves the page. */
+const MOCK_AVATAR = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" fill="#2f6f5e"/><circle cx="20" cy="16" r="7" fill="#f3d9b1"/><path d="M6 40c2-9 8-13 14-13s12 4 14 13z" fill="#f3d9b1"/><path d="M12 15c0-7 5-10 8-10s9 2 9 10c-2-3-6-5-9-5s-6 2-8 5z" fill="#3b2a20"/></svg>');
+
 export interface MockOptions {
 	/** "one": a deployment whose hosted sandboxes have one size (Docker, or E2B with only small built): no sizes are shown. */
 	sizes?: "one";
@@ -404,7 +407,7 @@ export const MOCK_E2B_PROFILES: SandboxProfile[] = profilesFor("e2b", { windlass
 // ---- GitHub ---------------------------------------------------------------------------------
 
 const GITHUB = { slug: "windlass-mock", url: "https://github.com" };
-const GITHUB_NOT_CONNECTED = "GitHub is not connected any more. Connect GitHub again from the account menu, then try once more.";
+const GITHUB_NOT_CONNECTED = "GitHub is not connected any more. Connect GitHub again in Settings, then try once more.";
 
 const GITHUB_ACCOUNTS: GithubAccount[] = [
 	{ installationId: 61001, login: "ada", kind: "user", manageUrl: "https://github.com/settings/installations/61001" },
@@ -3260,7 +3263,9 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			async linkedLogins() {
 				return (["github", "google"] as const)
 					.filter(provider => recall("wlp.mock.identity." + provider) === world().profile.uid)
-					.map(provider => ({ provider, display: provider === "github" ? "ada" : "ada@example.com" }));
+					.map(provider => provider === "github"
+						? { provider, display: "ada", name: "Ada Lovelace", avatar: MOCK_AVATAR }
+						: { provider, display: "ada@example.com", name: "Ada Lovelace", avatar: null });
 			},
 			async unlinkLogin(provider) {
 				const methods = await this.linkedLogins();

@@ -10,7 +10,7 @@ import { asking, useItems } from "./screens/Items";
 import { Machines } from "./screens/Machines";
 import { NewAgent } from "./screens/NewAgent";
 import { Session, SessionCrumb, useSessionMachine } from "./screens/Session";
-import { Settings, SettingsCrumb } from "./screens/Settings";
+import { Settings } from "./screens/Settings";
 import { Plans, PlansCrumb } from "./screens/Plans";
 import { MockAuthorize } from "./components/ChatgptPlan";
 import { LinkCallback, SignIn } from "./screens/SignIn";
@@ -96,7 +96,7 @@ function WorkspaceRoute({ selection, theme, onToggleTheme }: { selection: Select
 	}, [selection.kind]);
 	return (
 		<div className="app app-workspace">
-			<TopBar theme={theme} onToggleTheme={onToggleTheme} current="home" asking={offered ? waiting : 0} />
+			<TopBar theme={theme} onToggleTheme={onToggleTheme} current={selection.kind === "repository" && selection.view === "settings" ? "settings" : "home"} asking={offered ? waiting : 0} />
 			<Workspace selection={selection} items={items} />
 		</div>
 	);
@@ -211,9 +211,7 @@ export function App() {
 	if (route.name === "settings") {
 		return (
 			<div className="app">
-				<TopBar theme={theme} onToggleTheme={toggleTheme}>
-					<SettingsCrumb />
-				</TopBar>
+				<TopBar theme={theme} onToggleTheme={toggleTheme} current="settings" />
 				<Settings />
 			</div>
 		);
