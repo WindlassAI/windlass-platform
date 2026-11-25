@@ -1,8 +1,4 @@
-/**
- * One open session: the feed from the client, folded by the timeline reducer into what the session
- * screen draws. A plain store (no React) so it can be tested and so a burst of streaming deltas
- * becomes one render per frame.
- */
+/** Reduce one session feed, batch notifications per frame and recover missing timeline items from a snapshot. */
 import type { PendingQuestion, SandboxProfile, SecretRequest, SessionSnapshot, SessionSummary, TimelineItem } from "@contract";
 import type { ConnectionState, PlatformError, SessionApi } from "../api/client";
 import { applyDelta, applyItem, emptyView, fromSnapshot, type SessionView } from "../lib/timeline";
@@ -15,16 +11,11 @@ export interface SessionState {
 	summary: SessionSummary | null;
 	profile: SandboxProfile | null;
 	view: SessionView;
-	/** The question the turn in progress waits on: from the snapshot, then from the `question` event. */
 	question: PendingQuestion | null;
 	/** Counts the turns that ended while the session was open: the changes list reloads when it moves. */
 	turnsEnded: number;
-	/** For a session on one of the user's machines, what its banner says of the machine: from the snapshot, then from the `machine` event. */
 	machine: SessionSnapshot["machine"];
-	/**
-	 * The agent's open request for a secret (`request_secret`), in a person's own session: from the snapshot, then from the
-	 * line that asks it, until a turn starts. An item's builder asks on the item, so it is never set there.
-	 */
+	/** Personal sessions hold this request until the next turn. Builders ask on the item. */
 	secretRequest: (SecretRequest & { id: string }) | null;
 }
 
@@ -38,7 +29,6 @@ export function secretRequestAfter(open: SessionState["secretRequest"], item: Ti
 export interface SessionStore {
 	getState(): SessionState;
 	subscribe(listener: () => void): () => void;
-	/** Opens the feed. Returns the function that closes it. */
 	start(): () => void;
 }
 
