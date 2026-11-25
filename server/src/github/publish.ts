@@ -1,27 +1,3 @@
-/**
- * Getting a session's work out and in: the clone of a connected repository when its sandbox is made,
- * and the push with its pull request. Each is the platform's doing, step by step, with a token GitHub
- * issued for that step and that repository alone (app.ts, git.ts). The `agentSession` actor calls these
- * and keeps what they return; nothing here knows of actors, so the checks run them against a stand-in.
- *
- *   clone    contents: read                  the token goes into the sandbox, for `git clone`
- *   push     contents: write                 the token goes into the sandbox, for `git push`
- *   pull     pull requests: write            the token stays on the server, for GitHub's API
- *
- * Before each, GitHub is asked what the connected user may do in the repository (repos.ts): the
- * platform pushes as the app, and must not push where its user could not.
- *
- * A pull request's description ends with a section that says what the work was verified with
- * (verified.ts). The platform writes it when it opens the pull request and again with every push,
- * from what the session holds of its checks and from what git says of the work's changes once they
- * are committed; what else the description says is kept. `describePull` writes it without a push,
- * for a turn that ended after its work was pushed.
- *
- * Every failure a user can do something about is a `GithubProblem` with a sentence that says what:
- * no write access, a protected branch, a repository or an installation that is gone, a connection that
- * was removed.
- */
-
 import { networkBody } from "../blocked-network.js";
 import type { BlockedNetwork } from "../contract.js";
 import { mirrorOwner } from "../sandbox/git-mirrors.js";
@@ -74,10 +50,6 @@ export function branchFor(title: string, sessionId: string): string {
 export function authorOf(connection: StoredConnection): { name: string; email: string } {
 	return { name: connection.user.login, email: `${connection.user.id}+${connection.user.login}@users.noreply.github.com` };
 }
-
-// ---------------------------------------------------------------------------------------------
-// Cloning
-// ---------------------------------------------------------------------------------------------
 
 /** What a clone or a push that failed means for the user. */
 function gitProblem(outcome: GitOutcome, what: "clone" | "push", repository: string, account: string, branch: string): GithubProblem {
@@ -180,10 +152,6 @@ export async function putOnWork(sandbox: SandboxHandle, directory: string, work:
 	if (!outcome.ok || !/^[0-9a-f]{40,64}$/.test(head)) throw new Error(`the workspace could not be put on ${work}${outcome.said ? `: ${outcome.said}` : ""}`);
 	return head;
 }
-
-// ---------------------------------------------------------------------------------------------
-// Pushing, and the pull request
-// ---------------------------------------------------------------------------------------------
 
 /** What a pull request's description is to say was verified, as the session holds it (verified.ts). */
 export interface PublishEvidence {
@@ -448,38 +416,33 @@ function secretRefusal(found: { files: string[]; names: string[] }): string {
 	return `Nothing was pushed: ${files} would have gone to GitHub with the value of ${names} in it. The platform's own commit was undone, so the change is in the workspace as it was. Take the value out (and out of any commit that has it), then push again.`;
 }
 
-/**
- * Commits what is uncommitted, pushes the session's branch, and opens a pull request when none is
- * open. Throws GithubProblem; a `PullProblem` when the push itself went through.
- */
+/** A PullProblem retains the pushed head so a retry can finish publishing. */
 export async function publishWork(input: PublishInput): Promise<Published> {
 	const { app, connection, repository, sandbox, branch } = input;
 	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
-	// Asked before anything is committed: a user who may not push gets no commit made in their name.
+	// Check the user’s write access before committing in their name.
 	const resolved = await sessionRepository(app, connection, repository, "write");
 	const { installation } = resolved;
 	const name = fullName(resolved.repository);
 	const account = installation.account.login;
 
-	// The section's redaction is the session's: what it would take out of the pull request is not pushed either.
+	// Default the outgoing-commit scan to the PR redactor.
 	const work = await commitAndPush({ ...input, redact: input.redact ?? input.evidence.redact }, resolved, commitMessage(input.message));
 	if (work.workspaceChanged) throw new PullProblem(new GithubProblem("github_failed", `GitHub has ${work.head} on ${branch}. The workspace Git state could not be synchronized after the push. Fetch and reconcile the branch before publishing again.`), work.head);
-	const nothingNew = !work.pushed;
+	const { pushed, head, committedFiles } = work;
 	const open = isOpen(input.pull) ? input.pull : null;
 	const nothingToPush = () => new GithubProblem("github_failed", `There is nothing to push: ${branch} at GitHub already has everything in the workspace.`);
-	if (nothingNew && open && !input.retitle && !input.shownIsEnough) throw nothingToPush();
-	// Nothing new, and nothing of this session at GitHub to ask a pull request for.
-	if (nothingNew && input.pushed === null) throw new GithubProblem("github_failed", `There is nothing to open a pull request with: the workspace has no changes and no commit that ${repository.branch} does not have.`);
-	const { head, committedFiles } = work;
-	// Read once everything is committed: what git says of the work now is what the pull request will show.
+	if (!pushed && open && !input.retitle && !input.shownIsEnough) throw nothingToPush();
+	if (!pushed && input.pushed === null) throw new GithubProblem("github_failed", `There is nothing to open a pull request with: the workspace has no changes and no commit that ${repository.branch} does not have.`);
 	const said = evidenceSection(input.evidence, await readWork(sandbox, repository.baseSha ?? null), connection.user.login);
 
 	const now = Date.now();
-	const pushed = !nothingNew;
 	const title = input.message.title.trim();
+	const published = (pull: Pull, at: number, outcome: "opened" | "retitled" | "kept"): Published => ({
+		pull: infoOf(pull, at, said.words), opened: outcome === "opened", retitled: outcome === "retitled", pushed, head, committedFiles,
+	});
 	try {
-		// Contents too, to read: GitHub opens no pull request for a token that cannot see the two branches
-		// ("not all refs are readable"), whatever it may do with pull requests.
+		// GitHub requires contents:read to resolve both refs when opening a PR.
 		return await app.withToken(installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read", pull_requests: "write" } }, async (token): Promise<Published> => {
 			const { owner, name: repo } = resolved.repository;
 			// The installation listing used to find a repository can predate a visibility change.
@@ -489,25 +452,23 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 				// It may have been merged or closed at GitHub since: then the push went to a branch with no pull request.
 				const current = await app.pull(token, owner, repo, open.number).catch(() => null);
 				if (current && (current.state === "open" || current.state === "draft")) {
-					// When nothing was pushed, the pull request keeps the time of its last push.
 					const at = pushed ? now : open.pushedAt;
 					const titled = input.keepTitle ? current.title : title;
 					if (input.retitle && (current.title !== titled || current.body.trim() !== body)) {
 						const updated = await app.updatePull(token, owner, repo, current.number, { title: titled, body });
-						return { pull: infoOf(updated, at, said.words), opened: false, pushed, retitled: true, head, committedFiles };
+						return published(updated, at, "retitled");
 					}
 					if (!pushed && !input.shownIsEnough) throw nothingToPush();
 					// A push from the panel leaves the description as it is at GitHub, where its user may have edited it, but for the section.
 					const described = pullBody(repository, current.body, said.section);
 					const kept = input.retitle || current.body.trim() === described ? current : await app.updatePull(token, owner, repo, current.number, { title: current.title, body: described });
-					return { pull: infoOf(kept, at, said.words), opened: false, pushed, retitled: false, head, committedFiles };
+					return published(kept, at, "kept");
 				}
-				// Nothing was pushed, and the pull request it was for is no longer open: refused, as without the agent.
 				if (!pushed) throw nothingToPush();
 			}
 			try {
 				const created = await app.createPull(token, owner, repo, { title, body, head: branch, base: repository.branch });
-				return { pull: infoOf(created, now, said.words), opened: true, pushed, retitled: false, head, committedFiles };
+				return published(created, now, "opened");
 			} catch (error) {
 				// One pull request per pair of branches: one that is open already is the session's.
 				if (error instanceof GithubError && error.status === 422 && /already exists/i.test(error.said)) {
@@ -515,13 +476,12 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 					if (existing) {
 						const described = input.shownIsEnough && input.retitle ? { title: input.keepTitle ? existing.title : title, body } : { title: existing.title, body: pullBody(repository, existing.body, said.section) };
 						const kept = existing.title === described.title && existing.body.trim() === described.body ? existing : await app.updatePull(token, owner, repo, existing.number, described);
-						return { pull: infoOf(kept, now, said.words), opened: false, pushed, retitled: false, head, committedFiles };
+						return published(kept, now, "kept");
 					}
 				}
 				if (error instanceof GithubError && error.status === 422 && /no commits between/i.test(error.said)) {
 					throw new GithubProblem("github_failed", `GitHub opened no pull request: ${branch} has no commit that ${repository.branch} does not have.`);
 				}
-				// Any other refusal of the pull request itself is GitHub's to explain: the token and the repository were fine.
 				if (error instanceof GithubError && error.status === 422) {
 					throw new GithubProblem("github_failed", `The work is on ${branch} at GitHub, but GitHub opened no pull request${error.said ? `: ${error.said}` : ""}.`);
 				}
