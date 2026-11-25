@@ -1,5 +1,6 @@
 import { hostname } from "node:os";
 import { RUNNER_LOGS, docker } from "../../server/src/sandbox/docker.js";
+import { HARNESS_LABELS } from "./setup-choices.js";
 import type { MachineHarness } from "./policy.js";
 import { directory, RunnerError } from "./state.js";
 
@@ -24,24 +25,18 @@ export async function setupImageAndMounts() {
 	return { command: [...args, image], importFile: source && "/import/opencode/auth.json" };
 }
 
-const agentName = (harness: MachineHarness) => harness === "claude" ? "Claude Code" : harness === "codex" ? "Codex" : "OpenCode";
-/** How an agent that setup did not sign in is signed in later, in the runner that setup prints the command for. */
 export const laterLogin = (harness: MachineHarness) => `docker exec -it windlass-runner windlass-runner login ${harness}`;
 
-/**
- * Offers each agent's sign-in in turn. One skipped, or one whose sign-in fails, does not stop setup: the machine is
- * paired already, so the others are offered and the start command is printed (main.ts). Each is said, with the
- * command that signs it in later. Only stopping setup (`stopped`) ends it here.
- */
+// Setup continues with the other agents when a sign-in fails.
 export async function setupAgents(harnesses: MachineHarness[], ask: (message: string) => Promise<string>, login: (harness: MachineHarness) => Promise<void>,
 	say: (line: string) => void = console.log, stopped: () => boolean = () => false): Promise<MachineHarness[]> {
 	const unsigned: MachineHarness[] = [];
 	for (const harness of harnesses) {
 		let answer: string;
-		do { answer = (await ask(agentName(harness) + ": sign in now? [Y/n] ")).toLowerCase(); }
+		do { answer = (await ask(HARNESS_LABELS[harness] + ": sign in now? [Y/n] ")).toLowerCase(); }
 		while (!["", "y", "yes", "n", "no"].includes(answer));
 		if (answer === "n" || answer === "no") {
-			say(`${agentName(harness)} is not signed in. Sign it in later with: ${laterLogin(harness)}`);
+			say(`${HARNESS_LABELS[harness]} is not signed in. Sign it in later with: ${laterLogin(harness)}`);
 			unsigned.push(harness);
 			continue;
 		}
@@ -50,7 +45,7 @@ export async function setupAgents(harnesses: MachineHarness[], ask: (message: st
 		} catch (error) {
 			if (stopped()) throw error;
 			const why = error instanceof RunnerError ? error.message : "the sign-in did not finish.";
-			say(`${agentName(harness)} was not signed in: ${why} Sign it in later with: ${laterLogin(harness)}`);
+			say(`${HARNESS_LABELS[harness]} was not signed in: ${why} Sign it in later with: ${laterLogin(harness)}`);
 			unsigned.push(harness);
 		}
 	}
