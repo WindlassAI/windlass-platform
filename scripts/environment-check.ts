@@ -264,6 +264,20 @@ async function run(): Promise<void> {
 		expect("a record without a size is small's, as is a session without one", (await sessionEnvironment(s.host, PROJECT, "m_box", "npm ci", CHECKS)) === undefined && sameSize({}, undefined) && sameSize({}, "small") && !sameSize({}, "standard"));
 	}
 
+	// One ready environment per place, prepared for the latest subtask's image variant.
+	for (const screenshots of [false, true]) {
+		const s = stand();
+		const latest = s.host.sessions()[0];
+		latest.item = { id: "i_child", role: "builder", subtaskScreenshots: screenshots };
+		await rebuild(s.host, PROJECT, HOSTED);
+		expect("the build follows the latest subtask's screenshots choice", s.started[0].screenshots === screenshots);
+		await buildResult(s.host, "s_env_1", passed(screenshots ? { screenshots: true } : {}));
+		const prepared = (shots: boolean) => sessionEnvironment(s.host, PROJECT, HOSTED, "npm ci", CHECKS, undefined, shots);
+		expect("only sessions using the prepared variant can reuse it", (await prepared(screenshots))?.usable === true && (await prepared(!screenshots))?.usable === false);
+		await nudge(s.host, PROJECT, HOSTED, "missed", undefined, !screenshots);
+		expect("a miss for the other variant leaves the build ready", (await prepared(screenshots))?.usable === true);
+	}
+
 	// A red main: promoted, with the checks that failed on its code.
 	{
 		const s = stand();

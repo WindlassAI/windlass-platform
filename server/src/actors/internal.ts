@@ -52,7 +52,7 @@ export interface SessionCreateInput {
 	 * Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's.
 	 * `signIn`: how the machine's agent signed in when the item was filed, where that counts its tokens (harnesses.ts, `itemTokensOf`).
 	 */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; planCritic?: true; owns?: string[]; childBranch?: { name: string; start: string }; size?: number; effort?: string; signIn?: SignInMethod; filedWithKey?: true };
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; planCritic?: true; subtaskScreenshots?: boolean; owns?: string[]; childBranch?: { name: string; start: string }; size?: number; effort?: string; signIn?: SignInMethod; filedWithKey?: true };
 	/** Set for a session that only builds the repository's prepared environment at its place (user-environments.ts). */
 	environmentBuild?: EnvironmentBuildOrigin;
 }
@@ -65,11 +65,16 @@ export type EnvironmentBuildReport = EnvironmentBuildResult | { waiting: string 
 /** What a build session builds: `screenshots`, the image variant item sessions there use. */
 export interface EnvironmentBuildOrigin { project: string; place: string; screenshots: boolean }
 
-/** The repository setting selects an image only for work item sessions, at sandbox creation. */
+/** Subtask builders carry the approved choice, including false. Other work items follow the repository permission. */
+export function itemScreenshots(item: { subtaskScreenshots?: boolean } | undefined, harness: SessionSummary["harness"], allowed: boolean): boolean {
+	return allowed && !!item && item.subtaskScreenshots !== false && (harness ?? "windlass") === "windlass";
+}
+
+/** The image requested when creating or replacing a session's sandbox. */
 export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "size" | "origin" | "harness" | "environmentBuild" | "hostedSize">, screenshots = false): CreateSandboxInput {
 	const { uid, sessionId, profile, origin } = session;
 	const size = session.size ?? origin?.size;
-	return { uid, sessionId, profile, ...(session.environmentBuild && { environmentBuild: true }), ...(size && { size }), ...(session.hostedSize && { hostedSize: session.hostedSize }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: (origin?.kind === "item" && screenshots && (!session.harness || session.harness === "windlass")) || session.environmentBuild?.screenshots === true };
+	return { uid, sessionId, profile, ...(session.environmentBuild && { environmentBuild: true }), ...(size && { size }), ...(session.hostedSize && { hostedSize: session.hostedSize }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: session.environmentBuild ? screenshots && session.environmentBuild.screenshots : itemScreenshots(origin, session.harness, screenshots) };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
@@ -137,7 +142,7 @@ export interface UserInternal {
 	/** A build session's result (user-environments.ts `buildResult`); the session is deleted after it. */
 	internalEnvironmentResult(sessionId: string, result: EnvironmentBuildReport): Promise<void>;
 	/** A session found its place's ready image missing (`missed`), or started cold where the repository has no environment (`cold`). */
-	internalEnvironmentNudge(sessionId: string, kind: "missed" | "cold"): Promise<void>;
+	internalEnvironmentNudge(sessionId: string, kind: "missed" | "cold", screenshots: boolean): Promise<void>;
 	/** A push to a repository's default branch (github-inbox.ts). */
 	internalEnvironmentPushed(repositoryId: GithubId): Promise<void>;
 	internalSetupCommand(project: string): Promise<RepositorySetup>;

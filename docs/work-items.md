@@ -556,8 +556,9 @@ routes answer 404, `not_found` ("There is no such route."), whatever the token.
 
 ## Screenshots on work items
 
-Screenshots are off by default. Enable **Take screenshots for work items** in the repository’s
-settings, when the deployment allows screenshots. New builder and reviewer sandboxes then use `windlass-platform-sandbox:shots`
+Screenshots are off by default. Enable **Allow screenshots for work items** in the repository’s
+settings when the deployment allows screenshots. For feature subtasks, the approved plan must also
+set `needs.screenshots` to true. Eligible builder and reviewer sandboxes use `windlass-platform-sandbox:shots`
 on Docker or `windlass-platform-sandbox-shots` on E2B. The shots image extends the base with
 Chrome headless shell, Playwright core, fonts and `wlp-shot`. Personal agents and items with
 screenshots off use `windlass-platform-sandbox:latest` or the `windlass-platform-sandbox` template.

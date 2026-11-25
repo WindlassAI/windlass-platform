@@ -328,7 +328,7 @@ export interface SessionSummary {
 	/** Reload servers() when changedAt advances. Absent when the session has no known MCP servers. */
 	servers?: { count: number; changedAt: number };
 	/** Item sessions receive prompts from the factory. The recorded sign-in determines token accounting for machine agents. */
-	item?: { id: string; role?: "builder" | "reviewer"; planCritic?: true; reviewer?: { id: string; status: SessionStatus }; signIn?: "api-key" | "chatgpt" | "subscription" };
+	item?: { id: string; role?: "builder" | "reviewer"; subtaskScreenshots?: boolean; planCritic?: true; reviewer?: { id: string; status: SessionStatus }; signIn?: "api-key" | "chatgpt" | "subscription" };
 	/** Set for a session that only builds a prepared environment (environments.ts): it is not listed, and is deleted when done. */
 	environmentBuild?: true;
 	/** Set when the session's sandbox started from a validated environment: the commit setup and the checks ran at, and when they passed. */
@@ -598,6 +598,8 @@ export interface EnvironmentBuild {
 	finishedAt: number | null;
 	/** The base commit setup ran at; "" until the clone. */
 	commit: string;
+	/** Whether the build used the screenshots image. */
+	screenshots?: true;
 	/** The image the sandbox was made from, as the place says it; "" where it does not (an older runner). */
 	image: string;
 	/** Digests of the setup command and of the checks as they were when the build started. */

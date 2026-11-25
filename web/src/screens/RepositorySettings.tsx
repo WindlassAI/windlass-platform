@@ -26,10 +26,7 @@ import { Check } from "../components/ui/Check";
 /** The id of a section's heading: where a link to it lands. */
 export const sectionHeading = (section: RepositorySection) => `repo-${section}`;
 
-/**
- * Whether the agents of the repository's work items, the one that makes the change and the second
- * reviewer, take screenshots of the app for their reports (`RepositoryDefaults.screenshots`, off by default). Saved as soon as it is changed; read by each agent at its next turn.
- */
+/** Repository permission for work item screenshots, read by each agent at its next turn. */
 export function ScreenshotsSetting({ page, view }: { page: Pick<RepositoryPage, "id" | "replace">; view: RepositoryView }) {
 	const { client, explain, platform } = useApp();
 	const auth = useAuth();
@@ -57,16 +54,14 @@ export function ScreenshotsSetting({ page, view }: { page: Pick<RepositoryPage, 
 			<h2 className="usage-title" id="repo-screenshots">
 				Screenshots
 			</h2>
-			<p className="usage-lede">Let builders and reviewers attach pictures of the app to their work item reports. Screenshots are off by default.</p>
+			<p className="usage-lede">Let builders and reviewers attach pictures of the app to their reports. Screenshots are off by default.</p>
 			<div className="usage-card repo-form">
 				<Check checked={on} disabled={busy || (deploymentOff && !on)} onChange={(on) => set(on)}>
-					<span className="check-name">Take screenshots for work items</span>
+					<span className="check-name">Allow screenshots for work items</span>
 					<span className="check-means">
 						{deploymentOff
 							? "Screenshots are turned off for this whole deployment, so no work item takes them, whatever is chosen here."
-							: on
-							? "New work item sandboxes include a browser where available. Turning this off stops screenshot filing from the next turn."
-							: "Turning this on gives new work item sandboxes a browser where available. An existing builder keeps its sandbox."}
+							: "For features, only subtasks marked in the plan get a browser."}
 					</span>
 				</Check>
 				{said ? (
@@ -128,7 +123,7 @@ function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { pa
 		view.defaults.profile !== null || view.defaults.model !== null ? "the defaults for new agents" : null,
 		view.defaults.place ? "where new work items run" : null,
 		view.defaults.autoApprovePlans || view.defaults.autoMergeSingles || view.defaults.waitForCiOnEachPart ? "work item approval settings" : null,
-		view.defaults.screenshots ? "the choice to take screenshots" : null,
+		view.defaults.screenshots ? "permission to take screenshots" : null,
 		view.approvals.length > 0 ? (view.approvals.length === 1 ? "the remembered approval of one MCP server" : `the remembered approvals of ${view.approvals.length} MCP servers`) : null,
 	].filter((part): part is string => part !== null);
 	const listed = parts.length <= 1 ? (parts[0] ?? "") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;

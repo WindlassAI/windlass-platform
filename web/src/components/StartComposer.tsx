@@ -539,7 +539,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			<p className="ui-menu-note start-shots">Screenshots are turned off for this deployment.</p>
 		) : chosen && item && saved.defaults ? (
 			<p className="ui-menu-note start-shots">
-				{saved.defaults.screenshots ? "Its agents take screenshots of the app for their reports" : "Screenshots are off for this repository"}:{" "}
+				{saved.defaults.screenshots ? "Its agents can take screenshots of the app for their reports" : "Screenshots are off for this repository"}:{" "}
 				<a className="link" {...linkProps({ name: "repository", id: chosen.repository.id, view: "settings", section: "screenshots" })}>
 					{saved.defaults.screenshots ? "change it" : "turn them on"}
 				</a>
@@ -1015,7 +1015,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 							? {
 									id: "saved",
 									label: "Saved settings",
-									description: platform.info?.items?.screenshots === false ? "Screenshots are off for this deployment" : saved.defaults ? (saved.defaults.screenshots ? "Its agents take screenshots for their reports" : "Screenshots are off for this repository") : `What is saved for ${chosen.repository.name}`,
+									description: platform.info?.items?.screenshots === false ? "Screenshots are off for this deployment" : saved.defaults ? (saved.defaults.screenshots ? "Its agents can take screenshots for their reports" : "Screenshots are off for this repository") : `What is saved for ${chosen.repository.name}`,
 									icon: <SlidersIcon size={15} />,
 									onSelect: () => navigate({ name: "repository", id: chosen.repository.id, view: "settings", section: saved.defaults ? "screenshots" : undefined }),
 								}

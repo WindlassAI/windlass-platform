@@ -884,6 +884,7 @@ test("placement 7 scores available slots, queue, personal turns and direct depen
 });
 
 interface ChildOptions {
+	screenshots?: true;
 	/** The subtasks' agent; left out: Windlass on the feature's model. */
 	agent?: SubtaskAgent;
 	/** The feature session's model and the feature's effort, which a Windlass subtask inherits. */
@@ -907,7 +908,7 @@ async function childCreation(t: import("node:test").TestContext, overflow = fals
 		allowedProfiles: ["docker-windlass-sandbox", "docker-hardened"], harnesses: [...signedIn],
 		profiles: ["docker-windlass-sandbox", "docker-hardened"].map(id => ({ id, available: true } as never)), slots: { max: 3, busy: 0, queued: 0, unit: { cpus: 4, memoryBytes: 4 * GiB, pids: 1024 } } });
 	const linux = { ...mac, machineId: linuxId, name: "Linux box" };
-	const feature = placementFeature([mac, linux], { cpus: 8 }, ["Linux box"], overflow, "Mac", options.agent);
+	const feature = placementFeature([mac, linux], { cpus: 8, screenshots: options.screenshots }, ["Linux box"], overflow, "Mac", options.agent);
 	if (options.featureEffort) feature.agent = { harness: "windlass", model: options.featureModel ?? "default", effort: options.featureEffort, tokens: "counted", reportedTokens: 0, cost: null, fiveHour: null };
 	const selected = dispatch(feature, [mac]);
 	const first = selected.jobs![0];
@@ -928,18 +929,39 @@ async function childCreation(t: import("node:test").TestContext, overflow = fals
 		db: { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args) },
 		client: () => ({ workItem: { get: ([, id]: string[]) => id === job.id ? childActor : parent,
 			create: async (_key: string[], { input }: { input: { item: typeof feature } }) => { child = input.item; } } }) };
+	let sessionOrigin: Parameters<import("../server/src/actors/user-items.js").MakeSession>[4] | undefined;
 	const delivered: { place: unknown; size?: number; profile?: string }[] = [];
 	const sessions: { harness?: string; model?: string; effort?: string }[] = [];
 	const started: string[] = [];
 	childActor.internalAct = async (input: { action: { kind: string } }) => { started.push(input.action.kind); return child; };
 	const create = (cancel = false) => itemActions.internalFeatureChild(ctx as never, { parent: feature.id, child: job.id, cancel }, async (_c, _owner, input, _submission, origin) => {
 		if (options.refuse) throw clientError({ error() {} }, new Error(options.refuse.message), options.refuse.message, options.refuse.code);
+		sessionOrigin = origin;
 		delivered.push({ place: input.place, size: origin.size, profile: input.profile });
 		sessions.push({ harness: input.harness, model: input.model, effort: origin.effort });
 		return { ...input, model: input.model ?? "default", repository, id: origin.sessionId } as never;
 	}, async () => options.models ?? {});
-	return { create, delivered, sessions, started, facts, machines, mac, raw, child: () => child };
+	return { create, delivered, sessions, started, facts, machines, mac, raw, sessionOrigin: () => sessionOrigin, child: () => child };
 }
+
+test("approved subtasks get the screenshots image only when marked and permitted", async t => {
+	const { sessionSandboxInput } = await import("../server/src/actors/internal.js");
+	const sandbox = { uid: "owner", sessionId: "child", profile: "docker-hardened" as const };
+	for (const marked of [true, false]) {
+		const fixture = await childCreation(t, false, marked ? { screenshots: true } : {});
+		await fixture.create();
+		const item = fixture.sessionOrigin();
+		assert.ok(item);
+		assert.equal(item.subtaskScreenshots, marked);
+		const session = { ...sandbox, origin: { ...item, kind: "item" as const } };
+		assert.equal(sessionSandboxInput(session, true).screenshots, marked);
+		assert.equal(sessionSandboxInput(session, false).screenshots, false);
+	}
+	for (const role of ["builder", "reviewer"] as const) {
+		const session = { ...sandbox, origin: { kind: "item" as const, itemId: "item", role } };
+		for (const allowed of [true, false]) assert.equal(sessionSandboxInput(session, allowed).screenshots, allowed);
+	}
+});
 
 test("session sandbox creation retains a reported multi-slot size for replacement", async () => {
 	const { sessionSandboxInput } = await import("../server/src/actors/internal.js");
