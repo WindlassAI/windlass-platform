@@ -1,34 +1,6 @@
+/** Docker runs each session in its own container. Stopping the client leaves guest processes alive, so signal and sweep by run tag. */
+import { runCommand } from "./command.js";
 import type { SnapshotSelection } from "./snapshot-key.js";
-/**
- * Sandboxes: one Docker container per agent session, `wlp-session-<id>`.
- *
- * Commands run with `docker exec … wlp-run exec <tag> …` (see sandbox/wlp-run): the program leads a new
- * session inside the container and every process it starts carries WLP_RUN_TAG=<tag>, so a stop can
- * reach all of them with a second `docker exec`. Killing the local `docker exec` client alone does not
- * stop anything inside the container.
- *
- * `exec` runs a command to its end; `start` leaves its standard input open, for the program a turn
- * talks to (`windlass acp`, see windlass.ts).
- *
- * Environment. What a program is given in `env` is written into the arguments of `docker exec`
- * (`-e NAME=value`), where anyone on the server's machine who lists processes reads it: it is for
- * names and paths. A secret goes in `secretEnv`: `docker exec -e NAME`, without a value, has the
- * client take the value from its own environment, so the value is in the environment of that one
- * `docker` process (readable by the server's own Unix user and by root, as the server's memory is)
- * and in no argument. The Docker daemon is sent the value in the request that starts the program; a
- * daemon run with debug logging writes such requests to its log.
- *
- * A secret's own name never enters the client's environment: it is handed over as WLP_SECRET_<n>, and
- * a `sh` in the container gives each value its name before it runs the program (`secretNamesScript`).
- * Otherwise a name the `docker` client reads itself (DOCKER_HOST, LD_PRELOAD, a proxy, or whatever a
- * later client reads) would change what the client does on the machine it runs on. On the hosted side
- * the names are the user's saved ones, which leave such names out already (repo-secrets.ts); a runner
- * is handed them by a server it does not trust, and no list of names the client reads is ever complete.
- *
- * Two kinds of provider are made from this file: the hosted one, and a runner's on a user's own machine
- * (`DockerSandboxOptions`). They differ in the volume a container mounts and in its machine label.
- */
-
 import { INIT_WORKSPACE } from "../github/git-flags.js";
 import { gitMirrorMount, type MirrorStore, restoreGitMirror, saveSessionMirror } from "./git-mirrors.js";
 import { attemptLabel, candidateLabel, variantLabel, DockerSnapshots, sourceFromLabels } from "./snapshots.js";
@@ -51,20 +23,13 @@ import { readsModelRelay } from "../model-relay-url.js";
 import { probeImage } from "./tokens.js";
 
 const SANDBOX_ID = /^(?:(?:claude|opencode|codex)-)?[a-f0-9]{12}$/;
-const STDOUT_CAP = 4 * 1024 * 1024;
-const STDERR_CAP = 256 * 1024;
 
 export const containerName = (id: string) => `wlp-session-${id}`;
 
-/** What a secret is called in the `docker` client's environment: `${SECRET_ALIAS}<n>`. No saved secret's name starts with WLP_ (repo-secrets.ts). */
+// Alias secret names before launching Docker: a runner must not let a remote name configure its local client.
 const SECRET_ALIAS = "WLP_SECRET_";
 
-/**
- * Run in the container before the program, with the names as `-c` text: each value is given its own
- * name from its alias, the aliases are unset, and `exec` replaces the shell with the program, so the
- * program keeps the shell's process and nothing of it is left. The names are checked as identifiers
- * (`assertEnvNames`) before they are put into the script. `sh` is in every sandbox image there is.
- */
+/** Restore validated names only inside the guest, then exec the program without the aliases. */
 function secretNamesScript(names: string[]): string {
 	const assign = names.map((name, n) => `${name}="$${SECRET_ALIAS}${n}"`).join(" ");
 	const aliases = names.map((_, n) => `${SECRET_ALIAS}${n}`).join(" ");
@@ -84,11 +49,6 @@ export interface DockerProcess extends SandboxProcess {
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-function within<T>(promise: Promise<T>, ms: number): Promise<boolean> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	return Promise.race([promise.then(() => true), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), ms)))]).finally(() => clearTimeout(timer));
-}
 
 /**
  * Starts a stopped sandbox container. Docker resolves a mirror's volume-subpath again here.
@@ -249,75 +209,8 @@ export class DockerSandboxHandle implements TurnSandbox {
 		return async () => {};
 	}
 
-	/** Runs argv (no shell) under wlp-run to its end, with stdin, streaming, timeout and a stop that reaches the container. */
 	exec(argv: string[], options: ExecOptions = {}): Promise<InternalExecResult> {
-		if (options.signal?.aborted) return Promise.resolve({ exitCode: null, timedOut: false, aborted: true, stdout: "", stderr: "", killed: false, stopLog: [], leftovers: 0 });
-		let stdout = "";
-		let stderr = "";
-		const run = this.start(argv, {
-			gitUser: options.gitUser,
-			cwd: options.cwd,
-			env: options.env,
-			secretEnv: options.secretEnv,
-			onStdout: (text) => {
-				if (stdout.length < STDOUT_CAP) stdout += text.slice(0, STDOUT_CAP - stdout.length);
-				options.onStdout?.(text);
-			},
-			onStderr: (text) => {
-				stderr = (stderr + text).slice(-STDERR_CAP);
-				options.onStderr?.(text);
-			},
-		});
-		if (options.stdin !== undefined && options.stdin !== "") run.write(options.stdin);
-		run.closeStdin();
-
-		let stopping: Promise<void> | null = null;
-		let timedOut = false;
-		let aborted = false;
-		let killed = false;
-		const stopLog: string[] = [];
-		// SIGTERM to every process of the run, then SIGKILL after a grace period.
-		const stop = () => {
-			if (stopping !== null) return;
-			const began = Date.now();
-			const note = (text: string) => stopLog.push(`${text} at +${Date.now() - began}ms`);
-			stopping = (async () => {
-				note("SIGTERM to every process of the run");
-				await run.signal("TERM", "all");
-				if (await within(run.ended, 2000)) return;
-				note("SIGKILL to every process of the run");
-				killed = true;
-				await run.signal("KILL", "all");
-				if (await within(run.ended, 3000)) return;
-				note("killed the local docker client");
-				run.killClient();
-			})();
-		};
-		const onAbort = () => {
-			aborted = true;
-			stop();
-		};
-		options.signal?.addEventListener("abort", onAbort, { once: true });
-		const timer =
-			options.timeoutMs === undefined
-				? undefined
-				: setTimeout(() => {
-						timedOut = true;
-						stop();
-					}, options.timeoutMs);
-
-		return run.ended.then(async (end) => {
-			if (timer) clearTimeout(timer);
-			options.signal?.removeEventListener("abort", onAbort);
-			if (end.error !== null) throw end.error;
-			if (stopping !== null) await stopping;
-			const stopped = stopping !== null;
-			// What a stopped run left behind is given a moment to go, then killed.
-			const leftovers = await this.sweep(run.tag, { waitMs: stopped ? 2000 : 0 });
-			// Killed by a signal: no exit code.
-			const exitCode = killed || end.signal !== null || (stopped && end.code !== null && end.code > 128) ? null : end.code;
-			return { exitCode, timedOut, aborted, stdout, stderr, killed, stopLog, leftovers };
-		});
+		return runCommand(this, argv, options, "killed the local docker client");
 	}
 
 	/**
