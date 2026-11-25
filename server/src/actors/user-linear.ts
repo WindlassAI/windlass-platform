@@ -28,7 +28,7 @@ import { githubId, isGithubId } from "../github/ids.js";
 import { GithubProblem, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { LinearError, isLinearId, linearApp, newVerifier, challengeOf, redactLinear, type LinearApp, type LinearToken, type LinearWrite, type LinearTeam as ProtocolTeam } from "../linear/app.js";
 import { type LinearClaim, type LinearConnectStore, openLinearTicket } from "../linear/connect.js";
-import { QUICK_LABEL, TRIGGER_LABEL, type LinearDelivery, type LinearDispatch } from "../linear/webhook.js";
+import { isTriggerLabel, type LinearDelivery, type LinearDispatch } from "../linear/webhook.js";
 import { openSecret, sealSecret } from "../repo-secrets.js";
 import { readSignedPayload, signedPayload } from "../signatures.js";
 import { serverSealer } from "../signin/seal.js";
@@ -84,6 +84,7 @@ export interface LinearCtx {
 	vars: {
 		items: Pick<ItemsState, "created" | "items">;
 		github: StoredConnection | null;
+		linearWriteRetryAt?: number;
 		claimingTeams?: Set<{ workspaceId: string; teamId: string }>;
 	};
 	client(): any;
@@ -199,41 +200,54 @@ function openToken(uid: string, stored: Stored): LinearToken {
  * The connection's access token, refreshed when it is about to end. A token Linear no longer honours, or one that has expired with
  * no refresh token, is a `LinearError` that is `unauthorized`: the owner connects again.
  */
-async function accessToken(c: LinearCtx, app: LinearApp): Promise<{ stored: Stored; token: string }> {
-	return inLinearQueue(c, async () => {
-		const uid = c.key[0]!;
-		const stored = await readConnection(c.db);
-		if (!stored) throw notConnected();
-		const token = openToken(uid, stored);
-		if (token.expiresAt === null || token.expiresAt - REFRESH_MARGIN_MS > Date.now()) return { stored, token: token.accessToken };
-		if (!token.refreshToken) throw new LinearError(401, "the token has expired", "use the saved Linear token", "AuthenticationError");
-		const renewed = await app.refresh(token.refreshToken);
-		const sealed = sealToken(uid, stored.workspace.id, { ...renewed, refreshToken: renewed.refreshToken ?? token.refreshToken });
-		// Written before it is used: the old refresh token is spent.
-		await c.db.execute("UPDATE linear_connection SET sealed = ? WHERE id = 1 AND connected_at = ?", sealed, stored.connectedAt);
-		return { stored: { ...stored, sealed }, token: renewed.accessToken };
-	});
+async function tokenInQueue(c: LinearCtx, app: LinearApp): Promise<{ stored: Stored; token: string }> {
+	const uid = c.key[0]!;
+	const stored = await readConnection(c.db);
+	if (!stored) throw notConnected();
+	const token = openToken(uid, stored);
+	if (token.expiresAt === null || token.expiresAt - REFRESH_MARGIN_MS > Date.now()) return { stored, token: token.accessToken };
+	if (!token.refreshToken) throw new LinearError(401, "the token has expired", "use the saved Linear token", "AuthenticationError");
+	const renewed = await app.refresh(token.refreshToken);
+	const sealed = sealToken(uid, stored.workspace.id, { ...renewed, refreshToken: renewed.refreshToken ?? token.refreshToken });
+	// Written before it is used: the old refresh token is spent.
+	await c.db.execute("UPDATE linear_connection SET sealed = ? WHERE id = 1 AND connected_at = ?", sealed, stored.connectedAt);
+	return { stored: { ...stored, sealed }, token: renewed.accessToken };
+}
+
+function accessToken(c: LinearCtx, app: LinearApp) {
+	return inLinearQueue(c, () => tokenInQueue(c, app));
 }
 
 export interface LinearItemWrite {
 	workspaceId: string;
+	teamId: string;
 	issueId: string;
 	itemId: string;
 	write: LinearWrite;
 }
 
 export async function writeLinearItem(c: LinearCtx, input: LinearItemWrite): Promise<boolean> {
-	try {
-		const app = requireLinear();
-		const { stored, token } = await accessToken(c, app);
-		if (stored.workspace.id !== input.workspaceId) throw notConnected();
-		await app.writeIssue(token, input.issueId, input.itemId, input.write);
-		return true;
-	} catch (error) {
-		if (!(error instanceof UserError || error instanceof LinearError) || (error instanceof LinearError && (error.unreachable || error.rateLimited))) throw error;
-		c.log.warn({ msg: "Linear item update declined", item: input.itemId, event: input.write.key, reason: redactLinear(error.message) });
-		return false;
-	}
+	// Serialize the read and mutation: the item's outbox can deliver start, review and merge concurrently.
+	return inLinearQueue(c, async () => {
+		if ((c.vars.linearWriteRetryAt ?? 0) > Date.now()) throw new Error("linear_rate_limited");
+		try {
+			const app = requireLinear();
+			const { stored, token } = await tokenInQueue(c, app);
+			if (stored.workspace.id !== input.workspaceId) throw notConnected();
+			if (!(await c.db.execute("SELECT 1 FROM linear_mapping WHERE team_id=?", input.teamId)).length) return false;
+			await app.writeIssue(token, input.issueId, input.teamId, input.itemId, input.write);
+			return true;
+		} catch (error) {
+			if (error instanceof LinearError && error.rateLimited) {
+				c.vars.linearWriteRetryAt = Math.max(Date.now() + 15_000, error.retryAt);
+				throw new Error("linear_rate_limited");
+			}
+			if (error instanceof LinearError && error.unreachable) throw new Error("linear_unreachable");
+			if (!(error instanceof LinearError || error instanceof UserError)) throw new Error("linear_write_failed");
+			c.log.warn({ msg: "Linear item update declined", item: input.itemId, event: input.write.key, status: error instanceof LinearError ? error.status : undefined });
+			return false;
+		}
+	});
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -350,8 +364,11 @@ export async function linearTeams(c: LinearCtx, fresh = false): Promise<{ list: 
 
 /** Gives the team's claim up, then removes the mapping: a mapping whose claim is gone is routed nothing, and is removed by the next call. */
 async function unmap(c: LinearCtx, workspaceId: string, teamId: string): Promise<void> {
-	await releaseTeam(c, workspaceId, teamId);
-	await c.db.execute("DELETE FROM linear_mapping WHERE team_id = ?", teamId);
+	await inLinearQueue(c, async () => {
+		if ((await readConnection(c.db))?.workspace.id !== workspaceId) return;
+		await releaseTeam(c, workspaceId, teamId);
+		await c.db.execute("DELETE FROM linear_mapping WHERE team_id = ?", teamId);
+	});
 }
 
 export async function linearHoldsTeam(c: LinearCtx, workspaceId: string, teamId: string): Promise<boolean> {
@@ -509,7 +526,7 @@ async function decide(c: LinearCtx, app: LinearApp, stored: Stored, delivery: Li
 	if (lower(issue.teamId) !== teamId) return { kind: "ignored", why: "The issue is not in the mapped team." };
 
 	const holds = {
-		label: issue.labels.some(label => [TRIGGER_LABEL, QUICK_LABEL].includes(label.name.trim().toLowerCase())),
+		label: issue.labels.some(label => isTriggerLabel(label.name)),
 		assignment: issue.assigneeId !== null && lower(issue.assigneeId) === stored.appUser.id,
 	};
 	const via = reasons.find(reason => holds[reason]);

@@ -32,7 +32,7 @@ export interface LinearAppSettings {
  * words, redacted. The message is for the server's log: it names the call and never a credential.
  */
 export class LinearError extends Error {
-	constructor(readonly status: number, readonly said: string, what: string, readonly code = "") {
+	constructor(readonly status: number, readonly said: string, what: string, readonly code = "", readonly retryAt = 0) {
 		super(`${what}: ${status === 0 ? said : `Linear answered ${status}${said ? ` (${said})` : ""}`}`);
 		this.name = "LinearError";
 	}
@@ -104,10 +104,13 @@ export interface LinearIssue {
 	archived: boolean;
 }
 
+type StatusWrite = "start" | "review_opened" | "review_handover" | "complete";
+
 export type LinearWrite =
 	| { key: "opened" | "handed over" | "merged" | "failed" | "cancelled"; commentId: string; pr: string | null }
 	| { key: "attachment"; pr: string }
-	| { key: "complete" };
+	| { key: "owner_needed"; questionId: string; commentId: string; itemUrl: string; plan: boolean }
+	| { key: StatusWrite };
 
 export const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
 export const text = (value: unknown): string => (typeof value === "string" ? value : "");
@@ -154,6 +157,21 @@ async function boundedText(response: Response): Promise<string> {
 	return Buffer.concat(chunks, size).toString("utf8");
 }
 
+function linearErrorCode(error: Record<string, unknown>): string {
+	const extensions = record(error.extensions);
+	if (extensions.code === "RATELIMITED") return "RATELIMITED";
+	return text(extensions.type) || text(extensions.code);
+}
+
+function retryAt(headers: Headers): number {
+	const resets = ["requests", "endpoint-requests", "complexity"]
+		.filter(limit => Number(headers.get(`x-ratelimit-${limit}-remaining`)) === 0)
+		.map(limit => Number(headers.get(`x-ratelimit-${limit}-reset`)));
+	const after = headers.get("retry-after");
+	if (after) resets.push(/^\d+$/.test(after) ? Date.now() + Number(after) * 1000 : Date.parse(after));
+	return Math.max(0, ...resets.filter(Number.isFinite));
+}
+
 export class LinearApp {
 	constructor(
 		readonly settings: LinearAppSettings,
@@ -175,7 +193,7 @@ export class LinearApp {
 		return `${this.settings.webUrl}/oauth/authorize?${query}`;
 	}
 
-	private async send(url: string, init: RequestInit, what: string, secrets: string[]): Promise<{ status: number; body: Record<string, unknown> }> {
+	private async send(url: string, init: RequestInit, what: string, secrets: string[]): Promise<{ headers: Headers; body: Record<string, unknown> }> {
 		let response: Response;
 		try {
 			// A redirect would carry the credentials to wherever it points.
@@ -194,10 +212,10 @@ export class LinearApp {
 		if (response.status >= 300) {
 			const first = record(Array.isArray(body.errors) ? body.errors[0] : null);
 			const said = text(body.error_description) || text(body.error) || text(first.message) || text(body.message);
-			const code = text(record(first.extensions).type) || text(record(first.extensions).code) || text(body.error);
-			throw new LinearError(response.status, redactLinear(said.replace(/\s+/g, " ").slice(0, 300), secrets), `could not ${what}`, code);
+			const code = linearErrorCode(first) || text(body.error);
+			throw new LinearError(response.status, redactLinear(said.replace(/\s+/g, " ").slice(0, 300), secrets), `could not ${what}`, code, retryAt(response.headers));
 		}
-		return { status: response.status, body };
+		return { headers: response.headers, body };
 	}
 
 	private async token(form: Record<string, string>, what: string): Promise<LinearToken> {
@@ -236,15 +254,15 @@ export class LinearApp {
 	}
 
 	private async query(token: string, what: string, query: string, variables: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-		const { body } = await this.send(`${this.settings.apiUrl}/graphql`, {
+		const { body, headers } = await this.send(`${this.settings.apiUrl}/graphql`, {
 			method: "POST",
 			headers: { "content-type": "application/json", accept: "application/json", "user-agent": USER_AGENT, authorization: `Bearer ${token}` },
 			body: JSON.stringify({ query, variables }),
 		}, what, [token]);
 		if (Array.isArray(body.errors) && body.errors.length > 0) {
 			const first = record(body.errors[0]);
-			const code = text(record(first.extensions).type) || text(record(first.extensions).code);
-			throw new LinearError(code === "AuthenticationError" || code === "AUTHENTICATION_ERROR" ? 401 : 400, redactLinear(text(first.message).replace(/\s+/g, " ").slice(0, 300), [token]), `could not ${what}`, code);
+			const code = linearErrorCode(first);
+			throw new LinearError(code === "AuthenticationError" || code === "AUTHENTICATION_ERROR" ? 401 : 400, redactLinear(text(first.message).replace(/\s+/g, " ").slice(0, 300), [token]), `could not ${what}`, code, retryAt(headers));
 		}
 		return record(body.data);
 	}
@@ -318,34 +336,66 @@ export class LinearApp {
 		};
 	}
 
-	async writeIssue(token: string, issueId: string, itemId: string, write: LinearWrite): Promise<void> {
+	/** Read the current state and the candidate states from the issue's own team in the same request. */
+	private async updateState(token: string, issueId: string, teamId: string, key: StatusWrite): Promise<void> {
+		const review = key === "review_opened" || key === "review_handover";
+		const filter = { type: { eq: key === "complete" ? "completed" : "started" }, ...(review && { name: { eq: "In Review" } }) };
+		let target: { id: string; position: number } | undefined;
+		let after: string | null = null;
+		for (let page = 0; page < MAX_PAGES; page++) {
+			const data = await this.query(token, "read the issue workflow",
+				`query($id: String!, $filter: WorkflowStateFilter!, $after: String, $first: Int!) {
+					issue(id: $id) { state { id type position } team { id states(filter: $filter, first: $first, after: $after) {
+						nodes { id name position } pageInfo { hasNextPage endCursor }
+					} } }
+				}`, { id: issueId, filter, after, first: key === "complete" ? 1 : 100 });
+			const issue = record(data.issue), team = record(issue.team), current = record(issue.state);
+			if (team.id !== teamId || !["triage", "backlog", "unstarted", "started"].includes(text(current.type))) return;
+			if (current.type === "started" && key === "start") return;
+
+			const states = record(team.states);
+			for (const node of Array.isArray(states.nodes) ? states.nodes : []) {
+				const { id, name, position } = record(node);
+				if (!isLinearId(id) || typeof position !== "number" || (review && name !== "In Review")) continue;
+				if (!target || position < target.position) target = { id, position };
+			}
+			const info = record(states.pageInfo);
+			if (key !== "complete" && info.hasNextPage === true) {
+				after = text(info.endCursor);
+				if (!after) return;
+				continue;
+			}
+			if (!target || current.id === target.id) return;
+			if (review && current.type === "started" && (typeof current.position !== "number" || current.position > target.position)) return;
+			const updated = await this.query(token, "update the issue state", "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id: issueId, stateId: target.id });
+			if (record(updated.issueUpdate).success !== true) throw new LinearError(400, "state change declined", "update the issue state");
+			return;
+		}
+	}
+
+	async writeIssue(token: string, issueId: string, teamId: string, itemId: string, write: LinearWrite): Promise<void> {
+		if (!("commentId" in write) && write.key !== "attachment") return this.updateState(token, issueId, teamId, write.key);
+		const source = await this.query(token, "check the issue's team", "query($id: String!) { issue(id: $id) { team { id } } }", { id: issueId });
+		if (record(record(source.issue).team).id !== teamId) return;
 		if (write.key === "attachment") {
 			const data = await this.query(token, "attach the pull request", "mutation($input: AttachmentCreateInput!) { attachmentCreate(input: $input) { success } }",
 				{ input: { issueId, url: write.pr, title: "Windlass pull request" } });
 			if (record(data.attachmentCreate).success !== true) throw new LinearError(400, "attachment declined", "attach the pull request");
-		} else if (write.key === "complete") {
-			const data = await this.query(token, "read the team's completed state",
-				'query($id: String!) { issue(id: $id) { state { type } team { states(first: 1, filter: { type: { eq: "completed" } }) { nodes { id } } } } }', { id: issueId });
-			const issue = record(data.issue);
-			if (record(issue.state).type === "completed") return;
-			const nodes = record(record(issue.team).states).nodes;
-			const stateId = Array.isArray(nodes) && record(nodes[0]).id;
-			if (!isLinearId(stateId)) throw new LinearError(400, "the team has no completed state", "complete the issue");
-			const updated = await this.query(token, "complete the issue", "mutation($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }", { id: issueId, stateId });
-			if (record(updated.issueUpdate).success !== true) throw new LinearError(400, "state change declined", "complete the issue");
 		} else {
-			const outcome = { opened: "opened its pull request", "handed over": "was handed over", merged: "merged", failed: "failed", cancelled: "was cancelled" }[write.key];
-			const body = `Windlass item ${itemId} ${outcome}.${write.pr ? " " + write.pr : ""}`;
+			const outcomes = { opened: "opened its pull request", "handed over": "was handed over", merged: "merged", failed: "failed", cancelled: "was cancelled" };
+			const body = write.key === "owner_needed"
+				? `[Windlass item](${write.itemUrl}) ${write.plan ? "has a plan waiting for your approval" : "has a question for you"}.`
+				: `Windlass item ${itemId} ${outcomes[write.key]}.${write.pr ? " " + write.pr : ""}`;
 			try {
 				const data = await this.query(token, "comment on the issue", "mutation($input: CommentCreateInput!) { commentCreate(input: $input) { success } }",
 					{ input: { id: write.commentId, issueId, body } });
 				if (record(data.commentCreate).success !== true) throw new LinearError(400, "comment declined", "comment on the issue");
 			} catch (error) {
 				// Linear may have saved this UUID before the reply was lost.
-				if (error instanceof LinearError && ([400, 409, 422].includes(error.status) || error.unreachable)) {
+				if (error instanceof LinearError && !error.rateLimited && [400, 409, 422].includes(error.status)) {
 					const found = await this.query(token, "find the item's comment", "query($id: String!) { comment(id: $id) { issue { id } } }", { id: write.commentId })
 						.catch((cause: unknown) => {
-							if (cause instanceof LinearError && cause.status === 400) return null;
+							if (cause instanceof LinearError && cause.status === 400 && !cause.rateLimited) return null;
 							throw cause;
 						});
 					if (record(record(found?.comment).issue).id === issueId) return;

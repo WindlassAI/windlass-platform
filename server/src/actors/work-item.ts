@@ -149,7 +149,10 @@ type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kin
 
 type EffectRow = { id: string; effect: string; due_at: number; attempts: number };
 
-const rowId = (effect: Effect) => `${effect.kind}:${effect.kind === "ask" ? effect.question.id : effect.key}`;
+function rowId(effect: Effect): string {
+	if (effect.kind === "linear_write" && effect.key === "owner_needed") return `linear_write:owner_needed:${effect.questionId}`;
+	return `${effect.kind}:${effect.kind === "ask" ? effect.question.id : effect.key}`;
+}
 
 /** Whether the turn of a `deliver` key is the first of its run (`<item>:<run>:<step>:<attempt>`, blueprint.ts `stepKey`). */
 function startsRun(key: string): boolean {
@@ -375,6 +378,34 @@ async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void
 	}
 }
 
+function linearEffects(before: FactoryItem, next: FactoryItem, handoff: boolean): Array<{ kind: "linear_write" } & LinearWrite> {
+	const writes: LinearWrite[] = [];
+	const pr = next.pr?.url ?? null;
+	const comment = (key: Extract<LinearWrite, { pr: string | null; commentId: string }>["key"]) =>
+		writes.push({ key, commentId: randomUUID(), pr });
+	if (before.state === "draft" && next.state !== "draft" && !ENDED.has(next.state)) writes.push({ key: "start" });
+	if (next.question && next.question.id !== before.question?.id) {
+		const plan = next.featurePlan?.status === "proposed" && next.filedTurn === currentKey(next)
+			&& (next.question.kind === "plan_approval" || next.question.kind === "replan_approval");
+		writes.push({ key: "owner_needed", questionId: next.question.id, commentId: randomUUID(), itemUrl: itemUrl(next.id), plan });
+	}
+	if (!before.pr && pr) {
+		comment("opened");
+		writes.push({ key: "attachment", pr }, { key: "review_opened" });
+	}
+	if ((handoff && !next.run?.ci?.autoMergeKey) || (crossRepo(next) && next.run?.step.kind === "merged" && before.run?.step.kind !== "merged")) {
+		comment("handed over");
+		writes.push({ key: "review_handover" });
+	}
+	if (before.state !== next.state) {
+		if (next.state === "done") {
+			comment("merged");
+			writes.push({ key: "complete" });
+		} else if (next.state === "failed" || next.state === "cancelled") comment(next.state);
+	}
+	return writes.map(write => ({ kind: "linear_write", ...write }));
+}
+
 type CheckReceipt = { kind: "check_recorded"; at: number; effect: VerifiedCheckEffect; id: string | null; installationId: GithubId };
 
 /**
@@ -435,22 +466,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 			effects.push({ kind: "issue_comment", key: "link", revision: next.revision });
 		if (before.state === "failed" && !ENDED.has(next.state)) effects.push({ kind: "register_issue", key: String(next.revision) });
 	}
-	if (stored.meta.linear) {
-		const pr = next.pr?.url ?? null;
-		const comment = (key: Extract<LinearWrite, { commentId: string }>["key"]) =>
-			effects.push({ kind: "linear_write", key, commentId: randomUUID(), pr });
-		if (!before.pr && pr) {
-			comment("opened");
-			effects.push({ kind: "linear_write", key: "attachment", pr });
-		}
-		if ((handoff && !next.run?.ci?.autoMergeKey) || (crossRepo(next) && next.run?.step.kind === "merged" && before.run?.step.kind !== "merged")) comment("handed over");
-		if (before.state !== next.state) {
-			if (next.state === "done") {
-				comment("merged");
-				effects.push({ kind: "linear_write", key: "complete" });
-			} else if (next.state === "failed" || next.state === "cancelled") comment(next.state);
-		}
-	}
+	if (stored.meta.linear) effects.push(...linearEffects(before, next, !!handoff));
 	const sibling = fact.kind === "feature_ready" && fact.repo && crossRepo(next) && repoOf(next, fact.repo) !== next.repos![0] ? fact.repo : null;
 	if (sibling && fact.kind === "feature_ready") effects.push({ kind: "register", key: fact.key + "/" + sibling, pr: fact.pr.number, head: fact.head, repo: sibling });
 	else if (fact.kind === "feature_ready" || (fact.kind === "published" && fact.pr)) effects.push({ kind: "register", key: fact.key, pr: fact.pr!.number, head: fact.head });
@@ -613,7 +629,7 @@ async function performRow(c: Ctx, row: EffectRow): Promise<void> {
 		});
 	} catch (error) {
 		const wait = Math.min(EFFECT_RETRY_MOST_MS, EFFECT_RETRY_FIRST_MS * 2 ** Math.min(row.attempts, 10));
-		c.log.warn({ msg: "an effect of the item could not be performed; it is tried again", effect: row.id, inSeconds: wait / 1000, error: describeError(error) });
+		c.log.warn({ msg: "an effect of the item could not be performed; it is tried again", effect: row.id, inSeconds: wait / 1000, error: row.id.startsWith("linear_write:") ? "linear_write_retry" : describeError(error) });
 		await queued(c, () => c.db.execute("UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE id = ? AND effect = ?", Date.now() + wait, row.id, row.effect)).catch(() => undefined);
 	} finally {
 		c.vars.performing.delete(row.id);
@@ -1206,6 +1222,7 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "merge_feature_target") return item.featureUpdate?.key === effect.key && item.joining?.child === item.id && item.joining.key === effect.key;
 	if (effect.kind === "notify_integrated") return item.state === "done" && (item.integratedHead ?? item.head) === effect.head;
 	if (effect.kind === "cancel_children" || effect.kind === "verified_check") return true;
+	if (effect.kind === "linear_write" && ["start", "review_opened", "review_handover"].includes(effect.key)) return !ENDED.has(item.state);
 	if (effect.kind === "issue_comment" || effect.kind === "linear_write") return true;
 	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
 	if (effect.kind === "forget") return ENDED.has(item.state) || !item.run?.ci;
@@ -1523,9 +1540,9 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	if (!stored || !live(stored.item, effect)) return false;
 	const { item, meta } = stored;
 	if (effect.kind === "linear_write") {
-		const { workspaceId, origin } = meta.linear!;
+		const { workspaceId, teamId, origin } = meta.linear!;
 		if ((await c.db.execute("SELECT 1 FROM issue_actions WHERE subject=?", row.id)).length) return true;
-		const posted = await userActor(c, meta.uid).internalLinearWrite({ workspaceId, issueId: origin.linear.id, itemId: item.id, write: effect });
+		const posted = await userActor(c, meta.uid).internalLinearWrite({ workspaceId, teamId, issueId: origin.linear.id, itemId: item.id, write: effect });
 		if (posted) await c.db.execute("INSERT OR IGNORE INTO issue_actions VALUES(?)", row.id);
 		return true;
 	}
@@ -2064,6 +2081,7 @@ export const workItem = actor({
 				({ item } = started);
 				events.push(...started.events);
 				effects = started.effects;
+				if (input.meta.linear) effects.push(...linearEffects(input.item, item, false));
 			}
 			await c.db.transaction(async (tx) => {
 				if (input.meta.github) {

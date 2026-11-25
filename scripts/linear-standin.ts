@@ -50,6 +50,7 @@ export interface StandinIssue {
 	assigneeId: string | null;
 	labelIds: string[];
 	stateType: string;
+	stateId?: string;
 	archived: boolean;
 }
 
@@ -108,8 +109,10 @@ export class LinearStandin {
 	readonly labels = new Map<string, StandinLabel>();
 	readonly issues = new Map<string, StandinIssue>();
 	readonly comments = new Map<string, { issueId: string; body: string }>();
+	readonly commentReads: string[] = [];
 	readonly attachments = new Map<string, string>();
-	readonly completedStates = new Map<string, string>();
+	readonly workflowStates = new Map<string, Array<{ id: string; type: string; name: string; position: number }>>();
+	graphqlFailure: 503 | "RATELIMITED" | null = null;
 	denyStateChange = false;
 	/** Every mutation attempted, including retries. */
 	readonly writes: string[] = [];
@@ -156,7 +159,11 @@ export class LinearStandin {
 	addTeam(key: string, name = key): StandinTeam {
 		const team = { id: UUID_HEX(), key, name };
 		this.teams.push(team);
-		this.completedStates.set(team.id, UUID_HEX());
+		this.workflowStates.set(team.id, [
+			{ id: UUID_HEX(), type: "started", name: "In Review", position: 4 },
+			{ id: UUID_HEX(), type: "started", name: "Building", position: 1 },
+			{ id: UUID_HEX(), type: "completed", name: "Shipped", position: 0 },
+		]);
 		return team;
 	}
 
@@ -258,10 +265,12 @@ export class LinearStandin {
 		if (patch.team && patch.team.id !== issue.teamId) {
 			before.teamId = issue.teamId;
 			issue.teamId = patch.team.id;
+			delete issue.stateId;
 		}
 		if (patch.stateType !== undefined && patch.stateType !== issue.stateType) {
 			before.stateId = randomUUID();
 			issue.stateType = patch.stateType;
+			delete issue.stateId;
 		}
 		return this.envelope("update", issue, actor, before);
 	}
@@ -398,7 +407,7 @@ export class LinearStandin {
 		send(200, { access_token: accessToken, token_type: "Bearer", expires_in: 86_399, scope: scopes.join(","), refresh_token: refresh });
 	}
 
-	private graphql(raw: string, request: IncomingMessage, send: (status: number, body: unknown) => void): void {
+	private graphql(raw: string, request: IncomingMessage, send: (status: number, body: unknown, headers?: Record<string, string>) => void): void {
 		const bearer = /^Bearer (.+)$/.exec(String(request.headers.authorization ?? ""))?.[1] ?? "";
 		const session = this.sessions.get(bearer);
 		let parsed: { query?: string; variables?: Record<string, unknown> };
@@ -410,6 +419,8 @@ export class LinearStandin {
 		const query = String(parsed.query ?? "");
 		this.calls.push(`POST /graphql ${/^\s*mutation\b/.test(query) ? "mutation" : /\bviewer\b/.test(query) ? "viewer" : /\bteams\s*\(/.test(query) ? "teams" : /\bissue\s*\(/.test(query) ? "issue" : /\bcomment\(/.test(query) ? "comment" : "other"}`);
 		if (!session || session.expiresAt <= Date.now()) return send(401, { errors: [{ message: "Authentication required, not authenticated", extensions: { type: "AuthenticationError" } }] });
+		if (this.graphqlFailure === "RATELIMITED") return send(400, { errors: [{ message: "private rate limit details", extensions: { type: "usage", code: "RATELIMITED" } }] }, { "retry-after": "30" });
+		if (this.graphqlFailure) return send(this.graphqlFailure, { errors: [{ message: "private Linear outage details" }] });
 		const variables = parsed.variables ?? {};
 		if (/^\s*mutation\b/.test(query)) {
 			const operation = /\b(commentCreate|attachmentCreate|issueUpdate)\(/.exec(query)?.[1] ?? "unknown";
@@ -424,12 +435,16 @@ export class LinearStandin {
 				this.comments.set(input.id, { issueId: issue.id, body: input.body });
 			} else if (operation === "attachmentCreate" && input?.url) {
 				this.attachments.set(issue.id, input.url);
-			} else if (operation === "issueUpdate" && !this.denyStateChange && variables.stateId === this.completedStates.get(issue.teamId)) {
-				issue.stateType = "completed";
+			} else if (operation === "issueUpdate" && !this.denyStateChange && variables.stateId) {
+				const state = this.workflowStates.get(issue.teamId)?.find(s => s.id === variables.stateId);
+				if (!state) return refuse("Unknown state");
+				issue.stateType = state.type;
+				issue.stateId = state.id;
 			} else return refuse("Mutation declined");
 			return send(200, { data: { [operation]: { success: true } } });
 		}
 		if (/\bcomment\(/.test(query)) {
+			this.commentReads.push(String(variables.id));
 			const comment = this.comments.get(String(variables.id));
 			return send(200, { data: { comment: comment ? { issue: { id: comment.issueId } } : null } });
 		}
@@ -449,6 +464,11 @@ export class LinearStandin {
 			if (!issue) return send(200, { data: null, errors: [{ message: "Entity not found: Issue - Could not find referenced Issue.", extensions: { type: "invalid input" } }] });
 			const team = this.teams.find((entry) => entry.id === issue.teamId)!;
 			const creator = this.person(issue.creatorId), assignee = this.person(issue.assigneeId);
+			const workflow = this.workflowStates.get(team.id)!;
+			const filter = variables.filter as { type: { eq: string }; name?: { eq: string } } | undefined;
+			const matches = workflow.filter(s => s.type === filter?.type.eq && (!filter.name || s.name === filter.name.eq));
+			const start = Number(variables.after ?? 0);
+			const end = start + Math.min(Number(variables.first ?? 50), this.options.pageSize ?? 100);
 			return send(200, {
 				data: {
 					issue: {
@@ -459,11 +479,11 @@ export class LinearStandin {
 						url: this.issueUrl(issue),
 						archivedAt: issue.archived ? new Date().toISOString() : null,
 						trashed: false,
-						team: { id: team.id, ...(/states\(.*type: \{ eq: "completed"/.test(query) && { states: { nodes: [{ id: this.completedStates.get(team.id) }] } }) },
+						team: { id: team.id, ...(filter && { states: { nodes: matches.slice(start, end), pageInfo: { hasNextPage: end < matches.length, endCursor: String(end) } } }) },
 						creator: creator ? { id: creator.id, name: creator.name } : null,
 						assignee: assignee ? { id: assignee.id } : null,
 						labels: { nodes: issue.labelIds.map((id) => ({ id, name: this.labels.get(id)!.name })) },
-						state: { type: issue.stateType },
+						state: { ...workflow.find(s => s.id === issue.stateId), type: issue.stateType },
 					},
 				},
 			});

@@ -322,28 +322,69 @@ await section("refresh, expiry and reads: identity, teams and one issue, with no
 	assert.deepEqual(standin.writes, [], "something was written to Linear");
 });
 
-await section("writeback uses stable comment IDs, attaches the PR and selects the issue team's completed state", async () => {
+await section("writeback uses stable comment IDs, attaches the PR and advances within the issue team's workflow", async () => {
 	const { accessToken } = connection.token;
 	const { issue } = standin.createIssue({ team: beta });
 	const pr = "https://github.com/acme/repo/pull/42";
 	for (const [key, outcome] of [["opened", "opened its pull request"], ["handed over", "was handed over"], ["failed", "failed"], ["cancelled", "was cancelled"], ["merged", "merged"]] as const) {
 		const write = { key, commentId: randomUUID(), pr };
-		await app.writeIssue(accessToken, issue.id, "item-1", write);
-		await app.writeIssue(accessToken, issue.id, "item-1", write);
+		await app.writeIssue(accessToken, issue.id, beta.id, "item-1", write);
+		await app.writeIssue(accessToken, issue.id, beta.id, "item-1", write);
 		assert.deepEqual(standin.comments.get(write.commentId), { issueId: issue.id, body: `Windlass item item-1 ${outcome}. ${pr}` });
 	}
 	assert.equal(standin.comments.size, 5);
-	await app.writeIssue(accessToken, issue.id, "item-1", { key: "attachment", pr });
+	await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "attachment", pr });
 	assert.equal(standin.attachments.get(issue.id), pr);
 	assert.equal(issue.stateType, "unstarted");
+	const workflow = standin.workflowStates.get(beta.id)!;
+	const first = workflow.find(s => s.name === "Building")!;
+	const review = workflow.find(s => s.name === "In Review")!;
+	const write = (key: "start" | "review_opened" | "review_handover" | "complete") => app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key });
+	await write("start");
+	assert.equal(issue.stateId, first.id, "lowest started position, independent of name or response order");
+	review.type = "unstarted";
+	await write("review_opened");
+	assert.equal(issue.stateId, first.id, "In Review must itself be a started state");
+	review.type = "started";
+	review.name = "in review";
+	await write("review_opened");
+	assert.equal(issue.stateId, first.id);
+	review.name = "In Review";
+	await write("review_handover");
+	assert.equal(issue.stateId, review.id);
+	await write("start");
+	assert.equal(issue.stateId, review.id, "a delayed start cannot move review backwards");
+	const later = { id: randomUUID(), name: "Ready to deploy", type: "started", position: 5 };
+	workflow.push(later);
+	issue.stateId = later.id;
+	await write("review_opened");
+	assert.equal(issue.stateId, later.id, "review cannot move a later started state backwards");
+	const before = standin.writes.length;
+	standin.graphqlFailure = "RATELIMITED";
+	const now = Date.now();
+	await assert.rejects(write("start"), (err: unknown) => err instanceof LinearError && err.rateLimited && err.retryAt >= now + 30_000);
+	standin.graphqlFailure = null;
+	for (const type of ["completed", "canceled"]) {
+		issue.stateType = type;
+		await write("start");
+		await write("review_opened");
+		await write("complete");
+	}
+	issue.teamId = alpha.id;
+	issue.stateType = "unstarted";
+	await write("start");
+	await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "opened", commentId: randomUUID(), pr });
+	await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "attachment", pr });
+	assert.equal(standin.writes.length, before, "terminal states and foreign teams are left alone");
+	issue.teamId = beta.id;
 	standin.denyStateChange = true;
-	await assert.rejects(app.writeIssue(accessToken, issue.id, "item-1", { key: "complete" }), LinearError);
+	await assert.rejects(app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "complete" }), LinearError);
 	assert.equal(issue.stateType, "unstarted");
 	standin.denyStateChange = false;
-	await app.writeIssue(accessToken, issue.id, "item-1", { key: "complete" });
-	await app.writeIssue(accessToken, issue.id, "item-1", { key: "complete" });
+	await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "complete" });
+	await app.writeIssue(accessToken, issue.id, beta.id, "item-1", { key: "complete" });
 	assert.equal(issue.stateType, "completed");
-	assert.equal(standin.writes.filter(w => w === "issueUpdate").length, 2);
+	assert.equal(standin.writes.filter(w => w === "issueUpdate").length, 4);
 	// A revoked token (the app was uninstalled) is told apart from an outage.
 	standin.revoke(accessToken);
 	await assert.rejects(app.teams(accessToken), (error: unknown) => error instanceof LinearError && error.unauthorized && !error.unreachable);

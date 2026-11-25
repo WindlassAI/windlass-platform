@@ -53,7 +53,7 @@ revision, so an old ended item's page is read again only when it is opened or th
 
 The Linear OAuth callback connects a workspace to the account. Its team mappings select one GitHub
 repository per team. The signed issue webhook and a fresh read of the issue establish whether it
-gained the `windlass` label or was assigned to the app user. Human-authored issues arrive as drafts.
+gained a `windlass`, `windlass-quick`, or `windlass:quick` label or was assigned to the app user. Human-authored issues arrive as drafts.
 Issue intake deduplicates deliveries and shares the daily filing limit with GitHub. The platform posts
 the PR link and the handover or terminal outcome, and requests the team's completed state only on
 merge. A failed write is logged. Disconnect removes mappings and stops future intake; filed items stay.

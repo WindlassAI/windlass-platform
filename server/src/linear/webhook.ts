@@ -9,8 +9,12 @@ export const MAX_WEBHOOK_BYTES = 1024 * 1024;
 /** How far a delivery's signed timestamp may be from now, either way. Linear's own SDK uses a minute. */
 export const MAX_TIMESTAMP_SKEW_MS = 60_000;
 
-export const TRIGGER_LABEL = "windlass";
-export const QUICK_LABEL = "windlass:quick";
+export const QUICK_LABELS: readonly string[] = ["windlass:quick", "windlass-quick"];
+
+export function isTriggerLabel(name: string): boolean {
+	const label = name.trim().toLowerCase();
+	return label === "windlass" || QUICK_LABELS.includes(label);
+}
 
 /** What a qualifying delivery comes to once authenticated: lookup ids and the transition, nothing of the issue's content. */
 export interface LinearDelivery {
@@ -63,7 +67,7 @@ function labelsOf(data: Record<string, unknown>): Array<{ id: string; name: stri
 	for (const entry of Array.isArray(data.labels) ? data.labels.slice(0, 250) : []) {
 		const label = record(entry);
 		const id = idOrNull(label.id);
-		if (id !== null) labels.push({ id, name: text(label.name).trim().toLowerCase() });
+		if (id !== null) labels.push({ id, name: text(label.name) });
 	}
 	return labels;
 }
@@ -93,7 +97,7 @@ export function classify(payload: unknown): { label: boolean; assignedTo: string
 
 	const wasLabelIds = Array.isArray(before.labelIds) ? new Set(before.labelIds.map(idOrNull)) : null;
 	const label = (created || wasLabelIds !== null)
-		&& labelsOf(data).some(l => (l.name === TRIGGER_LABEL || l.name === QUICK_LABEL) && (created || !wasLabelIds!.has(l.id)));
+		&& labelsOf(data).some(l => isTriggerLabel(l.name) && (created || !wasLabelIds!.has(l.id)));
 
 	return label || assignedTo !== null ? { label, assignedTo } : null;
 }

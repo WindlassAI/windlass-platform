@@ -18,6 +18,7 @@ import { untrustedWords } from "../factory/untrusted.js";
 import { githubApp } from "../github/app.js";
 import { isGithubId } from "../github/ids.js";
 import { GithubProblem, resolveRepository } from "../github/repos.js";
+import { QUICK_LABELS } from "../linear/webhook.js";
 import { accountLimits } from "../user-limits.js";
 import { readDefaults } from "../repository-defaults.js";
 import { isActorGone, itemActor } from "./internal.js";
@@ -132,7 +133,7 @@ export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling,
 	const author = linearName(issue.creator?.name);
 	const trusted = issue.creator !== null && issue.creator.id === f.owner.linearUserId;
 	const labels = issue.labels.filter((label): label is string => typeof label === "string").map(label => label.trim().toLowerCase());
-	const { mode, reason: modeReason, refusal } = issueMode("", labels, process.env.WLP_FACTORY_ORCHESTRATE !== "0");
+	const { mode, reason: modeReason, refusal } = issueMode("", labels, process.env.WLP_FACTORY_ORCHESTRATE !== "0", QUICK_LABELS);
 	const resumed = resuming && await existingItem(c, uid, resuming.id);
 	if (refusal) return { kind: "refused", reason: refusal };
 	const cap = resumed ? null : await quotaRefusal(c, resuming?.id, "Linear");

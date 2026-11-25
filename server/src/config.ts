@@ -221,7 +221,7 @@
  *                              https://github.com)
  *
  * Linear (read by `linearConfig` below). A Linear OAuth app of this deployment's own lets the owner connect
- * a Linear workspace, map a team to a repository, and have an issue that gains the `windlass` label or
+ * a Linear workspace, map a team to a repository, and have an issue that gains a Windlass filing label or
  * is assigned to the app's user filed as a work item.
  * With none of the three first variables set the feature is off; with only some set it is off too, and
  * the server says which are missing when it starts. They are the same on every server.

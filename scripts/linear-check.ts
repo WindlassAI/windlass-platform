@@ -533,7 +533,13 @@ async function run() {
 			} finally { await limit("default"); }
 		});
 
+		const ensureWritebackMapping = async () => {
+			if ((await owner.linear()).state !== "connected") await owner.linearComplete(ticketFrom(await callback(await begin())));
+			await owner.saveLinearMapping({ teamId: eng.id, repositoryId: repo.id });
+		};
 		await check("writeback posts the PR, handover and merge once across lost replies and completes only on merge", async () => {
+			await ensureWritebackMapping();
+			const updatesBefore = linear.writes.filter(w => w === "issueUpdate").length;
 			const { issue, payload } = created(eng, { labels: ["windlass:quick"], title: "Print hello", description: "Add a short program." });
 			const { itemId } = await qualifying(payload);
 			const id = itemId!;
@@ -541,7 +547,8 @@ async function run() {
 			await owner.actOnItem({ id, action: { kind: "start" } });
 			const pr = await until("the Linear item's pull request", async () => (await owner.item(id)).pullRequest, 45_000);
 			await until("the PR link and handover on the issue", async () => linear.attachments.get(issue.id) === pr.url && comments().some(b => b.includes("was handed over")));
-			assert.equal(issue.stateType, "unstarted");
+			const review = linear.workflowStates.get(eng.id)!.find(s => s.name === "In Review")!;
+			await until("the review state", async () => issue.stateId === review.id);
 			const pull = github.pulls.find(p => p.repository === repo.id && p.number === pr.number)!;
 			pull.state = "closed";
 			pull.merged = true;
@@ -549,7 +556,7 @@ async function run() {
 			assert.equal((await owner.item(id)).state, "done");
 			await until("all three lost replies retried", async () => linear.calls.filter(c => c === "POST /graphql comment").length >= 3, 40_000);
 			assert.deepEqual(comments().sort(), ["opened its pull request", "was handed over", "merged"].map(event => `Windlass item ${id} ${event}. ${pr.url}`).sort());
-			assert.equal(linear.writes.filter(w => w === "issueUpdate").length, 1);
+			assert.equal(linear.writes.filter(w => w === "issueUpdate").length - updatesBefore, 3);
 			const cancelled = created(eng, { labels: ["windlass"] });
 			const filed = await qualifying(cancelled.payload);
 			await owner.actOnItem({ id: filed.itemId!, action: { kind: "cancel" } });
@@ -557,7 +564,8 @@ async function run() {
 			assert.equal(cancelled.issue.stateType, "unstarted");
 		});
 
-		await check("a failed item reports its outcome and leaves the issue open", async () => {
+		await check("writeback reports a question and giving up leaves the started issue open", async () => {
+			await ensureWritebackMapping();
 			await owner.saveRepositoryDefaults({ repositoryId: repo.id, profile: "docker-hardened" });
 			try {
 				const { issue, payload } = created(eng, { labels: ["windlass:quick"] });
@@ -565,10 +573,67 @@ async function run() {
 				const id = itemId!;
 				await owner.actOnItem({ id, action: { kind: "start" } });
 				const question = await until("the untrusted turn's question", async () => (await owner.item(id)).question);
+				const comment = await until("the owner question link", async () => [...linear.comments.values()].find(c => c.issueId === issue.id));
+				assert.equal(comment.body, `[Windlass item](${ORIGIN}/items/${id}) has a question for you.`);
 				await owner.actOnItem({ id, action: { kind: "answer", question: question.id, choice: "give_up" } });
 				await until("failure on the Linear issue", async () => [...linear.comments.values()].some(c => c.issueId === issue.id && c.body === `Windlass item ${id} failed.`));
-				assert.equal(issue.stateType, "unstarted");
+				assert.equal(issue.stateType, "started");
 			} finally { await owner.saveRepositoryDefaults({ repositoryId: repo.id, profile: null }); }
+		});
+
+		await check("writeback posts one owner comment for each plan approval across lost replies", async () => {
+			await ensureWritebackMapping();
+			const { issue, payload } = created(eng, { labels: ["windlass"] });
+			const { itemId } = await qualifying(payload);
+			const id = itemId!;
+			await owner.actOnItem({ id, action: { kind: "start" } });
+			const plan = await until("first plan approval", async () => (await owner.item(id)).question);
+			assert.equal(plan.kind, "plan_approval");
+			await owner.actOnItem({ id, action: { kind: "answer", question: plan.id, choice: "revise", note: "Clarify the scope." } });
+			const next = await until("revised plan approval", async () => {
+				const q = (await owner.item(id)).question;
+				return q && q.id !== plan.id && q;
+			});
+			assert.ok(["plan_approval", "replan_approval"].includes(next.kind));
+			const comments = () => [...linear.comments].filter(([, c]) => c.issueId === issue.id);
+			await until("both plan comments retried", async () => comments().length >= 2 && comments().every(([key]) => linear.commentReads.includes(key)), 45_000);
+			assert.deepEqual(comments().map(([, c]) => c.body), Array(2).fill(`[Windlass item](${ORIGIN}/items/${id}) has a plan waiting for your approval.`));
+			await owner.actOnItem({ id, action: { kind: "cancel" } });
+		});
+
+		await check("writeback during a Linear outage lets the item run and cancel", async () => {
+			await ensureWritebackMapping();
+			const { issue, payload } = created(eng, { labels: ["windlass:quick"] });
+			const { itemId } = await qualifying(payload);
+			const id = itemId!;
+			linear.graphqlFailure = 503;
+			try {
+				await owner.actOnItem({ id, action: { kind: "start" } });
+				await until("a PR while Linear is down", async () => (await owner.item(id)).pullRequest, 45_000);
+				await owner.actOnItem({ id, action: { kind: "cancel" } });
+				assert.equal((await owner.item(id)).state, "cancelled");
+			} finally { linear.graphqlFailure = null; }
+			await until("the cancellation reaches Linear after recovery", async () => [...linear.comments.values()].some(c => c.issueId === issue.id && c.body.includes("was cancelled")), 45_000);
+			assert.equal(issue.stateType, "unstarted");
+			assert.ok(!logs.includes("private Linear outage details"));
+		});
+
+		await check("writeback backs off across events after Linear rate limits the app user", async () => {
+			await ensureWritebackMapping();
+			const { issue, payload } = created(eng, { labels: ["windlass:quick"] });
+			const { itemId } = await qualifying(payload);
+			const actor = client.user.get([uid], service());
+			const write = (key: "start" | "review_opened") => actor.internalLinearWrite({
+				workspaceId: linear.workspace.id, teamId: eng.id, issueId: issue.id, itemId: itemId!, write: { key },
+			});
+			linear.graphqlFailure = "RATELIMITED";
+			try {
+				await assert.rejects(write("start"));
+			} finally { linear.graphqlFailure = null; }
+			const calls = linear.calls.length;
+			await assert.rejects(write("review_opened"));
+			assert.equal(linear.calls.length, calls, "additional events must respect the app user's cooldown");
+			assert.ok(!logs.includes("private rate limit details"));
 		});
 
 		await check("a removed mapping files nothing, and the same issue files again once it is mapped", async () => {
@@ -649,6 +714,19 @@ async function run() {
 			assert.deepEqual(await rows(), []);
 			assert.equal((await callback(pending)).headers.get("location"), `${ORIGIN}/settings#linear-error=used`);
 			assert.equal(await code(owner.linearComplete(ticket)), "linear_ticket");
+		});
+
+		await check("Quick labels: filing and mode from a single Linear label", async () => {
+			await owner.linearComplete(ticketFrom(await callback(await begin())));
+			await owner.saveLinearMapping({ teamId: eng.id, repositoryId: repo.id });
+			for (const [label, mode] of [["Windlass-Quick", "single"], ["windlass:quick", "single"], ["windlass", "orchestrate"]]) {
+				const { issue, payload } = created(eng, { labels: [label] });
+				assert.equal((await qualifying(payload)).kind, "filed", label);
+				assert.deepEqual((await itemsOf(issue)).map(item => item.mode), [mode], label);
+			}
+			const bare = created(eng, { labels: ["quick"] });
+			await ignored(bare.payload);
+			assert.deepEqual(await itemsOf(bare.issue), []);
 		});
 
 		await check("the platform logged no credential", async () => {
