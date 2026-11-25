@@ -1,5 +1,15 @@
 import type { PullRequestInfo } from "../contract.js";
 
+export interface SetupDiagnosis {
+	phase: "draft" | "review" | "revision";
+	model: string;
+	toolOffered: boolean;
+	attempts: number;
+	rejections: string[];
+	lastMessage: string | null;
+	outcome: string;
+	stopReason: string | null;
+}
 export type Verdict = "team" | "personal" | "private" | "secret" | "stale" | "question" | "duplicate";
 export interface NoteUse { path: string; line: number; evidence: string }
 export interface NoteDecision { noteId: string; verdict: Verdict; reason: string; uses: NoteUse[]; question?: string }

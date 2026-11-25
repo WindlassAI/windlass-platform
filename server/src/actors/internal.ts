@@ -102,7 +102,7 @@ export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: st
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
 	internalSetupPublished(session: string, publication: import("../repo-setup/types.js").SetupPublication, decisions: import("../repo-setup/types.js").NoteDecision[], installation: GithubId, source: string): Promise<void>;
-	internalReadinessResult(session: string, attempt: string, report: import("../factory/readiness.js").Judgment | string | null): Promise<void>;
+	internalReadinessResult(session: string, attempt: string, report: import("../factory/readiness.js").Judgment | string | null, diagnosis?: import("../repo-setup/types.js").SetupDiagnosis | null): Promise<void>;
 	internalReadinessLevel(id: GithubId): Promise<import("../factory/readiness.js").ReadinessLevel | null>;
 	internalLinearHoldsTeam(workspaceId: string, teamId: string): Promise<boolean>;
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;

@@ -671,8 +671,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		}
 		// A build runs no agent, so it asks for no model list (and needs no sign-in): the stand-in names one.
 		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : build ? standInModels("demo") : await modelsOf(c, profile.demo);
-		const setupModel = readiness?.draft && (models.models.find(m => /nano/i.test(m.id)) ?? models.models.find(m => /mini|small/i.test(m.id)));
-		const model = modelInput(() => chosenModel(models, setupModel?.id ?? input.model), options && machine ? "bad_input" : undefined);
+		const model = modelInput(() => chosenModel(models, input.model), options && machine ? "bad_input" : undefined);
 		if (providers && harness !== "windlass" && !hostedProvider(harness, model, providers.map(p => p.provider)))
 			throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		// An item's effort runs every turn, unwatched: only one its agent reported is taken.
@@ -853,7 +852,12 @@ async function assessRepository(c: CreateCtx, profile: UserProfile, id: GithubId
 			await sessionActor(c, profile.uid, pending.drafter).internalAssessRepository(prompt, readiness);
 			return;
 		}
-		await makeSession(c, profile, { title: "Repo setup", repository: { id }, place: destination.place, profile: profileId }, null, undefined, { readiness });
+		let model: string | undefined;
+		if (draft && (repoDefaults.model || account.model)) {
+			const offered = await modelsOf(c, profile.demo);
+			model = [repoDefaults.model, account.model].find((id): id is string => offered.models.some(m => m.id === id));
+		}
+		await makeSession(c, profile, { title: "Repo setup", repository: { id }, place: destination.place, profile: profileId, model }, null, undefined, { readiness });
 		await sessionActor(c, profile.uid, session).internalAssessRepository(prompt);
 	} catch (error) {
 		await finishAssessment(c.db, session, error instanceof UserError ? error.message : "The setup check could not start.");
@@ -1158,7 +1162,9 @@ export const user = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS session_secret_grant (session_id TEXT NOT NULL, name TEXT NOT NULL, PRIMARY KEY(session_id, name))");
 			// Before the column checks below: the API token table is one of them.
 			for (const table of ITEM_TABLES) await db.execute(table);
+			await db.execute(READINESS_TABLE);
 			for (const [table, column, definition] of [
+				["readiness", "diagnosis", "TEXT"],
 				["model_attempt", "attempt_id", "TEXT"],
 				["token_generation", "disconnected", "INTEGER NOT NULL DEFAULT 0"],
 				["token_generation", "disconnect_job", "TEXT"],
@@ -1182,7 +1188,6 @@ export const user = actor({
 			// The last launch claim's generation (`UserVars.launchClaim`): kept on its own, so that it only ever grows.
 			await db.execute(ENVIRONMENT_TABLE);
 			await db.execute("CREATE TABLE IF NOT EXISTS setup_scan (project TEXT PRIMARY KEY, at INTEGER NOT NULL, scan TEXT NOT NULL)");
-			await db.execute(READINESS_TABLE);
 			await db.execute(NOTES_TABLE);
 			await db.execute(PUBLICATION_TABLE);
 			await db.execute("CREATE INDEX IF NOT EXISTS readiness_project ON readiness(project,at DESC)");
@@ -2136,7 +2141,7 @@ export const user = actor({
 			await assessRepository(c, profile, id, undefined, notes, answers);
 			return repositoryView(c, id, setupKeyOf(id));
 		},
-		internalReadinessResult: async (c, session: string, attempt: string, report: Judgment | string | null): Promise<void> => {
+		internalReadinessResult: async (c, session: string, attempt: string, report: Judgment | string | null, diagnosis?: import("../repo-setup/types.js").SetupDiagnosis | null): Promise<void> => {
 			requireServiceFor(c, "call");
 			const current = c.vars.sessions.get(session);
 			if (!current?.readiness || !current.repository) return;
@@ -2144,7 +2149,7 @@ export const user = actor({
 			if (!pending) return;
 			const keep = (await c.db.execute("SELECT 1 FROM setup_notes WHERE drafter=? AND expires>? LIMIT 1", session, Date.now())).length > 0;
 			if (keep) await sessionActor(c, c.key[0], session).internalFreeSandbox();
-			await finishAssessment(c.db, attempt, report ?? "The turn ended before filing its setup checks.");
+			await finishAssessment(c.db, attempt, report ?? "The turn ended before filing its setup checks.", diagnosis);
 			if (!keep) await removeSession(c, c.key[0], session);
 			await retireDrafters(c, c.key[0], setupKeyOf(current.repository.id));
 		},

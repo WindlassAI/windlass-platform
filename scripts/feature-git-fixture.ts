@@ -4,6 +4,8 @@ import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "n
 import { dirname, join } from "node:path";
 import { FakeHandle, FakeWindlass } from "../server/src/sandbox-fake.js";
 import { getLayer } from "../server/src/layer.js";
+import { hostToolsMeta } from "../server/src/sandbox/turn.js";
+import { getSignIns } from "../server/src/signin/index.js";
 import { turnPlatformTools } from "../server/src/platform-tools.js";
 import { CI_POLLING } from "../server/src/github/ci.js";
 import { CROSS_POLLING } from "../server/src/factory/cross-repo.js";
@@ -16,6 +18,13 @@ Object.assign(CROSS_POLLING, {integrationMs: 1000, mergeMs: 120_000});
 if (process.env.WLP_FEATURE_TEST_RESTRICTED_HOST === "1") {
 	const { sandboxes } = await getLayer();
 	sandboxes.egress = () => "restricted";
+}
+if (process.env.WLP_TEST_SETUP_MODEL) {
+	const { commands } = await getSignIns();
+	commands.models = async () => ({ defaultModel: "account-default", models: [
+		{ id: "account-default", name: null, efforts: [] }, { id: "stale-mini", name: null, efforts: [] },
+		{ id: "saved-choice", name: null, efforts: [] },
+	] });
 }
 const fakeTurn = FakeWindlass.prototype.runTurn;
 FakeWindlass.prototype.runTurn = async function(sandbox, input) {
@@ -32,6 +41,27 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 					place: { prefer: "hosted", reason: "Small isolated documentation file." }, needs: { egress } };
 			}),
 		} }, signal) };
+	}
+	if (input.onSetup || input.onSetupReview) {
+		const names = hostToolsMeta(turnPlatformTools(input)).hostTools.map(t => t.name);
+		const tool = input.onSetupReview ? "file_repo_setup_review" : "file_repo_setup";
+		if (names.length !== 1 || names[0] !== tool || !input.prompt.includes(tool)) throw Error("Missing setup tool or filing instructions.");
+		const expectedModel = input.prompt.includes("ada/setup-startup") ? "saved-choice" : "account-default";
+		if (process.env.WLP_TEST_SETUP_MODEL && input.model !== expectedModel) throw Error("Setup changed the account model.");
+		const ended = { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: null, summary: null, stderrTail: "", failure: null };
+		if (input.prompt.includes("ada/setup-startup")) return { ...ended, failure: { reason: "unknown_model", message: "The model is unavailable." } };
+		input.onHostTools?.(names);
+		if (input.prompt.includes("ada/setup-no-filing") || input.prompt.includes("ada/setup-refused")) {
+			if (input.prompt.includes("ada/setup-refused")) {
+				for (const [i, args] of [{}, { files: [], notes: [], score: [] }].entries()) {
+					const reply = await input.onSetup!({ messageId: "draft", callId: "file-" + i, arguments: args }, input.signal!);
+					if (!reply.includes("Correct the filing")) throw Error("Expected a retryable rejection.");
+				}
+			}
+			input.onEvent?.({ type: "text.ended", data: { text: "First message." } });
+			input.onEvent?.({ type: "text.ended", data: { text: "Stopped ghs_diagnosisFixtureSecret123. " + "x".repeat(350) } });
+			return { ...ended, summary: { type: "cli.summary", outcome: "succeeded" }, stopReason: "end_turn" };
+		}
 	}
 	if (input.onSetupReview) {
 		const host = turnPlatformTools(input);

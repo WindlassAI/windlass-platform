@@ -1046,6 +1046,19 @@ PYTHON`);
 			session = attempt.result.windlassSessionId ?? undefined;
 			if (!session) throw new Error("missing reviewer session");
 		}
+		for (const tool of ["file_repo_setup", "file_repo_setup_review"]) {
+			const args = tool === "file_repo_setup" ? { score: [], files: [], notes: [] } : { files: [] };
+			let called = false;
+			let offered: string[] = [];
+			const handle = async () => { called = true; return "Filed."; };
+			const result = await layer.windlass.runTurn(box, {
+				prompt: "Call " + tool, planner: true, repoSetup: true, reviewDirectory: box.cwd,
+				untrusted: ["setup inputs"], onHostTools: names => { offered = names; },
+				...(tool === "file_repo_setup" ? { onSetup: handle } : { onSetupReview: handle }),
+				script: { responses: [[{ type: "tool_call", callId: "filing", name: tool, input: args }, { type: "finish", reason: "tool_calls" }], say("Done.")] },
+			});
+			expect("Windlass offers and dispatches " + tool, offered.join() === tool && called && result.stopReason === "end_turn", result.failure?.message);
+		}
 	});
 
 	for (const profileId of ["docker-windlass-sandbox", "docker-hardened"] as SandboxProfileId[]) {

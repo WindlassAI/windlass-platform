@@ -4,6 +4,7 @@ import { config } from "../config.js";
 import type { EnvironmentBuild, GithubId, RepositoryCheck } from "../contract.js";
 import { environmentInputs, readEnvironments, sameInputs } from "../environments.js";
 import { scoreReadiness, type Finding, type Judgment, type RepositoryReadiness } from "../factory/readiness.js";
+import type { SetupDiagnosis } from "../repo-setup/types.js";
 import type { SetupScan } from "../github/setup-checks.js";
 import { digest } from "../sandbox/snapshot-key.js";
 
@@ -18,7 +19,7 @@ export async function scheduleSetup(cron: Pick<ActorCron, "set" | "delete">, id:
 }
 
 export const READINESS_TABLE = `CREATE TABLE IF NOT EXISTS readiness (
-	project TEXT NOT NULL, session TEXT PRIMARY KEY, at INTEGER NOT NULL, inputs TEXT, judgment TEXT, error TEXT)`;
+	project TEXT NOT NULL, session TEXT PRIMARY KEY, at INTEGER NOT NULL, inputs TEXT, judgment TEXT, error TEXT, diagnosis TEXT)`;
 export const SETUP_TURN_MS = Math.min(config.turnTimeoutMs, 20 * 60_000);
 export const SETUP_LEASE_MS = SETUP_TURN_MS + 6 * 60_000;
 
@@ -52,7 +53,7 @@ export async function setupInputs(db: Db, project: string, scan: SetupScan & { a
 }
 
 export async function repositoryReadiness(db: Db, project: string, inputs: Awaited<ReturnType<typeof setupInputs>> | null, weekly: boolean, scanError: string | null = null): Promise<RepositoryReadiness> {
-	const [attempt] = await db.execute<{ judgment: string | null; error: string | null; at: number }>("SELECT judgment,error,at FROM readiness WHERE project=? ORDER BY at DESC, rowid DESC LIMIT 1", project);
+	const [attempt] = await db.execute<{ judgment: string | null; error: string | null; diagnosis: string | null; at: number }>("SELECT judgment,error,diagnosis,at FROM readiness WHERE project=? ORDER BY at DESC, rowid DESC LIMIT 1", project);
 	const pending = !!attempt && !attempt.judgment && !attempt.error;
 	const running = pending && Date.now() - attempt.at < SETUP_LEASE_MS;
 	let latest = null;
@@ -68,7 +69,7 @@ export async function repositoryReadiness(db: Db, project: string, inputs: Await
 		});
 		latest = scoreReadiness(findings, last?.at ?? inputs.at);
 	}
-	return { latest, weekly, run: running ? "running" : attempt ? "finished" : "new", error: scanError ?? (pending && !running ? "The setup check was interrupted." : attempt?.error ?? null) };
+	return { latest, weekly, ...(attempt?.diagnosis && { diagnosis: JSON.parse(attempt.diagnosis) as SetupDiagnosis }), run: running ? "running" : attempt ? "finished" : "new", error: scanError ?? (pending && !running ? "The setup check was interrupted." : attempt?.error ?? null) };
 }
 
 export async function claimAssessment(db: Db, project: string, session: string, now: number): Promise<boolean> {
@@ -78,7 +79,7 @@ export async function claimAssessment(db: Db, project: string, session: string, 
 	return rows.length > 0;
 }
 
-export async function finishAssessment(db: Db, session: string, result: Judgment | string) {
-	await db.execute("UPDATE readiness SET judgment=?,error=? WHERE session=? AND judgment IS NULL AND error IS NULL",
-		typeof result === "string" ? null : JSON.stringify(result), typeof result === "string" ? result : null, session);
+export async function finishAssessment(db: Db, session: string, result: Judgment | string, diagnosis?: SetupDiagnosis | null) {
+	await db.execute("UPDATE readiness SET judgment=?,error=?,diagnosis=? WHERE session=? AND judgment IS NULL AND error IS NULL",
+		typeof result === "string" ? null : JSON.stringify(result), typeof result === "string" ? result : null, diagnosis ? JSON.stringify(diagnosis) : null, session);
 }

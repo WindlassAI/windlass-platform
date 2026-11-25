@@ -4,6 +4,7 @@
 import { spareProfile, spareRecipe, type SpareRecipe, type SpareSetup } from "../runner/spare-recipe.js";
 import { SETUP_TURN_MS } from "./user-readiness.js";
 import { isGuide } from "../repo-setup/guide-check.js";
+import { SetupPhase } from "../repo-setup/phase.js";
 import { REVIEW_MS, PUBLISH_MS, reviewSetup } from "../repo-setup/review.js";
 import { publishSetup, type SetupTurn } from "../repo-setup/publish.js";
 import type { AcceptedDraft } from "../repo-setup/filing.js";
@@ -2224,7 +2225,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 }
 
 function reportAssessment(c: Ctx, meta: SessionMeta) {
-	void c.keepAwake(userActor(c, meta.uid).internalReadinessResult(meta.sessionId, meta.readiness!.attempt, meta.readiness?.result ?? meta.readiness?.error ?? null).catch(error =>
+	void c.keepAwake(userActor(c, meta.uid).internalReadinessResult(meta.sessionId, meta.readiness!.attempt, meta.readiness?.result ?? meta.readiness?.error ?? null, meta.readiness?.diagnosis ?? null).catch(error =>
 		c.log.warn({ msg: "could not save the readiness assessment", error: describeError(error) })));
 }
 
@@ -2367,6 +2368,8 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	/** The runner conversation's losses when the agent started (`ServerChannel.losses`): more at its end, and the machine went away mid-turn. */
 	// Reattached runner channels can lose their grace period during slot acquisition.
 	let lossesAtStart: number | null = active.reattach ? 0 : null;
+	const setupPhase = meta.readiness?.draft ? new SetupPhase(meta.model, s => active.secrets?.redactor.text(s) ?? s) : null;
+	let setupStage: "agent" | "publish" | "record" = "agent";
 	let agentStarted = false;
 	let thrown: unknown = null;
 	/** What a resumed turn's agent is given instead of its "carry on" should its saved session be gone after all. */
@@ -2672,6 +2675,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			const draft = setup.draft;
 			const rows = draft?.noteIds.length ? await secretsActor(c, meta.uid, meta.sessionId).internalSetupNoteFiles(meta.sessionId, draft.noteIds) : [];
 			const inputs = rows.map(row => openNote(meta.uid, setupProjectOf(meta)!.key, row));
+			setupPhase?.setNotes(inputs);
 			common.reviewDirectory = await app.withToken(installation.id, { repositoryId: repo.id, permissions: { contents: "read", metadata: "read" } },
 				token => readOnlyReview(sandbox, app.cloneUrl(owner, name), token, setup.commit, setup.commit, signal, inputs), { revokeAfter: true });
 			if (draft) {
@@ -2931,8 +2935,9 @@ fi`, { signal, timeoutMs: 5000 });
 					if (open) knowServers(c, meta, said);
 				},
 			};
-			if (setupTurn) {
-				const reviewed = await reviewSetup(setupTurn, windlassInput, input => harness.runTurn(sandbox, input), turnEndsAt);
+			if (setupTurn && setupPhase) {
+				const reviewed = await reviewSetup(setupTurn, windlassInput, input => harness.runTurn(sandbox, input), turnEndsAt, setupPhase);
+				setupStage = "record";
 				result = reviewed.result;
 				accepted = reviewed.filed;
 			} else result = await harness.runTurn(sandbox, windlassInput);
@@ -2953,7 +2958,9 @@ fi`, { signal, timeoutMs: 5000 });
 			if (setup && setupTurn && accepted) {
 				const { noteIds } = setupTurn.request;
 				if (noteIds.length) await secretsActor(c, meta.uid, meta.sessionId).internalSetupNoteFiles(meta.sessionId, noteIds);
+				setupStage = "publish";
 				const publication = await publishSetup(setupTurn, accepted, AbortSignal.any([signal, AbortSignal.timeout(PUBLISH_MS)]));
+				setupStage = "record";
 				await userActor(c, meta.uid).internalSetupPublished(meta.sessionId, publication, accepted.decisions, meta.repo!.installationId, setupTurn.commit);
 				setup.result = accepted.score;
 				await persist(c);
@@ -2961,7 +2968,19 @@ fi`, { signal, timeoutMs: 5000 });
 		}
 	} catch (error) {
 		thrown = error;
-		if (meta.readiness?.draft) meta.readiness.error = "The guides could not be published. Check repository write access and run setup again.";
+		if (meta.readiness && setupPhase) {
+			const why = error instanceof GithubError && meta.repo ? problemOf(error, meta.repo.owner, meta.repo.name).message
+				: error instanceof Error ? error.message : "Run setup again.";
+			if (setupStage === "agent") {
+				const diagnosis = setupPhase.diagnosis();
+				meta.readiness.error = setupPhase.clean(why, 360);
+				meta.readiness.diagnosis = diagnosis;
+				c.log.warn({ msg: "repo setup phase failed", session: meta.sessionId, turn, error: meta.readiness.error, ...diagnosis });
+			} else {
+				meta.readiness.error = (setupStage === "publish" ? "The guides could not be published. " : "Repo setup could not save the result. ") + setupPhase.clean(why);
+			}
+			error = thrown = new TurnProblem(meta.readiness.error);
+		}
 		if (meta.environmentBuild && !c.vars.environmentResult) {
 			if (opening && isSandboxUserError(error) && error.message === ENVIRONMENT_SLOT_WAIT) {
 				c.vars.environmentResult = { waiting: ENVIRONMENT_SLOT_WAIT };

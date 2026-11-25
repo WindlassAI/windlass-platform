@@ -392,7 +392,8 @@ export interface RunTurnInput {
 	onControl?: (control: TurnControl) => void;
 	/** Platform tool callbacks own authorization. The call waits for the result; settlement or turn end aborts the signal and discards late results. */
 	onPublish?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
-	/** A work item's agent files its report; returns what the agent is told. Not given with `onPublish`. */
+	/** Host declarations accepted when Windlass opened this session. */
+	onHostTools?: (names: string[]) => void;
 	onSetup?: RunTurnInput["onReport"];
 	onSetupReview?: RunTurnInput["onReport"];
 	onPlanReview?: RunTurnInput["onReport"];
@@ -426,6 +427,8 @@ export interface TurnChecks {
 }
 
 export interface RunTurnResult {
+	/** Windlass ACP session/prompt stop reason, when the request was answered. */
+	stopReason?: string;
 	acp?: {
 		stopReason: string | null; usage: AcpContext | null; models: ModelList | null;
 		/** The turn's tokens from the `session/prompt` answer; null where the agent reported none. */

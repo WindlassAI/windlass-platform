@@ -281,6 +281,7 @@ class Turn {
 	private failure: Failure | null = null;
 	private promptSent = false;
 	private promptSettled = false;
+	private stopReason?: string;
 	private promptEnding: { executionId: string | null; outcome: Outcome | null; stepLimit: boolean } | null = null;
 	/** The `_meta` keys the engine takes on `session/prompt` (`promptMeta` in its answer to `initialize`). */
 	private promptKeys: string[] = [];
@@ -502,6 +503,7 @@ class Turn {
 			windlassSessionId: this.sessionSeen,
 			...(this.freshened && { resumed: false }),
 			summary: this.summary,
+			...(this.stopReason && { stopReason: this.stopReason }),
 			stderrTail: scrub(stderrTail).slice(-STDERR_TAIL),
 			failure: failure === null ? failure : { reason: failure.reason, message: scrub(failure.message) },
 			...(this.checks === null ? {} : { checks: this.checks }),
@@ -783,6 +785,7 @@ class Turn {
 			(result) => {
 				const turn = result?._meta?.[NS] as { executionId?: unknown; outcome?: unknown } | undefined;
 				const outcome = typeof turn?.outcome === "string" && ["succeeded", "unresolved", "failed", "interrupted"].includes(turn.outcome) ? (turn.outcome as Outcome) : result?.stopReason === "cancelled" ? "interrupted" : null;
+				this.stopReason = typeof result?.stopReason === "string" ? result.stopReason : undefined;
 				this.promptEnding = { executionId: typeof turn?.executionId === "string" ? turn.executionId : null, outcome, stepLimit: result?.stopReason === "max_turn_requests" };
 				this.promptSettled = true;
 				this.check();
@@ -818,6 +821,7 @@ class Turn {
 		if (input.windlassSessionId !== undefined) {
 			try {
 				await this.resumeSession(input.windlassSessionId, meta);
+				input.onHostTools?.(meta.hostTools.map(tool => tool.name));
 				return;
 			} catch (error) {
 				// Either the lookup or the open can discover that the saved conversation is gone.
@@ -831,6 +835,7 @@ class Turn {
 			this.notes.push("[platform] the engine no longer had the session this turn resumes; a new one was opened with the whole task");
 		}
 		this.adopt(made.sessionId);
+		input.onHostTools?.(meta.hostTools.map(tool => tool.name));
 	}
 
 	private async resumeSession(prior: string, meta: Record<string, unknown>): Promise<void> {
