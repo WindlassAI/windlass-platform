@@ -43,7 +43,11 @@ function expect(name: string, ok: boolean, detail = ""): boolean {
 	else { failures += 1; console.log(`FAIL  ${name}  ${text || "condition not met"}`); }
 	return ok;
 }
+const sections = process.env.WLP_CHECK_SECTIONS?.split(",");
+const selected = (name: string) => !sections || sections.some(prefix => name.startsWith(prefix));
+
 async function section(name: string, body: () => Promise<void>): Promise<void> {
+	if (!selected(name)) return;
 	console.log(`\n== ${name}`);
 	try { await body(); }
 	catch (error) { failures += 1; console.log(`FAIL  ${name}: unexpected error  ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`); }
@@ -148,6 +152,18 @@ async function fakeChecks() {
 		const stillReadable = await switchedOff.connect(second);
 		expect("with snapshots turned off since, it still connects with its source", stillReadable?.snapshot?.commit === COMMIT);
 		expect("a sandbox made from a snapshot is never saved again", !(await w.sandboxes.saveSnapshot!(second, { ...ask, commit: COMMIT, created: w.clock.now })));
+	});
+
+	await section("environment build lifetime", async () => {
+		const w = world();
+		const { id, ok } = await w.saved("u1");
+		await w.sandboxes.suspend(id);
+		expect("suspending a saved candidate removes its source and preserves the image", ok && !w.fake.sandboxes.has(id) && await w.sandboxes.hasSnapshot!("u1", "42"));
+		const abandoned = await w.sandboxes.create({ uid: "u1", sessionId: "abandoned", profile: "e2b", environmentBuild: true });
+		const reader = await w.create("u1", request({ writer: false }));
+		await w.fake.expire(abandoned);
+		await w.fake.expire(reader);
+		expect("the provider kills an abandoned build and pauses a session restored from its image", await w.sandboxes.state(abandoned) === "none" && await w.sandboxes.state(reader) === "paused");
 	});
 
 	await section("never across users", async () => {
@@ -393,7 +409,7 @@ async function liveCheck() {
 if (live) await liveCheck();
 else {
 	await fakeChecks();
-	placementChecks();
+	if (selected("placement")) placementChecks();
 	if (withDocker) await dockerChecks();
 }
 console.log(`\n${passes} passed, ${failures} failed`);

@@ -224,6 +224,8 @@ export interface OutOfMemory {
 /** A sandbox as its provider lists it for a user. */
 export interface ListedSandbox {
 	id: string;
+	/** A disposable environment build, with its provider start time in milliseconds. */
+	buildStartedAt?: number;
 	/** The session it was made for, as `CreateSandboxInput.sessionId` named it. */
 	sessionId: string;
 	state: "running" | "paused";

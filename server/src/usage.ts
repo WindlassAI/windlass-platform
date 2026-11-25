@@ -566,13 +566,13 @@ weightOf: (session: string) => number = () => 1;
 	 * dropped, unless the session still holds time to make the sandbox it just claimed. A sandbox without a
 	 * claim is given one, also past the cap: it exists, and leaving it out would let its user make more.
 	 */
-	reconcile(now: number, existing: readonly string[]): { added: string[]; dropped: string[]; change: UsageChange } {
+	reconcile(now: number, existing: readonly string[], canClaim = (_session: string) => true): { added: string[]; dropped: string[]; change: UsageChange } {
 		const change = noChange();
 		const there = new Set(existing);
 		const added: string[] = [];
 		const dropped: string[] = [];
 		for (const claim of [...this.claims.values()]) {
-			if (there.has(claim.session) || (this.holds.has(claim.session) && now - claim.since < CLAIM_SETTLING_MS)) continue;
+			if (there.has(claim.session) || (this.holds.has(claim.session) && now - claim.since < CLAIM_SETTLING_MS && canClaim(claim.session))) continue;
 			this.claims.delete(claim.session);
 			change.released.push(claim.session);
 			dropped.push(claim.session);
