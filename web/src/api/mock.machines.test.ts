@@ -68,7 +68,7 @@ describe("the mock's machines", () => {
 		const snapshots: Array<{ machine?: unknown; profile: string }> = [];
 		const close = session.open({ onSnapshot: (snapshot) => snapshots.push({ machine: snapshot.machine, profile: snapshot.profile.name }), onItem: () => undefined, onDelta: () => undefined, onSummary: () => undefined, onQuestion: () => undefined, onConnection: () => undefined });
 		await tick();
-		expect(snapshots[0]).toEqual({ machine: null, profile: 'Hardened Docker on your machine "nas"' });
+		expect(snapshots[0]).toEqual({ machine: null, profile: "Open" });
 		// The day's time is used up, and a turn on the user's own machine starts all the same.
 		expect(await session.prompt({ text: "What is 1 + 1, to be sure?" })).toEqual({ turn: 1, steered: false });
 		await expect(user.createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "e2b" })).rejects.toThrow("There is no such sandbox.");
@@ -329,7 +329,7 @@ describe("the start composer's agent picker", () => {
 		act(() => (modeRows().find((option) => option.querySelector(".ui-item-label")?.textContent === name) as HTMLElement).click());
 	};
 	/** The lock in the tray: the chosen sandbox's facts, each with the sentence it stands for. */
-	const sandboxLine = () => host.querySelector(".start-sandbox")?.textContent ?? "";
+	const sandboxLine = () => host.querySelector('[data-picker="isolation"]')?.getAttribute("aria-label") ?? "";
 	/** Creates the agent from the launch button's menu. */
 	const createWithout = async () => {
 		act(() => (host.querySelector(".ui-split-more") as HTMLButtonElement).click());
@@ -419,7 +419,7 @@ describe("the start composer's agent picker", () => {
 		agents();
 		expect(text()).toContain("Choose whose sign-in it uses on the Machines page.");
 		expect(value("on")).toContain("nas");
-		expect(value("sandbox")).toContain('Hardened Docker on your machine "nas"');
+		expect(value("sandbox")).toBe("Open");
 		// nas's runner reported Claude Code's models: its default is named as the adapter names it, and chosen.
 		expect(value("agent")).toBe("Claude Code · Default (recommended)");
 		const rows = [...(pop()?.querySelectorAll('[data-value^="claude:"]') ?? [])].map((row) => [row.querySelector(".ui-item-label")?.textContent, row.getAttribute("aria-checked") === "true"]);
@@ -457,7 +457,7 @@ describe("the start composer's agent picker", () => {
 			["Ask", false],
 			["Auto", true],
 		]);
-		expect(modes().find((one) => one.chosen)?.text).toBe("Use Windlass’s command sandbox and ask when needed.");
+		expect(modes().find((one) => one.chosen)?.text).toBe("Runs safe commands, asks for the rest.");
 		// The hardened container has none: Ask and Full, on Full, in the warning tone.
 		chip("sandbox");
 		act(() => void pop()?.querySelector('[data-value="platform"]')?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })));
@@ -467,7 +467,8 @@ describe("the start composer's agent picker", () => {
 			["Ask", false],
 			["Full", true],
 		]);
-		expect(button("mode")?.querySelector(".tray-icon-dot-warn")).not.toBeNull();
+		// Full is the user's own choice: no amber dot, as nothing needs doing.
+		expect(button("mode")?.querySelector(".tray-icon-dot-warn")).toBeNull();
 		write("Run the tests");
 		await launchIt();
 		expect(created[0]).toMatchObject({ profile: "docker-hardened", mode: "full" });
@@ -492,30 +493,23 @@ describe("the start composer's agent picker", () => {
 		expect(created[0]?.mode).toBe("ask");
 	});
 
-	it("says Claude Code's mode and its Claude login in the sandbox's facts, and Windlass's as before", async () => {
+	it("says the isolation and whose sign-in the agent uses in one plain line, and Strict or Open with nas's sandboxes", async () => {
 		await open();
-		expect(sandboxLine()).toContain("runs what the sandbox contains, refuses the rest");
-		expect(sandboxLine()).toContain("token hidden from commands");
-		expect(sandboxLine()).toContain("The agent's commands cannot read the session's access token.");
-		expect(sandboxLine()).toContain("Approved local MCP servers can read each token.");
+		expect(sandboxLine()).toMatch(/^Isolation: Strict: Commands sandboxed, no internet\. For untrusted code\. Runs hosted/);
 		place("m_nas");
 		await settle();
 		agents();
 		agent("claude");
-		expect(sandboxLine()).toContain("runs in Auto mode");
-		expect(sandboxLine()).toContain("commands can use your Claude login. Runners without a credential relay also expose the setup token.");
-		expect(sandboxLine()).not.toContain("access token");
-		expect(sandboxLine()).not.toContain("without asking");
-		// The sandbox's row, in nas's sandboxes: its facts in a few words, and in sentences for its title.
+		expect(sandboxLine()).toBe("Isolation: Open: Commands run freely and can reach the internet. Runs on nas. Uses nas's Claude Code sign-in.");
+		expect(sandboxLine()).not.toMatch(/token|relay|Docker/);
+		// nas's sandboxes: Strict and Open, each with its outcome line, and no amber.
 		chip("sandbox");
 		act(() => void pop()?.querySelector('[data-value="m_nas"]')?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })));
 		act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
 		const row = document.querySelector('.ui-pop-sub [aria-checked="true"]') as HTMLElement;
-		expect(row.querySelector(".ui-item-description")?.textContent).toBe("Auto mode · network on · Claude login readable");
-		expect(row.title).toContain("runs in Auto mode");
-		expect(row.title).toContain("commands can use your Claude login. Runners without a credential relay also expose the setup token.");
-		expect(row.title).not.toContain("ChatGPT");
-		expect(row.title).not.toContain("runs every call without asking");
+		expect(row.querySelector(".ui-item-label")?.textContent).toBe("Open");
+		expect(row.querySelector(".ui-item-description")?.textContent).toBe("Commands run freely and can reach the internet.");
+		expect(document.querySelector(".ui-pop-sub [class*=warn]")).toBeNull();
 	});
 
 	/** Types the task, as a browser does. */

@@ -76,12 +76,13 @@ export const FAQ: Faq[] = [
 	{
 		question: "Where does the agent's code run?",
 		answer:
-			"In a sandbox you choose when you start it. Hosted sessions each get a Firecracker microVM of their own from E2B. Or pair a Mac, Linux or Windows (WSL) machine of yours that has Docker: a small runner on it connects out to the platform and runs each session in a container there, so nothing on your machine needs to be reachable from outside.",
+			"Hosted, or on your own machine: you choose when you start it. Hosted agents each get an isolated VM of their own. Or pair a Mac, Linux or Windows (WSL) machine of yours that has Docker: a small runner on it connects out to the platform and runs each session in a container there, so nothing on your machine needs to be reachable from outside.",
 	},
 	{
 		question: "How are agents isolated?",
 		answer:
-			"Every session has its own sandbox. On your machine it is a hardened container: non-root, no capabilities, Docker's seccomp profile and resource limits. In the Windlass sandbox profile every command the agent runs is sandboxed again: no network, writes only in the workspace, credentials hidden, unless you allow more when it asks. Your sign-in itself never enters the sandbox; a turn is lent a short-lived token.",
+			// jargon-ok: this answer is the "how it's isolated" account itself
+			"Every session has its own sandbox. On your machine it is a hardened container: non-root, no capabilities, Docker's seccomp profile and resource limits. In Strict isolation every command the agent runs is sandboxed again: no network, writes only in the workspace, credentials hidden, unless you allow more when it asks. Your sign-in itself never enters the sandbox; a turn is lent a short-lived token.",
 	},
 	{
 		question: "What is the Factory?",

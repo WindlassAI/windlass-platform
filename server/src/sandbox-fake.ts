@@ -167,7 +167,7 @@ const SLOW_STOP_MS = 800;
 const PROFILES: SandboxProfile[] = [
 	{
 		id: "docker-windlass-sandbox",
-		name: "Docker + Windlass sandbox",
+		name: "Strict",
 		summary: "Fake layer: stands in for a container whose commands Windlass sandboxes again.",
 		layers: ["In-memory sandbox (fake layer)", "Windlass's sandbox around each command (simulated)"],
 		approval: "auto",
@@ -177,7 +177,7 @@ const PROFILES: SandboxProfile[] = [
 	},
 	{
 		id: "docker-hardened",
-		name: "Docker, hardened",
+		name: "Open",
 		summary: "Fake layer: stands in for a container under Docker's default profiles.",
 		layers: ["In-memory sandbox (fake layer)"],
 		approval: "full",

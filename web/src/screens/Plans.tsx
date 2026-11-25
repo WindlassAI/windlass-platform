@@ -31,7 +31,7 @@ export function Plans() {
 				<div className="repo-head">
 					<p className="eyebrow">account · plans</p>
 					<h1 className="display display-small">Plans</h1>
-					<p className="home-account">Your own machines are never metered on any plan. A plan sets what runs on the platform's hosted sandboxes, counted in hosted minutes: one minute of a standard sandbox (2 vCPU, 4 GiB), with small counting half and large twice.</p>
+					<p className="home-account">Your own machines are never metered on any plan. A plan sets what runs on the platform's hosted sandboxes, counted in hosted minutes: one minute of a Medium sandbox (2 CPU · 4 GB), with Small counting half and Large twice.</p>
 				</div>
 			</header>
 			{view === null ? (

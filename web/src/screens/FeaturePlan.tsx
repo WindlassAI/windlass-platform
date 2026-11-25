@@ -783,7 +783,7 @@ function agentMenu(row: AgentRow, title: string): MenuSpec {
 				items: agentChoices(row.machine, row.hostedKeys, row.keyProfile).map((choice) => ({
 					id: choice.id,
 					label: choice.name,
-					description: choice.problem ?? (worksWithoutAsking(choice.id) ? row.machine ? `In its hardened container; ${UNATTENDED_WORDS}.` : `Uses your Settings key and ${UNATTENDED_WORDS}.` : choice.id === "windlass" ? "On the feature's model unless you choose one." : undefined),
+					description: choice.problem ?? (worksWithoutAsking(choice.id) ? row.machine ? `In Open isolation; ${UNATTENDED_WORDS}.` : `Uses your Settings key and ${UNATTENDED_WORDS}.` : choice.id === "windlass" ? "On the feature's model unless you choose one." : undefined),
 					disabled: choice.problem !== null,
 					wrap: true,
 					checked: current === choice.id,

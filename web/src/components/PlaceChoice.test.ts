@@ -44,10 +44,10 @@ describe("itemProfilesHere", () => {
 });
 
 describe("itemAgentLine", () => {
-	it("says Codex works without asking only on Docker, hardened", () => {
-		expect(itemAgentLine("codex", "docker-hardened")).toMatch(/^Codex works in the hardened container, without asking, and runs Quick\./);
+	it("says Codex works without asking only in Open isolation", () => {
+		expect(itemAgentLine("codex", "docker-hardened")).toMatch(/^Codex works in Open isolation, without asking, and runs Quick\./);
 		expect(itemAgentLine("codex", "docker-windlass-sandbox")).toMatch(/^Codex works in its own sandbox, without network, and runs Quick\. A request to leave the sandbox ends the step\./);
-		expect(itemAgentLine("claude", "docker-hardened")).toMatch(/^Claude Code works in the hardened container, without asking/);
+		expect(itemAgentLine("claude", "docker-hardened")).toMatch(/^Claude Code works in Open isolation, without asking/);
 	});
 	it("says the platform runs the repository's saved checks for every machine agent", () => {
 		for (const harness of ["claude", "opencode", "codex"] as const) expect(itemAgentLine(harness, "docker-hardened")).toMatch(/The platform runs your repository's saved checks when it ends a turn/);
@@ -61,7 +61,7 @@ describe("itemAgentLine, by the agent's checks flag", () => {
 
 	it("says CI decides for an agent whose checks nobody runs, and where the platform cannot run them", () => {
 		OPENCODE.capabilities = Object.freeze({ ...kept, checks: "none" as const });
-		expect(itemAgentLine("opencode", "docker-hardened")).toBe("OpenCode works in the hardened container, without asking, and runs Quick. It does not run your repository's checks: CI decides.");
+		expect(itemAgentLine("opencode", "docker-hardened")).toBe("OpenCode works in Open isolation, without asking, and runs Quick. It does not run your repository's checks: CI decides.");
 		expect(onPullRequest("opencode")).toBe(" It does not run this repository's checks; CI's result is on the pull request.");
 		expect(itemAgentLine("claude", "docker-hardened")).toMatch(/The platform runs your repository's saved checks when it ends a turn/);
 		expect(onPullRequest("claude")).toBe(" The platform runs this repository's saved checks when it ends a turn, and CI's result is on the pull request.");

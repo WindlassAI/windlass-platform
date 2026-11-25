@@ -741,7 +741,7 @@ describe("agents in a feature's plan", () => {
 		await show(`/items/${feature.id}`);
 		act(() => pill("Agent: Windlass", row("sender")).click());
 		// "nas" reports Claude Code only, signed in: Windlass and Claude Code are offered, nothing else.
-		expect([...document.querySelectorAll('[role="menuitemradio"]')].map((one) => one.textContent?.split(/In its|On the/)[0])).toEqual(["Windlass", "Claude Code"]);
+		expect([...document.querySelectorAll('[role="menuitemradio"]')].map((one) => one.textContent?.split(/In Open|On the/)[0])).toEqual(["Windlass", "Claude Code"]);
 		act(() => menuRow("Claude Code")!.click());
 		await settle(2);
 		expect(fact("sender", "agent")).toContain("works without asking");

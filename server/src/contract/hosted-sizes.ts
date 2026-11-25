@@ -8,6 +8,8 @@ export const HOSTED_SIZE_SPECS: Readonly<Record<HostedSize, { cpus: number; memo
 	standard: { cpus: 2, memoryMiB: 4096 },
 	large: { cpus: 4, memoryMiB: 8192 },
 };
+/** What a size is called on screen. "standard" stays the id; "Medium" keeps the word apart from the isolation words. */
+export const HOSTED_SIZE_NAMES: Readonly<Record<HostedSize, string>> = { small: "Small", standard: "Medium", large: "Large" };
 /** A work item's sandbox, where nothing else is chosen. */
 export const ITEM_HOSTED_SIZE: HostedSize = "standard";
 /** A person's own agent, where neither the launch form nor the repository says. */
@@ -17,10 +19,10 @@ export function isHostedSize(value: unknown): value is HostedSize {
 	return typeof value === "string" && (HOSTED_SIZES as readonly string[]).includes(value);
 }
 
-/** "Standard · 2 vCPU, 4 GiB". */
+/** "Medium · 2 CPU · 4 GB". */
 export function hostedSizeWords(size: HostedSize): string {
 	const spec = HOSTED_SIZE_SPECS[size];
-	return `${size.charAt(0).toUpperCase()}${size.slice(1)} · ${spec.cpus} vCPU, ${spec.memoryMiB / 1024} GiB`;
+	return `${HOSTED_SIZE_NAMES[size]} · ${spec.cpus} CPU · ${spec.memoryMiB / 1024} GB`;
 }
 
 /** The least size that has a plan's `cpus` and `memoryGiB`; null when even the largest has not. */

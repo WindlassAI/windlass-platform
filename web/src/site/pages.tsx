@@ -68,9 +68,11 @@ function landingMarkdown(): string {
 		"",
 		"You choose the sandbox when you start an agent, and see its layers before it starts. Your sign-in never goes into the sandbox: each turn is lent a short-lived token.",
 		"",
+		// jargon-ok: llms.txt is reference text for machines, where the layers belong
 		"- **Hosted.** Each hosted session gets a Firecracker microVM of its own from E2B; commands run as a non-root user.",
+		// jargon-ok: llms.txt reference text
 		"- **Your own machine.** Pair a Mac, Linux or Windows (WSL) machine with Docker. A small runner on it connects out to the platform and runs each session in a container there (non-root, no capabilities, seccomp, resource limits). Nothing on the machine needs to be reachable from outside.",
-		"- **The Windlass sandbox profile** sandboxes every command again: no network, writes only in the workspace, credentials hidden. A command that wants more asks first. The hardened profile runs commands directly in the container, with network.",
+		"- **Strict** isolation sandboxes every command again: no network, writes only in the workspace, credentials hidden. A command that wants more asks first. **Open** runs commands directly in the container, with network.",
 		"",
 		"## Factory",
 		"",
@@ -120,7 +122,7 @@ const landing: PublicPage = {
 			operatingSystem: "Web browser",
 			featureList: [
 				"Runs the Windlass and Claude Code coding agents",
-				"Hosted sandboxes (E2B microVMs) or your own machine through an outbound runner",
+				"Hosted sandboxes or your own machine through an outbound runner",
 				"Live timeline of every file read and command run",
 				"Steering, questions and approvals during a turn",
 				"Workspace diffs and pull requests through a GitHub App",

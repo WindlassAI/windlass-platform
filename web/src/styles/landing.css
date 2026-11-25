@@ -1364,10 +1364,6 @@
 	flex: none;
 	color: var(--ok);
 }
-.lp-sandbox-open > svg,
-.lp-fact-open {
-	color: var(--warn);
-}
 .lp-sandbox-line > span + span::before {
 	content: "·";
 	margin-right: 8px;

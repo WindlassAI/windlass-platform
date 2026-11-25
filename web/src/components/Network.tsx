@@ -19,7 +19,7 @@ import { Check } from "./ui/Check";
 /** What the deployment's hosted sandboxes do with the list, in a sentence. */
 function appliesHere(network: RepositoryNetwork, name: string): string {
 	const hosted = network.hosted;
-	if (hosted === null) return `This deployment's hosted sandboxes are not on E2B, so the list applies nowhere here.`;
+	if (hosted === null) return `This deployment's hosted sandboxes have no network rules, so the list applies nowhere here.`;
 	if (hosted.mode === "open") return `This deployment's hosted sandboxes reach any host today, so the list changes nothing until its operator limits them (WLP_E2B_NETWORK=restricted).`;
 	if (hosted.mode === "none") return `This deployment gives hosted sandboxes no network but the model API, so the list does not apply here.`;
 	return `Hosted agents on ${name} reach the model API, GitHub, the hosts this deployment allows, and what is allowed here. A change applies from each agent's next turn.`;
@@ -237,7 +237,7 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 						</button>
 					</div>
 					<p className="field-note" id={ids.hostNote}>
-						Exact names only, no wildcards: E2B matches the name a connection asks for. {network.hosts.length} of {network.limit} hosts used.
+						Exact host names only, no wildcards. {network.hosts.length} of {network.limit} hosts used.
 					</p>
 				</div>
 				{said ? (

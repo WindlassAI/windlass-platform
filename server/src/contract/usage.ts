@@ -144,7 +144,7 @@ export interface KeptSandbox {
 export interface UsagePrice {
 	/** US dollars per second. */
 	usdPerSecond: number;
-	/** What that price is of, for a sentence: "1 vCPU and 1,024 MiB of memory at E2B's published prices". */
+	/** What that price is of, for a sentence: "1 CPU and 1,024 MiB of memory". The provider is never named: it is an estimate either way. */
 	basis: string;
 }
 

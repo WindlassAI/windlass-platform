@@ -8,7 +8,7 @@
  * sessions, as their actor broadcasts them, the deployment's own information, and the user's models.
  * Nothing is asked of GitHub or of a sandbox to draw a list.
  */
-import { MAX_TITLE_CHARS, type AccountDefaults, type LastStart, type GithubId, type HarnessId, type ItemFeed, type ItemSummary, type ModelList, type PlatformInfo, type PullRequestInfo, type SandboxPlace, type SandboxProfileId, type SessionRepository, type SessionSummary } from "@contract";
+import { MAX_TITLE_CHARS, isolationName, type AccountDefaults, type LastStart, type GithubId, type HarnessId, type ItemFeed, type ItemSummary, type ModelList, type PlatformInfo, type PullRequestInfo, type SandboxPlace, type SandboxProfileId, type SessionRepository, type SessionSummary } from "@contract";
 
 // ---- the user's own agents, and the sessions of their work items -------------------------------------
 
@@ -226,7 +226,8 @@ export function startingChoices(defaults: AccountDefaults | null, info: Pick<Pla
 	if (defaults.profile !== null && info !== null) {
 		const saved = info.profiles.find((profile) => profile.id === defaults.profile);
 		if (saved?.available) choices.profile = saved.id;
-		else choices.ignored.profile = saved ? `${the} sandbox, ${saved.name}, cannot be used on this deployment now, so it is ignored.` : `${the} sandbox, "${defaults.profile}", is not one this deployment has any more, so it is ignored.`;
+		// Only Settings says so (the composer falls back without a word): unavailable profiles are not listed, so either way it is not offered here.
+		else choices.ignored.profile = `${the === "The default" ? "The saved" : "Your account's saved"} isolation, ${isolationName(defaults.profile)}, isn't available here, so ${info.profiles.find((profile) => profile.available)?.name ?? "the deployment's default"} is used.`;
 	}
 	if (defaults.model !== null && models !== null) {
 		if (models.models.some((model) => model.id === defaults.model)) choices.model = defaults.model;

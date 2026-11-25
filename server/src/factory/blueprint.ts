@@ -1268,7 +1268,7 @@ const AGENT_ASKS = "The agent stopped to ask you a question before it goes on.";
 
 export function sandboxEscapeQuestion(item: Pick<FactoryItem, "agent">, note: string): string {
 	const name = harnessName(item.agent?.harness ?? "windlass");
-	return `${name} asked to leave its sandbox, which “Docker + Windlass sandbox” never allows, so the step was stopped. ${note} File the work again on “Docker, hardened”, where ${name}'s commands run in the container without asking, or give up.`;
+	return `${name} asked to leave its sandbox, which “Strict” never allows, so the step was stopped. ${note} File the work again on “Open”, where ${name}'s commands run in the container without asking, or give up.`;
 }
 
 const answeredText = (note: string) => `The person answered your question:\n\n${note}\n\nGo on with the task.`;

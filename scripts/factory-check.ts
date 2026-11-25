@@ -1656,7 +1656,7 @@ expect("a machine cannot accrue a hosted ledger charge", advance(machineItem, { 
 		const escaped = advance(o.item, { kind: "turn_ended", at: T0 + MINUTE, key: currentKey(o.item)!, outcome: "error", verified: null, flags: [], changes: true, report: null, escaped: note, spend: turnSpend(usage, agentTurn("codex", usage, null, undefined, "chatgpt")) });
 		const question = escaped.item.question;
 		expect("a Codex turn that asked to leave its sandbox ends the step and asks to file again on Docker, hardened, or give up",
-			escaped.item.state === "waiting" && question?.kind === "turn_refused" && question.text.includes(note) && /File the work again on “Docker, hardened”/.test(question.text)
+			escaped.item.state === "waiting" && question?.kind === "turn_refused" && question.text.includes(note) && /File the work again on “Open”/.test(question.text)
 			&& isDeepStrictEqual(question.choices.map(choice => choice.id), ["give_up"]) && !escaped.effects.some(e => e.kind === "publish" || e.kind === "deliver"), JSON.stringify({ question, effects: escaped.effects.map(e => e.kind) }));
 	}
 }

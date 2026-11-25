@@ -361,15 +361,15 @@ export function Usage() {
 							{price === null
 								? "nothing is estimated: this deployment's sandboxes run on its own machine and are not billed by the second"
 								: sizes
-									? `an estimate: ${count(view.usedSeconds)} s counted, each agent's at its sandbox size's price (below). The provider's bill is what counts`
-									: `an estimate: ${count(view.usedSeconds)} s counted, at $${price.usdPerSecond.toFixed(7)} a second for ${price.basis}. The provider's bill is what counts`}
+									? `an estimate: ${count(view.usedSeconds)} s, each at its size's price (below)`
+									: `an estimate: ${count(view.usedSeconds)} s at ${price.basis}`}
 						</dd>
 					</div>
 				</dl>
 				{sizes ? (
 					<div className="usage-sizes">
 						<p className="usage-lede">
-							Hosted sandboxes come in sizes. A larger one costs more an hour; the daily allowance counts its time the same, second for second. Estimates at E2B's published prices.
+							Hosted sandboxes come in sizes. A larger one costs more an hour; your daily hosted time counts the same. Estimated prices.
 						</p>
 						<ul className="usage-size-list">
 							{sizes.map((size) => (
