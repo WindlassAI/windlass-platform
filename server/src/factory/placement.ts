@@ -6,7 +6,7 @@ import type { ChildPlacement, EgressMode, HostedSize, FeaturePlanEdit, HarnessId
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
-import { hostedProvider, hostedKeyMessage, initialHarnessModels, selectedKey, harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
+import { type CheckedProvider, hostedCatalog, hostedProvider, hostedKeyMessage, initialHarnessModels, selectedKey, harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
 import { checkItemEffort, chosenModel, ModelProblem } from "../account-models.js";
 
 /** A machine harness (Claude Code, OpenCode) runs only in the hardened container. */
@@ -31,7 +31,7 @@ export interface PlacementInventory {
 	machines: Machine[];
 	hostedProfiles: SandboxProfileId[];
 	keyProfiles?: SandboxProfileId[];
-	hostedKeys?: readonly import("../contract.js").ModelProvider[];
+	hostedKeys?: readonly CheckedProvider[];
 	/** The hosted sizes the deployment offers (`Sandboxes.sizes`), smallest first. Absent: one size, which takes no `cpus` or `memoryGiB`. */
 	hostedSizes?: HostedSize[];
 	/** What hosted sandboxes may reach (`Sandboxes.egress`); `none` takes no repository work. */
@@ -176,7 +176,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	const machine = place.kind === "machine" ? inventory.machines.find(m => m.machineId === place.machineId) : undefined;
 	const keys = machine?.harnesses?.find(h => h.id === harness)?.platformKeys ?? [];
 	const model = task.agent?.model ?? inventory.models?.machines?.[placeKey(place)]?.[harness]?.defaultModel;
-	const provider = place.kind === "hosted" && harness !== "windlass" ? hostedProvider(harness, model, inventory.hostedKeys ?? []) : selectedKey(harness, model, keys);
+	const provider = place.kind === "hosted" && harness !== "windlass" ? hostedProvider(harness, model, inventory.hostedKeys?.map(k => k.provider) ?? []) : selectedKey(harness, model, keys);
 	const limited = inventory.limited?.find(a => provider ? a.machineId === "settings/" + provider : limitApplies(a, placeKey(place)) && a.harness === harness);
 	const waiting = (limit: NonNullable<typeof limited>, name: string) => {
 		const dailyCap = !!tokenWait;
@@ -192,7 +192,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 		if (harness !== "windlass" && !provider)
 			return { refused: hostedKeyMessage(harness, model), permanent: true };
 		if (harness !== "windlass" && needs.screenshots) return { refused: `Hosted ${harnessName(harness)} cannot take screenshots.`, permanent: true };
-		const modelProblem = agentModelProblem(task, harness === "windlass" ? inventory.models?.windlass : initialHarnessModels(), inventory.featureModel);
+		const modelProblem = agentModelProblem(task, harness === "windlass" ? inventory.models?.windlass : initialHarnessModels(hostedCatalog(harness, inventory.hostedKeys ?? [])), inventory.featureModel);
 		if (modelProblem) return { refused: `hosted: ${modelProblem}.`, permanent: true };
 		if (!profiles.length || (needs.profile && !profiles.includes(needs.profile))) return { refused: "hosted has no available matching profile", permanent: true };
 		if (inventory.hostedEgress === "none") return { refused: "hosted sandboxes have no network for repositories", permanent: true };

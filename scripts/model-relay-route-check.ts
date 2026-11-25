@@ -569,7 +569,7 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 	const seen: string[] = [];
 	const logs: unknown[][] = [];
 	const warn = console.warn;
-	const recorder = createServer((req, res) => {
+	const recorder = createServer(async (req, res) => {
 		sent++;
 		const path = req.url!;
 		assert.equal(req.headers[auth] === credential(key), true, "upstream auth must use saved key");
@@ -587,6 +587,10 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 			if (req.method === "POST") {
 				assert.ok(req.headers["anthropic-beta"]?.includes("interleaved-thinking-2025-05-14"));
 				assert.ok(!req.headers["anthropic-beta"]?.includes("unknown-beta-2099-01-01"));
+				let body = "";
+				for await (const chunk of req) body += chunk;
+				if (body && JSON.parse(body).thinking?.display === "updates" && !req.headers["anthropic-beta"]?.includes("thinking-display-updates-2026-08-18"))
+					return res.writeHead(400).end();
 			}
 		}
 		if (path.endsWith("/models") || path.endsWith(":generateContent")) {
@@ -617,6 +621,24 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 	for (const agent of ["claude", "codex", "opencode"] as const) {
 		if (agent === "claude" && provider !== "anthropic" || agent === "codex" && provider !== "openai") continue;
 		await checkHostedTurn(agent, keyLease, key, e2b, sessionId, request => modelRelayResponse(request, d));
+	}
+	if (provider === "anthropic") {
+		const claude = await openModelKeyRelay(e2b, sessionId, { ...keyLease, harness: "claude" });
+		const hello = (placeholder?: string, method = "HEAD", path = "/api/hello") => modelRelayResponse(new Request(origin + "/model-relay" + path, {
+			method, headers: placeholder ? { "x-api-key": placeholder } : {},
+		}), d);
+		const before = sent;
+		const reply = await hello(claude.placeholder);
+		assert.equal(reply.status, 200);
+		assert.equal(await reply.text(), "");
+		assert.equal((await hello(lease.placeholder)).status, 403, "an OpenCode lease for the same provider");
+		assert.equal((await hello()).status, 401);
+		assert.equal((await hello("invalid")).status, 401);
+		assert.equal((await hello(claude.placeholder, "GET")).status, 403);
+		assert.equal((await hello(claude.placeholder, "HEAD", "/api/hello?beta=true")).status, 403);
+		await claude.close();
+		assert.equal((await hello(claude.placeholder)).status, 401);
+		assert.equal(sent, before);
 	}
 	if (provider === "openai") {
 		const controller = new AbortController();

@@ -1,4 +1,4 @@
-import { MODEL_PROVIDERS, type ModelProvider } from "../contract.js";
+import { MODEL_PROVIDERS, type ModelProvider, type ModelProviderStatus } from "../contract.js";
 import type { HarnessOptions, HarnessId, ModelList, PlatformToolName, SandboxProfileId, SessionCapabilities } from "../contract.js";
 
 /**
@@ -233,10 +233,42 @@ export function hostedKeyMessage(id: AcpProfile["id"], model?: string): string {
 	return `Add ${key} key in Settings to run ${machineHarnesses[id].name} here.`;
 }
 
+export type CheckedProvider = Pick<ModelProviderStatus, "provider" | "checkedAt" | "models">;
+
+// Windlass's public OpenAI catalog hides non-chat models and snapshots whose alias is listed.
+function codexModels(ids: string[]) {
+	const snapshot = /-\d{4}-\d{2}-\d{2}$/;
+	return ids.filter(id => /^(?:ft:)?(?:gpt-|chatgpt-|codex-|o\d+(?:-|$))/.test(id)
+		&& !/embedding|audio|realtime|search|transcrib|tts|image|moderation|instruct|^gpt-live|-healthcare(?:-|$)/i.test(id)
+		&& !(snapshot.test(id) && ids.includes(id.replace(snapshot, ""))));
+}
+
+/** Map the saved key checks to the model ids each hosted ACP adapter takes at launch. */
+export function hostedCatalog(harness: HarnessId, providers: readonly CheckedProvider[]): HarnessOptions | undefined {
+	const ids = new Set(["default"]);
+	let checkedAt: number | null = null;
+	for (const { provider, models: offered, checkedAt: at } of providers) {
+		if (!keyProviders(harness).includes(provider) || !offered?.length || at === null) continue;
+		checkedAt = Math.max(checkedAt ?? at, at);
+		if (harness === "claude") {
+			for (const family of ["sonnet", "opus", "haiku", "fable"]) {
+				if (offered.some(id => id.startsWith("claude-") && id.split("-").includes(family))) ids.add(family);
+			}
+		} else if (harness === "codex") {
+			for (const model of codexModels(offered)) ids.add(model);
+		} else {
+			for (const model of offered) ids.add(provider + "/" + model);
+		}
+	}
+	if (checkedAt === null) return undefined;
+	return { defaultModel: "default", models: [...ids].map(id => ({ id, name: id === "default" ? "Agent default" : null, efforts: [] })),
+		modes: [], checkedAt };
+}
+
 /** The reason a hosted agent is disabled in a picker. */
-export function hostedAgentProblem(id: AcpProfile["id"], keys: readonly ModelProvider[] | null, keyProfile: boolean, model?: string) {
+export function hostedAgentProblem(id: AcpProfile["id"], keys: readonly CheckedProvider[] | null, keyProfile: boolean, model?: string) {
 	if (!keys) return "Reading your Settings keys…";
-	if (!hostedProvider(id, model, keys)) return hostedKeyMessage(id, model);
+	if (!hostedProvider(id, model, keys.map(k => k.provider))) return hostedKeyMessage(id, model);
 	return keyProfile ? null : "This deployment has no supported hosted profile.";
 }
 

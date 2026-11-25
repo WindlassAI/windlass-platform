@@ -44,6 +44,25 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 }
 if (process.argv.includes("--turn-provider")) process.exit(0);
 {
+	const { hostedCatalog } = await import("../server/src/sandbox/harnesses.js");
+	const openai = ["gpt-5.6-luna", "gpt-5.6-luna-2026-11-01", "o3", "o3-mini-2025-01-31", "gpt-audio", "gpt-realtime", "tts-1",
+		"gpt-image-1", "text-embedding-3-large", "gpt-5-healthcare", "gpt-live-1", "gpt-4o-mini-transcribe", "gpt-4o-search-preview"];
+	const providers = [
+		{ provider: "openai" as const, checkedAt: 10, models: openai },
+		{ provider: "anthropic" as const, checkedAt: 8, models: ["claude-3-5-haiku-20241022", "claude-haiku-5-5", "claude-fable-5-2", "claude-opus-5-5"] },
+		{ provider: "google" as const, checkedAt: 9 },
+		{ provider: "openrouter" as const, checkedAt: 7, models: ["vendor/model"] },
+	];
+	const ids = (id: "claude" | "codex" | "opencode") => hostedCatalog(id, providers)?.models.map(m => m.id);
+	assert.deepEqual(ids("codex"), ["default", "gpt-5.6-luna", "o3", "o3-mini-2025-01-31"]);
+	assert.deepEqual(ids("claude"), ["default", "opus", "haiku", "fable"]);
+	assert.ok(ids("opencode")?.includes("openrouter/vendor/model"));
+	assert.ok(ids("opencode")?.includes("anthropic/claude-haiku-5-5"));
+	assert.ok(!ids("opencode")?.some(id => id.startsWith("google/")));
+	assert.equal(hostedCatalog("codex", providers.slice(1)), undefined);
+	console.log("ok  hosted launch catalogs from the owner's provider checks");
+}
+{
 	const { CLAUDE, itemSignInChanged } = await import("../server/src/sandbox/harnesses.js");
 	assert.match(itemSignInChanged(CLAUDE, "Bench", undefined, "api-key") ?? "", /Claude subscription/);
 	assert.equal(itemSignInChanged(CLAUDE, "Bench", undefined, "subscription"), null);

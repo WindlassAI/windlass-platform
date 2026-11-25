@@ -9,7 +9,7 @@ const wires = {
 	anthropic: { base: '', host: 'api.anthropic.com', models: '/v1/models', posts: ['/v1/messages', '/v1/messages?beta=true', '/v1/messages/count_tokens', '/v1/messages/count_tokens?beta=true'], auth: 'x-api-key',
 		fixed: { 'anthropic-version': '2023-06-01' }, betas: ['interleaved-thinking-2025-05-14', 'claude-code-20250219',
 			'context-management-2025-06-27', 'per-turn-control-2026-07-01', 'mid-conversation-tool-changes-2026-07-01',
-			'thinking-token-count-2026-05-13', 'advanced-tool-use-2025-11-20', 'effort-2025-11-24',
+			'thinking-token-count-2026-05-13', 'thinking-display-updates-2026-08-18', 'advanced-tool-use-2025-11-20', 'effort-2025-11-24',
 			'thinking-binding-controls-2026-08-01', 'fine-grained-tool-streaming-2025-05-14', 'structured-outputs-2025-11-13',
 			'inline-tools-2026-09-15', 'advisor-tool-2026-03-01'],
 		drop: ['anthropic-dangerous-direct-browser-access', 'x-app', 'x-client-request-id', 'x-claude-code-session-id'] },

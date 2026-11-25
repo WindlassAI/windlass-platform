@@ -29,7 +29,7 @@ export async function checkHostedTurn(id: AcpProfile["id"], key: ModelKeyLease, 
 			if (id === "claude") {
 				url = env.ANTHROPIC_BASE_URL + "/v1/messages?beta=true";
 				Object.assign(headers, { "x-api-key": env.ANTHROPIC_API_KEY, "x-app": "cli",
-					"anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14" });
+					"anthropic-beta": "claude-code-20250219,interleaved-thinking-2025-05-14,thinking-display-updates-2026-08-18" });
 			} else if (id === "codex") {
 				url = env.WLP_CODEX_BASE_URL + "/responses";
 				Object.assign(headers, { authorization: "Bearer " + env.WLP_SESSION_BEARER, "x-client-feature-id": "codex", originator: "codex" });
@@ -45,7 +45,7 @@ export async function checkHostedTurn(id: AcpProfile["id"], key: ModelKeyLease, 
 				else headers.authorization = "Bearer " + placeholder;
 			}
 			shown = (headers.authorization ?? headers["x-api-key"] ?? headers["x-goog-api-key"])!.replace(/^Bearer /, "");
-			request = new Request(url, { method: "POST", headers, body: "{}" });
+			request = new Request(url, { method: "POST", headers, body: JSON.stringify(id === "claude" ? { thinking: { type: "adaptive", display: "updates" } } : {}) });
 			let finish!: (end: ProcessEnd) => void;
 			const ended = new Promise<ProcessEnd>(resolve => { finish = resolve; });
 			return { tag: "fixture", ended, hasEnded: false, closeStdin: () => finish({ code: 0, signal: null, error: null }),

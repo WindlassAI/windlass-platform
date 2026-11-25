@@ -298,7 +298,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 	if (!config.modelRelay.on) return refusal(404, "The model relay is off.");
 	const url = new URL(request.url);
 	const path = url.pathname.slice(RELAY_PREFIX.length) + url.search;
-	const method = anyMethod(path);
+	const method = path === "/api/hello" ? "HEAD" : anyMethod(path);
 	if (!url.pathname.startsWith(RELAY_PREFIX + "/") || !method || request.method !== method) {
 		note(`refused ${request.method} ${url.pathname.slice(0, 80)}`);
 		return refusal(403, "This request is not allowed by the relay.");
@@ -320,13 +320,15 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 	};
 	let token: RelayToken | null;
 	try {
-		const admission = await tokenFor(deps, placeholder, machine, true);
+		const admission = await tokenFor(deps, placeholder, machine, method !== "HEAD");
 		if (admission === "limit") return refusal(429, "This turn reached its model request limit.");
 		token = admission;
 	} catch {
 		return refusal(503, "The relay could not reach the session. Try again.", { "retry-after": "1" });
 	}
 	if (token === null) return leaseEnded();
+	if (method === "HEAD" && !(token.kind === "key" && token.harness === "claude" && token.provider === "anthropic"))
+		return refusal(403, "This request is not allowed by the relay.");
 	const maxBody = deps.bodyBytes ?? ROUTE_LIMITS.bodyBytes;
 	const declared = Number(request.headers.get("content-length") ?? 0);
 	if (declared > maxBody) return refusal(413, "The request is too large for the relay.");
@@ -368,7 +370,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 			token = await lookup();
 			if (token?.kind === "key") {
 				provider = token.provider;
-				if (harnessMethod(token.harness, provider, path) !== method) { note(`refused for ${token.harness ?? "windlass"}: ${method} ${url.pathname.slice(0, 80)}`); release(); return refusal(403, "This request is not allowed by the relay."); }
+				if (method !== "HEAD" && harnessMethod(token.harness, provider, path) !== method) { note(`refused for ${token.harness ?? "windlass"}: ${method} ${url.pathname.slice(0, 80)}`); release(); return refusal(403, "This request is not allowed by the relay."); }
 				const nonce = randomBytes(16).toString("hex");
 				const sealed = await deps.key(placeholder.uid, provider, nonce);
 				const saved = sealed && openModelKeyTransit(placeholder.uid, provider, nonce, sealed);
@@ -379,6 +381,10 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 			return refusal(503, "The relay could not resolve the credential. Try again.", { "retry-after": "1" });
 		}
 		if (!secret || ended.signal.aborted) { release(); return leaseEnded(); }
+		if (method === "HEAD") {
+			release();
+			return new Response(null, { headers: { "cache-control": "no-store" } });
+		}
 		const target = wireTarget(provider, path, incoming, secret);
 		if (!target) { release(); return refusal(403, "This request is not allowed by the relay."); }
 		const secrets = [secret];

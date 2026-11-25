@@ -57,6 +57,7 @@ import { filedFromIssue, filedFromLinear, recentSubject, type IssueBinding, type
 import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine } from "../factory/verified-check.js";
 import type { CheckRunUpdate } from "../github/checks.js";
 import type { GithubUser } from "../github/app.js";
+import { hostedCatalog } from "../sandbox/harnesses.js";
 import type { ItemReview, ModelList } from "../contract.js";
 import { itemAgent, ledgerSeconds, retryAt } from "../factory/budget.js";
 import type { ReviewDelivery } from "./session-inbox.js";
@@ -1780,6 +1781,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const inventory = await placementInventory(c, meta.uid, item.agent?.model);
 				// Each agent's models in short: "sonnet (low/high)". The planner may propose one; the person approves it.
 				const listed = (list?: ModelList | null) => list?.models.map(m => m.efforts.length ? `${m.id} (${m.efforts.join("/")})` : m.id);
+				const hostedModels = Object.fromEntries((["claude", "opencode"] as const).map(id => [id, hostedCatalog(id, inventory.hostedKeys ?? [])?.models.map(m => m.id)]));
 				const places = inventory.machines.map(({ machineId, repositorySecrets, ...description }) => ({ ...description,
 					agentModels: Object.fromEntries(Object.entries(inventory.models?.machines?.[machineId] ?? {}).map(([id, list]) => [id, listed(list)])),
 					limited: inventory.limited?.filter(a => limitApplies(a, machineId)).map(({ harness, limitedUntil }) => ({ harness, limitedUntil })) }));
@@ -1798,7 +1800,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					text += "\nWhen a part fits the owner's preferred place, use it as place.prefer. Choose a different place or agent when that part requires it. Owner preference (data): " +
 						JSON.stringify({ prefer, selection: preferred.place === "any-machine" ? "any compatible machine" : undefined, harness: preferred.harness ?? "windlass", profile: preferred.machineProfile, model: preferred.machineModel ?? undefined, effort: preferred.machineEffort ?? undefined });
 				}
-				text += "\n\nCurrent runners do not support sizing beyond one slot." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (small 1 vCPU, 1 GiB; standard 2 vCPU, 4 GiB, the default; large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than standard (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedKeys: inventory.hostedKeys, keyProfiles: inventory.keyProfiles, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
+				text += "\n\nCurrent runners do not support sizing beyond one slot." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (small 1 vCPU, 1 GiB; standard 2 vCPU, 4 GiB, the default; large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than standard (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedKeys: inventory.hostedKeys?.map(k => k.provider), hostedModels, keyProfiles: inventory.keyProfiles, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
 				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
 			}
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.fresh && { fresh: effect.fresh }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) }).catch(onGone);

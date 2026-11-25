@@ -1,6 +1,6 @@
 import { availableCatalog } from "../../../server/src/sandbox/harnesses.js";
 import { monthState } from "../lib/hosted";
-import type { AccountSettings, ChatgptStatus, FactoryLimits, MachineSummary, ModelProvider, ModelList, SessionSummary, UsageNumbers } from "@contract";
+import type { AccountSettings, ChatgptStatus, FactoryLimits, MachineSummary, ModelProviderStatus, ModelList, SessionSummary, UsageNumbers } from "@contract";
 import type { HarnessOptions } from "@contract";
 import type { Catalogs } from "../lib/subtask-agents";
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
@@ -8,19 +8,19 @@ import type { ConnectionState, PlatformError } from "../api/client";
 import { useApp, useAuth } from "./app";
 import { createSessionStore, type SessionState } from "./sessionStore";
 
-/** Provider names only. Refresh when returning from Settings. */
+/** Refresh the checked model catalogs when returning from Settings. */
 export const PROVIDERS_CHANGED = "wlp-model-providers-changed";
 
 export function useHostedProviders(enabled = true) {
 	const { client } = useApp();
 	const auth = useAuth();
-	const [providers, setProviders] = useState<ModelProvider[] | null>(null);
+	const [providers, setProviders] = useState<ModelProviderStatus[] | null>(null);
 	useEffect(() => {
 		if (!enabled) return;
 		let version = 0;
 		const refresh = () => {
 			const mine = ++version;
-			client.user(auth).modelProviders().then(rows => { if (mine === version) setProviders(rows.map(r => r.provider)); },
+			client.user(auth).modelProviders().then(rows => { if (mine === version) setProviders(rows); },
 				() => { if (mine === version) setProviders([]); });
 		};
 		refresh();

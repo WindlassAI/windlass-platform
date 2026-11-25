@@ -42,7 +42,7 @@ import { plural } from "../lib/format";
 import { subscriptionSpend } from "../lib/item-agent";
 import { useApp } from "../state/app";
 import { useHostedProviders, useCatalogs, useModels } from "../state/hooks";
-import { effortChoices, effortsOf, modelLabel } from "../lib/models";
+import { effortChoices, effortsOf, harnessOptions, modelLabel } from "../lib/models";
 import type { AgentModels } from "../../../server/src/factory/placement.js";
 import { agentChanged, agentChoices, agentModelsOf, agentParts, cleanAgent, machineModels, preferredMachine, UNATTENDED_MEANS, UNATTENDED_WORDS, withAgent, worksWithoutAsking, type Catalogs } from "../lib/subtask-agents";
 import { useMachines } from "./Machines";
@@ -547,7 +547,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 			editable: (editing && !done.has(task.key)) || later,
 			machine,
 			hostedKeys: review.hostedKeys, keyProfile: review.keyProfile,
-			list: harness === "windlass" ? review.accountModels : machineModels(machine, harness, review.catalogs),
+			list: harness === "windlass" ? review.accountModels : harnessOptions(machine, harness, machine ? review.catalogs[machine.machineId]?.[harness] : undefined, review.hostedKeys).models,
 			onAgent: (agent) => (later ? void acting.act({ kind: "set_subtask_agent", key: task.key, agent }) : review.setAgent(task.key, agent)),
 		};
 	};
@@ -1016,7 +1016,7 @@ function agentMenu(row: AgentRow, title: string): MenuSpec {
 				items: agentChoices(row.machine, row.hostedKeys, row.keyProfile).map((choice) => ({
 					id: choice.id,
 					label: choice.name,
-					description: choice.problem ?? (worksWithoutAsking(choice.id) ? `In its hardened container; ${UNATTENDED_WORDS}.` : choice.id === "windlass" ? "On the feature's model unless you choose one." : undefined),
+					description: choice.problem ?? (worksWithoutAsking(choice.id) ? row.machine ? `In its hardened container; ${UNATTENDED_WORDS}.` : `Uses your Settings key and ${UNATTENDED_WORDS}.` : choice.id === "windlass" ? "On the feature's model unless you choose one." : undefined),
 					disabled: choice.problem !== null,
 					wrap: true,
 					checked: current === choice.id,
@@ -1024,7 +1024,6 @@ function agentMenu(row: AgentRow, title: string): MenuSpec {
 				})),
 			},
 		],
-		...(row.machine ? {} : { header: <span className="tone-dim">This platform runs Windlass only. Claude Code and OpenCode run on a machine of yours that is signed into them.</span> }),
 	};
 }
 
