@@ -269,7 +269,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						account={account.settings?.defaults ?? null}
 						models={models}
 						save={(change) => client.user(auth).saveRepositoryDefaults(page.id, change)}
-						onSaved={(next) => page.replace({ ...view, defaults: { ...view.defaults, ...next } })}
+						onSaved={(next) => page.replace({ ...view, defaults: next })}
 						lastStart={account.settings ? account.settings.lastStart : undefined}
 						forgetLastStart={() => client.user(auth).forgetLastStart()}
 						onForgotten={account.replace}

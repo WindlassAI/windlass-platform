@@ -856,7 +856,11 @@ export interface ItemPlaceDefaults {
 	machineEffort?: string | null;
 }
 
+export type StartPlace = { kind: "hosted" } | { kind: "machine"; machineId: string; profile: SandboxProfileId };
+
 export interface RepositoryDefaults extends RepositoryAutonomy, ItemPlaceDefaults {
+	/** The place for interactive launches, independent of work-item placement and the hosted profile. */
+	startPlace?: StartPlace | null;
 	/** Allow item agents to file screenshots for this repository. Defaults to false. */
 	screenshots: boolean;
 	/** The sandbox profile, by its id; null when none is saved. */
@@ -906,6 +910,9 @@ export interface SavedRepository {
 
 /** Account defaults apply after explicit launch and repository choices. Ignore unavailable profiles and models. */
 export type AccountDefaults = Omit<RepositoryDefaults, keyof RepositoryAutonomy | "screenshots" | "hostedSize">;
+
+export type AccountDefaultsPatch = Partial<Omit<AccountDefaults, "updatedAt">>;
+export type RepositoryDefaultsPatch = Partial<Omit<RepositoryDefaults, "updatedAt">>;
 
 /** Last personal launch, retained after deleting the session. Item sessions never replace it. */
 export interface LastStart {
@@ -2058,7 +2065,7 @@ export interface UserActions {
 	 */
 	githubRepository(repositoryId: GithubId): Promise<GithubRepository>;
 	/** Omitted fields keep their values. Explicit null clears a default. */
-	saveRepositoryDefaults(input: ItemPlaceDefaults & RepositoryAutonomy & { repositoryId: GithubId; screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults>;
+	saveRepositoryDefaults(input: RepositoryDefaultsPatch & { repositoryId: GithubId }): Promise<RepositoryDefaults>;
 	/** Forget all remembered definitions by name. Repeated calls succeed. */
 	forgetRepositoryApproval(input: { repositoryId: GithubId; name: string }): Promise<RepositoryView>;
 	/** Drop the repository's saved configuration, secrets and approvals. Existing sessions survive. */
@@ -2068,8 +2075,8 @@ export interface UserActions {
 	/** The account's settings: the defaults for new sessions and the user's own MCP servers. No secret's value. */
 	account(): Promise<AccountSettings>;
 	/** Omission preserves a field and null clears it. Repository overrides still take precedence. */
-	saveAccountDefaults(input: ItemPlaceDefaults & { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults>;
-	/** Forgets where the newest agent was started (`AccountSettings.lastStart`): the next agent starts on the platform's defaults. The next agent started is remembered again. */
+	saveAccountDefaults(input: AccountDefaultsPatch): Promise<AccountDefaults>;
+	/** Clears the remembered launch so saved start places apply. The next personal launch is remembered again. */
 	forgetLastStart(): Promise<AccountSettings>;
 	/**
 	 * Saves an MCP server of the user's own. With `existing`, the definition of the one of that name is

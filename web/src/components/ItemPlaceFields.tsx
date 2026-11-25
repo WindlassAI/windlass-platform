@@ -1,12 +1,12 @@
 import { machineLabel, type HarnessId, type ItemPlaceDefaults, type MachineSummary, type SandboxProfileId } from "@contract";
 import { useId, type ReactNode } from "react";
 import { placeMachines, profilesForItems } from "../../../server/src/factory/default-place";
+import { machineProfileName } from "../lib/machines";
 import { HARNESS_NAMES } from "../lib/acp";
 import { effortsOf, harnessOptions } from "../lib/models";
 import { useCatalogs } from "../state/hooks";
 import { EffortSelect, ModelSelect, agentDefaultLabel, modelDisplay } from "./ModelPicker";
 
-const PROFILE_NAMES: Partial<Record<SandboxProfileId, string>> = { "docker-windlass-sandbox": "Docker + Windlass sandbox", "docker-hardened": "Docker, hardened" };
 
 /** A saved work-item place in a few words: "nas · Claude Code · waits". */
 export function placeWords(policy: ItemPlaceDefaults, machines: readonly MachineSummary[] | null): string {
@@ -98,15 +98,15 @@ export function ItemPlaceFields({ defaults, machines, inherited, disabled, chang
 							Machine profile
 						</label>
 						<select className={`select${machineProfile ? "" : " is-inherited"}`} id={id + "-profile"} value={machineProfile ?? ""} onChange={(e) => change({ place, harness, machineProfile: (e.target.value as SandboxProfileId) || null, placeFallback })}>
-							<option value="">{firstProfile ? `${PROFILE_NAMES[firstProfile] ?? firstProfile} (default)` : "The agent's default"}</option>
+							<option value="">{firstProfile ? `${machineProfileName(firstProfile)} (default)` : "The agent's default"}</option>
 							{[...profiles.keys()].map((p) => (
 								<option key={p} value={p}>
-									{PROFILE_NAMES[p] ?? p}
+									{machineProfileName(p)}
 								</option>
 							))}
 							{machineProfile && !profiles.has(machineProfile) && (
 								<option value={machineProfile} disabled>
-									{PROFILE_NAMES[machineProfile] ?? machineProfile} (unavailable)
+									{machineProfileName(machineProfile)} (unavailable)
 								</option>
 							)}
 						</select>

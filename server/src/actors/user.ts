@@ -2,7 +2,7 @@
 // Keep launch and submission claims synchronous. Service-only actions check their caller before reading account data.
 
 import { changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
-import type { CredentialSource, ItemPlaceDefaults, RepositoryAutonomy } from "../contract.js";
+import type { AccountDefaultsPatch, CredentialSource, ItemPlaceDefaults, RepositoryDefaultsPatch } from "../contract.js";
 import { snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
 import type { AgentModels } from "../factory/placement.js";
@@ -1050,7 +1050,10 @@ export const user = actor({
 			// What the user keeps for their account: the defaults for new sessions (account-defaults.ts), their own MCP
 			// servers (personal-servers.ts) and the secrets those read (account-secrets.ts), each value sealed.
 			await db.execute(ACCOUNT_DEFAULTS_TABLE);
-			if (!(await db.execute<{ name: string }>("PRAGMA table_info(account_defaults)")).some(col => col.name === "item_place")) await db.execute("ALTER TABLE account_defaults ADD COLUMN item_place TEXT");
+			const accountColumns = await db.execute<{ name: string }>("PRAGMA table_info(account_defaults)");
+			for (const column of ["item_place", "start_place"]) {
+				if (!accountColumns.some(col => col.name === column)) await db.execute(`ALTER TABLE account_defaults ADD COLUMN ${column} TEXT`);
+			}
 			// Where the newest agent was started, its agent and its mode (account-defaults.ts): one row, written when an agent is made.
 			await db.execute(LAST_START_TABLE);
 			await db.execute(MODELS_TABLE);
@@ -1960,13 +1963,13 @@ export const user = actor({
 			return found;
 		},
 
-		saveRepositoryDefaults: async (c, input: ItemPlaceDefaults & RepositoryAutonomy & { repositoryId: GithubId; screenshots?: boolean; profile?: string | null; model?: string | null; hostedSize?: string | null }): Promise<RepositoryDefaults> => {
+		saveRepositoryDefaults: async (c, input: RepositoryDefaultsPatch & { repositoryId: GithubId }): Promise<RepositoryDefaults> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			let change: DefaultsChange;
 			try {
 				const layer = await getLayer();
-				change = cleanDefaults(input, layer.sandboxes.profiles(), await modelsOf(c, profile.demo), sizesOf(c, layer).map(size => size.id));
+				change = cleanDefaults(input, layer.sandboxes.profiles(), await modelsOf(c, profile.demo), sizesOf(c, layer).map(size => size.id), itemMachines(c.vars.machines));
 				if (change.screenshots === true && !config.factory.screenshots) throw new DefaultsProblem("bad_input", "Screenshots are turned off for this whole deployment, so they cannot be turned on for a repository.");
 			} catch (error) {
 				if (error instanceof DefaultsProblem) throw new UserError(error.message, { code: error.code });
@@ -2051,12 +2054,12 @@ export const user = actor({
 			}
 		},
 
-		saveAccountDefaults: async (c, input: ItemPlaceDefaults & { profile?: string | null; model?: string | null }): Promise<AccountDefaults> => {
+		saveAccountDefaults: async (c, input: AccountDefaultsPatch): Promise<AccountDefaults> => {
 			const profile = requireUser(c);
 			let change: DefaultsChange;
 			try {
 				const { sandboxes } = await getLayer();
-				change = cleanDefaults(input, sandboxes.profiles(), await modelsOf(c, profile.demo));
+				change = cleanDefaults(input, sandboxes.profiles(), await modelsOf(c, profile.demo), [], itemMachines(c.vars.machines));
 			} catch (error) {
 				if (error instanceof DefaultsProblem) throw new UserError(error.message, { code: error.code });
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");

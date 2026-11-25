@@ -6,7 +6,7 @@ Open the account menu and choose **Settings**. What you save here holds for ever
 
 Each choice saves as soon as you make it. A field you leave unset shows what it comes to in quiet text: the deployment's default here, your account's default on a repository's page.
 
-**Agents you start here** opens with **Starts on**: where your last agent started, with its agent and mode. It wins until you choose **Forget**. Under it, **Where** (or **Otherwise**, while your last launch was on a machine) picks the hosted sandbox, and **Model** the model, grouped by provider as in the composer. See [Defaults](/docs/start-an-agent#defaults) for the full order.
+**Agents you start here** shows where your next agent starts. **Where** saves Hosted or one of your paired machines. Choose a sandbox for Hosted or a profile the machine offers. Your last launch takes precedence until you choose **Forget**. If a saved machine or profile becomes unavailable, **Starts on** shows the next usable default and explains the change. [Launch defaults](/docs/start-an-agent#defaults)
 
 **Work items** sets where new work items run: a hosted sandbox, a paired machine, or Any of my machines. For a machine, choose its profile, whether an unavailable machine waits or runs hosted with Windlass, the agent, and for Claude Code, Codex or OpenCode its model and effort. Windlass work items use the model above. A repository can inherit your account setting or save its own.
 

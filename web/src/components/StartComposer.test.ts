@@ -516,6 +516,30 @@ describe("what the start composer starts on", () => {
 		await mock.user(ada).createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened", model: "gpt-6-brisk", mode: "ask" });
 	};
 
+	it("launches with the repository's machine and profile over the account place and hosted sandbox", async () => {
+		await show({ repositoryId: 7101, before: async mock => {
+			const user = mock.user(ada);
+			await user.saveAccountDefaults({ startPlace: { kind: "hosted" } });
+			await user.saveRepositoryDefaults(7101, { startPlace: { kind: "machine", machineId: "m_nas", profile: "docker-windlass-sandbox" } });
+			await user.forgetLastStart();
+		} });
+		expect(value("on")).toBe("nas");
+		write("Run the tests");
+		await enter();
+		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-windlass-sandbox" });
+	});
+
+	it("explains a removed repository machine and uses the account default", async () => {
+		await show({ repositoryId: 7101, machines: () => [], before: async mock => {
+			const user = mock.user(ada);
+			await user.saveAccountDefaults({ startPlace: { kind: "hosted" } });
+			await user.saveRepositoryDefaults(7101, { startPlace: { kind: "machine", machineId: "m_nas", profile: "docker-hardened" } });
+		} });
+		expect(value("on")).toBe("Hosted");
+		open("on");
+		expect(pop().textContent).toContain("machine from your repository default is no longer paired");
+	});
+
 	it("goes by the newest agent where nothing is saved: its repository (none), its place, its sandbox, its model and its mode", async () => {
 		await show({ before: lastOnNas });
 		created = [];

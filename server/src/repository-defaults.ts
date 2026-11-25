@@ -21,7 +21,8 @@
  */
 
 import { modelRefusal } from "./account-models.js";
-import { type ItemPlaceDefaults, type HostedSize, MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryAutonomy, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, isHostedSize } from "./contract.js";
+import { type ItemPlaceDefaults, type MachineSummary, type StartPlace, type HostedSize, MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryAutonomy, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, isHostedSize } from "./contract.js";
+import { startPlaceProblem } from "./start-place.js";
 
 const AUTONOMY_FIELDS = ["autoApprovePlans", "autoMergeSingles", "waitForCiOnEachPart"] as const;
 
@@ -38,6 +39,7 @@ export class DefaultsProblem extends Error {
 
 /** What a save changes: a field that is absent stays as it is, and null saves none for it. */
 export interface DefaultsChange extends RepositoryAutonomy {
+	start_place?: StartPlace | null;
 	item_place?: ItemPlaceDefaults | null;
 	screenshots?: boolean;
 	profile?: SandboxProfileId | null;
@@ -61,9 +63,15 @@ export function repositoryDefaultsLog(uid: string, project: string, change: Defa
  * null, or a sandbox this deployment can run and one of the user's models (account-models.ts). Throws
  * DefaultsProblem otherwise.
  */
-export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[], models: ModelList, sizes: readonly HostedSize[] = []): DefaultsChange {
-	const input = (typeof raw === "object" && raw !== null ? raw : {}) as { profile?: unknown; model?: unknown; screenshots?: unknown; hostedSize?: unknown };
+export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[], models: ModelList, sizes: readonly HostedSize[] = [], machines: readonly MachineSummary[] = []): DefaultsChange {
+	const input = (typeof raw === "object" && raw !== null ? raw : {}) as { startPlace?: StartPlace | null; profile?: unknown; model?: unknown; screenshots?: unknown; hostedSize?: unknown };
 	const change: DefaultsChange = {};
+	if (input.startPlace !== undefined) {
+		const place = input.startPlace;
+		const problem = place === null ? null : startPlaceProblem(place, machines);
+		if (problem) throw new DefaultsProblem("bad_input", problem);
+		change.start_place = place?.kind === "machine" ? { kind: "machine", machineId: place.machineId, profile: place.profile } : place ? { kind: "hosted" } : null;
+	}
 	for (const field of AUTONOMY_FIELDS) {
 		const value = (input as Record<string, unknown>)[field];
 		if (value === undefined) continue;
@@ -112,7 +120,8 @@ export const DEFAULTS_TABLE = `
 		updated_at INTEGER NOT NULL,
 		hosted_size TEXT,
 		${AUTONOMY_FIELDS.map(field => `${field} INTEGER NOT NULL DEFAULT 0`).join(",\n\t\t")},
-		item_place TEXT
+		item_place TEXT,
+		start_place TEXT
 	)
 `;
 
@@ -121,15 +130,17 @@ export async function migrateDefaults(db: DefaultsDb): Promise<void> {
 	const columns = await db.execute<{ name: string }>("PRAGMA table_info(repository_defaults)");
 	for (const field of AUTONOMY_FIELDS)
 		if (!columns.some(column => column.name === field)) await db.execute(`ALTER TABLE repository_defaults ADD COLUMN ${field} INTEGER NOT NULL DEFAULT 0`);
+	if (!columns.some(column => column.name === "start_place")) await db.execute("ALTER TABLE repository_defaults ADD COLUMN start_place TEXT");
 	if (!columns.some(column => column.name === "item_place")) await db.execute("ALTER TABLE repository_defaults ADD COLUMN item_place TEXT");
 	if (!columns.some((column) => column.name === "hosted_size")) await db.execute("ALTER TABLE repository_defaults ADD COLUMN hosted_size TEXT");
 }
 
 /** The defaults saved for a project; none when there is no row. */
 export async function readDefaults(db: DefaultsDb, project: string): Promise<RepositoryDefaults> {
-	const [row] = await db.execute<{ item_place: string | null; profile: string | null; model: string | null; screenshots: number; updated_at: number; hosted_size: string | null } & Record<typeof AUTONOMY_FIELDS[number], number>>(`SELECT item_place, ${AUTONOMY_FIELDS.join(", ")}, profile, model, screenshots, updated_at, hosted_size FROM repository_defaults WHERE project = ?`, project);
+	const [row] = await db.execute<{ start_place: string | null; item_place: string | null; profile: string | null; model: string | null; screenshots: number; updated_at: number; hosted_size: string | null } & Record<typeof AUTONOMY_FIELDS[number], number>>(`SELECT start_place, item_place, ${AUTONOMY_FIELDS.join(", ")}, profile, model, screenshots, updated_at, hosted_size FROM repository_defaults WHERE project = ?`, project);
 	return {
 		place: null, harness: null, machineProfile: null, placeFallback: null,
+		...(row?.start_place && { startPlace: JSON.parse(row.start_place) as StartPlace }),
 		...(row?.item_place && JSON.parse(row.item_place) as ItemPlaceDefaults),
 		...Object.fromEntries(AUTONOMY_FIELDS.filter(field => row?.[field] === 1).map(field => [field, true])),
 		screenshots: row?.screenshots === 1, profile: (row?.profile ?? null) as SandboxProfileId | null, model: row?.model ?? null,
@@ -143,10 +154,10 @@ export async function readDefaults(db: DefaultsDb, project: string): Promise<Rep
  * is removed, and so are the rows beyond what one user may keep.
  */
 export async function saveDefaults(db: DefaultsDb, project: string, label: string, change: DefaultsChange, now: number): Promise<RepositoryDefaults> {
-	const columns = (["item_place", "profile", "model", "screenshots", "hostedSize", ...AUTONOMY_FIELDS] as const).filter((column) => change[column] !== undefined).map((field) => (field === "hostedSize" ? "hosted_size" : field));
+	const columns = (["start_place", "item_place", "profile", "model", "screenshots", "hostedSize", ...AUTONOMY_FIELDS] as const).filter((column) => change[column] !== undefined).map((field) => (field === "hostedSize" ? "hosted_size" : field));
 	if (columns.length > 0) {
 		await db.execute(
-			`INSERT INTO repository_defaults (project, label, profile, model, screenshots, hosted_size, ${AUTONOMY_FIELDS.join(", ")}, item_place, updated_at) VALUES (?, ?, ?, ?, ?, ?, ${AUTONOMY_FIELDS.map(() => "?").join(", ")}, ?, ?)
+			`INSERT INTO repository_defaults (project, label, profile, model, screenshots, hosted_size, ${AUTONOMY_FIELDS.join(", ")}, start_place, item_place, updated_at) VALUES (?, ?, ?, ?, ?, ?, ${AUTONOMY_FIELDS.map(() => "?").join(", ")}, ?, ?, ?)
 			ON CONFLICT (project) DO UPDATE SET ${columns.map((column) => `${column} = excluded.${column}`).join(", ")}, label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, updated_at = excluded.updated_at`,
 			project,
 			label,
@@ -155,10 +166,11 @@ export async function saveDefaults(db: DefaultsDb, project: string, label: strin
 			change.screenshots === true ? 1 : 0,
 			change.hostedSize ?? null,
 			...AUTONOMY_FIELDS.map(field => Number(change[field] === true)),
+			change.start_place ? JSON.stringify(change.start_place) : null,
 			change.item_place ? JSON.stringify(change.item_place) : null,
 			now,
 		);
-		await db.execute(`DELETE FROM repository_defaults WHERE project = ? AND profile IS NULL AND model IS NULL AND screenshots = 0 AND hosted_size IS NULL AND ${AUTONOMY_FIELDS.map(field => `${field} = 0`).join(" AND ")} AND item_place IS NULL`, project);
+		await db.execute(`DELETE FROM repository_defaults WHERE project = ? AND profile IS NULL AND model IS NULL AND screenshots = 0 AND hosted_size IS NULL AND ${AUTONOMY_FIELDS.map(field => `${field} = 0`).join(" AND ")} AND start_place IS NULL AND item_place IS NULL`, project);
 		// Somebody who saves for one repository after another leaves no more than this many rows.
 		await db.execute("DELETE FROM repository_defaults WHERE project NOT IN (SELECT project FROM repository_defaults ORDER BY updated_at DESC, project LIMIT ?)", MAX_REPOSITORY_DEFAULTS);
 	}

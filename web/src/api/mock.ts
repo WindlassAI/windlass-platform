@@ -4,8 +4,9 @@
  * timers for replay, pending questions and cancellation.
  */
 import { modelRefusal } from "../../../server/src/account-models.js";
+import { cleanDefaults, DefaultsProblem } from "../../../server/src/repository-defaults";
 import { changedPlace, changesPlace, placeProblem, savedPlace } from "../../../server/src/factory/default-place";
-import type { ItemPlaceDefaults } from "@contract";
+import type { AccountDefaultsPatch, RepositoryDefaultsPatch } from "@contract";
 import { shiftMonths } from "../../../server/src/billing/meter.js";
 import { machineDetails } from "../../../server/src/machines/details.js";
 import { listedHarness, windlassModels, windlassProvider, hostedCatalog, hostedKeyMessage, hostedProfiles, hostedProvider, initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
@@ -2827,12 +2828,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** Saves as the server does (server/src/repository-defaults.ts): the same refusals in the same words, and only the fields that are named. */
 	/** Each repository's saved hosted size. */
 	const hostedSizes = new Map<GithubId, HostedSize>();
-	function saveDefaults(world: World, machines: MachineSummary[], repositoryId: GithubId, { screenshots, hostedSize, autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, ...change }: ItemPlaceDefaults & RepositoryAutonomy & { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): RepositoryDefaults {
+	function saveDefaults(world: World, machines: MachineSummary[], repositoryId: GithubId, { screenshots, hostedSize, autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, ...change }: RepositoryDefaultsPatch): RepositoryDefaults {
 		if (screenshots !== undefined && typeof screenshots !== "boolean") throw new PlatformError("user", "Screenshots must be true or false.", { reason: "bad_input" });
 		if (hostedSize !== undefined && hostedSize !== null && !isHostedSize(hostedSize)) throw new PlatformError("user", "Choose one of the hosted sizes: small, standard, large.", { reason: "bad_input" });
+		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change, modelsFor(world.profile), machines);
 		if (hostedSize === null) hostedSizes.delete(repositoryId);
 		else if (hostedSize !== undefined) hostedSizes.set(repositoryId, hostedSize);
-		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change, modelsFor(world.profile), machines);
 		if (next === null) world.defaults.delete(repositoryId);
 		else world.defaults.set(repositoryId, next);
 		const flags = { ...world.autonomy.get(repositoryId), updatedAt: now() };
@@ -2861,27 +2862,27 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		if (reason) throw new PlatformError("user", reason, { reason: "bad_model" });
 	}
 
-	function changedDefaults(before: SavedDefaults | null, change: ItemPlaceDefaults & { profile?: SandboxProfileId | null; model?: string | null }, models: ModelList, machines: MachineSummary[]): SavedDefaults | null {
+	function changedDefaults(before: SavedDefaults | null, change: AccountDefaultsPatch, models: ModelList, machines: MachineSummary[]): SavedDefaults | null {
 		const saved = before ?? { profile: null, model: null, updatedAt: 0 };
 		const next = { ...saved };
+		try {
+			const patch = cleanDefaults(change, profiles, models, [], machines);
+			if (patch.profile !== undefined) next.profile = patch.profile;
+			if (patch.model !== undefined) next.model = patch.model;
+			if (patch.start_place === null) delete next.startPlace;
+			else if (patch.start_place) next.startPlace = patch.start_place;
+		} catch (error) {
+			if (error instanceof DefaultsProblem) throw new PlatformError("user", error.message, { reason: error.code });
+			throw error;
+		}
 		if (changesPlace(change)) {
 			const policy = changedPlace(saved, change);
 			const problem = placeProblem(policy, machines);
 			if (problem) throw new PlatformError("user", problem, { reason: "bad_input" });
 			Object.assign(next, policy);
 		}
-		if (change.profile !== undefined) {
-			const chosen = change.profile === null ? null : profiles.find((profile) => profile.id === change.profile);
-			if (chosen === undefined) throw new PlatformError("user", "Choose one of the listed sandboxes.", { reason: "bad_input" });
-			if (chosen !== null && !chosen.available) throw new PlatformError("user", `${chosen.name} cannot be chosen yet. ${chosen.unavailableReason ?? ""}`.trim(), { reason: "bad_input" });
-			next.profile = chosen?.id ?? null;
-		}
-		if (change.model !== undefined) {
-			if (change.model !== null) checkModel(models, change.model);
-			next.model = change.model;
-		}
-		if (!changesPlace(change) && change.profile === undefined && change.model === undefined) return before;
-		return !next.place && next.profile === null && next.model === null ? null : { ...next, updatedAt: now() };
+		if (change.startPlace === undefined && !changesPlace(change) && change.profile === undefined && change.model === undefined) return before;
+		return !next.startPlace && !next.place && next.profile === null && next.model === null ? null : { ...next, updatedAt: now() };
 	}
 
 	// ---- the account's settings -------------------------------------------------------------------
@@ -3631,7 +3632,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				world().names.set(repositoryId, `${found.owner}/${found.name}`);
 				return describeRepository(found);
 			},
-			async saveRepositoryDefaults(repositoryId: GithubId, change: ItemPlaceDefaults & RepositoryAutonomy & { screenshots?: boolean; profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<RepositoryDefaults> {
+			async saveRepositoryDefaults(repositoryId: GithubId, change: RepositoryDefaultsPatch): Promise<RepositoryDefaults> {
 				await latency(300);
 				nameAtSave(world(), repositoryId);
 				return saveDefaults(world(), machinesView(auth), repositoryId, change);
@@ -3664,7 +3665,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(180);
 				return accountOf(world());
 			},
-			async saveAccountDefaults(change: ItemPlaceDefaults & { profile?: SandboxProfileId | null; model?: string | null }): Promise<AccountDefaults> {
+			async saveAccountDefaults(change: AccountDefaultsPatch): Promise<AccountDefaults> {
 				await latency(300);
 				const current = world();
 				// The same rules as a repository's defaults.

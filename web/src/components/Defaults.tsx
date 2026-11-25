@@ -1,20 +1,8 @@
-/**
- * Defaults, in two groups, the same on a repository's page and on the account's settings page:
- *
- *   - Agents you start here: where a new agent starts (the last launch, which the server remembers
- *     and which wins until it is forgotten), then the saved hosted sandbox and model;
- *   - Work items: where they run (a place, and on a machine its profile and fallback), their agent
- *     and its model.
- *
- * Only what applies is shown, and a field left unset says what it comes to in quiet text: the
- * account's default on a repository's page, the deployment's on the account's. A default naming a
- * sandbox or model that cannot be used now is shown as saved and said to be ignored. Each field saves
- * as soon as it is chosen.
- */
-import type { AccountDefaults, AccountSettings, ItemPlaceDefaults, HostedSize, LastStart, SandboxProfileId } from "@contract";
+import type { AccountDefaults, AccountSettings, RepositoryDefaultsPatch, HostedSize, LastStart, SandboxProfileId } from "@contract";
+import { resolveStartPlace, startProfiles } from "../../../server/src/start-place";
 import { useId, useState } from "react";
 import { HARNESS_NAMES } from "../lib/acp";
-import { machineLabel } from "../lib/machines";
+import { machineLabel, machineProfileName } from "../lib/machines";
 import { modeName } from "../lib/modes";
 import { sizeLabel, sizeName, startingSize } from "../lib/sizes";
 import { type StartingChoices, startingChoices } from "../lib/repositories";
@@ -28,7 +16,7 @@ import { AgentGlyph } from "./ui/Pill";
 
 type Saved = AccountDefaults & { hostedSize?: HostedSize | null };
 
-export function DefaultsSection({
+export function DefaultsSection<T extends Saved>({
 	id,
 	lede,
 	defaults,
@@ -46,29 +34,29 @@ export function DefaultsSection({
 	id: string;
 	/** What these defaults are for, in a sentence. */
 	lede: string;
-	defaults: Saved;
+	defaults: T;
 	whose: "repository" | "account";
 	/** The account's defaults that can be used, on a repository's page; null on the account's own. */
 	under: Pick<StartingChoices, "profile" | "model"> | null;
-	/** The account's saved defaults, on a repository's page: where its work items run when the repository says nothing. */
-	account: ItemPlaceDefaults | null;
+	/** The account defaults a repository inherits. */
+	account: AccountDefaults | null;
 	models: ModelsState;
-	save(change: ItemPlaceDefaults & { profile?: SandboxProfileId | null; model?: string | null; hostedSize?: HostedSize | null }): Promise<Saved>;
-	onSaved(next: Saved): void;
-	/** Where the last agent started: it wins over the saved sandbox until it is forgotten. Undefined while the account is read. */
+	save(change: RepositoryDefaultsPatch): Promise<T>;
+	onSaved(next: T): void;
+	/** Where the last agent started. Its place wins until forgotten. Undefined while the account is read. */
 	lastStart: LastStart | null | undefined;
 	forgetLastStart(): Promise<AccountSettings>;
 	onForgotten(next: AccountSettings): void;
 }) {
 	const { platform, explain } = useApp();
-	const ids = { agents: useId(), items: useId(), profile: useId(), model: useId(), size: useId(), itemSize: useId(), profileNote: useId(), modelNote: useId() };
+	const ids = { agents: useId(), items: useId(), where: useId(), profile: useId(), model: useId(), size: useId(), itemSize: useId(), modelNote: useId() };
 	const [saving, setSaving] = useState<"profile" | "model" | "hostedSize" | "place" | "forget" | null>(null);
 	const [said, setSaid] = useState<{ tone: "good" | "bad"; text: string } | null>(null);
 	const info = platform.info;
 	const machines = useMachines(!!info?.machines);
 	const choices = startingChoices(defaults, info, models.list, whose);
-	const savedProfile = info?.profiles.find((profile) => profile.id === defaults.profile) ?? null;
 	const inheritedFrom = whose === "repository" ? "account default" : "deployment default";
+	const savedProfile = info?.profiles.find((profile) => profile.id === defaults.profile) ?? null;
 
 	// What an unset field comes to: the account's usable default on a repository's page, else the deployment's.
 	const underProfile = under?.profile != null ? (info?.profiles.find((profile) => profile.id === under.profile && profile.available) ?? null) : null;
@@ -111,13 +99,30 @@ export function DefaultsSection({
 						</option>
 					))}
 				</select>
-				<p className="field-note">{item ? "The same size as agents above." : "Larger costs more an hour."}</p>
+				<p className="field-note">{item ? "Also used for hosted agents." : "Larger costs more an hour."}</p>
 			</div>
 		) : null;
 
-	const onMachine = lastStart?.place.kind === "machine";
-	const startMachine = onMachine ? (machines.list?.find((machine) => machine.machineId === (lastStart!.place as { machineId: string }).machineId) ?? null) : null;
-	const startWhere = !lastStart ? null : lastStart.place.kind === "hosted" ? "Hosted sandbox" : startMachine ? machineLabel(startMachine) : machines.list ? "a machine no longer yours" : "one of your machines";
+	const machinesReading = !!info?.machines && machines.list === null && machines.error === null;
+	const inventory = machinesReading ? null : (info?.machines ? machines.list ?? [] : []);
+	const place = defaults.startPlace;
+	const repositoryPlace = whose === "repository" ? place : null;
+	const accountPlace = whose === "account" ? place : account?.startPlace;
+	const start = resolveStartPlace({ last: lastStart?.place, repository: repositoryPlace, account: accountPlace, machines: inventory });
+	const inherited = resolveStartPlace({ account: account?.startPlace, machines: inventory });
+	const remembered = start.source === "last launch" ? lastStart : null;
+	const reading = start.pending || lastStart === undefined;
+	const savedMachine = place?.kind === "machine" ? inventory?.find(m => m.machineId === place.machineId) : null;
+	const profiles = savedMachine ? startProfiles(savedMachine) : [];
+	const selectedWhere = place?.kind === "machine" ? place.machineId : place?.kind ?? "";
+	const selectWhere = (value: string) => {
+		if (!value || value === "hosted") return change("place", { startPlace: value ? { kind: "hosted" } : null });
+		const machine = inventory?.find(m => m.machineId === value);
+		const profile = machine && startProfiles(machine)[0];
+		if (profile) return change("place", { startPlace: { kind: "machine", machineId: value, profile: profile.id } });
+	};
+	const inheritedName = inherited.machine ? machineLabel(inherited.machine) : "Hosted";
+	const showHosted = place?.kind === "hosted" || (!place && !inherited.machine && !inherited.pending);
 	const forget = () => persist("forget", async () => onForgotten(await forgetLastStart()));
 
 	return (
@@ -138,76 +143,54 @@ export function DefaultsSection({
 						</h3>
 						<div className="defaults-start">
 							<p className="defaults-start-line" data-testid="last-start">
-								{lastStart ? (
-									<>
-										<span className="defaults-start-key">Starts on</span>
-										<span className="defaults-start-value">
-											{onMachine ? <MachineIcon size={13} /> : <CloudIcon size={13} />}
-											{startWhere}
-										</span>
-										<span className="defaults-start-sep" aria-hidden="true">·</span>
-										<span className="defaults-start-value">
-											<AgentGlyph harness={lastStart.harness} size={11} inline />
-											{HARNESS_NAMES[lastStart.harness]}
-										</span>
-										<span className="defaults-start-sep" aria-hidden="true">·</span>
-										<span className="defaults-start-value">{modeName(lastStart.harness, lastStart.mode)}</span>
-										<span className="ui-tag defaults-start-tag">last launch</span>
-										<button type="button" className="link defaults-start-forget" onClick={() => void forget()} disabled={saving !== null}>
-											{saving === "forget" ? "Forgetting…" : "Forget"}
-										</button>
-									</>
-								) : (
-									<>
-										<span className="defaults-start-key">Starts on</span>
-										<span className="defaults-start-value">
-											<CloudIcon size={13} />
-											Hosted · {savedProfile?.available ? savedProfile.name : (elseProfile?.name ?? "sandbox")}
-										</span>
-										<span className="defaults-start-sep" aria-hidden="true">·</span>
-										<span className="defaults-start-value">
-											<AgentGlyph harness="windlass" size={11} inline accent />
-											Windlass
-										</span>
-									</>
-								)}
+								<span className="defaults-start-key">Starts on</span>
+								<span className="defaults-start-value">
+									{reading ? "Reading…" : start.machine ? <><MachineIcon size={13} />{machineLabel(start.machine)}</> : <><CloudIcon size={13} />Hosted</>}
+								</span>
+								{remembered && !reading && <>
+									<span className="defaults-start-sep" aria-hidden="true">·</span>
+									<span className="defaults-start-value"><AgentGlyph harness={remembered.harness} size={11} inline />{HARNESS_NAMES[remembered.harness]}</span>
+									<span className="defaults-start-sep" aria-hidden="true">·</span>
+									<span className="defaults-start-value">{modeName(remembered.harness, remembered.mode)}</span>
+								</>}
+								{!reading && <span className="ui-tag defaults-start-tag">{start.source}</span>}
+								{lastStart && <button type="button" className="link defaults-start-forget" onClick={() => void forget()} disabled={saving !== null}>
+									{saving === "forget" ? "Forgetting…" : "Forget"}
+								</button>}
 							</p>
-							<p className="field-note">
-								{lastStart === undefined
-									? "Reading where your last agent started…"
-									: !lastStart
-										? "Nothing remembered yet; your next launch is kept and wins until you forget it."
-										: onMachine
-											? "Your last launch wins until you forget it; then the hosted sandbox below."
-											: "Your last launch picks place, agent and mode; the fields below fill in the rest."}
-							</p>
+							{start.notes.length ? <p className="field-note tone-warn">{start.notes.join(" ")} Using the {start.source}.</p>
+								: machines.error ? <p className="field-note tone-warn">{machines.error}</p>
+								: !reading && <p className="field-note">{lastStart ? "Your last launch wins until you forget it." : "Nothing remembered yet. Your next launch will be remembered."}</p>}
 						</div>
 						<div className="defaults-fields defaults-fields-fill">
 							<div className="field">
-								<label className="label" htmlFor={ids.profile}>
-									{onMachine ? "Otherwise" : "Where"}
-								</label>
-								<select id={ids.profile} className={`select${defaults.profile === null ? " is-inherited" : ""}`} value={defaults.profile ?? ""} onChange={(event) => void change("profile", { profile: (event.target.value as SandboxProfileId) || null })} disabled={saving !== null} aria-describedby={ids.profileNote}>
-									<option value="">{elseProfile ? `Hosted · ${elseProfile.name} (${elseProfile.from})` : `The ${inheritedFrom}`}</option>
-									<optgroup label="Hosted sandbox">
-										{info.profiles
-											.filter((profile) => profile.available)
-											.map((profile) => (
-												<option key={profile.id} value={profile.id}>
-													Hosted · {profile.name}
-												</option>
-											))}
-									</optgroup>
-									{defaults.profile !== null && !savedProfile?.available ? (
-										<option value={defaults.profile} disabled>
-											{savedProfile?.name ?? defaults.profile} (not available)
-										</option>
-									) : null}
+								<label className="label" htmlFor={ids.where}>Where</label>
+								<select id={ids.where} className={`select${!place ? " is-inherited" : ""}`} value={selectedWhere} onChange={e => void selectWhere(e.target.value)} disabled={saving !== null || machinesReading}>
+									<option value="">{inherited.pending ? "Reading machines…" : `${inheritedName} (${inherited.source})`}</option>
+									<option value="hosted">Hosted</option>
+									{inventory?.length ? <optgroup label="Your machines">
+										{inventory.map(m => <option key={m.machineId} value={m.machineId} disabled={!startProfiles(m).length}>{machineLabel(m)}</option>)}
+									</optgroup> : null}
+									{place?.kind === "machine" && !savedMachine && <option value={place.machineId} disabled>{inventory ? "Removed machine" : "Machine"}</option>}
 								</select>
-								<p className={`field-note${choices.ignored.profile ? " tone-warn" : ""}`} id={ids.profileNote}>
-									{choices.ignored.profile ?? "A machine uses its own profile."}
-								</p>
+								{!place && inherited.profile && <p className="field-note">{machineProfileName(inherited.profile)}</p>}
 							</div>
+							{place?.kind === "machine" && savedMachine && <div className="field">
+								<label className="label" htmlFor={ids.profile}>Machine profile</label>
+								<select id={ids.profile} className="select" value={place.profile} onChange={e => void change("place", { startPlace: { ...place, profile: e.target.value as SandboxProfileId } })} disabled={saving !== null}>
+									{profiles.map(p => <option key={p.id} value={p.id}>{machineProfileName(p.id)}</option>)}
+									{!profiles.some(p => p.id === place.profile) && <option value={place.profile} disabled>{machineProfileName(place.profile)} (unavailable)</option>}
+								</select>
+							</div>}
+							{showHosted && <div className="field">
+								<label className="label" htmlFor={ids.profile}>Hosted sandbox</label>
+								<select id={ids.profile} className={`select${defaults.profile === null ? " is-inherited" : ""}`} value={defaults.profile ?? ""} onChange={e => void change("profile", { profile: (e.target.value as SandboxProfileId) || null })} disabled={saving !== null}>
+									<option value="">{elseProfile ? `${elseProfile.name} (${elseProfile.from})` : "Deployment default"}</option>
+									{info.profiles.filter(p => p.available).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+									{defaults.profile && !savedProfile?.available && <option value={defaults.profile} disabled>{savedProfile?.name ?? defaults.profile} (unavailable)</option>}
+								</select>
+								{choices.ignored.profile && <p className="field-note tone-warn">{choices.ignored.profile}</p>}
+							</div>}
 							<div className="field">
 								<label className="label" htmlFor={ids.model}>
 									Model
@@ -226,7 +209,7 @@ export function DefaultsSection({
 									{choices.ignored.model ?? (models.list ? "Change it with any prompt." : models.reading ? "Reading your models…" : (models.error ?? "Your models could not be read."))}
 								</p>
 							</div>
-							{sizeField("Hosted size", false)}
+							{showHosted && sizeField("Hosted size", false)}
 						</div>
 					</section>
 					{info.items ? (

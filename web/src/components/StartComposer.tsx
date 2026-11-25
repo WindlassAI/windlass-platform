@@ -1,4 +1,5 @@
 import { availableCatalog } from "../../../server/src/sandbox/harnesses.js";
+import { resolveStartPlace } from "../../../server/src/start-place";
 import { resolveDefaultPlace, savedPlace } from "../../../server/src/factory/default-place";
 import { monthReset, monthState } from "../lib/hosted";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type HostedSize, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
@@ -298,24 +299,20 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const now = useNow(30_000);
 	const mine = machinesInfo === null ? [] : (machines.list ?? []);
 	const why = (machine: MachineSummary) => machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", item ? "item" : "agent");
-	// Items inherit the repository or account placement. Personal agents remember their last start.
+	const machinesReading = machinesInfo !== null && machines.list === null && machines.error === null;
 	const started = startedOn(account.settings?.lastStart ?? null);
-	const lastMachineId = !item && started.place?.kind === "machine" ? started.place.machineId : null;
+	const startPlace = !item ? resolveStartPlace({
+		launch: placeChoice === undefined ? undefined : placeChoice === null ? { kind: "hosted" } : { kind: "machine", machineId: placeChoice },
+		last: started.place, repository: saved.defaults?.startPlace, account: account.settings?.defaults.startPlace,
+		machines: machinesReading ? null : mine,
+	}) : null;
 	const policy = item && placeChoice === undefined ? savedPlace(saved.defaults, account.settings?.defaults) : undefined;
 	const usePolicy = !!policy && harnessChoice === null && profileChoice === null;
 	const destination = policy && resolveDefaultPlace(policy, mine, usePolicy && info?.items?.orchestrate ? itemMode : "single");
-	const wantedMachine = placeChoice !== undefined ? placeChoice : destination?.place.kind === "machine" ? destination.place.machineId : lastMachineId;
-	const chosenMachine = mine.find((machine) => machine.machineId === wantedMachine && why(machine) === null) ?? null;
-	const machinesReading = machinesInfo !== null && machines.list === null && machines.error === null;
-	const lastMachine = mine.find((machine) => machine.machineId === lastMachineId) ?? null;
-	const placeProblem = destination?.note ?? (
-		wantedMachine === null || chosenMachine !== null || machinesReading
-			? null
-			: placeChoice !== undefined
-				? `The machine chosen can no longer be used, so this ${item ? "work item" : "agent"} runs on this platform.`
-				: lastMachine === null
-					? "The machine your last agent ran on is not one of yours any more, so this one runs on this platform."
-					: `Your last agent ran on “${machineLabel(lastMachine)}”, which cannot be used now, so this one runs on this platform. ${why(lastMachine) ?? ""}`.trim());
+	const itemMachineId = placeChoice !== undefined ? placeChoice : destination?.place.kind === "machine" ? destination.place.machineId : null;
+	const chosenMachine = startPlace ? startPlace.machine : mine.find(machine => machine.machineId === itemMachineId && why(machine) === null) ?? null;
+	const placeProblem = startPlace ? startPlace.notes.join(" ") || null : destination?.note ??
+		(itemMachineId && !chosenMachine && !machinesReading ? "The machine chosen can no longer be used, so this work item runs on this platform." : null);
 	const keys = useHostedProviders();
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
 	const hardened = placeProfiles.some((candidate) => candidate.id === HARNESS_PROFILE && candidate.available);
@@ -341,7 +338,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 
 	const hasCodexSandbox = (machine: MachineSummary | null) => harness === "codex" && machine?.harnesses?.some(h => h.id === "codex" && h.modes?.includes("workspace-write"));
 	// A Codex work item runs in Codex's sandbox unless "Docker, hardened" is picked (server/src/sandbox/harnesses.ts, `itemModes`).
-	const askedProfile = profileChoice ?? (destination?.place.kind === "machine" ? destination.profile ?? null : null);
+	const launchProfile = startPlace && placeChoice !== undefined && startPlace.source !== "launch" ? null : profileChoice;
+	const askedProfile = launchProfile ?? startPlace?.profile ?? (destination?.place.kind === "machine" ? destination.profile ?? null : null);
 	const codexItemSandbox = item && hasCodexSandbox(chosenMachine) && askedProfile !== HARNESS_PROFILE;
 	const profile = hasCodexSandbox(chosenMachine) && (askedProfile === "docker-windlass-sandbox" || codexItemSandbox) ? "docker-windlass-sandbox" : other ? chosenMachine ? HARNESS_PROFILE : hostedProfile?.id ?? null : startingProfile(askedProfile, defaults, info ? { profiles: placeProfiles } : null, last.of.windlass?.profile ?? null);
 	const modelList = other ? options.models : models.list;
@@ -363,10 +361,11 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const claude: ClaudeFacts | null = other ? { hosted: !chosenMachine, codex: harness === "codex", opencode: harness === "opencode", mode: mode ?? { id: "build", name: "Build", description: null } } : null;
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 
-	const profileChanged = !other && defaults.profile !== null && profile !== defaults.profile;
+	const defaultProfile = startPlace?.profile ?? defaults.profile;
+	const profileChanged = !other && defaultProfile !== null && profile !== defaultProfile;
 	const modelChanged = !other && defaults.model !== null && model !== defaults.model;
 	const ignored = {
-		profile: repositoryDefaults.ignored.profile ?? (repositoryDefaults.profile === null ? accountDefaults.ignored.profile : null),
+		profile: startPlace?.profile ? null : repositoryDefaults.ignored.profile ?? (repositoryDefaults.profile === null ? accountDefaults.ignored.profile : null),
 		model: repositoryDefaults.ignored.model ?? (repositoryDefaults.model === null ? accountDefaults.ignored.model : null),
 	};
 	const defaultsErrors = [chosen && saved.error ? `The defaults saved for ${repositoryName(chosen.repository)} could not be read: ${saved.error}` : null, account.settings === null && account.error ? `Your account's defaults could not be read: ${account.error}` : null].filter((line) => line !== null);
@@ -376,7 +375,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const checkingKeys = !chosenMachine && wantedHarness !== "windlass" && keys === null;
 	const reading = checkingKeys || (item
 		? info === null || (items === null && repositoryId === undefined) || (sessions === null && repositoryId === undefined && newestItem === null) || repoReading || saved.reading || accountReading || (machinesReading && !!policy?.place && policy.place !== "hosted")
-		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || (harness !== "windlass" && catalogs[harness].reading) || (machinesReading && wantedMachine !== null));
+		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || (harness !== "windlass" && catalogs[harness].reading) || !!startPlace?.pending);
 	const canCreate = !item && !reading && profile !== null && !repoInvalid && busy === null;
 	const task = prompt.trim();
 	const maxChars = item ? MAX_ITEM_BODY_CHARS : MAX_PROMPT_CHARS;
@@ -758,7 +757,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		groups: [...whereChoices, { id: "repository", label: "Repository", items: [repoRow] }],
 		footer: profileChanged ? (
 			<button type="button" className="ui-menu-action start-back" onClick={() => setProfile(null)}>
-				Back to the default ({whose(defaults.from.profile)}: {info?.profiles.find((candidate) => candidate.id === defaults.profile)?.name ?? defaults.profile})
+				Back to the default ({startPlace?.profile && chosenMachine ? machineLabel(chosenMachine) : whose(defaults.from.profile)}: {placeProfiles.find(candidate => candidate.id === defaultProfile)?.name ?? defaultProfile})
 			</button>
 		) : undefined,
 	};

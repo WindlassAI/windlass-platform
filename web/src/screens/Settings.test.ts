@@ -138,6 +138,42 @@ it("says where the last agent started, with its agent and mode, and forgets it",
 	}
 }, 15_000);
 
+it("saves an interactive machine and profile underneath the last launch, then reports its removal", async () => {
+	const client = createMockClient({ pace: 0 });
+	const auth = { token: "mock:user:u_start:ada@example.com", profile: { uid: "u_start", email: "ada@example.com", demo: false } };
+	const user = client.user(auth);
+	await user.createSession({ profile: "docker-hardened" });
+	saveAuth("mock", auth);
+	const host = document.body.appendChild(document.createElement("div"));
+	const root = createRoot(host);
+	const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => void await new Promise(r => setTimeout(r, 2))); };
+	const field = (label: string) => [...host.querySelectorAll<HTMLSelectElement>(".defaults-group:first-child select")].find(s => s.labels?.[0]?.textContent === label)!;
+	const choose = async (label: string, value: string) => {
+		await act(async () => { const s = field(label); s.value = value; s.dispatchEvent(new Event("change", { bubbles: true })); });
+		await settle();
+	};
+	const line = () => host.querySelector('[data-testid="last-start"]')!.textContent;
+	try {
+		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
+		await settle();
+		await choose("Where", "m_nas");
+		await choose("Machine profile", "docker-hardened");
+		expect((await user.account()).defaults.startPlace).toEqual({ kind: "machine", machineId: "m_nas", profile: "docker-hardened" });
+		expect(line()).toMatch(/Hosted.*last launch/);
+		await act(async () => host.querySelector<HTMLButtonElement>(".defaults-start-forget")!.click());
+		await settle();
+		expect(line()).toMatch(/nas.*account default/);
+		await act(async () => { await user.removeMachine({ machineId: "m_nas", removeSandboxes: false }); });
+		await settle();
+		expect(line()).toMatch(/Hosted.*deployment default/);
+		expect(host.querySelector(".defaults-start")?.textContent).toContain("no longer paired");
+		await choose("Where", "");
+		expect((await user.account()).defaults.startPlace).toBeUndefined();
+	} finally {
+		act(() => root.unmount()); host.remove(); client.dispose(); localStorage.clear();
+	}
+});
+
 it("saves a machine agent and profile and hides machine choices for Hosted", async () => {
 	const client = createMockClient({ pace: 0 });
 	const auth = { token: "mock:user:u_places:ada@example.com", profile: { uid: "u_places", email: "ada@example.com", demo: false } };

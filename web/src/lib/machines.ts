@@ -12,7 +12,13 @@ interface Described {
 }
 
 export { isMachineIdName, machineLabel } from "@contract";
-import { type EgressMode, type MachineSummary, isMachineIdName } from "@contract";
+import { type EgressMode, type MachineSummary, type SandboxProfileId, isMachineIdName } from "@contract";
+
+const PROFILE_NAMES: Partial<Record<SandboxProfileId, string>> = { "docker-windlass-sandbox": "Docker + Windlass sandbox", "docker-hardened": "Docker, hardened" };
+
+export function machineProfileName(id: SandboxProfileId): string {
+	return PROFILE_NAMES[id] ?? id;
+}
 
 /** The host name the runner reported, where the label does not show it whole: shown beside the label, for finding the container. */
 export function machineHostNote(machine: Described): string | null {
