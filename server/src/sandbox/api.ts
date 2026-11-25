@@ -393,6 +393,7 @@ export interface RunTurnInput {
 	/** Platform tool callbacks own authorization. The call waits for the result; settlement or turn end aborts the signal and discards late results. */
 	onPublish?: (request: TurnPublishRequest, signal: AbortSignal) => Promise<string>;
 	/** A work item's agent files its report; returns what the agent is told. Not given with `onPublish`. */
+	onSetup?: RunTurnInput["onReport"];
 	onPlanReview?: RunTurnInput["onReport"];
 	onPlan?: RunTurnInput["onReport"];
 	/** With `onPlan`: a cross-repo feature's planning turn, whose `file_plan` takes the plan's repositories too. */

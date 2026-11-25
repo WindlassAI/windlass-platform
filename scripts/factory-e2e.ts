@@ -232,6 +232,48 @@ const installation = standin.addInstallation("ada", "User");
 const harbor = standin.addRepository({ owner: "ada", name: "harbor", private: true, installation, files: { ".github/workflows/build.yml": "on: pull_request\n", "README.md": "# harbor\n", "notes.txt": "Review notes.\n" } });
 standin.appPermissions = { metadata: "read", contents: "write", pull_requests: "write", checks: "write", statuses: "read", actions: "read" };
 
+await check("repo-setup: draft guides with imported notes and delete them on close", async () => {
+	const server = new Server();
+	try {
+		const files = Object.fromEntries(Array.from({ length: 50 }, (_, i) => ["src/f" + i + ".ts", "export {};"]));
+		const repo = standin.addRepository({ owner: "ada", name: "guide-fixture", installation, private: false, files: { ...files, "README.md": "# Guide fixture\n" } });
+		const base = standin.branchHead(repo, "main");
+		const { user } = await world(server, standin, { WLP_FEATURE_TEST_GIT: join(server.storage, "git"), WLP_GITHUB_WEBHOOK_SECRET: server.secret });
+		const saved = await user.addSetupNotes(repo.id, [{ label: "source-note.md", text: "See README.md." }, { label: "hidden.md", text: "password=fixture-only" }, { label: "release.md", text: "Check the release process." }]);
+		const ids = saved.knowledge.notes.map(n => n.id);
+		for (let repeat = 0; repeat < 2; repeat++) {
+			const question = saved.knowledge.notes.find(n => n.label === "release.md")!;
+			if (repeat) await user.runReadiness(repo.id, ids, { [question.id]: "drop" });
+			else await user.runReadiness(repo.id, ids);
+			const view = await waitFor("the setup filing", async () => {
+				const view = await user.repository(repo.id);
+				return view.readiness.run === "finished" && view;
+			}, 35_000);
+			assert(!view.readiness.error, view.readiness.error ?? "");
+			assert(view.knowledge.notes.find(n => n.id === question.id)?.decision?.verdict === (repeat ? "stale" : "question"), "Question or answer missing");
+			assert(view.knowledge.notes.some(n => n.decision?.uses[0]?.line === 3), "Missing verified line citation");
+			assert(view.knowledge.notes.some(n => n.decision?.verdict === "secret"), "Missing secret classification");
+		}
+		const pulls = standin.pulls.filter(p => p.repository === repo.id);
+		assert(pulls.length === 1, "Expected one pull request");
+		const [p] = pulls;
+		assert(/^windlass\/repo-setup-\d{8}$/.test(p.head) && p.base === "main" && base === standin.branchHead(repo, "main"), "Wrong target branch");
+		const guide = standin.fileOn(repo, p.head, "AGENTS.md")!;
+		assert(guide.includes("## Terms") && guide.includes("README.md") && !/fixture-only|missing.sh|echo hello/.test(guide), "Unverified or sensitive guide content");
+		assert(standin.fileOn(repo, p.head, "src/AGENTS.md")?.includes("../README.md"), "Missing area guide");
+		assert(p.body.includes("1 line from 1 imported note") && !/source-note|hidden.md|fixture-only/.test(p.body), "Public citations disclosed source details");
+		p.state = "closed";
+		await standin.deliver(API + "/github/webhook", "pull_request", { installation: { id: installation.id }, repository: { id: repo.id }, action: "closed", pull_request: { number: p.number, merged: false, head: { ref: p.head, sha: standin.branchHead(repo, p.head) } } }, { secret: server.secret });
+		await waitFor("closed pull cleanup", async () => !(await user.repository(repo.id)).knowledge.notes.length, 30_000);
+		return "two turns, one public pull request, closed notes deleted";
+	} finally {
+		await server.stop();
+		execFileSync("chmod", ["-R", "u+w", server.storage]);
+		server.remove();
+	}
+});
+if (only.length === 1 && only[0] === "repo-setup") { await standin.stop(); process.exit(failed ? 1 : 0); }
+
 await check("ci: update from base pushes the sandbox merge and replays the same commit", async () => {
 	const { GithubApp } = await import("../server/src/github/app.js");
 	const app = new GithubApp({ appId: standin.appId, slug: standin.slug, clientId: standin.clientId, apiUrl: standin.apiUrl, webUrl: standin.url },

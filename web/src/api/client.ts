@@ -215,7 +215,9 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelP
 	deleteRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, name: string): Promise<RepositorySecrets>;
 	repository(repositoryId: GithubId): Promise<RepositoryView>;
 	setSetupWeekly(repositoryId: GithubId, enabled: boolean): Promise<void>;
-	runReadiness(repositoryId: GithubId): Promise<RepositoryView>;
+	addSetupNotes(repositoryId: GithubId, files: import("../../../server/src/repo-setup/types.js").NoteInput[]): Promise<RepositoryView>;
+	deleteSetupNote(repositoryId: GithubId, id: string): Promise<RepositoryView>;
+	runReadiness(repositoryId: GithubId, noteIds?: string[], answers?: Record<string, "keep" | "drop">): Promise<RepositoryView>;
 	/**
 	 * The repository as GitHub has it now: what a new agent can be launched on. Throws with reason `github_off`,
 	 * `github_not_connected`, `github_gone` or `github_denied` when it cannot be used for new agents, and

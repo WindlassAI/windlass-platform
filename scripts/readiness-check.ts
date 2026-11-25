@@ -105,3 +105,61 @@ test("weekly runs require opting in and share the manual claim", async () => {
 	assert.equal((await view()).error, "Could not read repository.");
 	sqlite.close();
 });
+
+test("only verified guide lines get citations, and filenames and reasons stay out of public descriptions", async () => {
+	const { validateDraft, privateLine } = await import("../server/src/repo-setup/filing.js");
+	const { setupBodies } = await import("../server/src/repo-setup/publish.js");
+	const request = { areas: [], later: 0, noteIds: ["team"], previous: null };
+	const ctx = { request, owner: "team", host: "github.com", notes: [{ id: "team", text: "Use the lint script.", label: "local-note.md" }],
+		paths: ["package.json"], read: new Map([["package.json", '{"scripts":{"lint":"eslint ."}}']]), redact: (s: string) => s.replaceAll("saved-value", "[redacted]") };
+	for (const line of ["/home/alice/tmp", "/Users/ada/work", "C:\\Users\\somebody", "a@test.invalid", "10.0.0.2", "@personal", "https://internal.example", "db.corp", "password=sample-value", "saved-value"])
+		assert.equal(privateLine(line, ctx), true);
+	const base = { score: answers().slice(0, 3), notes: [{ noteId: "team", verdict: "team", reason: "Found the saved script." }], questions: [] };
+	const file = { path: "AGENTS.md", kind: "guide", content: "# Guide\n## Terms\nUse `npm run lint`.\nUse `npm run nope`.\nUse `sh unsupported.sh`.\nMissing proof.\n",
+		lines: [3,4,5].map(line => ({ line, noteId: "team", evidence: { file: "package.json", line: 1 } })) };
+	const validate = (f = file) => validateDraft({ ...base, files: [f] }, ctx);
+	const draft = validate();
+	assert.equal(draft.files.get("AGENTS.md"), "# Guide\n## Terms\nUse `npm run lint`.\n");
+	assert.deepEqual(draft.decisions[0]?.uses, [{ path: "AGENTS.md", line: 3, evidence: "package.json:1" }]);
+	assert.throws(() => validate({ ...file, path: "../AGENTS.md" }));
+	assert.throws(() => validate({ ...file, content: "x".repeat(13 * 1024) }));
+	assert.throws(() => validate({ ...file, content: file.content + "saved-value" }));
+	assert.throws(() => validateDraft({ ...base, files: [file], notes: [] }, ctx));
+	const { body, privateBody } = setupBodies(draft, { ...ctx, repository: { owner: "team", url: "https://github.com/team/project" } as import("../server/src/github/publish.js").StoredRepository });
+	assert.match(body, /1 line from 1 imported note/);
+	assert.doesNotMatch(body, /local-note|package.json|AGENTS.md:3/);
+	assert.match(privateBody!, /AGENTS.md:3 \| local-note.md \| package.json:1/);
+});
+
+test("split, seal and expire notes within the owner's repository", async () => {
+	const { addNotes, setupKnowledge, splitNotes, NOTE_LIFETIME, NOTES_TABLE, PUBLICATION_TABLE } = await import("../server/src/repo-setup/notes.js");
+	const db = new DatabaseSync(":memory:");
+	db.exec(NOTES_TABLE); db.exec(PUBLICATION_TABLE);
+	const store = { execute: async (q: string, ...args: SQLInputValue[]) => db.prepare(q).all(...args) } as Parameters<typeof addNotes>[0];
+	const input = [{ label: "team.mdc", text: "# Build\nfirst fact\n## Check\nsecond fact" }];
+	assert.equal(splitNotes(input).length, 2);
+	assert.throws(() => splitNotes([{ label: "notes.md", text: "a".repeat(262145) }]));
+	await addNotes(store, "owner", "repo", input, Date.now());
+	assert.doesNotMatch(JSON.stringify(db.prepare("SELECT * FROM setup_notes").all()), /first fact|team.mdc/);
+	assert.equal((await setupKnowledge(store, "owner", "repo")).notes.length, 2);
+	assert.equal((await setupKnowledge(store, "owner", "other")).notes.length, 0);
+	await assert.rejects(setupKnowledge(store, "other", "repo"));
+	await addNotes(store, "owner", "repo", input, Date.now() - NOTE_LIFETIME);
+	assert.equal((await setupKnowledge(store, "owner", "repo")).notes.length, 2);
+	db.close();
+});
+
+test("the server chooses at most eight source folders and includes folders with 5,000 verified lines", async () => {
+	const files = new Map<string, string>();
+	for (let i = 0; i < 8; i++) for (let j = 0; j < 50; j++) files.set(`part${i}/x${j}.ts`, "x");
+	for (let i = 0; i < 10; i++) files.set(`many-lines/f${i}.py`, "x\n".repeat(500));
+	files.set("vendor/long.js", "x\n".repeat(7000));
+	const scanFiles: GithubApp["scanFiles"] = async (_t, _o, _n, _r, pick) => {
+		const { paths } = pick([...files].map(([path, text]) => ({ path, size: text.length, type: "blob" })), false);
+		return { commit: "a".repeat(40), files: paths.map(path => ({ path, text: files.get(path)! })), incomplete: false };
+	};
+	const scan = await scanRepoSetup({ scanFiles } as GithubApp, "read", { defaultBranch: "main" } as Repository);
+	assert.equal(scan.areas.length, 8);
+	assert.equal(scan.later, 1);
+	assert.ok(scan.areas.every(a => a.startsWith("part")));
+});

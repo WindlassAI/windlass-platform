@@ -15,7 +15,11 @@ A work item runs in one of two ways:
 
 Open a connected repository to see its eight setup checks. The platform reads the default branch and looks for guide files, folder guides, templates, long source files, pull request checks and protection for secrets. It also checks whether a setup command and checks are saved. This first score uses no agent time.
 
-Choose **Finish setup** for one read-only agent turn in the repository’s usual place. It checks the guide’s instructions and uses the latest matching environment build to verify that setup worked and all saved checks passed in five minutes total. It does not run the commands. **Run setup checks weekly** starts off. Turn it on to repeat the file scan and agent turn each week.
+Choose **Finish setup** to draft a root contributor guide with a Terms section and guides for up to eight large folders. One read-only turn reads the default branch and the latest matching build. It checks whether setup worked and saved checks passed within five minutes. The platform checks the proposed guides and opens a pull request for review. Running it again updates the open pull request. Allow up to 26 hosted minutes, including up to 20 minutes of drafting. Running on your machine uses your model allowance and no hosted minutes.
+
+Paste notes or upload up to 20 Markdown files (256 KB total). Select the notes to include. The agent checks commands and paths against repository evidence. Personal, private, secret and stale notes stay out of the guides. Review the source notes, where they were used and any questions under **Repo setup**. Choose **Apply answers** to update the pull request after checking your answers. Public pull requests show counts. Private pull requests also list the sources and evidence.
+
+Notes are encrypted for your account and repository. You can delete them here. Selected notes are deleted when their pull request merges or closes, and all notes expire after 30 days. **Run setup checks weekly** repeats the score check each week.
 
 Each level needs at least 80% of its checks and every earlier level. The levels are Functional, Documented and Standardized. Below Documented, the planner asks for smaller, independently checkable parts. Use **File as work item** beside a failed check to create a draft with its reason.
 

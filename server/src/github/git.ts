@@ -456,6 +456,20 @@ export async function readOnlyReview(sandbox: SandboxHandle, url: string, token:
 	return sourceOnly ? transportDirectory(id) : transportDirectory(id) + "/repo";
 }
 
+/** The setup checkout lives outside the workspace. Only its transport owner can create these inputs. */
+export async function materializeNotes(sandbox: SandboxHandle, directory: string, notes: { id: string; text: string }[], signal: AbortSignal) {
+	if (!notes.length) return;
+	if (!/^\/tmp\/wlp-transport-[a-f0-9]{32}$/.test(directory) || notes.some(n => !/^[a-f0-9]{20}$/.test(n.id))) throw Error("Invalid note location.");
+	const dest = ".windlass-inputs/notes";
+	// One line per note on stdin keeps the values out of arguments and logs.
+	const write = [inputsGuard(".windlass-inputs"), `mkdir -- ${dest}`, ...notes.map(n =>
+		`IFS= read -r encoded; printf %s "$encoded" | base64 -d > ${dest}/${n.id}.md; chmod 444 ${dest}/${n.id}.md`)].join("\n");
+	const result = await sandbox.run(`set -eu\ncd -- ${shellQuote(directory)}\n${write}\nchmod 555 .windlass-inputs ${dest}`, {
+		gitUser: true, stdin: notes.map(n => Buffer.from(n.text).toString("base64")).join("\n") + "\n", signal, timeoutMs: PROBE_TIMEOUT_MS,
+	});
+	if (result.exitCode !== 0) throw Error("Could not prepare the read-only notes.");
+}
+
 export async function checkoutReview(sandbox: SandboxHandle, url: string, token: string, directory: string, pr: number, head: string, signal?: AbortSignal) {
 	if (!Number.isSafeInteger(pr) || pr < 1) throw new Error("Invalid pull request number.");
 	const fetch = await fetchRefs(sandbox, token, url, directory, [{ source: `refs/pull/${pr}/head`, destination: "refs/wlp/review" }], signal);

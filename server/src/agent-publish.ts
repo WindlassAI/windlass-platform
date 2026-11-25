@@ -188,6 +188,7 @@ export interface PlatformToolOffer {
 	publish: boolean;
 	report: boolean;
 	push: boolean;
+	setup?: boolean;
 	planReview?: boolean;
 	review?: boolean;
 	screenshots?: boolean;
@@ -242,6 +243,12 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		untrustedResult: false,
 		...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
 	});
+	if (offer.setup) {
+		const rows = { type: "array", items: { type: "object" } };
+		return [tool("file_repo_setup", "File score [{id,pass,reason}], files [{kind: guide or area,path,content,lines:[{line,noteId?,evidence:{file,line?} or {command,exit,said}}]}], notes [{noteId,verdict,reason}], questions [{noteId?,claim,ask}]. Line numbers start at one.", {
+			type: "object", required: ["score", "files", "notes", "questions"], properties: { score: rows, files: rows, notes: rows, questions: rows },
+		})];
+	}
 	if (offer.planReview) return [tool("file_plan_review", "File the independent decision and concise findings on the proposed plan.", {
 		type: "object", required: ["decision", "findings"], properties: {
 			decision: { enum: ["approve", "revise"] }, findings: { type: "array", items: { type: "string" } },

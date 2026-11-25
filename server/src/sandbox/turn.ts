@@ -556,7 +556,7 @@ class Turn {
 			scriptPath === null ? undefined : this.sandbox.writeTextFile(scriptPath, JSON.stringify(this.input.script)),
 			agentFile === null ? undefined : this.sandbox.writeTextFile(agentFile, [
 				"---", `name: ${this.reviewerAgent}`, this.input.planner ? "description: Read the repository and plan the feature." : "description: Reviews this pull request independently.",
-				this.input.repoSetup ? "tools: ls, read, report" : this.input.planner ? "disallowed-tools: write, edit, shell, subagent" : this.input.reviewDirectory ? "disallowed-tools: write, edit, subagent" : "disallowed-tools: subagent", "---", this.input.planner ? "Read the repository and file the requested artifact." : "Review the change yourself.", "",
+				this.input.onSetup ? "tools: ls, read, file_repo_setup" : this.input.repoSetup ? "tools: ls, read, report" : this.input.planner ? "disallowed-tools: write, edit, shell, subagent" : this.input.reviewDirectory ? "disallowed-tools: write, edit, subagent" : "disallowed-tools: subagent", "---", this.input.planner ? "Read the repository and file the requested artifact." : "Review the change yourself.", "",
 			].join("\n")),
 			// The user's access token, in its file before the engine looks for it. An abort does not wait for it.
 			this.tokenFile === null ? undefined : this.unlessAborted(this.tokenFile.start()),
@@ -601,6 +601,10 @@ class Turn {
 			}
 			const openKeys = openKeysIn(init);
 			this.promptKeys = promptKeysIn(init);
+			if (input.onSetup && input.untrusted?.length && !this.promptKeys.includes(UNTRUSTED_KEY)) {
+				this.failure = { reason: "engine", message: "Update Windlass to a version that can mark imported notes as untrusted." };
+				return;
+			}
 			if (!openKeys.includes("hostTools")) {
 				this.failure = { reason: "host_tools_required", message: "The sandbox needs Windlass 0.4.0 or later for host tools." };
 				return;

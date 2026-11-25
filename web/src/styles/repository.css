@@ -861,3 +861,27 @@ a.agent-group-name:hover .agent-group-owner {
 	.readiness-group li { grid-template-columns: 7ch 1fr; }
 	.readiness-group li > .link { grid-column: 2; justify-self: start; }
 }
+
+.setup-notes, .setup-result {
+	display: grid;
+	gap: 8px;
+	margin-block: 14px;
+	padding: 12px;
+	border: 1px solid var(--line);
+	border-radius: 5px;
+}
+.setup-notes textarea {
+	width: 100%;
+	box-sizing: border-box;
+	resize: vertical;
+	padding: 8px;
+	font: inherit;
+	color: var(--ink);
+	background: var(--bg);
+	border: 1px solid var(--line);
+	border-radius: 3px;
+}
+.setup-actions, .setup-note-row { display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+.setup-note-row details { flex-basis: 100%; overflow-wrap: anywhere; }
+.setup-note-row details p { white-space: pre-wrap; }
+.setup-result { justify-items: start; }

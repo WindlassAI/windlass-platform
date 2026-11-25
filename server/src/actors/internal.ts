@@ -25,7 +25,7 @@ import { issueServiceToken, verifyToken } from "../tokens.js";
 
 /** What `user` passes when it creates an `agentSession`. */
 export interface SessionCreateInput {
-	readiness?: { commit: string };
+	readiness?: { commit: string; draft?: import("../repo-setup/types.js").DraftRequest };
 	size?: number;
 	/** Hosted only, where the layer offers sizes (`Sandboxes.sizes`): the sandbox's size. */
 	hostedSize?: HostedSize;
@@ -101,7 +101,8 @@ export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: st
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
-	internalReadinessResult(session: string, report: import("../factory/readiness.js").Judgment | null): Promise<void>;
+	internalSetupPublished(session: string, publication: import("../repo-setup/types.js").SetupPublication, decisions: import("../repo-setup/types.js").NoteDecision[]): Promise<void>;
+	internalReadinessResult(session: string, report: import("../factory/readiness.js").Judgment | string | null): Promise<void>;
 	internalReadinessLevel(id: GithubId): Promise<import("../factory/readiness.js").ReadinessLevel | null>;
 	internalLinearHoldsTeam(workspaceId: string, teamId: string): Promise<boolean>;
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
@@ -219,6 +220,7 @@ export interface RequestedSecretSave {
 export interface UserSecretsInternal {
 	internalRequestedSecretConflict(sessionId: string, name: string): Promise<string | null>;
 	internalSaveRequestedSecret(sessionId: string, input: RequestedSecretSave): Promise<void>;
+	internalSetupNoteFiles(session: string, ids: string[]): Promise<{ id: string; sealed: string; decision: string | null }[]>;
 	internalSessionSecrets(sessionId: string, snapshotSetup?: boolean): Promise<SealedSecrets>;
 }
 

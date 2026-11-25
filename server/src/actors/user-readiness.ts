@@ -19,7 +19,8 @@ export async function scheduleSetup(cron: Pick<ActorCron, "set" | "delete">, id:
 
 export const READINESS_TABLE = `CREATE TABLE IF NOT EXISTS readiness (
 	project TEXT NOT NULL, session TEXT PRIMARY KEY, at INTEGER NOT NULL, inputs TEXT, judgment TEXT, error TEXT)`;
-const RUN_LEASE = config.turnTimeoutMs + 5 * 60_000;
+export const SETUP_TURN_MS = Math.min(config.turnTimeoutMs, 20 * 60_000);
+const RUN_LEASE = SETUP_TURN_MS + 6 * 60_000;
 
 export async function cachedScan(db: Db, project: string) {
 	const [row] = await db.execute<{ at: number; scan: string }>("SELECT at, scan FROM setup_scan WHERE project=?", project);

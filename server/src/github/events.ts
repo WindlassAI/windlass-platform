@@ -8,7 +8,7 @@ type InstallationSender = { senderId: GithubId | null };
 type Fields = {
 	issues: { issue: number; sender: Sender; label?: string };
 	issue_comment: { issue: number; sender: Sender; commentId: string; body: string; isPullRequest: boolean };
-	pull_request: { pr: number; head: string; merged: boolean; toDefault?: true };
+	pull_request: { pr: number; head: string; merged: boolean; setupGuides?: true; toDefault?: true };
 	/** A push to the repository's default branch, for its prepared environments (environments.ts). */
 	push: { head: string };
 	pull_request_review: { pr: number; reviewId: string; state: string; body: string; commitId: string; sender: Sender };
@@ -88,7 +88,7 @@ export function edge(event: string, payload: unknown, meta: { slug: string; appI
 	if (event === "pull_request") {
 		const head = sha(obj(pull.head).sha);
 		return pr && head && typeof pull.merged === "boolean" && ["closed", "reopened", "synchronize"].includes(action)
-			? { ...base, event, data: { pr, head, merged: pull.merged, ...(pull.merged === true && action === "closed" && str(obj(pull.base).ref) !== "" && str(obj(pull.base).ref) === str(obj(p.repository).default_branch) && { toDefault: true as const }) } } : null;
+			? { ...base, event, data: { pr, head, merged: pull.merged, ...(action === "closed" && /^windlass\/repo-setup-\d{8}$/.test(str(obj(pull.head).ref)) && { setupGuides: true as const }), ...(pull.merged === true && action === "closed" && str(obj(pull.base).ref) !== "" && str(obj(pull.base).ref) === str(obj(p.repository).default_branch) && { toDefault: true as const }) } } : null;
 	}
 	const author = obj(p.sender);
 	const userId = githubId(author.id);

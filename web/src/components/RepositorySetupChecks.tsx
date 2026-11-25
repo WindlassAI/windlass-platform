@@ -8,10 +8,18 @@ import { useApp, useAuth } from "../state/app";
 export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryPage; offersItems: boolean }) {
 	const { client, explain, platform } = useApp();
 	const auth = useAuth();
-	const [busy, setBusy] = useState<"run" | "weekly" | CriterionId | null>(null);
+	const [busy, setBusy] = useState<"run" | "notes" | "weekly" | CriterionId | null>(null);
 	const [error, setError] = useState("");
 	const [filed, setFiled] = useState<Record<string, string>>({});
 	const data = page.view?.readiness;
+	const [paste, setPaste] = useState("");
+	const [excluded, setExcluded] = useState<string[]>([]);
+	const [answers, setAnswers] = useState<Record<string, "keep" | "drop">>({});
+	const upload = useRef<HTMLInputElement>(null);
+	const knowledge = page.view?.knowledge;
+	const notes = knowledge?.notes ?? [];
+	const publication = knowledge?.publication;
+	const selected = notes.filter(n => !excluded.includes(n.id)).map(n => n.id);
 	const report = data?.latest;
 	const running = data?.run === "running";
 	const reload = page.reload;
@@ -37,17 +45,61 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 	const checking = busy === "run" || running;
 	const sizes = platform.info?.hostedSizes ?? [];
 	const rate = sizes.find(s => s.id === startingSize(sizes, page.view?.defaults.hostedSize, false))?.usdPerHour;
-	const cost = rate ? ` Five minutes hosted costs about $${(rate / 12).toFixed(2)} in running time.` : " Hosted runs also use a few minutes of running time.";
+	const cost = rate ? ` (about $${(rate * 26 / 60).toFixed(2)} in running time)` : "";
 	const pending = report?.findings.filter(f => f.pass === null).length ?? 0;
 	return <section id="repo-setup" className="usage-section ws-section repo-setup" aria-labelledby="setup-title">
 		<header className="ws-list-head">
 			<h2 id="setup-title" className="ws-section-title">Repo setup</h2>
 			<button className="button button-outline button-small" type="button" disabled={disabled || running} onClick={() => submit("run", async () => {
-				const next = await client.user(auth).runReadiness(page.id);
+				const next = await client.user(auth).runReadiness(page.id, selected);
 				if (mounted.current) page.replace(next);
 			})}>{checking ? "Checking…" : data.run === "finished" ? "Run again" : "Finish setup"}</button>
 		</header>
-		<p className="usage-note">One agent turn reads the repository and its latest build results. It uses your normal model allowance.{cost}</p>
+		<p className="usage-note">Draft contributor guides and check the latest build in one read-only turn. Review the changes in a pull request.</p>
+		<p className="usage-note">Allow up to 26 hosted minutes{cost}, or use your machine for no hosted minutes. Both use your model allowance.</p>
+		<div className="setup-notes">
+			<label htmlFor="setup-note"><strong>Add notes from your agents</strong></label>
+			<textarea id="setup-note" rows={3} value={paste} placeholder="Paste repository notes…" onChange={e => setPaste(e.target.value)} />
+			<div className="setup-actions">
+				<button className="button button-outline button-small" disabled={disabled || !paste.trim()} onClick={() => submit("notes", async () => {
+					if (new Blob([paste]).size > 262144) throw Error("Use up to 256 KB of notes.");
+					page.replace(await client.user(auth).addSetupNotes(page.id, [{ label: "Pasted note.md", text: paste }]));
+					setPaste("");
+				})}>Add note</button>
+				<button className="link" disabled={disabled} onClick={() => upload.current?.click()}>Upload files</button>
+				<input hidden type="file" multiple accept=".md,.mdc" aria-label="Upload Markdown notes" ref={upload} onChange={e => {
+					const files = Array.from(e.target.files ?? []);
+					e.target.value = "";
+					if (files.length) void submit("notes", async () => {
+						if (files.length > 20 || files.reduce((n, f) => n + f.size, 0) > 262144) throw Error("Choose up to 20 Markdown files and 256 KB.");
+						page.replace(await client.user(auth).addSetupNotes(page.id, await Promise.all(files.map(async f => ({ label: f.name, text: await f.text() })))));
+					});
+				}} />
+			</div>
+			<p className="usage-note">Only you can see saved notes. They are deleted after 30 days or when their pull request closes.</p>
+			{notes.map(n => <div className="setup-note-row" key={n.id}>
+				<label className="check"><input type="checkbox" checked={!excluded.includes(n.id)} onChange={e => setExcluded(e.target.checked ? excluded.filter(id => id !== n.id) : [...excluded, n.id])} />{n.label}</label>
+				<button className="link" disabled={!!busy} onClick={() => submit("notes", async () => page.replace(await client.user(auth).deleteSetupNote(page.id, n.id)))}>Delete</button>
+				<details><summary>{n.decision ? n.decision.verdict + " · View details" : "View note"}</summary><p>{n.text}</p>
+					{n.decision && <><p>{n.decision.reason} {n.decision.verdict === "secret" && "Rotate this credential."}</p>
+						{n.decision.uses.map((u,i) => <p key={i}>{u.path}:{u.line} · {u.evidence}</p>)}</>}
+				</details>
+			</div>)}
+		</div>
+		{publication && <div className="setup-result">
+			<a className="link" href={publication.pull.url} target="_blank" rel="noreferrer">Review guide changes in pull request #{publication.pull.number}</a>
+			<p>{publication.files.join(" · ")} · {publication.pull.state}</p>
+			{publication.questions.map(q => <p key={q}>{q}</p>)}
+			{notes.filter(n => n.decision?.question).map(n => <label key={n.id}>{n.decision?.question} <select aria-label={"Answer for " + n.label} value={answers[n.id] ?? ""} onChange={e => {
+				const next = { ...answers };
+				if (!e.target.value) delete next[n.id]; else next[n.id] = e.target.value as "keep" | "drop";
+				setAnswers(next);
+			}}><option value="">Leave out for now</option><option value="keep">Keep if verified</option><option value="drop">Drop</option></select></label>)}
+			{notes.some(n => n.decision?.question) && <button className="button button-outline button-small" disabled={disabled || checking || !Object.keys(answers).some(id => selected.includes(id))} onClick={() => submit("run", async () => {
+				page.replace(await client.user(auth).runReadiness(page.id, selected, Object.fromEntries(Object.entries(answers).filter(([id]) => selected.includes(id)))));
+				setAnswers({});
+			})}>Apply answers</button>}
+		</div>}
 		<label className="check setup-weekly"><input role="switch" type="checkbox" checked={data.weekly} disabled={!!busy || (!data.weekly && page.access.state !== "usable")} onChange={event => submit("weekly", async () => {
 			await client.user(auth).setSetupWeekly(page.id, event.target.checked);
 			if (mounted.current) reload();
