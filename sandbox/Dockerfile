@@ -1,6 +1,6 @@
 # The sandbox image of windlass-platform: one container per agent session.
 # Built by sandbox/build.sh, which puts the Windlass binary into the build context as ./windlass.
-FROM ubuntu:24.04 AS base
+FROM ubuntu:26.04 AS base
 
 ARG DEBIAN_FRONTEND=noninteractive
 
