@@ -254,6 +254,8 @@ await check("repo-setup: draft guides with imported notes and delete them on clo
 			assert(view.knowledge.notes.some(n => n.decision?.uses[0]?.line === 3), "Missing verified line citation");
 			assert(view.knowledge.notes.some(n => n.decision?.verdict === "secret"), "Missing secret classification");
 		}
+		const sessions = [...server.text.matchAll(/session.start_times session=(s_\w+) turn=(\d+)/g)];
+		assert(sessions.length === 2 && sessions[0][1] === sessions[1][1] && sessions[1][2] === "2", "Answers should continue the drafter's session.");
 		const pulls = standin.pulls.filter(p => p.repository === repo.id);
 		assert(pulls.length === 1, "Expected one pull request");
 		const [p] = pulls;

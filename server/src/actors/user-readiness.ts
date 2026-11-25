@@ -20,7 +20,7 @@ export async function scheduleSetup(cron: Pick<ActorCron, "set" | "delete">, id:
 export const READINESS_TABLE = `CREATE TABLE IF NOT EXISTS readiness (
 	project TEXT NOT NULL, session TEXT PRIMARY KEY, at INTEGER NOT NULL, inputs TEXT, judgment TEXT, error TEXT)`;
 export const SETUP_TURN_MS = Math.min(config.turnTimeoutMs, 20 * 60_000);
-const RUN_LEASE = SETUP_TURN_MS + 6 * 60_000;
+export const SETUP_LEASE_MS = SETUP_TURN_MS + 6 * 60_000;
 
 export async function cachedScan(db: Db, project: string) {
 	const [row] = await db.execute<{ at: number; scan: string }>("SELECT at, scan FROM setup_scan WHERE project=?", project);
@@ -54,7 +54,7 @@ export async function setupInputs(db: Db, project: string, scan: SetupScan & { a
 export async function repositoryReadiness(db: Db, project: string, inputs: Awaited<ReturnType<typeof setupInputs>> | null, weekly: boolean, scanError: string | null = null): Promise<RepositoryReadiness> {
 	const [attempt] = await db.execute<{ judgment: string | null; error: string | null; at: number }>("SELECT judgment,error,at FROM readiness WHERE project=? ORDER BY at DESC, rowid DESC LIMIT 1", project);
 	const pending = !!attempt && !attempt.judgment && !attempt.error;
-	const running = pending && Date.now() - attempt.at < RUN_LEASE;
+	const running = pending && Date.now() - attempt.at < SETUP_LEASE_MS;
 	let latest = null;
 	if (inputs) {
 		const [last] = await db.execute<{ judgment: string; at: number }>("SELECT judgment,at FROM readiness WHERE project=? AND inputs=? AND judgment IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1", project, inputs.key);
@@ -74,7 +74,7 @@ export async function repositoryReadiness(db: Db, project: string, inputs: Await
 export async function claimAssessment(db: Db, project: string, session: string, now: number): Promise<boolean> {
 	const rows = await db.execute(`INSERT OR IGNORE INTO readiness(project,session,at) SELECT ?,?,?
 		WHERE NOT EXISTS (SELECT 1 FROM readiness WHERE project=? AND judgment IS NULL AND error IS NULL AND at>?) RETURNING session`,
-		project, session, now, project, now - RUN_LEASE);
+		project, session, now, project, now - SETUP_LEASE_MS);
 	return rows.length > 0;
 }
 

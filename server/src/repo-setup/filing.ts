@@ -19,11 +19,17 @@ export interface AcceptedDraft {
 const verdicts: Verdict[] = ["team", "personal", "private", "secret", "stale", "question", "duplicate"];
 const opaqueCredential = /\b(?=[A-Za-z0-9_+/=-]{32,}\b)(?=[A-Za-z0-9_+/=-]*[A-Z])(?=[A-Za-z0-9_+/=-]*[a-z])(?=[A-Za-z0-9_+/=-]*\d)[A-Za-z0-9_+/=-]{32,}/;
 const secret = (s: string) => opaqueCredential.test(s) || redact(s) !== s || pushTokenKinds(s).length > 0 || /(?:password|passwd|api[_-]?key|access[_-]?token)\s*[:=]\s*["']?[^\s"'<>]{4,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(s);
+// Bare domains in prose can look like filenames. These are common repository file extensions.
+const fileExtension = /\.(?:[cm]?[jt]sx?|mdc?|rst|txt|json[c5]?|ya?ml|toml|lock|sql|css|scss|html?|xml|svg|png|jpe?g|gif|webp|sh|bash|zsh|py|go|rs|java|kt|swift|cs|cpp|hpp|rb|php|scala|vue|svelte|dart|exs?|hs|lua|env|conf|config|ini|mod|sum|gradle|properties|proto|tf|hcl|csv|tsv|pdf|gz|zip)$/i;
 export function privateLine(s: string, ctx: Pick<DraftContext, "host" | "owner" | "read" | "redact">) {
 	if (ctx.redact(s) !== s || secret(s) || /(?:\/home\/|\/Users\/|[a-z]:\\Users\\)|\b[\w.+-]+@[\w.-]+|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[a-f\d]{1,4}:){3,}[a-f\d:]+/i.test(s)) return true;
 	const owners = [ctx.owner, ...((ctx.read.get(".github/CODEOWNERS") ?? ctx.read.get("CODEOWNERS") ?? "").match(/@[\w/-]+/g) ?? [])].map(v => v.replace(/^@/, "").toLowerCase());
-	if ([...s.matchAll(/(?:^|\s)@([\w/-]+)/g)].some(m => !owners.includes(m[1].toLowerCase()))) return true;
-	return [...s.matchAll(/(?:https?:\/\/|\bwww\.)([\w.-]+)|\b([\w-]+(?:\.[\w-]+)*\.(?:com|net|org|io|internal|local|corp|lan|dev|cloud|test))\b/gi)].some(m => (m[1] ?? m[2]).toLowerCase() !== ctx.host);
+	if ([...s.matchAll(/(?:^|[^\w@])@([\w/-]+)/g)].some(m => !owners.includes(m[1].toLowerCase()))) return true;
+	for (const m of s.matchAll(/(?:https?:\/\/|\bwww\.)([\w.-]+)|\b([\w-]+(?:\.[\w-]+)*\.[a-z]{2,24})\b/gi)) {
+		const host = (m[1] ?? m[2]).replace(/\.$/, "").toLowerCase();
+		if (host !== ctx.host && (m[1] || !fileExtension.test(host))) return true;
+	}
+	return false;
 }
 
 type Row = Record<string, unknown>;

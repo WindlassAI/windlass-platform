@@ -8,7 +8,7 @@ import type { NoteDecision, NoteInput, SetupKnowledge, SetupNote, SetupPublicati
 type Db = Pick<RawAccess, "execute">;
 export const NOTE_LIFETIME = 30 * 86400_000;
 export const NOTES_TABLE = `CREATE TABLE IF NOT EXISTS setup_notes (
-	project TEXT NOT NULL, id TEXT PRIMARY KEY, bytes INTEGER NOT NULL, sealed TEXT NOT NULL, expires INTEGER NOT NULL, pr INTEGER, decision TEXT)`;
+	project TEXT NOT NULL, id TEXT PRIMARY KEY, bytes INTEGER NOT NULL, sealed TEXT NOT NULL, expires INTEGER NOT NULL, pr INTEGER, decision TEXT, drafter TEXT)`;
 export const PUBLICATION_TABLE = "CREATE TABLE IF NOT EXISTS setup_publication (project TEXT PRIMARY KEY, result TEXT NOT NULL)";
 const invalid = (message: string) => new UserError(message, { code: "bad_input" });
 
@@ -47,10 +47,10 @@ export async function setupKnowledge(db: Db, uid: string, project: string): Prom
 	return { notes, publication: saved ? JSON.parse(saved.result) : null };
 }
 
-export async function savePublication(db: Db, uid: string, project: string, publication: SetupPublication, decisions: NoteDecision[]) {
+export async function savePublication(db: Db, uid: string, project: string, publication: SetupPublication, decisions: NoteDecision[], session: string) {
 	await db.execute("INSERT OR REPLACE INTO setup_publication VALUES (?,?)", project, JSON.stringify(publication));
-	for (const d of decisions) await db.execute("UPDATE setup_notes SET pr=?,decision=? WHERE project=? AND id=?",
-		publication.pull.number, sealSecret(serverSealer(), uid, project, "decision:" + d.noteId, JSON.stringify(d)), project, d.noteId);
+	for (const d of decisions) await db.execute("UPDATE setup_notes SET pr=?,decision=?,drafter=? WHERE project=? AND id=?",
+		publication.pull.number, sealSecret(serverSealer(), uid, project, "decision:" + d.noteId, JSON.stringify(d)), d.question ? session : null, project, d.noteId);
 }
 
 export async function closeSetupPull(db: Db, project: string, pr: number, merged: boolean) {

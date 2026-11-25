@@ -112,7 +112,7 @@ test("only verified guide lines get citations, and filenames and reasons stay ou
 	const request = { areas: [], later: 0, noteIds: ["team"], previous: null };
 	const ctx = { request, owner: "team", host: "github.com", notes: [{ id: "team", text: "Use the lint script.", label: "local-note.md" }],
 		paths: ["package.json"], read: new Map([["package.json", '{"scripts":{"lint":"eslint ."}}']]), redact: (s: string) => s.replaceAll("saved-value", "[redacted]") };
-	for (const line of ["/home/alice/tmp", "/Users/ada/work", "C:\\Users\\somebody", "a@test.invalid", "10.0.0.2", "@personal", "https://internal.example", "db.corp", "password=sample-value", "saved-value"])
+	for (const line of ["/home/alice/tmp", "/Users/ada/work", "C:\\Users\\somebody", "a@test.invalid", "10.0.0.2", "(@personal)", "worker.office.example", "https://internal.example", "db.corp", "password=sample-value", "saved-value"])
 		assert.equal(privateLine(line, ctx), true);
 	const base = { score: answers().slice(0, 3), notes: [{ noteId: "team", verdict: "team", reason: "Found the saved script." }], questions: [] };
 	const file = { path: "AGENTS.md", kind: "guide", content: "# Guide\n## Terms\nUse `npm run lint`.\nUse `npm run nope`.\nUse `sh unsupported.sh`.\nMissing proof.\n",

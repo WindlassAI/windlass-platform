@@ -2220,7 +2220,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 }
 
 function reportAssessment(c: Ctx, meta: SessionMeta) {
-	void c.keepAwake(userActor(c, meta.uid).internalReadinessResult(meta.sessionId, meta.readiness?.result ?? meta.readiness?.error ?? null).catch(error =>
+	void c.keepAwake(userActor(c, meta.uid).internalReadinessResult(meta.sessionId, meta.readiness!.attempt, meta.readiness?.result ?? meta.readiness?.error ?? null).catch(error =>
 		c.log.warn({ msg: "could not save the readiness assessment", error: describeError(error) })));
 }
 
@@ -5223,11 +5223,17 @@ export const agentSession = actor({
 			return summaryOf(liveMeta(c));
 		},
 
-		internalAssessRepository: async (c, text: string): Promise<void> => {
+		internalAssessRepository: async (c, text: string, continuation?: NonNullable<SessionCreateInput["readiness"]>): Promise<void> => {
 			requireServiceFor(c, "call");
 			const meta = liveMeta(c);
 			if (!meta.readiness) throw new UserError("This session cannot run setup checks.", { code: "bad_input" });
-			if (!meta.turns && !c.vars.turn && !c.vars.accepting) await startPrompt(c, meta, { text }, text, null);
+			if (continuation) {
+				if (!continuation.draft?.answers || meta.status !== "idle" || meta.sandboxId || c.vars.turn || c.vars.accepting) throw new UserError("The earlier setup turn is still finishing.", { code: "sandbox_busy" });
+				if (meta.readiness.attempt === continuation.attempt) return;
+				meta.readiness = continuation;
+				meta.windlassSessionId = null;
+				await startPrompt(c, meta, { text }, text, null);
+			} else if (!meta.turns && !c.vars.turn && !c.vars.accepting) await startPrompt(c, meta, { text }, text, null);
 		},
 		internalBuildEnvironment: async (c): Promise<void> => {
 			requireService(c);

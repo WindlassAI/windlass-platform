@@ -7,8 +7,8 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
 	cwd: root, encoding: "utf8",
-}).split("\0").filter(Boolean);
-const guides = files.filter(file => /(^|\/)AGENTS\.md$/.test(file) && existsSync(join(root, file)));
+}).split("\0").filter(file => file && existsSync(join(root, file)));
+const guides = files.filter(file => /(^|\/)AGENTS\.md$/.test(file));
 const errors = checkGuides(new Map(guides.map(path => [path, readFileSync(join(root, path), "utf8")])), files,
 	path => existsSync(join(root, path)) ? readFileSync(join(root, path), "utf8") : undefined,
 	(dir, tool) => existsSync(join(root, dir, "node_modules/.bin", tool)));
