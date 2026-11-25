@@ -58,9 +58,9 @@ export interface SessionCreateInput {
 }
 
 /** What a build session reports: its build, without what the user actor set when it started it. */
-export type EnvironmentBuildResult = Omit<EnvironmentBuild, "trigger" | "startedAt" | "setupHash" | "checksHash" | "profile">;
+export type EnvironmentBuildResult = Omit<EnvironmentBuild, "trigger" | "retries" | "interrupted" | "startedAt" | "setupHash" | "checksHash" | "profile">;
 
-export type EnvironmentBuildReport = EnvironmentBuildResult | { waiting: string };
+export type EnvironmentBuildReport = EnvironmentBuildResult | { interrupted: true } | { waiting: string };
 
 /** What a build session builds: `screenshots`, the image variant item sessions there use. */
 export interface EnvironmentBuildOrigin { project: string; place: string; screenshots: boolean }

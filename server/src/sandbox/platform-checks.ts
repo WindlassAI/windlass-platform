@@ -39,7 +39,7 @@ import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js
 import { outputTail } from "../verified.js";
 import { environmentFailure } from "../factory/check-environment.js";
 import { shellQuote } from "./provider.js";
-import type { SandboxHandle } from "./api.js";
+import { sandboxConnectionLost, type SandboxHandle } from "./api.js";
 
 /** How many times one turn's agent is sent back with failing checks (the factory's `RULES.gateRounds`). */
 export const PLATFORM_CHECK_ROUNDS = 2;
@@ -232,7 +232,7 @@ export class PlatformChecks {
 		return null;
 	}
 
-	private async runOne(check: RepositoryCheck): Promise<PlatformCheckResult> {
+	private async runOne(check: RepositoryCheck, building = false): Promise<PlatformCheckResult> {
 		const stream = new RedactingStream(this.options.redactor ?? NO_REDACTION);
 		let kept = "";
 		const keep = (chunk: string) => { kept = (kept + stream.push(chunk)).slice(-KEPT_CHARS); };
@@ -251,7 +251,7 @@ export class PlatformChecks {
 			return { ...base, status, exitCode: got.exitCode, durationMs: Date.now() - startedAt, output: kept, startError: "" };
 		} catch (error) {
 			const said = (this.options.redactor ?? NO_REDACTION).text(error instanceof Error ? error.message : String(error));
-			return { ...base, status: this.options.signal?.aborted ? "interrupted" : "could_not_start", exitCode: null, durationMs: Date.now() - startedAt, output: kept, startError: said.slice(0, 400) || "The sandbox could not run the command." };
+			return { ...base, status: this.options.signal?.aborted || (building && sandboxConnectionLost(error)) ? "interrupted" : "could_not_start", exitCode: null, durationMs: Date.now() - startedAt, output: kept, startError: said.slice(0, 400) || "The sandbox could not run the command." };
 		}
 	}
 
@@ -263,7 +263,9 @@ export class PlatformChecks {
 		const results: PlatformCheckResult[] = [];
 		for (const check of this.checks) {
 			if (this.options.signal?.aborted) break;
-			results.push(await this.runOne(check));
+			const result = await this.runOne(check, true);
+			results.push(result);
+			if (result.status === "interrupted") break;
 		}
 		return results;
 	}

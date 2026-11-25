@@ -13,8 +13,8 @@ import type { RawAccess } from "rivetkit/db";
 import type { EnvironmentBuild, EnvironmentPlace, EnvironmentSchedule, EnvironmentTrigger, HostedSize, MachineSummary, RepositoryCheck, RepositoryDefaults, RepositoryEnvironments, SessionSummary } from "../contract.js";
 import { ITEM_HOSTED_SIZE } from "../contract.js";
 import {
-	afterChange, afterPush, emptyRow, environmentInputs, environmentPlaces, environmentView, finishBuild, HOSTED, nextBuild, nextScheduled, nextWake, placeRefusal, readEnvironments, readSchedule, sameInputs,
-	BUILD_LOST_MS, RETRY_MS, usable, writeEnvironment, defaultSchedule, type DueBuild, type EnvironmentRow, type PlaceFacts,
+	afterChange, afterPush, emptyRow, environmentInputs, environmentPlaces, environmentView, finishBuild, interruptBuild, HOSTED, nextBuild, nextScheduled, nextWake, placeRefusal, readEnvironments, readSchedule, sameInputs,
+	BUILD_LOST_MS, INTERRUPTION_RETRY_MS, RETRY_MS, usable, writeEnvironment, defaultSchedule, type DueBuild, type EnvironmentRow, type PlaceFacts,
 } from "../environments.js";
 
 type Db = Pick<RawAccess, "execute">;
@@ -37,6 +37,9 @@ function matchesImage(ready: EnvironmentBuild, place: EnvironmentPlace, hostedSi
 	return (ready.screenshots === true) === screenshots && (place !== HOSTED || sameSize(ready, hostedSize));
 }
 
+/** A known refusal before the build turn began (for example a sandbox quota). */
+export class BuildStartRefused extends Error {}
+
 export interface EnvironmentHost {
 	db: Db;
 	uid: string;
@@ -49,8 +52,9 @@ export interface EnvironmentHost {
 	snapshots: { hosted: boolean; machines: boolean };
 	/** E2B's WLP_E2B_SNAPSHOT_USER_MAX where hosted sandboxes are E2B; null where the store caps bytes, not count. */
 	hostedUserMax: number | null;
-	/** Makes the build's hidden session and starts its one turn. Throws with a sentence fit to show when it is refused. */
-	startBuild(request: BuildRequest): Promise<string>;
+	/** Makes the hidden session. The row records its id before the turn is handed to it. */
+	createBuild(request: BuildRequest): Promise<string>;
+	runBuild(session: string): Promise<void>;
 	removeSession(id: string): Promise<void>;
 	/** Asks to be told of pushes to the repository's default branch (github-repository.ts). Never throws. */
 	watchPushes(repositoryId: string): Promise<void>;
@@ -105,7 +109,7 @@ async function scheduled(host: EnvironmentHost, rows: EnvironmentRow[]): Promise
 		const kept = rows.filter(r => r.project === project);
 		for (const place of environmentPlaces(await placeFacts(host, project), now, kept.map(r => r.place))) {
 			const row = kept.find(r => r.place === place.place);
-			if (row?.note && row.dueAt !== null && row.dueAt > now) continue; // Honor a deferred build’s retry time.
+			if ((row?.note || row?.dueTrigger === "retry") && row.dueAt !== null && row.dueAt > now) continue; // Honor a deferred build’s retry time.
 			const when = nextScheduled(hours, row?.attempt?.startedAt ?? 0, host.uid + ":" + project, now);
 			if (when === null) continue;
 			if (when <= now) due.push({ project, place: place.place, trigger: "schedule" });
@@ -146,13 +150,7 @@ function buildSandbox(host: EnvironmentHost, project: string, place: Environment
  */
 export async function tick(host: EnvironmentHost): Promise<DueBuild | null> {
 	const now = host.now();
-	const rows = await readEnvironments(host.db);
-	// A build that never reported is lost: its record ends as it was, and the next may start.
-	for (const row of rows.filter(r => r.session !== null && r.attempt?.finishedAt === null && now - r.attempt.startedAt >= BUILD_LOST_MS)) {
-		const lost = finishBuild(row, { ...row.attempt!, finishedAt: now, failure: { kind: "setup", check: null, line: "The build did not finish.", excerpt: "" } });
-		await writeEnvironment(host.db, lost);
-		await host.removeSession(row.session!).catch(() => undefined);
-	}
+	await sweepLostBuilds(host);
 	const fresh = await readEnvironments(host.db);
 	const { due } = await scheduled(host, fresh);
 	const next = nextBuild(fresh, due, now);
@@ -161,11 +159,30 @@ export async function tick(host: EnvironmentHost): Promise<DueBuild | null> {
 	return next;
 }
 
+/** Recover an overdue attempt even if the server stopped before it armed the build deadline. */
+async function sweepLostBuilds(host: EnvironmentHost): Promise<void> {
+	const now = host.now();
+	for (const row of await readEnvironments(host.db)) {
+		if (row.attempt?.finishedAt !== null) continue;
+		if (now < row.attempt.startedAt + BUILD_LOST_MS && host.sessions().some(s => s.id === row.session)) continue;
+		await writeEnvironment(host.db, interruptBuild(row, row.attempt, now));
+		if (row.session) await host.removeSession(row.session).catch(() => undefined);
+	}
+}
+
+export async function wakeEnvironments(host: EnvironmentHost): Promise<void> {
+	await sweepLostBuilds(host);
+	const at = nextWake(await readEnvironments(host.db), []);
+	if (at !== null) await host.arm(Math.max(host.now(), at));
+}
+
 async function start(host: EnvironmentHost, due: DueBuild): Promise<void> {
 	const now = host.now();
 	const row = await rowFor(host, due.project, due.place);
 	const saved = await host.saved(due.project);
-	const later = async (note: string) => writeEnvironment(host.db, { ...row, note, dueAt: now + RETRY_MS, dueTrigger: due.trigger });
+	const retry = due.trigger === "retry";
+	const trigger = due.trigger === "retry" ? row.attempt!.trigger : due.trigger;
+	const later = async (note: string, delay = RETRY_MS) => writeEnvironment(host.db, { ...row, note, dueAt: now + delay, dueTrigger: due.trigger });
 	const none = unavailable(host, saved);
 	if (none) {
 		await writeEnvironment(host.db, { ...row, note: none, dueAt: null, dueTrigger: null, firstPush: null });
@@ -174,7 +191,7 @@ async function start(host: EnvironmentHost, due: DueBuild): Promise<void> {
 	const facts = (await placeFacts(host, due.project)).find(p => p.place === due.place);
 	const hostedProjects = (await readEnvironments(host.db)).filter(r => r.place === HOSTED && r.ready).map(r => r.project);
 	const refusal = facts ? placeRefusal(facts, { userEnvironments: hostedProjects.length, userMax: host.hostedUserMax }, due.project, hostedProjects) : "That machine is not yours any more.";
-	if (refusal) return later(refusal);
+	if (refusal) return later(refusal, retry && facts && !facts.online ? INTERRUPTION_RETRY_MS : RETRY_MS);
 	const sandbox = buildSandbox(host, due.project, due.place, saved);
 	if (!sandbox) return later("Choose a sandbox under Defaults for new agents, or run an agent on this repository here first.");
 	const inputs = environmentInputs(saved.command, saved.checks);
@@ -189,10 +206,10 @@ async function start(host: EnvironmentHost, due: DueBuild): Promise<void> {
 			return;
 		}
 	}
-	let attempt: EnvironmentBuild = { trigger: due.trigger, startedAt: now, finishedAt: null, commit: "", image: "", ...inputs, profile: sandbox.profile, checks: [], failure: null, snapshot: false };
+	let attempt: EnvironmentBuild = { trigger, ...(retry && { retries: (row.attempt?.retries ?? 0) + 1 }), startedAt: now, finishedAt: null, commit: "", image: "", ...inputs, profile: sandbox.profile, checks: [], failure: null, snapshot: false };
 	let session: string;
 	try {
-		session = await host.startBuild({ project: due.project, place: due.place, ...sandbox, trigger: due.trigger, repositoryId: repoOf(due.project) });
+		session = await host.createBuild({ project: due.project, place: due.place, ...sandbox, trigger, repositoryId: repoOf(due.project) });
 	} catch (error) {
 		// The user's running-agent limit, daily sandbox time, a full machine: the same refusals any session gets.
 		console.log(`[wlp] environment.waiting uid=${host.uid} project=${due.project} place=${due.place}: ${error instanceof Error ? error.message.slice(0, 200) : "refused"}`);
@@ -201,7 +218,17 @@ async function start(host: EnvironmentHost, due: DueBuild): Promise<void> {
 	// The size the build's session was made in, as makeSession held it to what is offered: what sessions are matched against.
 	const made = host.sessions().find(s => s.id === session)?.hostedSize;
 	if (made) attempt = { ...attempt, hostedSize: made };
-	await writeEnvironment(host.db, { ...row, attempt, session, note: null, dueAt: null, dueTrigger: null, firstPush: null });
+	const running = { ...row, attempt, session, note: null, dueAt: null, dueTrigger: null, firstPush: null };
+	await host.arm(now + BUILD_LOST_MS);
+	await writeEnvironment(host.db, running);
+	try {
+		await host.runBuild(session);
+	} catch (error) {
+		if (error instanceof BuildStartRefused) await later(error.message);
+		else await writeEnvironment(host.db, interruptBuild(running, attempt, host.now()));
+		await host.removeSession(session).catch(() => undefined);
+		return;
+	}
 	console.log(`[wlp] environment.started session=${session} trigger=${due.trigger}`);
 	await host.watchPushes(repoOf(due.project));
 }
@@ -210,7 +237,14 @@ async function start(host: EnvironmentHost, due: DueBuild): Promise<void> {
 export async function buildResult(host: EnvironmentHost, sessionId: string, result: EnvironmentBuildReport): Promise<boolean> {
 	const row = (await readEnvironments(host.db)).find(r => r.session === sessionId);
 	if (!row?.attempt) return false;
-	if ("waiting" in result) {
+	if ("interrupted" in result) {
+		await writeEnvironment(host.db, interruptBuild(row, row.attempt, host.now()));
+	} else if ("waiting" in result && row.attempt.retries) {
+		// No slot was granted: put the same retry back, without spending it.
+		await writeEnvironment(host.db, { ...row, session: null, note: result.waiting,
+			attempt: { ...row.attempt, retries: row.attempt.retries - 1, interrupted: true, finishedAt: host.now() },
+			dueAt: row.dueAt ?? host.now() + RETRY_MS, dueTrigger: row.dueTrigger ?? "retry" });
+	} else if ("waiting" in result) {
 		await writeEnvironment(host.db, { ...row, session: null, attempt: row.ready, note: result.waiting,
 			dueAt: host.now() + RETRY_MS, dueTrigger: row.dueTrigger === "rebuild" ? "rebuild" : row.attempt.trigger });
 	} else {
@@ -218,7 +252,7 @@ export async function buildResult(host: EnvironmentHost, sessionId: string, resu
 	}
 	await host.removeSession(sessionId).catch(() => undefined);
 	await tick(host);
-	return !("waiting" in result) && result.failure === null;
+	return "failure" in result && result.failure === null;
 }
 
 /** A push to the repository's default branch: each of its environments builds once the pushes settle. */
@@ -281,12 +315,12 @@ export async function nudge(host: EnvironmentHost, project: string, place: Envir
 	// A different image variant or hosted size starts cold and leaves the ready build available to matching sessions.
 	if (row.ready && !matchesImage(row.ready, place, hostedSize, screenshots)) return;
 	if (kind === "missed") {
-		if (!row.ready) return;
+		if (!row.ready || row.stale !== null) return;
 		await writeEnvironment(host.db, { ...row, stale: "Its prepared image is no longer at this place: the image changed or was removed.", dueAt: row.dueAt ?? host.now() + 60_000, dueTrigger: row.dueTrigger ?? "image" });
 	} else {
 		if (row.session !== null || row.dueAt !== null || (row.stale === null && sameInputs(row.ready, environmentInputs(saved.command, saved.checks)))) return;
 		// One that failed is not tried again for every cold start: its schedule, a push or Rebuild builds it.
-		if (row.attempt?.failure && (!row.ready || row.attempt.startedAt > row.ready.startedAt)) return;
+		if ((row.attempt?.failure || row.attempt?.interrupted) && (!row.ready || row.attempt.startedAt > row.ready.startedAt)) return;
 		await writeEnvironment(host.db, { ...row, dueAt: host.now() + 60_000, dueTrigger: "first_use" });
 	}
 	await rearm(host);

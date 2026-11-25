@@ -95,7 +95,7 @@ import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, hoste
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/hosted-network.js";
 import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
-import { buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, type EnvironmentHost } from "./user-environments.js";
+import { BuildStartRefused, buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, wakeEnvironments, type EnvironmentHost } from "./user-environments.js";
 import type { EnvironmentBuildOrigin, EnvironmentBuildReport } from "./internal.js";
 import { AccountCheckout, billingTables, readBilling } from "../billing/account.js";
 import { billing } from "../billing/config.js";
@@ -735,12 +735,17 @@ export async function agentModels(c: CreateCtx & { key: string[] }): Promise<Age
 	return { windlass, machines };
 }
 
-/** When each user actor's environment alarm is set for, while it is awake. */
-const environmentAlarms = new WeakMap<UserVars, number>();
+/** An alarm, a trigger and a quick session result can all arrive while a build is being started. */
+const environmentWrites = new WeakMap<UserVars, Promise<unknown>>();
+function changeEnvironments<T>(c: EnvironmentCtx, work: (host: EnvironmentHost) => Promise<T>): Promise<T> {
+	const next = (environmentWrites.get(c.vars) ?? Promise.resolve()).then(() => work(environmentHost(c)));
+	environmentWrites.set(c.vars, next.catch(() => undefined));
+	return next;
+}
 
 /** An action's context, as prepared environments need it: sessions can be made and the actor woken later. */
 interface EnvironmentCtx extends CreateCtx {
-	schedule: { at(at: number, action: string, ...args: unknown[]): Promise<unknown> };
+	schedule: { at(at: number, action: string, ...args: unknown[]): Promise<unknown>; list(): Promise<{ action: string; runAt: number }[]> };
 }
 
 async function applyPlaceChange(change: DefaultsChange, input: ItemPlaceDefaults, machines: Map<string, MachineSummary>, read: () => Promise<ItemPlaceDefaults>) {
@@ -794,7 +799,7 @@ function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 		},
 		snapshots: { hosted: snapshotsFor({ kind: "hosted" }), machines: snapshotsFor({ kind: "machine" }) },
 		hostedUserMax: config.hosted?.snapshots?.maxPerUser ?? null,
-		startBuild: async (request) => {
+		createBuild: async (request) => {
 			const profile = c.vars.profile;
 			if (!profile) throw new Error("Sign in again so the platform can build environments.");
 			const [row] = await c.db.execute<{ label: string }>("SELECT label FROM setup_command WHERE project = ?", request.project);
@@ -806,13 +811,15 @@ function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 			} catch (error) {
 				throw new Error(error instanceof UserError ? error.message : "The build's sandbox could not be made.");
 			}
-			try { await sessionActor(c, profile.uid, summary.id).internalBuildEnvironment(); }
-			catch (error) {
-				await removeSession(c, profile.uid, summary.id);
-				const said = (error as { group?: string; message?: string } | null);
-				throw new Error(said?.group === "user" && typeof said.message === "string" ? said.message : "The build could not start.");
-			}
 			return summary.id;
+		},
+		runBuild: async (session) => {
+			try { await sessionActor(c, uid, session).internalBuildEnvironment(); }
+			catch (error) {
+				const said = error as { group?: string; message?: string } | null;
+				if (!isSessionGone(error) && said?.group === "user" && typeof said.message === "string") throw new BuildStartRefused(said.message);
+				throw error;
+			}
 		},
 		removeSession: (id) => removeSession(c, uid, id),
 		watchPushes: async (repositoryId) => {
@@ -820,9 +827,8 @@ function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 		},
 		arm: async (at) => {
 			// One alarm is enough: another is set only for a time before the one that is set.
-			const set = environmentAlarms.get(c.vars);
-			if (set !== undefined && set >= Date.now() && set <= at) return;
-			environmentAlarms.set(c.vars, at);
+			const alarms = await c.schedule.list();
+			if (alarms.some(a => a.action === "internalEnvironmentTick" && a.runAt > Date.now() && a.runAt <= at)) return;
 			await c.schedule.at(at, "internalEnvironmentTick");
 		},
 	};
@@ -1164,6 +1170,8 @@ export const user = actor({
 	onWake: async (c) => {
 		await c.db.execute("DELETE FROM model_attempt WHERE attempt_id IS NULL OR expires<=?", Date.now());
 		queueOverageReport(c);
+		if (c.vars.profile) void c.keepAwake(changeEnvironments(c, wakeEnvironments).catch(error =>
+			c.log.warn({ msg: "could not recover environment builds", error: String(error) })));
 		// Backfill saved connections on upgrade and repair a grant interrupted after the local write.
 		const connection = c.vars.github;
 		if (connection && githubConfig().webhook) {
@@ -1572,7 +1580,7 @@ export const user = actor({
 			const command = setupCommandOf(input?.command);
 			try {
 				const saved = await saveSetup(c, profile.uid, project, await labelFor(c, input.repositoryId, project), command);
-				await settingsChanged(environmentHost(c), project).catch((error: unknown) => c.log.warn({ msg: "environments could not be marked stale", error: String(error) }));
+				await changeEnvironments(c, host => settingsChanged(host, project)).catch((error: unknown) => c.log.warn({ msg: "environments could not be marked stale", error: String(error) }));
 				return saved;
 			} catch (error) {
 				throw clientError(c.log, error, "The setup command could not be saved. Try again.");
@@ -1630,7 +1638,7 @@ export const user = actor({
 				// The list is written whole, in one statement: of two saves that run together, one stays as it was sent.
 				const saved = await saveChecks(c.db, project, await labelFor(c, input.repositoryId, project), checks, Date.now());
 				console.log(`[wlp] checks.saved uid=${profile.uid} project=${project} checks=${checks.length}`);
-				await settingsChanged(environmentHost(c), project).catch((error: unknown) => c.log.warn({ msg: "environments could not be marked stale", error: String(error) }));
+				await changeEnvironments(c, host => settingsChanged(host, project)).catch((error: unknown) => c.log.warn({ msg: "environments could not be marked stale", error: String(error) }));
 				return saved;
 			} catch (error) {
 				throw clientError(c.log, error, "The checks could not be saved. Try again.");
@@ -1774,7 +1782,7 @@ export const user = actor({
 			const project = setupKeyOf(input?.repositoryId);
 			if (input.place !== undefined && (typeof input.place !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(input.place))) throw new UserError("Choose one of the places listed.", { code: "bad_input" });
 			const host = environmentHost(c);
-			try { await rebuildEnvironments(host, project, input.place); }
+			try { await changeEnvironments(c, host => rebuildEnvironments(host, project, input.place)); }
 			catch (error) {
 				if (error instanceof Error && !(error instanceof UserError)) throw new UserError(error.message, { code: "environment_refused" });
 				throw clientError(c.log, error, "The rebuild could not be asked for. Try again.");
@@ -1786,31 +1794,30 @@ export const user = actor({
 			const project = setupKeyOf(input?.repositoryId);
 			if (!ENVIRONMENT_SCHEDULES.includes(input?.schedule)) throw new UserError("Choose nightly, every 12 hours, every 6 hours or off.", { code: "bad_input" });
 			const host = environmentHost(c);
-			await saveSchedule(host, project, input.schedule);
+			await changeEnvironments(c, host => saveSchedule(host, project, input.schedule));
 			return environmentsView(host, project);
 		},
 		internalEnvironmentTick: async (c): Promise<void> => {
-			environmentAlarms.delete(c.vars);
 			if (!c.vars.profile) return;
-			await environmentTick(environmentHost(c)).catch((error: unknown) => c.log.warn({ msg: "environment builds could not be started", error: String(error) }));
+			await changeEnvironments(c, environmentTick).catch((error: unknown) => c.log.warn({ msg: "environment builds could not be started", error: String(error) }));
 		},
 		internalEnvironmentResult: async (c, sessionId: string, result: EnvironmentBuildReport): Promise<void> => {
 			requireService(c);
-			const passed = await buildResult(environmentHost(c), boundedText(sessionId, 200), result);
+			const passed = await changeEnvironments(c, host => buildResult(host, boundedText(sessionId, 200), result));
 			if ("waiting" in result) return;
-			console.log(`[wlp] environment.built uid=${c.key[0]} session=${sessionId} passed=${passed} failure=${result.failure?.kind ?? "none"}`);
+			console.log(`[wlp] environment.built uid=${c.key[0]} session=${sessionId} passed=${passed} failure=${"interrupted" in result ? "interrupted" : result.failure?.kind ?? "none"}`);
 		},
 		internalEnvironmentNudge: async (c, sessionId: string, kind: "missed" | "cold", screenshots: boolean): Promise<void> => {
 			requireService(c);
 			const session = c.vars.sessions.get(boundedText(sessionId, 200));
 			const project = setupProjectKey(session?.repository?.id);
 			if (!session || !project || session.environmentBuild || (kind !== "missed" && kind !== "cold")) return;
-			await environmentNudge(environmentHost(c), project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, kind, session.hostedSize, screenshots);
+			await changeEnvironments(c, host => environmentNudge(host, project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, kind, session.hostedSize, screenshots));
 		},
 		internalEnvironmentPushed: async (c, repositoryId: GithubId): Promise<void> => {
 			requireService(c);
 			if (!c.vars.profile) return;
-			await environmentPushed(environmentHost(c), setupKeyOf(repositoryId));
+			await changeEnvironments(c, host => environmentPushed(host, setupKeyOf(repositoryId)));
 		},
 		internalSetupCommand: async (c, project: string): Promise<RepositorySetup> => {
 			requireService(c);
@@ -2020,7 +2027,7 @@ export const user = actor({
 				await c.db.execute("DELETE FROM repository_defaults WHERE project = ?", project);
 				await c.db.execute("DELETE FROM repository_network WHERE project = ?", project);
 				await c.db.execute("DELETE FROM network_request WHERE project = ?", project);
-				await forgetEnvironments(environmentHost(c), project);
+				await changeEnvironments(c, host => forgetEnvironments(host, project));
 				const done = await changeApprovals(c, (book) => book.forgetProject(project));
 				await dropHostedSnapshots(profile.uid, String(repositoryId));
 				console.log(`[wlp] repository.forgotten uid=${profile.uid} project=${project} approvals=${done.removed.length}`);

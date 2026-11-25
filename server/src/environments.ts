@@ -30,6 +30,8 @@ export const RECENT_USE_MS = 14 * 86_400_000;
 export const MAX_PLACES = 3;
 /** A build that has not reported in this long is taken as lost (its session went), and the next may start. */
 export const BUILD_LOST_MS = 2 * 60 * 60_000;
+export const INTERRUPTION_RETRY_MS = 90_000;
+const MAX_BUILD_RETRIES = 2;
 /** A build refused for a limit is tried again no sooner than this. */
 export const RETRY_MS = 30 * 60_000;
 /** Nightly builds start between these UTC hours, at a time picked from the user and repository. */
@@ -58,7 +60,7 @@ export interface EnvironmentRow {
 	note: string | null;
 	/** A build asked for (push, change, rebuild, image) and when it is due. */
 	dueAt: number | null;
-	dueTrigger: EnvironmentTrigger | null;
+	dueTrigger: EnvironmentTrigger | "retry" | null;
 	/** The first push of a run of pushes, for PUSH_CAP_MS. */
 	firstPush: number | null;
 	/** The build session running now, if any. */
@@ -77,6 +79,7 @@ export function usable(row: Pick<EnvironmentRow, "ready" | "stale"> | undefined,
 
 export function stateOf(row: EnvironmentRow, inputs: EnvironmentInputs): EnvironmentState {
 	if (row.attempt && row.attempt.finishedAt === null) return "building";
+	if (row.attempt?.interrupted && sameInputs(row.attempt, inputs)) return row.dueAt === null ? "interrupted" : "retrying";
 	// Its image is gone from the place: whatever the last build said, sessions start cold until one is saved again.
 	if (row.ready && row.stale !== null) return "stale";
 	// A failure under settings that have changed since says nothing of today's: the record is stale then.
@@ -169,14 +172,14 @@ export function placeRefusal(place: PlaceFacts, hosted: { userEnvironments: numb
 }
 
 /** A due build: the record, and why. */
-export interface DueBuild { project: string; place: EnvironmentPlace; trigger: EnvironmentTrigger }
+export interface DueBuild { project: string; place: EnvironmentPlace; trigger: EnvironmentTrigger | "retry" }
 
 /**
  * The next build to start, or null. One runs at a time: none while a build is running and not lost. Asked-for
  * builds (Rebuild first, then the oldest due) go before scheduled ones.
  */
 export function nextBuild(rows: readonly EnvironmentRow[], scheduled: readonly DueBuild[], now: number): DueBuild | null {
-	if (rows.some(r => r.session !== null && r.attempt && r.attempt.finishedAt === null && now - r.attempt.startedAt < BUILD_LOST_MS)) return null;
+	if (rows.some(r => r.attempt?.finishedAt === null && now - r.attempt.startedAt < BUILD_LOST_MS)) return null;
 	const asked = rows.filter(r => r.dueAt !== null && r.dueAt <= now && r.dueTrigger !== null)
 		.sort((a, b) => Number(b.dueTrigger === "rebuild") - Number(a.dueTrigger === "rebuild") || a.dueAt! - b.dueAt!);
 	if (asked[0]) {
@@ -190,7 +193,9 @@ export function nextBuild(rows: readonly EnvironmentRow[], scheduled: readonly D
 
 /** The soonest time anything is due, for the alarm; null when nothing is. */
 export function nextWake(rows: readonly EnvironmentRow[], scheduledAt: readonly number[]): number | null {
-	const times = [...rows.flatMap(r => r.dueAt !== null ? [r.dueAt] : []), ...rows.flatMap(r => r.session !== null && r.attempt ? [r.attempt.startedAt + BUILD_LOST_MS] : []), ...scheduledAt];
+	const deadlines = rows.flatMap(r => r.attempt?.finishedAt === null ? [r.attempt.startedAt + BUILD_LOST_MS] : []);
+	if (deadlines.length) return Math.min(...deadlines);
+	const times = [...rows.flatMap(r => r.dueAt !== null ? [r.dueAt] : []), ...scheduledAt];
 	return times.length ? Math.min(...times) : null;
 }
 
@@ -220,6 +225,13 @@ export function judgeChecks(ran: readonly RanCheck[]): { checks: EnvironmentChec
 		return { name: r.name, status: r.status, exitCode: r.exitCode, durationMs: r.durationMs, environment: env?.kind ?? null };
 	});
 	return { checks, failure, codeFailures };
+}
+
+/** A newer push, settings change or Rebuild already queued gets its own retry budget. */
+export function interruptBuild(row: EnvironmentRow, attempt: EnvironmentBuild, now: number): EnvironmentRow {
+	const retry = row.dueAt === null && (attempt.retries ?? 0) < MAX_BUILD_RETRIES;
+	return { ...row, session: null, note: null, attempt: { ...attempt, finishedAt: now, interrupted: true },
+		...(retry && { dueTrigger: "retry", dueAt: now + INTERRUPTION_RETRY_MS }) };
 }
 
 /** The record after a build ended: promoted when it passed, else only the attempt changes. */
@@ -253,7 +265,7 @@ const parse = (text: string | null): EnvironmentBuild | null => {
 };
 
 function rowOf(s: Stored): EnvironmentRow {
-	return { project: s.project, place: s.place, attempt: parse(s.attempt), ready: parse(s.ready), stale: s.stale, note: s.note, dueAt: s.due_at, dueTrigger: s.due_trigger as EnvironmentTrigger | null, firstPush: s.first_push, session: s.session };
+	return { project: s.project, place: s.place, attempt: parse(s.attempt), ready: parse(s.ready), stale: s.stale, note: s.note, dueAt: s.due_at, dueTrigger: s.due_trigger as EnvironmentRow["dueTrigger"], firstPush: s.first_push, session: s.session };
 }
 
 export async function readEnvironments(db: Pick<RawAccess, "execute">, project?: string): Promise<EnvironmentRow[]> {

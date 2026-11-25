@@ -14,12 +14,16 @@
 import { DatabaseSync } from "node:sqlite";
 import type { EnvironmentBuild, MachineSummary, RepositoryCheck, SessionSummary } from "../server/src/contract.js";
 import {
-	afterChange, afterPush, CHANGE_DEBOUNCE_MS, ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, environmentInputs, environmentPlaces, HOSTED, judgeChecks, nextBuild, nextScheduled, nightlyMinute,
+	afterChange, afterPush, BUILD_LOST_MS, INTERRUPTION_RETRY_MS, CHANGE_DEBOUNCE_MS, ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, environmentInputs, environmentPlaces, HOSTED, judgeChecks, nextBuild, nextScheduled, nightlyMinute,
 	PUSH_CAP_MS, PUSH_DEBOUNCE_MS, readEnvironments, RETRY_MS, stateOf, usable, type EnvironmentRow,
 } from "../server/src/environments.js";
+import { ConversationLost } from "../server/src/runner/channel.js";
+import type { SandboxHandle } from "../server/src/sandbox/api.js";
+import { runSetupCommand } from "../server/src/sandbox/setup.js";
+import { PlatformChecks } from "../server/src/sandbox/platform-checks.js";
 import { snapshotPlaces } from "../server/src/snapshot-places.js";
 import { edge } from "../server/src/github/events.js";
-import { buildResult, environmentsView, nudge, pushed, rebuild, sameSize, saveSchedule, sessionEnvironment, settingsChanged, tick, type BuildRequest, type EnvironmentHost } from "../server/src/actors/user-environments.js";
+import { buildResult, environmentsView, nudge, pushed, rebuild, sameSize, saveSchedule, sessionEnvironment, settingsChanged, tick, wakeEnvironments, type BuildRequest, type EnvironmentHost } from "../server/src/actors/user-environments.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail: unknown = ""): void {
@@ -134,7 +138,7 @@ function stand(): Stand {
 	const saved = { command: "npm ci", checks: CHECKS, secrets: 0 };
 	const started: BuildRequest[] = [], removed: string[] = [], watched: string[] = [];
 	const sessions: SessionSummary[] = [
-		{ id: "s_a", place: { kind: "hosted" }, profile: "docker-hardened", harness: "windlass", repository: { id: 7101 }, updatedAt: clock.now - HOUR } as unknown as SessionSummary,
+		{ id: "s_a", place: { kind: "hosted" }, hostedSize: "small", profile: "docker-hardened", harness: "windlass", repository: { id: 7101 }, updatedAt: clock.now - HOUR } as unknown as SessionSummary,
 		{ id: "s_b", place: { kind: "machine", machineId: "m_box" }, profile: "docker-hardened", harness: "windlass", repository: { id: 7101 }, updatedAt: clock.now - 2 * HOUR, item: { id: "i_1" } } as unknown as SessionSummary,
 	];
 	const s: Stand = { started, removed, clock, saved, refuse: null, watched, machines: [{ machineId: "m_box", name: "box", status: "online", orchestrator: "yes" } as unknown as MachineSummary], host: null as unknown as EnvironmentHost };
@@ -147,11 +151,14 @@ function stand(): Stand {
 		saved: async () => ({ ...saved, defaults: { screenshots: true, profile: null, model: null, updatedAt: null }, label: "acme/harbor" }),
 		snapshots: { hosted: true, machines: true },
 		hostedUserMax: null,
-		startBuild: async (request) => {
+		createBuild: async (request) => {
 			if (s.refuse) throw new Error(s.refuse);
 			started.push(request);
-			return `s_env_${++n}`;
+			const id = `s_env_${++n}`;
+			sessions.push({ id, environmentBuild: true, hostedSize: request.hostedSize } as SessionSummary);
+			return id;
 		},
+		runBuild: async () => {},
 		removeSession: async (id) => { removed.push(id); },
 		watchPushes: async (repo) => { watched.push(repo); },
 		arm: async () => undefined,
@@ -207,6 +214,82 @@ async function run(): Promise<void> {
 		expect("the view says why it is stale", (await environmentsView(s.host, PROJECT)).environments.find(e => e.place === HOSTED)?.note?.includes("setup command") === true);
 	}
 
+	{
+		const s = stand();
+		await saveSchedule(s.host, PROJECT, 0);
+		s.host.runBuild = async (id) => {
+			expect("the build session is recorded before its turn starts", (await readEnvironments(s.host.db, PROJECT))[0].session === id);
+			throw new Error("Lost connection to the build session");
+		};
+		await rebuild(s.host, PROJECT, HOSTED);
+		expect("losing the build session at handoff queues its retry", (await environmentsView(s.host, PROJECT)).environments[0].state === "retrying");
+	}
+
+	{
+		const handle = { run: async () => { throw new ConversationLost("runner restarted"); } } as unknown as SandboxHandle;
+		const setup = await runSetupCommand(handle, { command: "npm ci", cwd: ".", timeoutMs: 1000 });
+		const checks = await new PlatformChecks(handle, CHECKS, () => {}, { agent: "the build" }).runAll();
+		expect("a lost runner survives setup error handling", setup.connectionLost === true);
+		expect("a lost runner interrupts validation before the next check", checks.length === 1 && checks[0].status === "interrupted");
+	}
+	// The same trigger gets two automatic retries. Time offline spends neither of them.
+	{
+		const s = stand();
+		s.host.snapshots.hosted = false;
+		await saveSchedule(s.host, PROJECT, 0);
+		const view = async () => (await environmentsView(s.host, PROJECT)).environments[0];
+		await rebuild(s.host, PROJECT, "m_box");
+		await buildResult(s.host, "s_env_1", { interrupted: true });
+		const pending = await view();
+		expect("an interruption queues a retry in 90 seconds", pending.state === "retrying" && pending.nextAt === s.clock.now + INTERRUPTION_RETRY_MS);
+		s.machines[0].status = "offline";
+		for (let i = 0; i < 3; i++) {
+			s.clock.now += INTERRUPTION_RETRY_MS;
+			await tick(s.host);
+		}
+		expect("an offline machine waits for connection without using a retry", s.started.length === 1 && (await view()).note?.includes("connect") === true);
+		s.machines[0].status = "online";
+		for (let retry = 1; retry <= 2; retry++) {
+			s.clock.now += INTERRUPTION_RETRY_MS;
+			await tick(s.host);
+			const active = await view();
+			expect(`retry ${retry} starts on the original machine`, active.state === "building" && active.attempt?.retries === retry && s.started.at(-1)?.place === "m_box");
+			await buildResult(s.host, `s_env_${retry + 1}`, { interrupted: true });
+		}
+		s.clock.now += HOUR;
+		await nudge(s.host, PROJECT, "m_box", "cold");
+		await tick(s.host);
+		const capped = await view();
+		expect("after two retries there is no build queued", capped.state === "interrupted" && capped.nextAt === null && s.started.length === 3);
+		await rebuild(s.host, PROJECT, "m_box");
+		await buildResult(s.host, "s_env_4", { interrupted: true });
+		expect("manual Rebuild starts a new retry budget", (await view()).state === "retrying");
+		s.clock.now += INTERRUPTION_RETRY_MS;
+		await tick(s.host);
+		await buildResult(s.host, "s_env_5", failedBuild);
+		s.clock.now += HOUR;
+		await tick(s.host);
+		expect("a real check failure during a retry ends the chain", (await view()).state === "failed" && (await view()).nextAt === null && s.started.length === 5);
+	}
+	{
+		const s = stand();
+		await saveSchedule(s.host, PROJECT, 0);
+		await rebuild(s.host, PROJECT, HOSTED);
+		const alarms: number[] = [];
+		const woken = { ...s.host, arm: async (at: number) => { alarms.push(at); } };
+		await wakeEnvironments(woken);
+		expect("waking before the deadline restores the deadline alarm", alarms.at(-1) === s.clock.now + BUILD_LOST_MS && s.removed.length === 0);
+		s.clock.now += BUILD_LOST_MS;
+		await wakeEnvironments(woken);
+		expect("waking after the deadline sweeps the lost session and arms its retry", s.removed.includes("s_env_1") && alarms.at(-1) === s.clock.now + INTERRUPTION_RETRY_MS);
+		await buildResult(woken, "s_env_1", failedBuild);
+		s.clock.now += INTERRUPTION_RETRY_MS;
+		await tick(woken);
+		await buildResult(woken, "s_env_2", passed());
+		const env = (await environmentsView(woken, PROJECT)).environments[0];
+		expect("the retry succeeds and a late result from the old session is ignored", env.state === "ready" && s.started.length === 2);
+	}
+
 	// A quick setup validates once. Cold items, identical settings and code-only merges leave it alone.
 	{
 		const s = stand();
@@ -246,12 +329,6 @@ async function run(): Promise<void> {
 		const s = stand();
 		const sessions = s.host.sessions();
 		(sessions[0] as { hostedSize?: string }).hostedSize = "large";
-		const startBuild = s.host.startBuild;
-		s.host.startBuild = async (request) => {
-			const id = await startBuild(request);
-			sessions.push({ id, place: { kind: "hosted" }, profile: request.profile, harness: "windlass", repository: { id: 7101 }, updatedAt: s.clock.now, environmentBuild: {}, hostedSize: request.hostedSize } as unknown as SessionSummary);
-			return id;
-		};
 		await rebuild(s.host, PROJECT, HOSTED);
 		expect("a hosted build asks for the size of the repository's latest session there", s.started[0]?.hostedSize === "large", s.started);
 		await buildResult(s.host, "s_env_1", passed());
