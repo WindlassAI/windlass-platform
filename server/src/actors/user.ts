@@ -98,6 +98,7 @@ import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, hoste
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/hosted-network.js";
 import { cachedScan, saveSetupScan, claimAssessment, finishAssessment, repositoryReadiness, READINESS_TABLE, READINESS_TICK, SETUP_LEASE_MS, scheduleName, scheduleSetup, setupInputs } from "./user-readiness.js";
+import { applyOffers, offered, type OfferRow } from "../factory/readiness-track.js";
 import type { Judgment } from "../factory/readiness.js";
 import { readinessPrompt } from "../factory/readiness-filing.js";
 import { scanCiHistory } from "../github/ci-history.js";
@@ -424,8 +425,37 @@ function guideFilesFor(c: Pick<CreateCtx, "client">, id: GithubId) {
 	return c.client().githubRepository.getOrCreate([String(id)], { params: serviceParams() });
 }
 
+async function repoRecords(c: UserCtx & Pick<CreateCtx, "client">, id: GithubId) {
+	const rows = [...c.vars.items.items.values()].filter(s => String(s.repository.id) === String(id) && !s.parent && ["done", "failed", "cancelled"].includes(s.state));
+	for (const row of rows) if (row.record === undefined) {
+		const summary = await itemActor(c, c.vars.profile!.uid, row.id).internalSummary();
+		if (row.revision === summary.revision) row.record = summary.record;
+	}
+	return rows.flatMap(s => s.record ? [s.record] : []);
+}
+
+async function repoPolicy(c: UserCtx & Pick<CreateCtx, "client">, id: GithubId, project: string, weekly = false, scanError: string | null = null, patch?: RepositoryDefaultsPatch) {
+	const records = await repoRecords(c, id);
+	return c.db.transaction(async tx => {
+		const scan = await cachedScan(tx, project);
+		const inputs = scan && await setupInputs(tx, project, scan, (await readSetup(tx, project)).command, (await readChecks(tx, project)).checks);
+		const readiness = await repositoryReadiness(tx, project, inputs ?? null, weekly, scanError, records);
+		const manual = await readDefaults(tx, project);
+		const rows = await tx.execute<OfferRow>("SELECT offer, earned, off FROM setup_offer WHERE project=?", project);
+		const record = readiness.latest?.record;
+		const policy = applyOffers(manual, record, rows);
+		for (const offer of policy.expired) await tx.execute("UPDATE setup_offer SET off=1 WHERE project=? AND offer=?", project, offer);
+		if (patch?.offer !== undefined) {
+			if (!record || !offered(record, policy.defaults).includes(patch.offer)) throw new UserError("This offer is no longer available.", { code: "bad_input" });
+			const row = { offer: patch.offer, earned: record.earned[patch.offer]!, off: 0 };
+			await tx.execute("INSERT OR REPLACE INTO setup_offer VALUES (?,?,?,0)", project, row.offer, row.earned);
+			return { readiness, defaults: applyOffers(manual, record, [...rows.filter(r => r.offer !== row.offer), row]).defaults };
+		}
+		return { readiness: { ...readiness, switchNote: policy.switchNote }, defaults: policy.defaults };
+	});
+}
+
 async function repositoryView(c: UserCtx & Pick<CreateCtx, "client"> & { cron: Pick<ActorCron, "get"> }, repositoryId: GithubId, project: string): Promise<RepositoryView> {
-	const defaults = await readDefaults(c.db, project);
 	const setup = await readSetup(c.db, project);
 	const [secrets] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ?", project);
 	const { checks } = await readChecks(c.db, project);
@@ -445,14 +475,13 @@ async function repositoryView(c: UserCtx & Pick<CreateCtx, "client"> & { cron: P
 		catch { scanError = "Could not read the default branch. Open this page again to retry."; }
 	}
 	const knowledge = await setupKnowledge(c.db, c.vars.profile!.uid, project);
-	const inputs = scan ? await setupInputs(c.db, project, scan, setup.command, checks) : null;
+	const policy = await repoPolicy(c, repositoryId, project, !!await c.cron.get(scheduleName(repositoryId)), scanError);
 	return {
 		id: repositoryId,
 		name: name === "" ? null : name,
 		knowledge,
 		guideCheck: scan ? await guideFilesFor(c, repositoryId).internalGuideSettings(knowledge.publication?.head) : { enabled: true, result: null },
-		readiness: await repositoryReadiness(c.db, project, inputs, !!await c.cron.get(scheduleName(repositoryId)), scanError),
-		defaults,
+		...policy,
 		approvals: [...approvals.values()],
 		// For all the repository's sessions, of either Docker profile: a hardened one's Windlass data may be its own.
 		forgetting: forgettingWords({ dataInSandbox: sandboxes.sessionsLiveInSandbox, hardenedOwnData: (await sandboxes.privateSessionData?.("docker-hardened")) === true }),
@@ -1166,6 +1195,7 @@ export const user = actor({
 			// Before the column checks below: the API token table is one of them.
 			for (const table of ITEM_TABLES) await db.execute(table);
 			await db.execute(READINESS_TABLE);
+			await db.execute("CREATE TABLE IF NOT EXISTS setup_offer(project TEXT, offer TEXT, earned INTEGER, off INTEGER, PRIMARY KEY(project,offer))");
 			for (const [table, column, definition] of [
 				["readiness", "diagnosis", "TEXT"],
 				["model_attempt", "attempt_id", "TEXT"],
@@ -1713,8 +1743,10 @@ export const user = actor({
 
 		internalRepositoryAutonomy: async (c, repositoryId: GithubId) => {
 			requireService(c);
-			const { autoApprovePlans, autoMergeSingles, waitForCiOnEachPart } = await readDefaults(c.db, setupKeyOf(repositoryId));
-			return { autoApprovePlans: !!autoApprovePlans, autoMergeSingles: !!autoMergeSingles, waitForCiOnEachPart: !!waitForCiOnEachPart };
+			const project = setupKeyOf(repositoryId);
+			const hasOffers = (await c.db.execute("SELECT 1 FROM setup_offer WHERE project=? AND off=0 LIMIT 1", project)).length;
+			const { autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, mergeKinds } = hasOffers ? (await repoPolicy(c, repositoryId, project)).defaults : await readDefaults(c.db, project);
+			return { mergeKinds, autoApprovePlans: !!autoApprovePlans, autoMergeSingles: !!autoMergeSingles, waitForCiOnEachPart: !!waitForCiOnEachPart };
 		},
 
 		repositoryChecks: async (c, repositoryId: GithubId): Promise<RepositoryChecks> => {
@@ -2160,10 +2192,7 @@ export const user = actor({
 		},
 		internalReadinessLevel: async (c, id: GithubId) => {
 			requireServiceFor(c, "call");
-			const project = setupKeyOf(id), scan = await cachedScan(c.db, project);
-			if (!scan) return null;
-			const inputs = await setupInputs(c.db, project, scan, (await readSetup(c.db, project)).command, (await readChecks(c.db, project)).checks);
-			return (await repositoryReadiness(c.db, project, inputs, false)).latest?.level ?? null;
+			return (await repoPolicy(c, id, setupKeyOf(id))).readiness.latest?.level ?? null;
 		},
 		repository: async (c, repositoryId: GithubId): Promise<RepositoryView> => {
 			requireUser(c);
@@ -2198,6 +2227,7 @@ export const user = actor({
 		saveRepositoryDefaults: async (c, input: RepositoryDefaultsPatch & { repositoryId: GithubId }): Promise<RepositoryDefaults> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
+			if (input.offer !== undefined) return (await repoPolicy(c, input.repositoryId, project, false, null, input)).defaults;
 			let change: DefaultsChange;
 			try {
 				const layer = await getLayer();
@@ -2210,10 +2240,13 @@ export const user = actor({
 			try {
 				const label = await labelFor(c, input.repositoryId, project);
 				const saved = await c.db.transaction(async tx => {
+					if (change.autoApprovePlans !== undefined) await tx.execute("DELETE FROM setup_offer WHERE project=? AND offer='Small plans'", project);
+					if (change.autoMergeSingles !== undefined) await tx.execute("DELETE FROM setup_offer WHERE project=? AND offer!='Small plans'", project);
 					await applyPlaceChange(change, input, c.vars.machines, () => readDefaults(tx, project));
 					return saveDefaults(tx, project, label, change, Date.now());
 				});
 				console.log(repositoryDefaultsLog(profile.uid, project, change));
+				if ((await c.db.execute("SELECT 1 FROM setup_offer WHERE project=? AND off=0 LIMIT 1", project)).length) return (await repoPolicy(c, input.repositoryId, project)).defaults;
 				return saved;
 			} catch (error) {
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
@@ -2247,6 +2280,7 @@ export const user = actor({
 				await scheduleSetup(c.cron, repositoryId, false);
 				await c.cron.delete("setup-note-cleanup-" + repositoryId);
 				await c.db.execute("DELETE FROM setup_scan WHERE project=?", project);
+				await c.db.execute("DELETE FROM setup_offer WHERE project=?", project);
 				await c.db.execute("DELETE FROM readiness WHERE project=?", project);
 				await c.db.execute("DELETE FROM setup_notes WHERE project=?", project);
 				await retireDrafters(c, profile.uid, project);

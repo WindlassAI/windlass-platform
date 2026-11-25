@@ -37,6 +37,7 @@ import { useApp, useAuth } from "../state/app";
 import { useGithub, type Github } from "../state/github";
 import { useNow, useSessions } from "../state/hooks";
 import { RepositoryItems, type ItemsState } from "./Items";
+import { offered } from "../../../server/src/factory/readiness-track";
 import { RepositorySetupChecks } from "../components/RepositorySetupChecks";
 import { RepositorySettings } from "./RepositorySettings";
 import { readTwice } from "../lib/retry";
@@ -410,6 +411,7 @@ export function RepositoryPane({ page, view, launching = false, items, filters, 
 	const launchable = access.state !== "unusable";
 	const pulls = page.sessions === null ? null : openPulls(page.sessions, page.id);
 	const offersItems = Boolean(platform.info?.items);
+	const record = page.view?.readiness.latest?.record;
 	const tab = view === "agents" || view === "items" ? view : "overview";
 	const aside = view === "pulls" || view === "settings" ? view : null;
 	const slash = page.name?.indexOf("/") ?? -1;
@@ -434,6 +436,7 @@ export function RepositoryPane({ page, view, launching = false, items, filters, 
 					<h1 className="ws-title">{short}</h1>
 					{page.name === null && page.view !== null ? <p className="home-account">Nothing here says what it is called: no agent of yours is on it, and GitHub was not heard on it. {page.id} is GitHub's number for it.</p> : null}
 					<StatusLine page={page} items={items} />
+					{record && (record.note || page.view?.readiness.switchNote || offered(record, page.view!.defaults).length > 0) && <p className="usage-note">{record.note} {page.view?.readiness.switchNote} {offered(record, page.view!.defaults).length > 0 && <a className="link" {...(tab === "overview" && !aside ? { href: "#repo-setup" } : linkProps({ name: "repository", id: page.id }))}>Review earned settings in Repo setup</a>}</p>}
 					<AccessLine page={page} github={github} />
 				</div>
 				<div className="ws-head-actions">

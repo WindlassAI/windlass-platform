@@ -856,6 +856,8 @@ export interface RepositorySecrets {
 export interface RepositoryAutonomy {
 	autoApprovePlans?: boolean;
 	autoMergeSingles?: boolean;
+	/** An offer limits automatic merge to these kinds. A manual opt-in covers every kind. */
+	mergeKinds?: import("./factory/readiness-track.js").TaskKind[];
 	waitForCiOnEachPart?: boolean;
 }
 
@@ -930,7 +932,7 @@ export interface SavedRepository {
 export type AccountDefaults = Omit<RepositoryDefaults, keyof RepositoryAutonomy | "screenshots" | "hostedSize">;
 
 export type AccountDefaultsPatch = Partial<Omit<AccountDefaults, "updatedAt">>;
-export type RepositoryDefaultsPatch = Partial<Omit<RepositoryDefaults, "updatedAt">>;
+export type RepositoryDefaultsPatch = Partial<Omit<RepositoryDefaults, "updatedAt" | "mergeKinds">> & { offer?: import("./factory/readiness-track.js").Offer };
 
 /** Last personal launch, retained after deleting the session. Item sessions never replace it. */
 export interface LastStart {
@@ -1614,6 +1616,7 @@ export interface LinearIssueOrigin {
 export type ItemOrigin = GithubIssueOrigin | LinearIssueOrigin;
 
 export interface ItemSummary {
+	record?: import("./factory/readiness-track.js").ItemRecord | null;
 	/** Its builder session has not been created yet. */
 	awaitingPlace?: boolean;
 	/** Absent for items filed before agents could be chosen: Windlass. */

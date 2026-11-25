@@ -462,7 +462,7 @@ export type StepFact =
 	/** The paused turn of `key` has waited for its machine since `since`, long enough (WLP_MACHINE_AWAY_ASK_MS) to ask the person once. */
 	| { kind: "machine_away"; deadline?: number; at: number; key: string; since: number; machine: string | null }
 	| {
-			kind: "turn_ended"; autoApprovePlans?: boolean;
+			kind: "turn_ended"; taskKind?: import("./readiness-track.js").TaskKind; autoApprovePlans?: boolean;
 			at: number;
 			key: string;
 			outcome: TurnOutcome;

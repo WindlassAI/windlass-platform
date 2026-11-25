@@ -5,7 +5,7 @@ const commitsQuery = `query($owner: String!, $name: String!, $head: GitObjectID!
 	repository(owner: $owner, name: $name) { object(oid: $head) { ... on Commit {
 		history(first: 100, since: $since, after: $after) {
 			pageInfo { hasNextPage endCursor }
-			nodes { oid message parents(first: 1) { totalCount nodes { oid } } statusCheckRollup { state }
+			nodes { oid committedDate message parents(first: 1) { totalCount nodes { oid } } statusCheckRollup { state }
 				associatedPullRequests(first: 5) { nodes { number title baseRefName mergedAt mergeCommit { oid } } }
 			}
 		}
@@ -13,7 +13,7 @@ const commitsQuery = `query($owner: String!, $name: String!, $head: GitObjectID!
 }`;
 
 interface Commit {
-	oid: string; message: string; parents: { totalCount: number; nodes: { oid: string }[] };
+	oid: string; committedDate: string; message: string; parents: { totalCount: number; nodes: { oid: string }[] };
 	statusCheckRollup: { state: string } | null;
 	associatedPullRequests: { nodes: { number: number; title: string; baseRefName: string; mergedAt: string | null; mergeCommit: { oid: string } | null }[] };
 }
@@ -40,10 +40,19 @@ export async function scanCiHistory(app: GithubApp, token: string, repo: Reposit
 		after = result.pageInfo.endCursor;
 	}
 	const reverts = new Set<string>();
+	const originals = [...commits.values()].flatMap(c => c.associatedPullRequests.nodes.filter(p => p.mergedAt && p.baseRefName === branch && !/^Revert\s/i.test(p.title)));
 	for (const commit of commits.values()) {
 		const pulls = commit.associatedPullRequests.nodes.filter(p => p.baseRefName === branch && p.mergedAt && p.mergedAt >= since && /^Revert\s/i.test(p.title));
 		for (const pull of pulls) reverts.add("pr-" + pull.number);
-		if (!pulls.length && (/^Revert ".*"/.test(commit.message) || /^This reverts commit\b/m.test(commit.message))) reverts.add(commit.oid);
+		const direct = /^Revert ".*"/.test(commit.message) || /^This reverts commit\b/m.test(commit.message);
+		if (!pulls.length && direct) reverts.add(commit.oid);
+		if (!pulls.length && !direct) continue;
+		const sha = /^This reverts commit ([0-9a-f]{7,40})\b/im.exec(commit.message)?.[1];
+		const title = /^Revert "(.+)"(?: \(#\d+\))?$/m.exec(commit.message)?.[1] ?? /^Revert "(.+)"$/.exec(pulls[0]?.title ?? "")?.[1];
+		const byTitle = [...new Set(originals.filter(p => p.title === title).map(p => p.number))];
+		const pr = (sha && originals.find(p => p.mergeCommit?.oid.startsWith(sha))?.number) ||
+			Number(title?.match(/\(#(\d+)\)$/)?.[1] ?? commit.message.match(/^Revert (?:pull request )?#(\d+)\b/im)?.[1]) || (byTitle.length === 1 && byTitle[0]);
+		if (pr) (history.revertedPulls ??= {})[pr] = Date.parse(commit.committedDate);
 	}
 	history.reverts = reverts.size;
 	// Follow the first parent so checks on a side branch never count as checks on main.

@@ -4,6 +4,8 @@
 
 import { randomUUID } from "node:crypto";
 import type { LinearWrite } from "../linear/app.js";
+import { finishedItem, type TaskKind } from "../factory/readiness-track.js";
+import { environmentFailure } from "../factory/check-environment.js";
 import { plannerReadiness } from "../factory/readiness.js";
 import { newAgent } from "../factory/budget.js";
 import { networkBody, unionNetwork } from "../blocked-network.js";
@@ -55,6 +57,9 @@ import type { ItemFacts } from "./user-items.js";
 
 /** What the item knows around the blueprint's `FactoryItem`. */
 export interface ItemMeta {
+	taskKind?: TaskKind;
+	flaky?: boolean;
+	ciCodeFailure?: boolean;
 	defaultPlace?: import("../contract.js").ItemPlaceDefaults;
 	pendingBuilder?: import("./user-items.js").DefaultBuilder;
 	/** Sealed by the requesting session. Kept with the claim until the save is settled. */
@@ -292,7 +297,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 	const verdicts = await c.db.execute<{ data: string }>("SELECT data FROM verdicts ORDER BY at, id");
 	const plan = stored.item.featurePlan;
 	const completed = completedKeys(stored.item);
-	return {
+	const view: ItemView = {
 		...summaryOf(stored),
 		blockedNetwork: itemNetwork(stored.meta),
 		feedback: await feedbackView(c.db),
@@ -313,6 +318,23 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		events: events.map((row) => JSON.parse(row.data) as ItemEvent),
 		verdicts: verdicts.map((row) => JSON.parse(row.data) as Verdict),
 	};
+	if (ENDED.has(view.state)) {
+		const { meta, item } = stored;
+		view.record = view.parent || crossRepo(item) ? null : finishedItem(view, meta.taskKind,
+			meta.flaky, item.jobs?.some(j => j.ciFix));
+		const gate = (item.run?.ci?.gate ?? item.run?.gate)?.verified;
+		const gateFailed = gate?.run?.checks.some(c => c.status === "failed" && !c.startError && !environmentFailure(c));
+		if (view.record?.failed && !gateFailed && (meta.ciCodeFailure === false || gate && view.verdict?.ci !== "failed" && !item.run?.rounds.ci)) view.record.failed = false;
+	}
+	return view;
+}
+
+async function indexedSummary(c: Ctx, stored: Stored) {
+	if (!ENDED.has(stored.item.state)) return summaryOf(stored);
+	return queued(c, async () => {
+		const saved = (await load(c.db))!;
+		return { ...summaryOf(saved), record: (await pageOf(c, saved)).record };
+	});
 }
 
 /** Sends summaries to the user's index until the newest has gone; calls meanwhile collapse into one more. */
@@ -325,7 +347,7 @@ function report(c: Ctx): void {
 			while (c.vars.reportAgain && c.vars.stored) {
 				c.vars.reportAgain = false;
 				try {
-					await userActor(c, c.vars.stored.meta.uid).internalItemChanged(summaryOf(c.vars.stored));
+					await userActor(c, c.vars.stored.meta.uid).internalItemChanged(await indexedSummary(c, c.vars.stored));
 				} catch (error) {
 					c.log.warn({ msg: "could not report the item's summary to its user", error: describeError(error) });
 				}
@@ -346,7 +368,7 @@ function queued<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 
 async function repositoryAutonomy(c: Ctx, meta: ItemMeta, repositoryId = meta.repository.id) {
 	try { return await userActor(c, meta.uid).internalRepositoryAutonomy(repositoryId); }
-	catch { return { autoApprovePlans: false, autoMergeSingles: false, waitForCiOnEachPart: false }; }
+	catch { return { autoApprovePlans: false, autoMergeSingles: false, waitForCiOnEachPart: false, mergeKinds: undefined }; }
 }
 
 async function autoApprovePlans(c: Ctx, { item, meta }: Stored) {
@@ -438,6 +460,13 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	if (outcome.item === before) return false;
 	if (issue?.said) outcome.events.push({ at: fact.at, by: issue.by, step: null, said: issue.said });
 	stored.item = outcome.item;
+	if (fact.kind === "published") delete stored.meta.ciCodeFailure;
+	if (fact.kind === "turn_ended" && fact.changes) stored.meta.taskKind = fact.taskKind;
+	if (fact.kind === "ci_read" && fact.reading.kind === "read" && fact.head === fact.reading.head) {
+		const failed = fact.reading.runs.filter(r => r.state === "failed");
+		if (failed.some(r => r.baseResult === "failed")) stored.meta.flaky = true;
+		if (failed.length && before.run?.step.kind === "ci") stored.meta.ciCodeFailure = failed.some(r => !r.environment && !r.baseResult);
+	}
 	if (outcome.item.run?.step.kind === "plan_review") stored.meta.criticSessionId = criticSessionId(outcome.item.id);
 	if (fact.kind === "default_place_ready") {
 		delete stored.meta.pendingBuilder;
@@ -917,7 +946,7 @@ async function placementInventory(c: Ctx, uid: string, featureModel: string | un
 async function planCiBranches(c: Ctx, { item, meta }: Stored, repo?: FeatureRepoState) {
 	const branch = repo ?? item;
 	const waitForParts = branch.pr ? !branch.featureCi : (await repositoryAutonomy(c, meta, repo?.repositoryId)).waitForCiOnEachPart;
-	return requiredCiBranches(item, waitForParts, repo?.alias);
+	return requiredCiBranches(item, !!waitForParts, repo?.alias);
 }
 
 /**
@@ -1515,8 +1544,9 @@ async function pollCi(c: Ctx, stored: Stored, effect: Extract<Effect, { kind: "p
 	const repo = effect.repo ? repoOf(item, effect.repo) : undefined;
 	const branch = repo ?? item;
 	const number = branch.pr?.number ?? 0;
-	const autoMergeSingles = item.run?.step.kind === "handoff" && item.mode !== "orchestrate" && !item.parent &&
-		(await repositoryAutonomy(c, meta)).autoMergeSingles;
+	const settings = item.run?.step.kind === "handoff" && item.mode !== "orchestrate" && !item.parent &&
+		await repositoryAutonomy(c, meta);
+	const autoMergeSingles = !!settings && !!settings.autoMergeSingles && (!settings.mergeKinds || !!meta.taskKind && settings.mergeKinds.includes(meta.taskKind));
 	const read = async () => {
 		const hub = await github(c, meta, "read", repo);
 		// Some push receipts hold a branch name. Encode it as one path segment.
@@ -1922,7 +1952,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 						const settings = await userActor(c, meta.uid).internalRepositoryAutonomy(meta.repository.id);
 						if (!settings.autoMergeSingles) throw new Error("Automatic merge is off.");
 						const target = { installationId: hub.installationId, repositoryId: meta.repository.id, owner: hub.owner, name: hub.name, head: effect.head };
-						behind = await mergeReviewedPull(hub.app, token, target, pull, effect.baseTip) === "behind";
+						behind = await mergeReviewedPull(hub.app, token, target, pull, effect.baseTip, settings.mergeKinds) === "behind";
 						if (behind) reason = "The base branch advanced before merge.";
 					});
 				});
@@ -2247,10 +2277,10 @@ export const workItem = actor({
 				return await take(c, { ...input, kind: "file_plan", at: Date.now() }) ? "Plan filed. End your turn." : "This planning turn ended.";
 			} catch (error) { return describeError(error); }
 		},
-		internalSummary: (c): ItemSummary => {
+		internalSummary: async (c): Promise<ItemSummary> => {
 			requireService(c);
 			if (!c.vars.stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
-			return summaryOf(c.vars.stored);
+			return indexedSummary(c, c.vars.stored);
 		},
 
 		internalBlockedNetwork: async (c, receipt: NetworkReceipt): Promise<void> => {
