@@ -60,13 +60,11 @@ export function LoginMethods() {
 				<ul className="usage-kept" aria-label="Sign-in methods">
 					{providers.map(provider => {
 						const { id, name, logo } = provider;
-						if (id === "google" && !info.googleLogin) return null;
+						if (id === "github" ? !info.github : !info.googleLogin) return null;
 						const method = linked.find(one => one.provider === id);
 						const last = method && linked.length === 1;
-						const unavailable = id === "github" && !info.github;
 						const instance = method && id === "github" && host !== "github.com" && host;
 						const action = method ? "Unlink…" : "Link";
-						const reason = unavailable ? "GitHub sign-in is not configured." : undefined;
 						return (
 							<li key={id} className="usage-kept-row login-method">
 								<div className="usage-kept-main">
@@ -80,8 +78,8 @@ export function LoginMethods() {
 								<button type="button" className="button button-outline button-small"
 									aria-label={method ? `Unlink ${name}…` : `Link ${name}`}
 									aria-describedby={last ? "last-login-reason" : undefined}
-									title={last ? lastMethodReason : reason}
-									disabled={busy || last || unavailable}
+									title={last ? lastMethodReason : undefined}
+									disabled={busy || last}
 									onClick={() => {
 										if (method) { setError(""); setRemoving(provider); }
 										else void link(id);

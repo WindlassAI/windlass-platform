@@ -107,6 +107,28 @@ it.each([false, true])("shows linked identities and protects the last sign-in me
 	}
 });
 
+it("refuses a pending GitHub sign-in and lists only Google after the GitHub App is removed", async () => {
+	const configured = createMockClient({ pace: 0 });
+	const pending = await configured.login.start("github");
+	configured.dispose();
+	const client = createMockClient({ pace: 0, github: false });
+	await expect(client.login.finish(pending.url)).rejects.toMatchObject({ reason: "invalid_callback" });
+	const login = await client.login.start("google");
+	saveAuth("mock", await client.login.finish(login.url));
+	const host = document.body.appendChild(document.createElement("div"));
+	const root = createRoot(host);
+	try {
+		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
+		const names = host.querySelectorAll('[aria-label="Sign-in methods"] .provider-name');
+		expect(Array.from(names, row => row.textContent)).toEqual(["Google"]);
+	} finally {
+		act(() => root.unmount());
+		host.remove();
+		client.dispose();
+		localStorage.clear();
+	}
+});
+
 it("says where the last agent started, with its agent and mode, and forgets it", async () => {
 	const client = createMockClient({ pace: 0 });
 	const auth = { token: "mock:user:u_last:ada@example.com", profile: { uid: "u_last", email: "ada@example.com", demo: false } };

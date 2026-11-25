@@ -513,7 +513,7 @@ describe("each picker of the start composer", () => {
 describe("what the start composer starts on", () => {
 	/** An agent of the user's launched on no repository, on "nas", in the hardened container, on the second model and in Ask: the newest of all. */
 	const lastOnNas = async (mock: MockClient) => {
-		await mock.user(ada).createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened", model: "gpt-6-brisk", mode: "ask" });
+		await mock.user(ada).createSession({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened", model: "gpt-6-sol", mode: "ask" });
 	};
 
 	it("goes by the newest agent where nothing is saved: its repository (none), its place, its sandbox, its model and its mode", async () => {
@@ -522,7 +522,7 @@ describe("what the start composer starts on", () => {
 		expect(value("repo")).toBe("none");
 		write("Look around");
 		await enter();
-		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened", model: "gpt-6-brisk", mode: "ask" });
+		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened", model: "gpt-6-sol", mode: "ask" });
 	});
 
 	it("puts the account's saved default before the newest agent's, and the repository's before the account's", async () => {
@@ -589,12 +589,12 @@ describe("what the start composer starts on", () => {
 	it("puts a choice made here before every default", async () => {
 		await show({ repositoryId: 7101 });
 		open("agent");
-		pick("windlass:gpt-6-brisk");
+		pick("windlass:gpt-6-sol");
 		open("sandbox");
 		pickIn("platform", "docker-windlass-sandbox");
 		write("Look around");
 		await enter();
-		expect(created[0]).toMatchObject({ profile: "docker-windlass-sandbox", model: "gpt-6-brisk" });
+		expect(created[0]).toMatchObject({ profile: "docker-windlass-sandbox", model: "gpt-6-sol" });
 	});
 });
 

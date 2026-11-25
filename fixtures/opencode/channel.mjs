@@ -9,7 +9,7 @@ import { turnCredential } from '../../server/src/actors/agent-session.ts';
 import { OPENCODE, CODEX } from '../../server/src/sandbox/harnesses.ts';
 import { turnRefusal } from '../../server/src/provider-refusal.ts';
 
-export async function channelTurn(owner, session, id, model, expectedFailure, codex, providers = []) {
+export async function channelTurn(owner, session, id, model, expectedFailure, codex, { providers = [], source = null } = {}) {
 	if (providers.length) {
 		const { config } = await import('../../server/src/config.ts');
 		config.modelRelay.on = true;
@@ -40,14 +40,17 @@ export async function channelTurn(owner, session, id, model, expectedFailure, co
 		assert.ok(box);
 		if (!codex) await box.writeTextFile('/workspace/opencode.json', JSON.stringify({enabled_providers: [], default_agent: 'nonexistent'}));
 		const harness = new AcpHarness(codex ? CODEX : OPENCODE, 'fixture');
+		const offered = owner.report().harnesses.find(entry => entry.id === harness.id);
+		assert.ok(offered, `runner did not report ${harness.id}`);
 		let previous;
 		for (const mode of (codex ? ['agent-full-access'] : session === 'third' ? ['build', 'plan'] : ['plan'])) {
 			let reply = '', selected;
 			const ctx = {vars:{runner:link}, client:() => ({user:{get:() => ({
 				internalModelKeys:async () => providers.map(provider => ({provider, generation:'fixture'})),
+				internalCredentialSource:async () => source,
 			})}})};
 			const credential = await turnCredential(ctx, {uid:owner.identity.uid, harness:harness.id, place:{kind:'machine', machineId:owner.identity.machineId}},
-				{id:harness.id, keyRelay:owner.harnessKeyRelays}, model);
+				{...offered, keyRelay:owner.harnessKeyRelays}, model);
 			const turn = await harness.runTurn(box, {
 				prompt: 'Say relay proof.', mode, model:credential.model,
 				...(credential.key && { modelKey: { sessionId: session, key:credential.key } }), windlassSessionId: previous,
