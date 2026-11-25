@@ -1,108 +1,6 @@
-/**
- * Running Windlass in a sandbox, whatever provider the sandbox is from: this file knows a sandbox only
- * as a `TurnSandbox` (provider.ts). One turn is one process that speaks the Agent Client Protocol,
- * started under wlp-run in the sandbox's workspace with
- *
- *   WINDLASS_WAKE=off WINDLASS_ACP_LOG=warn
- *   WINDLASS_ACP_SCRIPT=/tmp/.wlp-script-<random>.json                                        a scripted (demo) turn
- *   WINDLASS_ACCESS_TOKEN_FILE=<session-private path>/access-token-<id>.json       any other turn
- *   wlp-run exec <tag> windlass acp
- *
- * (windlass.ts shows the `docker exec` this is on Docker, e2b/sandboxes.ts the command it is on E2B.)
- *
- * A turn that is not scripted runs on its user's ChatGPT sign-in, which is never in the sandbox: the
- * turn is handed the user's current access token in that file (token-file.ts says where, how and for
- * how long), written before the process starts (`TurnSandbox.writeSecretFile`: the token on standard
- * input, the file renamed into place), replaced the same way when the token in it has ten minutes left,
- * and removed when the turn ends. A scripted turn gets no token.
- *
- * While a turn runs, the sandbox is held (`TurnSandbox.holdForTurn`): a provider whose sandboxes stop by
- * themselves when nobody vouches for them keeps this one running until the turn has ended.
- *
- * A turn of a session on a repository with saved secrets is handed them (`RunTurnInput.secrets`):
- * those meant for Windlass go into the process's environment without being on a command line
- * (`StartOptions.secretEnv`), and every saved value is taken out of whatever the engine sends before
- * any of it is looked at (`AcpConnection`'s `clean`), out of the pieces of streaming text a value is
- * split over (`streamed`), and out of the end of standard error and a failure's sentence. Which of
- * them no command may get, and which credential-looking ones sandboxed commands get all the same, is
- * said by name when the session is opened (`withholdEnv`, `passEnv`).
- *
- * Each turn checks its engine's initialize response for host tools before opening a session.
- *
- * The process is driven over its stdin and stdout as the `windlass` command line drives its own engine (Windlass's
- * docs/acp.md, "The command line is an ACP client"):
- *
- *   initialize                         every engine event is asked for as `_windlass/event`, no standard updates
- *   session/new | _windlass/resolve + session/resume
- *                                      model, effort, the profile's approval mode, whether anyone can answer,
- *                                      a home of the session's own for
- *                                      sandboxed commands, the two lists of variable names, and the
- *                                      user's checks as required checks
- *   _windlass/mcp                      the servers the project's configuration names that wait for approval,
- *                                      each put to `onServerQuestion` before the prompt goes
- *     -> _windlass/mcp_approve         a server the user said to start; it starts at once
- *   session/prompt                     answered when the turn ends, with how it ended
- *     <- _windlass/event               passed on unchanged, in order
- *     <- session/request_permission    a tool call's approval question, put to `onQuestion`
- *     <- _windlass/host_call           a call of one of the platform's own tools, answered by its callback
- *     <- _windlass/mcp_changed         a server came to wait, started or failed while the turn runs
- *     -> _windlass/steer               a message into the running turn (`TurnControl.steer`)
- *     -> _windlass/cancel_call         one running tool call stopped (`TurnControl.cancelCall`)
- *     -> session/cancel                the turn stopped (`signal`)
- *   session/close, stdin closed        the process lets go of the session and exits
- *
- * No prompt text is ever on a command line. The process lives for one turn, so nothing has to be kept
- * between turns and a server that restarts loses nothing but the turn it was running.
- *
- * A project's MCP servers are asked about as Windlass's own command line asks (its docs/acp.md, "A
- * question about a project's hook, language server or MCP server put before a message is sent"): what
- * waits is read before the prompt, the prompt goes after the answers, and the turn starts with what the
- * user allowed. A server approved then is running, and in the model's list of tools, at the turn's
- * first step. One that Windlass reports later (`_windlass/mcp_changed`) is asked about while the turn
- * runs: approved, it starts at once, its tools can be called at once, and the model is told of them at
- * its next step. Windlass remembers the approval itself, in its data directory in the sandbox, and
- * from then on starts the server without reporting it as waiting. What it says of the project's
- * servers at each of these moments is handed on as it comes (`onServers`), for whoever shows them.
- *
- * Windlass starts by itself the servers the configuration file of its own user names, and the layer
- * writes the MCP servers of the session's user (`RunTurnInput.servers`) into that file in the sandbox
- * for a turn (windlass-config.ts). They go in once the engine has said what it can do and before a
- * session is opened, which is when it reads its configuration, and are taken out again when the
- * turn has ended. What the file holds besides is kept. What an earlier turn left there, because its server stopped under it,
- * is taken out first, by the layer's own list of what it wrote: a sandbox that exists has the user's
- * servers as they are now from its next turn, and a deleted one does not go on starting.
- *
- * The opener supplies the user's required checks on every turn. The engine's evidence identifies their origin.
- *
- * The platform's own tools (platform-tools.ts: `publish`, `report`, `ask_person`, `push`, `fetch_base`, and
- * the planner's and the reviewer's filing tools) are declared to the engine when the session is opened (`hostTools`), those the turn has a callback for
- * (`RunTurnInput.onPublish`, ...). A call arrives as the engine's
- * request `_windlass/host_call` on this turn's connection, which lives with the turn's engine process:
- * it is answered for this turn's session, while the turn runs, for a tool the turn declared, and with
- * what the tool's callback resolves with. One that arrives once the turn is over, or names another
- * session or a tool the turn did not declare, is answered with an error the model reads and reaches
- * no callback. A call Windlass gives up on (it stopped it, or its time ran out: `tool.settled`), and
- * every call when the turn ends, has its callback's signal aborted. The tools are declared so that
- * Windlass never asks about them: no question about one reaches the permission handler.
- *
- * A call of a tool of one of the user's own servers whose user said that its tools run without
- * asking (`TurnPersonalServer.unasked`) has the engine's question about it answered here, with
- * "once", and `onUnasked` is told. Which call that is is known from the engine's `tool.called`
- * event of an `mcp_call`, which names the server and the tool, for a server this turn wrote into the file with
- * the setting on and which the engine holds to be its user's own; and the question has to be about
- * using exactly that tool (`approval.needs`), asked by the session and not by a subagent. Nothing
- * is read from the question's sentence. Each call is answered once and Windlass remembers nothing,
- * so the answer does not depend on what Windlass makes of earlier approvals once content it does
- * not trust is in the conversation, and the server's results stay content it does not trust.
- *
- * When a turn fails, what the failure means is read from the stable code Windlass gives it, not from
- * the words of its message: the code on the error the engine answered with (`data.windlass.code`,
- * Windlass's docs/acp.md, "Errors") and, where there is no such error, the one on the provider error of
- * the model call that failed (`step.failed`, `error.error.code`). `Turn.told` turns the codes about a
- * handed-in token into what the user should read (handoff.ts has the mapping); every other failure
- * stays as Windlass reported it.
- */
+/** Each turn owns an ACP process and a provider hold. Scope prompts, tools and approvals to that session; redact events before forwarding them. On exit revoke turn credentials and sweep the tagged process. */
 
+import { within } from "./command.js";
 import { untrustedSource } from "../factory/untrusted.js";
 import { callArguments } from "../agent-publish.js";
 import { CALL_AFTER_TURN, CALL_UNKNOWN, platformToolDeclarations, runPlatformTool, turnPlatformTools, type PlatformToolHandler } from "../platform-tools.js";
@@ -123,7 +21,6 @@ import { hostedKeyEnv, redactKeyLease } from "./hosted-keys.js";
 import { hostedKeyMessage, windlassProvider } from "./harnesses.js";
 import { openModelKeyRelay, TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
 
-/** The platform's tools of a turn (platform-tools.ts): Windlass takes every one as a host tool. */
 export const turnHostTools = (input: RunTurnInput) => turnPlatformTools(input);
 
 export function sessionOpenParams(cwd: string, meta: Record<string, unknown>) {
@@ -153,7 +50,6 @@ const EXT = {
 	hostCall: `_${NS}/host_call`,
 };
 const PROTOCOL_VERSION = 1;
-/** What `initialize` is sent with: every engine event is asked for as `_windlass/event`, and no standard updates. */
 const INITIALIZE = { protocolVersion: PROTOCOL_VERSION, clientInfo: { name: "windlass-platform", title: "Windlass Platform", version: "0" }, clientCapabilities: { _meta: { [NS]: { events: true, updates: false } } } };
 
 /**
@@ -180,7 +76,6 @@ const SESSION_ID = /^ses_[A-Za-z0-9]{1,64}$/;
 const STDERR_TAIL = 4000;
 const STDERR_KEPT = 64 * 1024;
 
-/** How long the engine may take to start and answer `initialize` (the command line's own limit). */
 export const START_TIMEOUT_MS = 20_000;
 /** How long opening a session may take: with a real model the account's models are read first. */
 const OPEN_TIMEOUT_MS = 90_000;
@@ -190,59 +85,35 @@ const WINDING_DOWN_MS = 6000;
 const CANCEL_ANSWER_MS = 1000;
 /** After a cancel, how long the turn may take to end (a command gets 3 s between SIGTERM and SIGKILL) before signals are sent. */
 const CANCEL_WAIT_MS = 6000;
-/** How long `session/close` may take. */
 const CLOSE_TIMEOUT_MS = 5000;
-/** How long the process may take to exit once its stdin is closed, before it is signalled. */
 const EXIT_WAIT_MS = 3000;
 /** What `session/close` and the exit get instead, once a cancel has gone unanswered. */
 const FORCED_WAIT_MS = 1500;
 /** After the turn's end, how long a message admitted too late to be part of it may take to start its own execution. */
 const FOLLOW_UP_MS = 3000;
-/** How long Windlass may take to say which servers wait, and to take an approval. */
 const SERVERS_TIMEOUT_MS = 20_000;
-/**
- * After an approval, how long the layer waits for the server to have started or failed before it
- * reports "starting". A server that needs nothing takes a tenth of a second; Windlass itself gives one
- * 30 s (`startupTimeoutSeconds`) and holds the turn's first step 1.5 s for it.
- */
+/** Report startup as pending when an approved server takes longer than this to start. */
 const SERVER_START_WAIT_MS = 5000;
-/** How long reading a server's definition, and asking which variables are set, may take. */
 const DEFINITION_TIMEOUT_MS = 10_000;
 
-
-/** The events whose text arrives in pieces, as the session passes them on to browsers while a turn runs. */
 const STREAMED = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]);
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-function within<T>(promise: Promise<T>, ms: number): Promise<boolean> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	return Promise.race([promise.then(() => true), new Promise<boolean>((resolve) => (timer = setTimeout(() => resolve(false), ms)))]).finally(() => clearTimeout(timer));
-}
-
 export interface TurnOptions {
-	/** The command that serves ACP on stdio inside the sandbox. Default `windlass acp`; another one stands in for it in the layer's own checks. */
+	/** Command serving ACP on stdio. Defaults to windlass acp. */
 	engineCommand?: string[];
-	/** How long the engine may take to answer `initialize`. Default `START_TIMEOUT_MS`. */
 	startTimeoutMs?: number;
-	/** The schedule of a turn's access token file and where its log lines go; the layer's own checks shorten the one and read the other. */
+	/** Controls token-file rotation and logging. */
 	tokenFile?: TokenFileOptions;
 }
 
-/**
- * What the turn code has to be told about the Windlasses of a deployment, and cannot see from a
- * sandbox: the provider knows where its image is and who fetches the tokens.
- */
 export interface WindlassHost {
-	/** `Windlass.version()`: the version in the image sandboxes are made from, or null. */
 	version(): Promise<string | null>;
-	/** `Windlass.problem()`. */
 	problem(): Promise<string | null>;
 }
 
-/** `Windlass` on any provider's sandboxes. A provider passes its `WindlassHost` (windlass.ts for Docker, e2b/windlass.ts for E2B). */
 export class SandboxWindlass implements Windlass {
-	/** `tokens`: where a turn that is not scripted gets its user's access token. */
 	constructor(
 		private readonly tokens: AccessTokens,
 		private readonly host: WindlassHost,
@@ -279,11 +150,7 @@ type Outcome = "succeeded" | "unresolved" | "failed" | "stopped" | "interrupted"
 
 const callKey = (messageId: unknown, callId: unknown) => `${String(messageId)}\n${String(callId)}`;
 
-/**
- * A call of an MCP server's tool, from Windlass's `tool.called` event of an `mcp_call`: the server,
- * the tool as that server names it, and the arguments; null for any other call. Windlass takes the
- * tool's name with or without the server's in front, and asks about the call as `<server>/<tool>`.
- */
+/** Trust the engine's mcp_call fields to identify the server and tool. */
 function mcpCall(name: unknown, input: unknown): { server: string; tool: string } | null {
 	if (name !== "mcp_call") return null;
 	let call: unknown = input;
@@ -300,17 +167,12 @@ function mcpCall(name: unknown, input: unknown): { server: string; tool: string 
 	return { server, tool: tool.startsWith(`${server}/`) ? tool.slice(server.length + 1) : tool };
 }
 
-/**
- * What the command line's `cli.summary` line says about a turn, added up from its events the same way
- * (Windlass's packages/cli/src/renderer.ts, `JsonSink`): steps, the summary requests of compactions,
- * token use, and the time from `execution.started` to the event that ended it.
- */
+/** Fold Windlass events using CLI summary semantics across all executions in this turn. */
 class Tally {
 	private startedAt: number | null = null;
 	private steps = 0;
 	private summaryCalls = 0;
 	private usage: TurnUsage | null = null;
-	/** The execution at work, by its id. */
 	running: string | null = null;
 	/** The execution that ended last, and how its event says it ended. */
 	last: { executionId: string; sessionId: string; outcome: Outcome; message: string | null; time: number } | null = null;
@@ -358,7 +220,6 @@ class Tally {
 		}
 	}
 
-	/** What a turn checkpoint keeps of it (`Turn.checkpoint`). */
 	save(): Record<string, unknown> {
 		return { startedAt: this.startedAt, steps: this.steps, summaryCalls: this.summaryCalls, usage: this.usage, running: this.running, last: this.last };
 	}
@@ -388,15 +249,12 @@ class Tally {
 
 }
 
-/** One turn: the process, the connection, and everything that has to be told apart while it runs. */
 class Turn {
 	private readonly approval: "ask" | "auto" | "full";
 	private readonly reviewerAgent: string | null;
 	private process: SandboxProcess | null = null;
 	private readonly peer: AcpConnection;
-	/** The engine's standard output, a line at a time. */
 	private readonly lines: LineSplitter;
-	/** The id `session/prompt` went with. */
 	private promptId: number | null = null;
 	/** A turn a restarted server takes up (`RunTurnInput.reattach`) has its process again. */
 	private takenUp = false;
@@ -422,9 +280,7 @@ class Turn {
 
 	private failure: Failure | null = null;
 	private promptSent = false;
-	/** The prompt was answered, with a result or an error. */
 	private promptSettled = false;
-	/** How the prompt's answer says its execution ended. */
 	private promptEnding: { executionId: string | null; outcome: Outcome | null; stepLimit: boolean } | null = null;
 	/** The `_meta` keys the engine takes on `session/prompt` (`promptMeta` in its answer to `initialize`). */
 	private promptKeys: string[] = [];
@@ -442,62 +298,51 @@ class Turn {
 	private abortRequested = false;
 	private resolveAborted: () => void = () => {};
 	private readonly whenAborted = new Promise<"aborted">((resolve) => (this.resolveAborted = () => resolve("aborted")));
-	/** `session/cancel` was sent. */
 	private cancelSent = false;
 	private cancelTimer: ReturnType<typeof setTimeout> | undefined;
 	/** The cancel did not end the turn in time: it is cut off. */
 	private forced = false;
 	/** The process had to be signalled: it has no exit code of its own. */
 	private signalled = false;
-	/** Resolves once the engine has recorded the interrupt (or a moment after the cancel): pending questions are answered `cancelled` then. */
+	/** Delay answers to withdrawn questions until the engine records the interrupt or its grace period expires. */
 	private resolveInterrupted: () => void = () => {};
 	private readonly whenInterrupted = new Promise<void>((resolve) => (this.resolveInterrupted = resolve));
 	private readonly questions = new Set<AbortController>();
-	/** One question at a time: the next waits for the one before it. */
 	private questionLine: Promise<void> = Promise.resolve();
 
-	/** The project's servers as Windlass last described them. */
 	private servers: ServerState[] = [];
-	/** The definitions this turn has asked about, or is about to: `<name>:<fingerprint>`. Each is asked about once. */
+	/** Ask at most once per name and definition fingerprint in this turn. */
 	private readonly serversAsked = new Set<string>();
 	/** The questions about servers that are open: one at a time, and each withdrawn when the turn is stopped or ends. */
 	private readonly serverQuestions = new Set<AbortController>();
 	private serverLine: Promise<void> = Promise.resolve();
-	/** Woken when Windlass says its servers changed. */
 	private readonly serverWaiters = new Set<() => void>();
 	/** What the engine was started with, for asking the sandbox what the engine can see. */
 	private engineEnv: Record<string, string> = {};
-	/** The names of the secrets the engine was started with: its environment has them, and their values are not kept here. */
+	/** Remember only names of injected secrets after start. */
 	private engineSecrets = new Set<string>();
-	/** Takes the repository's saved secrets out of what the engine sends (`RunTurnInput.secrets`). */
 	private redactor: Redactor;
-	/** The platform's tools this turn declares, by name, each with its callback. */
 	private hostTools: ReadonlyMap<string, PlatformToolHandler> = new Map();
 	/** True while this turn has servers of its own in that file: they are taken out when it ends. */
 	private configWritten = false;
-	/** What Windlass had for checks when its session was opened; null until the file was dealt with. */
 	private checks: TurnChecks | null = null;
-	/** The names of the user's own servers this turn wrote there: what `onServers` is told of beside the project's. */
 	private personal = new Set<string>();
-	/** Of those, the ones whose tools run without asking. */
 	private unasked = new Set<string>();
-	/** The engine reported the session tainted in this turn, with `unaskedUntilTainted`: nothing is answered unasked any more. */
+	/** Stop automatic approvals after taint when the caller requested that policy. */
 	private taintSeen = false;
 	/** The calls of the platform's tools that are being answered, by `<messageId>\n<callId>`: aborted when the engine settles one, or the turn ends. */
 	private readonly hostCalls = new Map<string, AbortController>();
 	/** The calls of a tool of a server in `unasked` the engine reported and has not settled. */
 	private readonly unaskedCalls = new Map<string, TurnUnaskedCall>();
-	/** The end of a piece of streaming text that may be the beginning of a saved value, per stream, until the next piece shows whether it is. */
+	/** Hold a possible secret prefix across chunks separately for each stream. */
 	private readonly heldBack = new Map<string, string>();
 
-	/** The access token file of a turn that is not scripted. */
 	private readonly tokenFile: TokenFile | null;
 	/** Windlass's code for `failure`, when the error it came from carried one (`data.windlass.code`). */
 	private failureCode: string | null = null;
 	private stepFailureCode: string | null = null;
 	/** The message of the provider error of the model call that failed: with the model relay, it says whether the relay refused the lease (`relayRefused`). */
 	private stepFailureMessage: string | null = null;
-	/** Whether the model's first output was told (`onStartMark`). */
 	private outputSeen = false;
 
 	constructor(
@@ -533,7 +378,6 @@ class Turn {
 		}
 	}
 
-	/** Tells a point of the turn's start (RunTurnInput.onStartMark). */
 	private mark(mark: StartMark, ms?: number): void {
 		try {
 			this.input.onStartMark?.(mark, ms);
@@ -552,7 +396,6 @@ class Turn {
 		// What the turn leaves in the sandbox besides its processes.
 		const files = [...(scriptPath === null ? [] : [scriptPath]), ...(tokenFile === null ? [] : tokenFile.files), ...(agentFile ? [agentFile] : [])];
 		const onAbort = () => this.abort();
-		/** Ends the hold on the sandbox; null while there is none. */
 		let release: (() => Promise<void>) | null = null;
 		let keyLease: import("./provider.js").KeyTurnRelay | undefined;
 		try {
@@ -657,18 +500,7 @@ class Turn {
 		};
 	}
 
-	/**
-	 * The failure as the user should read it. Windlass's refusal of a handed-in token is an
-	 * `auth_required` (or the failure of an execution a late message started) whose sentence is for
-	 * whoever handed the token in: it names the variable and says to hand in a new one. What that means
-	 * for the user depends on what Windlass found in the file, which its code says, and on why the
-	 * platform left the file so.
-	 *
-	 * The code is the one on the error the engine answered with and, where there is no such error (the
-	 * execution a late message started), the one on the provider error of the model call that failed;
-	 * Windlass gives both the same. A code that is not about a handed-in token (`network_error`, a
-	 * provider's own) leaves the failure as Windlass reported it.
-	 */
+	/** Classify provider refusal using the handed-in token and stable error code. */
 	private async told(failure: Failure | null): Promise<Failure | null> {
 		const tokenFile = this.tokenFile;
 		if (failure === null) return failure;
@@ -693,7 +525,6 @@ class Turn {
 		return handedInFailure(problem, state);
 	}
 
-	/** What has to be so before the engine starts. False, with `failure` set, when the sandbox cannot be used. */
 	private async prepare(scriptPath: string | null, agentFile: string | null): Promise<boolean> {
 		// One turn at a time per sandbox: a Windlass still running here is left over from a turn whose server or
 		// client went away, and it would hold the session ("in use by another windlass process").
@@ -736,7 +567,6 @@ class Turn {
 		}
 		return true;
 	}
-
 
 	private get startTimeoutMs(): number {
 		return this.options.startTimeoutMs ?? START_TIMEOUT_MS;
@@ -811,7 +641,6 @@ class Turn {
 		await this.whenOver;
 	}
 
-	/** Until the process ends: its end ends the connection and the turn. */
 	private follow(run: SandboxProcess): void {
 		void run.ended.then((end) => {
 			this.lines.flush();
@@ -822,7 +651,6 @@ class Turn {
 		});
 	}
 
-	/** The turn's handle, for whoever steers it. */
 	private controlled(): void {
 		if (this.input.onControl === undefined) return;
 		try {
@@ -832,13 +660,7 @@ class Turn {
 		}
 	}
 
-	/**
-	 * What this turn needs to be taken up again by a server that restarted (`TurnCheckpoint`), or null
-	 * when it cannot be from here: before the prompt went, once it was answered or stopped, or where the
-	 * provider cannot keep the process across a restart. Read synchronously with the timeline it goes
-	 * with, so the two say the same moment. No secret: values the redactor holds back are kept only
-	 * once complete values were taken out, and no longer than the longest value could begin.
-	 */
+	/** Checkpoint a live, prompted, durable process synchronously before its prompt settles. */
 	private checkpoint(): TurnCheckpoint | null {
 		// A platform key lease ends with its owning process. Start a fresh segment after a restart.
 		if (this.input.modelKey) return null;
@@ -884,12 +706,7 @@ class Turn {
 		};
 	}
 
-	/**
-	 * Takes up the process a checkpoint names, which the machine's runner kept running while this server
-	 * restarted: the connection goes on with the same ids, the prompt's answer is waited for again, and a
-	 * request of the engine's left unanswered is answered now. The token goes again (it is never stored).
-	 * False, with `failure` set, when it cannot be had: the caller ends the turn as one cut off.
-	 */
+	/** Adopt the runner's process and reconnect the pending prompt using its original request IDs. */
 	private async takeUp(checkpoint: TurnCheckpoint): Promise<boolean> {
 		const saved = checkpoint.state;
 		if (checkpoint.harness !== "windlass" || saved.v !== 1 || this.sandbox.adopt === undefined) {
@@ -949,7 +766,6 @@ class Turn {
 		return true;
 	}
 
-	/** How the prompt's answer says the turn ended. */
 	private answered(request: Promise<PromptResult>): void {
 		void request.then(
 			(result) => {
@@ -1139,12 +955,7 @@ class Turn {
 
 	// ---- the servers the platform hands the engine: the user's own ----
 
-	/**
-	 * Windlass's configuration file in the sandbox, the layer's list of what it wrote there, and the
-	 * configuration file of the project the session works in, in one question: each as it is, null
-	 * for one that is not there. Null when the sandbox did not answer, or Windlass's own file is
-	 * something the platform does not replace (a directory, a file it cannot read).
-	 */
+	/** Read managed and project configuration together. Treat missing files as null. */
 	private async readConfiguration(): Promise<{ config: string | null; written: string | null; project: string | null } | null> {
 		const mark = `wlp-${randomId(12)}`;
 		const script = 'mark=$1; shift; for file in "$@"; do if [ ! -e "$file" ]; then echo absent; elif [ -f "$file" ] && [ -r "$file" ]; then echo file; cat -- "$file"; else echo other; fi; printf "\\n%s\\n" "$mark"; done';
@@ -1164,18 +975,14 @@ class Turn {
 		return { config, written: read(parts[1] as string) ?? null, project: read(parts[2] as string) ?? null };
 	}
 
-	/** Makes the file and the list in the sandbox what `next` says. The list first: it may name more than the file holds, never less. */
+	/** Write the managed-name list first: over-reporting names is recoverable, missing one can leave a stale server installed. */
 	private async storeConfiguration(next: PlatformConfig, had: { written: string | null }): Promise<void> {
 		if (next.written !== null) await this.sandbox.writeTextFile(PLATFORM_SERVERS_FILE, next.written);
 		if (next.changed) await this.sandbox.writeTextFile(WINDLASS_CONFIG_FILE, next.config);
 		if (next.written === null && had.written !== null) await this.sandbox.removeFiles([PLATFORM_SERVERS_FILE]);
 	}
 
-	/**
-	 * When the turn ends, by the sandbox's own clock (its seconds since the epoch, plus what is left by this
-	 * server's), for the platform's hook (windlass-config.ts `TURN_TIME_HOOK`). One that cannot be written is removed:
-	 * the hook then refuses nothing. Never throws.
-	 */
+	/** Use the sandbox clock for its shell deadline; a failed write must not leave an earlier deadline in force. */
 	private async writeDeadline(): Promise<void> {
 		const endsAt = this.input.endsAt;
 		if (endsAt === undefined) return;
@@ -1185,7 +992,6 @@ class Turn {
 		if (said === null || said.code !== 0) await this.sandbox.removeFiles([TURN_DEADLINE_FILE]).catch(() => undefined);
 	}
 
-	/** Writes the user's MCP servers and reads the project's check settings before opening the session. */
 	private async writeServers(): Promise<void> {
 		// The platform's own name is not a user's to have, whatever was saved.
 		const personal: ConfigServer[] = (this.input.servers ?? []).filter((server) => !isReservedServerName(server.name)).map(({ name, definition }) => ({ name, definition }));
@@ -1212,7 +1018,6 @@ class Turn {
 		}
 	}
 
-	/** Removes this turn's personal servers from Windlass's configuration. Never throws. */
 	private async withdrawServers(): Promise<void> {
 		if (!this.configWritten) return;
 		this.configWritten = false;
@@ -1225,12 +1030,7 @@ class Turn {
 		}
 	}
 
-	/**
-	 * What the engine says of a call of a tool of a server whose tools run without asking. `tool.called`
-	 * names the server and the tool: the call is kept while the engine holds that server to be its
-	 * user's own, which a server of that name the project's file names or changes is not.
-	 * `tool.settled` ends it.
-	 */
+	/** Only a session-owned tool call on a user-owned server may bypass an approval question. */
 	private callingUnasked(event: WindlassEvent): void {
 		if (event.type === "taint.noticed" && this.input.unaskedUntilTainted === true) {
 			this.taintSeen = true;
@@ -1250,13 +1050,7 @@ class Turn {
 		this.unaskedCalls.set(key, { messageId: data.messageId, callId: data.callId, server: call.server, tool: call.tool });
 	}
 
-	/**
-	 * The event as it is handed on. Every saved value that is whole in it was taken out when it arrived.
-	 * Streaming text comes in pieces, and a value can be split over two: the end of a piece that may be
-	 * the beginning of a value is held back and put before the next piece of the same stream, where it
-	 * is replaced when it turns out to be one. Null when all of a piece is held back. The durable event
-	 * that follows a stream carries its whole text, so what is still held back then is dropped.
-	 */
+	/** Hold incomplete secret prefixes between stream chunks and flush them when the stream ends. */
 	private streamed(event: WindlassEvent): WindlassEvent | null {
 		const redactor = this.redactor;
 		if (!redactor.active) return event;
@@ -1286,13 +1080,7 @@ class Turn {
 		throw new MethodNotFound(method);
 	}
 
-	/**
-	 * A call of one of the platform's own tools, as the engine sends it. It is this turn's when it is
-	 * for this turn's session, while the turn runs, and of a tool the turn declared; then the tool's
-	 * callback decides and does what is to be done, and its answer is the call's result. Anything else
-	 * is answered with an error the model reads, and reaches no callback: a call that comes once the
-	 * turn is over has no turn to belong to. Never rejects.
-	 */
+	/** Deliver only to this turn's declared tool while the session is active; abort the callback on settlement or turn end. */
 	private async hostCall(params: Record<string, unknown>): Promise<unknown> {
 		const refused = (output: string) => ({ status: "error", output });
 		const run = typeof params.name === "string" ? this.hostTools.get(params.name) : undefined;
@@ -1377,12 +1165,7 @@ class Turn {
 
 	// ---- the project's MCP servers ----
 
-	/**
-	 * Before the prompt: Windlass is asked which servers wait (`_windlass/mcp` reads the configuration as
-	 * it is now), and each is put to the user. An answer can bring the next question (a definition that
-	 * changed under its own question waits anew), so this returns when none is left. A Windlass that
-	 * cannot say leaves the turn as it was before the platform asked: such servers stay stopped.
-	 */
+	/** Resolve waiting definitions before sending the first prompt. Approval may expose another waiting definition. */
 	private async askAboutServers(): Promise<void> {
 		// Also asked for the servers whose tools run without asking: whose a server is, by the engine's word, decides whether a call is acted on.
 		if (this.input.onServerQuestion === undefined && this.input.onServers === undefined && this.unasked.size === 0) return;
@@ -1400,11 +1183,7 @@ class Turn {
 		}
 	}
 
-	/**
-	 * What Windlass says of the session's servers: the answer to `_windlass/mcp` and to an approval, and
-	 * `_windlass/mcp_changed`. A definition that waits and was not asked about in this turn joins the line
-	 * of questions; whoever waits for a server to start is woken.
-	 */
+	/** Publish the full list before asking about new definitions. */
 	private serversSaid(raw: unknown): void {
 		const servers = serversOf(raw);
 		if (servers === null) return;
@@ -1426,7 +1205,6 @@ class Turn {
 		}
 	}
 
-	/** Puts one server's question, and has Windlass start the server on a yes. Never throws. */
 	private async askServer(server: ServerState): Promise<void> {
 		const ask = this.input.onServerQuestion;
 		const gone = () => this.over || this.abortRequested || this.cancelSent || this.peer.closed;
@@ -1466,7 +1244,6 @@ class Turn {
 		}
 	}
 
-	/** Whether Windlass still says that exactly this definition waits. */
 	private stillWaits(server: ServerState): boolean {
 		return this.servers.some((now) => now.name === server.name && now.state === "awaiting_approval" && now.fingerprint === server.fingerprint);
 	}
@@ -1506,16 +1283,7 @@ class Turn {
 		});
 	}
 
-	/**
-	 * The variables a server's definition reads: those that are not set where the engine runs, and those
-	 * the engine was handed as secrets of the repository. Windlass puts `${NAME}` in a definition's `env`
-	 * and `headers` in place from its own environment when the server starts, and does not start a
-	 * server that names one that is not set. Which names a definition reads is in the file Windlass says
-	 * defines it. Whether each is set is known for what the engine was started with, and asked of the
-	 * sandbox for the rest (its own environment; no value is sent along to ask), so the user can be
-	 * told before they answer. Both empty when the file cannot be read as Windlass reads it: the
-	 * server's failure then says it, in Windlass's words.
-	 */
+	/** Report names of missing variables and supplied secrets, never their values. */
 	private async variablesOf(server: ServerState): Promise<{ unset: string[]; secrets: string[] }> {
 		const none = { unset: [], secrets: [] };
 		try {
@@ -1570,7 +1338,6 @@ class Turn {
 		this.resolveOver();
 	}
 
-	/** The abort signal fired. */
 	private abort(): void {
 		// Once the turn's work is over there is nothing left to stop: it ended as it ended.
 		this.resolveTitle();
@@ -1607,7 +1374,6 @@ class Turn {
 		return Promise.race([work, this.whenAborted]);
 	}
 
-	/** The summary, the session let go of, and the process gone. */
 	private async end(): Promise<void> {
 		this.finish();
 		// An approval on its way to Windlass is reported before the turn is: its question was withdrawn above, so this is short.
@@ -1660,11 +1426,7 @@ class Turn {
 		return this.closingSession;
 	}
 
-	/**
-	 * Ends the process: its stdin is closed, which makes it shut down and exit by itself; one that does
-	 * not is signalled, as a stopped turn always was (SIGINT to Windlass, SIGTERM and then SIGKILL to
-	 * everything the run started). `now`: nothing is waited for first.
-	 */
+	/** Close stdin first, then interrupt the leader and escalate to TERM and KILL for all tagged processes. */
 	private async stopProcess(now: boolean): Promise<void> {
 		const run = this.process;
 		if (run === null || run.hasEnded) return;
@@ -1690,7 +1452,6 @@ class Turn {
 		this.failureCode = error instanceof AcpError ? error.failureCode : null;
 	}
 
-	/** A refusal of the engine as `RunTurnResult.failure`: Windlass's reason and its own sentence. */
 	private failureOf(error: unknown, fallback = "engine"): Failure {
 		if (!(error instanceof AcpError)) return { reason: "engine", message: error instanceof Error ? error.message : String(error) };
 		// The engine is gone, or did not answer: its last words say more than "closed".
@@ -1727,7 +1488,6 @@ type Initialized = { agentCapabilities?: { _meta?: Record<string, unknown> } };
 const TAKE_UP_FAILED = "the engine process of this turn could not be taken up again after the server restarted";
 type PromptResult = { stopReason?: unknown; _meta?: Record<string, unknown> };
 
-/** The prompt's marker of outside text (Windlass 0.6.0, its docs/acp.md). */
 const UNTRUSTED_KEY = "windlass/untrusted";
 
 /** The `_meta` keys an engine takes on `session/prompt`, from its answer to `initialize`; none when it lists none. */
@@ -1736,10 +1496,7 @@ function promptKeysIn(init: Initialized): string[] {
 	return Array.isArray(listed) ? listed.filter((key): key is string => typeof key === "string") : [];
 }
 
-/**
- * The prompt's `_meta`: its step limit, and where its outside text came from when the engine takes the
- * marker. One that does not list it is sent the prompt without it, as before: it would ignore the key.
- */
+/** Send prompt metadata only for keys the engine advertised. */
 export function promptMeta(input: Pick<RunTurnInput, "maxSteps" | "untrusted">, promptKeys: readonly string[]): { _meta?: Record<string, unknown> } {
 	const source = promptKeys.includes(UNTRUSTED_KEY) ? untrustedSource(input.untrusted) : null;
 	const meta = { ...(input.maxSteps === undefined ? {} : { "windlass/maxSteps": input.maxSteps }), ...(source === null ? {} : { [UNTRUSTED_KEY]: { source } }) };
@@ -1791,19 +1548,14 @@ function toolAsked(params: Record<string, unknown>): string | null {
 	return need?.kind === "tool" && typeof need.tool === "string" ? need.tool : null;
 }
 
-/** One MCP server of the session as `_windlass/mcp` describes it (Windlass's docs/acp.md, "The session's features"). */
 interface ServerState {
 	name: string;
-	/** "running", "starting", "failed", "awaiting_approval", "disabled", "stopped" or "not_started". */
 	state: string;
-	/** The command and its arguments; null for a server reached at an address. */
 	argv: string[] | null;
-	/** The command with its arguments, or the address. */
 	target: string | null;
 	tools: number | null;
 	error: string | null;
 	file: string | null;
-	/** Of the definition that waits (`question.fingerprint`); null when none does. */
 	fingerprint: string | null;
 	/** "user": only the user's own configuration defines it. "project": the project's file names or changes it. Null when Windlass did not say. */
 	origin: string | null;

@@ -372,30 +372,31 @@ export class AcpHarness implements Harness {
 				finally { asking--; lastHeard = Date.now(); }
 			},
 		}, "", value => redactor.deep(value));
+		const sendCancel = () => {
+			rpc.notify("session/cancel", { sessionId: result.windlassSessionId });
+			cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
+		};
 		// Codex asked to leave its sandbox during a work item's turn (above): the turn is stopped, and fails with the platform's note.
 		let escaped: string | null = null;
 		const endForEscape = (note: string) => {
 			if (escaped !== null) return;
 			escaped = note;
 			questions.abort();
-			rpc.notify("session/cancel", { sessionId: result.windlassSessionId });
-			cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
+			sendCancel();
 		};
 		// The agent went past the turn's step limit (above): the turn is stopped, and ends unresolved.
 		const stopAtLimit = () => {
 			if (acp.stepLimit !== undefined || escaped !== null) return;
 			acp.stepLimit = input.maxSteps;
 			questions.abort();
-			rpc.notify("session/cancel", { sessionId: result.windlassSessionId });
-			cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
+			sendCancel();
 		};
 		// The platform ends the turn for the agent (`ended`): it went quiet, or said it gave up on the provider.
 		const endFor = (reason: string, message: string) => {
 			if (ended !== null || escaped !== null || phase !== "running") return;
 			ended = { reason, message };
 			questions.abort();
-			rpc.notify("session/cancel", { sessionId: result.windlassSessionId });
-			cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
+			sendCancel();
 		};
 		const idleMs = input.idleMs ?? ACP_IDLE_MS;
 		const idleMinutes = Math.round(idleMs / 60_000);
@@ -406,8 +407,7 @@ export class AcpHarness implements Harness {
 		const cancel = () => {
 			questions.abort();
 			if (phase === "running") {
-				rpc.notify("session/cancel", { sessionId: result.windlassSessionId });
-				cancelDeadline = setTimeout(() => rpc.end("The agent did not answer the stop request."), 10_000);
+				sendCancel();
 			} else rpc.end("The turn was stopped.");
 		};
 		const loginHint = () => this.machine && !input.modelKey ? machineLoginMessage(profile, this.machine) : "Check the provider key in Settings.";
