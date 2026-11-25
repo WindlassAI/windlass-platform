@@ -249,9 +249,21 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 			properties: { path: { type: "string" }, verdict: { enum: ["ok", "fix", "drop"] }, findings: { type: "array", items: { type: "string" } } } } } },
 	})];
 	if (offer.setup) {
-		const rows = { type: "array", items: { type: "object" } };
-		return [tool("file_repo_setup", "File score [{id,pass,reason}], files [{kind: guide, area or skill,path,content,lines:[{line,noteId?,evidence:{file,line?} or {command,exit,said}}]}], notes [{noteId,verdict,reason,question?}]. For a question verdict, include the question for that note. Line numbers start at one.", {
-			type: "object", required: ["score", "files", "notes"], properties: { score: rows, files: rows, notes: rows },
+		const text = { type: "string" }, number = { type: "integer" };
+		const rows = (properties: Record<string, unknown>, required: string[]) => ({
+			type: "array", items: { type: "object", properties, required },
+		});
+		const evidence = { type: "object", description: "A repository file with an optional line, or a verified path check with command, exit and said.",
+			properties: { file: text, line: number, command: text, exit: number, said: text } };
+		return [tool("file_repo_setup", "Submit the complete proposed guides for review. Use one-based line numbers and repository-relative evidence paths. Correct any refused filing and call again.", {
+			type: "object", required: ["score", "files", "notes"], properties: {
+				score: rows({ id: { type: "string", enum: ["setup", "checks", "guide"] }, pass: { type: "boolean" }, reason: text }, ["id", "pass", "reason"]),
+				files: rows({ kind: { type: "string", enum: ["guide", "area", "skill"] }, path: text, content: text,
+					lines: rows({ line: number, noteId: text, evidence }, ["line", "evidence"]),
+					removed: rows({ line: number, evidence }, ["line", "evidence"]) }, ["kind", "path", "content", "lines"]),
+				notes: rows({ noteId: text, verdict: { type: "string", enum: ["team", "personal", "private", "secret", "stale", "question", "duplicate"] },
+					reason: text, question: text }, ["noteId", "verdict", "reason"]),
+			},
 		})];
 	}
 	if (offer.planReview) return [tool("file_plan_review", "File the independent decision and concise findings on the proposed plan.", {

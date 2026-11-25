@@ -296,7 +296,43 @@ await check("repo-setup: draft guides with imported notes and delete them on clo
 		server.remove();
 	}
 });
-if (only.length === 1 && only[0] === "repo-setup") { await standin.stop(); process.exit(failed ? 1 : 0); }
+await check("repo-setup: keep the failed phase on the owner's run", async () => {
+	const server = new Server();
+	try {
+		const repos = ["setup-no-filing", "setup-refused", "setup-startup"].map(name =>
+			standin.addRepository({ owner: "ada", name, installation, private: false, files: { "README.md": "# Example" } }));
+		const { user } = await world(server, standin, { WLP_FEATURE_TEST_GIT: join(server.storage, "git"), WLP_TEST_SETUP_MODEL: "1", WLP_ALLOWED_EMAILS: "ada@example.invalid" }, "routing");
+		for (const [name, error, rejections] of [
+			["setup-no-filing", "The drafting agent stopped without proposing any guides. Run setup again.", []],
+			["setup-refused", "The proposed guides were refused. File the three requested checks.", ["Check the number of entries in each list.", "File the three requested checks."]],
+			["setup-startup", "The drafting agent could not start. The model is unavailable.", []],
+		] as const) {
+			const repo = repos.find(r => r.name === name)!;
+			if (name === "setup-startup") await user.saveAccountDefaults({ model: "saved-choice" });
+			await user.runReadiness(repo.id);
+			const run = await waitFor("the failed setup record", async () => {
+				const { readiness } = await user.repository(repo.id);
+				return readiness.run === "finished" && readiness;
+			}, 35_000);
+			assert(run.error === error, "Wrong owner error: " + run.error);
+			const d = run.diagnosis;
+			const opened = name !== "setup-startup";
+			assert(d?.phase === "draft" && d.toolOffered === opened && d.attempts === rejections.length, "Missing filing diagnostics");
+			assert(JSON.stringify(d.rejections) === JSON.stringify(rejections), "Lost rejection reasons");
+			assert(d.model === (opened ? "account-default" : "saved-choice"), "Wrong setup model");
+			assert(d.outcome === (opened ? "succeeded" : "failed") && d.stopReason === (opened ? "end_turn" : "unknown_model"), "Lost stop reason");
+			assert(opened ? d.lastMessage?.startsWith("Stopped [redacted]") && d.lastMessage.length === 300 : d.lastMessage === null, "Wrong last message");
+			assert(server.text.includes("repo setup phase failed") && !server.text.includes("diagnosisFixtureSecret"), "Unsafe or missing log");
+			assert(!standin.pulls.some(p => p.repository === repo.id), "Failed setup published a pull request");
+		}
+		return "no filing, two rejections and a pre-prompt model failure";
+	} finally {
+		await server.stop();
+		execFileSync("chmod", ["-R", "u+w", server.storage]);
+		server.remove();
+	}
+});
+if (only.length && only.every(prefix => prefix.startsWith("repo-setup"))) { await standin.stop(); process.exit(failed ? 1 : 0); }
 
 await check("ci: update from base pushes the sandbox merge and replays the same commit", async () => {
 	const { GithubApp } = await import("../server/src/github/app.js");

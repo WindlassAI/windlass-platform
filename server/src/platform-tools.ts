@@ -134,7 +134,7 @@ export const CALL_UNKNOWN = "This session has no such tool of the platform's.";
 export function turnPlatformTools(input: RunTurnInput, reach: "host" | "sandbox" = "host"): Map<PlatformTool, PlatformToolHandler> {
 	const tools = new Map<PlatformTool, PlatformToolHandler>();
 	if (input.onSetupReview) tools.set("file_repo_setup_review", input.onSetupReview);
-	if (input.onSetup) tools.set("file_repo_setup", input.onSetup);
+	else if (input.onSetup) tools.set("file_repo_setup", input.onSetup);
 	else if (input.onPlanReview) tools.set(PLAN_REVIEW_TOOL, input.onPlanReview);
 	else if (input.onPlan) tools.set(PLAN_TOOL, input.onPlan);
 	else if (input.onReview) tools.set(REVIEW_TOOL, input.onReview);

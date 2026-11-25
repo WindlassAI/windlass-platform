@@ -758,6 +758,7 @@ export class FakeWindlass implements Windlass {
 		const offered = turnHostTools(input);
 		const declarations = hostToolsMeta(offered, input.reportScreenshots, input.crossRepoPlan);
 		const visibleTools = session.hostToolNames ??= declarations.hostTools.map(tool => tool.name);
+		input.onHostTools?.(visibleTools);
 		const agentMeta = turnAgentMeta(input.planner ? "planner" : input.onReview ? "reviewer" : null, input.clearPlanner);
 		if (agentMeta.agent !== undefined) session.agent = agentMeta.agent;
 		sessions.set(sessionId, session);

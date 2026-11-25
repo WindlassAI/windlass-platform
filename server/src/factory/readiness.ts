@@ -17,7 +17,7 @@ export type CriterionId = typeof readinessCriteria[number]["id"];
 export interface Finding { id: CriterionId; pass: boolean | null; reason: string }
 export interface Judgment { findings: Finding[] }
 export interface ReadinessReport { at: number; level: ReadinessLevel; passed: number; findings: Finding[] }
-export interface RepositoryReadiness { latest: ReadinessReport | null; run: "new" | "running" | "finished"; weekly: boolean; error: string | null }
+export interface RepositoryReadiness { latest: ReadinessReport | null; run: "new" | "running" | "finished"; weekly: boolean; error: string | null; diagnosis?: import("../repo-setup/types.js").SetupDiagnosis }
 
 export function scoreReadiness(findings: Finding[], at: number): ReadinessReport {
 	let level: ReadinessLevel = "not reached yet";
