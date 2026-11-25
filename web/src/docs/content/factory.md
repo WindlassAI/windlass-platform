@@ -15,7 +15,9 @@ A work item runs in one of two ways:
 
 ## Repo setup
 
-Open a connected repository to see its eight setup checks. The platform reads the default branch and looks for guide files, folder guides, templates, long source files, pull request checks and protection for secrets. It also checks whether a setup command and checks are saved. **Setup N of 8** counts the checks that pass. These first checks use no agent time.
+Readiness checklists exist, Factory's Agent Readiness among them. Repo setup measures readiness from what actually happened when agents worked in the repository.
+
+Open a connected repository to see **Setup N of 8**. The count includes the saved setup command and checks. Windlass also reads the default branch for contributor guides, issue and pull request templates, oversized files, workflows that check proposed changes, and protection for secrets. Reading these files uses no agent time.
 
 Choose **Finish setup** to draft a root contributor guide with a Terms section and guides for up to eight large folders. The drafter reads the default branch and the latest matching build. It can also write up to five reusable instructions in `.agents/skills/<name>/SKILL.md`. The platform passes the drafted files and the selected, verified team notes to a separate reviewer. The reviewer can ask for files to be dropped or for one round of changes before the draft goes to the pull request. Running it again updates the open pull request. It runs where the repository's agents usually run; on your machine it uses no hosted minutes.
 

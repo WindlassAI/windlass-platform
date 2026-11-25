@@ -10,29 +10,29 @@ export interface CiHistory {
 }
 
 export const readinessCriteria = [
-	{ id: "setup", title: "Set up with one command" },
-	{ id: "checks", title: "Saved checks pass within five minutes" },
-	{ id: "guide", title: "Accurate instructions for agents" },
-	{ id: "areas", title: "Guides for large folders" },
-	{ id: "templates", title: "Pull request and issue templates" },
-	{ id: "size", title: "Source files at most 1,500 lines" },
-	{ id: "ci", title: "Automatic checks on pull requests" },
-	{ id: "secrets", title: "Scan for secrets and ignore environment files" },
+	{ id: "setup", title: "Set up a checkout with the saved command" },
+	{ id: "checks", title: "Pass all saved checks in five minutes or less" },
+	{ id: "guide", title: "Put working setup and check commands in the root guide" },
+	{ id: "areas", title: "Give folders with 50 or more source files a guide" },
+	{ id: "templates", title: "Provide templates for both issues and pull requests" },
+	{ id: "size", title: "Keep each source file within 1,500 lines" },
+	{ id: "ci", title: "Check proposed changes with a workflow" },
+	{ id: "secrets", title: "Ignore local .env files and scan the repository for secrets" },
 ] as const;
 export type CriterionId = typeof readinessCriteria[number]["id"];
 export interface Finding { id: CriterionId; pass: boolean | null; reason: string }
 export interface Judgment { findings: Finding[] }
-export interface ReadinessReport { at: number; level: ReadinessLevel; ci: CiHistory | null; passed: number; findings: Finding[] }
-export interface RepositoryReadiness { ciReadFailed?: boolean; latest: ReadinessReport | null; run: "new" | "running" | "finished"; weekly: boolean; error: string | null; diagnosis?: import("../repo-setup/types.js").SetupDiagnosis }
+export interface SetupReport { at: number; level: ReadinessLevel; ci: CiHistory | null; passed: number; findings: Finding[] }
+export interface RepositoryReadiness { ciReadFailed?: boolean; latest: SetupReport | null; run: "new" | "running" | "finished"; weekly: boolean; error: string | null; diagnosis?: import("../repo-setup/types.js").SetupDiagnosis }
 
-export function setupReport(findings: Finding[], at: number, ci: CiHistory | null): ReadinessReport {
+export function setupReport(findings: Finding[], at: number, ci: CiHistory | null): SetupReport {
 	const proven = (id: CriterionId) => findings.some(f => f.id === id && f.pass);
 	const healthy = ci && ci.checked > 0 && ci.green / ci.checked >= MIN_GREEN_RATE && ci.flaky.every(job => job.count <= MAX_FLAKES);
 	const level = proven("setup") && proven("checks") && healthy ? "Ask first" : "Not ready";
 	return { at, level, ci, passed: findings.filter(row => row.pass).length, findings };
 }
 
-export function readinessItem(id: GithubId, report: ReadinessReport, criterion: CriterionId | number): CreateItemInput {
+export function readinessItem(id: GithubId, report: SetupReport, criterion: CriterionId | number): CreateItemInput {
 	if (typeof criterion === "number") {
 		const ci = report.ci;
 		const job = ci?.flaky[criterion];
