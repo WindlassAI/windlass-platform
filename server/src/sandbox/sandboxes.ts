@@ -126,6 +126,7 @@ export class DockerSandboxHandle implements TurnSandbox {
 		const secret = Object.entries(options.gitUser ? {} : options.secretEnv ?? {}).filter(([key]) => options.env?.[key] === undefined);
 		for (const [key] of secret) if (key.startsWith(SECRET_ALIAS)) throw new Error(`the variable ${key} cannot be handed to a program in the sandbox: its name is the platform's`);
 		// Named only, by alias: the client takes each value from its own environment, which is this process's with the aliases added.
+		// Values stay off the client command line, but the daemon receives them, and its debug request logging can record them.
 		const aliases = secret.map(([, value], n) => [`${SECRET_ALIAS}${n}`, value] as const);
 		const names = secret.length === 0 ? [] : ["sh", "-c", secretNamesScript(secret.map(([key]) => key)), "sh"];
 		const user = options.gitUser ? ["--user", "65534:65534"] : [];

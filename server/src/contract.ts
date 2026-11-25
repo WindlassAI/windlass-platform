@@ -1572,6 +1572,7 @@ export interface GithubIssueOrigin {
 
 /** Linear provenance is separate from the GitHub PR binding. The event sender and issue author may differ. */
 export interface LinearIssueOrigin {
+	/** `trusted`: the issue creator's id matches the user who connected the workspace; whoever added the label does not make another person's text trusted. */
 	linear: { id: string; identifier: string; url: string; author: string; trusted: boolean };
 	sender: string;
 	issue?: undefined;

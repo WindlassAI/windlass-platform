@@ -1694,7 +1694,7 @@ function carriedOver(c: Ctx, meta: SessionMeta): boolean {
 	return carried !== null && carried.use === useOf(meta) && carried.gen === c.vars.sandboxGen;
 }
 
-// Write the request ID before reserving time. Reuse it if the response is lost.
+// Write the request ID before reserving time. Reuse it if the response is lost. Call only from inside `metered`.
 async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean, observedUntil?: number): Promise<ReserveAnswer | null> {
 	// Reports the book has not had go first: one for a hold it still has open would be counted in full once another is taken.
 	if (meta.unsettled?.length) await sendUnsettled(c, meta);
@@ -1868,6 +1868,7 @@ async function suspendOutOfTime(c: Ctx, meta: SessionMeta, text: string | null):
 }
 
 // Keep the settlement until the user's meter acknowledges its idempotent receipt.
+// Call only from inside `metered`: it does not take the queue itself.
 async function settleStretch(c: Ctx, meta: SessionMeta, until: number, use: string | null, observedUntil?: number): Promise<void> {
 	const open = meta.meter;
 	if (!open || useOf(meta) !== use) return;

@@ -1,5 +1,5 @@
 /**
- * Each token owns one in-memory world rebuilt on reload. Sessions keep durable events in their
+ * One in-memory world per user per mock client, rebuilt on reload. Sessions keep durable events in their
  * timeline and broadcast transient deltas until the next durable event. This client owns the
  * timers for replay, pending questions and cancellation.
  */
