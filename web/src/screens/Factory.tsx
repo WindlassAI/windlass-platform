@@ -19,10 +19,10 @@
  * heading says so and no row says a word of it.
  */
 import { type GithubId, type ItemState, type ItemSummary } from "@contract";
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { StartComposer } from "../components/StartComposer";
 import { ChevronIcon, FileIcon, Mark, RepoIcon, WarnIcon } from "../components/Icons";
-import { Menu, Pill, type MenuSpec } from "../components/ui";
+import { Menu, Pill, useMediaQuery, type MenuSpec } from "../components/ui";
 import { plural } from "../lib/format";
 import { feedCounts, feedRepositories, repositoryName, workingCounts } from "../lib/repositories";
 import { ITEM_SOURCES, linkProps, navigate, type ItemSource } from "../lib/router";
@@ -116,32 +116,6 @@ function FilterMenu({ name, label, icon, value, choices, chosen, onChoose }: { n
 	);
 }
 
-/** Whether the screen is a phone's: it has the list only. */
-function usePhone(): boolean {
-	const query = typeof matchMedia === "function" ? matchMedia(PHONE_QUERY) : null;
-	const [phone, setPhone] = useState(() => query?.matches ?? false);
-	useEffect(() => {
-		if (!query) return;
-		const change = () => setPhone(query.matches);
-		query.addEventListener?.("change", change);
-		return () => query.removeEventListener?.("change", change);
-	}, [query?.media]);
-	return phone;
-}
-
-/** List | Board: which the Factory shows, remembered on this browser. */
-export function ViewToggle({ view, onChange }: { view: FactoryView; onChange(view: FactoryView): void }) {
-	return (
-		<div className="factory-view" role="group" aria-label="Show as">
-			{(["list", "board"] as const).map((one) => (
-				<button key={one} type="button" className="factory-view-choice" aria-pressed={view === one} onClick={() => onChange(one)}>
-					{one === "list" ? "List" : "Board"}
-				</button>
-			))}
-		</div>
-	);
-}
-
 /** No work item yet: what the factory does, in three sentences, under the composer that files the first. */
 function FactoryEmpty({ github }: { github: boolean }) {
 	return (
@@ -180,7 +154,7 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	const reviewer = platform.info?.items?.reviewer !== false;
 	const [showEnded, setShowEnded] = useState(false);
 	const [chosenView, setChosenView] = useState<FactoryView>(initialView);
-	const phone = usePhone();
+	const phone = useMediaQuery(PHONE_QUERY);
 	const view: FactoryView = phone ? "list" : chosenView;
 	const chooseView = (next: FactoryView) => {
 		setChosenView(next);
@@ -217,7 +191,7 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	const turnsUsed = limits && sessions !== null ? Math.min(hosted, limits.hostedRunning) : null;
 
 	return (
-		<main className={`home factory${view === "board" ? " factory-is-board" : ""}`}>
+		<main className="home factory">
 			<header className="home-head factory-head">
 				<div>
 					<h1 className="display">Factory</h1>
@@ -338,7 +312,15 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 								Clear
 							</button>
 						) : null}
-						{phone ? null : <ViewToggle view={view} onChange={chooseView} />}
+						{phone ? null : (
+							<div className="factory-view" role="group" aria-label="Show as">
+								{(["list", "board"] as const).map((option) => (
+									<button key={option} type="button" aria-pressed={view === option} onClick={() => chooseView(option)}>
+										{option === "list" ? "List" : "Board"}
+									</button>
+								))}
+							</div>
+						)}
 					</div>
 					{shown && shown.length === 0 && filtered ? (
 						<p className="usage-empty factory-none">
@@ -349,17 +331,7 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 						</p>
 					) : null}
 					{view === "board" && shown ? (
-						<FactoryBoard
-							list={shown}
-							children={items.feed?.children}
-							endedCount={endedCount}
-							now={now}
-							reviewer={reviewer}
-							onAllEnded={() => {
-								chooseView("list");
-								setShowEnded(true);
-							}}
-						/>
+						<FactoryBoard key={`${filters.repository ?? ""}/${filters.from ?? ""}`} list={shown} children={items.feed?.children} filters={filters} endedCount={endedCount} now={now} reviewer={reviewer} />
 					) : (
 						<>
 						<Group id={ids.needs} name="Needs you" items={groups.needs} now={now} reviewer={reviewer} tone="needs" />

@@ -1,10 +1,3 @@
-/*
- * The Factory's board (screens/FactoryBoard.tsx): a tray for what needs its person, the one place the
- * amber is, over the pipeline's columns on the sunk surface. The board is wider than the page's measure
- * and centres on the page; the columns scroll inside it where the window is narrower than they need.
- */
-
-/* List | Board, at the right end of the filters. */
 .factory-view {
 	display: inline-flex;
 	margin-left: auto;
@@ -12,23 +5,19 @@
 	border-radius: var(--r-control);
 	box-shadow: inset 0 0 0 1px var(--line-strong);
 }
-.factory-view-choice {
+.factory-view button {
 	height: 24px;
 	padding: 0 10px;
 	border: 0;
 	border-radius: 6px;
 	background: none;
 	color: var(--ink-faint);
-	font: inherit;
 	font-size: var(--text-12);
 	font-weight: var(--weight-medium);
-	cursor: pointer;
 	transition: color var(--dur-hover) var(--ease), background-color var(--dur-hover) var(--ease);
 }
-.factory-view-choice:hover {
-	color: var(--ink);
-}
-.factory-view-choice[aria-pressed="true"] {
+.factory-view button:hover { color: var(--ink); }
+.factory-view [aria-pressed="true"] {
 	background: var(--bg-active);
 	color: var(--ink);
 }
@@ -39,35 +28,17 @@
 	margin: 18px 0 0 calc((100% - var(--board)) / 2);
 	display: grid;
 	gap: 18px;
+	font-size: var(--text-12);
 }
-
-/* Needs you: its cards in a row of three, on the amber wash. */
+.factory-board ul { display: grid; }
+.board-cards { gap: 8px; }
 .board-tray {
 	padding: 10px 12px 12px;
 	border: 1px solid var(--needs-edge);
 	border-radius: var(--r-box);
 	background: var(--needs-wash);
 }
-.board-tray-head {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	margin: 0 2px 10px;
-	font-size: 12.5px;
-	font-weight: var(--weight-medium);
-	letter-spacing: 0;
-	color: var(--needs);
-}
-.board-tray-head .board-column-count {
-	color: var(--needs);
-}
-.board-tray-cards {
-	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-	gap: 10px;
-}
-
-/* The pipeline: one column a stage, ruled apart, the ended ones narrow at the end. */
+.board-tray .board-cards { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 .board-pipeline {
 	display: grid;
 	grid-template-columns: repeat(5, minmax(188px, 1fr)) minmax(160px, 0.8fr);
@@ -77,9 +48,7 @@
 	background: var(--bg-sunk);
 	overscroll-behavior-x: contain;
 }
-.board-pipeline:focus-visible {
-	outline-offset: 2px;
-}
+.board-pipeline:focus-visible { outline-offset: 2px; }
 .board-column {
 	display: flex;
 	flex-direction: column;
@@ -87,65 +56,49 @@
 	min-width: 0;
 	min-height: 360px;
 	padding: 10px 8px 12px;
-	border-left: 1px solid var(--line);
 }
-.board-column:first-child {
-	border-left: 0;
-}
-.board-column-head {
+.board-column + .board-column { border-left: 1px solid var(--line); }
+.board-heading {
 	display: flex;
 	align-items: center;
 	gap: 8px;
-	height: 24px;
 	margin: 0 4px 2px;
 	font-size: 12.5px;
 	font-weight: var(--weight-medium);
 	letter-spacing: 0;
-	color: var(--ink-dim);
+	color: var(--ink);
 }
-.board-column-bar {
+.board-column .board-heading { height: 24px; }
+.board-column .board-heading::before {
+	content: "";
 	width: 16px;
 	height: 3px;
 	border-radius: 2px;
-	background: var(--line-strong);
+	background: var(--bar, var(--line-strong));
 }
-.board-column-building .board-column-bar,
-.board-column-ci .board-column-bar,
-.board-column-review .board-column-bar {
-	background: var(--accent-text);
-}
-.board-column-ready .board-column-bar {
-	background: var(--ok);
-}
-.board-column-name {
-	color: var(--ink);
-}
-.board-column-count {
+.board-column-building, .board-column-ci, .board-column-review { --bar: var(--accent-text); }
+.board-column-ready { --bar: var(--ok); }
+.board-column-count, .board-card-meta, .board-card-foot, .board-part-doing, .board-ended-meta {
 	font-family: var(--font-mono);
 	font-size: 11px;
-	font-weight: var(--weight-regular);
 	color: var(--ink-faint);
 }
+.board-column-count { font-weight: var(--weight-regular); }
+.board-tray .board-heading { margin: 0 2px 10px; }
+.board-tray .board-heading, .board-tray .board-column-count, .board-part-asks .board-part-doing { color: var(--needs); }
 .board-column-empty {
 	margin: 4px 6px;
-	font-size: var(--text-12);
 	color: var(--ink-faint);
 }
-.board-cards,
-.board-parts,
-.board-ended {
-	margin: 0;
-	padding: 0;
-	list-style: none;
+.factory-board ul:empty { display: none; }
+.board-toggle {
+	align-self: flex-start;
+	margin: 4px;
+	font-size: var(--text-12);
 }
-.board-cards {
-	display: grid;
-	gap: 8px;
-}
+.board-tray .board-toggle { margin-top: 10px; }
 
-/* A card: title, the one thing it waits on, its parts, then where it runs and what it cost. */
 .board-card {
-	position: relative;
 	display: grid;
 	gap: 6px;
 	min-width: 0;
@@ -156,53 +109,46 @@
 	box-shadow: var(--shadow-box);
 	transition: border-color var(--dur-hover) var(--ease);
 }
-.board-card:hover,
-.board-card:focus-within {
-	border-color: var(--line-strong);
-}
-.board-card-is-draft {
+.board-card:hover, .board-card:focus-within { border-color: var(--line-strong); }
+.board-card[data-state="draft"] {
 	background: transparent;
 	box-shadow: none;
 	border-style: dashed;
+}
+.board-card-title, .board-part-title, .board-ended-title {
+	color: var(--ink);
+	text-decoration: none;
+}
+.board-card-title:hover, .board-part-title:hover, .board-ended-title:hover {
+	color: var(--ink);
+	text-decoration: underline;
+	text-underline-offset: 3px;
 }
 .board-card-title {
 	font-size: var(--text-13);
 	font-weight: var(--weight-strong);
 	line-height: 1.35;
-	color: var(--ink);
-	text-decoration: none;
 	overflow-wrap: anywhere;
 }
-.board-card-title:hover {
-	text-decoration: underline;
-	text-underline-offset: 3px;
-}
-.board-card-why,
-.board-card-standing {
+.board-card-why, .board-card-standing, .board-part { line-height: 1.45; }
+.board-card-why, .board-card-standing, .board-card-cost, .board-ended-title { color: var(--ink-dim); }
+.board-card-why {
 	display: -webkit-box;
-	margin: 0;
 	overflow: hidden;
 	-webkit-box-orient: vertical;
 	-webkit-line-clamp: 3;
-	font-size: var(--text-12);
-	line-height: 1.45;
-	color: var(--ink-dim);
 }
-.board-card-standing {
+.board-card-standing, .board-card-meta {
 	display: flex;
 	flex-wrap: wrap;
+}
+.board-card-standing {
 	align-items: center;
 	gap: 4px 8px;
 }
 .board-card-meta {
-	display: flex;
-	flex-wrap: wrap;
 	gap: 0 12px;
 	line-height: 1.6;
-	margin: 0;
-	font-family: var(--font-mono);
-	font-size: 11px;
-	color: var(--ink-faint);
 }
 .board-card-foot {
 	display: flex;
@@ -210,16 +156,10 @@
 	justify-content: space-between;
 	gap: 8px;
 	min-height: 22px;
-	font-family: var(--font-mono);
-	font-size: 11px;
-	color: var(--ink-faint);
 }
 .board-card-time {
 	flex: none;
 	line-height: 1.6;
-}
-.board-card-cost {
-	color: var(--ink-dim);
 }
 .board-card-action {
 	flex: none;
@@ -235,22 +175,15 @@
 	color: var(--ink);
 	text-decoration: none;
 }
-.board-card-action:hover {
-	background: var(--bg-hover);
-}
-.board-card-action-needs {
+.board-card-action:hover { background: var(--bg-hover); }
+.board-tray .board-card-action {
 	background: var(--needs-fill);
 	box-shadow: none;
 	color: var(--needs-ink);
 }
-.board-card-action-needs:hover {
-	background: var(--needs-fill);
-	filter: brightness(1.06);
-}
+.board-tray .board-card-action:hover { filter: brightness(1.06); }
 
-/* A feature's parts: a ruled list of compact rows, a state dot each. */
-.board-parts {
-	display: grid;
+.factory-board .board-parts {
 	gap: 3px;
 	padding-top: 7px;
 	border-top: 1px solid var(--line);
@@ -260,99 +193,39 @@
 	grid-template-columns: 6px minmax(0, 1fr);
 	align-items: baseline;
 	column-gap: 8px;
-	font-size: var(--text-12);
-	line-height: 1.45;
 }
-.board-part-dot {
+.board-part:not(.board-part-more)::before {
+	content: "";
 	align-self: center;
-	grid-row: 1;
 	width: 6px;
 	height: 6px;
 	border-radius: 50%;
-	background: var(--accent-text);
+	background: var(--dot, var(--accent-text));
 }
-.board-part-asks .board-part-dot {
-	background: var(--needs);
-}
-.board-part-done .board-part-dot {
-	background: var(--ok);
-}
-.board-part-stopped .board-part-dot,
-.board-part-to_go .board-part-dot {
-	background: var(--ink-faint);
-}
-.board-part-title {
+.board-part-asks { --dot: var(--needs); }
+.board-part-done { --dot: var(--ok); }
+.board-part-stopped, .board-part-to_go { --dot: var(--ink-faint); }
+.board-part-title, .board-ended-title {
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	min-width: 0;
-	color: var(--ink);
-	text-decoration: none;
-}
-.board-part-title:hover {
-	text-decoration: underline;
-	text-underline-offset: 3px;
 }
 .board-part-doing {
 	grid-column: 2;
-	font-family: var(--font-mono);
-	font-size: 11px;
-	color: var(--ink-faint);
 	white-space: nowrap;
-}
-.board-part-asks .board-part-doing {
-	color: var(--needs);
 }
 .board-part-more {
 	display: block;
 	padding-left: 14px;
 	color: var(--ink-faint);
 }
-
-/* The ended ones: titles only, quiet, with how each ended. */
-.board-column-ended {
-	background: transparent;
-}
-.board-ended {
-	display: grid;
+.factory-board .board-ended {
 	gap: 10px;
 	padding: 2px 4px;
 }
-.board-ended-row {
+.board-ended li {
 	display: grid;
 	gap: 1px;
 	min-width: 0;
 }
-.board-ended-title {
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-	font-size: var(--text-12);
-	color: var(--ink-dim);
-	text-decoration: none;
-}
-.board-ended-title:hover {
-	color: var(--ink);
-	text-decoration: underline;
-	text-underline-offset: 3px;
-}
-.board-ended-meta {
-	font-family: var(--font-mono);
-	font-size: 11px;
-	color: var(--ink-faint);
-}
-.board-ended-failed .board-ended-meta {
-	color: var(--bad);
-}
-.board-ended-all {
-	align-self: flex-start;
-	margin: 4px 4px 0;
-	font-size: var(--text-12);
-}
-
-@media (prefers-reduced-motion: reduce) {
-	.board-card,
-	.factory-view-choice {
-		transition: none;
-	}
-}
+.board-ended [data-state="failed"] .board-ended-meta { color: var(--bad); }
