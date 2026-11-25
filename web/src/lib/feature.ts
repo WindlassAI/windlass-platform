@@ -4,7 +4,6 @@
  * so that a figure the server would refuse is said at its field.
  */
 import type { FeaturePlan, ItemBudget, SubtaskBudget } from "@contract";
-import { compact } from "./format";
 
 /** How a work item runs, in the words of the composer's pill and the filing dialog. */
 export const ITEM_MODE_WORDS = {
@@ -16,9 +15,6 @@ export const ITEM_MODE_WORDS = {
 export function orchestrateProblem(checks: number | null): string | null {
 	return checks === 0 ? "No checks are saved for this repository. Save checks before approving subtasks, or run the plan with one implementer." : null;
 }
-
-/** A subtask's budget has one figure: cost-weighted tokens (server/src/factory/feature-plan.ts, `validatePlan`). */
-export const PLAN_DIMENSIONS = ["tokens"] as const;
 
 /** The least a subtask may be given: a tenth of a single item's tokens, and at least 1,000. */
 export function subtaskFloor(single: Pick<ItemBudget, "tokens">): SubtaskBudget {
@@ -60,23 +56,10 @@ export function budgetProblems(single: Pick<ItemBudget, "tokens">, budgets: Reco
 	return { fields, total: [], any };
 }
 
-/** A plan's budget figure as a field: tokens in millions. `spelled` says a figure in the page's words. */
-export interface PlanField {
-	key: keyof SubtaskBudget;
-	label: string;
-	short: string;
-	unit: string;
-	toInput(value: number): string;
-	fromInput(text: string): number;
-	spelled(value: number): string;
-}
+/** Subtask budgets are entered in millions of cost-weighted tokens. */
+export const tokenInput = (tokens: number) => String(Number((tokens / 1e6).toFixed(2)));
 
-const trimmed = (value: number) => String(Number(value.toFixed(2)));
-const parse = (text: string, scale: number) => {
+export function parseTokenInput(text: string): number {
 	const value = text.trim() === "" ? Number.NaN : Number(text);
-	return Number.isFinite(value) ? Math.round(value * scale) : Number.NaN;
-};
-
-export const PLAN_FIELDS: PlanField[] = [
-	{ key: "tokens", label: "Tokens", short: "tokens", unit: "M", toInput: (value) => trimmed(value / 1e6), fromInput: (text) => parse(text, 1e6), spelled: compact },
-];
+	return Number.isFinite(value) ? Math.round(value * 1e6) : Number.NaN;
+}
