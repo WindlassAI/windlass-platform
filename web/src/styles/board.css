@@ -10,11 +10,12 @@
 }
 .factory-board ul { display: grid; }
 .board-cards { gap: 8px; }
+/* The tray of what asks is a surface like the pipeline's: amber only on its heading's mark and count, and on the Answer buttons. */
 .board-tray {
 	padding: 10px 12px 12px;
-	border: 1px solid var(--needs-edge);
+	border: 1px solid var(--line);
 	border-radius: var(--r-box);
-	background: var(--needs-wash);
+	background: var(--bg-sunk);
 }
 .board-tray .board-cards { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); }
 .board-pipeline {
@@ -80,8 +81,15 @@
 	color: var(--ink-faint);
 }
 .board-column-count { font-weight: var(--weight-regular); }
-.board-tray .board-heading { margin: 0 2px 10px; }
-.board-tray .board-heading, .board-tray .board-column-count, .board-part-asks .board-part-doing { color: var(--needs); }
+.board-tray .board-heading { height: 24px; margin: 0 2px 6px; }
+.board-tray .board-heading::before {
+	content: "";
+	width: 16px;
+	height: 3px;
+	border-radius: 2px;
+	background: var(--needs);
+}
+.board-tray .board-column-count, .board-part-asks .board-part-doing { color: var(--needs); }
 .factory-board ul:empty { display: none; }
 .board-toggle {
 	align-self: flex-start;

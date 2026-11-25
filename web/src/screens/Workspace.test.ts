@@ -167,10 +167,10 @@ describe("the rail", () => {
 	it("folds away with Ctrl+B and comes back, and the browser remembers it", async () => {
 		await show("/");
 		press("b", { ctrlKey: true });
-		expect(rail().hidden).toBe(true);
+		expect(rail().hasAttribute("inert")).toBe(true);
 		expect(localStorage.getItem("wlp.workspace.rail")).toBe("folded");
 		act(() => (host.querySelector(".ws-unfold") as HTMLButtonElement).click());
-		expect(rail().hidden).toBe(false);
+		expect(rail().hasAttribute("inert")).toBe(false);
 		expect(localStorage.getItem("wlp.workspace.rail")).toBeNull();
 	});
 });

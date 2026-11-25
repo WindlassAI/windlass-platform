@@ -553,6 +553,12 @@ describe("the Factory's rail and the way back", () => {
 		// The rail stands for the repository filter; "from" stays a chip.
 		expect(host.querySelector('.factory-filters [data-picker="repository"]')).toBeNull();
 		expect(host.querySelector('.factory-filters [data-picker="from"]')).not.toBeNull();
+		// The Agents home's rail: its search, its owners and its foot; a work item is always on a repository, so no "No repository".
+		const rail = host.querySelector("nav.ws-rail") as HTMLElement;
+		expect(rail.querySelector(".ws-search input")).not.toBeNull();
+		expect(rail.querySelector(".ws-rail-owner-row")).not.toBeNull();
+		expect(rail.querySelector(".ws-rail-foot")?.getAttribute("href")).toMatch(/^\/usage/);
+		expect([...rail.querySelectorAll(".ws-rail-name")].map((name) => name.textContent)).not.toContain("No repository");
 	});
 
 	it("opens an item from a filtered Factory with the Factory lit and a way back to that filter, and Back brings the ended ones back", async () => {
