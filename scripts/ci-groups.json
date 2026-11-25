@@ -417,6 +417,7 @@
         "server/src/platform-tools.ts",
         "runner/src/docker-executor.ts",
         "fixtures/codex/**",
+        "fixtures/opencode/channel.mjs",
         "scripts/codex-docker-check.mjs",
         "scripts/codex-sandbox-escape-check.mjs"
       ],
