@@ -6,6 +6,7 @@ const REQUEST_TIMEOUT_MS = 20_000;
 /**
  * The Linear OAuth app. It is authorized with `actor=app`, so the token acts as Linear's application user, never as
  * the person who authorized it: `viewer` answers with the app user, and a token that answers with a human is refused.
+ * So this module never knows who wrote an issue: callers treat authorship as untrusted.
  */
 /** The most of an answer that is read. */
 const MAX_ANSWER_BYTES = 1024 * 1024;
