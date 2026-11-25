@@ -105,7 +105,9 @@ it.each(["claude", "opencode", "codex"] as const)("shows %s models and modes in 
 		expect(pickers()).toContain("effort");
 	} else {
 		act(() => (host.querySelector('[data-picker="model"]') as HTMLButtonElement).click());
-		expect(Array.from(document.querySelectorAll(".ui-pop .ui-item-label"), el => el.textContent)).toEqual(names);
+		// The picker names them as every model picker does: clean, under their provider, the default tagged.
+		const picked = harness === "claude" ? names : ["GPT-5.4", "GPT-5.4 mini"];
+		expect(Array.from(document.querySelectorAll(".ui-pop .ui-item-label"), el => el.textContent)).toEqual(picked);
 	}
 	const details = host.querySelector("#panel-session")!.closest("section")!.querySelector("details")!;
 	act(() => { details.open = true; details.dispatchEvent(new Event("toggle")); });

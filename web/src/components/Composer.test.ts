@@ -170,7 +170,7 @@ describe("the composer's submissions", () => {
 });
 
 describe("another harness's model picker", () => {
-	it("names its models as the harness does, and marks its default as the start composer does, wherever it is listed", () => {
+	it("names its models as the harness does, and tags its default as the start composer does, under their provider", () => {
 		const models = { source: "harness" as const, fetchedAt: null, defaultModel: "opus", models: [{ id: "haiku", name: "Haiku", efforts: [] }, { id: "opus", name: "Opus", efforts: [] }, { id: "sonnet", name: null, efforts: [] }] };
 		show({ harness: "Claude Code", model: "opus", models });
 		const pill = host.querySelector('[data-picker="model"]') as HTMLButtonElement;
@@ -178,9 +178,11 @@ describe("another harness's model picker", () => {
 		const rows = [...document.querySelectorAll('.ui-pop [role="menuitemradio"]')] as HTMLElement[];
 		expect(rows.map((row) => [row.dataset.value, row.querySelector(".ui-item-label")?.textContent])).toEqual([
 			["haiku", "Haiku"],
-			["opus", "Opus (default)"],
-			["sonnet", "sonnet"],
+			["opus", "Opus"],
+			["sonnet", "Sonnet"],
 		]);
+		expect(rows.find((row) => row.dataset.value === "opus")?.textContent).toContain("default");
+		expect(document.querySelector(".ui-pop")?.textContent).toContain("Anthropic");
 		expect(rows.find((row) => row.getAttribute("aria-checked") === "true")?.dataset.value).toBe("opus");
 		expect(pill.dataset.value).toBe("opus");
 	});

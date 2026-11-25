@@ -7,7 +7,7 @@ import { AgentGlyph } from "./ui/Pill";
 import { Tooltip } from "./ui/Tooltip";
 
 /** An effort as bars, filled to its level. */
-function EffortBars({ level, of }: { level: number; of: number }) {
+export function EffortBars({ level, of }: { level: number; of: number }) {
 	const bars = Math.max(of, 3);
 	return (
 		<span className="effort-bars" aria-hidden="true">

@@ -127,7 +127,8 @@ it("says where the last agent started, with its agent and mode, and forgets it",
 		const forget = Array.from(host.querySelectorAll("button")).find((one) => one.textContent === "Forget");
 		await act(async () => forget!.click());
 		await settle();
-		expect(line()).toBe("Nothing remembered yet");
+		expect(line()).not.toContain("Claude Code");
+		expect(host.textContent).toContain("Nothing remembered yet");
 		expect((await client.user(auth).account()).lastStart).toBeNull();
 	} finally {
 		act(() => root.unmount());
@@ -153,12 +154,12 @@ it("saves a machine agent and profile and hides machine choices for Hosted", asy
 		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
 		await settle();
 		expect(field("Agent")).toBeUndefined();
-		await select("Place", "m_nas");
+		await select("Where", "m_nas");
 		await select("Agent", "claude");
 		await select("Machine profile", "docker-hardened");
 		await select("If unavailable", "hosted");
 		expect((await client.user(auth).account()).defaults).toMatchObject({ place: { machine: "m_nas" }, harness: "claude", machineProfile: "docker-hardened", placeFallback: "hosted" });
-		await select("Place", "hosted");
+		await select("Where", "hosted");
 		expect(field("Machine profile")).toBeUndefined();
 		expect((await client.user(auth).account()).defaults.place).toBe("hosted");
 	} finally {

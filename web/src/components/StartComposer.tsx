@@ -7,7 +7,7 @@ import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { HARNESS_NAMES } from "../lib/acp";
 import { count, localTime, sandboxTime } from "../lib/format";
-import { MODEL_SOURCES, SOURCE_NAMES, cleanModelName, credentialWords, effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault, modelsBySource, type ModelSource } from "../lib/models";
+import { MODEL_SOURCES, SOURCE_NAMES, cleanModelName, effortsOf, harnessOptions, modelLabel, modelName, modelsNote, modelsBySource, type ModelSource } from "../lib/models";
 import { safeStorage } from "../lib/workspace";
 import { OPEN_MODES, launchModes } from "../lib/modes";
 import { itemOf, lastUsed, layerChoices, repositoryName, startedOn, startingChoices, startingModel, startingProfile } from "../lib/repositories";
@@ -34,6 +34,7 @@ import { Menu, MenuList, PickerPanel, type MenuGroup, type MenuItem, type MenuSp
 import { Popover } from "./ui/Popover";
 import { AgentGlyph, AgentLogo } from "./ui/Pill";
 import { RepoTile } from "./RepoTile";
+import { modelGroups as sharedModelGroups } from "./ModelPicker";
 import { AgentPill, EffortButton, LockHint, OptionsButton, WherePill, effortGroup } from "./TrayControls";
 import { ProviderLogo } from "./AgentLogos";
 import { SplitButton } from "./ui/Button";
@@ -783,19 +784,11 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		for (const id of ["claude", "codex", "opencode"] as const) agentButtons.push({ id, reason: hostedProblem(id) });
 	}
 
-	const bySource = modelsBySource(harness, other && machineProblem ? null : modelList);
-	const rowsFor = (source: ModelSource | null): MenuItem[] => (bySource.get(source) ?? []).map(({ id, name: reportedName }) => {
-		const name = cleanModelName(id, other ? reportedName : null);
-		const isDefault = id === modelList?.defaultModel;
-		return {
-			id: `${harness}:${id}`, label: name, textValue: `${name} ${id}`,
-			icon: source ? <ProviderGlyph source={source} /> : <AgentGlyph harness={HARNESS_NAMES[harness]} />,
-			trailing: isDefault && !saysDefault(name) ? <span className="ui-tag">default</span> : undefined,
-			checked: other && !model ? isDefault : model === id,
-			onSelect: () => { setHarness(harness); setModel(id); },
-		};
-	});
-	const defaultRows = rowsFor(null);
+	const shownList = other && machineProblem ? null : modelList;
+	const bySource = modelsBySource(harness, shownList);
+	const pickModel = (id: string) => { setHarness(harness); setModel(id); };
+	const checkedModel = other && !model ? (modelList?.defaultModel ?? "") : model;
+	const defaultRows: MenuItem[] = [];
 	if (!bySource.size) {
 		const name = HARNESS_NAMES[harness];
 		let label: string = name;
@@ -818,12 +811,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const shownTab = providerTab !== null && tabs.includes(providerTab) ? providerTab : null;
 	const modelGroups: MenuGroup[] = [
 		...(defaultRows.length && shownTab === null ? [{ id: "agent-default", items: defaultRows }] : []),
-		...sources.filter((source) => shownTab === null || tabOf(source) === shownTab).map((source) => ({
-			id: `provider:${source}`,
-			label: SOURCE_NAMES[source],
-			note: credentialWords(harness, source, machineEntry, machineName) || undefined,
-			items: rowsFor(source),
-		})),
+		...sharedModelGroups({ harness, list: shownList, chosen: checkedModel, onChoose: pickModel, entry: machineEntry, machine: machineName, rowValue: (id) => `${harness}:${id}`, only: shownTab === null ? undefined : (source) => tabOf(source) === shownTab }),
 	];
 	const chooseAgent = (id: HarnessId) => {
 		if (id === harness) return;
@@ -1265,11 +1253,3 @@ function sentence(parts: readonly string[]): string {
 		.join(" ");
 }
 
-/** A model's provider mark in the square an agent's badge has (`AgentGlyph`). */
-function ProviderGlyph({ source }: { source: ModelSource }) {
-	return (
-		<span className="ui-glyph ui-glyph-logo" aria-hidden="true" data-source={source}>
-			<ProviderLogo provider={source === "other" ? "opencode" : source} size={12} />
-		</span>
-	);
-}

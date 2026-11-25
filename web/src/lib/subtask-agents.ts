@@ -15,7 +15,7 @@ import type { AgentModels } from "../../../server/src/factory/placement.js";
 import { hostedAgentProblem, machineHarness, worksWithoutAsking } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_NAMES } from "./acp";
 import { machineLabel } from "./machines";
-import { harnessOptions, modelName, type ReportedOptions } from "./models";
+import { cleanModelName, harnessOptions, modelName, type ReportedOptions } from "./models";
 
 export { worksWithoutAsking };
 
@@ -81,7 +81,7 @@ export function agentModelsOf(machines: MachineSummary[] | null, catalogs: Catal
 /** A subtask's agent in short words: its name, model and effort, each as the page names them. */
 export function agentParts(agent: SubtaskAgent | undefined, list: ModelList | null): { name: string; model: string; effort: string | null; unattended: boolean } {
 	const harness = agent?.harness ?? "windlass";
-	const model = agent?.model ? modelName(list, agent.model) : harness === "windlass" ? "the feature's model" : "its default model";
+	const model = agent?.model ? cleanModelName(agent.model, harness === "windlass" ? null : modelName(list, agent.model)) : harness === "windlass" ? "the feature's model" : "its default model";
 	return { name: HARNESS_NAMES[harness], model, effort: agent?.effort ?? null, unattended: worksWithoutAsking(harness) };
 }
 

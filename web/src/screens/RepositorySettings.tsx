@@ -262,13 +262,17 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 					<DefaultsSection
 						key={generation}
 						id="repo-defaults"
-						lede={`A new agent on ${name} starts from these. They can still be changed when it is launched, for that agent only, and an agent that exists keeps what it was launched with.`}
+						lede={`New agents and work items on ${name} start from these; a choice made at launch comes first. An agent that exists keeps what it has.`}
 						defaults={view.defaults}
 						whose="repository"
 						under={accountChoices}
+						account={account.settings?.defaults ?? null}
 						models={models}
 						save={(change) => client.user(auth).saveRepositoryDefaults(page.id, change)}
 						onSaved={(next) => page.replace({ ...view, defaults: { ...view.defaults, ...next } })}
+						lastStart={account.settings ? account.settings.lastStart : undefined}
+						forgetLastStart={() => client.user(auth).forgetLastStart()}
+						onForgotten={account.replace}
 					/>
 
 					<ScreenshotsSetting page={page} view={view} />

@@ -790,3 +790,33 @@
 .ui-pop-menu .ui-menu-list {
 	min-height: 96px;
 }
+
+/*
+ * A picker opened from a form: a select's look (its border, chevron and height), holding the chosen
+ * model's provider glyph and clean name, or the effort's bars and level. The menu it opens is the
+ * composer's own.
+ */
+.picker-select {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	text-align: left;
+	cursor: pointer;
+}
+.picker-select-text {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.picker-select .ui-glyph {
+	width: 16px;
+	height: 16px;
+}
+.picker-select[data-state="open"] {
+	border-color: var(--ink-faint);
+}
+.picker-effort .effort-bars {
+	flex: none;
+}

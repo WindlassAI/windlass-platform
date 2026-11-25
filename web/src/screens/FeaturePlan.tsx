@@ -12,7 +12,9 @@ import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, 
 import { compact, plural } from "../lib/format";
 import { subscriptionSpend } from "../lib/item-agent";
 import type { useHostedProviders } from "../state/hooks";
-import { effortChoices, effortsOf, harnessOptions, modelLabel } from "../lib/models";
+import { effortsOf, harnessOptions } from "../lib/models";
+import { modelMenu as sharedModelMenu } from "../components/ModelPicker";
+import { effortGroup } from "../components/TrayControls";
 import type { AgentModels } from "../../../server/src/factory/placement.js";
 import { agentChanged, agentChoices, agentParts, cleanAgent, machineModels, preferredMachine, UNATTENDED_MEANS, UNATTENDED_WORDS, worksWithoutAsking, type Catalogs } from "../lib/subtask-agents";
 import { subtaskFloor, sumBudgets } from "../lib/feature";
@@ -793,32 +795,24 @@ function agentMenu(row: AgentRow, title: string): MenuSpec {
 }
 
 function modelMenu(row: AgentRow, harness: HarnessId): MenuSpec {
-	const list = row.list;
-	const chosen = row.draft?.model ?? "";
-	const none = harness === "windlass" ? "The feature's model" : "Its default model";
-	return {
-		label: "Model",
-		width: 280,
-		groups: [
-			{ id: "inherit", items: [{ id: "", label: none, checked: chosen === "", onSelect: () => row.onAgent(harness === "windlass" ? (row.draft?.effort ? { harness, effort: row.draft.effort } : null) : { harness }) }] },
-			...(list && list.models.length > 0
-				? [{ id: "models", items: list.models.map((model) => ({ id: model.id, label: modelLabel(list, model.id), checked: chosen === model.id, onSelect: () => row.onAgent({ harness, model: model.id }) })) }]
-				: []),
-		],
-	};
+	const entry = row.machine?.harnesses?.find((one) => one.id === harness) ?? null;
+	return sharedModelMenu({
+		harness,
+		list: row.list,
+		chosen: row.draft?.model ?? "",
+		inherit: { label: harness === "windlass" ? "The feature's model" : "Its default model" },
+		entry,
+		machine: row.machine ? machineLabel(row.machine) : null,
+		onChoose: (model) => (model ? row.onAgent({ harness, model }) : row.onAgent(harness === "windlass" ? (row.draft?.effort ? { harness, effort: row.draft.effort } : null) : { harness })),
+	});
 }
 
-function effortMenu(row: AgentRow, harness: HarnessId, efforts: string[]): MenuSpec {
-	const chosen = row.draft?.effort ?? "";
+function effortMenu(row: AgentRow, harness: HarnessId, efforts: string[], model: string): MenuSpec {
 	const pick = (effort: string) => {
-		const next = { harness, ...(row.draft?.model && { model: row.draft.model }), ...(effort && { effort }) };
+		const next = { harness, ...(row.draft?.model && { model: row.draft.model }), ...(effort && effort !== "default" && { effort }) };
 		row.onAgent(cleanAgent(next) ?? null);
 	};
-	return {
-		label: "Effort",
-		width: 220,
-		groups: [{ id: "efforts", items: [{ id: "", label: "Default", checked: chosen === "", onSelect: () => pick("") }, ...effortChoices(efforts).map((effort) => ({ id: effort, label: effort, checked: chosen === effort, onSelect: () => pick(effort) }))] }],
-	};
+	return { label: "Effort", width: 220, groups: [effortGroup(efforts, row.draft?.effort ?? "", model, pick)], hints: false };
 }
 
 function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: string; child: ItemSummary | null; row: AgentRow; editing: boolean; disabled: boolean }) {
@@ -852,7 +846,7 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 					<span className="plan-place-picks">
 						<Menu spec={agentMenu(row, title)} trigger={(props) => <Pill {...props} outlined disabled={disabled} dot={row.changed ? "changed" : null} dotLabel={row.changed ? "changed, not saved" : undefined} className="plan-place-pick" icon={<AgentGlyph harness={harness} size={11} />} aria-label={`Agent: ${parts.name}`}>{parts.name}</Pill>} />
 						<Menu spec={modelMenu(row, harness)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Model: ${parts.model}`}>{parts.model}</Pill>} />
-						{efforts.length > 0 || row.draft?.effort ? <Menu spec={effortMenu(row, harness, efforts)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Effort: ${parts.effort ?? "default"}`}>{parts.effort ? `${parts.effort} effort` : "Default effort"}</Pill>} /> : null}
+						{efforts.length > 0 || row.draft?.effort ? <Menu spec={effortMenu(row, harness, efforts, parts.model)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Effort: ${parts.effort ?? "default"}`}>{parts.effort ? `${parts.effort} effort` : "Default effort"}</Pill>} /> : null}
 						{parts.unattended ? <UnattendedTag /> : null}
 					</span>
 				) : (
