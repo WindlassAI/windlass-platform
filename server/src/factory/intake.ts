@@ -61,7 +61,7 @@ export function taskOfLinear(input: { title: string; body: string; identifier: s
 }
 
 export const refusals = {
-	connection: "Not taken: your GitHub account's Windlass connection does not include this repository's installation. Connect GitHub again from Windlass's account menu, then label the issue again.",
+	connection: "Not taken: your GitHub account's Windlass connection does not include this repository's installation. Connect GitHub again in Windlass's Settings, then label the issue again.",
 	off: "Not taken: work items are off on this Windlass deployment.",
 	read: "Not taken: Windlass needs write access to this repository for you, and GitHub says you have read access.",
 	archived: "Not taken: this repository is archived.",

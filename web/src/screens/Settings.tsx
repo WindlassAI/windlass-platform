@@ -3,7 +3,8 @@ import { Dialog } from "../components/Dialog";
 import { ApiTokens } from "../components/ApiTokens";
 import { SettingsSecrets } from "../components/Secrets";
 import { DefaultsSection } from "../components/Defaults";
-import { ArrowLeftIcon } from "../components/Icons";
+import { CopyButton } from "../components/Copy";
+import { GithubSettings } from "../components/GithubSettings";
 import { LinearSettings } from "../components/LinearSettings";
 import { LoginMethods } from "../components/LoginMethods";
 import { ModelProviders } from "../components/ModelProviders";
@@ -15,29 +16,14 @@ import { settingsKeyUpgrade, useMachines } from "./Machines";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useAccount, useModels } from "../state/hooks";
+import { useGithub } from "../state/github";
 import { Check } from "../components/ui/Check";
 import { SettingsGroup, SettingsLayout, SettingsPending, SettingsRefreshError } from "../components/SettingsGroups";
-
-export function SettingsCrumb() {
-	return (
-		<nav className="crumb" aria-label="Where you are">
-			<a className="crumb-back" {...linkProps({ name: "home" })}>
-				<ArrowLeftIcon size={14} />
-				<span>Agents</span>
-			</a>
-			<span className="crumb-sep" aria-hidden="true">
-				/
-			</span>
-			<span className="crumb-title" aria-current="page">
-				Settings
-			</span>
-		</nav>
-	);
-}
 
 export function Settings() {
 	const { client, platform } = useApp();
 	const auth = useAuth();
+	const github = useGithub();
 	const account = useAccount();
 	const models = useModels();
 	const { settings } = account;
@@ -67,6 +53,13 @@ export function Settings() {
 					{!auth.profile.demo && <LoginMethods />}
 					{info?.billing ? <PlanSection /> : null}
 					<SessionSettings />
+					{!auth.profile.demo ? (
+						<div className="settings-row settings-account-id">
+							<span className="settings-row-text">Account id</span>
+							<code className="settings-row-meta">{auth.profile.uid}</code>
+							<CopyButton text={auth.profile.uid} label="Copy the account id" />
+						</div>
+					) : null}
 				</SettingsGroup>
 
 				<SettingsGroup id="settings-defaults" title="Defaults" lede="Used wherever a repository has no default of its own. A choice made at launch always comes first.">
@@ -112,10 +105,11 @@ export function Settings() {
 					</SettingsGroup>
 				) : null}
 
-				{info?.items ? (
-					<SettingsGroup id="settings-integrations" title="Integrations" lede="File work items from other places.">
-						<LinearSettings />
-						<ApiTokens />
+				{info?.items || github.enabled ? (
+					<SettingsGroup id="settings-integrations" title="Integrations" lede={info?.items ? "Your repositories, and work items filed from other places." : "Your repositories."}>
+						<GithubSettings />
+						{info?.items ? <LinearSettings /> : null}
+						{info?.items ? <ApiTokens /> : null}
 					</SettingsGroup>
 				) : null}
 			</SettingsLayout>

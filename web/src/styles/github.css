@@ -1,79 +1,15 @@
-.menu-github {
-	margin-top: 14px;
-	padding-top: 12px;
-	border-top: 1px solid var(--line);
-}
-.menu-heading {
-	font-family: var(--font-mono);
-	font-size: var(--size-tiny);
-	font-weight: 700;
-	letter-spacing: 0.09em;
-	text-transform: uppercase;
-	color: var(--ink-dim);
-}
-.menu-github .menu-note {
-	margin-top: 6px;
-}
-/* What went wrong keeps its tone: the note's own colour would win otherwise. */
-.menu-github .menu-note.tone-bad {
-	color: var(--bad);
-}
+/* ---- the GitHub connection, in Settings ----------------------------------------------------------- */
 
-.gh-accounts {
-	display: grid;
-	gap: 5px;
-	margin-top: 8px;
-	font-family: var(--font-mono);
-	font-size: var(--size-mono-small);
-}
-.gh-accounts li {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	min-width: 0;
-}
-.gh-account-name {
-	min-width: 0;
-	color: var(--ink);
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-.gh-accounts .chip {
-	flex: none;
-}
-.gh-account-link {
-	margin-left: auto;
+.gh-settings-actions {
 	display: inline-flex;
-	align-items: center;
-	gap: 4px;
-	flex: none;
-	border-radius: var(--radius-s);
-	color: var(--ink-dim);
-	text-decoration: underline;
-	text-decoration-color: var(--line-strong);
-	text-decoration-thickness: 1px;
-	text-underline-offset: 3px;
+	gap: 14px;
+	margin-left: auto;
 }
-.gh-account-link:hover {
-	color: var(--ink);
-	text-decoration-color: currentColor;
+.gh-settings-actions .secret-add {
+	margin-left: 0;
 }
-
-.gh-menu-actions {
-	display: flex;
-	gap: 8px;
-	margin-top: 12px;
-}
-.gh-menu-actions .button,
-.gh-menu-connect {
-	flex: 1;
-	border-color: var(--line-strong);
-	color: var(--ink);
-}
-.gh-menu-connect {
-	width: 100%;
-	margin-top: 10px;
+#settings-github .usage-kept-row .button {
+	gap: 6px;
 }
 
 .gh-connect-line {

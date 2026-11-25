@@ -146,6 +146,6 @@ describe("the mock's GitHub", () => {
 		expect((await refusal(running.publish({ title: "x", body: "" }))).reason).toBe("publish_blocked");
 
 		await mock.user(ada).githubDisconnect();
-		expect((await refusal(session.publish({ title: "x", body: "" }))).message).toBe("GitHub is not connected any more. Connect GitHub again from the account menu, then try once more.");
+		expect((await refusal(session.publish({ title: "x", body: "" }))).message).toBe("GitHub is not connected any more. Connect GitHub again in Settings, then try once more.");
 	});
 });

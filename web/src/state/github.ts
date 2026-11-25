@@ -18,7 +18,8 @@
  * (which screen, and what the start composer held), and `completeGithubReturn` picks it up again when
  * the page loads: it takes the fragment out of the address, hands the ticket to the user's actor, and
  * goes back to that screen. Where the result is said (`notice`) depends on where the user started: in
- * the start composer, or in the account menu, which opens for it.
+ * the start composer, or on the account: Settings' GitHub section, or the account menu, which opens for it
+ * on any other page.
  */
 import type { AuthResult, GithubStatus, ItemMode } from "@contract";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
@@ -29,8 +30,8 @@ import { useApp, useAuth } from "./app";
 export interface GithubNotice {
 	tone: "good" | "bad";
 	text: string;
-	/** Where it is shown: in the start composer's repository picker, or in the account menu. */
-	where: "launch" | "menu";
+	/** Where it is shown: in the start composer's repository picker, or on the account (Settings, or the account menu elsewhere). */
+	where: "launch" | "account";
 }
 
 export interface GithubState {
@@ -280,7 +281,7 @@ function listen(client: PlatformClient, auth: AuthResult, explain: (error: unkno
 function onGithubMessage(client: PlatformClient, auth: AuthResult, explain: (error: unknown) => string, event: MessageEvent): void {
 	const hash = githubMessageHash(event);
 	if (hash === null) return;
-	const where = popup?.where ?? "menu";
+	const where = popup?.where ?? "account";
 	if (popup) popup.done = true;
 	stopWatching();
 	finishReturn(client, auth, explain, hash, where);
@@ -295,7 +296,7 @@ function completeGithubReturn(client: PlatformClient, auth: AuthResult, explain:
 	const hash = location.hash;
 	history.replaceState(null, "", location.pathname + location.search);
 	const from = take<Return>(RETURN_KEY);
-	const where = from?.where === "launch" ? "launch" : "menu";
+	const where = from?.where === "launch" ? "launch" : "account";
 	const route: Route | null = from && typeof from.path === "string" ? parseRoute(from.path) : null;
 	if (route && (route.name === "new" || route.name === "session" || route.name === "home" || route.name === "repository")) navigate(route, { replace: true });
 	finishReturn(client, auth, explain, hash, where);
@@ -419,7 +420,7 @@ export function useGithub(): Github {
 		try {
 			set({ status: await client.user(auth).githubDisconnect(), busy: null });
 		} catch (error) {
-			set({ busy: null, notice: { tone: "bad", text: errorMessage(error), where: "menu" } });
+			set({ busy: null, notice: { tone: "bad", text: errorMessage(error), where: "account" } });
 			explain(error);
 		}
 	}, [client, auth, explain]);

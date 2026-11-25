@@ -19,13 +19,13 @@ test("Google code exchange, ID token verification and explicit identity ownershi
 	const { url, pending } = beginOAuth("google", origin);
 	const query = new URL(url).searchParams;
 	assert.equal(query.get("code_challenge_method"), "S256");
-	assert.equal(query.get("scope"), "openid email");
+	assert.equal(query.get("scope"), "openid email profile");
 	const callback = pending.redirect + "?code=one&state=" + query.get("state");
 
 	const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
 	const jwk = { ...publicKey.export({ format: "jwk" }), kid: "google-test", alg: "RS256" };
 	const now = Math.floor(Date.now() / 1000);
-	const claims = { sub: "12345", iss: "https://accounts.google.com", aud: "test-client", exp: now + 3600, iat: now, nonce: query.get("nonce"), email: "owner@example.invalid", email_verified: true, hd: "example.invalid" };
+	const claims = { sub: "12345", iss: "https://accounts.google.com", aud: "test-client", exp: now + 3600, iat: now, nonce: query.get("nonce"), email: "owner@example.invalid", email_verified: true, hd: "example.invalid", name: "Ada Owner", picture: "https://lh3.googleusercontent.com/a/ada" };
 	let overrides: Record<string, unknown> = {};
 	let corrupt = false;
 	const tokenBody = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
@@ -54,10 +54,14 @@ test("Google code exchange, ID token verification and explicit identity ownershi
 	const uid = await resolveIdentity(db, identity);
 	assert.ok(uid);
 	assert.equal(identity.display, claims.email);
+	assert.equal(identity.name, "Ada Owner");
+	assert.equal(identity.avatar, claims.picture);
 	assert.notEqual(await resolveIdentity(db, { ...identity, sub: "different" }), uid);
 	overrides = { email: "changed@gmail.com" };
 	assert.equal(await resolveIdentity(db, await finishOAuth(pending, callback)), uid);
 	assert.equal(sqlite.prepare("SELECT display FROM login_identity WHERE uid=?").get(uid)?.display, "changed@gmail.com");
+	overrides = { picture: "http://insecure.invalid/a.png" };
+	assert.equal((await finishOAuth(pending, callback)).avatar, null);
 
 	for (const patch of [{ email_verified: false }, { email_verified: "true" }, { hd: undefined }]) {
 		overrides = { sub: "another-" + JSON.stringify(patch), ...patch };

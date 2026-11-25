@@ -4227,7 +4227,7 @@ async function githubChecks(server: Server, client: Client, demoSignIn: () => Pr
 			await refused(() => userOf(alice).githubRepositories(""), "github_not_connected");
 			await refused(() => userOf(alice).createSession({ profile: profile as never, repository: { id: harbor.id } }), "github_not_connected");
 			const said = await refused(() => sessionOf(alice, sessionId).publish({ message: { title: "After", body: "" } }), "github_gone");
-			assert(said === "GitHub is not connected any more. Connect GitHub again from the account menu, then try once more.", `a push says "${said}"`);
+			assert(said === "GitHub is not connected any more. Connect GitHub again in Settings, then try once more.", `a push says "${said}"`);
 			// The session stays, with what it was launched on; and a ticket from before cannot bring the connection back.
 			const kept = (await userOf(alice).listSessions()).find((session) => session.id === sessionId);
 			assert(kept?.repository?.name === "harbor" && kept.pullRequest?.number === 2, "the session lost its repository or its pull request");

@@ -25,7 +25,7 @@ export type Route =
 	/** The user's sandbox time and kept sandboxes. */
 	| { name: "usage" }
 	/** What the user keeps for their account, whatever the repository: defaults, their own MCP servers, and those servers' secrets. */
-	| { name: "settings" }
+	| { name: "settings"; section?: "settings-models" | "settings-github" }
 	/** Free and Pro side by side, with the way to upgrade: where the deployment has billing (`PlatformInfo.billing`). */
 	| { name: "plans" }
 	/** The user's own machines. With `add`, the dialog that pairs one is open: the address a runner prints with its code. */
@@ -136,7 +136,7 @@ export function href(route: Route): string {
 	if (route.name === "factory" && route.repository !== undefined) query.set("repository", String(route.repository));
 	if (route.name === "factory" && route.from) query.set("from", route.from);
 	if (mock !== null) query.set("mock", mock);
-	const fragment = (route.name === "repository" || route.name === "docs") && route.section ? `#${route.section}` : "";
+	const fragment = (route.name === "repository" || route.name === "docs" || route.name === "settings") && route.section ? `#${route.section}` : "";
 	const search = query.toString();
 	return pathOf(route) + (search ? `?${search}` : "") + fragment;
 }

@@ -520,22 +520,32 @@ export function MenuSheet({ open, spec, onClose, anchor, id, title, settings = f
 }
 
 /** A form that opens from a control: a popover anchored to it on a wide screen, a bottom sheet on a phone. */
-export function PickerPanel({ open, onClose, anchor, title, width = 340, surface: forced, children, id }: { open: boolean; onClose(): void; anchor: RefObject<HTMLElement | null>; title: string; width?: number; surface?: Surface; children: ReactNode; id?: string }) {
+/** `header`, where given, is shown in the title's place (and atop a phone's sheet); `title` still names the panel. */
+export function PickerPanel({ open, onClose, anchor, title, header, width = 340, surface: forced, children, id }: { open: boolean; onClose(): void; anchor: RefObject<HTMLElement | null>; title: string; header?: ReactNode; width?: number; surface?: Surface; children: ReactNode; id?: string }) {
 	const auto = useSurface();
 	const surface = forced ?? auto;
 	const labelId = useId();
 	if (surface === "sheet") {
 		return (
 			<Sheet open={open} onClose={onClose} title={title} returnFocus={anchor} id={id}>
-				<div className="ui-sheet-panel">{children}</div>
+				<div className="ui-sheet-panel">
+					{header}
+					{children}
+				</div>
 			</Sheet>
 		);
 	}
 	return (
 		<Popover open={open} anchor={anchor} onClose={onClose} width={width} labelledBy={labelId} id={id} maxHeight={520} className="ui-pop-panel">
-			<p className="ui-pop-panel-title" id={labelId}>
-				{title}
-			</p>
+			{header ? (
+				<div className="ui-pop-panel-title ui-pop-panel-header" id={labelId}>
+					{header}
+				</div>
+			) : (
+				<p className="ui-pop-panel-title" id={labelId}>
+					{title}
+				</p>
+			)}
 			{children}
 		</Popover>
 	);

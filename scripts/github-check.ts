@@ -1367,7 +1367,7 @@ await section("failures: each is said in a sentence the user can act on", async 
 	// The connection was removed, by the user or because the app was uninstalled.
 	const orphan = await prepared("orphan", adaConnection, harbor, adaInstallation);
 	const disconnected = await problem(() => publish.publishWork({ ...orphan, connection: null }));
-	expect("the connection was removed", disconnected?.code === "github_gone" && disconnected.message === "GitHub is not connected any more. Connect GitHub again from the account menu, then try once more.", disconnected?.message);
+	expect("the connection was removed", disconnected?.code === "github_gone" && disconnected.message === "GitHub is not connected any more. Connect GitHub again in Settings, then try once more.", disconnected?.message);
 	const temporary = standin.addInstallation("eve", "User");
 	const eve = standin.addUser("eve");
 	temporary.account.id = eve.id;

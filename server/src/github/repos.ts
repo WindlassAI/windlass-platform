@@ -34,7 +34,7 @@ export interface StoredConnection extends ConfirmedConnection {
 
 export type StoredInstallation = StoredConnection["installations"][number];
 
-export const NOT_CONNECTED = "GitHub is not connected any more. Connect GitHub again from the account menu, then try once more.";
+export const NOT_CONNECTED = "GitHub is not connected any more. Connect GitHub again in Settings, then try once more.";
 
 const LIST_FRESH_MS = 60_000;
 const PERMISSION_FRESH_MS = 5 * 60_000;

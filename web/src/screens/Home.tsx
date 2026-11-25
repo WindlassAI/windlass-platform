@@ -69,7 +69,7 @@ function AccountLine() {
 	return (
 		<p className="home-account">
 			<span className="home-account-who">{auth.profile.email ?? auth.profile.uid}</span>
-			{status === null ? <span className="tone-faint">checking ChatGPT…</span> : status.connected ? <span className="home-account-ok">ChatGPT connected</span> : <span className="tone-faint">ChatGPT not connected · <a className="link" href="/settings#settings-providers">Connect</a></span>}
+			{status === null ? <span className="tone-faint">checking ChatGPT…</span> : status.connected ? <span className="home-account-ok">ChatGPT connected</span> : <span className="tone-faint">ChatGPT not connected · <a className="link" href="/settings#settings-models">Connect</a></span>}
 		</p>
 	);
 }
