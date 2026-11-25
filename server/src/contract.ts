@@ -1350,6 +1350,8 @@ export interface ItemQuestion {
 	kind: QuestionKind;
 	/** Current repository requirement blocking approval of this plan. */
 	approvalBlock?: string;
+	/** Why automatic plan approval needs the owner. Also included in the full question text. */
+	criticReason?: string;
 	criticFindings?: string[];
 	text: string;
 	choices: Array<{ id: ChoiceId; label: string }>;

@@ -20,15 +20,20 @@ export function requiredCiBranches(item: FactoryItem, waitForCiOnEachPart: boole
 // including the feature's own planning, summary and review allowance.
 const SMALL_PLAN_LIMIT = 3;
 
-export function smallPlan(plan: FeaturePlan, single: ItemBudget, repos: string[] = []): boolean {
-	if (plan.status !== "proposed" || plan.questions.some(q => !q.answer && !q.recommended) || plan.subtasks.length > SMALL_PLAN_LIMIT ||
-		plan.budget.tokens > single.tokens * SMALL_PLAN_LIMIT) return false;
-	try { validatePlan(plan, single, repos); } catch { return false; }
+export function smallPlanProblem(plan: FeaturePlan, single: ItemBudget, repos: string[] = []): string | null {
+	if (plan.status !== "proposed") return "Only a proposed plan can be approved automatically.";
+	if (plan.questions.some(q => !q.answer && !q.recommended)) return "A plan question needs your answer because it has no recommendation.";
+	if (plan.subtasks.length > SMALL_PLAN_LIMIT) return `Only plans with up to ${SMALL_PLAN_LIMIT} subtasks can be approved automatically.`;
+	if (plan.budget.tokens > single.tokens * SMALL_PLAN_LIMIT) return "The plan exceeds the token budget for automatic approval.";
+	try { validatePlan(plan, single, repos); } catch (error) { return error instanceof Error ? error.message : "The plan failed validation."; }
 	const parts = plan.subtasks;
 	const ordered = (a: typeof parts[number], key: string): boolean =>
 		a.dependsOn.some(k => k === key || ordered(parts.find(p => p.key === k)!, key));
-	return parts.every((a, i) => parts.slice(i + 1).every(b =>
-		!sharedPaths(a, b) || ordered(a, b.key) || ordered(b, a.key)));
+	for (const [i, a] of parts.entries()) for (const b of parts.slice(i + 1)) {
+		if (sharedPaths(a, b) && !ordered(a, b.key) && !ordered(b, a.key))
+			return `Subtasks ${a.key} and ${b.key} own overlapping paths and could run at the same time.`;
+	}
+	return null;
 }
 
 export interface PlanReview { decision: "approve" | "revise"; findings: string[] }

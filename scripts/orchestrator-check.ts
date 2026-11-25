@@ -758,6 +758,18 @@ test("placement 2 refuses approval for missing screenshots, tags, profile, egres
 	assert.throws(() => placementFeature([mac], {}, [], false, "Mac", { harness: "claude" }), /does not offer Claude Code/);
 	assert.doesNotThrow(() => placementFeature([mac], { tags: ["build", "os:darwin", "arch:arm64", "screenshots", "harness:windlass"] }));
 });
+test("hosted placement matches the requested network policy and explains each refusal", () => {
+	const task = proposal().subtasks[0]!;
+	const route = { preferred: { kind: "hosted" as const }, alternatives: [] };
+	const fit = (hostedEgress: "restricted" | "open" | "none" | undefined, needs: PlacementNeeds) =>
+		choosePlacement({ ...task, needs }, route, { machines: [], hostedProfiles: ["e2b"], hostedEgress });
+	for (const egress of ["restricted", "open"] as const) assert.equal(fit(egress, { egress }).decision?.name, "hosted");
+	assert.equal(fit("open", { egress: "restricted" }).refused, "Hosted sandboxes here have open internet access. This part asked for restricted network access.");
+	assert.equal(fit("restricted", { egress: "open" }).refused, "Hosted sandboxes here have restricted network access. This part asked for open internet access.");
+	assert.match(fit(undefined, { egress: "restricted" }).refused!, /policy is unknown.*restricted network access/);
+	assert.match(fit("none", { egress: "open" }).refused!, /no network for repositories/);
+	assert.match(fit("restricted", { tags: ["gpu"] }).refused!, /machine tag “gpu”/);
+});
 test("placement 3 measures requested CPU and memory in sandbox units", () => {
 	const mac = machineReport();
 	assert.throws(() => placementFeature([mac], { cpus: 8 }), /slots|units/i);

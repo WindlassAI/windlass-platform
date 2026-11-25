@@ -3,6 +3,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { FakeHandle, FakeWindlass } from "../server/src/sandbox-fake.js";
+import { getLayer } from "../server/src/layer.js";
 import { turnPlatformTools } from "../server/src/platform-tools.js";
 import { CI_POLLING } from "../server/src/github/ci.js";
 import { CROSS_POLLING } from "../server/src/factory/cross-repo.js";
@@ -12,9 +13,26 @@ if (!root || new URL(process.env.WLP_GITHUB_API_URL!).hostname !== "127.0.0.1") 
 Object.assign(CI_POLLING, {everyMs: 200});
 // A cross-repo feature's run is read every second; its merges are woken by webhooks, the poll being a fallback.
 Object.assign(CROSS_POLLING, {integrationMs: 1000, mergeMs: 120_000});
-// The recorded builder keeps the feature's setup script when resolving the target-update fixture.
+if (process.env.WLP_FEATURE_TEST_RESTRICTED_HOST === "1") {
+	const { sandboxes } = await getLayer();
+	sandboxes.egress = () => "restricted";
+}
 const fakeTurn = FakeWindlass.prototype.runTurn;
 FakeWindlass.prototype.runTurn = async function(sandbox, input) {
+	if (input.onPlan && input.prompt.includes("(hosted-docs)")) {
+		const file = input.onPlan;
+		const egress = input.prompt.includes("(open-egress)") ? "open" : "restricted";
+		input = { ...input, onPlan: (call, signal) => file({ ...call, arguments: {
+			spec: { goal: "Add two documentation notes", requirements: [], outOfScope: [], acceptance: ["Both notes exist."] },
+			questions: [],
+			subtasks: ["B", "C"].map(letter => {
+				const path = `docs/NOTES-${letter}.md`;
+				return { key: "notes-" + letter.toLowerCase(), title: "Write " + path, brief: "Add a note.", owns: [path],
+					acceptance: [`Run test -f ${path}`], dependsOn: [], budget: { tokens: 200_000 },
+					place: { prefer: "hosted", reason: "Small isolated documentation file." }, needs: { egress } };
+			}),
+		} }, signal) };
+	}
 	if (input.onSetupReview) {
 		const host = turnPlatformTools(input);
 		const repo = join(root, sandbox.id, input.reviewDirectory!.replace("/tmp/", "tmp/"), ".windlass-inputs");
@@ -59,6 +77,7 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 		if (!answer.startsWith("Guides filed") || !(await invoke(call, input.signal!)).includes("closed")) throw Error("Unexpected filing reply: " + answer);
 		return { exitCode: 0, aborted: false, timedOut: false, windlassSessionId: "draft-turn", summary: null, stderrTail: "", failure: null };
 	}
+	// The recorded builder keeps the feature's setup script when resolving the target-update fixture.
 	if (input.prompt.includes("git merge origin/main; do not rebase")) {
 		execFileSync("git", ["-c", "user.name=Builder", "-c", "user.email=builder@example.com",
 			"merge", "--no-edit", "-X", "ours", "origin/main"], { cwd: join(root, sandbox.id, "workspace") });

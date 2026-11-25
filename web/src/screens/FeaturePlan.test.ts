@@ -219,6 +219,14 @@ describe("a feature's plan on its page", () => {
 		expect(host.querySelector('[role="alert"]')?.textContent).toContain("The automatic approval setting wasn’t saved.");
 	});
 
+	it("shows why an approved plan still needs its owner", async () => {
+		const reason = "The reviewer approved, but the plan still needs your decision. Hosted sandboxes here have restricted network access. This part asked for open internet access.";
+		make({ items: "features" }, item => item.question ? { ...item, question: { ...item.question, criticReason: reason, text: reason + "\n" + item.question.text } } : item);
+		const feature = await featureNamed("Search the docs from the command line");
+		await show(`/items/${feature.id}`);
+		expect(host.querySelector(".plan-question")?.textContent).toContain(reason);
+	});
+
 	it("links a reviewer-approved plan to the repository's work item approvals", async () => {
 		make({ items: "features" }, item => item.plan ? { ...item, plan: { ...item.plan, approvedBy: "critic",
 			questions: [{ id: "newline", text: "Add a trailing newline?", answer: "Yes", answeredBy: "critic" }] } } : item);

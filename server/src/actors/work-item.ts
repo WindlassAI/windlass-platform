@@ -185,7 +185,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		origin: meta.github?.origin ?? meta.linear?.origin ?? null,
 		state: item.state,
 		wait: item.wait,
-		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, recommended: item.question.recommended ?? item.question.choices[0]?.id, askedAt: item.question.askedAt, ...(item.question.secret && { secret: item.question.secret }), ...(item.question.asked && { asked: item.question.asked }), ...(item.question.criticFindings && { criticFindings: item.question.criticFindings }), ...(item.question.check && { check: item.question.check }) },
+		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, recommended: item.question.recommended ?? item.question.choices[0]?.id, askedAt: item.question.askedAt, ...(item.question.secret && { secret: item.question.secret }), ...(item.question.asked && { asked: item.question.asked }), ...(item.question.criticReason && { criticReason: item.question.criticReason }), ...(item.question.criticFindings && { criticFindings: item.question.criticFindings }), ...(item.question.check && { check: item.question.check }) },
 		pullRequest: item.pr,
 		verdict: meta.verdict,
 		review: secondReview(item, meta),
@@ -351,8 +351,11 @@ async function repositoryAutonomy(c: Ctx, meta: ItemMeta, repositoryId = meta.re
 
 async function autoApprovePlans(c: Ctx, { item, meta }: Stored) {
 	const repositories = item.repos?.map(r => r.repositoryId) ?? [meta.repository.id];
-	const settings = await Promise.all(repositories.map(id => repositoryAutonomy(c, meta, id)));
-	return settings.length > 0 && settings.every(s => s.autoApprovePlans);
+	try {
+		const user = userActor(c, meta.uid);
+		const settings = await Promise.all(repositories.map(id => user.internalRepositoryAutonomy(id)));
+		return settings.length > 0 && settings.every(s => s.autoApprovePlans);
+	} catch { return null; }
 }
 
 /** Both receipt paths charge the same settled holds, including a replay after a restart. */
@@ -361,17 +364,23 @@ async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void
 		const { item, meta } = stored;
 		if (currentKey(item) === fact.key && (item.run?.step.kind === "refine" || item.run?.step.kind === "plan_review")) {
 			const enabled = await autoApprovePlans(c, stored);
-			if (fact.kind === "turn_ended") fact = { ...fact, autoApprovePlans: enabled };
+			if (fact.kind === "turn_ended") fact = { ...fact, autoApprovePlans: enabled === true };
 			else if (fact.planReview?.decision === "approve") {
+				let checking = "read the available places for the subtasks";
 				try {
-					if (!enabled) throw new Error("Automatic approval is off.");
+					if (enabled === null) throw new PlanError("The repository’s automatic approval setting could not be read.");
+					if (!enabled) throw new PlanError("Automatic approval is turned off for this repository.");
 					if (!item.featurePlan?.singleSuggested) {
 						fact.inventory = await placementInventory(c, meta.uid, item.agent?.model);
+						checking = "verify the repository’s CI requirements";
 						await checkFeatureCi(c, stored);
 					}
 					fact = { ...fact, by: "critic" };
-					advance(item, fact); // Placement and every existing approval guard must succeed.
-				} catch { fact = { ...fact, by: undefined, planReview: undefined }; }
+					checking = "validate the plan for approval";
+					advance(item, fact);
+				} catch (error) {
+					fact = { ...fact, by: undefined, approvalProblem: error instanceof PlanError || error instanceof GithubProblem ? error.message : `The platform could not ${checking}.` };
+				}
 			}
 		}
 		const hostedSeconds = stored.item.place.kind === "hosted"
@@ -1789,7 +1798,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				try {
 					await userActor(c, meta.uid).internalPlanCritic(meta.sessionId);
 				} catch {
-					await take(c, { kind: "review_ended", key: effect.key, at: Date.now(), outcome: "error", said: null,
+					await take(c, { kind: "review_ended", key: effect.key, at: Date.now(), outcome: "error", said: null, refused: "The reviewer session could not be started.",
 						review: null, spend: { tokens: 0, hostedSeconds: item.spent.hostedSeconds } });
 					return true;
 				}
@@ -1843,7 +1852,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					text += "\nWhen a part fits the owner's preferred place, use it as place.prefer. Choose a different place or agent when that part requires it. Owner preference (data): " +
 						JSON.stringify({ prefer, selection: preferred.place === "any-machine" ? "any compatible machine" : undefined, harness: preferred.harness ?? "windlass", profile: preferred.machineProfile, model: preferred.machineModel ?? undefined, effort: preferred.machineEffort ?? undefined });
 				}
-				text += "\n\nCurrent runners do not support sizing beyond one slot." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (Small 1 vCPU, 1 GiB; Medium 2 vCPU, 4 GiB, the default; Large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than Medium (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedKeys: inventory.hostedKeys?.map(k => k.provider), hostedModels, keyProfiles: inventory.keyProfiles, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
+				text += "\n\nCurrent runners do not support sizing beyond one slot." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (Small 1 vCPU, 1 GiB; Medium 2 vCPU, 4 GiB, the default; Large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than Medium (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedKeys: inventory.hostedKeys?.map(k => k.provider), hostedModels, keyProfiles: inventory.keyProfiles, hostedEgress: inventory.hostedEgress, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
 				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
 			}
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.fresh && { fresh: effect.fresh }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) }).catch(onGone);
