@@ -11,7 +11,7 @@ import { accountFor, PROVIDER_TABLE, providerAccounts, recordProviderUsage } fro
 import { recordTurnTokens, TOKEN_USAGE_TABLE, tokensOn } from "../server/src/usage.js";
 import { availableCatalog, selectedKey, withSettingsKeys } from "../server/src/sandbox/harnesses.js";
 import { modelKeyCaller } from "../server/src/actors/internal.js";
-import { MODEL_PROVIDERS, type ModelProvider } from "../server/src/contract.js";
+import { MODEL_PROVIDERS, validModelKey, type ModelProvider } from "../server/src/contract.js";
 import { MODEL_PROVIDER_TABLES, openModelKeyTransit, modelProviderActions as actions } from "../server/src/model-providers.js";
 import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import { createSealer, serverSealer } from "../server/src/signin/seal.js";
@@ -97,6 +97,8 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 	for (const provider of MODEL_PROVIDERS) {
 		const wrong = provider === "openai" ? keys.anthropic : keys.openai;
 		await assert.rejects(save(provider, wrong), err => { clean(err); return err instanceof Error && err.message.includes("format"); });
+		// Anthropic issues more than the apiNN- shape; the check call decides, not the prefix.
+		if (provider === "anthropic") assert.ok(validModelKey(provider, "sk-ant-xyz-a-" + "b".repeat(40)));
 		const saved = await save(provider, keys[provider]);
 		clean(saved);
 		assert.equal(saved.last4, keys[provider].slice(-4));

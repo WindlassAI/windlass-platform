@@ -1302,7 +1302,7 @@ export function isModelProvider(value: unknown): value is ModelProvider {
 
 const MODEL_KEY_SHAPES: Record<ModelProvider, RegExp> = {
 	openai: /^sk-(?:(?:proj|svcacct)-[A-Za-z0-9_-]{16,512}|[A-Za-z0-9]{16,512})$/,
-	anthropic: /^sk-ant-api[0-9]{2}-[A-Za-z0-9_-]{16,512}$/,
+	anthropic: /^sk-ant-[A-Za-z0-9_-]{16,600}$/,
 	google: /^(?:AIza[A-Za-z0-9_-]{35}|AQ\.[A-Za-z0-9_.-]{16,1024})$/,
 	openrouter: /^sk-or-v1-[A-Za-z0-9]{16,512}$/,
 };

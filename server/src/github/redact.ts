@@ -13,6 +13,7 @@ const PUSH_TOKEN_SHAPES: ReadonlyArray<readonly [string, RegExp]> = [
 	["Anthropic OAuth setup token", /sk-ant-oat01-[A-Za-z0-9_-]{16,512}/],
 	["Anthropic API key", /sk-ant-api03-[A-Za-z0-9_-]{16,512}/],
 	["Anthropic admin key", /sk-ant-admin01-[A-Za-z0-9_-]{16,512}/],
+	["Anthropic key", /sk-ant-[A-Za-z0-9_-]{20,600}/],
 	["OpenCode API key", /oc_sk_[A-Za-z0-9_-]{16,512}/],
 	["OpenAI API key", /sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{16,512}/],
 	["OpenRouter API key", /sk-or-v1-[A-Za-z0-9]{16,512}/],
