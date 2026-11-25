@@ -51,8 +51,8 @@ export async function scanCiHistory(app: GithubApp, token: string, repo: Reposit
 		const title = /^Revert "(.+)"(?: \(#\d+\))?$/m.exec(commit.message)?.[1] ?? /^Revert "(.+)"$/.exec(pulls[0]?.title ?? "")?.[1];
 		const byTitle = [...new Set(originals.filter(p => p.title === title).map(p => p.number))];
 		const pr = (sha && originals.find(p => p.mergeCommit?.oid.startsWith(sha))?.number) ||
-			Number(title?.match(/\(#(\d+)\)$/)?.[1] ?? commit.message.match(/^Revert (?:pull request )?#(\d+)\b/im)?.[1]) || (byTitle.length === 1 && byTitle[0]);
-		if (pr) (history.revertedPulls ??= {})[pr] = Date.parse(commit.committedDate);
+			Number(title?.match(/\(#(\d+)\)$/)?.[1] ?? title?.match(/^Merge pull request #(\d+)\b/i)?.[1] ?? (pulls[0]?.title ?? commit.message).match(/^Revert (?:pull request )?#(\d+)\b/i)?.[1]) || (byTitle.length === 1 && byTitle[0]);
+		if (pr) (history.revertedPulls ??= {})[pr] = Math.max(history.revertedPulls?.[pr] ?? 0, Date.parse(pulls[0]?.mergedAt ?? commit.committedDate));
 	}
 	history.reverts = reverts.size;
 	// Follow the first parent so checks on a side branch never count as checks on main.

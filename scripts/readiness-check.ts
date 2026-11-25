@@ -7,9 +7,9 @@ import { emptyRow, environmentInputs, ENVIRONMENT_TABLE, writeEnvironment } from
 import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { test } from "node:test";
-import { applyOffers, BARS, offered, taskKind, trackRecord, type ItemRecord } from "../server/src/factory/readiness-track.js";
+import { applyOffers, BARS, finishedItem, offered, taskKind, trackRecord, type ItemRecord } from "../server/src/factory/readiness-track.js";
 import { buildProof, cachedScan, saveSetupScan, claimAssessment, finishAssessment, READINESS_TABLE, repositoryReadiness, scheduleSetup, setupInputs } from "../server/src/actors/user-readiness.js";
-import type { EnvironmentBuild } from "../server/src/contract.js";
+import type { EnvironmentBuild, ItemView } from "../server/src/contract.js";
 import { fileReadiness } from "../server/src/factory/readiness-filing.js";
 import { plannerReadiness, readinessCriteria, readinessItem, setupReport, type CiHistory, type CriterionId, type Judgment } from "../server/src/factory/readiness.js";
 import { GithubError, GithubApp, type Repository } from "../server/src/github/app.js";
@@ -67,6 +67,17 @@ test("levels, offers and recovery follow finished work in order", () => {
 	assert.deepEqual(applyOffers({}, recovered, [plan]).expired, ["Small plans"]);
 	assert.deepEqual(applyOffers({ autoApprovePlans: true }, lost, []).defaults, { autoApprovePlans: true });
 	assert.doesNotMatch(plannerReadiness("Full plans"), /smaller/);
+});
+
+test("only current-head verification and repository failures count", () => {
+	const item = { head: "head", state: "done", pullRequest: { number: 8 }, run: { n: 1, rounds: {} },
+		verdicts: [{ head: "head", run: 1, result: "pass", flags: [], ci: { state: "passed" }, gate: { required: [] } }],
+		events: [], reviews: [], feedback: { batches: [] } } as unknown as ItemView;
+	assert.ok(finishedItem(item).clean);
+	assert.equal(finishedItem({ ...item, head: "new" }).verified, false);
+	assert.equal(finishedItem({ ...item, review: { state: "filed", recommendation: "needs_person" } }).clean, false);
+	for (const stopReason of ["tokens", "turn_refused", "sandboxes"])
+		assert.equal(finishedItem({ ...item, state: "failed", run: { ...item.run!, stopReason } }).failed, false);
 });
 
 test("each changed path must belong to the same kind", () => {

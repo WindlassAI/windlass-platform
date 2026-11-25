@@ -15,7 +15,8 @@ export function taskKind(paths: string[]): TaskKind {
 }
 
 export function finishedItem(v: ItemView, kind?: TaskKind, flaky = false, featureFix = false) {
-	const verdict = v.verdicts.findLast(r => r.head === v.head && r.run === v.run?.n);
+	const latest = v.verdicts.at(-1);
+	const verdict = latest && latest.head === v.head && latest.run === v.run?.n && !latest.moved ? latest : undefined;
 	const ciFix = featureFix || !!v.run?.rounds.ci || v.events.some(e => e.step?.kind === "ci_fix");
 	const sentBack = !!v.run?.rounds.review || v.reviews.some(r => r.recommendation === "changes_requested") ||
 		v.events.some(e => e.said.startsWith("Sent back: ")) || v.feedback.batches.some(b => b.entries.some(e => e.kind === "changes_requested"));

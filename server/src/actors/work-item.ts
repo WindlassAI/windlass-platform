@@ -60,6 +60,7 @@ export interface ItemMeta {
 	taskKind?: TaskKind;
 	flaky?: boolean;
 	ciCodeFailure?: boolean;
+	mergedDifferentHead?: true;
 	defaultPlace?: import("../contract.js").ItemPlaceDefaults;
 	pendingBuilder?: import("./user-items.js").DefaultBuilder;
 	/** Sealed by the requesting session. Kept with the claim until the save is settled. */
@@ -322,6 +323,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		const { meta, item } = stored;
 		view.record = view.parent || crossRepo(item) ? null : finishedItem(view, meta.taskKind,
 			meta.flaky, item.jobs?.some(j => j.ciFix));
+		if (view.record && meta.mergedDifferentHead) view.record.verified = view.record.clean = false;
 		const gate = (item.run?.ci?.gate ?? item.run?.gate)?.verified;
 		const gateFailed = gate?.run?.checks.some(c => c.status === "failed" && !c.startError && !environmentFailure(c));
 		if (view.record?.failed && !gateFailed && (meta.ciCodeFailure === false || gate && view.verdict?.ci !== "failed" && !item.run?.rounds.ci)) view.record.failed = false;
@@ -460,6 +462,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	if (outcome.item === before) return false;
 	if (issue?.said) outcome.events.push({ at: fact.at, by: issue.by, step: null, said: issue.said });
 	stored.item = outcome.item;
+	if (fact.kind === "pr_read" && fact.state === "merged" && fact.prHead && fact.prHead !== before.head) stored.meta.mergedDifferentHead = true;
 	if (fact.kind === "published") delete stored.meta.ciCodeFailure;
 	if (fact.kind === "turn_ended" && fact.changes) stored.meta.taskKind = fact.taskKind;
 	if (fact.kind === "ci_read" && fact.reading.kind === "read" && fact.head === fact.reading.head) {
