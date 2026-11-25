@@ -1,3 +1,4 @@
+import { loginHttp } from "./login-http.js";
 import { cloneReadyBase } from "../server/src/github/git.js";
 import { runSetupCommand } from "../server/src/sandbox/setup.js";
 import { MIRROR_ROOT, mirrorOwner } from "../server/src/sandbox/git-mirrors.js";
@@ -104,7 +105,7 @@ async function realMachine(runnerImage: string) {
 		}, "Local platform did not start.", 90_000);
 		const { createClient } = await import("../server/src/client.js");
 		const client = createClient<import("../server/src/client.js").Registry>({ endpoint, namespace: "default" });
-		const auth = await client.login.getOrCreate([randomUUID()]).demo();
+		const auth = await loginHttp(platform).demo();
 		const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 		await mkdir(directory, { mode: 0o700 });
 		const socket = "/var/run/docker.sock";

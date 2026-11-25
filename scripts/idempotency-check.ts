@@ -25,6 +25,7 @@
  * the second delivery is RivetKit's own, 25 ms later.
  */
 
+import { loginHttp } from "./login-http.js";
 import { localListeners, portFree } from "./check-listeners.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -186,11 +187,9 @@ const lossy: typeof fetch = async (input, init) => {
 
 async function main(): Promise<void> {
 	const client = createClient<Registry>({ endpoint: ENDPOINT, fetch: lossy });
-	const signIn = async (): Promise<AuthResult> => client.login.getOrCreate([`check-${randomBytes(8).toString("hex")}`]).demo();
+	const signIn = async (): Promise<AuthResult> => loginHttp(API).demo();
 	// The HTTP routes can answer before the local engine has opened actor storage under load.
-	const login = client.login.getOrCreate([`check-${randomBytes(8).toString("hex")}`]);
-	await waitFor("the first login actor to become reachable", () => login.resolve().catch(() => false), 90_000, 500);
-	const auth = await login.demo();
+	const auth = await waitFor("the login service to become reachable", () => signIn().catch(() => false as const), 90_000, 500);
 	const { uid } = auth.profile;
 	const params = { token: auth.token };
 	const user = client.user.getOrCreate([uid], { params });

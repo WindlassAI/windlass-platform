@@ -16,8 +16,8 @@ settings, the rate limits) that is not a whole number in its range stops the ser
 | Variable | Effect |
 |---|---|
 | `WLP_DEMO` | `1`: offer the demo sign-in (scripted model, no ChatGPT account). `scripts/dev.sh` sets it |
-| `WLP_ALLOWED_EMAILS`, `WLP_ALLOWED_USERS` | who may sign in with ChatGPT: account emails and user ids (`u_...`), comma-separated. Unset, both: anyone with a ChatGPT account. Asked at the sign-in and at every call, so a removal holds at once |
-| `WLP_ACCOUNT_EMAILS` | comma-separated seeds such as `owner@example.com=u_existing`. At the first sign-in for each verified email, the platform records the configured uid. Existing entries keep their uid when seeds change or are removed. Invitation rules still apply to the resolved uid and email |
+| `WLP_ALLOWED_EMAILS`, `WLP_ALLOWED_USERS` | Invite verified provider emails or platform user ids, comma-separated. Empty lists allow any authenticated account. Checked at sign-in and at every call |
+| `WLP_GOOGLE_CLIENT_ID`, `WLP_GOOGLE_CLIENT_SECRET` | Google Web application OAuth credentials. Both enable Google login. Register the web origin followed by `/signin` as the redirect URI |
 | `WLP_SECRET` | signs tokens; at least 16 characters (`openssl rand -hex 32`). When unset one is generated in `.data/secret`. Required with a remote engine (`RIVET_ENDPOINT`): the server refuses to start without it |
 | `WLP_WEB_ORIGINS` | origins the web app may connect from, comma-separated (default `localhost:5173`, `127.0.0.1:5173`) |
 | `WLP_HTTP_PORT`, `PORT` | the port of the server's own routes (`WLP_HTTP_PORT` first, then `PORT`, which Rivet Cloud sets on its nodes; default 6440). [operating.md](operating.md#running-on-several-servers) lists the routes |

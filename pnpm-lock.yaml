@@ -39,6 +39,9 @@ importers:
       e2b:
         specifier: 2.63.0
         version: 2.63.0
+      jose:
+        specifier: 6.2.18
+        version: 6.2.18
       minimatch:
         specifier: 11.0.8
         version: 11.0.8
@@ -1070,6 +1073,9 @@ packages:
 
   is-potential-custom-element-name@1.0.1:
     resolution: {integrity: sha512-bCYeRA2rVibKZd+s2625gGnGF/t7DSqDs4dP7CrLA1m7jKWz6pps0LpYLJN8Q64HtmPKJ1hrN3nzPNKFEKOUiQ==}
+
+  jose@6.2.18:
+    resolution: {integrity: sha512-doV4thUwgkrycJH4yLeqwTGIIZphHl+pk7CPReuMIhYhncmgzdko85MaCG4YQFTxqMFr1/oEH32tZuKKovcDEg==}
 
   js-base64@3.9.6:
     resolution: {integrity: sha512-LjkzbLtU6Lx6fjXMYGEACEB7rdtqZtxkBe9aS1ZpDNUyWgUivw3yBEIhQ37OVygJYRt+C+9e9fVT8PpFzH2Hww==}
@@ -2287,6 +2293,8 @@ snapshots:
   is-network-error@1.3.2: {}
 
   is-potential-custom-element-name@1.0.1: {}
+
+  jose@6.2.18: {}
 
   js-base64@3.9.6: {}
 

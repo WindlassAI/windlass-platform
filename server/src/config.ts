@@ -3,10 +3,11 @@
  *
  *   WLP_DEMO=1                 offer the demo sign-in (scripted model, no ChatGPT account)
  *   WLP_ALLOWED_EMAILS, WLP_ALLOWED_USERS
- *                              who may sign in with ChatGPT: account emails and user ids (`u_...`),
- *                              comma-separated. Unset, both: anyone with a ChatGPT account. Asked at
+ *                              who may sign in: verified provider emails and user ids (`u_...`),
+ *                              comma-separated. Unset, both: any authenticated account. Asked at
  *                              the sign-in and at every call, so a removal holds at once (access.ts)
- *   WLP_ACCOUNT_EMAILS           comma-separated email=u_... seeds for first sign-in
+ *   WLP_GOOGLE_CLIENT_ID, WLP_GOOGLE_CLIENT_SECRET
+ *                              enable Google platform login when both are configured
  *   WLP_ALLOW_DOCKER_HOSTED=1 explicitly allow the Docker sandbox layer with a remote engine
  *   WLP_SANDBOX=docker|e2b|fake
  *                              the sandbox layer (default docker). docker: containers on this machine, for
@@ -287,7 +288,7 @@ import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type AccessRules, normalizeEmail, readAccessRules } from "./access.js";
+import { type AccessRules, readAccessRules } from "./access.js";
 import { QUESTION_TIMEOUT_MS } from "./contract.js";
 import { APPROVAL_TTL_MS } from "./server-approvals.js";
 import { DEFAULT_DAILY_SECONDS, DEFAULT_HOLD_SECONDS, DEFAULT_MAX_KEPT, type UsageLimits } from "./usage.js";
@@ -340,7 +341,6 @@ export interface Config {
 	machines: MachinesConfig | null;
 	/** Who may use the platform (access.ts). */
 	access: AccessRules;
-	accountEmails: ReadonlyMap<string, string>;
 	sandbox: SandboxMode;
 	allowDockerHosted: boolean;
 	signingKeys: Keyring;
@@ -787,6 +787,8 @@ function readHttpLimits() {
 		apiToken: perMinute("WLP_API_TOKEN_PER_MINUTE", 60),
 		apiFailures: perMinute("WLP_API_FAILURES_PER_MINUTE", 12),
 		webhookRefusals: perMinute("WLP_WEBHOOK_REFUSALS_PER_MINUTE", 30),
+		loginAddress: perMinute("WLP_LOGIN_ADDRESS_PER_MINUTE", 120),
+		loginTotal: perMinute("WLP_LOGIN_TOTAL_PER_MINUTE", 600),
 		runnerPoll: perMinute("WLP_RUNNER_POLLS_PER_MINUTE", 240),
 		runnerConnection: perMinute("WLP_RUNNER_CONNECTIONS_PER_MINUTE", 120),
 	};
@@ -870,29 +872,12 @@ function readMachines(httpPort: number): MachinesConfig | null {
 	return { identity: platformIdentity(), runnerImage: pinned ? image : null, runnerHarnesses: pinned ? publishedHarnesses(image, process.env.WLP_RUNNER_CAPABILITIES) : undefined, publicUrl, durableTurns: process.env.WLP_RUNNER_DURABLE_TURNS === "1" };
 }
 
-function readAccountEmails(): ReadonlyMap<string, string> {
-	const seeds = new Map<string, string>();
-	for (const entry of (process.env.WLP_ACCOUNT_EMAILS ?? "").split(",")) {
-		if (!entry.trim()) continue;
-		const split = entry.lastIndexOf("=");
-		const email = normalizeEmail(entry.slice(0, split));
-		const uid = entry.slice(split + 1).trim();
-		if (split < 1 || !email || !/^u_[A-Za-z0-9_-]{1,62}$/.test(uid) || (seeds.has(email) && seeds.get(email) !== uid)) {
-			unusable.push("WLP_ACCOUNT_EMAILS must contain comma-separated email=u_... entries with one user id per email");
-			break;
-		}
-		seeds.set(email, uid);
-	}
-	return seeds;
-}
-
 const httpPort = readHttpPort();
 
 export const config: Config = {
 	demo: process.env.WLP_DEMO === "1",
 	machines: readMachines(httpPort),
 	access: readAccessRules(),
-	accountEmails: readAccountEmails(),
 	sandbox: readSandboxMode(),
 	allowDockerHosted: process.env.WLP_ALLOW_DOCKER_HOSTED === "1",
 	signingKeys: configuredKeys("WLP_SECRET_KEYS", 16) ?? [{ id: "default", secret: readSecret() }],

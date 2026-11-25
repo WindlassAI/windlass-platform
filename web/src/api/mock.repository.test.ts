@@ -11,7 +11,7 @@ import { NetworkProblem, cleanEntries } from "../../../server/src/repository-net
 import { PlatformError, type SessionFeed } from "./client";
 import { MOCK_FORGETTING, MOCK_PROFILES, createMockClient } from "./mock";
 
-const ada = { token: "mock:chatgpt:u_repo:ada@example.com", profile: { uid: "u_repo", email: "ada@example.com", demo: false } };
+const ada = { token: "mock:user:u_repo:ada@example.com", profile: { uid: "u_repo", email: "ada@example.com", demo: false } };
 const make = (options: Parameters<typeof createMockClient>[0] = {}) => createMockClient({ pace: 0, ...options });
 
 async function refusal(call: Promise<unknown>): Promise<PlatformError> {

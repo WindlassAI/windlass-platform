@@ -33,6 +33,7 @@ type Level = "admin" | "write" | "read" | "none";
 type Permissions = Record<string, "read" | "write">;
 
 export interface StandinUser {
+	emails?: { email: string; primary: boolean; verified: boolean }[];
 	id: number;
 	login: string;
 }
@@ -201,6 +202,7 @@ export class GithubStandin {
 	readonly reactions = new Set<string>();
 	readonly tokens = new Map<string, Token>();
 	readonly requests: StandinRequest[] = [];
+	emailPermission = true;
 	gitResponseBytes = 0;
 	/** Leave one authenticated advertisement pending until the client cancels it. */
 	hangNextGitRead = false;
@@ -469,7 +471,7 @@ export class GithubStandin {
 		const params = new URL(address).searchParams;
 		if (!address.startsWith(`${this.url}/login/oauth/authorize?`)) throw new Error(`not the authorization page: ${address}`);
 		if (params.get("client_id") !== this.clientId) throw new Error("the authorization names another client");
-		const back = new URL(this.options.callbackUrl);
+		const back = new URL(params.get("redirect_uri") ?? this.options.callbackUrl);
 		const state = params.get("state");
 		if (state !== null) back.searchParams.set("state", state);
 		if (options.deny) {
@@ -746,9 +748,11 @@ export class GithubStandin {
 		}
 
 		// --- as a user ---
-		if (api === "/user" || api === "/user/installations") {
+		if (api === "/user" || api === "/user/installations" || api === "/user/emails") {
 			const user = auth.token?.kind === "user" ? [...this.users.values()].find((candidate) => candidate.id === auth.token?.user) : undefined;
 			if (!user) return answer(401, { message: "Bad credentials" });
+			if (api === "/user/emails" && !this.emailPermission) return answer(403, { message: "Permission denied for sensitive@example.invalid" });
+			if (api === "/user/emails") return answer(200, user.emails ?? [{ email: user.login + "@example.invalid", primary: true, verified: true }]);
 			if (api === "/user") return answer(200, { id: user.id, login: user.login, type: "User" });
 			const list = this.installationsOf(user);
 			return answer(200, { total_count: list.length, installations: list.map((installation) => this.installationJson(installation)) });

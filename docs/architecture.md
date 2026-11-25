@@ -15,7 +15,7 @@ browser ── HTTP ───────▶ any server (:6440)  GET /platform/i
 browser ── WebSocket ──▶ Rivet endpoint (:6420)
                            │
                            ├─ login             [attemptId]          one sign-in attempt
-                           ├─ accountEmail      [email hash]         the platform uid for one verified email
+                           ├─ accountIdentities [platform]           provider identities, account links, login limits
                            ├─ user              [uid]                profile, the index of sessions, the ChatGPT
                            │                                         sign-in (encrypted) and its access tokens,
                            │                                         the models of the ChatGPT plan,
@@ -199,11 +199,15 @@ session counts as idle: it is not among the user's hosted sandboxes at work (`WL
 
 ### Sign-in
 
-Windlass does it itself. `login.start()` runs `windlass login start` and returns the OpenAI
-address. The browser ends on `http://127.0.0.1:1455/auth/callback`, which does not load; the user pastes that
-address, and `login.finish()` feeds it to `windlass login finish`. The saved sign-in goes to the user's `user`
-actor, encrypted ([Sign-ins](#sign-ins) below). The platform's own token is an HMAC-signed string, checked in
-`onBeforeConnect` and again in every action.
+Platform login uses GitHub or Google. The browser posts to `/platform/login/start` and
+`/platform/login/finish`. The shared identity directory applies admission budgets before the server
+opens a per-attempt actor. The attempt binds its OAuth state and PKCE verifier to a browser secret
+and, for an account link, the signed-in UID. The user actor checks the resulting platform token
+on connection and again on each action.
+
+From Settings, a signed-in user can also connect a ChatGPT plan. Windlass runs `windlass login start`,
+the user pastes the loopback callback, and `finishChatgpt` runs `windlass login finish`. The user
+actor stores the model credentials encrypted. See [Sign-ins](#sign-ins).
 
 ### No sandbox holds the sign-in
 
@@ -214,7 +218,7 @@ has less left. With the [model relay](model-relay.md), the token goes to the rel
 (`access-token-<sandbox id>.json`, mode 0600, in Docker's private `/dev/shm` tmpfs or the E2B guest's Windlass data directory), and
 Windlass is started with `WINDLASS_ACCESS_TOKEN_FILE` naming it. The file is removed when the turn ends. Demo
 turns are handed nothing. When the sign-in is gone, has expired or its token is rejected, the turn ends by
-asking the user to sign in with ChatGPT again; when the platform could not get or replace the token for
+asking the user to reconnect their ChatGPT plan in Settings; when the platform could not get or replace the token for
 another reason, it ends by saying so and that the sign-in is untouched.
 
 ### Keeping the token fresh
@@ -249,12 +253,12 @@ from that code what a failure means, never from the words of the message (`serve
 | Windlass's code | Reported by | The turn ends as | Which says |
 |---|---|---|---|
 | `handed_in_missing`, `handed_in_unreadable`, `handed_in_empty`, `handed_in_malformed` | the turn | `token_unavailable` | Windlass could not read the token it was handed; the sign-in is untouched, send the prompt again. (`auth_required` when the token source says there is no sign-in any more: forgetting a sign-in removes the token files of running turns) |
-| `handed_in_expired` | the turn | `auth_required` when the token source says the sign-in is gone or no longer accepted, otherwise `token_unavailable` | sign in with ChatGPT again; or: the token ran out and the platform did not replace it in time (with the reason, when there is one), the sign-in is untouched |
-| `handed_in_rejected` | the turn | `auth_required` | ChatGPT rejected the token: sign in with ChatGPT again. (When the token had run out as well by the platform's clock, as for `handed_in_expired`) |
+| `handed_in_expired` | the turn | `auth_required` when the token source says the sign-in is gone or no longer accepted, otherwise `token_unavailable` | reconnect the ChatGPT plan in Settings; or: the token ran out and the platform did not replace it in time (with the reason, when there is one), the sign-in is untouched |
+| `handed_in_rejected` | the turn | `auth_required` | ChatGPT rejected the token: reconnect the ChatGPT plan in Settings. (When the token had run out as well by the platform's clock, as for `handed_in_expired`) |
 | `network_error` | the turn | what Windlass reported (`execution_failed`) | Windlass's own sentence: a connection problem, not a sign-in problem |
 | `network_error` | the token source | `token_unavailable` | the sign-in service could not be reached; the sign-in is untouched, send the prompt again |
-| `signed_out` | the token source | `auth_required` | sign in with ChatGPT |
-| `invalid_grant`, `invalid_client`, `unauthorized_client`, `access_denied`, `invalid_request`, `invalid_scope`, `http_400`, `http_401`, `http_403` | the token source | `auth_required` | the sign-in is no longer accepted: sign in with ChatGPT again. A turn that is running tries its token file again more and more slowly |
+| `signed_out` | the token source | `auth_required` | connect a ChatGPT plan in Settings |
+| `invalid_grant`, `invalid_client`, `unauthorized_client`, `access_denied`, `invalid_request`, `invalid_scope`, `http_400`, `http_401`, `http_403` | the token source | `auth_required` | the sign-in is no longer accepted: reconnect the ChatGPT plan in Settings. A turn that is running tries its token file again more and more slowly |
 | any other code of a refresh (`refresh_locked`, `bad_token_response`, `server_error`, ...) | the token source | `token_unavailable` | the sign-in could not be refreshed, with Windlass's sentence and the code; the sign-in is untouched |
 | a `handed_in_...` code the platform does not know | the turn | `token_unavailable` | Windlass could not use the token: send the prompt again, and sign in again if it ends the same way |
 | any other code | the turn | what Windlass reported | Windlass's own sentence |
@@ -322,22 +326,14 @@ token and its expiry, the refresh token, the ID token) and `host-id`. The platfo
 tokens itself. It stores the files and lends them to Windlass for one command at a time
 (`server/src/signin/`).
 
-Windlass returns the verified email from OpenAI’s ID token. Each OAuth app can receive a different
-`sub` for the same person. The first sign-in for an email records its platform uid in an `accountEmail`
-actor keyed by SHA-256 of the trimmed, lowercased email. Its uid comes from `WLP_ACCOUNT_EMAILS` if
-seeded, otherwise from the first app’s `sub`. Later sign-ins reuse that uid, including after the user
-forgets their ChatGPT sign-in. A sign-in without an email uses the uid derived from its own `sub`.
+The identity directory keys GitHub accounts by API origin and numeric user ID, and Google accounts by issuer and OpenID Connect subject. A new identity creates a fresh UID after admission. A signed-in account can link another provider, and an operator can [recover a signed-out owner](operating.md#recover-a-platform-login). Email is an admission attribute only.
 
-**Where it is.** In the user's `user` actor, one row, encrypted. A sign-in attempt between `start` and
-`finish` (Windlass's `auth-pending.json`: the PKCE verifier, state and nonce) is in its `login` actor the same
-way, so the two steps can be served by different servers. Actor storage is the Rivet engine's, which with
-Rivet Cloud is a third party's:
+The signed-in user can authorize a ChatGPT plan from Settings. The user actor owns the pending model connection and adopts the finished credentials under its own UID.
 
 | What | Where | Sealed for | Until |
 |---|---|---|---|
 | the user's sign-in (`auth.json`, `host-id`) | `user` actor, table `signin`, column `sealed` | that uid | it is replaced or forgotten |
-| a pending attempt (`auth-pending.json`, `host-id`) | `login` actor, table `attempt`, column `sealed` | that attempt id | `finish`, or the attempt expires (10 minutes) |
-| a finished attempt | the same place | that attempt id | the user's actor has taken it, moments later |
+| a pending model connection (`auth-pending.json`, `host-id`) | `user` actor, table `model_attempt` | that uid | ten minutes, until superseded, or until completion or disconnect |
 | an access token on its way to the server that runs the turn | not stored: an actor's answer, through the engine | that uid and that request | it is read |
 
 Each is AES-256-GCM (`server/src/signin/seal.ts`) under a key derived with HKDF-SHA256 from `WLP_SIGNIN_KEY`,
@@ -350,7 +346,7 @@ the sign-in changed, whether a line about short tokens was already logged, and w
 Someone with a copy of the actor storage and without the key learns which users have a sign-in, how long each
 blob is, and when it last changed (so, roughly, when its user was active). They learn no token, no refresh
 token and no PKCE secret, and, from these rows, no account. (The email is in the same actor's `profile` table,
-which is not encrypted. Someone who knows an email can also hash it to find its directory entry.) Someone
+which the platform also uses to check admission for API tokens.) Someone
 who can also write to the storage can put back an older blob of the same user (a sign-in that was forgotten, or one from before a refresh, which the sign-in
 service then refuses); they cannot make one user's blob work for another. Forgetting a sign-in empties the
 row; what the engine keeps of earlier versions of a row is the engine's, and is ciphertext.
@@ -361,7 +357,7 @@ hold on a Rivet Cloud cluster, where Rivet also runs the servers and keeps their
 (`rivet cluster secret set WLP_SECRET`): there the encryption protects a copy of the actor storage, such as a
 backup, and not against whoever runs the cluster. The key must be the same on every server and must not
 change: with another key a stored sign-in does not open, the server logs `[wlp] sign-in.unreadable`, and the
-user is asked to sign in with ChatGPT again.
+user is asked to reconnect the ChatGPT plan in Settings.
 
 **Running Windlass's commands.** For each command a runner makes a private directory (mode 0700), writes the
 sign-in's files into it (0600), runs `windlass login ...` with `XDG_DATA_HOME` pointing there (Windlass looks

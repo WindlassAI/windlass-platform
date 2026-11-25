@@ -19,7 +19,7 @@ async function check() {
 		assert.equal(gateway.hostname, "127.0.0.1");
 		const action = page.waitForResponse(response => {
 			const url = new URL(response.url());
-			return url.origin === gateway.origin && url.pathname === "/gateway/login/action/demo" && response.ok();
+			return url.origin === origin && url.pathname === "/platform/login/demo" && response.ok();
 		});
 		const feed = page.waitForEvent("websocket", ws => {
 			const url = new URL(ws.url());

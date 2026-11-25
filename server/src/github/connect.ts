@@ -127,6 +127,10 @@ export async function githubCallbackResponse(request: Request, deps: ConnectDeps
 	// A state that cannot be read names no address to go back to: the web app's own is the one there is.
 	const home = origins[0] ?? "";
 	const state = verifyState(params.get("state"));
+	if (!state && params.get("error") === "redirect_uri_mismatch") {
+		const messages = origins.map(origin => "Add " + origin + "/signin to the GitHub App's callback URLs");
+		return new Response(messages.join("\n"), { status: 400, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer" } });
+	}
 	if (!state || !origins.includes(state.origin)) {
 		if (home === "") return new Response("This link to connect GitHub is not valid any more. Go back to Windlass and connect again.\n", { status: 400, headers: { "content-type": "text/plain; charset=utf-8" } });
 		return failed(home, "state");
@@ -147,7 +151,7 @@ export async function githubCallbackResponse(request: Request, deps: ConnectDeps
 			userToken = await app.exchangeCode(code, claimed.verifier);
 		} catch (error) {
 			if (error instanceof GithubError && !error.unreachable) {
-				log(`[wlp] github.connect.refused uid=${uid}: ${error.message}`);
+				log(`[wlp] github.connect.refused uid=${uid} status=${error.status}`);
 				return failed(origin, "code");
 			}
 			throw error;
@@ -178,7 +182,7 @@ export async function githubCallbackResponse(request: Request, deps: ConnectDeps
 		return back(origin, `github=${issueTicket(uid, confirmed, Date.now(), readAt)}`);
 	} catch (error) {
 		const unreachable = error instanceof GithubError && error.unreachable;
-		console.error(`[wlp] github.connect.failed uid=${uid}: ${error instanceof Error ? error.message : "unknown error"}`);
+		console.error(`[wlp] github.connect.failed uid=${uid} status=${error instanceof GithubError ? error.status : 0}`);
 		return failed(origin, unreachable ? "unreachable" : "failed");
 	}
 }

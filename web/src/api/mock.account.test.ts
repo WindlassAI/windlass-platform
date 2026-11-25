@@ -12,7 +12,7 @@ import { personalServerReach } from "../../../server/src/server-question";
 import { PlatformError } from "./client";
 import { MOCK_E2B_PROFILES, MOCK_PROFILES, createMockClient, mockCleanServer, mockPersonalReach } from "./mock";
 
-const ada = { token: "mock:chatgpt:u_account:ada@example.com", profile: { uid: "u_account", email: "ada@example.com", demo: false } };
+const ada = { token: "mock:user:u_account:ada@example.com", profile: { uid: "u_account", email: "ada@example.com", demo: false } };
 const make = (options: Parameters<typeof createMockClient>[0] = {}) => createMockClient({ pace: 0, ...options });
 
 async function refusal(call: Promise<unknown>): Promise<PlatformError> {

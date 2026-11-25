@@ -21,6 +21,7 @@ import { AccountSecretsBlock } from "../components/Secrets";
 import { DefaultsSection } from "../components/Defaults";
 import { ArrowLeftIcon, WarnIcon } from "../components/Icons";
 import { LinearSettings } from "../components/LinearSettings";
+import { LoginMethods } from "../components/LoginMethods";
 import { ModelProviders } from "../components/ModelProviders";
 import { PersonalServers } from "../components/PersonalServers";
 import { PlanSection } from "../components/Plan";
@@ -127,6 +128,7 @@ export function Settings() {
 				</div>
 			</header>
 
+			{!auth.profile.demo && <LoginMethods />}
 			{info?.billing ? <PlanSection /> : null}
 
 			{settings === null ? (

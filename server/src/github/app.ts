@@ -60,6 +60,7 @@ export class GithubError extends Error {
 		what: string,
 		readonly headers = new Headers(),
 		readonly conflictFiles: string[] = [],
+		readonly oauthCode?: string,
 	) {
 		super(`${what}: ${status === 0 ? said : `GitHub answered ${status}${said ? ` (${said})` : ""}`}`);
 		this.name = "GithubError";
@@ -181,8 +182,9 @@ export class GithubApp {
 	}
 
 	/** Where a user authorizes the app: the web application flow's first step, with PKCE. */
-	authorizeUrl(state: string, codeChallenge: string): string {
+	authorizeUrl(state: string, codeChallenge: string, redirect?: string): string {
 		const query = new URLSearchParams({ client_id: this.settings.clientId, state, code_challenge: codeChallenge, code_challenge_method: "S256" });
+		if (redirect) query.set("redirect_uri", redirect);
 		return `${this.settings.webUrl}/login/oauth/authorize?${query}`;
 	}
 
@@ -279,7 +281,7 @@ export class GithubApp {
 			] : [];
 			const files = conflicts.map(entry => text(record(entry).path) || text(record(entry).filename) || text(entry)).filter(Boolean)
 				.slice(0, 12).map(path => redact(path.replace(/\s+/g, " ").slice(0, 200), known));
-			throw new GithubError(refused && response.ok ? 400 : response.status, redact(said.replace(/\s+/g, " ").slice(0, 300), known), `could not ${call.what}`, response.headers, files);
+			throw new GithubError(refused && response.ok ? 400 : response.status, redact(said.replace(/\s+/g, " ").slice(0, 300), known), `could not ${call.what}`, response.headers, files, fields.error === "redirect_uri_mismatch" ? "redirect_uri_mismatch" : undefined);
 		}
 		return { status: response.status, body, link: response.headers.get("link") ?? "", next: /rel="next"/.test(response.headers.get("link") ?? "") };
 	}
@@ -414,10 +416,11 @@ export class GithubApp {
 	// ---- a user who connects ------------------------------------------------------------------
 
 	/** Exchanges the code a user's authorization ended with for a user access token. */
-	async exchangeCode(code: string, codeVerifier: string | null): Promise<string> {
+	async exchangeCode(code: string, codeVerifier: string | null, redirect?: string): Promise<string> {
 		const clientSecret = this.secrets.clientSecret();
 		if (clientSecret === null) throw new Error("WLP_GITHUB_CLIENT_SECRET is not set");
 		const body: Record<string, string> = { client_id: this.settings.clientId, client_secret: clientSecret, code };
+		if (redirect) body.redirect_uri = redirect;
 		if (codeVerifier !== null) body.code_verifier = codeVerifier;
 		const answer = await this.call({ method: "POST", path: "/login/oauth/access_token", body, auth: null, web: true, what: "exchange the authorization code", secrets: [clientSecret, code] });
 		const token = text(record(answer.body).access_token);
@@ -432,6 +435,15 @@ export class GithubApp {
 		const login = text(fields.login);
 		if (id === null || login === "") throw new GithubError(answer.status, "the answer names no user", "could not read who authorized");
 		return { id, login };
+	}
+
+	async verifiedPrimaryEmail(userToken: string): Promise<string | null> {
+		const { items } = await this.pages({ path: "/user/emails", auth: { bearer: userToken }, what: "read verified email" }, body => {
+			if (!Array.isArray(body)) throw new Error("GitHub returned no email list");
+			return body;
+		});
+		const primary = items.map(record).filter(row => row.primary === true && row.verified === true);
+		return primary.length === 1 ? text(primary[0]?.email) : null;
 	}
 
 	/** The installations of this app the user can reach: accounts they own, and ones they are a member or collaborator in. */
@@ -479,7 +491,7 @@ export class GithubApp {
 				secrets: [userToken, clientSecret],
 			});
 		} catch (error) {
-			console.error(`[wlp] github.user_token.delete_failed: ${error instanceof Error ? error.message : "unknown error"}`);
+			console.error(`[wlp] github.user_token.delete_failed status=${error instanceof GithubError ? error.status : 0}`);
 		}
 	}
 

@@ -15,7 +15,7 @@ import { checksSummary, ciState, ItemChecks, openLine, sortedRuns } from "./Item
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const auth = { token: "mock:chatgpt:u_checks:ada@example.com", profile: { uid: "u_checks", email: "ada@example.com", demo: false } };
+const auth = { token: "mock:user:u_checks:ada@example.com", profile: { uid: "u_checks", email: "ada@example.com", demo: false } };
 const links = { src: (id: string) => `/mock/${id}.png`, failed: () => undefined, freshen: () => undefined, generation: 1 };
 
 let views: ItemView[] = [];

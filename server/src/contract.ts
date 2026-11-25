@@ -54,6 +54,7 @@ export interface SandboxProfile {
 // Platform information (GET PLATFORM_INFO_PATH)
 
 export interface PlatformInfo {
+	googleLogin?: true;
 	/** True when the server runs with WLP_DEMO=1: the demo sign-in is offered and its model is scripted. */
 	demoEnabled: boolean;
 	/** The Windlass version inside the sandbox image, e.g. "0.4.0". */
@@ -148,7 +149,7 @@ export type AuthToken = string;
 
 export interface UserProfile {
 	uid: string;
-	/** The ChatGPT account's email, when OpenAI gave one. Null for the demo user. */
+	/** The verified address supplied by the login provider, when available. */
 	email: string | null;
 	/** A demo user has no ChatGPT sign-in: its sessions run a scripted model. */
 	demo: boolean;
@@ -159,22 +160,19 @@ export interface AuthResult {
 	profile: UserProfile;
 }
 
+export type LoginProvider = "github" | "google";
+
+export interface LinkedLogin {
+	provider: LoginProvider;
+	/** Provider login or email for display. Older links may have no label until the next sign-in. */
+	display: string | null;
+}
+
 export interface LoginStart {
-	/** The OpenAI address to open in a new tab. */
 	url: string;
-	/** The loopback address the browser ends on, e.g. "http://127.0.0.1:1455/auth/callback". */
 	redirectPrefix: string;
 	/** When this attempt stops being accepted, ms since the epoch. */
 	expiresAt: number;
-}
-
-export interface LoginActions {
-	/** Begins "Sign in with ChatGPT". Calling it again restarts the attempt. */
-	start(): Promise<LoginStart>;
-	/** Accepts the entire callback URL. Refusals are safe to show to the user. */
-	finish(pastedUrl: string): Promise<AuthResult>;
-	/** Signs in as a fresh demo user. Throws when the server has no demo mode. */
-	demo(): Promise<AuthResult>;
 }
 
 // user actor
@@ -1962,7 +1960,12 @@ export interface ApiToken {
 export interface UserActions {
 	signOutEverywhere(options?: { revokeApiTokens: boolean }): Promise<void>;
 	me(): Promise<UserProfile>;
+	linkedLogins(): Promise<LinkedLogin[]>;
+	unlinkLogin(provider: LoginProvider): Promise<void>;
 	chatgpt(): Promise<ChatgptStatus>;
+	startChatgpt(): Promise<LoginStart>;
+	finishChatgpt(callback: string): Promise<void>;
+	forgetChatgpt(): Promise<void>;
 	/** On fetch failure return cached or fallback choices and identify their source. */
 	models(): Promise<ModelList>;
 	/** The user's GitHub connection. Throws a UserError with code `github_off` when the deployment has no GitHub App. */

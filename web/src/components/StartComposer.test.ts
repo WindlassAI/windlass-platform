@@ -17,7 +17,7 @@ import { AppProvider } from "../state/app";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const ada: AuthResult = { token: "mock:chatgpt:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
+const ada: AuthResult = { token: "mock:user:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
 const demo: AuthResult = { token: "mock:demo:demo_1:", profile: { uid: "demo_1", email: null, demo: true } };
 
 let host: HTMLElement;

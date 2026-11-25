@@ -20,6 +20,7 @@
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
+import { loginHttp } from "./login-http.js";
 import { imageId } from "./check-image.js";
 import { localListeners, portFree } from "./check-listeners.js";
 import { type ChildProcess, execFile, execFileSync, spawn, spawnSync } from "node:child_process";
@@ -548,30 +549,94 @@ async function runningSlotRace(server: Server, client: Client, auth: AuthResult,
 	});
 }
 
-/** Grants from the fake issuer. Only the code comes back from the browser. */
-const identityGrants = {
-	"first-app": { email: "  Ada@example.invalid " }, brief: { email: "ada@EXAMPLE.invalid" },
-	"first-0": { email: "one@example.invalid" }, "second-0": { email: "one@example.invalid" },
-	"first-1": { email: "two@example.invalid" }, "second-1": { email: "two@example.invalid" },
-	"seed-app": { email: "seed@example.com" }, "bare-seeded": { sub: "fake|bare", email: "seed@example.com" },
-	bare: { email: null }, "other-bare": { email: null },
-	"race-a": { email: "race@example.invalid" }, "race-b": { email: "race@example.invalid" },
-	"my-sub": { email: "mine@example.invalid" }, "their-sub": { email: "theirs@example.invalid" },
-};
+const loginOrigin = "http://localhost:5173";
 
-/** Separate ChatGPT apps issue different subjects for one verified email. */
-async function identityChecks(client: Client, server: Server) {
-	const { uidOfAccount } = await import("../server/src/signin/material.js");
-	const { serverSealer } = await import("../server/src/signin/seal.js");
-	const { serviceParams } = await import("../server/src/auth.js");
-	const prepare = async (code: string) => {
-		const login = client.login.getOrCreate([`identity-${randomBytes(8).toString("hex")}`]);
-		const { redirectPrefix } = await login.start();
-		return () => login.finish(`${redirectPrefix}?${new URLSearchParams({ code })}`);
-	};
-	const signIn = async (code: string) => (await prepare(code))();
+async function identityChecks(client: Client, server: Server, github: GithubStandin) {
+	await check("login requests share address and deployment budgets before attempt allocation", async () => {
+		const remaining = 60_000 - Date.now() % 60_000;
+		if (remaining < 5_000) await new Promise(done => setTimeout(done, remaining));
+		const { serviceParams } = await import("../server/src/auth.js");
+		const request = (step: string, ip: string) => fetch(API + "/platform/login/" + step, {
+			method: "POST", headers: { origin: loginOrigin, "content-type": "application/json", "x-test-ip": ip },
+			body: JSON.stringify({ id: step === "finish" ? "invalid!" : "budget-check", provider: "github", secret: "b".repeat(43) }),
+		});
+
+		for (const [step, ip, status] of [["finish", "192.0.2.1", 400], ["finish", "192.0.2.1", 400], ["start", "192.0.2.1", 429],
+			["finish", "192.0.2.2", 400], ["finish", "192.0.2.3", 400], ["start", "192.0.2.4", 429]] as const) {
+			const response = await request(step, ip);
+			assert(response.status === status, `login budget for ${ip}: expected ${status}, got ${response.status}`);
+		}
+		await refused(() => client.login.get(["budget-check"], { params: serviceParams() }).demo(), "not_found");
+		return "429 for both ceilings, refused requests created no attempt actor";
+	});
+	await server.stop();
+	await server.start({ ...github.env(), WLP_ITEMS: "1" });
 	const userOf = (auth: AuthResult) => client.user.get([auth.profile.uid], { params: { token: auth.token } });
-	const derived = (code: string) => uidOfAccount(`fake|${code}`);
+	const signIn = async (name: string, auth?: AuthResult) => {
+		const login = loginHttp(API);
+		const { url } = await login.start("github", auth);
+		return login.finish(github.authorize(name, url), auth);
+	};
+	const { issueUserToken } = await import("../server/src/tokens.js");
+	const profile = { uid: "u_owner", email: "owner@example.invalid", demo: false };
+	const owner = { profile, token: issueUserToken(profile, 0) };
+	await client.user.getOrCreate([profile.uid], { params: { token: owner.token } }).me();
+	const original = github.addUser("my-sub");
+	original.emails = [{ email: profile.email, primary: true, verified: true }];
+	github.addUser("their-sub").emails = original.emails;
+
+	await check("an existing session explicitly links GitHub and an unlinked identity gets a fresh uid", async () => {
+		assert((await signIn("my-sub", owner)).profile.uid === profile.uid, "link changed owner");
+		const [linked] = await userOf(owner).linkedLogins();
+		assert(linked?.provider === "github" && linked.display === "my-sub", "link lost the GitHub login");
+		assert((await signIn("my-sub")).profile.uid === profile.uid, "linked login lost owner");
+		const fresh = await signIn("their-sub");
+		assert(fresh.profile.uid !== profile.uid && fresh.profile.email === null, "email selected an account");
+		assert((await signIn("their-sub")).profile.uid === fresh.profile.uid, "fresh uid was unstable");
+		await refused(() => signIn("their-sub", owner), "identity_linked");
+		assert(!github.requests.some(r => r.path.includes("/user/emails")), "login requested email without email admission");
+		await refused(() => userOf(owner).unlinkLogin("github"), "last_login");
+		return "owner retained, matching email created a distinct user, last method retained";
+	});
+
+	await check("pending provider attempts are immutable and require the starting browser", async () => {
+		const login = loginHttp(API);
+		const started = await login.start("github");
+		await refused(() => login.start("github"), "attempt_started");
+		const callback = github.authorize("my-sub", started.url);
+		await refused(() => login.finish(callback, undefined, ""), "bad_browser");
+		assert((await login.finish(callback)).profile.uid === profile.uid, "original browser lost the attempt");
+		return "second start refused, original secret completed the original attempt";
+	});
+
+	await check("a pending link requires the original signed-in owner; five failures close an attempt", async () => {
+		const other = await signIn("their-sub");
+		const login = loginHttp(API);
+		const { url } = await login.start("github", owner);
+		const callback = github.authorize("my-sub", url);
+		await refused(() => login.finish(callback), "wrong_account");
+		await refused(() => login.finish(callback, other), "wrong_account");
+		for (let i = 0; i < 3; i++) await refused(() => login.finish(callback, owner, ""), "bad_browser");
+		await refused(() => login.finish(callback, owner), "attempt_locked");
+		return "owner and browser checked before exchange; failure cap enforced";
+	});
+
+	await check("ChatGPT connects to the authenticated uid only", async () => {
+		const auth = await signIn("my-sub");
+		const user = userOf(auth);
+		await refused(() => client.user.get([auth.profile.uid]).startChatgpt(), "unauthorized");
+		const plan = await user.startChatgpt();
+		await user.finishChatgpt(plan.redirectPrefix + "?code=plan");
+		assert((await user.chatgpt()).email === "plan@example.com", "model grant missing");
+		assert((await user.me()).uid === "u_owner" && (await user.me()).email === auth.profile.email, "model grant changed profile");
+		await user.forgetChatgpt();
+		assert(!(await user.chatgpt()).connected && (await user.me()).uid === "u_owner", "disconnect changed platform session");
+		const racing = await user.startChatgpt();
+		await Promise.allSettled([user.finishChatgpt(racing.redirectPrefix + "?code=racing"), user.forgetChatgpt()]);
+		assert(!(await user.chatgpt()).connected, "in-flight completion restored a disconnected plan");
+		await refused(() => user.finishChatgpt(racing.redirectPrefix + "?code=racing"), "attempt_expired");
+		return "model grant attached and removed, same uid and session";
+	});
 
 	await check("sign out everywhere revokes both sign-ins and direct session access", async () => {
 		const first = await signIn("my-sub");
@@ -632,96 +697,63 @@ async function identityChecks(client: Client, server: Server) {
 		});
 		assert(stdout.includes(uid), "the revoke command did not acknowledge its uid");
 		await server.stop();
-		await server.start({ WLP_ITEMS: "1", WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
+		await server.start({ ...github.env(), WLP_ITEMS: "1" });
 		await refused(() => userOf(auth).me(), "invalid_token");
 		await userOf(await signIn("my-sub")).me();
 		return "old generation still refused after restart";
 	});
 
-	await check("returning email keeps its sessions and refreshes the second app's sign-in", async () => {
-		const first = await signIn("first-app");
-		const session = await userOf(first).createSession({ profile: "docker-windlass-sandbox" });
+	await check("email grants admission only and the optional GitHub permission has a specific diagnostic", async () => {
+		await server.stop();
+		await server.start({ ...github.env(), WLP_ALLOWED_USERS: profile.uid, WLP_ALLOWED_EMAILS: profile.email });
+		github.addUser("invited").emails = original.emails;
+		const admitted = await signIn("invited");
+		assert(admitted.profile.email === profile.email && admitted.profile.uid !== profile.uid, "email selected the owner uid");
+		github.emailPermission = false;
 		try {
-			const next = await signIn("brief");
-			const uid = next.profile.uid;
-			assert(uid === first.profile.uid && uid === derived("first-app"), `first ${first.profile.uid}, second ${uid}`);
-			assert((await userOf(next).listSessions()).some(row => row.id === session.id), "the second login lost the session");
-			const inner = client.user.get([uid], { params: serviceParams() });
-			const before = await inner.internalSignInStatus();
-			assert(before.ok && before.value?.sub === "fake|brief" && (before.value.accessExpiresAt ?? 0) < Date.now() + 120_000, "the second app's short-lived material was not adopted");
-			assert((await inner.internalAccessToken(randomBytes(16).toString("base64url"))).ok, "the second app's refresh failed");
-			const after = await inner.internalSignInStatus();
-			assert(after.ok && after.value?.sub === "fake|brief" && (after.value.accessExpiresAt ?? 0) > Date.now() + 55 * 60_000, "the refreshed second sign-in was not saved");
-			return `uid ${uid}, session ${session.id}, refreshed second app`;
-		} finally {
-			await userOf(first).deleteSession(session.id);
-		}
+			assert((await signIn("my-sub")).profile.uid === profile.uid, "UID admission required email permission");
+			const message = await refused(() => signIn("invited"), "email_permission");
+			assert(message === "The GitHub App needs the Email addresses permission", "missing permission diagnostic");
+			assert(!server.output.includes("sensitive@example.invalid"), "provider text entered the server log");
+			await fetch(API + "/signin?code=callback-log-canary&state=state-log-canary");
+			assert(!server.output.includes("callback-log-canary") && !server.output.includes("state-log-canary"), "callback query entered the log");
+		} finally { github.emailPermission = true; }
+		return "verified matching email admitted a new UID, 403 kept UID access and explained email admission";
 	});
 
-	await check("two verified emails keep distinct uids across apps", async () => {
-		const loginPair = (app: string) => Promise.all([0, 1].map(i => signIn(`${app}-${i}`)));
-		const [one, two] = await loginPair("first");
-		const [oneAgain, twoAgain] = await loginPair("second");
-		assert(one.profile.uid !== two.profile.uid, "two people share a uid");
-		assert(oneAgain.profile.uid === one.profile.uid && twoAgain.profile.uid === two.profile.uid, "the second app changed their uids");
-		return `${one.profile.uid} and ${two.profile.uid}`;
+	await check("operator recovery binds an existing uid to the configured instance", async () => {
+		const replacement = new GithubStandin({ callbackUrl: loginOrigin + "/signin" });
+		await replacement.start();
+		try {
+			const sameId = replacement.addUser("enterprise-owner");
+			assert(sameId.id === original.id, "fixture needs equal numeric IDs");
+			await server.stop();
+			const env = { ...replacement.env(), WLP_ITEMS: "1", WLP_GOOGLE_CLIENT_ID: "test", WLP_GOOGLE_CLIENT_SECRET: "test" };
+			await server.start(env);
+			const login = loginHttp(API);
+			const { url } = await login.start("github");
+			const fresh = await login.finish(replacement.authorize("enterprise-owner", url));
+			assert(fresh.profile.uid !== profile.uid, "foreign instance selected the old uid");
+			const recovery = replacement.addUser("recovery");
+			const recover = (uid: string, provider: string, id: string) => promisify(execFile)(process.execPath,
+				["--import", "tsx", "src/link-identity.ts", "--uid", uid, "--provider", provider, "--id", id],
+				{ cwd: SERVER_DIR, env: { ...process.env, ...env, RIVET_ENGINE: ENDPOINT }, timeout: 30_000 });
+			await recover(profile.uid, "github", String(recovery.id));
+			const recovered = loginHttp(API);
+			const start = await recovered.start("github");
+			const auth = await recovered.finish(replacement.authorize("recovery", start.url));
+			assert(auth.profile.uid === profile.uid, "server recovery did not restore the owner");
+			await recover(profile.uid, "google", "operator-verified-sub");
+			await userOf(auth).unlinkLogin("github");
+			const remaining = await userOf(auth).linkedLogins();
+			assert(remaining.length === 1 && remaining[0].provider === "google" && remaining[0].display === null, "unlink removed the wrong method");
+			await refused(() => userOf(auth).unlinkLogin("google"), "last_login");
+			return "same numeric ID isolated, signed-out owner recovered, another method required for unlink";
+		} finally { await replacement.stop(); }
 	});
 
-	await check("first sign-in of a seeded email uses the operator's uid", async () => {
-		const result = await signIn("seed-app");
-		assert(result.profile.uid === "u_existing", `got ${result.profile.uid}`);
-		return result.profile.uid;
-	});
 
-	await check("email-less sign-ins use only their own subject, even beside a seeded email", async () => {
-		const first = await signIn("bare");
-		const seeded = await signIn("bare-seeded");
-		const again = await signIn("bare");
-		const other = await signIn("other-bare");
-		assert([first, again, other].every(auth => auth.profile.email === null), "an email appeared");
-		assert(first.profile.uid === derived("bare") && again.profile.uid === first.profile.uid && other.profile.uid === derived("other-bare"), "an email-less uid changed");
-		assert(seeded.profile.uid !== first.profile.uid, "the seeded email and the email-less subject resolved to the same user");
-		return `${first.profile.uid} and ${other.profile.uid}`;
-	});
 
-	await check("two concurrent first sign-ins claim one uid", async () => {
-		const finishes = await Promise.all(["race-a", "race-b"].map(code => prepare(code)));
-		const [a, b] = await Promise.all(finishes.map(finish => finish()));
-		assert(a.profile.uid === b.profile.uid && [derived("race-a"), derived("race-b")].includes(a.profile.uid), `got ${a.profile.uid} and ${b.profile.uid}`);
-		return a.profile.uid;
-	});
-
-	await check("ownerOf refuses material whose email belongs elsewhere even when the subject matches", async () => {
-		const mine = await signIn("my-sub");
-		await signIn("their-sub");
-		const uid = mine.profile.uid;
-		const inner = client.user.get([uid], { params: serviceParams() });
-		const material = { files: { "auth.json": JSON.stringify({ account: { sub: "fake|my-sub", email: "theirs@example.invalid" } }) } };
-		const answer = await inner.internalAdoptSignIn(serverSealer().seal("user", uid, JSON.stringify(material)));
-		assert(!answer.ok && answer.problem.message.includes("another account's"), "accepted or misclassified theirs@example.invalid");
-		assert((await userOf(mine).chatgpt()).email === mine.profile.email, "refused material replaced the saved sign-in");
-		return "an email linked to another user was refused";
-	});
-
-	await check("a sign-in saved before the directory (no link yet) stays with the user its own subject names, and no other", async () => {
-		const mine = await signIn("my-sub");
-		const uid = mine.profile.uid;
-		const material = (sub: string) => ({ files: { "auth.json": JSON.stringify({ account: { sub, email: "unlinked@example.invalid" } }) } });
-		const own = await client.user.get([uid], { params: serviceParams() }).internalAdoptSignIn(serverSealer().seal("user", uid, JSON.stringify(material("fake|my-sub"))));
-		assert(own.ok, "the user's own unlinked material was refused");
-		const other = await client.user.get([uid], { params: serviceParams() }).internalAdoptSignIn(serverSealer().seal("user", uid, JSON.stringify(material("fake|someone-else"))));
-		assert(!other.ok && other.problem.message.includes("another account's"), "unlinked material of another subject was accepted");
-		return "own subject kept, another subject refused";
-	});
-	// The first seed is gone. A different seed for the same email must not override the durable entry.
-	await server.stop();
-	await server.start({ WLP_ACCOUNT_EMAILS: "seed@example.com=u_replacement", WLP_ALLOWED_USERS: "u_existing" });
-	await check("after restart an existing email link wins over a changed seed and is invited by uid alone", async () => {
-		const auth = await signIn("seed");
-		assert(auth.profile.uid === "u_existing" && (await userOf(auth).me()).uid === auth.profile.uid, `got ${auth.profile.uid}`);
-		await refused(() => signIn("uninvited"), "not_invited");
-		return auth.profile.uid;
-	});
 }
 
 /** A prompt whose turn asks before it runs a command: both layers choose that scenario by these words. */
@@ -733,7 +765,7 @@ async function main(server: Server | null): Promise<void> {
 	const client = newClient();
 	const attempt = () => `e2e-${randomBytes(8).toString("hex")}`;
 	const demoSignIn = async (id = attempt()): Promise<AuthResult> => {
-		const result = await client.login.getOrCreate([id]).demo();
+		const result = await loginHttp(API, loginOrigin, id).demo();
 		demoUids.push(result.profile.uid);
 		return result;
 	};
@@ -957,7 +989,7 @@ async function main(server: Server | null): Promise<void> {
 		const good = newClient({ origin: "http://localhost:5173" });
 		try {
 			await refused(() => evil.user.getOrCreate([uid], { params: { token } }).me(), "origin_not_allowed");
-			await refused(() => evil.login.getOrCreate([attempt()]).start(), "origin_not_allowed");
+			await refused(() => loginHttp(API, "http://evil.example").start("github"), "origin_not_allowed");
 			await good.user.getOrCreate([uid], { params: { token } }).me();
 
 			webSocketOrigin = "http://evil.example";
@@ -1357,7 +1389,7 @@ async function main(server: Server | null): Promise<void> {
 			await userConn.dispose().catch(() => undefined);
 			await server.crash();
 			promptWoken.logFrom = server.output.length;
-			await server.start({ WLP_LOGIN_TTL_MS: String(SHORT_LOGIN_TTL_MS), ...(FAKE ? { WLP_FAKE_PROVIDER_DELAY_MS: String(PROVIDER_DELAY_MS), WLP_FAKE_IDLE_STOP_MS: String(IDLE_STOP_S * 1000), WLP_FAKE_CREATE_FAILS: "1" } : {}) });
+			await server.start({ WLP_GOOGLE_CLIENT_ID: "unused-check-client", WLP_GOOGLE_CLIENT_SECRET: "unused-check-secret", WLP_LOGIN_TTL_MS: String(SHORT_LOGIN_TTL_MS), ...(FAKE ? { WLP_FAKE_PROVIDER_DELAY_MS: String(PROVIDER_DELAY_MS), WLP_FAKE_IDLE_STOP_MS: String(IDLE_STOP_S * 1000), WLP_FAKE_CREATE_FAILS: "1" } : {}) });
 			loginTtlMs = SHORT_LOGIN_TTL_MS;
 			// Woken before any other session: nothing in the new server has asked the layer for its idle stop yet.
 			if (counted.problem === null) {
@@ -2215,49 +2247,19 @@ async function main(server: Server | null): Promise<void> {
 			return `not signed in: "${(none as Error).message}"; 6 requests at once: one answer; reused; replaced by adopt; gone after logout; a token that was due: one refresh for 4 requests, saved; expired: SandboxUserError; offline: ${(offline as Error).name} (${(offline as { code?: string }).code})`;
 		});
 
-		await check("ChatGPT sign-in: start, finish, token, and the actor goes away", async () => {
-			const id = attempt();
-			const handle = client.login.getOrCreate([id]);
-			await refused(() => handle.finish("http://127.0.0.1:1455/auth/callback?code=early"), "attempt_not_started");
-			const started = await handle.start();
-			assert(started.url.startsWith("https://") && started.redirectPrefix.startsWith("http://127.0.0.1"), `start gave ${plain(started)}`);
-			assert(Math.abs(started.expiresAt - (Date.now() + loginTtlMs)) < 5_000, `the attempt does not expire in ${loginTtlMs} ms`);
-			const wrong = await refused(() => handle.finish("https://example.com/nope"), "sandbox_error");
-			const refusedByOpenAi = await refused(() => handle.finish(`${started.redirectPrefix}?code=refused`), "sandbox_error");
-			const internal = await refused(() => handle.finish(`${started.redirectPrefix}?code=explode`), "internal_error");
-			assert(!internal.includes("docker") && !internal.includes("/var/run"), `an internal error leaked: "${internal}"`);
-			const result = await handle.finish(`${started.redirectPrefix}?code=alice&state=x`);
-			const expected = `u_${createHash("sha256").update("fake|alice").digest("hex").slice(0, 20)}`;
-			assert(result.profile.uid === expected && result.profile.email === "alice@example.com" && result.profile.demo === false, `profile is ${plain(result.profile)}`);
-			await refused(() => handle.finish(`${started.redirectPrefix}?code=alice`), "attempt_done");
-			await refused(() => handle.start(), "attempt_done");
-
-			const alice = client.user.getOrCreate([result.profile.uid], { params: { token: result.token } });
-			assert(plain(await alice.me()) === plain(result.profile), "user.me() differs from the sign-in's profile");
-			const chatgpt = await alice.chatgpt();
-			assert(chatgpt.connected && chatgpt.email === "alice@example.com" && typeof chatgpt.accessExpiresAt === "number", `chatgpt() is ${plain(chatgpt)}`);
-			await refused(() => client.user.getOrCreate([uid], { params: { token: result.token } }).me(), "forbidden");
-
-			await waitFor(
-				"the login actor to remove itself",
-				async () => {
-					try {
-						await client.login.get([id]).start();
-						return false;
-					} catch (error) {
-						return (error as { code?: string }).code === "not_found";
-					}
-				},
-				15_000,
-				300,
-			);
-			return `uid ${result.profile.uid}; refusals: "${wrong}" / "${refusedByOpenAi}" / "${internal}"`;
-		});
+		// Model checks start with a signed platform fixture and attach the fake model grant in Settings.
+		const connectPlan = async (code: string) => {
+			const profile = { uid: "u_" + randomBytes(12).toString("hex"), demo: false, email: "platform@example.invalid" };
+			const { issueUserToken } = await import("../server/src/tokens.js");
+			const auth = { profile, token: issueUserToken(profile, 0) };
+			const user = client.user.getOrCreate([profile.uid], { params: { token: auth.token } });
+			const plan = await user.startChatgpt();
+			await user.finishChatgpt(plan.redirectPrefix + "?" + new URLSearchParams({ code }));
+			return auth;
+		};
 
 		await check("the models are the signed-in account's own: listed once for all who ask at once and kept, each model with its own efforts, and gone with the sign-in", async () => {
-			const handle = client.login.getOrCreate([attempt()]);
-			const started = await handle.start();
-			const mona = await handle.finish(`${started.redirectPrefix}?code=mona`);
+			const mona = await connectPlan("mona");
 			const user = client.user.getOrCreate([mona.profile.uid], { params: { token: mona.token } });
 			const lists = await Promise.all([1, 2, 3, 4, 5].map(() => user.models()));
 			const [list] = lists;
@@ -2289,13 +2291,8 @@ async function main(server: Server | null): Promise<void> {
 		});
 
 		await check("a user without a ChatGPT sign-in is told to sign in; with one, turns run unscripted on an access token handed to them", async () => {
-			const signIn = async (code: string) => {
-				const handle = client.login.getOrCreate([attempt()]);
-				const started = await handle.start();
-				return handle.finish(`${started.redirectPrefix}?code=${code}`);
-			};
 			// A user who signed in and then had the sign-in forgotten: the platform's token is still good, the ChatGPT sign-in is gone.
-			const without = await signIn("carol");
+			const without = await connectPlan("carol");
 			const withoutUser = client.user.getOrCreate([without.profile.uid], { params: { token: without.token } });
 			assert((await withoutUser.chatgpt()).connected === true, "a user who just signed in is not reported as connected");
 			await withoutUser.forgetChatgpt();
@@ -2308,7 +2305,7 @@ async function main(server: Server | null): Promise<void> {
 			assert(snapshot.timeline.length === 0 && snapshot.summary.status === "idle" && snapshot.summary.turns === 0, "the refused prompt changed the session");
 			await withoutUser.deleteSession(blocked.id);
 
-			const bob = await signIn("bob");
+			const bob = await connectPlan("bob");
 			const bobUser = client.user.getOrCreate([bob.profile.uid], { params: { token: bob.token } });
 			const session = await bobUser.createSession({ profile: availableProfile as never });
 			const bobWatch = new Watch(client, bob.profile.uid, session.id, bob.token);
@@ -2333,10 +2330,7 @@ async function main(server: Server | null): Promise<void> {
 		});
 
 		await check("the sign-in is the user's actor's: turns started at once cause one refresh, the refreshed sign-in outlives the actor's sleep, a forgotten one yields nothing, and the actor data holds no token", async () => {
-			const handle = client.login.getOrCreate([attempt()]);
-			const started = await handle.start();
-			// `brief`: the saved token has a minute left, so the first request for it has to refresh the sign-in.
-			const eve = await handle.finish(`${started.redirectPrefix}?code=brief`);
+			const eve = await connectPlan("brief");
 			const uidOfEve = eve.profile.uid;
 			const user = client.user.getOrCreate([uidOfEve], { params: { token: eve.token } });
 			const before = await user.chatgpt();
@@ -2424,9 +2418,7 @@ async function main(server: Server | null): Promise<void> {
 
 		await check("a sign-in that is no longer accepted, or whose token cannot be had, ends the turn with what to do", async () => {
 			const turnOf = async (code: string) => {
-				const handle = client.login.getOrCreate([attempt()]);
-				const started = await handle.start();
-				const auth = await handle.finish(`${started.redirectPrefix}?code=${code}`);
+				const auth = await connectPlan(code);
 				const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 				// The sign-in is there, so the prompt is taken: only asking for its token shows what state it is in.
 				assert((await user.chatgpt()).connected === true, `the ${code} user is not reported as connected`);
@@ -2454,7 +2446,6 @@ async function main(server: Server | null): Promise<void> {
 			return `expired: "${expired.message}"; offline: "${offline.message}"`;
 		});
 	} else {
-		skip("ChatGPT sign-in: start, finish, token, and the actor goes away", "a real sign-in is never completed by this script; run in fake mode");
 		skip("a user without a ChatGPT sign-in is told to sign in; with one, turns run unscripted on an access token handed to them", "needs a signed-in account; run in fake mode, or scripts/sandbox-check.ts for the real hand-off");
 		skip("the sign-in is the user's actor's: turns started at once cause one refresh, the refreshed sign-in outlives the actor's sleep, a forgotten one yields nothing, and the actor data holds no token", "needs a signed-in account; run in fake mode, or scripts/signin-check.ts for the same with a real Windlass");
 		skip("a sign-in that is no longer accepted, or whose token cannot be had, ends the turn with what to do", "needs a signed-in account; run in fake mode");
@@ -2463,16 +2454,16 @@ async function main(server: Server | null): Promise<void> {
 	if (server && loginTtlMs === SHORT_LOGIN_TTL_MS) {
 		await check("an unfinished sign-in attempt is discarded when it expires", async () => {
 			const id = attempt();
-			const handle = client.login.getOrCreate([id]);
-			const started = await handle.start();
+			const handle = loginHttp(API, loginOrigin, id);
+			const started = await handle.start("google");
 			assert(started.url.startsWith("https://") && started.redirectPrefix.startsWith("http://"), `start gave ${plain(started)}`);
 			assert(Math.abs(started.expiresAt - (Date.now() + loginTtlMs)) < 8_000, "expiresAt is off");
 			// Neither layer contacts OpenAI for an address that is not the loopback one.
-			const wrong = await refused(() => handle.finish("https://example.com/not-the-callback"), "sandbox_error");
+			const wrong = await refused(() => handle.finish("https://example.com/not-the-callback"), "invalid_callback");
 			// An attempt is kept, sealed, in its actor: no layer makes a volume for it.
 			if (!FAKE) assert(loginVolumes(id).length === 0, `an attempt left a volume: wlp-login-${id}`);
 			await waitFor("the attempt to be discarded", () => server.output.includes(`[wlp] login.discarded attempt=${id}`), loginTtlMs + 20_000, 250);
-			await refused(() => client.login.get([id]).finish(`${started.redirectPrefix}?code=late&state=x`), "not_found");
+			await refused(() => handle.finish(`${started.redirectPrefix}?code=late&state=x`), "not_found");
 			return `after ${Math.round(loginTtlMs / 1000)} s the actor and the attempt in it were gone; a wrong address was answered with "${wrong}"`;
 		});
 	} else {
@@ -2482,12 +2473,12 @@ async function main(server: Server | null): Promise<void> {
 	await check("the demo sign-in's login actor goes away", async () => {
 		const id = attempt();
 		await demoSignIn(id);
-		await refused(() => client.login.get([id]).demo(), "attempt_done");
+		await refused(() => loginHttp(API, loginOrigin, id).demo(), "attempt_done");
 		await waitFor(
 			"the login actor to remove itself",
 			async () => {
 				try {
-					await client.login.get([id]).demo();
+					await loginHttp(API, loginOrigin, id).finish("expired");
 					return false;
 				} catch (error) {
 					return (error as { code?: string }).code === "not_found";
@@ -2496,7 +2487,7 @@ async function main(server: Server | null): Promise<void> {
 			15_000,
 			300,
 		);
-		await refused(() => client.login.getOrCreate(["bad id!"]).start(), "bad_attempt_id");
+		await refused(() => loginHttp(API, loginOrigin, "bad id!").start("github"), "bad_attempt_id");
 		return "destroyed a few seconds after issuing its token";
 	});
 
@@ -4780,7 +4771,7 @@ async function preparedSessions(server: Server) {
 		const repo = github.addRepository({owner:"ada", name:"snapshot-check", installation, files:{"package-lock.json":"{}", "base.txt":"first"}});
 		const base = github.branchHead(repo, "main")!;
 		await server.start({...github.env(), WLP_SNAPSHOTS: snapshotBenchmark ? "off" : "on"});
-		const auth = await client.login.getOrCreate(["snapshot-" + randomBytes(8).toString("hex")]).demo();
+		const auth = await loginHttp(API).demo();
 		const uid = auth.profile.uid, params = {token:auth.token};
 		demoUids.push(uid);
 		const user = client.user.getOrCreate([uid], {params});
@@ -4897,12 +4888,15 @@ try {
 		if (!existsSync(join(SERVER_DIR, "src", "index.ts"))) throw new Error(`run this from ${SERVER_DIR}`);
 		server = new Server();
 		if (FAKE && (!section || section === "core") && !idleOnly && !githubOnly && !resumeOnly) {
-			await server.start({ WLP_ITEMS: "1", WLP_FAKE_SIGNIN_GRANTS: JSON.stringify(identityGrants), WLP_ACCOUNT_EMAILS: "unused@example.invalid=u_unused, SEED@EXAMPLE.COM = u_existing" });
+			const github = new GithubStandin({ callbackUrl: loginOrigin + "/signin" });
+			await github.start();
+			await server.start({ ...github.env(), WLP_ITEMS: "1", WLP_CLIENT_IP_HEADER: "x-test-ip", WLP_LOGIN_ADDRESS_PER_MINUTE: "2", WLP_LOGIN_TOTAL_PER_MINUTE: "4" });
 			const identityClient = newClient();
 			try {
-				await identityChecks(identityClient, server);
+				await identityChecks(identityClient, server, github);
 			} finally {
 				await identityClient.dispose();
+				await github.stop();
 			}
 			await server.stop();
 		}

@@ -68,6 +68,7 @@ import {
 	type AcpUpdate,
 	type HarnessId,
 	type LiveDelta,
+	type LoginProvider,
 	type LoginStart,
 	type ItemView,
 	type MachineSummary,
@@ -842,6 +843,7 @@ function takenUnder<Answer>(kept: Map<string, Taken<Answer>>, key: string | null
 type SavedDefaults = AccountDefaults & { updatedAt: number };
 
 interface World {
+	planConnected: boolean;
 	profile: UserProfile;
 	sessions: Map<string, MockSession>;
 	feeds: Set<UserFeed>;
@@ -954,7 +956,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	const now = () => clock ?? realNow();
 
 	const worlds = new Map<string, World>();
-	const attempt: { state: string; expiresAt: number } = { state: "", expiresAt: 0 };
+	let attempt: { owner?: string; provider: LoginProvider; state: string; expiresAt: number } | null = null;
+	const modelAttempts = new Map<string, { state: string; expiresAt: number }>();
 	let disposed = false;
 	const timers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -1023,7 +1026,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	const revoked = new Map<string, string>();
 	const generation = (uid: string) => recall("wlp.mock.tokenGen." + uid) ?? revoked.get(uid) ?? "";
-	const tokenFor = (profile: UserProfile) => `mock:${profile.demo ? "demo" : "chatgpt"}:${profile.uid}:${profile.email ?? ""}${generation(profile.uid) ? ":" + generation(profile.uid) : ""}`;
+	const tokenFor = (profile: UserProfile) => `mock:${profile.demo ? "demo" : "user"}:${profile.uid}:${profile.email ?? ""}${generation(profile.uid) ? ":" + generation(profile.uid) : ""}`;
 
 	/** A checked key for each provider, with the models its check read (`?keys=1`). */
 	function seedKeys(world: World): void {
@@ -1041,17 +1044,17 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 
 	function worldOf(auth: AuthResult): World {
 		const [scheme, kind, uid, email, gen = ""] = auth.token.split(":");
-		if (scheme !== "mock" || !uid || gen !== generation(uid) || uid !== auth.profile.uid || (kind !== "demo" && kind !== "chatgpt")) {
+		if (scheme !== "mock" || !uid || gen !== generation(uid) || uid !== auth.profile.uid || (kind !== "demo" && kind !== "user")) {
 			throw new PlatformError("unauthorized", "This sign-in is no longer accepted. Sign in again.");
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { providers: new Map(), checks: { minute: 0, used: 0 }, defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
-			// Whoever signed in with ChatGPT starts connected; the demo user connects by hand. A choice made since is kept.
+			world = { planConnected: recall("wlp.mock.plan." + uid) === "1", profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { providers: new Map(), checks: { minute: 0, used: 0 }, defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
+			// The seeded user starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
-			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
+			if (githubOn && (kept === "1" || (kept === null && kind === "user"))) world.github = connectionFor(world.profile);
 			worlds.set(uid, world);
-			if (options.keys && kind === "chatgpt") seedKeys(world);
+			if (options.keys && kind === "user") seedKeys(world);
 			seed(world);
 			// The items, each with its agent session, are there with the agents (`seedItemSession`).
 			items.prepare(auth);
@@ -2849,7 +2852,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	const listedAt = realNow();
 	function modelsFor(profile: UserProfile): ModelList {
 		if (profile.demo) return mockStandInModels("demo");
-		const account: ModelList = options.models === "unavailable" ? mockStandInModels("unavailable") : { source: "account", models: MOCK_PLAN.map((model) => ({ ...model, efforts: [...model.efforts] })), defaultModel: MODELS[0] as string, fetchedAt: listedAt - 12 * MINUTE };
+		const account: ModelList = !worlds.get(profile.uid)?.planConnected ? mockStandInModels("signed-out") : options.models === "unavailable" ? mockStandInModels("unavailable") : { source: "account", models: MOCK_PLAN.map((model) => ({ ...model, efforts: [...model.efforts] })), defaultModel: MODELS[0] as string, fetchedAt: listedAt - 12 * MINUTE };
 		return windlassModels(account, [...(worlds.get(profile.uid)?.account.providers.values() ?? [])]);
 	}
 	/** A model a client named, held against the user's list as the server holds it. */
@@ -3322,6 +3325,17 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	function userApi(auth: AuthResult): UserApi {
 		const world = () => worldOf(auth);
 		return {
+			async linkedLogins() {
+				return (["github", "google"] as const)
+					.filter(provider => recall("wlp.mock.identity." + provider) === world().profile.uid)
+					.map(provider => ({ provider, display: provider === "github" ? "ada" : "ada@example.com" }));
+			},
+			async unlinkLogin(provider) {
+				const methods = await this.linkedLogins();
+				if (!methods.some(method => method.provider === provider)) return;
+				if (methods.length < 2) throw new PlatformError("user", "Link another login method first.");
+				keep("wlp.mock.identity." + provider, "");
+			},
 			...machineCalls(auth),
 			...items.calls(auth),
 			async signOutEverywhere(options) {
@@ -3338,7 +3352,29 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			async chatgpt(): Promise<ChatgptStatus> {
 				await latency(220);
 				const { profile } = world();
-				return profile.demo ? { connected: false, email: null, accessExpiresAt: null } : { connected: true, email: profile.email, accessExpiresAt: now() + 52 * MINUTE };
+				return profile.demo || !world().planConnected ? { connected: false, email: null, accessExpiresAt: null } : { connected: true, email: profile.email, accessExpiresAt: now() + 52 * MINUTE };
+			},
+			async startChatgpt() {
+				const { uid, demo } = world().profile;
+				if (demo) throw new PlatformError("user", "The demo uses a scripted model.");
+				const state = hex(16), expiresAt = now() + 10 * MINUTE;
+				modelAttempts.set(uid, { state, expiresAt });
+				return { url: origin + "/mock/authorize?" + new URLSearchParams({ state }), redirectPrefix: REDIRECT_PREFIX, expiresAt };
+			},
+			async finishChatgpt(callback) {
+				const { uid } = world().profile;
+				const pending = modelAttempts.get(uid);
+				const url = new URL(callback);
+				if (!pending || pending.expiresAt < now() || url.origin + url.pathname !== REDIRECT_PREFIX || url.searchParams.get("state") !== pending.state || !url.searchParams.get("code")) throw new PlatformError("user", "Start the ChatGPT connection again.");
+				modelAttempts.delete(uid);
+				world().planConnected = true;
+				keep("wlp.mock.plan." + uid, "1");
+			},
+			async forgetChatgpt() {
+				const { uid } = world().profile;
+				modelAttempts.delete(uid);
+				world().planConnected = false;
+				keep("wlp.mock.plan." + uid, "0");
 			},
 			async models(): Promise<ModelList> {
 				await latency(200);
@@ -4232,34 +4268,34 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
 			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, runnerHarnesses: ["claude", "opencode", "codex"] as Array<"claude" | "opencode" | "codex">, platformUrl: origin } };
-			return { demoEnabled: true, windlassVersion: "0.4.0", profiles, ...(options.sizes === "one" ? {} : { hostedSizes: MOCK_SIZES }), ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(billingState === "off" ? {} : { billing: { plans: MOCK_PLANS } }), ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true, screenshots: options.screenshots !== false } }) };
+			return { demoEnabled: true, googleLogin: true, windlassVersion: "0.4.0", profiles, ...(options.sizes === "one" ? {} : { hostedSizes: MOCK_SIZES }), ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(billingState === "off" ? {} : { billing: { plans: MOCK_PLANS } }), ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true, screenshots: options.screenshots !== false } }) };
 		},
 		login: {
-			async start(): Promise<LoginStart> {
+			async start(provider = "github", auth): Promise<LoginStart> {
 				await latency(400);
-				attempt.state = hex(16);
-				attempt.expiresAt = now() + 10 * MINUTE;
-				const query = new URLSearchParams({ mock: "1", state: attempt.state, redirect_uri: REDIRECT_PREFIX });
-				return { url: `${origin}/mock/authorize?${query}`, redirectPrefix: REDIRECT_PREFIX, expiresAt: attempt.expiresAt };
+				attempt = { owner: auth && worldOf(auth).profile.uid, provider, state: hex(16), expiresAt: now() + 10 * MINUTE };
+				if (typeof sessionStorage !== "undefined") sessionStorage.setItem("wlp.mock.login", JSON.stringify(attempt));
+				const redirectPrefix = origin + "/signin";
+				return { url: redirectPrefix + "?" + new URLSearchParams({ code: "mock_login", state: attempt.state }), redirectPrefix, expiresAt: attempt.expiresAt };
 			},
-			async finish(pastedUrl: string): Promise<AuthResult> {
-				await latency(700);
-				if (attempt.state === "") throw new PlatformError("user", "This sign-in attempt is not known. Start again.");
-				if (now() > attempt.expiresAt) throw new PlatformError("user", "This sign-in attempt has expired. Start again.");
-				const pasted = pastedUrl.trim();
-				if (!pasted.startsWith(REDIRECT_PREFIX)) throw new PlatformError("user", `That is not the address the sign-in ends on. It starts with ${REDIRECT_PREFIX}.`);
-				let params: URLSearchParams;
-				try {
-					params = new URL(pasted).searchParams;
-				} catch {
-					throw new PlatformError("user", "That is not a whole address. Copy everything in the address bar.");
-				}
-				const refused = params.get("error");
-				if (refused !== null) throw new PlatformError("user", `OpenAI did not approve the sign-in (${refused}).`);
-				if (!params.get("code")) throw new PlatformError("user", "That address has no sign-in code in it. Copy the whole address, including everything after the question mark.");
-				if (params.get("state") !== attempt.state) throw new PlatformError("user", "That address belongs to another sign-in attempt. Start again.");
-				attempt.state = "";
-				const profile: UserProfile = { uid: "u_ada", email: "ada@example.com", demo: false };
+			async finish(callback: string, auth): Promise<AuthResult> {
+				await latency(500);
+				attempt ??= typeof sessionStorage === "undefined" ? null : JSON.parse(sessionStorage.getItem("wlp.mock.login") ?? "null");
+				if (!attempt || now() > attempt.expiresAt) throw new PlatformError("user", "This sign-in attempt has expired. Start again.");
+				const url = new URL(callback);
+				if (url.origin + url.pathname !== origin + "/signin") throw new PlatformError("user", "That is not the address the sign-in ends on.");
+				if (url.searchParams.has("error")) throw new PlatformError("user", "Sign-in refused: " + url.searchParams.get("error"));
+				if (!url.searchParams.get("code")) throw new PlatformError("user", "There is no sign-in code.");
+				if (url.searchParams.get("state") !== attempt.state) throw new PlatformError("user", "Start sign-in in this tab.");
+				if (attempt.owner !== auth?.profile.uid) throw new PlatformError("user", "Return to the account that started this link.");
+				const key = "wlp.mock.identity." + attempt.provider;
+				const existing = recall(key);
+				if (auth && existing && existing !== auth.profile.uid) throw new PlatformError("user", "This identity is already linked.");
+				const uid = auth ? worldOf(auth).profile.uid : existing || (existing === "" ? "u_" + hex(8) : attempt.provider === "github" ? "u_ada" : "u_google_ada");
+				keep(key, uid);
+				attempt = null;
+				if (typeof sessionStorage !== "undefined") sessionStorage.removeItem("wlp.mock.login");
+				const profile: UserProfile = { uid, email: "ada@example.com", demo: false };
 				return { token: tokenFor(profile), profile };
 			},
 			async demo(): Promise<AuthResult> {

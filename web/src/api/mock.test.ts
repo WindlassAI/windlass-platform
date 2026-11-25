@@ -178,7 +178,7 @@ describe("what the mock serves", () => {
 describe("signing in", () => {
 	it("finishes only from an address under the redirect prefix, with a code and the attempt's state", async () => {
 		const started = await after(1000, client.login.start());
-		expect(started.redirectPrefix).toBe("http://127.0.0.1:1455/auth/callback");
+		expect(new URL(started.redirectPrefix).pathname).toBe("/signin");
 		expect(started.expiresAt).toBeGreaterThan(Date.now());
 		const state = new URL(started.url).searchParams.get("state");
 
@@ -189,7 +189,13 @@ describe("signing in", () => {
 
 		const result = await after(1000, client.login.finish(`${started.redirectPrefix}?code=abc&state=${state}`));
 		expect(result.profile).toEqual({ uid: "u_ada", email: "ada@example.com", demo: false });
-		expect(await after(500, client.user(result).chatgpt())).toMatchObject({ connected: true, email: "ada@example.com" });
+		const user = client.user(result);
+		expect(await after(500, user.chatgpt())).toMatchObject({ connected: false });
+		const plan = await user.startChatgpt();
+		await user.finishChatgpt(plan.redirectPrefix + "?code=plan&state=" + new URL(plan.url).searchParams.get("state"));
+		expect(await after(500, user.chatgpt())).toMatchObject({ connected: true });
+		await user.forgetChatgpt();
+		expect(await after(500, user.me())).toEqual(result.profile);
 	});
 
 	it("rejects an attempt that has expired", async () => {
@@ -595,7 +601,7 @@ describe("stopping one call", () => {
 });
 
 describe("the agent's own push", () => {
-	const ada: AuthResult = { token: "mock:chatgpt:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
+	const ada: AuthResult = { token: "mock:user:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
 	/** The seeded session's timeline as the session screen folds it, and its platform lines. */
 	async function opened(mock: MockClient, id: string) {
 		const { record, feed } = recorder();

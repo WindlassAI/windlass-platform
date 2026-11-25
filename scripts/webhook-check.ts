@@ -2,6 +2,7 @@
  * with test-only fixture actions attached before registry setup. No production action exposes SQL,
  * sets a test clock or installs a handler. All HTTP listeners use OS-assigned ports.
  */
+import { loginHttp } from "./login-http.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -348,7 +349,7 @@ async function run() {
 		};
 		const authorize = async (user: ReturnType<typeof client.user.getOrCreate>, login: string) => user.githubComplete(await ticketFor(user, login));
 		const connectUser = async (login: string) => {
-			const auth = await client.login.getOrCreate([randomUUID()]).demo();
+			const auth = await loginHttp(api).demo();
 			const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 			await authorize(user, login);
 			return { uid: auth.profile.uid, token: auth.token, user };
@@ -522,7 +523,7 @@ async function run() {
 		});
 		await check("an uninstall delivered while a user connects leaves no access in either order", async () => {
 			const person = standin.addUser("race-user");
-			const auth = await client.login.getOrCreate([randomUUID()]).demo();
+			const auth = await loginHttp(api).demo();
 			const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 			const id = auth.profile.uid;
 			const noAccess = async (installation: number) => {
@@ -2079,7 +2080,7 @@ async function run() {
 		});
 		await check("connect, replace, old disconnect, current disconnect", async () => {
 			const connect = async () => {
-				const auth = await client.login.getOrCreate([randomUUID()]).demo();
+				const auth = await loginHttp(api).demo();
 				const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 				const { url } = await user.githubConnect({ origin });
 				const back = await fetch(standin.authorize("ada", url), { redirect: "manual" });

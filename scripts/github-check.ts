@@ -314,6 +314,13 @@ const visit = async (address: string): Promise<{ status: number; location: strin
 	};
 };
 
+await section("connect: login callback registration", async () => {
+	const request = new Request(ORIGIN + "/github/callback?error=redirect_uri_mismatch&state=platform-state");
+	const reply = await githubCallbackResponse(request, { app, store, origins: [ORIGIN] });
+	expect("a login returned to the default App callback names the missing URL", reply.status === 400 &&
+		(await reply.text()).includes("Add " + ORIGIN + "/signin to the GitHub App's callback URLs"));
+});
+
 await section("connect: a user with an installation", async () => {
 	const begun = store.begin("u_ada");
 	const address = new URL(begun.url);

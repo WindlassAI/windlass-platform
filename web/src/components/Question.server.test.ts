@@ -219,7 +219,7 @@ describe("the question's words", () => {
 
 	it("has the mock list a repository's secrets for the sandbox it is asked about: the selected sandbox profile", async () => {
 		const client = createMockClient({ pace: 0, origin: "http://localhost:5173" });
-		const user = client.user({ token: "mock:chatgpt:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } });
+		const user = client.user({ token: "mock:user:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } });
 		const sentences = (list: { secrets: Array<{ name: string; reach: { note: string | null } }> }) => Object.fromEntries(list.secrets.map((secret) => [secret.name, secret.reach.note !== null]));
 		expect(sentences(await user.repositorySecrets(7101, "docker-windlass-sandbox"))).toEqual({ DEPLOY_KEY: false, NPM_TOKEN: false, PREVIEW_HOST: false, SENTRY_DSN: false });
 		expect(sentences(await user.repositorySecrets(7101, "docker-hardened"))).toEqual({ DEPLOY_KEY: false, NPM_TOKEN: true, PREVIEW_HOST: false, SENTRY_DSN: true });

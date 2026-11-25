@@ -2,21 +2,21 @@ Each message below is what Windlass shows, word for word. Where a message names 
 
 ## Signing in
 
-**"This platform is by invitation for now, and this ChatGPT account is not on its list. Ask whoever runs it to add you."**\
-Your ChatGPT account is not on the platform's list. Ask whoever runs it to add the email of the account you signed in with.
+**"This platform is by invitation for now, and this account is not on its list. Ask whoever runs it to add you."**\
+Ask the operator to invite your platform UID or your verified provider email.
 
-**"This sign-in attempt has expired. Start again."** or **"This attempt has run out of time."**\
-A sign-in attempt lasts 10 minutes. Choose **Start over** and do both steps again.
+**"This sign-in attempt has expired. Start again."**\
+A sign-in attempt lasts 10 minutes. Choose your provider again.
 
 **"That is not the address the browser ended on. It starts with http://127.0.0.1:1455/auth/callback?code="**\
-Paste the full address of the page that did not load, after you approved the sign-in, not the address of OpenAI's page.
+In Settings → Model providers, paste the full loopback address from the tab where you approved the ChatGPT connection.
 
 **"Your sign-in is no longer accepted. Sign in again to carry on."**\
 Your sign-in on the platform ended, or you were taken off its list. Sign in again.
 
 **"You are not signed in with ChatGPT. Sign in with ChatGPT, then send the prompt again."**\
 **"Your ChatGPT sign-in is no longer accepted: it expired or was withdrawn. Sign in with ChatGPT again, then send the prompt once more."**\
-The platform could not get a ChatGPT token for the turn. Sign out, sign in with ChatGPT again, then send the prompt again.
+The platform could not get a ChatGPT token for the turn. Reconnect your ChatGPT plan in Settings → Model providers, then send the prompt again.
 
 ## GitHub
 
@@ -186,7 +186,7 @@ The provider had an error, or the relay could not reach it. Try again later. Che
 The provider refused it for another reason, and the relay does not pass that reason on. Try another model, or check your account with the provider.
 
 **"ChatGPT did not accept the saved sign-in. Sign in with ChatGPT again, then send the prompt once more."**\
-Sign out, sign in with ChatGPT again, then send the prompt again.
+Reconnect your ChatGPT plan in Settings → Model providers, then send the prompt again.
 
 ## Work items
 

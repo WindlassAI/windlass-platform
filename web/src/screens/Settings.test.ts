@@ -58,9 +58,58 @@ it.each([true, false])("keeps the session on cancel and signs out with revoke AP
 	}
 }, 15_000);
 
+it.each([false, true])("shows linked identities and protects the last sign-in method (Google configured: %s)", async google => {
+	const client = createMockClient({ pace: 0 });
+	const github = await client.login.start("github");
+	const auth = await client.login.finish(github.url);
+	const info = await client.info();
+	vi.spyOn(client, "info").mockResolvedValue({
+		...info, googleLogin: google ? true : undefined,
+		github: { slug: "windlass", url: google ? "https://github.example.test" : "https://github.com" },
+	});
+	if (google) {
+		const link = await client.login.start("google", auth);
+		await client.login.finish(link.url, auth);
+	}
+	saveAuth("mock", auth);
+	const host = document.body.appendChild(document.createElement("div"));
+	const root = createRoot(host);
+	try {
+		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
+		const rows = Array.from(host.querySelectorAll('[aria-label="Sign-in methods"] li'));
+		expect(rows.map(row => row.querySelector(".provider-name")?.textContent)).toEqual(google ? ["GitHub", "Google"] : ["GitHub"]);
+		const githubRow = rows[0]!;
+		expect(githubRow.textContent).toContain("@ada");
+		expect(githubRow.textContent).not.toContain("github.com");
+		const unlink = githubRow.querySelector("button")!;
+		if (google) {
+			expect(githubRow.textContent).toContain("github.example.test");
+			expect(rows[1]?.textContent).toContain("ada@example.com");
+			await act(async () => unlink.click());
+			expect(host.querySelector("dialog")?.textContent).toContain("Unlink GitHub?");
+			await act(async () => host.querySelector<HTMLButtonElement>("dialog [data-autofocus]")!.click());
+			expect(await client.user(auth).linkedLogins()).toHaveLength(2);
+			await act(async () => unlink.click());
+			await act(async () => host.querySelector<HTMLButtonElement>("dialog .button-danger")!.click());
+			expect(host.querySelector("dialog")).toBeNull();
+			expect(githubRow.textContent).toContain("not linked");
+			expect(githubRow.textContent).not.toContain("@ada");
+			expect(githubRow.querySelector("button")?.getAttribute("aria-label")).toBe("Link GitHub");
+		}
+		const lastAction = rows.at(-1)!.querySelector("button")!;
+		expect(lastAction.disabled).toBe(true);
+		expect(document.getElementById(lastAction.getAttribute("aria-describedby")!)?.textContent).toMatch(/link another sign-in method/i);
+	} finally {
+		act(() => root.unmount());
+		host.remove();
+		client.dispose();
+		localStorage.clear();
+	}
+});
+
 it("says where the last agent started, with its agent and mode, and forgets it", async () => {
 	const client = createMockClient({ pace: 0 });
-	const auth = { token: "mock:chatgpt:u_last:ada@example.com", profile: { uid: "u_last", email: "ada@example.com", demo: false } };
+	const auth = { token: "mock:user:u_last:ada@example.com", profile: { uid: "u_last", email: "ada@example.com", demo: false } };
 	await client.user(auth).createSession({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", profile: "docker-hardened", mode: "plan" });
 	saveAuth("mock", auth);
 	const host = document.body.appendChild(document.createElement("div"));
@@ -90,7 +139,7 @@ it("says where the last agent started, with its agent and mode, and forgets it",
 
 it("saves a machine agent and profile and hides machine choices for Hosted", async () => {
 	const client = createMockClient({ pace: 0 });
-	const auth = { token: "mock:chatgpt:u_places:ada@example.com", profile: { uid: "u_places", email: "ada@example.com", demo: false } };
+	const auth = { token: "mock:user:u_places:ada@example.com", profile: { uid: "u_places", email: "ada@example.com", demo: false } };
 	saveAuth("mock", auth);
 	const host = document.body.appendChild(document.createElement("div"));
 	const root = createRoot(host);

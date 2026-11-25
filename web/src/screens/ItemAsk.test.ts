@@ -18,7 +18,7 @@ import { Item } from "./Item";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 Element.prototype.scrollTo ??= () => {};
 
-const auth: AuthResult = { token: "mock:chatgpt:u_ask:ada@example.com", profile: { uid: "u_ask", email: "ada@example.com", demo: false } };
+const auth: AuthResult = { token: "mock:user:u_ask:ada@example.com", profile: { uid: "u_ask", email: "ada@example.com", demo: false } };
 
 let host: HTMLElement;
 let root: Root;

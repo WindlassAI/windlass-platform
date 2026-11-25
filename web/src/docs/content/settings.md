@@ -12,6 +12,8 @@ Choose a default **Sandbox** and **Model**, or **No default**. They save as soon
 
 ### Model providers
 
+**Connect ChatGPT plan** opens a model connection for your signed-in Windlass account. Follow **Authorize your plan at OpenAI**, approve it, then copy the full loopback address from the page that fails to load. Paste it into Settings and choose **Finish connecting** within ten minutes. **Disconnect plan** removes this model connection. Your platform login and sessions stay with your GitHub or Google identity.
+
 In **Settings → Model providers**, choose **Add key…** for OpenAI, Anthropic, Google (Gemini) or OpenRouter. You can save one key per provider. Windlass stores it encrypted, checks it with the provider and shows its last four characters and the number of models found. Use **Check**, **Replace…** or **Remove…** to manage it later.
 
 These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and uses a per-turn relay to keep the key outside the sandbox. Removing or replacing a key stops new requests through leases for the old key. Hosted sandboxes always use these keys: Claude Code your Anthropic key, Codex your OpenAI key, and OpenCode the key for the selected provider. On a paired machine, an agent signed in there (a Claude subscription, a ChatGPT plan for Codex, an OpenCode provider login) uses that sign-in first, and a key only for providers the machine is not signed in to. To have it use your key instead, choose “Use your … key” under the agent on the Machines page. Windlass uses your Settings key for the models listed under that provider, and your ChatGPT sign-in for your plan's models.

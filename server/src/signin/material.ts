@@ -17,7 +17,6 @@
  * functions here that fail say which file was wrong, never what was in it.
  */
 
-import { createHash } from "node:crypto";
 import type { ChatgptAccount } from "../sandbox/api.js";
 
 /** The files of a sign-in, by their names in Windlass's data directory. No other name is ever written or read back. */
@@ -78,11 +77,6 @@ export function accountOf(material: SignInMaterial): ChatgptAccount | null {
 	const email = parsed.account?.email;
 	const expiresAt = parsed.expiresAt;
 	return { sub, email: typeof email === "string" ? email : null, accessExpiresAt: typeof expiresAt === "number" && Number.isFinite(expiresAt) ? expiresAt : null };
-}
-
-/** The default uid for a new email, or the uid of an email-less sign-in, from this OAuth app’s subject. */
-export function uidOfAccount(sub: string): string {
-	return `u_${createHash("sha256").update(sub).digest("hex").slice(0, 20)}`;
 }
 
 /** User ids and attempt ids name things at the providers and in a sealed blob's binding: letters, digits, `_` and `-`, starting with a letter or digit, at most 64. */

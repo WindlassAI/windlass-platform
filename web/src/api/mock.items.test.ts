@@ -14,7 +14,7 @@ import { createMockClient, type MockMachineState } from "./mock";
 import { REMOVED_MACHINE_ID, ciSentence, seededVerdicts, verdictSaid, type MockItemsState, type SeedVerdict } from "./mock-items";
 import { disagrees, partsOf, ReviewBlocks, ReviewText } from "../components/ReviewBlocks";
 
-const auth = { token: "mock:chatgpt:u_items:ada@example.com", profile: { uid: "u_items", email: "ada@example.com", demo: false } };
+const auth = { token: "mock:user:u_items:ada@example.com", profile: { uid: "u_items", email: "ada@example.com", demo: false } };
 const make = (items?: MockItemsState, machine?: MockMachineState) => createMockClient({ pace: 0, items, machine });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 

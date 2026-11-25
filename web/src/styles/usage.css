@@ -335,6 +335,13 @@
 	font-family: var(--font-mono);
 	font-size: var(--size-mono-small);
 }
+.login-method .provider-name {
+	display: flex;
+}
+.login-method .agent-meta {
+	margin-left: 24px;
+}
+.login-method .machine-used.tone-good,
 .provider-row .machine-used.tone-good {
 	color: var(--accent);
 }
@@ -461,6 +468,10 @@
 	.usage-kept-row .button {
 		grid-area: free;
 		align-self: center;
+	}
+	.login-method .machine-used {
+		grid-area: state;
+		margin-left: 24px;
 	}
 	.provider-row {
 		grid-template-areas:

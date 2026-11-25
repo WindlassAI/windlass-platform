@@ -1,5 +1,5 @@
 /**
- * The real `PlatformClient`: the three actors of contract.ts over `rivetkit/client` (3.1.1), and the
+ * The real `PlatformClient`: the user and session actors over `rivetkit/client` (3.1.1), and the
  * platform's information over plain HTTP (`GET PLATFORM_INFO_PATH` on the platform's address, which
  * any of the servers answers; it is not an actor).
  *
@@ -12,10 +12,10 @@
  * ASSUMPTION and listed again at the bottom of the file.
  *
  * How it talks to the actors:
- * - Actors are addressed by name and key through the untyped client (`client.getOrCreate(name, key)`),
+ * - Actors are addressed by name and key through the untyped client (`client.get(name, key)`),
  *   because the server's registry type is not part of the contract. Arguments and results are typed
  *   here from contract.ts.
- * - `login` is called without parameters. `user` and `agentSession` get the
+ * - Login uses the platform HTTP route. `user` and `agentSession` get the
  *   connection parameter `{ token }` on every handle, which RivetKit sends both when a connection
  *   opens and with each stateless action call.
  * - Actions are stateless calls on the handle (HTTP). The two live feeds each hold one connection
@@ -33,7 +33,7 @@ import {
 	type AgentSessionActions,
 	type AgentSessionEvents,
 	type AuthResult,
-	type LoginActions,
+	type LoginStart,
 	type MachineSummary,
 	type SessionSnapshot,
 	type SessionSummary,
@@ -59,7 +59,7 @@ type Handle = ActorHandle<Untyped>;
 type Conn = ActorConn<Untyped>;
 
 /** The actor names, as the server's registry is expected to register them. ASSUMPTION 1. */
-const ACTOR = { login: "login", user: "user", agentSession: "agentSession" } as const;
+const ACTOR = { user: "user", agentSession: "agentSession" } as const;
 
 /**
  * How long an action may take. RivetKit retries an endpoint that does not answer for as long as it
@@ -220,16 +220,19 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		}
 	}
 
-	// One sign-in attempt at a time; `start`, `finish` and `demo` must reach the same actor.
-	let attemptId: string | null = null;
-	const login = async () => {
-		const client = await connect();
-		attemptId ??= crypto.randomUUID();
-		return client.getOrCreate<Untyped>(ACTOR.login, [attemptId]);
-	};
+	async function loginPost<T>(step: string, body: object, auth?: AuthResult): Promise<T> {
+		const response = await fetch(api.replace(/\/$/, "") + "/platform/login/" + step, {
+			method: "POST", cache: "no-store", redirect: "error",
+			headers: { "content-type": "application/json", ...(auth && { authorization: "Bearer " + auth.token }) },
+			body: JSON.stringify(body),
+		});
+		const data = await response.json();
+		if (!response.ok) throw new PlatformError("user", data.message ?? "Sign-in failed. Try again.", { reason: data.code });
+		return data;
+	}
 
 	// ASSUMPTION 2: `params` on the handle is what `onBeforeConnect` receives, for `.connect()` and for stateless actions alike.
-	const userHandle = (auth: AuthResult) => lazy(async () => (await connect()).getOrCreate<Untyped>(ACTOR.user, [auth.profile.uid], { params: { token: auth.token } }));
+	const userHandle = (auth: AuthResult) => lazy(async () => (await connect()).get<Untyped>(ACTOR.user, [auth.profile.uid], { params: { token: auth.token } }));
 	// ASSUMPTION 3: a session's actor is created by `user.createSession`, so the web app only ever looks it up.
 	const sessionHandle = async (auth: AuthResult, sessionId: string) => (await connect()).get<Untyped>(ACTOR.agentSession, [auth.profile.uid, sessionId], { params: { token: auth.token } });
 
@@ -370,7 +373,12 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		return {
 			me: () => act("me"),
 			signOutEverywhere: (...args) => act("signOutEverywhere", ...args),
+			linkedLogins: () => act("linkedLogins"),
+			unlinkLogin: provider => act("unlinkLogin", provider),
 			chatgpt: () => act("chatgpt"),
+			startChatgpt: () => act("startChatgpt"),
+			finishChatgpt: callback => act("finishChatgpt", callback),
+			forgetChatgpt: () => act("forgetChatgpt"),
 			models: () => act("models"),
 			listSessions: () => act("listSessions"),
 			createSession: (input) => act("createSession", input),
@@ -582,17 +590,21 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		},
 		info: () => getPlatform<PlatformInfo>(api, PLATFORM_INFO_PATH),
 		login: {
-			start: () => call<LoginActions, "start">(login(), "start"),
-			finish: async (pastedUrl) => {
-				const result = await call<LoginActions, "finish">(login(), "finish", pastedUrl);
-				attemptId = null;
+			async start(provider = "github", auth) {
+				const id = crypto.randomUUID();
+				const secret = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+				const started = await loginPost<LoginStart>("start", { id, secret, provider }, auth);
+				sessionStorage.setItem("wlp.login", JSON.stringify({ id, secret, state: new URL(started.url).searchParams.get("state") }));
+				return started;
+			},
+			async finish(callback, auth) {
+				const saved = JSON.parse(sessionStorage.getItem("wlp.login") ?? "null");
+				if (!saved?.state || new URL(callback).searchParams.get("state") !== saved.state) throw new PlatformError("user", "Start the sign-in in this tab.");
+				const result = await loginPost<AuthResult>("finish", { id: saved.id, secret: saved.secret, callback }, auth);
+				sessionStorage.removeItem("wlp.login");
 				return result;
 			},
-			demo: async () => {
-				const result = await call<LoginActions, "demo">(login(), "demo");
-				attemptId = null;
-				return result;
-			},
+			demo: () => loginPost<AuthResult>("demo", { id: crypto.randomUUID() }),
 		},
 		user: userApi,
 		session: sessionApi,
@@ -609,11 +621,10 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 /*
  * ASSUMPTIONS to check against the running backend
  *
- * 1. Actor names. The registry registers the actors as `login`, `user`, `agentSession`
- *    (`setup({ use: { login, user, agentSession } })`), with keys [attemptId], [uid], [uid, sessionId].
- * 2. Parameters. `{ params: { token } }` given to `getOrCreate` / `get` reaches the actor's
+ * 1. The browser opens user and agentSession actors by [uid] and [uid, sessionId].
+ * 2. Parameters. `{ params: { token } }` given to `get` reaches the actor's
  *    `onBeforeConnect(c, params)` both for `.connect()` and for a stateless `handle.action(...)`.
- * 3. Creation. `login` and `user` may be created by the client's `getOrCreate`. An
+ * 3. Creation. The login HTTP service creates the user. An
  *    `agentSession` is created by the server in `user.createSession`; the client uses `get`, and an
  *    unknown session fails with group "actor", code "not_found".
  * 4. Events. `c.broadcast("item", item)` (one argument) arrives as `conn.on("item", (item) => ...)`;

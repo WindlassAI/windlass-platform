@@ -1,4 +1,5 @@
 // From server: pnpm exec tsx ../scripts/runner-e2e.ts egress <base-image-id> <claude-image-id>
+import { loginHttp } from "./login-http.js";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
@@ -40,7 +41,7 @@ export async function sessionEgress(dir: string, origin: string, endpoint: strin
 	] }));
 	await start({ WLP_TEST_MODEL_SCRIPT: model, WLP_PUBLIC_ENDPOINT: endpoint });
 	const client = createClient<Registry>({ endpoint, token: "default", namespace: "default" });
-	const { profile: { uid }, token } = await client.login.getOrCreate([randomUUID()]).demo();
+	const { profile: { uid }, token } = await loginHttp(origin).demo();
 	const params = { token };
 	const user = client.user.getOrCreate([uid], { params });
 	const runner = spawn(process.execPath, [bundle, "--platform", origin, "--egress", "restricted", "--egress-allow", "git-fixture.test", "--harness", "claude"], {

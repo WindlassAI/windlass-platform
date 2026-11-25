@@ -21,7 +21,7 @@ import type { ScreenshotLinks } from "./Screenshots";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const auth = { token: "mock:chatgpt:u_review:ada@example.com", profile: { uid: "u_review", email: "ada@example.com", demo: false } };
+const auth = { token: "mock:user:u_review:ada@example.com", profile: { uid: "u_review", email: "ada@example.com", demo: false } };
 
 /** Every image has a link: what an image on the page could only come from. */
 const links: ScreenshotLinks = { src: (id) => `/mock/${id}.png`, failed: () => undefined, freshen: () => undefined, generation: 1 };

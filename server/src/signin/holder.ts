@@ -51,7 +51,7 @@ export interface SignInStore {
 	/** Null when nothing was ever saved. */
 	load(): Promise<StoredSignIn | null>;
 	/** Resolves when the store has it. */
-	save(row: StoredSignIn): Promise<void>;
+	save(row: StoredSignIn, pendingId?: string): Promise<void>;
 }
 
 export interface SignInHolderOptions {
@@ -64,8 +64,6 @@ export interface SignInHolderOptions {
 	 * that are still running. Called after the sign-in is gone from the store.
 	 */
 	revoke?: (uid: string) => Promise<void>;
-	/** The user an account belongs to. When given, a sign-in of an account that is not this user's is refused. */
-	ownerOf?: (account: ChatgptAccount) => string | Promise<string | null>;
 	/** Where the holder's `[wlp]` lines go. Default the console. None ever contains a token. */
 	log?: (line: string) => void;
 }
@@ -152,7 +150,7 @@ export class SignInHolder {
 	 * Replaces the user's sign-in with the one in `sealed`, a finished sign-in sealed for this user.
 	 * Tokens of the earlier sign-in are not handed out again.
 	 */
-	async adopt(sealed: string): Promise<void> {
+	async adopt(sealed: string, pendingId?: string): Promise<void> {
 		// Looked at before anything is touched: what is not a finished sign-in sealed for this user changes nothing.
 		let material: SignInMaterial;
 		try {
@@ -162,12 +160,11 @@ export class SignInHolder {
 		}
 		const account = accountOf(material);
 		if (account === null) throw new SandboxUserError("This sign-in is not finished yet.");
-		if (this.options.ownerOf !== undefined && (await this.options.ownerOf(account)) !== this.uid) throw new Error(`the sign-in handed over for user ${this.uid} is another account's`);
 		this.running?.abort();
 		await this.exclusive(async () => {
-			this.unsaved = null;
 			const row = (await this.options.store.load()) ?? NOTHING;
-			await this.options.store.save({ sealed: this.seal(material), generation: row.generation + 1, shortNoted: false });
+			await this.options.store.save({ sealed: this.seal(material), generation: row.generation + 1, shortNoted: false }, pendingId);
+			this.unsaved = null;
 			this.kept = null;
 		});
 	}

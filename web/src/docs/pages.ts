@@ -34,7 +34,7 @@ export const DOCS_PAGES: readonly DocsPage[] = [
 	{
 		slug: "getting-started",
 		title: "Getting started",
-		description: "Get access, sign in with ChatGPT, connect GitHub and start your first agent.",
+		description: "Get access, sign in, connect GitHub and start your first agent.",
 		section: "Start here",
 		file: "getting-started.md",
 	},

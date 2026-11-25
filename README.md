@@ -1,7 +1,7 @@
 # Windlass Platform
 
 Windlass Platform runs coding agents for you in sandboxes, on your GitHub repositories, and hands their work
-back as pull requests. You sign in with ChatGPT, start an agent from the browser, and watch every file it
+back as pull requests. You sign in with GitHub or Google, start an agent from the browser, and watch every file it
 reads and every command it runs as it happens. It runs [Windlass](https://github.com/WindlassAI/windlass), the
 terminal coding agent, and is built on [Rivet Actors](https://www.rivet.dev/actors/docs).
 

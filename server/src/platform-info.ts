@@ -14,6 +14,7 @@
  * while the sign-in screen still has everything it shows.
  */
 
+import { googleCredentials } from "./platform-login.js";
 import { fingerprint } from "./runner/frame-auth.js";
 import { UserError } from "rivetkit";
 import { assertOrigin } from "./auth.js";
@@ -85,6 +86,7 @@ export async function platformInfo(): Promise<PlatformInfo> {
 	if (sizes.length > 1) info.hostedSizes = sizes;
 	// Left out without a GitHub App: the answer is then what it was before there could be one.
 	const app = githubInfo();
+	if (googleCredentials()) info.googleLogin = true;
 	if (app) info.github = app;
 	if (config.machines) info.machines = { minRunnerVersion: config.machines.identity ? MIN_RUNNER_VERSION : LEGACY_MIN_RUNNER_VERSION, platformFingerprint: config.machines.identity && fingerprint(config.machines.identity.root), runnerImage: config.machines.runnerImage, runnerHarnesses: config.machines.runnerHarnesses, platformUrl: config.machines.publicUrl };
 	if (billing()) info.billing = { plans: PLAN_LIST };

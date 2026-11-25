@@ -8,6 +8,7 @@ import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type R
 import { absoluteTime, day, relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { PROVIDERS_CHANGED, useNow } from "../state/hooks";
+import { ChatgptPlan } from "./ChatgptPlan";
 import { Dialog } from "./Dialog";
 import { AnthropicLogo, GeminiLogo, OpenAILogo, OpenRouterLogo } from "./AgentLogos";
 import { ExternalIcon, WarnIcon } from "./Icons";
@@ -211,6 +212,7 @@ export function ModelProviders() {
 			<p className="usage-lede">
 				Hosted agents always use these keys: Claude Code your Anthropic key, Codex your OpenAI key, OpenCode the key of its model's provider. On your machines an agent uses the machine's own sign-in first and a key for the rest, unless you choose the key on the Machines page. Windlass uses a key for the models listed under its provider, and your ChatGPT plan for the rest. A saved key stays on the platform.
 			</p>
+			{!auth.profile.demo && <ChatgptPlan />}
 			{list === null ? (
 				state.error ? (
 					<div className="state state-error" role="alert">
