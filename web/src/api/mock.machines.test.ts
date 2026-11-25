@@ -3,6 +3,7 @@
  * The mock's machines: what the Machines page is looked at with, by hand and here. It answers as the
  * server's user actor says it does (contract.ts, `UserActions.machines` and the four calls after it).
  */
+import { HARNESS_NAMES } from "../lib/acp";
 import { workingCounts } from "../lib/repositories";
 import { MAX_MACHINES, type AuthResult, type CreateSessionInput, type MachineSummary } from "@contract";
 import { act, createElement } from "react";
@@ -296,17 +297,18 @@ describe("the start composer's agent picker", () => {
 		chip("on");
 		act(() => (pop()?.querySelector(`[data-value="${machineId}"]`) as HTMLElement).click());
 	};
-	/** Opens the agent's picker and says which agents it offers here: the groups with a row that can be chosen. */
 	const agents = () => {
 		chip("agent");
-		// The effort, the menu's last group, is not an agent.
-		return [...(pop()?.querySelectorAll(".ui-menu-group") ?? [])].filter((group) => group.querySelector('[role="menuitemradio"]:not([aria-disabled="true"])')).map((group) => group.querySelector(".ui-menu-group-label b")?.textContent).filter((label) => label !== "Effort");
+		return [...pop()!.querySelectorAll('.agent-switch button:not([aria-disabled="true"])')].map(button => button.getAttribute("aria-label"));
 	};
-	/** Chooses an agent in its open picker: Claude Code on its reported default, Windlass on its default model. */
-	const agent = (id: string) => {
-		const rows = [...(pop()?.querySelectorAll(`[data-value^="${id}:"]`) ?? [])] as HTMLElement[];
-		const row = rows.find((candidate) => candidate.dataset.value === `${id}:default` || candidate.querySelector(".ui-tag")) ?? rows[0];
-		act(() => (row as HTMLElement).click());
+	const switchAgent = (id: keyof typeof HARNESS_NAMES) => {
+		act(() => pop()!.querySelector<HTMLButtonElement>(`.agent-switch [aria-label="${HARNESS_NAMES[id]}"]`)!.click());
+	};
+	const agent = (id: keyof typeof HARNESS_NAMES) => {
+		switchAgent(id);
+		const rows = [...pop()!.querySelectorAll<HTMLElement>(`[data-value^="${id}:"]`)];
+		const row = rows.find(candidate => candidate.dataset.value === `${id}:default` || candidate.querySelector(".ui-tag")) ?? rows[0]!;
+		act(() => row.click());
 	};
 	/** The approval choices in the open options menu's Mode group. */
 	const modeRows = () => {
@@ -343,16 +345,21 @@ describe("the start composer's agent picker", () => {
 	it("offers Windlass or Claude Code on a machine that reports it, and its sign-in where it is not signed in", async () => {
 		await open();
 		place("m_workshop");
+		await settle();
 		expect(agents()).toEqual(["Windlass", "Claude Code", "OpenCode", "Codex"]);
+		switchAgent("opencode");
+		expect(text()).toContain("OpenAI login · workshop");
+		switchAgent("claude");
 		showCommands();
-		expect(text()).toContain("OpenCode: signed in");
 		expect(text()).toContain("Claude Code: sign in needed");
 		expect(pop()?.querySelector(".machine-harness pre")?.textContent).toBe("docker exec -it windlass-runner windlass-runner login claude");
 		chip("agent", true);
 		// The second machine reports its own sign-in state.
 		place("m_nas");
+		await settle();
 		expect(agents()).toEqual(["Windlass", "Claude Code"]);
-		expect(text()).toContain("Claude Code: signed in");
+		switchAgent("claude");
+		expect(text()).toContain("Claude subscription · nas");
 	}, 30_000);
 
 	it("offers both reported catalogs on a fresh machine and launches OpenCode in its selected mode", async () => {
@@ -365,18 +372,20 @@ describe("the start composer's agent picker", () => {
 		agents();
 		await settle();
 		const catalog = (id: string) => Array.from(pop()!.querySelectorAll(`[data-value^="${id}:"] .ui-item-label`), row => row.textContent);
+		switchAgent("claude");
 		expect(catalog("claude")).toEqual(["Default (recommended)", "Opus", "Haiku"]);
-		expect(catalog("opencode")).toEqual(["OpenAI/GPT-5.4", "OpenAI/GPT-5.4 mini"]);
+		switchAgent("opencode");
+		expect(catalog("opencode")).toEqual(["GPT-5.4", "GPT-5.4 mini"]);
 		act(() => {
 			for (const feed of feeds) feed.onMachineHost?.({ machineId: machine!.machineId, host: { cpus: 2, sandboxCpus: 1, memoryBytes: 12e9, memoryFreeBytes: 4e9, load1: 1 } });
 		});
 		await settle();
 		expect([...catalogsRead].sort()).toEqual(["claude", "codex", "opencode"]);
+		switchAgent("codex");
 		expect(catalog("codex")).toEqual(["6.2 Sol"]);
-		showCommands();
-		expect(text()).toContain("docker exec -it windlass-runner windlass-runner login opencode");
+
 		agent("opencode");
-		expect(value("agent")).toContain("OpenAI/GPT-5.4");
+		expect(value("agent")).toContain("GPT-5.4");
 		expect(modes().map(({ name, chosen }) => [name, chosen])).toEqual([["build", true], ["plan", false]]);
 		mode("plan");
 		await createWithout();
@@ -387,7 +396,7 @@ describe("the start composer's agent picker", () => {
 		await open();
 		expect(agents()).toEqual(["Windlass"]);
 		// Hosted Claude Code needs a Settings key.
-		expect(pop()?.querySelector('[data-value="claude:default"]')?.getAttribute("aria-disabled")).toBe("true");
+		expect(pop()?.querySelector('.agent-switch [aria-label="Claude Code"]')?.getAttribute("aria-disabled")).toBe("true");
 		chip("agent", true);
 		// The choice is on nas, and it goes with the machine.
 		place("m_nas");
@@ -408,7 +417,7 @@ describe("the start composer's agent picker", () => {
 		agents();
 		agent("claude");
 		agents();
-		expect(text()).toContain("Claude Code runs in the hardened container with your Anthropic Settings key or Claude subscription, in the mode chosen for it. The platform runs this repository's saved checks when it ends a turn, and CI's result is on the pull request.");
+		expect(text()).toContain("Choose whose sign-in it uses on the Machines page.");
 		expect(value("on")).toContain("nas");
 		expect(value("sandbox")).toContain('Hardened Docker on your machine "nas"');
 		// nas's runner reported Claude Code's models: its default is named as the adapter names it, and chosen.

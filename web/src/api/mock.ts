@@ -3098,7 +3098,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	function seedMachines(state: MockMachineState): MachineSummary[] {
 		const at = realNow();
 		const claude = { ...MOCK_CLAUDE, options: { models: MOCK_CLAUDE_MODELS.models, defaultModel: MOCK_CLAUDE_MODELS.defaultModel, modes: [...CLAUDE_LAUNCH_MODES], checkedAt: at } };
-		const externalHarnesses: MachineSummary["harnesses"] = [{ ...claude, signIn: "none" }, { ...MOCK_CLAUDE, id: "opencode", adapter: "OpenCode 1.19.6", signIn: "token", options: { models: MOCK_OPENCODE_MODELS.models, defaultModel: MOCK_OPENCODE_MODELS.defaultModel, modes: MOCK_OPENCODE_MODES, checkedAt: at } }];
+		const externalHarnesses: MachineSummary["harnesses"] = [{ ...claude, signIn: "none" }, { ...MOCK_CLAUDE, id: "opencode", adapter: "OpenCode 1.19.6", signIn: "token", machineProviders: ["openai"], options: { models: MOCK_OPENCODE_MODELS.models, defaultModel: MOCK_OPENCODE_MODELS.defaultModel, modes: MOCK_OPENCODE_MODES, checkedAt: at } }];
 		externalHarnesses.push({keyRelay:true, id:"codex", image:MOCK_CLAUDE.image, adapter:"codex-acp 2.9.0", signIn:"token", method:"api-key", modes:["agent-full-access"],
 			options:{defaultModel:MOCK_CODEX_MODELS.defaultModel,models:MOCK_CODEX_MODELS.models, modes:codexModes("docker-hardened"),checkedAt:at}});
 		const slots = (max: number, busy: number) => ({ max, busy, queued: 0, unit: { cpus: 2, memoryBytes: 4 * 2 ** 30, pids: 1024 }, reserve: { cpus: 1, memoryBytes: Math.ceil(2.1 * 2 ** 30) } });
