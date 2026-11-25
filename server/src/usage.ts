@@ -563,7 +563,7 @@ weightOf: (session: string) => number = () => 1;
 
 	/**
 	 * Holds the claims against the sessions the provider has a sandbox for. A claim without a sandbox is
-	 * dropped, unless it was made a moment ago and the sandbox is still being made. A sandbox without a
+	 * dropped, unless the session still holds time to make the sandbox it just claimed. A sandbox without a
 	 * claim is given one, also past the cap: it exists, and leaving it out would let its user make more.
 	 */
 	reconcile(now: number, existing: readonly string[]): { added: string[]; dropped: string[]; change: UsageChange } {
@@ -572,7 +572,7 @@ weightOf: (session: string) => number = () => 1;
 		const added: string[] = [];
 		const dropped: string[] = [];
 		for (const claim of [...this.claims.values()]) {
-			if (there.has(claim.session) || now - claim.since < CLAIM_SETTLING_MS) continue;
+			if (there.has(claim.session) || (this.holds.has(claim.session) && now - claim.since < CLAIM_SETTLING_MS)) continue;
 			this.claims.delete(claim.session);
 			change.released.push(claim.session);
 			dropped.push(claim.session);

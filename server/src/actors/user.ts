@@ -257,6 +257,8 @@ interface UserVars {
 	checkout: AccountCheckout;
 	/** The user's sandboxes as the provider last listed them, and when; null until it was asked. */
 	listed: { at: number; sandboxes: ListedSandbox[] } | null;
+	/** Changes that can invalidate an in-flight provider listing: a create, release, or settled hold. */
+	keptGeneration: number;
 	/** The user's work items, the turn queue and its slots (user-items.ts), as the tables have them. */
 	items: ItemsState;
 	machines: Map<string, MachineSummary>;
@@ -879,13 +881,6 @@ export async function readUsage(db: RawAccess, limits: UsageLimits, sessions: Re
 }
 
 /**
- * Makes a step in the book and writes what it did to the tables before the caller answers. The book
- * changes first, in one synchronous step, so two calls cannot both decide from the same numbers; if
- * the tables cannot be written, the book is read from them again and the call fails: what is counted
- * is what is stored. An entry is written before its hold's row is removed, and a hold is closed once
- * (an entry's `hold` is unique), so a server that stops in between counts nothing twice.
- */
-/**
  * For scripts/e2e.ts only, and only with the fake layer (WLP_SANDBOX=fake), as the fake layer's own
  * settings are (sandbox-fake.ts): WLP_FAKE_RESERVE_FAULT, read once, plays the reply between a session
  * and this actor going wrong in `internalReserve`. Parts, comma-separated: `lose:<n>` has the next n
@@ -911,23 +906,27 @@ const reserveFault = ((): { fresh: number; renewal: number; delayMs: number; dow
 	return fault;
 })();
 
+/** Decide synchronously and enqueue the entire change in one transaction so a later release stays released on disk. */
 async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step: (book: UsageBook) => T): Promise<T> {
 	// A plan's limits change with the clock (a grace period that ends): the book decides with them as they are now.
 	Object.assign(c.vars.usage.limits, accountLimits(c.vars.items.limits).usage);
 	const done = step(c.vars.usage);
 	const { change } = done;
 	if (isEmptyChange(change)) return done;
+	if (change.kept.length || change.released.length || change.closed.length) c.vars.keptGeneration++;
 	try {
-		for (const entry of change.entries) {
-			if (entry.startedAt !== undefined) await c.db.execute("INSERT OR IGNORE INTO usage_start (hold, day, started_at) VALUES (?, ?, ?)", entry.hold, entry.day, entry.startedAt);
-			await c.db.execute("INSERT OR IGNORE INTO usage_entry (day, session, hold, kind, seconds, weight, at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", entry.day, entry.session, entry.hold, entry.kind, entry.seconds, entry.weight!, entry.at, entry.note);
-		}
-		for (const id of change.closed) await c.db.execute("DELETE FROM usage_hold WHERE id = ?", id);
-		for (const hold of change.opened) {
-			await c.db.execute("INSERT OR REPLACE INTO usage_hold (session, id, day, seconds, weight, started_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)", hold.session, hold.id, hold.day, hold.seconds, hold.weight!, hold.startedAt, hold.expiresAt);
-		}
-		for (const session of change.released) await c.db.execute("DELETE FROM kept_sandbox WHERE session = ?", session);
-		for (const claim of change.kept) await c.db.execute("INSERT OR REPLACE INTO kept_sandbox (session, since) VALUES (?, ?)", claim.session, claim.since);
+		await c.db.transaction(async tx => {
+			for (const entry of change.entries) {
+				if (entry.startedAt !== undefined) await tx.execute("INSERT OR IGNORE INTO usage_start (hold, day, started_at) VALUES (?, ?, ?)", entry.hold, entry.day, entry.startedAt);
+				await tx.execute("INSERT OR IGNORE INTO usage_entry (day, session, hold, kind, seconds, weight, at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", entry.day, entry.session, entry.hold, entry.kind, entry.seconds, entry.weight!, entry.at, entry.note);
+			}
+			for (const id of change.closed) await tx.execute("DELETE FROM usage_hold WHERE id = ?", id);
+			for (const hold of change.opened) {
+				await tx.execute("INSERT OR REPLACE INTO usage_hold (session, id, day, seconds, weight, started_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)", hold.session, hold.id, hold.day, hold.seconds, hold.weight!, hold.startedAt, hold.expiresAt);
+			}
+			for (const session of change.released) await tx.execute("DELETE FROM kept_sandbox WHERE session = ?", session);
+			for (const claim of change.kept) await tx.execute("INSERT OR REPLACE INTO kept_sandbox (session, since) VALUES (?, ?)", claim.session, claim.since);
+		}, { name: "changeUsage" });
 	} catch (error) {
 		const restored = await readUsage(c.db, c.vars.usage.limits, c.vars.sessions).catch(() => c.vars.usage);
 		const now = Date.now();
@@ -976,6 +975,14 @@ function sweepUsage(c: UsageCtx, now: number): Promise<{ change: UsageChange }> 
 	return changeUsage(c, (book) => ({ change: book.sweep(now) }));
 }
 
+/** A list read before this release must not put the removed sandbox back in the book. */
+function releaseKept(c: UsageCtx, session: string) {
+	// A sandbox can be freed before the book has discovered it.
+	if (!c.vars.usage.keeps(session)) c.vars.keptGeneration++;
+	c.vars.listed = null;
+	return changeUsage(c, (book) => ({ change: book.release(session) }));
+}
+
 /**
  * Holds the count of kept sandboxes against the provider's own list of the user's sandboxes (usage.ts,
  * `reconcile`): at most once in KEPT_FRESH_MS, unless `force`. Never throws: when the provider cannot
@@ -983,6 +990,7 @@ function sweepUsage(c: UsageCtx, now: number): Promise<{ change: UsageChange }> 
  */
 async function reconcileKept(c: UsageCtx, force = false): Promise<void> {
 	if (!force && c.vars.listed !== null && Date.now() - c.vars.listed.at < KEPT_FRESH_MS) return;
+	const generation = c.vars.keptGeneration;
 	try {
 		const { sandboxes } = await getLayer();
 		const found = await sandboxes.list(c.key[0]!);
@@ -997,6 +1005,7 @@ async function reconcileKept(c: UsageCtx, force = false): Promise<void> {
 				(error: unknown) => c.log.warn({ msg: "an orphaned sandbox could not be removed", id: orphan.id, session: orphan.sessionId, error: String(error) }),
 			);
 		}
+		if (generation !== c.vars.keptGeneration) return reconcileKept(c, force);
 		const now = Date.now();
 		c.vars.listed = { at: now, sandboxes: listed };
 		const done = await changeUsage(c, (book) =>
@@ -1747,7 +1756,7 @@ export const user = actor({
 		const items = await loadItems(c.db);
 		// Where the deployment has billing, the account's subscription sets its plan's limits (billing/plans.ts).
 		items.limits.billing = billing() ? await readBilling(c.db) : null;
-		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, accountLimits(items.limits).usage, sessions), overageReport: Promise.resolve(), checkout: new AccountCheckout(), listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
+		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, accountLimits(items.limits).usage, sessions), overageReport: Promise.resolve(), checkout: new AccountCheckout(), keptGeneration: 0, listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
 	},
 
 	events: {
@@ -2231,8 +2240,10 @@ export const user = actor({
 						await sandboxes.destroy(left.id);
 						console.log(`[wlp] sandbox.freed id=${left.id} uid=${profile.uid} session=${id}: it was left at the provider without its agent`);
 					}
-					await changeUsage(c, (book) => ({ change: book.release(id) }));
+					await releaseKept(c, id);
 				}
+				// The session also swept any extra sandboxes after releasing its own.
+				c.vars.keptGeneration++;
 				c.vars.listed = null;
 				return await usageView(c);
 			} catch (error) {
@@ -3357,7 +3368,7 @@ internalSweepSandboxes: async (c): Promise<void> => {
 
 internalRelease: async (c, sessionId: string): Promise<void> => {
 			requireService(c);
-			await changeUsage(c, (book) => ({ change: book.release(approvalText(sessionId, 200)) }));
+			await releaseKept(c, approvalText(sessionId, 200));
 		},
 	},
 });

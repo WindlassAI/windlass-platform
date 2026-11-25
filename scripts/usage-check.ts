@@ -2,7 +2,7 @@
  * The rules of a user's sandbox time and kept sandboxes (server/src/usage.ts), on their own: no server,
  * no sandbox, no clock but the one given.
  *
- *   cd server && npx tsx ../scripts/usage-check.ts
+ *   cd server && npx tsx ../scripts/usage-check.ts [--kept-only]
  *
  * What it holds to: two sessions that ask at once are not both given the last of the day; a hold never
  * reaches past midnight UTC and the next one is the new day's; a hold nobody settles is counted in
@@ -26,6 +26,12 @@ const NINE = Date.UTC(2026, 10, 17, 9);
 const TODAY = dayOf(NINE);
 const at = (seconds: number) => NINE + seconds * 1000;
 const granted = (result: ReturnType<UsageBook["reserve"]>) => (result.ok ? result.hold.seconds : 0);
+
+const keptChecks = [checkKeptLimit, checkReconcile, checkClaim, checkSharedPlace];
+if (process.argv.includes("--kept-only")) {
+	for (const check of keptChecks) check();
+	process.exit(failed ? 1 : 0);
+}
 
 // Reserve, then settle.
 {
@@ -195,7 +201,7 @@ for (const stayedWarm of [false, true]) {
 }
 
 // Kept sandboxes.
-{
+function checkKeptLimit() {
 	const book = new UsageBook(LIMITS);
 	const one = book.reserve(at(0), { id: "a1", session: "a", keep: true, fresh: true });
 	const two = book.reserve(at(0), { id: "b1", session: "b", keep: true, fresh: true });
@@ -215,8 +221,9 @@ for (const stayedWarm of [false, true]) {
 }
 
 // The count against what exists.
-{
+function checkReconcile() {
 	const book = new UsageBook(LIMITS, { kept: [{ session: "gone", since: at(-3600) }, { session: "here", since: at(-3600) }, { session: "making", since: at(-10) }] });
+	book.reserve(at(-10), { id: "making-1", session: "making" });
 	expect("a count made wrong keeps a user out", book.atCap("new"));
 	const done = book.reconcile(at(0), ["here", "unknown-1", "unknown-2"]);
 	expect("a claim with no sandbox behind it is dropped", done.dropped.join() === "gone" && !book.keeps("gone"));
@@ -228,24 +235,28 @@ for (const stayedWarm of [false, true]) {
 }
 
 // A place claimed where the sandbox is made (agent-session.ts, `openSandbox`; user.ts, `internalClaimPlace`).
-{
+function checkClaim() {
 	const book = new UsageBook(LIMITS, { kept: [{ session: "x", since: at(-3600) }, { session: "y", since: at(-3600) }] });
 	const refused = book.claim(at(0), "z");
 	expect("a claim at the cap is refused and takes nothing", !refused.ok && refused.change.kept.length === 0 && !book.keeps("z") && book.kept().length === 2);
+	book.reserve(at(1), { id: "x1", session: "x" });
 	const again = book.claim(at(1), "x");
 	expect("a session that has its place claims it again, from now, and the claim is stored anew; nothing else changes", again.ok && again.change.kept.length === 1 && again.change.kept[0]?.since === at(1) && book.kept().length === 2 && book.kept().find((k) => k.session === "x")?.since === at(1));
 	// Its sandbox is being made when another session's reconcile runs: the provider has no sandbox for it yet, and its place stays.
 	const reconciled = book.reconcile(at(2), ["y"]);
 	expect("a place claimed anew for a sandbox being made is not dropped by a reconcile meanwhile, though it was first claimed long ago", book.keeps("x") && !reconciled.dropped.includes("x"), reconciled.dropped.join(","));
 	book.release("y");
+	book.reserve(at(2), { id: "z1", session: "z" });
 	const taken = book.claim(at(2), "z");
 	expect("a free place is taken in the same step", taken.ok && taken.change.kept.length === 1 && book.keeps("z") && book.atCap("w"));
 	book.reconcile(at(3), ["x"]);
 	expect("held against a list that does not have its sandbox yet, a place just claimed is kept", book.keeps("z") && book.kept().length === 2);
+	book.settle(at(4), { session: "z", hold: "z1", seconds: 2 });
+	expect("a fresh claim left behind after settlement is repaired on the next listing", book.reconcile(at(4), ["x"]).dropped.join() === "z");
 }
 
 // A work item counts as one place: its reviewer shares its builder's (`UsageBook.sharing`, user.ts `itemSharing`).
-{
+function checkSharedPlace() {
 	const book = new UsageBook(LIMITS);
 	book.sharing = (session) => (session === "reviewer" ? "builder" : undefined);
 	book.claim(at(0), "builder");
@@ -262,6 +273,8 @@ for (const stayedWarm of [false, true]) {
 	lone.claim(at(0), "b");
 	expect("a reviewer whose builder holds no place needs one of its own", lone.atCap("reviewer"));
 }
+
+for (const check of keptChecks) check();
 
 // Until when a sandbox that is found stopped can have run, and how lengths of time are said.
 {
