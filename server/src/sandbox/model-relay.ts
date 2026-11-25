@@ -1,24 +1,6 @@
 /**
- * Windlass's model relay on a Docker daemon (docs/model-relay.md): one relay container per daemon scope
- * (the hosted server's, or one machine's runner), and one forwarder container per running turn in that
- * turn's session container's network namespace.
- *
- *   relay      wlp-model-relay[-<machine>]: `sandbox/relay/windlass.cjs` from the pinned base image, as
- *              agent, read-only, no capabilities, on the bridge (its route to api.openai.com).
- *              Its tokens are in its own tmpfs, `/run/wlp-model/tokens/<nonce>.json`, written with
- *              `docker exec -i` and the content on standard input; its socket in the volume
- *              wlp-model-socket[-<machine>], which only the relay and the forwarders mount.
- *   forwarder  wlp-model-fwd-<sandbox>: `wlp-model-forward <nonce>` of runner/src/egress-proxy.mjs, with
- *              `--network container:<session>`, so it listens on the session's 127.0.0.1:17893 and is
- *              in none of its other namespaces. It prefixes each connection with the turn's nonce. It
- *              says it holds the port in a tmpfs of its own; a session process that took the port
- *              first makes it exit, and the turn fails instead of talking to that process.
- *
- * The session gets `WINDLASS_MODEL_BASE_URL=http://127.0.0.1:17893/v1` and a token file that holds
- * `wlp-model.<32 hex>`, a bearer the relay takes only on that turn's connections and only while the
- * turn's file is in its tmpfs. `close` removes both, and the relay stops the turn's requests still
- * running. What a process that died left behind (forwarders, files of leases that are gone) `sweep`
- * removes when the server or the runner starts; the relay deletes a file whose token expired itself.
+ * Each daemon scope has one credential relay. A turn's forwarder shares only the session's network namespace.
+ * A request needs both the forwarder's nonce and a live lease. Closing a lease revokes it before removing the forwarder.
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -32,11 +14,10 @@ import { SECRET_FILE_SCRIPT, type ForwardedKeyLease, type KeyTurnRelay, type Key
 declare const WINDLASS_RELAY_SCRIPT: string;
 declare const EGRESS_SOURCE: string;
 
-/** Where Windlass in the session sends its model requests. */
 export const MODEL_RELAY_URL = "http://127.0.0.1:17893/v1";
 const ROLE = `${LABEL}.model-relay`;
 const VERSION = `${ROLE}-version`;
-/** On a forwarder: the nonce of its turn, so the turn's file can be found when the lease's holder is gone. */
+/** Recover the token filename from the forwarder after its lease owner exits. */
 const NONCE_LABEL = `${ROLE}-nonce`;
 const TOKENS = "/run/wlp-model/tokens";
 /** runner/src/egress-proxy.mjs `MODEL_FORWARD_READY`. */
@@ -53,7 +34,7 @@ export const RELAY_MEMORY = "192m";
 const FORWARDER_MEMORY = "128m";
 
 const root = () => join(import.meta.dirname, "..", "..", "..");
-/** The relay program, with the shared relay it requires, as one script for `node -e`. The runner's bundle has it built. */
+/** Docker embeds the relay sources; the runner uses its bundled copy. */
 export function relayScript(): string {
 	if (typeof WINDLASS_RELAY_SCRIPT === "string") return WINDLASS_RELAY_SCRIPT;
 	const read = (name: string) => readFileSync(join(root(), "sandbox", "relay", name), "utf8");
@@ -82,7 +63,7 @@ function probe() {
 }
 function retry() { if (Date.now() >= deadline) process.exit(1); setTimeout(probe, 50); }
 probe();`;
-/** Waits, inside the helper's own namespaces, until it listens (and, with `marker`, until it said so itself). */
+/** Probe inside the helper namespace. A marker also proves which process owns the listener. */
 async function waitForListener(id: string, address: string, marker?: string): Promise<void> {
 	const result = await docker(["exec", id, "node", "-e", READY, address, ...(marker ? [marker] : [])], { timeoutMs: 15_000 });
 	if (result.code !== 0) throw new Error(`the model relay helper did not start listening (${result.stderr.trim() || `exit ${result.code}`})`);
@@ -110,7 +91,6 @@ export interface DockerModelRelayOptions {
 	limits?: Record<string, number>;
 }
 
-/** The turn's relay as a turn of a Docker sandbox has it. */
 export interface DockerKeyRelay extends KeyTurnRelay {
 	/** The turn's nonce: what its forwarder writes, and its token file's name in the relay. */
 	readonly nonce: string;
@@ -121,8 +101,7 @@ export type DockerTurnRelay = DockerKeyRelay & TurnModelRelay;
 export class DockerModelRelay {
 	private readonly suffix: string;
 	private ensuring: Promise<string> | null = null;
-	/** The leases this process opened and has not closed, by sandbox: what `endSandbox` closes. */
-	private readonly open_ = new Map<string, DockerKeyRelay>();
+	private readonly openLeases = new Map<string, DockerKeyRelay>();
 
 	constructor(private readonly options: DockerModelRelayOptions) {
 		if (options.machine !== "" && !/^[A-Za-z0-9_-]+$/.test(options.machine)) throw new Error("invalid machine id");
@@ -145,7 +124,7 @@ export class DockerModelRelay {
 		return ["--label", LABEL_ARG, ...(this.options.machine ? ["--label", `${MACHINE_LABEL}=${this.options.machine}`] : []), ...(this.options.labelFlags ?? []), "--label", `${ROLE}=${role}`];
 	}
 
-	/** Labels of a container or volume of this scope with that role; anything else of that name is not this relay's to touch. */
+	/** Names can collide. Verify every ownership label before touching a container or volume. */
 	private owned(labels: Record<string, string> | null | undefined, role: string): boolean {
 		if (labels?.[LABEL] !== "1" || labels[ROLE] !== role || (labels[MACHINE_LABEL] ?? "") !== this.options.machine) return false;
 		const extra = this.options.labelFlags ?? [];
@@ -176,7 +155,7 @@ export class DockerModelRelay {
 		return createHash("sha256").update(relayScript()).update(JSON.stringify([image, requests ?? null, userRequests ?? null, network ?? null, upstream ?? null, limits ?? null, RELAY_MEMORY, this.logOptions])).digest("hex");
 	}
 
-	/** The relay is running, with this program: its container id. One at a time in this process. */
+	/** Concurrent callers share a single startup attempt. */
 	ensure(): Promise<string> {
 		this.ensuring ??= this.ensureOnce().finally(() => (this.ensuring = null));
 		return this.ensuring;
@@ -240,10 +219,7 @@ export class DockerModelRelay {
 		return this.options.forwardKeyLease(uid, sessionId, key, this.options.machine || undefined, forward => this.open(container, sandbox, uid, forward), signal, takeRequest);
 	}
 
-	/**
-	 * A lease for one turn of `sandbox`, whose container is `container` and running: the relay is there,
-	 * the turn's forwarder listens in the container's namespace, and nothing is in the relay for it yet.
-	 */
+	/** Start the turn's forwarder before handing credentials to the relay. */
 	open(container: string, sandbox: string, user?: string): Promise<DockerTurnRelay>;
 	open(container: string, sandbox: string, user: string | undefined, forward: ForwardedKeyLease | undefined): Promise<DockerKeyRelay | DockerTurnRelay>;
 	async open(container: string, sandbox: string, user?: string, forward?: ForwardedKeyLease): Promise<DockerKeyRelay | DockerTurnRelay> {
@@ -264,8 +240,7 @@ export class DockerModelRelay {
 		const id = started.stdout.trim();
 		try {
 			await waitForListener(id, "17893", FORWARD_READY);
-			// The probe connects to whatever listens on the session's 127.0.0.1:17893. Only a forwarder that is
-			// still running, and that said it holds the port, is the one it reached.
+			// Require the forwarder's own readiness marker: a session process might hold the port.
 			const box = await this.inspect(id);
 			if (!box?.running) throw new Error("the model relay's forwarder could not take 127.0.0.1:17893 in the session: a process in the sandbox may be holding that port. Stop it, or send the prompt again");
 		} catch (error) {
@@ -288,7 +263,7 @@ export class DockerModelRelay {
 			// The file first: the relay then stops the turn's requests still running, and the forwarder's removal ends its connections.
 			close: async () => {
 				closed = true;
-				if (this.open_.get(sandbox) === lease) this.open_.delete(sandbox);
+				if (this.openLeases.get(sandbox) === lease) this.openLeases.delete(sandbox);
 				await this.removeFiles(relay, [nonce]);
 				await docker(["rm", "-f", id], { timeoutMs: 30_000 }).catch(() => undefined);
 			},
@@ -297,7 +272,7 @@ export class DockerModelRelay {
 			try { await write({ forward, expiresAt: forward.expiresAt }); }
 			catch (error) { await lease.close(); throw error; }
 		}
-		this.open_.set(sandbox, lease);
+		this.openLeases.set(sandbox, lease);
 		if (forward) return lease;
 		return { ...lease, hand: async (token: AccessToken) => {
 			if (closed) throw new Error("This relay lease has ended.");
@@ -311,13 +286,9 @@ export class DockerModelRelay {
 		if (paths.length) await docker(["exec", "-u", "1000:1000", relay, "rm", "-f", "--", ...paths], { timeoutMs: 15_000 }).catch(() => undefined);
 	}
 
-	/**
-	 * Ends whatever lease `sandbox` has: its turn's file in the relay and its forwarder, also one left by a
-	 * process that is gone (the forwarder names its nonce). For a sandbox that stops or goes, and before a
-	 * new lease of it.
-	 */
+	/** The forwarder's nonce lets us revoke the lease even if its owner has exited. */
 	async endSandbox(sandbox: string): Promise<void> {
-		const held = this.open_.get(sandbox);
+		const held = this.openLeases.get(sandbox);
 		if (held) await held.close();
 		const box = await this.inspect(this.forwarderName(sandbox)).catch(() => null);
 		if (!box || !this.owned(box.labels, "forward")) return;
@@ -327,27 +298,18 @@ export class DockerModelRelay {
 		await docker(["rm", "-f", box.id], { timeoutMs: 30_000 });
 	}
 
-	/** `endSandbox`, as the stopping and removal of a sandbox call it. */
-	removeForwarder(sandbox: string): Promise<void> {
-		return this.endSandbox(sandbox);
-	}
-
-	/**
-	 * What a server or runner that died left: every forwarder of this scope, and every file in the relay. At
-	 * its start no lease of this scope is live, since each is held by the process that opened it (with one
-	 * server process per Docker daemon, and one runner per machine). Returns how many forwarders it removed.
-	 */
+	/** One process owns each daemon scope. Keep its live leases when clearing orphaned files and forwarders. */
 	async sweep(): Promise<number> {
 		const listed = await docker(["ps", "-aq", "--no-trunc", "--filter", `label=${ROLE}=forward`], { timeoutMs: 15_000 });
 		let removed = 0;
 		for (const id of listed.code === 0 ? listed.stdout.split(/\s+/).filter(Boolean) : []) {
 			const box = await this.inspect(id).catch(() => null);
-			if (!box || !this.owned(box.labels, "forward") || [...this.open_.values()].some((lease) => lease.nonce === box.labels[NONCE_LABEL])) continue;
+			if (!box || !this.owned(box.labels, "forward") || [...this.openLeases.values()].some((lease) => lease.nonce === box.labels[NONCE_LABEL])) continue;
 			if ((await docker(["rm", "-f", box.id], { timeoutMs: 30_000 })).code === 0) removed += 1;
 		}
 		const relay = await this.inspect(this.relayName).catch(() => null);
 		if (relay?.running && this.owned(relay.labels, "relay")) {
-			const live = [...this.open_.values()].map((lease) => `${lease.nonce}.json`);
+			const live = [...this.openLeases.values()].map((lease) => `${lease.nonce}.json`);
 			// Every file but those of the leases this process holds now.
 			const script = `cd ${TOKENS} && for f in *; do [ -e "$f" ] || continue; case " $* " in *" $f "*) ;; *) rm -f -- "$f" ;; esac; done`;
 			await docker(["exec", "-u", "1000:1000", relay.id, "sh", "-c", script, "sh", ...live], { timeoutMs: 30_000 }).catch(() => undefined);

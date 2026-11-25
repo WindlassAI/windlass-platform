@@ -240,13 +240,8 @@ exports.SIGNED_OUT = SIGNED_OUT;
 class Stopping extends Error {}
 exports.Stopping = Stopping;
 
-// One session (nonce) and the whole relay (the machine's one credential) each have a ceiling on requests in
-// flight. A request over it waits at the relay, before it reaches the provider, in one FIFO across the relay
-// (a session's requests keep their order; a session at its own ceiling does not hold up the others), for up to
-// `waitMs`. Only if no slot frees in that time, or the wait list is full, is it refused: a 503 with retry-after,
-// which every harness retries a limited number of times. Claude Code never retries a 429 on a subscription login
-// and records it as the account's limit being reached, so a 429 here would end the turn and mark the machine's
-// account limited. A session's connections past its ceiling are answered 503 and closed before any request.
+// Bound requests and connections per session and across the machine's shared credential.
+// Local saturation returns 503 with retry-after. Claude treats a subscription 429 as an account limit.
 const SESSION_REQUESTS = 8, SESSION_CONNECTIONS = 32, MACHINE_REQUESTS = 24;
 exports.limits = { sessionRequests: SESSION_REQUESTS, sessionConnections: SESSION_CONNECTIONS, machineRequests: MACHINE_REQUESTS,
 	sessionWaiting: 32, machineWaiting: 128, waitMs: 90_000, firstRequestMs: 10_000 };
@@ -322,26 +317,22 @@ function notesOf(notesFile) {
 	return note;
 }
 
-exports.createRelay = function createRelay({ publicKey, machine,
-	readToken = () => readFile('/run/wlp-harness/claude/token', 'utf8'), forward = https.request,
-	domain = 'windlass-claude-relay-v2', provider, harness = publicKey && !provider ? 'claude' : undefined, signedOut = () => existsSync(SIGNED_OUT), limits: overrides, host = '127.0.0.1:17892', notesFile }) {
-	const limits = { ...exports.limits, ...overrides };
-	const note = notesOf(notesFile);
-	const sessions = new WeakMap();
-	// Per nonce: open connections, requests in flight and requests waiting. `waiting` is the relay's one FIFO.
-	const open = new Map(), inFlight = new Map(), queued = new Map(), waiting = [];
-	// Per user, where the provider names one for a nonce (a relay of many users' turns): requests in flight.
-	const userInFlight = new Map();
-	// Per nonce: how to stop each of its requests at once, when its lease ends (`endSession`).
-	const active = new Map();
-	// The relay's own 401: where the provider gives it a code, the client can tell it from the provider's.
-	const unauthorized = res => reject(res, 401, provider?.unauthorizedCode ? { code: provider.unauthorizedCode,
-		message: 'The model relay has no lease for this turn any more: the turn ended, or the relay was restarted.' } : {});
-	// Per socket: what to run when it closes (one listener, however many requests are pipelined on it).
-	const onClose = new WeakMap();
+function adjustCount(map, key, delta) {
+	const count = (map.get(key) ?? 0) + delta;
+	if (count) map.set(key, count);
+	else map.delete(key);
+}
+
+// One FIFO per relay. A full session or user must not block eligible waiters.
+function requestAdmission(limits, onClose) {
+	const inFlight = new Map(), userInFlight = new Map(), queued = new Map();
+	const waiting = [];
 	let machineInFlight = 0;
-	const add = (map, key, n) => { const v = (map.get(key) ?? 0) + n; if (v) map.set(key, v); else map.delete(key); };
-	const busy = (res, message) => reject(res, 503, { message, headers: { 'retry-after': '2' } });
+	function countActive(nonce, user, delta) {
+		machineInFlight += delta;
+		adjustCount(inFlight, nonce, delta);
+		if (user !== undefined) adjustCount(userInFlight, user, delta);
+	}
 	const userRoom = user => user === undefined || (userInFlight.get(user) ?? 0) < (limits.userRequests ?? Infinity);
 	const room = (nonce, user) => (inFlight.get(nonce) ?? 0) < limits.sessionRequests && userRoom(user) && machineInFlight < limits.machineRequests;
 	const full = (nonce, user) => (inFlight.get(nonce) ?? 0) >= limits.sessionRequests
@@ -352,7 +343,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 		const at = waiting.indexOf(entry);
 		if (at < 0) return false;
 		waiting.splice(at, 1);
-		add(queued, entry.nonce, -1);
+		adjustCount(queued, entry.nonce, -1);
 		return true;
 	}
 	// Give freed slots to the earliest waiters whose session has room.
@@ -362,9 +353,8 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			if (room(entry.nonce, entry.user)) { leave(entry); entry.grant(); } else i++;
 		}
 	}
-	// Counted from the accepted lease to the end of the response, and released once on every path. Uses
-	// req.socket: a pipelined request's response is not attached to its socket until the ones before it finish.
-	function admit(req, res, nonce, user) {
+	// Pipelined responses may have no socket yet; count against the request socket until release.
+	return function admit(req, res, nonce, user) {
 		const closing = onClose.get(req.socket);
 		return new Promise(resolve => {
 			let released = false;
@@ -372,35 +362,51 @@ exports.createRelay = function createRelay({ publicKey, machine,
 				if (released) return;
 				released = true;
 				res.off('close', release); closing.delete(release);
-				machineInFlight--;
-				add(inFlight, nonce, -1);
-				if (user !== undefined) add(userInFlight, user, -1);
+				countActive(nonce, user, -1);
 				drain();
 			};
 			const start = () => {
 				// Releasing a slot on socket close can drain a waiter on that same socket.
 				if (req.socket.destroyed || res.destroyed) return resolve(false);
-				add(inFlight, nonce, 1);
-				if (user !== undefined) add(userInFlight, user, 1);
-				machineInFlight++;
+				countActive(nonce, user, 1);
 				res.once('close', release); closing.add(release);
 				resolve(true);
 			};
 			if (room(nonce, user)) return start();
+			const refuse = message => {
+				reject(res, 503, { message, headers: { 'retry-after': '2' } });
+				resolve(false);
+			};
 			if ((queued.get(nonce) ?? 0) >= limits.sessionWaiting)
-				return busy(res, `Too many model requests waiting from this session (${limits.sessionWaiting}).`), resolve(false);
+				return refuse(`Too many model requests waiting from this session (${limits.sessionWaiting}).`);
 			if (waiting.length >= limits.machineWaiting)
-				return busy(res, `Too many model requests waiting on this machine (${limits.machineWaiting}).`), resolve(false);
+				return refuse(`Too many model requests waiting on this machine (${limits.machineWaiting}).`);
 			const done = () => { clearTimeout(timer); res.off('close', gone); closing.delete(gone); };
-			// The client went away while waiting: it leaves the queue and never reaches the provider.
 			const gone = () => { if (leave(entry)) { done(); resolve(false); } };
 			const entry = { nonce, user, grant: () => { done(); start(); } };
-			const timer = setTimeout(() => { if (leave(entry)) { done(); busy(res, full(nonce, user)); resolve(false); } }, limits.waitMs);
+			const timer = setTimeout(() => { if (leave(entry)) { done(); refuse(full(nonce, user)); } }, limits.waitMs);
 			res.once('close', gone); closing.add(gone);
 			waiting.push(entry);
-			add(queued, nonce, 1);
+			adjustCount(queued, nonce, 1);
 		});
-	}
+	};
+}
+
+exports.createRelay = function createRelay({ publicKey, machine,
+	readToken = () => readFile('/run/wlp-harness/claude/token', 'utf8'), forward = https.request,
+	domain = 'windlass-claude-relay-v2', provider, harness = publicKey && !provider ? 'claude' : undefined, signedOut = () => existsSync(SIGNED_OUT), limits: overrides, host = '127.0.0.1:17892', notesFile }) {
+	const limits = { ...exports.limits, ...overrides };
+	const note = notesOf(notesFile);
+	const sessions = new WeakMap();
+	const open = new Map();
+	// Revocation stops this nonce's active upstream requests.
+	const active = new Map();
+	// The relay's own 401: where the provider gives it a code, the client can tell it from the provider's.
+	const unauthorized = res => reject(res, 401, provider?.unauthorizedCode ? { code: provider.unauthorizedCode,
+		message: 'The model relay has no lease for this turn any more: the turn ended, or the relay was restarted.' } : {});
+	// Per socket: what to run when it closes (one listener, however many requests are pipelined on it).
+	const onClose = new WeakMap();
+	const admit = requestAdmission(limits, onClose);
 	const machineProvider = provider;
 	const httpServer = http.createServer(async (req, res) => {
 		const key = harness && require('./harness-key.cjs').harnessKeyProvider(harness, machine, req.headers, scrubStream);
@@ -409,8 +415,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 		const methodFor = provider?.methodFor ?? (url => (provider ? provider.accepts(url) : messages.has(url)) && 'POST');
 		// A request arrived: the socket's idle deadline (ingress) no longer applies. Node's own keep-alive one does.
 		req.socket.setTimeout(0);
-		// One request per connection: the session's forwarder then knows, for the request on a connection,
-		// whether the relay had begun to answer it when the relay went away (runner/src/egress-proxy.mjs).
+		// A forwarder can retry only if this connection has sent no response bytes.
 		if (machineProvider?.closeEachReply) res.setHeader('connection', 'close');
 		try {
 			if (req.headers.host !== host || req.method !== methodFor(req.url))
@@ -549,10 +554,10 @@ exports.createRelay = function createRelay({ publicKey, machine,
 			// Until its first request an identified socket has an idle deadline, so idle sockets cannot hold the session's connections.
 			socket.setTimeout(limits.firstRequestMs);
 			sessions.set(socket, nonce);
-			add(open, nonce, 1);
+			adjustCount(open, nonce, 1);
 			const closing = new Set();
 			onClose.set(socket, closing);
-			socket.once('close', () => { add(open, nonce, -1); for (const run of [...closing]) run(); });
+			socket.once('close', () => { adjustCount(open, nonce, -1); for (const run of [...closing]) run(); });
 			httpServer.emit('connection', socket);
 			socket.resume();
 		}
@@ -576,10 +581,7 @@ exports.createRelay = function createRelay({ publicKey, machine,
 	return ingress;
 };
 
-/**
- * The runner stops a relay that refreshes with SIGTERM before removing it (logout, re-pair, update):
- * a refresh already sent spends the old refresh token, so its reply must reach the volume first.
- */
+// Persist any in-flight token rotation before the runner removes the relay.
 exports.stopOnSignal = function stopOnSignal(server, provider) {
 	process.once('SIGTERM', async () => {
 		server.close();
