@@ -999,17 +999,17 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 			});
 			await check("a Claude Code work item runs on the machine without asking; its reviewer can use Claude and Plan first requires Windlass", async () => {
 				const raw = { title: "Inspect", body: "Read the repo", repository: { id: repo.id }, harness: "claude" as const };
-				const hosted = await refusal(user.createItem(raw));
+				const hosted = await refusal(user.createItem({ ...raw, mode: "single", profile: "docker-hardened" }));
 				const planFirst = await refusal(user.createItem({ ...raw, place, mode: "orchestrate" }));
 				const { createSessionActor } = await import("../server/src/actors/internal.js");
 				const reviewer = await refusal(createSessionActor({ client: () => client }, uid, randomUUID(), { ...launch, model: "default", demo: false, title: "Inspect", titleIsTyped: true, repoUrl: null, createdAt: Date.now(), origin: { kind: "item", role: "reviewer", itemId: "i_fixture" } }));
-				assert(hosted === "bad_input" && planFirst === "bad_input" && reviewer === "accepted", `hosted, plan first, reviewer: ${[hosted, planFirst, reviewer].join(", ")}`);
+				assert(hosted === "profile_unavailable" && planFirst === "bad_input" && reviewer === "accepted", `hosted, plan first, reviewer: ${[hosted, planFirst, reviewer].join(", ")}`);
 				const item = await user.createItem({ ...raw, place, mode: "single", profile: "docker-windlass-sandbox" });
 				const builder = (await user.listSessions()).find(s => s.id === item.sessionId);
 				assert(item.agent?.harness === "claude" && builder?.harness === "claude" && builder.profile === "docker-hardened" && builder.mode === "bypassPermissions",
 					JSON.stringify({ agent: item.agent, harness: builder?.harness, profile: builder?.profile, mode: builder?.mode }));
 				await user.actOnItem({ id: item.id, action: { kind: "cancel" } }).catch(() => undefined);
-				return "hosted without a key and Plan first refused; Claude reviewer accepted and builder in bypassPermissions";
+				return "hosted without a relay and Plan first refused; Claude reviewer accepted and builder in bypassPermissions";
 			});
 			await check("Claude bounds the serialized item, live deltas and reconnect text", async () => {
 				const { id } = await acpSession();
