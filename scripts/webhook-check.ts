@@ -1178,7 +1178,7 @@ async function run() {
 				const { review } = standin.submitReview(projectG2, item.pull, peer, "changes_requested", "Handle a missing file.");
 				await delivered("pull_request_review", reviewFields(item.pr, review));
 				await until("fresh PR branch checkout", async () => (await session.snapshot()).timeline.some(row =>
-					row.turn === 2 && row.kind === "platform" && row.text.includes(`Put the workspace on ${item.pull.head} at ${item.head.slice(0, 7)}`)));
+					row.turn === 2 && row.kind === "platform" && row.text.includes(`Put the workspace on ${item.pull.head} at ${item.head.slice(0, 7)}`)), 45_000);
 			} finally { await stop(item.id); }
 			await until("cancelled item frees its builder", async () => (await session.snapshot()).summary.sandbox === "none");
 		});

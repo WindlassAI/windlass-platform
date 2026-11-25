@@ -12,10 +12,11 @@ export function releaseAt(item: ItemSummary): number {
 }
 
 // Use the same account and runner inventories as admission, including sandboxes kept before this policy.
-function candidates(c: ItemsCtx) {
+function candidates(c: ItemsCtx, personal = false) {
 	const { sessions, items, machines, usage } = c.vars;
 	const busy = new Set([...items.slots.values(), ...items.requests.values()].map(turn => turn.session));
 	return [...sessions.values()].flatMap(session => {
+		if (!personal && !session.item) return [];
 		if (busy.has(session.id) || session.status !== "idle" || session.environmentBuild || session.readiness) return [];
 		const item = session.item && items.items.get(session.item.id);
 		const due = item ? releaseAt(item) : Infinity;
@@ -73,7 +74,7 @@ export function keptFull(c: ItemsCtx, session: SessionSummary): boolean {
 export async function makeSandboxRoom(c: ItemsCtx, asking: SessionSummary): Promise<boolean> {
 	if (!keptFull(c, asking)) return true;
 	const place = asking.place;
-	const oldest = candidates(c).sort((a, b) => a.used - b.used || a.session.id.localeCompare(b.session.id));
+	const oldest = candidates(c, true).sort((a, b) => a.used - b.used || a.session.id.localeCompare(b.session.id));
 	for (const { session, item, used } of oldest) {
 		if (!keptFull(c, asking)) return true;
 		if (session.id === asking.id || (session.item && session.item.id === asking.item?.id)) continue;

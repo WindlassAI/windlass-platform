@@ -892,6 +892,7 @@ export async function notifyRemovedMachines(c: ItemsCtx, machineId?: string): Pr
 export function queueChanged(c: ItemsCtx): void {
 	const { requests, slots } = c.vars.items;
 	if (requests.size === 0 && [...slots.values()].every(slot => slot.told)) {
+		if (!Number.isFinite(nextSandboxRelease(c))) return;
 		void c.keepAwake(armQueue(c).catch(error => c.log.warn({ msg: "Could not schedule sandbox expiry", error: String(error) })));
 		return;
 	}
