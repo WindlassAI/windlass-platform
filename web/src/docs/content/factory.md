@@ -15,7 +15,7 @@ A work item runs in one of two ways:
 
 ## Repo setup
 
-Readiness checklists exist, Factory's Agent Readiness among them. Repo setup measures readiness from what actually happened when agents worked in the repository.
+Some tools, such as Factory.ai's Agent Readiness, score a repository with a checklist of what it contains. Repo setup checks your setup too, but a repository's level comes from what happened when agents actually worked in it: green CI, verified work and no reverts.
 
 Open a connected repository to see **Setup N of 8**. The count includes the saved setup command and checks. Windlass also reads the default branch for contributor guides, issue and pull request templates, oversized files, workflows that check proposed changes, and protection for secrets. Reading these files uses no agent time.
 
