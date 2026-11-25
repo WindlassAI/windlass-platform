@@ -1,34 +1,3 @@
-/**
- * The git commands the platform itself runs in a session's sandbox, for a repository of the user's
- * GitHub connection: one clone, and for each push a commit and a push. The agent runs none of them and
- * is given no credential: it works on the files, and its own git has nothing to authenticate with.
- *
- * The commands that talk to GitHub need an installation token (`clone`, `fetch`, `push`). How the token
- * gets to git, and no further:
- *
- *   - It is written to the command's standard input (`ExecOptions.stdin`), not passed in its arguments or
- *     its environment: on Docker those are on the server's own `docker exec` command line.
- *   - The script reads it into a shell variable that is never exported, and hands it to git on a pipe
- *     (file descriptor 3). Git is given a credential helper, in its environment's configuration, that
- *     answers a request for GitHub's host by reading that pipe: so the token is in no argument, no
- *     environment variable and no file, the pipe is empty once git has read it, and git sends it only
- *     where GitHub asked for it. On the wire it is what GitHub documents, the HTTP password of the
- *     user `x-access-token`:
- *     https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-as-a-github-app-installation
- *   - That git runs with an empty environment (`env -i`), without the system's and the user's
- *     configuration, and without hooks: nothing writes the token down. A clone's `.git/config` holds the
- *     plain address and no credential.
- *   - The transport uid owns the outgoing-history scan and push database. It accepts an
- *     object pack from the workspace user's staging step and builds its own index and config.
- *   - The token is revoked when the command has ended (`GithubApp.withToken`), so what a command could
- *     have kept of it is of no use afterwards.
- *
- * What an agent's command can still observe is said in docs/github-and-repositories.md, "GitHub".
- *
- * The sandbox layer's fake runs none of this: there every command succeeds and prints nothing. So what
- * a script reports (`wlp:` lines) is read where it is there and never required.
- */
-
 import { mirrorStage } from "../sandbox/git-mirrors.js";
 import { MIRROR_BYTES, MIRROR_CONFIG, MIRROR_ROOT } from "../sandbox/store-limits.js";
 import { RUNNER_HTTP_PROXY } from "../runner/egress.js";
@@ -72,9 +41,7 @@ if [ "\${https_proxy:-}" = '${RUNNER_HTTP_PROXY}' ]; then wlp_proxy='${RUNNER_HT
 const PROXY_ENV = 'http_proxy="$wlp_proxy" https_proxy="$wlp_proxy"';
 
 /**
- * `wlp_git`: git as the platform runs it with a token. The token is in the shell variable WLP_T and
- * reaches git on descriptor 3; the helper is consulted for `host` only, answers `get` and ignores
- * `store` and `erase`.
+ * Use stdin and fd 3 so the token never reaches argv, the exported environment or disk.
  */
 function tokenGit(host: string): string {
 	const transportFlags = [

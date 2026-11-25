@@ -1,46 +1,3 @@
-/**
- * The deployment's GitHub App, as the server talks to GitHub: the app's own token, installation
- * tokens, the exchange of a user's authorization code, and the few REST calls the platform makes.
- *
- * The app uses three kinds of credential:
- *
- *   the app's JWT            signed here with the app's private key (RS256), good for nine minutes, sent
- *                            to GitHub for app-level requests
- *   an installation token    GitHub's, good for an hour at most. Every one is asked for with the one
- *                            repository and the permissions the step at hand needs (`TokenScope`), is
- *                            used for that step and dropped; one that went into a sandbox is revoked
- *                            when its git command has ended. A read-only one that stays in this
- *                            process may be kept in memory and used again (`withToken`'s `reuse`)
- *   a user access token      what a user's authorization code is exchanged for when they connect. It
- *                            is used for two questions (who is this, which installations can they
- *                            reach), deleted at GitHub, and forgotten. The platform keeps no
- *                            credential of the user's: what it does later it does as the installation
- *
- * What GitHub's documentation says of each call, as read on 2026-11-15:
- *
- *   the JWT                  https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-json-web-token-jwt-for-a-github-app
- *                            (RS256; `iat` a minute in the past; `exp` at most ten minutes ahead; `iss`
- *                            the app id or the client id; sent as `Authorization: Bearer`)
- *   installation tokens      https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app
- *                            (`repository_ids`, `permissions`; expires after one hour; 404 for an
- *                            installation that is gone, 422 for a repository or a permission the
- *                            installation does not have). They no longer have a fixed length
- *   revoking one             https://docs.github.com/en/rest/apps/installations#revoke-an-installation-access-token
- *   the code exchange        https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app
- *                            (`POST <github>/login/oauth/access_token` with `client_id`, `client_secret`,
- *                            `code`, `code_verifier`)
- *   deleting a user token    https://docs.github.com/en/rest/apps/oauth-applications#delete-an-app-token
- *                            (Basic authentication with the client id and secret)
- *   who the user is          https://docs.github.com/en/rest/users/users#get-the-authenticated-user
- *   their installations      https://docs.github.com/en/rest/apps/installations#list-app-installations-accessible-to-the-user-access-token
- *   an installation's repos  https://docs.github.com/en/rest/apps/installations#list-repositories-accessible-to-the-app-installation
- *   a user's permission      https://docs.github.com/en/rest/collaborators/collaborators#get-repository-permissions-for-a-user
- *                            (an installation token with "Metadata: read" may ask:
- *                            https://docs.github.com/en/rest/authentication/permissions-required-for-github-apps)
- *   branches                 https://docs.github.com/en/rest/branches/branches#list-branches ("Contents: read")
- *   pull requests            https://docs.github.com/en/rest/pulls/pulls ("Pull requests: write" to create)
- */
-
 import { dependencyHash, SHA, type TreeEntry } from "../sandbox/snapshot-key.js";
 
 import type { GithubId } from "../contract.js";
@@ -50,6 +7,10 @@ import { createPrivateKey, createSign, type KeyObject } from "node:crypto";
 import { githubClientSecret, githubConfig, githubPrivateKey } from "../config.js";
 import { redact } from "./redact.js";
 
+/**
+ * The GitHub App as the server uses it. Each installation token is requested for one repository and only the
+ * permissions its step needs (`TokenScope`); only read-only ones are kept for reuse. User tokens come from the code exchange.
+ */
 /** The REST API version every request names; the one GitHub's documentation showed when this was written. */
 export const GITHUB_API_VERSION = "2026-03-10";
 const USER_AGENT = "windlass-platform";
@@ -190,8 +151,8 @@ interface Call {
 	deadline?: number;
 }
 
-const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {});
-const text = (value: unknown): string => (typeof value === "string" ? value : "");
+export const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {});
+export const text = (value: unknown): string => (typeof value === "string" ? value : "");
 const whole = (value: unknown): number => (typeof value === "number" && Number.isSafeInteger(value) ? value : 0);
 
 function githubPerson(value: unknown, allowBot = false): GithubUser | null {

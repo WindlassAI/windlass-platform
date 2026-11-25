@@ -1,47 +1,11 @@
-/**
- * What GitHub says of a commit's CI, read for the factory (Plans "software factory" §2.1 step 4): the
- * workflow runs, check runs and commit statuses of the pushed head and, for a GitHub Actions job that failed, the end
- * of its log. When check output or a single annotation says the job never started, the Actions job
- * record must confirm it had no steps or runner. CI reads use an installation token scoped to Checks,
- * Commit statuses and Actions. Listing recent default-branch commits uses the Contents read token.
- *
- * Every reading ends as one of four outcomes, and the four are never confused, because the factory acts
- * on each differently:
- *
- *   read            what GitHub has: possibly nothing yet, possibly still running (`ciState`)
- *   not_permitted   GitHub will not show this installation the commit's CI: the app lacks a permission,
- *                   the installation has not accepted it, or GitHub answered 403 for another reason.
- *                   Waiting does not help; the item is handed over saying so
- *   rate_limited    GitHub asks to wait, until `retryAt`: a primary limit (`x-ratelimit-reset`) or a
- *                   secondary one (`retry-after`)
- *   failed          GitHub could not be reached or answered something else; the next poll tries again
- *
- * A log is untrusted text: it is what code from the branch printed in CI, so it is marked as such, has
- * control characters and anything that looks like a token taken out, and is cut to its last
- * LOG_TAIL_LINES lines and LOG_TAIL_CHARS characters. It is read as a stream, keeping only its end, and
- * no further than LOG_MAX_BYTES.
- *
- * The polling intervals of the factory (slice 1) are here as data (`CI_POLLING`), not timers: the item
- * actor schedules its polls itself.
- *
- * GitHub's documentation:
- *   workflow runs     https://docs.github.com/en/rest/actions/workflow-runs#list-workflow-runs-for-a-repository ("Actions: read")
- *   check runs        https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference ("Checks: read")
- *   combined status   https://docs.github.com/en/rest/commits/statuses#get-the-combined-status-for-a-specific-reference ("Commit statuses: read")
- *   a job's log       https://docs.github.com/en/rest/actions/workflow-jobs#download-job-logs-for-a-workflow-run ("Actions: read"; a 302 to a short-lived address)
- *   rate limits       https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api (403 or 429; `x-ratelimit-remaining: 0` with `x-ratelimit-reset`, or `retry-after`)
- */
-
 import { environmentFailure } from "../factory/check-environment.js";
 import { parse } from "yaml";
 import type { GithubId } from "../contract.js";
 import { decimalId, ownApp } from "./ids.js";
-import { type GithubApp, GithubError } from "./app.js";
+import { type GithubApp, GithubError, record, text } from "./app.js";
 import { redact } from "./redact.js";
 
-/** How often the factory looks at CI, and how long it waits for it (Plans "software factory" §2.1 steps 4 and 8, §4.2 "GitHub API"). */
 export const CI_POLLING = {
-	/** While an item waits for CI. */
 	everyMs: 60_000,
 	/** The same, while the user has more than `crowdedAbove` items open: keeps an installation under GitHub's hourly limit. */
 	crowdedEveryMs: 180_000,
@@ -133,9 +97,6 @@ export function workflowOverdue(reading: CiReading, now: number): boolean {
 
 /** Conclusions of a completed check run that say the code failed something. "cancelled", "skipped", "stale" and "neutral" do not. */
 const FAILING = new Set(["failure", "startup_failure", "action_required"]);
-
-const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {});
-const text = (value: unknown): string => (typeof value === "string" ? value : "");
 
 /** Strips what a terminal would interpret and anything that is not printable text. */
 export function plain(value: string): string {
