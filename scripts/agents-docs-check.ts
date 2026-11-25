@@ -1,31 +1,38 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, globSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { posix } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = fileURLToPath(new URL("../", import.meta.url));
-const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
-	cwd: root, encoding: "utf8",
-}).split("\0").filter(Boolean);
-const guides = files.filter(file => /(^|\/)AGENTS\.md$/.test(file) && existsSync(join(root, file)));
-const errors = new Set<string>();
-const commandStart = /^(?:cd|node|npx|pnpm|tsx|bash|sh|corepack)\s|^(?:[A-Z_][A-Z_0-9]*=(?:"[^"]*"|'[^']*'|\S+)|(?:\.{0,2}\/)?[\w./-]+\.sh)\s/;
+const { dirname, join, relative, resolve, matchesGlob } = posix;
+const root = "/";
+
+const commandStart = /^(?:cd|node|npx|npm|pnpm|tsx|bash|sh|corepack)\s|^(?:[A-Z_][A-Z_0-9]*=(?:"[^"]*"|'[^']*'|\S+)|(?:\.{0,2}\/)?[\w./-]+\.sh)\s/;
 const pathLike = /^(?:\.{1,2}\/|[\w.*-]+\/|[\w*-][\w.*-]*\.[\w-]+$)/;
 
-function manifest(dir: string) {
-	const file = join(dir, "package.json");
-	if (existsSync(file)) return JSON.parse(readFileSync(file, "utf8"));
+export function guideTree(files: string[], read: (path: string) => string | undefined, hasBin?: (dir: string, tool: string) => boolean) {
+	const paths = new Set(files);
+	const dirs = new Set([""]);
+	for (const file of paths) {
+		for (let dir = dirname(file); dir !== "." && !dirs.has(dir); dir = dirname(dir)) dirs.add(dir);
+	}
+	for (const dir of dirs) paths.add(dir);
+	return { files, paths, dirs, read, hasBin };
 }
 
-function checkGuide(guide: string) {
-	const lines = readFileSync(join(root, guide), "utf8").split(/\r?\n/);
+export function checkGuide(guide: string, contents: string, { files, dirs, paths, read, hasBin }: ReturnType<typeof guideTree>) {
+	const errors: { path: string; line: number; message: string }[] = [];
+	function manifest(dir: string) {
+		try { return JSON.parse(read(relative(root, join(dir, "package.json"))) ?? "{}"); }
+		catch { return {}; }
+	}
+	const lines = contents.split(/\r?\n/);
 	const here = dirname(join(root, guide));
 	let line = 0;
-	const fail = (message: string) => errors.add(`${guide}:${line + 1}: ${message}`);
+	const fail = (message: string) => errors.push({ path: guide, line: line + 1, message });
 
 	function checkPath(target: string, cwd: string) {
 		const path = resolve(cwd, target);
-		const found = target.includes("*") ? globSync(target, { cwd }).length > 0 : existsSync(path);
+		const found = target.includes("*") ? files.some(f => matchesGlob(f, relative(root, path))) : paths.has(relative(root, path));
 		if (!found) fail(`missing path ${relative(root, path)}`);
 	}
 
@@ -39,7 +46,7 @@ function checkGuide(guide: string) {
 			if (pathLike.test(tool)) checkPath(tool, cwd);
 			if (tool === "cd" && args[0]) {
 				cwd = resolve(cwd, args[0]);
-				if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) fail(`missing directory ${relative(root, cwd)}`);
+				if (!dirs.has(relative(root, cwd))) fail(`missing directory ${relative(root, cwd)}`);
 				continue;
 			}
 			let dir = cwd;
@@ -54,10 +61,10 @@ function checkGuide(guide: string) {
 				args.splice(0, 2);
 			}
 			if (tool === "pnpm" && ["--dir", "-C"].includes(args[0])) {
-				dir = resolve(dir, args[1]);
+				dir = resolve(dir, args[1] ?? ".");
 				args.splice(0, 2);
 			}
-			if (tool === "pnpm" && args[0] !== "exec") {
+			if ((tool === "pnpm" && args[0] !== "exec") || (tool === "npm" && args[0] === "run")) {
 				if (args[0] === "run") args.shift();
 				const script = args.shift();
 				if (script && script !== "install" && !Object.hasOwn(manifest(dir)?.scripts ?? {}, script)) {
@@ -66,15 +73,15 @@ function checkGuide(guide: string) {
 			} else if (tool === "npx" || tool === "pnpm") {
 				if (tool === "pnpm") args.shift();
 				tool = args.shift();
-				if (tool && !existsSync(join(dir, "node_modules/.bin", tool))) fail(`missing executable ${tool} in ${relative(root, dir)}`);
+				if (tool && hasBin && !hasBin(relative(root, dir), tool)) fail(`missing executable ${tool} in ${relative(root, dir)}`);
 			}
 			for (const [i, arg] of args.entries()) {
 				if (args[i - 1] !== "--base" && pathLike.test(arg)) checkPath(arg, dir);
 			}
 			if (tool && ["node", "tsx", "bash", "sh"].includes(tool) && args[0] && !args[0].startsWith("-")) checkPath(args[0], dir);
 			if (tool === "tsc" && args.includes("-p")) {
-				const project = resolve(dir, args[args.indexOf("-p") + 1]);
-				checkPath(statSync(project, { throwIfNoEntry: false })?.isDirectory() ? join(project, "tsconfig.json") : project, dir);
+				const project = resolve(dir, args[args.indexOf("-p") + 1] ?? ".");
+				checkPath(dirs.has(relative(root, project)) ? join(project, "tsconfig.json") : project, dir);
 			}
 		}
 		return cwd;
@@ -99,19 +106,26 @@ function checkGuide(guide: string) {
 				if (target && !/^(?:\w+:|\/\/)/.test(target)) checkPath(target, here);
 				return "";
 			});
-			// Also catch ordinary unformatted filenames and repository paths in prose.
 			for (const match of prose.matchAll(/(?:^|[\s(])((?:[.\w*-]+\/)*[\w*-][\w.*-]*\.(?:[cm]?[jt]sx?|md|json|ya?ml|sh|py|css)|(?:server|web|runner|scripts|sandbox|docs|fixtures|deploy|\.github)\/[\w./*-]+)(?=[\s.,:;)!?]|$)/g)) {
 				checkPath(match[1], here);
 			}
 		}
 		line++;
 	}
+	return errors;
 }
 
-for (const guide of guides) checkGuide(guide);
-if (errors.size) {
-	console.error([...errors].join("\n"));
-	process.exitCode = 1;
-} else {
-	console.log(`Checked paths and command targets in ${guides.length} AGENTS.md files.`);
+if (import.meta.main) {
+	const checkout = fileURLToPath(new URL("../", import.meta.url));
+	const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
+		cwd: checkout, encoding: "utf8",
+	}).split("\0").filter(file => file && existsSync(join(checkout, file)));
+	const guides = files.filter(file => /(^|\/)AGENTS\.md$/.test(file));
+	const tree = guideTree(files, path => existsSync(join(checkout, path)) ? readFileSync(join(checkout, path), "utf8") : undefined,
+		(dir, tool) => existsSync(join(checkout, dir, "node_modules/.bin", tool)));
+	const errors = guides.flatMap(path => checkGuide(path, readFileSync(join(checkout, path), "utf8"), tree));
+	if (errors.length) {
+		for (const { path, line, message } of errors) console.error(`${path}:${line}: ${message}`);
+		process.exitCode = 1;
+	} else console.log(`Checked paths and command targets in ${guides.length} AGENTS.md files.`);
 }

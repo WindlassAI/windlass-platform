@@ -220,6 +220,7 @@ export interface Pushed {
 }
 
 export interface PublishInput extends PushInput {
+	privateBody?: string;
 	blockedNetwork?: BlockedNetwork;
 	/** The pull request the session has, if any. */
 	pull: PullRequestInfo | null;
@@ -270,7 +271,7 @@ export class PullProblem extends GithubProblem {
 	}
 }
 
-function infoOf(pull: Pull, pushedAt: number, verified: string): PullRequestInfo {
+export function infoOf(pull: Pull, pushedAt: number, verified: string): PullRequestInfo {
 	return { number: pull.number, url: pull.url, state: pull.state, title: pull.title, branch: pull.head, base: pull.base, pushedAt, verified };
 }
 
@@ -446,8 +447,8 @@ export async function publishWork(input: PublishInput): Promise<Published> {
 		return await app.withToken(installation.id, { repositoryId: repository.id, permissions: { metadata: "read", contents: "read", pull_requests: "write" } }, async (token): Promise<Published> => {
 			const { owner, name: repo } = resolved.repository;
 			// The installation listing used to find a repository can predate a visibility change.
-			const showHosts = !!input.blockedNetwork?.hosts.length && (await app.repositoryById(token, repository.id)).private;
-			const body = pullBody(repository, input.message.body, said.section, input.blockedNetwork, showHosts);
+			const isPrivate = (!!input.privateBody || !!input.blockedNetwork?.hosts.length) && (await app.repositoryById(token, repository.id)).private;
+			const body = pullBody(repository, (isPrivate && input.privateBody) || input.message.body, said.section, input.blockedNetwork, isPrivate);
 			if (open) {
 				// It may have been merged or closed at GitHub since: then the push went to a branch with no pull request.
 				const current = await app.pull(token, owner, repo, open.number).catch(() => null);

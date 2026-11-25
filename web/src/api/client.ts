@@ -159,7 +159,7 @@ export interface SessionFeed {
 	onConnection(state: ConnectionState, error?: PlatformError): void;
 }
 
-export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelProviders" | "saveModelProvider" | "checkModelProvider" | "removeModelProvider"> {
+export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelProviders" | "saveModelProvider" | "checkModelProvider" | "removeModelProvider" | "addSetupNotes" | "deleteSetupNote" | "runReadiness"> {
 	me(): Promise<UserProfile>;
 	linkedLogins(): Promise<LinkedLogin[]>;
 	unlinkLogin(provider: LoginProvider): Promise<void>;
@@ -215,7 +215,6 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelP
 	deleteRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, name: string): Promise<RepositorySecrets>;
 	repository(repositoryId: GithubId): Promise<RepositoryView>;
 	setSetupWeekly(repositoryId: GithubId, enabled: boolean): Promise<void>;
-	runReadiness(repositoryId: GithubId): Promise<RepositoryView>;
 	/**
 	 * The repository as GitHub has it now: what a new agent can be launched on. Throws with reason `github_off`,
 	 * `github_not_connected`, `github_gone` or `github_denied` when it cannot be used for new agents, and

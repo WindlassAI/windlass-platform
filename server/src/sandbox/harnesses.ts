@@ -72,7 +72,7 @@ const MCP_PLATFORM_TOOLS = tools("report", "ask_person", "request_secret", "publ
 
 export const WINDLASS_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	events: "windlass", resume: "windlass", steer: true, cancelCall: true, questions: true,
-	platformTools: tools("publish", "report", "ask_person", "request_secret", "push", "fetch_base", "file_review", "file_plan_review"),
+	platformTools: tools("publish", "report", "ask_person", "request_secret", "push", "fetch_base", "file_review", "file_plan_review", "file_repo_setup"),
 	reportScreenshots: true, restrictedReview: true, userServers: "config-file", projectServerApproval: true,
 	checks: "required", envLists: true, sessionHome: true, usage: "tokens", models: "account",
 	signIn: ["chatgpt", "platform-key"] as const, backups: true, steps: "engine", untrustedMarker: "taint", planMode: false, demo: true,

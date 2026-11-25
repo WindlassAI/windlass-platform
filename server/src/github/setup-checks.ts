@@ -4,10 +4,15 @@ import type { ScanEntry } from "../repository-network.js";
 import type { Finding } from "../factory/readiness.js";
 import { GithubError, type GithubApp, type Repository } from "./app.js";
 
-export interface SetupScan { commit: string | null; findings: Finding[] }
+export interface SetupScan { commit: string | null; findings: Finding[]; areas: string[]; later: number }
 const workflow = /^\.github\/workflows\/[^/]+\.ya?ml$/i;
 const source = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|kts|swift|c|cc|cpp|h|hpp|cs|rb|php|scala|sh|vue|svelte|dart|exs?|hs|lua)$/i;
 const generated = /(?:^|\/)(?:node_modules|vendor|third_party|generated|__generated__|dist|build|target|coverage)\/|(?:\.min|\.generated|\.g|\.pb)\.[^/]+$/i;
+function folders(path: string) {
+	const parts = path.split("/").slice(0, -1);
+	if (parts.some(p => !/^[\w.-]+$/.test(p) || [".", "..", ".git"].includes(p.toLowerCase()))) return [];
+	return parts.map((_, i) => parts.slice(0, i + 1).join("/"));
+}
 const bytesPerFile = 1024 * 1024;
 
 function ignored(text: string, path: string) {
@@ -24,6 +29,7 @@ function ignored(text: string, path: string) {
 export async function scanRepoSetup(app: GithubApp, token: string, repo: Repository): Promise<SetupScan> {
 	let paths: string[] = [];
 	let sources: ScanEntry[] = [];
+	const dirs = new Map<string, { files: number; bytes: number; lines: number }>();
 	let truncated = false;
 	const scan = await app.scanFiles(token, repo.owner, repo.name, repo.defaultBranch, (tree, short) => {
 		const entries = tree.filter(f => f.type === "blob");
@@ -31,9 +37,20 @@ export async function scanRepoSetup(app: GithubApp, token: string, repo: Reposit
 		truncated = short;
 		const config = entries.filter(f => workflow.test(f.path) || f.path === ".gitignore");
 		// Fewer than 1,501 bytes cannot contain more than 1,500 lines. Read the largest candidates first.
-		sources = entries.filter(f => source.test(f.path) && !generated.test(f.path));
+		sources = entries.filter(f => source.test(f.path) && f.mode !== "120000" && !generated.test(f.path));
 		const large = sources.filter(f => (f.size ?? Infinity) > 1500).sort((a, b) => (b.size ?? 0) - (a.size ?? 0));
-		const selected = [...config, ...large].filter(f => f.size === null || f.size <= bytesPerFile).slice(0, 96).map(f => f.path);
+		// Small files can collectively meet the line threshold. Skip folders already qualified by count.
+		for (const file of sources) for (const dir of folders(file.path)) {
+			const total = dirs.get(dir) ?? { files: 0, bytes: 0, lines: 0 };
+			total.files++;
+			total.bytes += file.size ?? bytesPerFile;
+			dirs.set(dir, total);
+		}
+		const small = sources.filter(f => f.size !== null && f.size <= 1500 && folders(f.path).some(dir => {
+			const t = dirs.get(dir)!;
+			return t.files < 50 && t.bytes + t.files >= 5000;
+		}));
+		const selected = [...config, ...large, ...small].filter(f => f.size === null || f.size <= bytesPerFile).slice(0, 96).map(f => f.path);
 		return { paths: selected, more: false, maxBytes: 6 * bytesPerFile, maxFileBytes: bytesPerFile };
 	}).catch((error: unknown) => {
 		if (error instanceof GithubError && error.status === 409 && /repository is empty/i.test(error.said))
@@ -43,21 +60,17 @@ export async function scanRepoSetup(app: GithubApp, token: string, repo: Reposit
 	const files = new Map(scan.files.map(f => [f.path, f.text]));
 	const known = new Set(paths);
 	const rootGuide = paths.find(p => /^(AGENTS|CLAUDE)\.md$/.test(p));
-	const dirs = new Map<string, number>();
 	let oversized: string | undefined;
 	let unreadSource = truncated;
 	for (const entry of sources) {
-		const parts = entry.path.split("/");
-		for (let i = 1; i < parts.length; i++) {
-			const dir = parts.slice(0, i).join("/");
-			dirs.set(dir, (dirs.get(dir) ?? 0) + 1);
-		}
-		if (entry.size !== null && entry.size <= 1500) continue;
 		const text = files.get(entry.path);
+		const sourceLines = text ? text.replace(/\n$/, "").split("\n").length : 0;
+		for (const dir of folders(entry.path)) dirs.get(dir)!.lines += sourceLines;
+		if (entry.size !== null && entry.size <= 1500) continue;
 		if (text === undefined) unreadSource = true;
-		else if (text.replace(/\n$/, "").split("\n").length > 1500) oversized ??= entry.path;
+		else if (sourceLines > 1500) oversized ??= entry.path;
 	}
-	const missingGuide = [...dirs].find(([dir, count]) => count >= 50 && !["AGENTS.md", "CLAUDE.md", "README.md"].some(name => known.has(dir + "/" + name)));
+	const missingGuide = [...dirs].find(([dir, total]) => total.files >= 50 && !["AGENTS.md", "CLAUDE.md", "README.md"].some(name => known.has(dir + "/" + name)));
 	const pr = paths.some(p => /^(?:(?:docs|\.github)\/)?pull_request_template(?:\.md|\/[^/]+\.md)$/i.test(p));
 	const issue = paths.some(p => /^(?:(?:docs|\.github)\/)?issue_template(?:\.md|\/(?!config\.ya?ml$)[^/]+\.(?:md|ya?ml))$/i.test(p));
 	let pullChecks = false, scanner = !!repo.secretScanning, unreadWorkflow = truncated;
@@ -85,9 +98,11 @@ export async function scanRepoSetup(app: GithubApp, token: string, repo: Reposit
 		: scanner ? "Environment files are ignored and secret scanning is enabled."
 		: unreadWorkflow ? "Some workflows could not be checked for a secret scan."
 		: "Environment files are ignored. No secret scan was found.";
-	return { commit: scan.commit, findings: [
+	const areas = [...dirs].filter(([, total]) => total.files >= 50 || total.lines >= 5000)
+		.sort(([a, n], [b, m]) => m.files - n.files || m.lines - n.lines || a.localeCompare(b)).map(([dir]) => dir);
+	return { commit: scan.commit, areas: areas.slice(0, 8), later: Math.max(0, areas.length - 8), findings: [
 		{ id: "guide", pass: rootGuide || truncated ? null : false, reason: rootGuide ? `${rootGuide} found. Finish setup to check its instructions.` : truncated ? unknown : "The root folder has no AGENTS.md or CLAUDE.md." },
-		{ id: "areas", pass: missingGuide ? false : truncated ? null : true, reason: missingGuide ? `${missingGuide[0]} has ${missingGuide[1]} source files and no guide.` : truncated ? unknown : "Every folder with 50 or more source files has a guide." },
+		{ id: "areas", pass: missingGuide ? false : truncated ? null : true, reason: missingGuide ? `${missingGuide[0]} has ${missingGuide[1].files} source files and no guide.` : truncated ? unknown : "Every folder with 50 or more source files has a guide." },
 		{ id: "templates", pass: found(pr && issue), reason: pr && issue ? "Both templates are present." : truncated ? unknown : `Missing ${[!pr && "pull request", !issue && "issue"].filter(Boolean).join(" and ")} template.` },
 		{ id: "size", pass: oversized ? false : unreadSource ? null : true, reason: oversized ? `${oversized} exceeds 1,500 lines.` : unreadSource ? "Some source files exceeded the automatic scan limit." : "No source file exceeds 1,500 lines." },
 		{ id: "ci", pass: found(pullChecks, unreadWorkflow), reason: pullChecks ? "A workflow runs on pull requests." : unreadWorkflow ? "Some workflows could not be checked." : "No workflow runs on pull requests." },

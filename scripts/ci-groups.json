@@ -27,6 +27,8 @@
         "server/src/factory/review.ts",
         "server/src/factory/readiness*.ts",
         "server/src/actors/user-readiness.ts",
+        "server/src/repo-setup/**",
+        "scripts/agents-docs-check.ts",
         "scripts/readiness-check.ts",
         "server/src/factory/reviewer-task.ts",
         "server/src/factory/verified-check.ts",
@@ -202,6 +204,8 @@
         "scripts/github-standin.ts",
         "scripts/runner-standin.ts",
         "scripts/feature-git-fixture.ts",
+        "server/src/repo-setup/**",
+        "scripts/agents-docs-check.ts",
         "scripts/factory-check.ts",
         "scripts/orchestrator-check.ts",
         "scripts/login-http.ts",
@@ -210,7 +214,7 @@
       "shards": {
         "1": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "user-limits,reviewer,schedules,memory,machine" } },
         "2": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "api,on,ci,untrusted,ask,person,gate,handoff,sleep,deploy,creation" } },
-        "3": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "capacity,screenshots,allowance,off,cross-repo" } },
+        "3": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "capacity,screenshots,allowance,off,cross-repo,repo-setup" } },
         "orchestration": { "env": { "FACTORY_ONLY": "orchestrator" } }
       },
       "checks": {

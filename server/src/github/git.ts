@@ -438,22 +438,26 @@ export function reviewCheckoutScript(directory: string, head: string): string {
 
 /** A PR comment requests a source inspection. The transport user owns both the checkout and its
  * parent under sticky /tmp, so even an unattended agent with a shell cannot edit the reviewed tree. */
-export async function readOnlyReview(sandbox: SandboxHandle, url: string, token: string, head: string, base: string, signal: AbortSignal, sourceOnly = false): Promise<string> {
+export async function readOnlyReview(sandbox: SandboxHandle, url: string, token: string, head: string, base: string, signal: AbortSignal, setupNotes?: { id: string; text: string }[]): Promise<string> {
 	if (![head, base].every(sha => /^[0-9a-f]{40}$/.test(sha))) throw new Error("Invalid review target.");
 	const id = randomBytes(16).toString("hex");
+	if (setupNotes?.some(n => !/^[a-f0-9]{20}$/.test(n.id))) throw Error("Invalid setup note id.");
+	const notesDir = ".windlass-inputs/notes";
 	const script = [
 		startTransport(id), READ_TOKEN, tokenGit(hostOf(url)), PLAIN_GIT,
+		...(setupNotes?.length ? [`mkdir -p -- ${notesDir}`, ...setupNotes.map(n =>
+			`IFS= read -r encoded; printf %s "$encoded" | base64 -d > ${notesDir}/${n.id}.md; chmod 444 ${notesDir}/${n.id}.md`), `chmod 555 .windlass-inputs ${notesDir}`] : []),
 		"plain_git init -q --template= repo",
 		`wlp_git -C repo fetch --quiet --no-tags -- ${shellQuote(url)} ${base} ${head}`,
 		"WLP_T=",
 		`plain_git -C repo checkout -q --detach ${head}`,
 		// Project hooks and agent definitions must stay inert during setup checks.
-		...(sourceOnly ? ["rm -rf -- repo/.git", "find repo -type l -delete"] : []),
-		'chmod -R a+rX repo', sourceOnly ? 'chmod 755 "$private"' : 'chmod 711 "$private"',
+		...(setupNotes ? ["rm -rf -- repo/.git", "find repo -type l -delete"] : []),
+		'chmod -R a+rX repo', setupNotes ? 'chmod 755 "$private"' : 'chmod 711 "$private"',
 	].join("\n");
-	const result = await run(sandbox, script, { gitUser: true, stdin: token + "\n", secrets: [token], timeoutMs: CLONE_TIMEOUT_MS, signal });
+	const result = await run(sandbox, script, { gitUser: true, stdin: [token, ...(setupNotes ?? []).map(n => Buffer.from(n.text).toString("base64"))].join("\n") + "\n", secrets: [token], timeoutMs: CLONE_TIMEOUT_MS, signal });
 	if (!result.ok) throw new GithubProblem("github_gone", "Could not open the requested pull request at its pinned commit.");
-	return sourceOnly ? transportDirectory(id) : transportDirectory(id) + "/repo";
+	return setupNotes ? transportDirectory(id) : transportDirectory(id) + "/repo";
 }
 
 export async function checkoutReview(sandbox: SandboxHandle, url: string, token: string, directory: string, pr: number, head: string, signal?: AbortSignal) {

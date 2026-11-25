@@ -315,7 +315,15 @@ export const HANDLERS: Partial<Record<Delivery["event"], (delivery: Delivery, c:
 	check_run: nudgeItems,
 	check_suite: nudgeItems,
 	status: nudgeItems,
-	pull_request: async (d, c) => { await environmentPush(d, c); return nudgeItems(d, c); },
+	pull_request: async (d, c) => {
+		if (d.event === "pull_request" && d.data.setupGuides && d.repositoryId) {
+			const params = { params: serviceParams() };
+			const users: string[] = await c.client().githubHooks.get(["app"], params).internalInstallationUsers(d.installationId);
+			for (const uid of users) await c.client().user.get([uid], params).internalSetupPullClosed(d.installationId, d.repositoryId, d.data.pr, d.data.merged);
+		}
+		await environmentPush(d, c);
+		return nudgeItems(d, c);
+	},
 	push: environmentPush,
 	installation: refreshInstallation,
 	installation_repositories: refreshInstallation,

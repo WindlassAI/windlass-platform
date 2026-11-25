@@ -690,7 +690,7 @@ export class GithubApp {
 	 * tree short or `pick` left files out. What `pick` says of size holds whatever the tree said: a blob
 	 * larger than `maxFileBytes` is passed over, and reading stops once the files read come to `maxBytes`.
 	 */
-	async scanFiles(token: string, owner: string, name: string, revision: string, pick: (tree: Array<{ path: string; type: string; size: number | null }>, truncated: boolean) => { paths: string[]; more: boolean; maxBytes: number; maxFileBytes: number }): Promise<{ commit: string; files: Array<{ path: string; text: string }>; incomplete: boolean }> {
+	async scanFiles(token: string, owner: string, name: string, revision: string, pick: (tree: Array<{ path: string; type: string; mode?: string; size: number | null }>, truncated: boolean) => { paths: string[]; more: boolean; maxBytes: number; maxFileBytes: number }): Promise<{ commit: string; files: Array<{ path: string; text: string }>; incomplete: boolean }> {
 		const prefix = `/repos/${owner}/${name}`;
 		const auth = { bearer: token };
 		const { body } = await this.call({ path: prefix + "/commits/" + encodeURIComponent(revision), auth, what: "resolve the branch to read" });
@@ -699,7 +699,7 @@ export class GithubApp {
 		const tree = record((await this.call({ path: prefix + "/git/trees/" + treeSha, query: { recursive: "1" }, auth, what: "list the repository's files" })).body);
 		const entries = (Array.isArray(tree.tree) ? tree.tree : []).map((entry) => {
 			const e = record(entry);
-			return { path: text(e.path), type: text(e.type), sha: text(e.sha), size: typeof e.size === "number" ? e.size : null };
+			return { path: text(e.path), type: text(e.type), mode: text(e.mode), sha: text(e.sha), size: typeof e.size === "number" ? e.size : null };
 		}).filter((entry) => entry.path !== "" && SHA.test(entry.sha));
 		const picked = pick(entries, tree.truncated === true);
 		const shaOf = new Map(entries.map((entry) => [entry.path, entry.sha]));
@@ -942,6 +942,20 @@ export class GithubApp {
 		const pull = this.pullOf(answer.body);
 		if (!pull) throw new GithubError(answer.status, "the answer describes no pull request", `could not update pull request #${number} of ${owner}/${name}`);
 		return pull;
+	}
+
+	async openSetupPull(token: string, owner: string, name: string, id: GithubId, base: string): Promise<Pull | null> {
+		for (let page = 1; ; page++) {
+			const answer = await this.call({ path: `/repos/${owner}/${name}/pulls`, query: { state: "open", base, per_page: 100, page }, auth: { bearer: token }, what: "find the repository setup pull request" });
+			if (!Array.isArray(answer.body)) throw new Error("GitHub returned no pull request list.");
+			for (const raw of answer.body) {
+				const head = record(record(raw).head);
+				if (String(record(head.repo).id) !== String(id) || !/^windlass\/repo-setup-\d{8}$/.test(text(head.ref))) continue;
+				const pull = this.pullOf(raw);
+				if (pull && pull.base === base) return pull;
+			}
+			if (!answer.next) return null;
+		}
 	}
 
 	/** The open pull request from `head` into `base`, if there is one: GitHub allows one per pair of branches. */

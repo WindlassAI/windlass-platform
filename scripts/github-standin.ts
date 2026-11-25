@@ -599,7 +599,7 @@ export class GithubStandin {
 			merge_commit_sha: pull.merged ? pull.mergeCommit ?? null : null,
 			title: pull.title,
 			body: pull.body,
-			head: { ref: pull.head, ...(pull.headSha && { sha: pull.headSha }), ...(pull.head.startsWith("windlass/feature-i_") && { sha: this.branchHead(repository, pull.head) }) },
+			head: { repo: { id: repository.id }, ref: pull.head, ...(pull.headSha && { sha: pull.headSha }), ...(/^windlass\/(?:feature-i_|repo-setup-)/.test(pull.head) && { sha: this.branchHead(repository, pull.head) }) },
 			base: { ref: pull.base, sha: this.branchHead(repository, pull.base) },
 		};
 	}
@@ -864,6 +864,12 @@ export class GithubStandin {
 				const sha = this.branchHead(repository, ref) ?? (/^[a-f0-9]{40}$/.test(ref) ? ref : null);
 				if (!sha) return answer(404, {message: "Not Found"});
 				return answer(200, {sha, commit: {tree: {sha: git(["show", "-s", "--format=%T", sha], repository.path)}}});
+			}
+			const blob = /^\/git\/blobs\/([a-f0-9]{40})$/.exec(rest);
+			if (blob && method === "GET") {
+				if (!this.allows(token, repository, "contents", "read")) return denied();
+				const data = execFileSync("git", ["cat-file", "blob", blob[1]], { cwd: repository.path });
+				return answer(200, { encoding: "base64", content: data.toString("base64") });
 			}
 			const commitCi = /^\/commits\/([^/]+)\/(check-runs|status)$/.exec(rest);
 			const job = /^\/actions\/jobs\/(\d+)(\/logs)?$/.exec(rest);
