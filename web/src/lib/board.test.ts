@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-/** The Factory board's columns: each item in exactly one, a feature as one card, and the List | Board choice. */
+/** The Factory board's columns: each item in exactly one, a feature as one card. */
 import type { ItemState, ItemSummary, StepKind, WaitReason } from "@contract";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { BOARD_COLUMNS, boardCards, boardColumn, initialView, storedView, storeView } from "./board";
+import { describe, expect, it } from "vitest";
+import { BOARD_COLUMNS, boardCards, boardColumn } from "./board";
 
 const STATES: ItemState[] = ["draft", "queued", "working", "waiting", "review", "done", "failed", "cancelled"];
 const STEPS: Array<StepKind | undefined> = [undefined, "plan_review", "subtasks", "integration", "summary", "refine", "implement", "gate", "publish", "ci", "ci_fix", "run_checks", "conflict", "review", "review_fix", "handoff", "merged"];
@@ -94,45 +94,5 @@ describe("the board's columns", () => {
 	it("keeps a part whose feature is filtered out as a card of its own", () => {
 		const part = summary({ title: "Feature — Colours", parent: { itemId: "it_gone", key: "b", title: "Feature" }, question });
 		expect(boardCards([part], []).needs.map((card) => card.item.id)).toEqual([part.id]);
-	});
-});
-
-describe("List | Board", () => {
-	afterEach(() => {
-		localStorage.clear();
-		vi.unstubAllGlobals();
-		vi.restoreAllMocks();
-	});
-	const screen = (width: number) => vi.stubGlobal("matchMedia", (query: string) => ({ matches: query.includes("max-width: 760px") ? width <= 760 : query.includes("min-width: 1100px") ? width >= 1100 : false, media: query }));
-
-	it("opens on the board on a wide screen and the list on a narrower one, until the viewer chooses", () => {
-		screen(1440);
-		expect(initialView()).toBe("board");
-		screen(900);
-		expect(initialView()).toBe("list");
-		storeView("board");
-		expect(initialView()).toBe("board");
-		storeView("list");
-		screen(1440);
-		expect(initialView()).toBe("list");
-	});
-
-	it("has the list only on a phone, whatever was chosen", () => {
-		storeView("board");
-		screen(390);
-		expect(initialView()).toBe("list");
-	});
-
-	it("does without storage where it is closed", () => {
-		vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-			throw new Error("blocked");
-		});
-		vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-			throw new Error("blocked");
-		});
-		expect(() => storeView("board")).not.toThrow();
-		expect(storedView()).toBeNull();
-		screen(1440);
-		expect(initialView()).toBe("board");
 	});
 });

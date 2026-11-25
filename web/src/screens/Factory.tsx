@@ -28,7 +28,7 @@ import { feedCounts, feedRepositories, repositoryName, workingCounts } from "../
 import { ITEM_SOURCES, linkProps, navigate, type ItemSource } from "../lib/router";
 import { useApp } from "../state/app";
 import { useFactoryLimits, useNow, useSessions } from "../state/hooks";
-import { initialView, PHONE_QUERY, storeView, type FactoryView } from "../lib/board";
+import { BOARD_QUERY } from "../lib/board";
 import { FactoryBoard } from "./FactoryBoard";
 import { asking, EndedFoot, endedWords, ItemRow, questionLine, useEndedPages, type ItemsState } from "./Items";
 
@@ -153,13 +153,8 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	const limits = useFactoryLimits().value;
 	const reviewer = platform.info?.items?.reviewer !== false;
 	const [showEnded, setShowEnded] = useState(false);
-	const [chosenView, setChosenView] = useState<FactoryView>(initialView);
-	const phone = useMediaQuery(PHONE_QUERY);
-	const view: FactoryView = phone ? "list" : chosenView;
-	const chooseView = (next: FactoryView) => {
-		setChosenView(next);
-		storeView(next);
-	};
+	// A phone has the list; anything wider the board.
+	const view = useMediaQuery(BOARD_QUERY) ? "board" : "list";
 	const ended = useId();
 	const ids = { needs: useId(), ready: useId(), progress: useId(), drafts: useId(), ended: useId() };
 
@@ -312,15 +307,6 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 								Clear
 							</button>
 						) : null}
-						{phone ? null : (
-							<div className="factory-view" role="group" aria-label="Show as">
-								{(["list", "board"] as const).map((option) => (
-									<button key={option} type="button" aria-pressed={view === option} onClick={() => chooseView(option)}>
-										{option === "list" ? "List" : "Board"}
-									</button>
-								))}
-							</div>
-						)}
 					</div>
 					{shown && shown.length === 0 && filtered ? (
 						<p className="usage-empty factory-none">

@@ -144,36 +144,5 @@ export function boardCards(list: readonly ItemSummary[], children: readonly Item
 	return columns;
 }
 
-// ---- List | Board, remembered per viewer ---------------------------------------------------------
-
-export type FactoryView = "list" | "board";
-const VIEW_KEY = "wlp.factory.view";
-/** A phone has the list only; a wide screen opens on the board until its viewer chooses. */
-export const PHONE_QUERY = "(max-width: 760px)";
-export const WIDE_QUERY = "(min-width: 1100px)";
-
-const matches = (query: string): boolean => typeof matchMedia === "function" && matchMedia(query).matches;
-
-/** The view the viewer chose last on this browser; null where none was, or storage is closed. */
-export function storedView(): FactoryView | null {
-	try {
-		const value = localStorage.getItem(VIEW_KEY);
-		return value === "list" || value === "board" ? value : null;
-	} catch {
-		return null;
-	}
-}
-
-export function storeView(view: FactoryView): void {
-	try {
-		localStorage.setItem(VIEW_KEY, view);
-	} catch {
-		// Private windows and blocked storage: the choice lasts the page.
-	}
-}
-
-/** The view to open on: the list on a phone, whatever the choice; else the choice, or the board on a wide screen. */
-export function initialView(): FactoryView {
-	if (matches(PHONE_QUERY)) return "list";
-	return storedView() ?? (matches(WIDE_QUERY) ? "board" : "list");
-}
+/** Wider than a phone: the Factory shows the board; a phone has the list. */
+export const BOARD_QUERY = "(min-width: 761px)";

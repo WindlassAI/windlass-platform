@@ -19,7 +19,9 @@ import { AppProvider } from "../state/app";
 // The whole app renders here: beside the other files on a busy machine, its first render can take longer than the default 5 s.
 vi.setConfig({ testTimeout: 30_000 });
 // jsdom has no media queries: the theme reads one, and a wide screen matches none of the app's.
-window.matchMedia ??= ((query: string) => ({ matches: false, media: query, onchange: null, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent: () => false })) as typeof window.matchMedia;
+// Most tests read the list, which a phone gets; the board's own tests set `wide`.
+let wide = false;
+window.matchMedia ??= ((query: string) => ({ matches: wide && query.includes("min-width: 761px"), media: query, onchange: null, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent: () => false })) as typeof window.matchMedia;
 
 const ada: AuthResult = { token: "mock:user:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
 
@@ -475,14 +477,15 @@ describe("a deployment without the second review", () => {
 });
 
 describe("the Factory page's board", () => {
-	afterEach(() => localStorage.removeItem("wlp.factory.view"));
+	beforeEach(() => { wide = true; });
+	afterEach(() => { wide = false; });
 
 	it("caps the tray at two rows and columns at eight, keeping totals when expanded", async () => {
-		await show("/factory", { items: "many" });
-		const style = document.createElement("style");
+		// The tray measures its columns when it mounts: three columns, so two rows hold six.
+		const style = document.head.appendChild(document.createElement("style"));
 		style.textContent = ".board-tray .board-cards { grid-template-columns: 320px 320px 320px; }";
-		host.append(style);
-		act(() => button("Board").click());
+		await show("/factory", { items: "many" });
+		await settle(2);
 		for (const [selector, limit] of [[".board-tray", 6], [".board-column-ready", 8], [".board-column-ended", 8]] as const) {
 			const lane = host.querySelector(selector)!;
 			const total = Number(lane.querySelector(".board-column-count")?.textContent);
@@ -498,17 +501,15 @@ describe("the Factory page's board", () => {
 			act(() => toggle.click());
 			expect(count()).toBe(limit);
 		}
+		style.remove();
 	});
 
-	it("switches List | Board, remembers the choice, and shows a feature as one card with its parts", async () => {
+	it("shows the board on a wide screen with no switch, and a feature as one card with its parts", async () => {
 		await show("/factory", { items: "features" });
-		expect(button("List").getAttribute("aria-pressed")).toBe("true");
-		expect(host.querySelector(".factory-board")).toBeNull();
-		act(() => button("Board").click());
 		await settle(2);
-		expect(button("Board").getAttribute("aria-pressed")).toBe("true");
-		expect(localStorage.getItem("wlp.factory.view")).toBe("board");
+		expect(host.querySelector(".factory-board")).not.toBeNull();
 		expect(host.querySelector(".factory-group")).toBeNull();
+		expect(host.querySelector(".factory-view")).toBeNull();
 		act(() => host.querySelector<HTMLButtonElement>(".board-tray .board-toggle")!.click());
 		const titles = [...host.querySelectorAll(".board-card-title")].map((title) => title.firstChild?.textContent ?? "");
 		const top = (await listed()).filter((item) => !item.parent);
@@ -516,14 +517,5 @@ describe("the Factory page's board", () => {
 		const feature = [...host.querySelectorAll(".board-card")].find((card) => card.querySelector(".board-part-asks"));
 		expect(feature?.closest(".board-tray")).not.toBeNull();
 		expect(feature?.querySelector(".board-card-action")?.textContent).toBe("Answer");
-		act(() => root?.unmount());
-		root = null;
-		client.dispose();
-		await show("/factory", { items: "features" });
-		expect(host.querySelector(".factory-board")).not.toBeNull();
-		act(() => button("List").click());
-		await settle(2);
-		expect(localStorage.getItem("wlp.factory.view")).toBe("list");
-		expect(host.querySelector(".factory-board")).toBeNull();
 	});
 });
