@@ -7,6 +7,10 @@ import { createPrivateKey, createSign, type KeyObject } from "node:crypto";
 import { githubClientSecret, githubConfig, githubPrivateKey } from "../config.js";
 import { redact } from "./redact.js";
 
+/**
+ * The GitHub App as the server uses it. Each installation token is requested for one repository and only the
+ * permissions its step needs (`TokenScope`); only read-only ones are kept for reuse. User tokens come from the code exchange.
+ */
 /** The REST API version every request names; the one GitHub's documentation showed when this was written. */
 export const GITHUB_API_VERSION = "2026-03-10";
 const USER_AGENT = "windlass-platform";
