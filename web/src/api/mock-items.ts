@@ -1,3 +1,6 @@
+/** Item fixtures, replay and feed updates for the mock client. Each user owns a separate item store. */
+import { sandboxTime } from "../lib/format";
+import { flagWords } from "../../../server/src/verified";
 import type { ItemPlaceDefaults } from "@contract";
 import { type DefaultDestination, defaultPlaceRetryAt, resolveDefaultPlace } from "../../../server/src/factory/default-place";
 import { approvalText, planTokens, singleAfterPlanning, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
@@ -8,28 +11,6 @@ import { checkItemEffort } from "../../../server/src/account-models.js";
 import { approveRoutes, bindRoute, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
 import { plannerMachines } from "../../../server/src/machines/details.js";
 import { answeredWords, choice } from "../../../server/src/factory/answered.js";
-/**
- * The mock's work items, API tokens and factory limits: what the item screens are looked at with, by
- * hand (`?items=`) and in tests. It answers as the server's user actor says it does (contract.ts,
- * "Work items", and `UserActions.listItems` to `revokeApiToken`), and pushes the feed (`ItemFeed`: open
- * items, the newest ended ones, the counts) to the user's live feeds (`UserFeed.onItems`) after every
- * change, as `UserEvents.items` is.
- *
- * Every sentence an item shows is the server's (server/src/factory/blueprint.ts, budget.ts and
- * verdict.ts, server/src/actors/user-items.ts), copied here: the screens only display them. A verdict's
- * `said` is made as the server makes it (`ciSentence`, `flagWords`), and a run's `caps` are the step
- * machine's (`RULES`). The seeded
- * set has one item in each state, each wait sentence, each question, and a review with each verdict,
- * each state of CI and each way CI decides (with and without the user's checks), and one verdict stored
- * before verdicts carried their sentences (no `said`). Where the deployment offers machines, it also has
- * items on the user's machines, made from the machines the mock lists: one at work on an online
- * machine, one waiting for an offline one, one stopped on a budget, and one asked about a machine that
- * was removed. An item on a machine is filed, started, held and asked about as the server does it
- * (user-items.ts `itemProfile`, user-machines.ts `launchMachineProfiles`, budget.ts `admit`,
- * blueprint.ts `askRemoved`): `machinesChanged` is told of every change of the machines.
- *
- * mock.ts wires it in with one hook: `createMockItems(…)` once, and `...items.calls(auth)` in the user's interface.
- */
 import {
 	machineLabel,
 	MAX_ACCEPTANCE_CRITERIA,
@@ -155,18 +136,6 @@ const short = (sha: string) => sha.slice(0, 7);
 /** A new id or value, for what is made here rather than seeded. */
 const fresh = (length: number) => crypto.randomUUID().replace(/-/g, "").slice(0, length);
 const utc = (at: number) => new Date(at).toISOString().slice(11, 16);
-
-/** "1 h 30 min" (server/src/usage.ts, `spellSeconds`). */
-function spellSeconds(total: number): string {
-	const seconds = Math.max(0, Math.round(total));
-	const hours = Math.floor(seconds / 3600);
-	const minutes = Math.floor((seconds % 3600) / 60);
-	const rest = seconds % 60;
-	if (hours > 0) return minutes === 0 ? `${hours} h` : `${hours} h ${minutes} min`;
-	if (minutes >= 10 || (minutes > 0 && rest === 0)) return `${minutes} min`;
-	if (minutes > 0) return `${minutes} min ${rest} s`;
-	return `${seconds} s`;
-}
 
 interface Seed {
 	n: number;
@@ -306,7 +275,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 		// Each wait for capacity, as the user actor's turn queue words it (budget.ts, `admit`).
 		waitingFor(5, "Fix the flaky clock test", "The clock test fails about one run in twenty when the minute rolls over. Freeze the time in it.", HARBOR, "capacity", "Waiting for one of your 6 hosted sandboxes that run at once: 6 running now. Your machines don't count toward this.", 6, at + 25_000),
 		waitingFor(6, "Drop the Node 20 workaround", "Node 20 is no longer supported. Remove the fallback for its missing fetch timeout, and 20 from the engines range.", HARBOR, "capacity", "Waiting for one of your 6 hosted sandboxes that run at once: 6 running now. Your machines don't count toward this.", 4, at + 40_000),
-		waitingFor(7, "Log the upload's size", "Log each artefact's size when it is uploaded, in a unit a person reads easily.", TIDES, "capacity", `Your 2 h of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${spellSeconds(Math.max(60, Math.ceil((nextMidnight(at) - at) / MINUTE) * 60))}). The allowance is this deployment's setting, which its owner can raise.`, 50, nextMidnight(at)),
+		waitingFor(7, "Log the upload's size", "Log each artefact's size when it is uploaded, in a unit a person reads easily.", TIDES, "capacity", `Your 2 h of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${sandboxTime(Math.max(60, Math.ceil((nextMidnight(at) - at) / MINUTE) * 60))}). The allowance is this deployment's setting, which its owner can raise.`, 50, nextMidnight(at)),
 		waitingFor(8, "Explain the tide formula in a comment", "Above the harmonic sum, say in a comment what each term stands for and where the constants come from.", TIDES, "capacity", "Waiting for a place among the 20 sandboxes you may keep: all are in use. Free one on the Usage page, or it frees itself 3 days after its item is done.", 12, at + 2 * MINUTE),
 		waitingFor(9, "Speed up the harmonic constants table", "Building the harmonic constants table takes 2 s at start. Build it once and keep it.", TIDES, "capacity", "Waiting for one of your 6 hosted sandboxes that run at once: 6 running now. Your machines don't count toward this.", 7, at + 30_000),
 		waitingFor(10, "Show the next high tide first", "On a station's page, list the next high tide above the rest of the day's tides.", TIDES, "capacity", `Waiting for a hosted sandbox: this deployment runs 10 at once and all are in use. Trying again at ${utc(at + 4 * MINUTE)} UTC.`, 9, at + 4 * MINUTE),
@@ -1016,24 +985,6 @@ export function ciSentence(ci: Verdict["ci"]): string {
 			return `CI could not be read${ci.said ? ` in full: ${ci.said}` : ": GitHub did not answer while the platform waited for it"}. The pull request's own page shows its CI.`;
 		case "not_permitted":
 			return `CI was not read: GitHub does not let the platform see this repository's checks${ci.said ? ` (“${ci.said}”)` : ""}. The GitHub App needs read access to Checks, Commit statuses and Actions, accepted on the installation. The pull request's own page shows them.`;
-	}
-}
-
-/** A flag in words (server/src/verified.ts, `flagWords`): what each of `Verdict.said.flags` is. */
-function flagWords(kind: Verdict["flags"][number]["kind"]): string {
-	switch (kind) {
-		case "tests_removed":
-			return "Test files were deleted or renamed away";
-		case "tests_skipped":
-			return "Tests were newly skipped or disabled";
-		case "checks_changed":
-			return "What the checks run was changed in this work";
-		case "outside_scope":
-			return "The subtask changed files outside its approved paths";
-		case "agent_instructions_changed":
-			return "Instructions for agents were changed in this work";
-		case "exit_ignored":
-			return "A check's command came to ignore an exit status (`|| true` or the like)";
 	}
 }
 

@@ -1,71 +1,14 @@
+/**
+ * Each token owns one in-memory world rebuilt on reload. Sessions keep durable events in their
+ * timeline and broadcast transient deltas until the next durable event. This client owns the
+ * timers for replay, pending questions and cancellation.
+ */
 import { modelRefusal } from "../../../server/src/account-models.js";
-import { withSettingsKeys } from "../../../server/src/sandbox/harnesses.js";
 import { changedPlace, changesPlace, placeProblem, savedPlace } from "../../../server/src/factory/default-place";
 import type { ItemPlaceDefaults } from "@contract";
 import { shiftMonths } from "../../../server/src/billing/meter.js";
 import { machineDetails } from "../../../server/src/machines/details.js";
-/**
- * The mock `PlatformClient`: the whole backend in memory, with no network.
- *
- * It serves a user with a handful of sessions in different states, the seven sandbox profiles, and
- * plays the recorded `windlass --json` runs in fixtures/windlass-events/ as turns with their real
- * timing. Events are split the way contract.ts describes: durable events and `notice`,
- * `workspace.changes`, `cli.summary` are stored as timeline items; `text.delta`, `reasoning.delta`,
- * `tool.input.delta` and `tool.progress` are broadcast as deltas and kept in `pending` only until the
- * next durable event. `stop()` interrupts a turn the way Windlass winds one down.
- *
- * Interactive turns: a prompt about the network plays the ACP approval recording up to its question
- * and waits (`question`, status "waiting"); `answer()` carries on with the approved or the declined
- * recording, and a question nobody answers is declined by the platform after `questionTimeoutMs`.
- * A prompt sent while a turn runs steers it, and `stopCall()` stops one running call.
- *
- * A project's MCP server: a prompt with the word "mcp" plays a repository whose `.windlass/config.json`
- * names the server "harbor". The question about it is put before the turn's first event and holds the
- * turn; "start" and "not now" each leave the platform's line and the turn carries on, and nobody
- * answering is "not now". An approved definition is not asked about again in that session. With
- * "variable" in the prompt the definition reads a variable that is not set (the question says so, and
- * an approval ends in the line that the server did not start); with "late", Windlass reports the
- * server while the turn runs, so with a network word as well the tool call's question arrives while
- * the server's is open: the server's steps aside and is put again after it. The words are
- * server/src/server-question.ts's, repeated here (Question.server.test.ts compares the two).
- *
- * An approval is remembered for the user and the session's project (its repository, or the session
- * itself), as the server remembers it, and here the mock plays the deployment and not local Docker,
- * whose profiles it lists: Windlass's own record stays in the sandbox it was made in, so a second
- * session on the same repository is spared the question by the platform's record, with the line that
- * says so. The panel's list comes from `servers()`, and `approveServer()` and `forgetServer()` change
- * the record. Two seeded sessions on acme/harbor share one approval, and one of them shows every
- * state: a server that runs, one that waits and one that could not start. `mockNextServers()` makes
- * the next of those calls fail.
- *
- * GitHub: the deployment has a GitHub App, the signed-in ChatGPT user starts connected and the demo
- * user does not. Connecting sends the browser to the address the real server would send it back to
- * (`#github=<ticket>`), so the way back is the real one; whether a user is connected is kept in
- * localStorage, since the page reloads on the way. A few seeded sessions were launched on repositories
- * of the connection, with and without a pull request. `publish()` takes a moment, empties the list of
- * changed files and writes the timeline's line. `mockNextGithub()` makes the next call fail as GitHub
- * can, and `createMockClient({ github: false })` plays a deployment with no GitHub App.
- *
- * Usage: the deployment gives each user two hours of sandbox time a day and lets them keep twenty
- * sandboxes (the real default is five; the seeded sessions keep eight, and agents launched by hand need room). Today's time is made up for
- * the seeded sessions, a turn played here adds what it ran, and the last two weeks are a fixed
- * history with one day at the limit. Every sandbox that runs holds five minutes of the day. The
- * prices are E2B's, since the mock plays a deployment there. `mockUsage("low" | "used" | "full")`,
- * or `&usage=...` in the address, plays a day with little left, a day that is used up (a prompt is
- * refused as the server refuses it), and an account that keeps as many sandboxes as it may (a new
- * agent's first prompt is refused); `freeSandbox()` removes one. The sentences are
- * server/src/usage.ts's, repeated here (mock.usage.test.ts compares the two).
- *
- * What a user keeps for their account (docs/github-and-repositories.md, "Account settings") is here too: the defaults for new
- * agents, their own MCP servers and those servers' secrets, with the server's refusals in the
- * server's words. A session's panel lists the user's own servers beside its project's from its next
- * turn. With `account: "seeded"`, which the page asks for, the user has two servers and two secrets
- * saved, one of each under a name acme/harbor has a secret of its own for.
- *
- * The world is rebuilt from the token on every page load, so the seeded sessions keep their IDs
- * across a reload and sessions created by hand do not survive one.
- */
-import { windlassModels, windlassProvider, hostedCatalog, hostedKeyMessage, hostedProfiles, hostedProvider, initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
+import { withSettingsKeys, windlassModels, windlassProvider, hostedCatalog, hostedKeyMessage, hostedProfiles, hostedProvider, initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
 import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { mockEnvironments, mockRebuild, mockSchedule } from "./mock-environments";
@@ -86,7 +29,6 @@ import {
 	MAX_SECRET_VALUE_BYTES,
 	MAX_SECRETS_PER_REPOSITORY,
 	MAX_SERVER_DEFINITION_BYTES,
-	MAX_SERVER_NAME_CHARS,
 	MAX_SETUP_COMMAND_CHARS,
 	MAX_CHECKS_PER_REPOSITORY,
 	MAX_CHECK_NAME_CHARS,
@@ -182,11 +124,12 @@ import {
 	type LinearTeamList,
 } from "@contract";
 import { PlatformError, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
-import { acpOutcome, acpRecorder, isDurable, isLive, isPermission, schedule, splitRuns, turnEnded, withSummary, type AcpPermission } from "./feed";
-import { contextOf, HARNESS_NAMES } from "../lib/acp";
+import { acpOutcome, acpRecorder, isDurable, isLive, isPermission, schedule, turnEnded, type AcpPermission } from "./feed";
+import { contextOf, HARNESS_NAMES, unifiedDiff } from "../lib/acp";
 import { acpFixture } from "./acp-fixtures";
-import { fixture } from "./fixtures";
-import { unifiedDiff } from "../lib/acp";
+import { SCRIPTS, ROTATION, MOCK_HOST_CALL, chooseScript, chooseServer, isHostEvent, type MockServer, type Script, type ScriptName, type QuestionScript, type WorkspaceChange } from "./mock-scenarios";
+import { cleanServerName, cleanServerDefinition, definitionReads, ServerProblem } from "../../../server/src/personal-server-definition.js";
+import { sandboxTime } from "../lib/format";
 import { dayOf, reportedModelUsage, usesPlatformModel } from "../../../server/src/usage";
 import { createMockItems, MOCK_FACTORY_LIMITS, type MockItemsState } from "./mock-items";
 
@@ -394,28 +337,16 @@ const MOCK_HISTORY = [0, 3_120, 5_460, 1_890, 0, 0, 4_410, 7_200, 2_280, 6_630, 
 const MOCK_SPENT: Record<string, number> = { "add-test": 1_140, headers: 420, "harbor-build": 240, probe: 480, unattended: 360 };
 const MOCK_UNREPORTED: Record<string, number> = { probe: 300 };
 
-/** server/src/usage.ts, `spellSeconds`. */
-function spellSeconds(total: number): string {
-	const seconds = Math.max(0, Math.round(total));
-	const hours = Math.floor(seconds / 3600);
-	const whole = Math.floor((seconds % 3600) / 60);
-	const rest = seconds % 60;
-	if (hours > 0) return whole === 0 ? `${hours} h` : `${hours} h ${whole} min`;
-	if (whole >= 10 || (whole > 0 && rest === 0)) return `${whole} min`;
-	if (whole > 0) return `${whole} min ${rest} s`;
-	return `${seconds} s`;
-}
-
-const resetWords = (numbers: UsageNumbers) => `The allowance is whole again at 00:00 UTC, in ${spellSeconds(Math.max(60, Math.ceil((numbers.resetsAt - numbers.at) / 60_000) * 60))}.`;
+const resetWords = (numbers: UsageNumbers) => `The allowance is whole again at 00:00 UTC, in ${sandboxTime(Math.max(60, Math.ceil((numbers.resetsAt - numbers.at) / 60_000) * 60))}.`;
 
 /** server/src/usage.ts, `allowanceRefusal`. */
 export function mockAllowanceRefusal(numbers: UsageNumbers): string {
-	const allowance = spellSeconds(numbers.allowanceSeconds ?? 0);
-	const used = spellSeconds(numbers.usedSeconds);
-	const held = numbers.heldSeconds > 0 ? spellSeconds(numbers.heldSeconds) : null;
+	const allowance = sandboxTime(numbers.allowanceSeconds ?? 0);
+	const used = sandboxTime(numbers.usedSeconds);
+	const held = numbers.heldSeconds > 0 ? sandboxTime(numbers.heldSeconds) : null;
 	const left = numbers.leftSeconds ?? 0;
 	let said: string;
-	if (left > 0) said = `Only ${spellSeconds(left)} of today's ${allowance} of sandbox time is left (${used} used${held === null ? "" : `, ${held} held for sandboxes that are running now`}), which is too little to start with, so nothing was started.`;
+	if (left > 0) said = `Only ${sandboxTime(left)} of today's ${allowance} of sandbox time is left (${used} used${held === null ? "" : `, ${held} held for sandboxes that are running now`}), which is too little to start with, so nothing was started.`;
 	else if (held === null) said = `Today's ${allowance} of sandbox time is used up, so nothing was started.`;
 	else said = `Today's ${allowance} of sandbox time is all used or held: ${used} used, and ${held} held for sandboxes that are running now. Nothing was started.`;
 	if (held !== null) said += " What a running sandbox does not use of its hold is free again when it stops.";
@@ -608,329 +539,12 @@ export function mockStandInModels(source: Exclude<ModelList["source"], "account"
 }
 const REDIRECT_PREFIX = "http://127.0.0.1:1455/auth/callback";
 
-interface WorkspaceChange {
-	status: string;
-	diff: string;
-}
-
-/** The rest of a turn that stops at a question: one recording per kind of answer. */
-interface QuestionScript {
-	approved: WindlassEvent[];
-	declined: WindlassEvent[];
-	/** Set when a subagent asks: the first line of its task. */
-	subagent?: string;
-}
-
-/** A server the project's configuration names, as a prompt's words choose it. */
-interface MockServer {
-	name: string;
-	/** Stands for Windlass's mark of the definition: an approval is for it. */
-	fingerprint: string;
-	argv: string[];
-	/** Variables the definition reads that are not set in the sandbox. */
-	unset: string[];
-	/** Reported while the turn runs, instead of before its prompt goes. */
-	late: boolean;
-}
-
-interface Script {
-	/** For a turn with a question: everything up to and including its `approval.requested`. */
-	events: WindlassEvent[];
-	question?: QuestionScript;
-	/** The project's server that waits for the user's approval in this turn. */
-	server?: MockServer;
-	/** Slows the recording down (2 plays it at half speed). */
-	stretch?: number;
-	workspace?: Record<string, WorkspaceChange>;
-	/** The platform could not run the turn at all: no Windlass events, an "error" outcome with this message. */
-	platformFailure?: string;
-	/** With `platformFailure`: the sandbox's machine could not be reached, so the turn fails before its sandbox is opened. */
-	unreachable?: boolean;
-}
-
-const run = (name: string, index = 0): WindlassEvent[] => splitRuns(fixture(name))[index] ?? [];
-
-/**
- * The mock's stand-in for the platform answering one of its own tools (server/src/agent-publish.ts):
- * where a recording has it, the platform's line goes into the timeline and the call settles with what
- * the agent is told (`hostCall`). Never sent to a client.
- */
-const MOCK_HOST_CALL = "mock.host_call";
-
-/** A call of the platform's `push` or `fetch_base` in a scripted turn. `changed`: the files the turn changed by then, which the platform commits. */
-interface MockHostCall {
-	tool: "push" | "fetch_base";
-	input: Record<string, unknown>;
-	changed?: string[];
-}
-
-/**
- * A recorded run with calls of the platform's tools added before its last step, one step each, as a
- * model makes them once its work is done. They are marked, so that a session with no repository,
- * where the server offers no such tool, plays the run without them.
- */
-function withHostCalls(events: WindlassEvent[], calls: MockHostCall[]): WindlassEvent[] {
-	const last = events.findLastIndex((event) => event.type === "step.started");
-	const usage = { inputTokens: 9300, cachedInputTokens: 9100, outputTokens: 28, reasoningTokens: 0 };
-	const added = calls.flatMap((call, index): WindlassEvent[] => {
-		const messageId = `h${index + 1}`;
-		const callId = `call_${call.tool}`;
-		const host = { messageId, callId, host: true };
-		return [
-			{ type: "step.started", v: 1, seq: 0, data: { ...host, attempt: 1, model: "gpt-test" } },
-			{ type: "tool.called", v: 1, seq: 0, data: { ...host, name: call.tool, input: JSON.stringify(call.input), providerData: null } },
-			{ type: "tool.started", v: 1, seq: 0, data: { ...host, effect: "read" } },
-			{ type: MOCK_HOST_CALL, data: { ...host, tool: call.tool, branch: call.input.branch ?? null, changed: call.changed ?? [] } },
-			{ type: "step.ended", v: 1, seq: 0, data: { ...host, finish: "tool_calls", usage } },
-		];
-	});
-	const out = [...events.slice(0, last), ...added, ...events.slice(last)];
-	// The turn's summary counts the added steps.
-	return out.map((event) => (event.type === "cli.summary" && typeof event.steps === "number" ? { ...event, steps: event.steps + calls.length } : event));
-}
-
-const isHostEvent = (event: WindlassEvent): boolean => event.type === MOCK_HOST_CALL || (event.data ?? {}).host === true;
-
-const ADD_TS_DIFF = `diff --git a/src/add.ts b/src/add.ts
-index 3b1f0c2..9d2e7aa 100644
---- a/src/add.ts
-+++ b/src/add.ts
-@@ -1,3 +1,3 @@
- export function add(a: number, b: number) {
--  return a - b
-+  return a + b
- }
-`;
-
-const CHECKS_DIFF = `diff --git a/add.ts b/add.ts
-index 1c9a0f4..5e8b7d1 100644
---- a/add.ts
-+++ b/add.ts
-@@ -1 +1 @@
--export const add = (a: number, b: number) => a - b
-+export const add = (a: number, b: number) => a + b
-`;
-
-const TEST_DIFF = `diff --git a/a.test.ts b/a.test.ts
-index 77c41de..0b9f3a2 100644
---- a/a.test.ts
-+++ b/a.test.ts
-@@ -1,7 +1,7 @@
- import { expect, test } from "bun:test"
- import { add } from "./add.ts"
-
- test("adds two numbers", () => {
--  expect(add(1, 1)).toBe(3)
-+  expect(add(1, 1)).toBe(2)
- })
-
-@@ -14,6 +14,10 @@ test("adds negative numbers", () => {
-   expect(add(-1, -1)).toBe(-2)
- })
-
-+test("adds zero", () => {
-+  expect(add(0, 0)).toBe(0)
-+})
-+
- test("is commutative", () => {
-   expect(add(2, 3)).toBe(add(3, 2))
- })
-`;
-
-const MADE_DIFF = `diff --git a/made.txt b/made.txt
-new file mode 100644
-index 0000000..ce01362
---- /dev/null
-+++ b/made.txt
-@@ -0,0 +1 @@
-+hello
-`;
-
-/**
- * A long turn made up for the mock, not recorded: the agent reads its way round a repository, searches
- * it, edits three files, runs a test that fails, fixes it, runs the lint and the types, and ends in a
- * slow build. Many calls in a row, as a real agent makes them, so that a busy transcript can be seen
- * here. A prompt about the retry backoff plays it.
- */
-function backoffRun(): WindlassEvent[] {
-	const events: WindlassEvent[] = [];
-	let time = 1794666100000;
-	let seq = 0;
-	let step = 0;
-	let call = 0;
-	const stored = (type: string, data: Record<string, unknown>, after: number) => {
-		time += after;
-		events.push({ type, v: 1, seq: ++seq, data, sessionId: "ses_demo", time });
-	};
-	const message = () => `a${step}`;
-	const begin = (after = 200) => {
-		step++;
-		call = 0;
-		stored("step.started", { messageId: message(), attempt: 1, model: "gpt-test" }, after);
-	};
-	const end = (finish: "tool_calls" | "stop" = "tool_calls") => stored("step.ended", { messageId: message(), finish, usage: { inputTokens: 4000 + step * 900, cachedInputTokens: 3200 + step * 850, outputTokens: 60, reasoningTokens: 12 } }, 60);
-	const say = (text: string, after = 500) => stored("text.ended", { messageId: message(), text, providerData: null }, after);
-	const think = (text: string) => stored("reasoning.ended", { messageId: message(), text, providerData: null }, 700);
-	const tool = (name: string, input: Record<string, unknown>, effect: string, result: { output: string; display?: Record<string, unknown> | null; outcome?: string; ms?: number; progress?: string[] }) => {
-		call++;
-		const ids = { messageId: message(), callId: `call_${call}` };
-		stored("tool.called", { ...ids, name, input: JSON.stringify(input), providerData: null }, 140);
-		stored("tool.started", { ...ids, effect }, 40);
-		const ms = result.ms ?? 220;
-		const lines = result.progress ?? [];
-		lines.forEach((_, index) => {
-			time += Math.round(ms / (lines.length + 1));
-			events.push({ type: "tool.progress", sessionId: "ses_demo", ...ids, text: lines.slice(0, index + 1).join("\n"), time });
-		});
-		stored("tool.settled", { ...ids, outcome: result.outcome ?? "success", output: result.output, truncation: null, attachments: [], display: result.display ?? null }, lines.length > 0 ? Math.round(ms / (lines.length + 1)) : ms);
-	};
-	const shell = (command: string, output: string, exitCode: number, ms: number, progress?: string[]) => tool("shell", { command }, "exec", { output, outcome: exitCode === 0 ? "success" : "error", display: { exitCode, signal: null, timedOut: false, interrupted: null, durationMs: ms }, ms, progress });
-	const read = (path: string, lines: number) => tool("read", { path }, "read", { output: `1\t// ${path}\n…`, display: { path, offset: 1, lines, totalLines: lines } });
-	const edit = (path: string, diff: string) => tool("edit", { path, old_string: "…", new_string: "…" }, "write", { output: `Edited ${path}: replaced 1 occurrence.`, display: { path, replacements: 1, diff } });
-
-	stored("session.created", { cwd: "/repo", title: null, lineage: null, settings: { model: "gpt-test", reasoningEffort: "medium" } }, 0);
-	stored("inbox.enqueued", { messageId: "u1", origin: null, delivery: "steer", content: [{ type: "text", text: "" }] }, 0);
-	stored("execution.started", { executionId: "exe_1" }, 40);
-	stored("inbox.delivered", { messageId: "u1" }, 80);
-
-	begin();
-	think("**Mapping the retry path**\n\nThe client retries in two places: the HTTP wrapper and the queue's consumer. I should read both before changing the delay.");
-	say("I'll look at how the client retries requests before changing anything.");
-	tool("glob", { pattern: "src/**/*.ts" }, "read", { output: "src/client/http.ts\nsrc/client/retry.ts\nsrc/client/retry.test.ts\nsrc/queue/consumer.ts", display: { files: 14 } });
-	tool("grep", { pattern: "retry|backoff", path: "src" }, "read", { output: "src/client/http.ts:41:  return retry(() => send(request), policy)\nsrc/client/retry.ts:12:export function backoff(attempt: number) {", display: { matches: 9, files: 4, engine: "ripgrep" } });
-	read("src/client/http.ts", 182);
-	read("src/client/retry.ts", 64);
-	end();
-
-	begin();
-	read("src/client/retry.test.ts", 120);
-	read("src/queue/consumer.ts", 96);
-	tool("grep", { pattern: "maxDelay", path: "src" }, "read", { output: "", display: { matches: 0, files: 0, engine: "ripgrep" } });
-	read("package.json", 41);
-	end();
-
-	begin();
-	say("The delay doubles with no ceiling, and the jitter is added after the point where a cap would apply. Capping it at 30 s and moving the jitter inside the cap.");
-	edit("src/client/retry.ts", "--- a/src/client/retry.ts\n+++ b/src/client/retry.ts\n@@ -10,7 +10,9 @@\n+const MAX_DELAY_MS = 30_000\n+\n export function backoff(attempt: number) {\n-  const delay = BASE_MS * 2 ** attempt\n-  return delay + jitter()\n+  const delay = Math.min(BASE_MS * 2 ** attempt, MAX_DELAY_MS)\n+  return Math.min(delay + jitter(), MAX_DELAY_MS)\n }");
-	edit("src/client/http.ts", "--- a/src/client/http.ts\n+++ b/src/client/http.ts\n@@ -39,3 +39,3 @@\n-  return retry(() => send(request), policy)\n+  return retry(() => send(request), { ...policy, maxDelayMs: 30_000 })\n");
-	end();
-
-	begin();
-	shell("bun test src/client", "bun test v1.4.0\n\nsrc/client/retry.test.ts:\n✓ retry > gives up after five attempts\n✗ retry > waits longer each time [0.40ms]\n  error: expect(received).toBe(expected)\n  Expected: 64000\n  Received: 30000\n\n 11 pass\n 1 fail\n[Exit code 1]", 1, 2400);
-	end();
-
-	begin();
-	say("One test expected the old, uncapped delay after six attempts. Updating it to the cap.");
-	edit("src/client/retry.test.ts", "--- a/src/client/retry.test.ts\n+++ b/src/client/retry.test.ts\n@@ -22,5 +22,5 @@\n test(\"waits longer each time\", () => {\n-  expect(backoff(6)).toBe(64000)\n+  expect(backoff(6)).toBe(30000)\n })");
-	shell("bun test src/client", "bun test v1.4.0\n\nsrc/client/retry.test.ts:\n✓ retry > gives up after five attempts\n✓ retry > waits longer each time\n\n 12 pass\n 0 fail", 0, 2100);
-	end();
-
-	begin();
-	shell("bun run lint", "$ eslint src\n✔ No problems found", 0, 3100);
-	shell("bun run typecheck", "$ tsc --noEmit", 0, 4200);
-	end();
-
-	begin();
-	say("Now the full build and the whole suite.");
-	const suite = ["$ tsc -p tsconfig.build.json", "$ bun build src/index.ts --outdir dist", "  dist/index.js  418.21 KB", "$ bun test", "bun test v1.4.0", ...["client/http", "client/retry", "queue/consumer", "queue/producer", "store/cache", "store/disk", "api/routes", "api/auth", "jobs/sweep", "jobs/export"].map((name, index) => `src/${name}.test.ts: ${[18, 12, 41, 27, 52, 33, 43, 21, 9, 16][index]} pass`), "", " 272 pass", " 0 fail", "Ran 272 tests across 10 files. [118.40s]"];
-	shell("bun run build && bun test", suite.join("\n"), 0, 150_000, suite);
-	end();
-
-	begin();
-	say("The delay is capped now, and everything passes.\n\n- **`src/client/retry.ts`**: `backoff()` stops at `MAX_DELAY_MS` (30 s), and the jitter stays inside the cap.\n- **`src/client/http.ts`**: the HTTP client passes the cap to `retry()`.\n- **`src/client/retry.test.ts`**: the test that expected 64 s after six attempts now expects the cap.\n\n`bun run lint`, `bun run typecheck`, the build and all 272 tests pass.", 900);
-	end("stop");
-
-	stored("execution.succeeded", { executionId: "exe_1", verification: { status: "not_configured" } }, 40);
-	events.push({ type: "cli.summary", sessionId: "ses_demo", executionId: "exe_1", outcome: "succeeded", steps: step, summaryCalls: 0, requests: step, durationMs: time - 1794666100000, usage: { inputTokens: 58_000, cachedInputTokens: 51_200, outputTokens: 1480, reasoningTokens: 220 }, cachedShare: 0.883 });
-	return events;
-}
-
-/**
- * The ACP approval recordings as a question script: the shared start up to the question, then the
- * approved or declined rest. The two runs have their own message IDs; the declined rest is given the
- * approved run's, since it continues the same call. The second message steered in while a command ran
- * is the recorder's, not the user's: it is left out, and the user's own steers are added by `prompt()`.
- */
-function questionScript(subagent?: string): Script {
-	const approved = withSummary(fixture("acp-approval-approved"));
-	const declined = withSummary(fixture("acp-approval-denied"));
-	const asked = (events: WindlassEvent[]) => events.findIndex((event) => event.type === "approval.requested");
-	const messageOf = (events: WindlassEvent[]) => String((events[asked(events)]?.data ?? {}).messageId);
-	const from = messageOf(declined);
-	const to = messageOf(approved);
-	const rest = (events: WindlassEvent[], rename: boolean) =>
-		events
-			.slice(asked(events) + 1)
-			.filter((event) => !event.type.startsWith("inbox."))
-			.map((event) => {
-				if (!rename || event.data?.messageId !== from) return event;
-				return { ...event, data: { ...event.data, messageId: to } };
-			});
-	return { events: approved.slice(0, asked(approved) + 1), question: { approved: rest(approved, false), declined: rest(declined, true), subagent }, stretch: 1.4 };
-}
-
-const SCRIPTS = {
-	fix: { events: run("demo-find-and-fix-a-failing-test"), workspace: { "src/add.ts": { status: " M", diff: ADD_TS_DIFF } } },
-	parallel: { events: run("demo-two-parallel-tool-calls") },
-	checks: { events: run("demo-the-checks-fail-the-model-fixes-the-code-and-they-pass"), workspace: { "add.ts": { status: " M", diff: CHECKS_DIFF } } },
-	steps: { events: run("demo-several-steps-in-one-turn"), workspace: { "a.test.ts": { status: " M", diff: TEST_DIFF } } },
-	build: { events: run("demo-a-long-build-command") },
-	backoff: { events: backoffRun(), workspace: { "src/client/retry.ts": { status: " M", diff: "" }, "src/client/http.ts": { status: " M", diff: "" }, "src/client/retry.test.ts": { status: " M", diff: "" } } },
-	answer: { events: run("demo-two-turns-in-one-session", 0) },
-	answerAgain: { events: run("demo-two-turns-in-one-session", 1) },
-	sandboxed: { events: run("real-scripted-bwrap"), workspace: { "made.txt": { status: "??", diff: MADE_DIFF } } },
-	refused: { events: run("real-scripted-hardened") },
-	usageLimit: { events: run("demo-a-non-retryable-error-usage-limit") },
-	signedOut: { events: run("demo-a-non-retryable-error-authentication") },
-	cancelled: { events: run("demo-cancel-while-one-tool-is-running") },
-	network: questionScript(),
-	subagentNetwork: questionScript("Check what the API's health endpoint returns"),
-	// Four subagents: one finishes, one fails, the user stops one, and one runs in the background. Played slowly enough to watch them run.
-	subagents: { events: run("acp-subagents"), stretch: 3 },
-	crash: { events: [], platformFailure: "The sandbox stopped responding and the turn was abandoned. Nothing it had written was lost; send the prompt again to carry on." },
-	// The fix, then the base fetched and the branch pushed by the agent: the platform commits the changed file, so nothing is left to push.
-	agentPush: { events: withHostCalls(run("demo-find-and-fix-a-failing-test"), [{ tool: "fetch_base", input: {} }, { tool: "push", input: { message: "Make add() add" }, changed: ["src/add.ts"] }]) },
-	// The fix, then a push to the repository's default branch, which is refused: the change stays in the workspace.
-	agentPushRefused: { events: withHostCalls(run("demo-find-and-fix-a-failing-test"), [{ tool: "push", input: { branch: "main", message: "Make add() add" } }]), workspace: { "src/add.ts": { status: " M", diff: ADD_TS_DIFF } } },
-} satisfies Record<string, Script>;
-
-type ScriptName = keyof typeof SCRIPTS;
-
 /** The server's refusal of a prompt to a work item's agent (`prompt` in agent-session.ts), word for word. */
 export const ITEM_SESSION_PROMPT = "This agent works for a work item, whose steps send its prompts. Answer the item, or send its work back with a note.";
-
-/** What an unrecognised prompt plays, in turn. */
-const ROTATION: ScriptName[] = ["fix", "parallel", "checks", "steps", "build", "answer"];
-
-function chooseScript(text: string, rotation: number): ScriptName {
-	const words = text.toLowerCase();
-	if (/usage|limit|quota/.test(words)) return "usageLimit";
-	if (/sign.?in|signed out|auth/.test(words)) return "signedOut";
-	if (/crash/.test(words)) return "crash";
-	if (/\bpush\b/.test(words)) return /\b(main|default branch)\b/.test(words) ? "agentPushRefused" : "agentPush";
-	if (/\b(network|fetch|download|curl|https?|headers?|website|url)\b/.test(words)) return /subagent/.test(words) ? "subagentNetwork" : "network";
-	if (/subagent/.test(words)) return "subagents";
-	if (/backoff/.test(words)) return "backoff";
-	if (/refus|approv|unattended|without the sandbox/.test(words)) return "refused";
-	if (/sandbox/.test(words)) return "sandboxed";
-	if (/build|slow|long|stop|cancel/.test(words)) return "build";
-	if (/parallel|both files/.test(words)) return "parallel";
-	if (/check/.test(words)) return "checks";
-	if (/\d\s*[+*-]\s*\d/.test(words)) return "answer";
-	return ROTATION[rotation % ROTATION.length] ?? "fix";
-}
 
 const SERVER_FILE = "/workspace/.windlass/config.json";
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
-
-/** The server a prompt's words say the project names: "mcp", with "variable" for one that cannot start and "late" for one reported mid-turn. */
-function chooseServer(text: string): MockServer | null {
-	const words = text.toLowerCase();
-	if (!/\bmcp\b/.test(words)) return null;
-	const unset = /\bvariables?\b/.test(words) ? ["HARBOR_TOKEN"] : [];
-	return { name: "harbor", fingerprint: unset.length > 0 ? "748df09716dce52c" : "81498df752b8ef7d", argv: ["python3", "tools/harbor_mcp.py"], unset, late: /\blate\b/.test(words) };
-}
 
 /** What an approval is remembered for, as server/src/server-approvals.ts names it: the session's repository, or the session itself. */
 export interface MockProject {
@@ -1058,119 +672,15 @@ export function mockPersonalReach(profile: SandboxProfile): PersonalServerReach 
 	return { profile: profile.id, name: profile.name, command, address: `Nothing is started: Windlass reaches it at that address from a session's ${machine}, outside its sandbox around commands, and what the agent sends it leaves the ${machine}.` };
 }
 
-/** The keys of one server in Windlass's configuration, as server/src/personal-servers.ts has them (`SERVER_KEYS`). */
-const MOCK_SERVER_KEYS = ["command", "args", "cwd", "env", "url", "headers", "tools", "timeoutSeconds", "startupTimeoutSeconds", "untrusted", "enabled", "protocol"];
-
-/**
- * A server's name and definition as the server would save them (server/src/personal-servers.ts,
- * `cleanServerName` and `cleanServerDefinition`): the same refusals in the same words, and what is
- * kept rebuilt from the keys Windlass knows.
- */
 export function mockCleanServer(rawName: unknown, raw: unknown): { name: string; definition: Record<string, unknown> } {
-	const bad = (message: string) => new PlatformError("user", message, { reason: "bad_server" });
-	if (typeof rawName !== "string" || rawName === "") throw bad("A server needs a name.");
-	if (rawName.length > MAX_SERVER_NAME_CHARS) throw bad(`A server's name can be at most ${MAX_SERVER_NAME_CHARS} characters long.`);
-	if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(rawName)) throw bad("A server's name is made of letters, digits, '_', '.' and '-', and starts with a letter or a digit.");
-	if (rawName.toLowerCase().startsWith("windlass_platform")) throw bad("A name that begins with windlass_platform cannot be a server's: it is the platform's own, and a server by that name would pass for the platform's tools.");
-
-	const isObject = (value: unknown): value is Record<string, unknown> => {
-		if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-		const prototype = Object.getPrototypeOf(value);
-		return prototype === Object.prototype || prototype === null;
-	};
-	const text = (value: unknown, key: string, nonEmpty: boolean): string => {
-		if (typeof value !== "string" || (nonEmpty && value === "")) throw bad(`${key} must be ${nonEmpty ? "text that is not empty" : "text"}.`);
-		if (value.includes("\0")) throw bad(`${key} holds a character that cannot be passed on.`);
-		return value;
-	};
-	const textList = (value: unknown, key: string, nonEmpty: boolean): string[] => {
-		if (!Array.isArray(value)) throw bad(`${key} must be a list of texts.`);
-		return value.map((item, index) => text(item, `${key}[${index}]`, nonEmpty));
-	};
-	const textMap = (value: unknown, key: string, variables: boolean): Record<string, string> => {
-		if (!isObject(value)) throw bad(`${key} must be an object whose values are texts.`);
-		const map: Record<string, string> = {};
-		for (const [name, item] of Object.entries(value)) {
-			if (variables && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw bad(`${key} has a key that is not an environment variable's name: letters, digits and underscores, not starting with a digit.`);
-			if (name === "" || name.includes("\0")) throw bad(`${key} has a key that cannot be passed on.`);
-			map[name] = text(item, `${key}.${name}`, false);
-		}
-		return map;
-	};
-	const whole = (value: unknown, key: string, max: number): number => {
-		if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > max) throw bad(`${key} must be a whole number from 1 to ${max}.`);
-		return value;
-	};
-	const flag = (value: unknown, key: string): boolean => {
-		if (typeof value !== "boolean") throw bad(`${key} must be true or false.`);
-		return value;
-	};
-	const unknownKey = (found: string[], known: string[], where: string): void => {
-		const unknown = found.find((key) => !known.includes(key));
-		if (unknown !== undefined) throw bad(`${where} has a key Windlass does not know, "${unknown.replace(/[^\x20-\x7e]/g, "?").slice(0, 40)}". It takes: ${known.join(", ")}.`);
-	};
-
-	if (!isObject(raw)) throw bad("A server's definition is an object, as Windlass's configuration takes it: a command to start, or an address to reach.");
-	unknownKey(Object.keys(raw), MOCK_SERVER_KEYS, "The definition");
-	const out: Record<string, unknown> = {};
-	if (raw.command !== undefined) out.command = text(raw.command, "command", true);
-	if (raw.args !== undefined) out.args = textList(raw.args, "args", false);
-	if (raw.cwd !== undefined) out.cwd = text(raw.cwd, "cwd", true);
-	if (raw.env !== undefined) out.env = textMap(raw.env, "env", true);
-	if (raw.url !== undefined) {
-		const url = text(raw.url, "url", true);
-		let protocol = "";
-		try {
-			protocol = new URL(url).protocol;
-		} catch {
-			// Said below.
-		}
-		if (protocol !== "http:" && protocol !== "https:") throw bad("url must be an http or https address.");
-		out.url = url;
+	try {
+		return { name: cleanServerName(rawName), definition: cleanServerDefinition(raw) };
+	} catch (error) {
+		if (error instanceof ServerProblem) throw new PlatformError("user", error.message, { reason: error.code });
+		throw error;
 	}
-	if (raw.headers !== undefined) out.headers = textMap(raw.headers, "headers", false);
-	if (raw.tools !== undefined) {
-		if (!isObject(raw.tools)) throw bad("tools must be an object with allow and deny, each a list of tool names.");
-		unknownKey(Object.keys(raw.tools), ["allow", "deny"], "tools");
-		const tools: Record<string, string[]> = {};
-		for (const key of ["allow", "deny"]) if (raw.tools[key] !== undefined) tools[key] = textList(raw.tools[key], `tools.${key}`, true);
-		out.tools = tools;
-	}
-	if (raw.timeoutSeconds !== undefined) out.timeoutSeconds = whole(raw.timeoutSeconds, "timeoutSeconds", 3600);
-	if (raw.startupTimeoutSeconds !== undefined) out.startupTimeoutSeconds = whole(raw.startupTimeoutSeconds, "startupTimeoutSeconds", 600);
-	if (raw.untrusted !== undefined) out.untrusted = flag(raw.untrusted, "untrusted");
-	if (raw.enabled !== undefined) out.enabled = flag(raw.enabled, "enabled");
-	if (raw.protocol !== undefined) {
-		if (typeof raw.protocol !== "string" || !["auto", "modern", "legacy"].includes(raw.protocol)) throw bad("protocol must be one of auto, modern, legacy.");
-		out.protocol = raw.protocol;
-	}
-	if (out.command !== undefined && out.url !== undefined) throw bad("A definition has a command or a url, not both: a server is either started or reached.");
-	if (out.command === undefined && out.url === undefined) throw bad("A definition needs a command (a server to start) or a url (a server to reach).");
-	if (out.command !== undefined && out.headers !== undefined) throw bad("headers applies only to a server reached by a url.");
-	if (out.url !== undefined) {
-		const misplaced = ["args", "cwd", "env"].find((key) => out[key] !== undefined);
-		if (misplaced !== undefined) throw bad(`${misplaced} applies only to a server started by a command.`);
-	}
-	const bytes = new TextEncoder().encode(JSON.stringify(out)).length;
-	if (bytes > MAX_SERVER_DEFINITION_BYTES) throw bad(`A server's definition can be at most ${MAX_SERVER_DEFINITION_BYTES.toLocaleString("en-US")} bytes long as JSON; this one is ${bytes.toLocaleString("en-US")}.`);
-	return { name: rawName, definition: out };
 }
 
-/** The variables a definition reads: every `${NAME}` in the values of its `env` and `headers`, in order of first appearance. */
-function mockDefinitionReads(definition: Record<string, unknown>): string[] {
-	const names: string[] = [];
-	for (const key of ["env", "headers"]) {
-		const values = definition[key];
-		if (typeof values !== "object" || values === null) continue;
-		for (const value of Object.values(values)) {
-			if (typeof value !== "string") continue;
-			for (const match of value.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g)) if (match[1] !== undefined && !names.includes(match[1])) names.push(match[1]);
-		}
-	}
-	return names;
-}
-
-/** What forgetting does and leaves, as the server says it where Windlass's own record stays in the sandbox. */
 /** The demo repository whose items show example screenshots has opted in. */
 export const MOCK_SCREENSHOTS = [7101];
 
@@ -3361,7 +2871,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					subject: remote ? String(server.definition.url) : commandLine(argv),
 					enabled: server.definition.enabled !== false,
 					unasked: server.unasked,
-					reads: mockDefinitionReads(server.definition).map((read) => ({ name: read, saved: world.account.secrets.has(read) })),
+					reads: definitionReads(server.definition).map((read) => ({ name: read, saved: world.account.secrets.has(read) })),
 					updatedAt: server.updatedAt,
 				};
 			}),
@@ -3411,7 +2921,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		for (const [name, server] of [...world.account.servers.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
 			if (server.definition.enabled === false || projects.some((known) => known.name === name)) continue;
 			const remote = typeof server.definition.url === "string";
-			const unset = mockDefinitionReads(server.definition).find((read) => !handed(read));
+			const unset = definitionReads(server.definition).find((read) => !handed(read));
 			const argv = remote ? [] : [String(server.definition.command ?? ""), ...(Array.isArray(server.definition.args) ? server.definition.args.map(String) : [])];
 			const known: MockKnown = {
 				name,
