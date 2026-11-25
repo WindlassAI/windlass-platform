@@ -109,7 +109,8 @@ it.each(["claude", "opencode", "codex"] as const)("shows %s models and modes in 
 		const picked = harness === "claude" ? names : ["GPT-5.4", "GPT-5.4 mini"];
 		expect(Array.from(document.querySelectorAll(".ui-pop .ui-item-label"), el => el.textContent)).toEqual(picked);
 	}
-	const details = host.querySelector("#panel-session")!.closest("section")!.querySelector("details")!;
+	// Under "More", in a fold of its own that reads them once it is opened.
+	const details = host.querySelector("#panel-session")!.closest("section")!.querySelector("details details")!;
 	act(() => { details.open = true; details.dispatchEvent(new Event("toggle")); });
 	expect(Array.from(details.querySelectorAll('[aria-label="Available models"] li'), el => el.firstChild?.textContent)).toEqual(names.map(name => name.replace(" (default)", "")));
 	expect(Array.from(details.querySelectorAll('[aria-label="Available modes"] li'), el => el.textContent)).toEqual(modeNames);
@@ -156,13 +157,12 @@ describe("a Claude Code agent's page", () => {
 		expect(turn.querySelector(".turn-end")?.textContent).toContain("context 41% used");
 		expect(turn.querySelector(".turn-end")?.textContent).toContain("$0.38 so far");
 		expect(turn.querySelector(".turn-end")?.textContent).not.toContain("no token counts were reported");
-		// The side panel: the context and the cost, and the tokens the turn answered with, per turn; no cache chart, since it counts no calls.
-		expect(host.querySelector("#panel-context")?.closest("section")?.textContent).toContain("41% used");
-		const tokens = host.querySelector("#panel-tokens")?.closest("section");
-		expect(tokens?.querySelector(".panel-title-aside")?.textContent).toBe("1 turn reported");
-		expect(tokens?.textContent).toContain("24,300");
-		expect(tokens?.textContent).not.toContain("calls");
-		expect(host.querySelector("#panel-cache")).toBeNull();
+		// The side panel: the cost first, the context, and under "Token details" the tokens the turn answered with, per turn; no cache chart, since it counts no calls.
+		const usage = host.querySelector("[data-usage=context]");
+		expect([...(usage?.querySelectorAll(".figure-value") ?? [])].map((value) => value.textContent)).toEqual(["$0.38", "41%"]);
+		expect(usage?.querySelector("details .tokens")?.textContent).toContain("24,300");
+		expect(usage?.textContent).not.toContain("calls");
+		expect(host.querySelector(".cache-calls")).toBeNull();
 		// Its saved secrets are not handed to it (`envLists`), so the panel does not list them.
 		expect(host.querySelector("#panel-secrets")).toBeNull();
 	});
@@ -241,6 +241,9 @@ describe("an agent's mode on its page", () => {
 	it("says in the panel's sandbox that commands can use the Claude login, and nothing of ChatGPT", async () => {
 		await open("nas-claude");
 		const sandbox = host.querySelector("#panel-sandbox")?.closest("section")?.textContent ?? "";
+		// In a plain outcome line, not as a warning; the detail is under "How it's isolated".
+		expect([...host.querySelectorAll("#panel-sandbox ~ .outcomes li")].map((line) => line.textContent)).toContain("Commands can use this machine's Claude login");
+		expect(host.querySelector("#panel-sandbox")?.closest("section")?.querySelector("[class*=warn], [class*=open]:not(.outcome-open)")).toBeNull();
 		expect(sandbox).toContain("commands in this container can use your Claude login. Runners without a credential relay also expose the setup token.");
 		expect(sandbox).toContain("approvalAutoAutomatically assess tool permissions.");
 		expect(sandbox).not.toContain("ChatGPT");
@@ -250,8 +253,8 @@ describe("an agent's mode on its page", () => {
 
 	it("gives a Windlass agent on a repository, by its flags, per-call tokens, no context section and its saved secrets", async () => {
 		await open((sessions) => sessions.find((one) => (one.harness ?? "windlass") === "windlass" && one.item === undefined && one.turns > 0 && one.repository));
-		expect(host.querySelector("#panel-tokens")?.closest("section")?.querySelector(".panel-title-aside")?.textContent).toMatch(/call/);
-		expect(host.querySelector("#panel-context")).toBeNull();
+		expect(host.querySelector("[data-usage=tokens] .cache-calls")).not.toBeNull();
+		expect(host.querySelector("[data-usage=context]")).toBeNull();
 		expect(host.querySelector("#panel-secrets")).not.toBeNull();
 		expect(host.textContent).not.toContain("Plan mode");
 	});

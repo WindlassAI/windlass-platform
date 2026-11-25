@@ -83,8 +83,8 @@ describe("a session page drawn by its agent's flags", () => {
 	it("gives Claude Code, sent Windlass's flags, the per-call token counts in place of the context, Plan mode and a call's stop", async () => {
 		const summary = await open((sessions) => sessions.find((one) => one.id === "nas-claude"));
 		expect(summary.capabilities.cancelCall).toBe(true);
-		expect(host.querySelector("#panel-tokens")?.closest("section")?.querySelector(".panel-title-aside")?.textContent).toMatch(/call/);
-		expect(host.querySelector("#panel-context")).toBeNull();
+		expect(host.querySelector("[data-usage=tokens] .cache-calls")).not.toBeNull();
+		expect(host.querySelector("[data-usage=context]")).toBeNull();
 		expect(host.textContent).toContain("Plan mode");
 		// A running call has its own stop, as the flag says it can be stopped.
 		await act(async () => void client.session(auth, "nas-claude").prompt({ text: "Read the README again and run the tests." }));
@@ -97,8 +97,8 @@ describe("a session page drawn by its agent's flags", () => {
 		// One on a repository, whose saved secrets its panel would list for an agent they are handed to.
 		const summary = await open((sessions) => sessions.find((one) => (one.harness ?? "windlass") === "windlass" && one.item === undefined && one.turns > 0 && one.repository));
 		expect(summary.capabilities.usage).toBe("context");
-		expect(host.querySelector("#panel-context")).not.toBeNull();
-		expect(host.querySelector("#panel-cache")).toBeNull();
+		expect(host.querySelector("[data-usage=context]")).not.toBeNull();
+		expect(host.querySelector(".cache-calls")).toBeNull();
 		expect(host.querySelector("#panel-secrets")).toBeNull();
 		expect(host.textContent).not.toContain("Plan mode");
 	});

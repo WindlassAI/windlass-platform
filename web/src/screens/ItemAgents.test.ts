@@ -181,7 +181,7 @@ describe("a work item's agent session", () => {
 		expect(stop.title).toBe("The item tries this step again. To end its work, cancel the item.");
 		// The panel: the pull request is the item's to open, and the setting to publish unasked, which its agent never asks, is not there.
 		const panel = host.querySelector("aside#details") as HTMLElement;
-		expect(panel.textContent).not.toContain("Let the agent publish without asking");
+		expect(panel.textContent).not.toContain("Let the agent open and update it");
 		expect(panel.querySelector(".gh-item-note")?.textContent).toBe("The work item's steps push the work and open or update the pull request.");
 		// And the server would refuse a prompt in any case: the mock does, in its words.
 		const auth = loadAuth("mock") as AuthResult;

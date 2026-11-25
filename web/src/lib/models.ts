@@ -29,23 +29,6 @@ export function modelsNote(list: ModelList): string {
 	}
 }
 
-/** The same in a few words, for beside the composer's pickers. */
-export function modelsNoteShort(list: ModelList): string {
-	if (list.models.some(m => windlassProvider(m.id))) return "ChatGPT and Settings keys";
-	switch (list.source) {
-		case "harness":
-			return "harness models";
-		case "account":
-			return "your plan's models";
-		case "demo":
-			return "stand-in models: demo";
-		case "signed-out":
-			return "stand-in models: no ChatGPT sign-in";
-		case "unavailable":
-			return "stand-in models: your plan's could not be read";
-	}
-}
-
 /** What a machine's runner may report of a harness's options beside it: read as optional, so that a runner that reports none, and a summary without the field, read as nothing. */
 export interface ReportedOptions {
 	models?: ModelChoice[];

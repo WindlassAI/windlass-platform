@@ -225,11 +225,13 @@ interface SecretsDialogProps {
 	/** Where it starts. From the list, a finished form goes back to the list; otherwise it closes the dialog. */
 	start: DialogView;
 	workspace: "none" | "made" | null;
+	/** The name an empty form starts with: the variable a server that could not start reads. Never a value. */
+	initialName?: string;
 	onSaved(list: SecretList): void;
 	onClose(): void;
 }
 
-function SecretsDialog({ owner, profile, secrets, start, workspace, onSaved, onClose }: SecretsDialogProps) {
+function SecretsDialog({ owner, profile, secrets, start, workspace, initialName, onSaved, onClose }: SecretsDialogProps) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const account = owner.kind === "account";
@@ -249,7 +251,7 @@ function SecretsDialog({ owner, profile, secrets, start, workspace, onSaved, onC
 	const viewKey = typeof view === "object" ? view.name : view;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: the form is reset when another one is opened, not when the list is read again
 	useEffect(() => {
-		setName("");
+		setName(viewKey === "add" ? (initialName ?? "") : "");
 		setValue("");
 		setLines(false);
 		setScope(editing?.scope ?? "setup");
@@ -555,6 +557,18 @@ function OwnedSecrets({ owner, profile, session, title, onChanged }: { owner: Se
 			{open !== null && list !== null && profile !== null ? createPortal(<SecretsDialog owner={owner} profile={profile} secrets={list.secrets} start={open} workspace={workspace} onSaved={set} onClose={() => setOpen(null)} />, document.body) : null}
 		</>
 	);
+}
+
+/**
+ * The form that adds one secret, opened from a problem the side panel names (an MCP server that could not
+ * start because `name` is not set): the repository's for a server the repository names, the account's for
+ * one of the user's own. It closes once saved.
+ */
+export function AddSecretDialog({ repository, profile, name, onClose }: { repository: { id: GithubId; name: string } | null; profile: SandboxProfileId; name: string; onClose(): void }) {
+	const owner = useMemo(() => (repository ? repositoryOwner(repository.id, repository.name) : ACCOUNT_OWNER), [repository?.id, repository?.name]);
+	const { list } = useSecrets(owner, profile);
+	if (list === null) return null;
+	return createPortal(<SecretsDialog owner={owner} profile={profile} secrets={list.secrets} start="add" workspace={null} initialName={name} onSaved={onClose} onClose={onClose} />, document.body);
 }
 
 /** The side panel's section, for a session on a repository of the GitHub connection. */

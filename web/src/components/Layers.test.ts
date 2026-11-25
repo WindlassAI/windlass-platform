@@ -3,7 +3,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it } from "vitest";
 import { e2bOpenProfile, e2bProfile, profilesFor } from "../../../server/src/sandbox/profiles";
-import { commandNetworkFact, ProfileFacts } from "./Layers";
+import { commandNetworkFact, isolationOutcomes, ProfileFacts } from "./Layers";
+import { missingVariable } from "./RepositorySetup";
 import { SetupField } from "./SetupCommand";
 
 it("uses the machine's command network sentence in the session panel", () => {
@@ -53,4 +54,21 @@ it("says a relayed sandbox's commands read only a placeholder, from both flags",
 	const e2b = profilesFor("e2b", { windlassSandbox: false, openProfile: true, network: "restricted" }, true);
 	expect(e2b.filter((p) => p.modelRelay).map((p) => p.id)).toEqual(["e2b", "e2b-open"]);
 	expect(e2b.find((p) => p.id === "e2b-open")!.summary).toContain("The access token never enters the microVM.");
+});
+
+it("says a sandbox in three plain outcome lines, open facts as plain facts", () => {
+	const [sandboxed, hardened] = profilesFor("docker").filter((p) => p.id.startsWith("docker-"));
+	expect(isolationOutcomes(sandboxed!, null)).toEqual([
+		{ text: "Commands run in a locked-down sandbox", kept: true },
+		{ text: "No internet from commands", kept: true },
+		{ text: "Your sign-in stays outside the sandbox", kept: true },
+	]);
+	expect(isolationOutcomes(hardened!, null, "open").map((line) => line.text)).toEqual(["Commands run freely, without asking", "Commands can reach the internet and your network", "Commands can use this turn's sign-in"]);
+	expect(isolationOutcomes(hardened!, null).every((line) => !/[A-Z][a-z]+ \+|Docker|token|relay/.test(line.text))).toBe(true);
+});
+
+it("reads the variable a server could not start without", () => {
+	expect(missingVariable("the environment variable WIKI_TOKEN named in its headers is not set")).toBe("WIKI_TOKEN");
+	expect(missingVariable("it exited with code 1")).toBeNull();
+	expect(missingVariable(null)).toBeNull();
 });
