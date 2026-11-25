@@ -21,7 +21,7 @@
  */
 
 import { imageId } from "./check-image.js";
-import { localListeners } from "./check-listeners.js";
+import { localListeners, portFree } from "./check-listeners.js";
 import { type ChildProcess, execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, createWriteStream, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -289,14 +289,6 @@ class Server {
 		if (failed === 0 && process.env.WLP_E2E_KEEP !== "1") rmSync(this.storage, { recursive: true, force: true });
 		else console.log(`\nserver log and state kept in ${this.storage}`);
 	}
-}
-
-function portFree(port: number): Promise<boolean> {
-	return new Promise((done) => {
-		const probe = createServer();
-		probe.once("error", () => done(false));
-		probe.listen(port, "127.0.0.1", () => probe.close(() => done(true)));
-	});
 }
 
 /** Both of the server's ports: the engine's and the platform's HTTP routes. */

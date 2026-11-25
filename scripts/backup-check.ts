@@ -34,6 +34,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
+import { bucketSettings } from "./check-bucket.js";
 import { S3ObjectStore, type S3Settings } from "../server/src/bucket/s3.js";
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
 import { ObjectStoreError, type ObjectStore } from "../server/src/bucket/store.js";
@@ -296,15 +297,6 @@ async function scripted(): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 // A real bucket
 // ---------------------------------------------------------------------------------------------
-
-/** The bucket's settings: the server's own variables, or the R2_* names a credentials file may use. */
-function bucketSettings(): S3Settings | null {
-	const own = backupConfig().bucket;
-	if (own !== null) return own;
-	const read = (name: string) => (process.env[name] ?? "").trim();
-	const settings: S3Settings = { endpoint: read("R2_ENDPOINT"), region: "auto", bucket: read("R2_BUCKET"), accessKeyId: read("R2_ACCESS_KEY_ID"), secretAccessKey: read("R2_SECRET_ACCESS_KEY"), style: "path" };
-	return settings.endpoint === "" || settings.bucket === "" || settings.accessKeyId === "" || settings.secretAccessKey === "" ? null : settings;
-}
 
 /** What a sandbox does with a link, done here: curl, the link on its standard input. Returns the HTTP status. */
 function curl(url: string, args: string[]): string {

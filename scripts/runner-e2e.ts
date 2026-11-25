@@ -13,11 +13,10 @@
  * The engine and HTTP server use ports reserved for this check. Nothing runs in
  * Docker. Prints one PASS/FAIL line per check and exits 1 if any failed.
  */
-import { localListeners } from "./check-listeners.js";
+import { localListeners, portFree } from "./check-listeners.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deepStrictEqual } from "node:assert/strict";
@@ -112,7 +111,7 @@ class Server {
 		if (!child) return;
 		child.kill("SIGTERM");
 		await until("the server to exit", () => this.child === null, 40_000).catch(() => child.kill("SIGKILL"));
-		await until("the engine's ports to be free", async () => (await free(PORT)) && (await free(HTTP)), 20_000);
+		await until("the engine's ports to be free", async () => (await portFree(PORT)) && (await portFree(HTTP)), 20_000);
 	}
 
 	/** As a crash: SIGKILL, no `onSleep`; the engine it started is stopped by its PID. */
@@ -127,7 +126,7 @@ class Server {
 		} catch {
 			// No engine left, which is the point.
 		}
-		await until("the engine's ports to be free", async () => (await free(PORT)) && (await free(HTTP)), 20_000);
+		await until("the engine's ports to be free", async () => (await portFree(PORT)) && (await portFree(HTTP)), 20_000);
 	}
 
 	log(): string {
@@ -208,14 +207,6 @@ async function serverNode(): Promise<void> {
 		return sealed;
 	};
 	await import("../server/src/index.js");
-}
-
-function free(port: number): Promise<boolean> {
-	return new Promise((done) => {
-		const probe = createServer();
-		probe.once("error", () => done(false));
-		probe.listen(port, "127.0.0.1", () => probe.close(() => done(true)));
-	});
 }
 
 // ---------------------------------------------------------------------------------------------

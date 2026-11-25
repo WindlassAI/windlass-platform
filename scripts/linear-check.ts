@@ -1,25 +1,6 @@
 /**
- * End-to-end check of filing from Linear: cd server && npx tsx ../scripts/linear-check.ts
- *
- * Nothing outside this machine is used: Linear is scripts/linear-standin.ts (consent page, token endpoint, GraphQL API, signed
- * webhooks), GitHub is scripts/github-standin.ts, the sandbox is the fake one, and no browser runs (the owner's click is the
- * stand-in's `authorize()`). The platform is the real one: a child process runs the server's own index.ts, so the Linear callback
- * and webhook routes, the `linearWorkspace` team claims, the owner's `user` actor and the items' actors are the ones a deployment runs.
- * The child attaches test actions before the registry is built (`--node`: the owner's delivery rows, what an item kept
- * of its issue, and a paired machine for the saved placement), as webhook-check.ts does; no filing helper is replaced.
- *
- * The owner is set up through the supported actions only: sign in, connect GitHub, `linearConnect`, the callback and `linearComplete`,
- * `saveLinearMapping`. Everything is then read back from the platform: the owner's items, an item's page, the owner's
- * delivery rows, what the stand-ins were asked.
- *
- * What it shows: the OAuth connection (a replayed, forged or foreign-origin state refused) and the mapping (a team outside the
- * workspace, a repository the owner cannot write to refused); bad signatures refused and unmapped teams ignored; the label and the
- * app assignment each file one item, a redelivery and another qualifying event for the same issue file nothing more, and an edit
- * that is not a transition, a removed label, an unassignment and a removal change nothing; the stored issue id, identifier, link
- * and repository; Plan first against `windlass:quick`; the saved placement; the issue's author as third-party text (a draft, quoted)
- * whoever wrote it; GitHub and Linear competing for the one daily cap; a removed mapping filing nothing; a second owner of the
- * workspace unable to take a live claim, and given a dead one; item progress posted once
- * and no credential in the platform's output.
+ * Test Linear filing through the platform's HTTP routes and actors, with stand-ins for Linear, GitHub and the sandbox.
+ * The child process adds service-only fixture actions before registering the actors. Setup cases supply state for later mapping and filing checks.
  */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -29,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { pollUntil, readProvenance } from "./issue-intake-fixture.js";
 import { GithubStandin } from "./github-standin.js";
 import { LinearStandin, type StandinIssue, type StandinPerson, type StandinTeam } from "./linear-standin.js";
 import { localListeners } from "./check-listeners.js";
@@ -86,26 +68,15 @@ async function testNode() {
 		},
 	});
 	Object.assign(workItem.config.actions!, {
-		// What the item kept of the issue it was filed from, apart from the GitHub binding.
 		checkProvenance: async (c: ItemCtx) => {
 			requireServiceFor(c, "call");
-			const { meta, item } = c.vars.stored!;
-			const [binding] = await c.db.execute<{ n: number }>("SELECT count(*) AS n FROM github_binding");
-			return { github: meta.github ?? null, linear: meta.linear ?? null, untrusted: item.untrusted ?? null, bindingRows: binding?.n ?? 0, issueEffects: (await c.db.execute("SELECT 1 FROM effects WHERE id LIKE '%issue%'")).length };
+			return readProvenance(c);
 		},
 	});
 	await import("../server/src/index.js");
 }
 
-async function until<T>(label: string, probe: () => Promise<T | null | undefined | false>, timeout = 20_000): Promise<T> {
-	const end = Date.now() + timeout;
-	do {
-		const answer = await probe();
-		if (answer) return answer;
-		await sleep(60);
-	} while (Date.now() < end);
-	throw new Error("timed out waiting for " + label);
-}
+const until = pollUntil(20_000);
 
 async function run() {
 	const { engine, http: [http] } = await localListeners();

@@ -30,8 +30,8 @@
  * Exit code 0 when every check passed, 1 when one failed, 2 without a key or a bucket, 3 at the limit.
  */
 
-import { S3ObjectStore, type S3Settings } from "../server/src/bucket/s3.js";
-import { backupConfig } from "../server/src/config.js";
+import { bucketSettings } from "./check-bucket.js";
+import { S3ObjectStore } from "../server/src/bucket/s3.js";
 import type { WindlassEvent } from "../server/src/contract.js";
 import type { AccessTokens, ChatgptLogins, SandboxHandle, ScriptedModel } from "../server/src/sandbox/api.js";
 import { SandboxSessionBackups } from "../server/src/sandbox/backup.js";
@@ -60,15 +60,6 @@ function info(text: string): void {
 type Response = ScriptedModel["responses"][number];
 const say = (text: string): Response => [{ type: "text", text }, { type: "finish", reason: "stop" }];
 const shell = (callId: string, command: string): Response => [{ type: "tool_call", callId, name: "shell", input: { command } }, { type: "finish", reason: "tool_calls" }];
-
-/** The bucket's settings: the server's own variables, or the R2_* names a credentials file may use. */
-function bucketSettings(): S3Settings | null {
-	const own = backupConfig().bucket;
-	if (own !== null) return own;
-	const read = (name: string) => (process.env[name] ?? "").trim();
-	const settings: S3Settings = { endpoint: read("R2_ENDPOINT"), region: "auto", bucket: read("R2_BUCKET"), accessKeyId: read("R2_ACCESS_KEY_ID"), secretAccessKey: read("R2_SECRET_ACCESS_KEY"), style: "path" };
-	return settings.endpoint === "" || settings.bucket === "" || settings.accessKeyId === "" || settings.secretAccessKey === "" ? null : settings;
-}
 
 async function main(): Promise<number> {
 	const apiKey = (process.env.E2B_API_KEY ?? "").trim();

@@ -1,40 +1,10 @@
 /**
- * End-to-end check of the sandbox layer on this machine. Run with:
- *
- *   cd server && npx tsx ../scripts/sandbox-check.ts
- *
- * No real model is called, no real sign-in is completed, and nothing is sent to OpenAI:
- *
- *   - every sign-in here is a synthetic auth.json with obviously fake tokens (`FAKE-ACCESS-TOKEN-...`);
- *   - no server runs beside this check, so its layers keep the users' sign-ins in this process
- *     (`signIns: "memory"`) where a server keeps them in the users' actors: the same holders, sealed
- *     the same way, over a store in memory. Windlass's sign-in commands run in helper containers of
- *     the image, as a development server runs them;
- *   - the helper that asks Windlass for an access token has no network in this check's layers
- *     (`tokenNetwork: "none"`), so it can send nothing: a token that has the time left the platform
- *     asks for is printed all the same, and one that needs a refresh fails;
- *   - where a refresh has to work, or to be refused (the section `valid-for`), the helper still has no
- *     network: its image is a throwaway one in which a stand-in for OpenAI's token endpoint runs beside
- *     Windlass, inside the same container, and answers the refresh with tokens that are as fake, or with
- *     a refusal;
- *   - every turn is scripted with WINDLASS_ACP_SCRIPT, except those of the sections `failures`,
- *     `hand-off` and `valid-for` that are handed a (fake) access token or must fail for want of one.
- *     Each of those runs in a sandbox that was first cut off from every network and shown to be, so
- *     Windlass could reach no model whatever it tried;
- *   - `finish` is tried only with addresses Windlass rejects before any network request.
- *
- * What a failure of the sign-in means is checked by Windlass's code for it, never by its words: each
- * code is produced by a real Windlass where a container can produce it (an expired token, a rejected
- * one, a file that is missing, empty, malformed or unreadable, a sign-in service that cannot be reached
- * or refuses), and a stand-in for the engine reports codes with words that say something else, to show
- * that the words decide nothing (`hand-off`).
- *
- * Everything created here is removed at the end, and nothing this run did not create is touched. No
- * token, fake as they are, may appear in what this check prints: its last check reads its own output.
- *
- *   WLP_CHECK_SECTIONS=image,failures   run only the sections whose names start with one of these
+ * Run against local sandbox images with synthetic sign-ins. WLP_CHECK_SECTIONS=profiles selects a section.
+ * Scripted turns use WINDLASS_ACP_SCRIPT. Unscripted failure cases require network isolation; refresh cases use a local token endpoint.
+ * Cleanup removes only this run's resources and checks its captured output for tokens.
  */
 
+import { matchesSection } from "./check-sections.js";
 import { DOCKER_BWRAP_PROBE } from "../server/src/sandbox/docker-flags.js";
 import { imageId } from "./check-image.js";
 import { createHash } from "node:crypto";
@@ -106,10 +76,6 @@ for (const method of ["log", "warn", "error"] as const) {
 		} else real(line);
 	};
 }
-const only = (process.env.WLP_CHECK_SECTIONS ?? "")
-	.split(",")
-	.map((name) => name.trim())
-	.filter((name) => name !== "");
 const createdSandboxes = new Set<string>();
 /** Every sandbox this run created, removed or not. */
 const everySandbox = new Set<string>();
@@ -135,7 +101,7 @@ function info(text: string): void {
 	console.log(`      ${text}`);
 }
 async function section(name: string, body: () => Promise<void>): Promise<void> {
-	if (only.length > 0 && name !== "cleanup" && !only.some((prefix) => name.startsWith(prefix))) return;
+	if (name !== "cleanup" && !matchesSection(name)) return;
 	console.log(`\n== ${name}`);
 	try {
 		await body();
@@ -694,7 +660,7 @@ async function standInRequests(_user: string): Promise<string[]> {
 
 async function main(): Promise<void> {
 	console.log(`sandbox-check run ${run} on ${process.arch}`);
-	const checkBuild = !only.length || only.some(prefix => "image".startsWith(prefix) || "screenshot images".startsWith(prefix));
+	const checkBuild = matchesSection("image") || matchesSection("screenshot images");
 	let built;
 	if (checkBuild) {
 		createdImages.add(baseTag);

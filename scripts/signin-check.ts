@@ -1,36 +1,10 @@
 /**
- * Check of the sign-in machinery (server/src/signin/) on this machine, without Docker. Run with:
- *
- *   cd server && npx tsx ../scripts/signin-check.ts
- *
- * Its last section, `actors`, starts a server of its own on OS-assigned ports (fake sandboxes, real sign-in).
- * The sections before it need no server.
- *
- * No real sign-in is used and nothing is sent to OpenAI:
- *
- *   - every sign-in here is made up, with obviously fake tokens (`FAKE-ACCESS-TOKEN-...`);
- *   - where a real Windlass runs (the sections `windlass` and `actors`, with the pinned release as
- *     sandbox/fetch-windlass.sh keeps it, or the executable WLP_WINDLASS_BIN names),
- *     it is pointed at a stand-in for OpenAI's sign-in service that runs inside this process: Windlass
- *     is given it as its HTTPS proxy, so the requests Windlass means for auth.openai.com arrive here,
- *     are answered here, and go nowhere else. The stand-in exchanges a made-up code, signs an ID token
- *     with a key of its own, and refreshes as the service does: every refresh replaces the refresh
- *     token, and one that was used is refused afterwards;
- *   - everything else runs a small shell program in Windlass's place, or no program at all.
- *
- * What it shows: a sealed blob opens only as what it was sealed as; the runner's private directory is
- * private while a command runs and gone afterwards, whatever the command did; an attempt started on
- * one "server" is finished on another with nothing shared but the blob and the key; one user's token
- * requests cause one refresh; a refreshed sign-in is saved before its token is returned; a sign-in
- * that is replaced or forgotten yields no more tokens; what happens when a server dies between the
- * refresh and the save; and, with a real server, that a second server gets a user's token from the
- * user's actor, encrypted on the way, and that the sign-in survives the first server's death.
- *
- * No token, fake as they are, may appear in what this check prints: its last check reads its own output.
- *
- *   WLP_CHECK_SECTIONS=seal,holder   run only the sections whose names start with one of these
+ * WLP_CHECK_SECTIONS=seal,holder selects sign-in sections. The cleanup section checks captured output for credentials.
+ * The windlass and actors sections use WLP_WINDLASS_BIN or the pinned binary with a local HTTPS proxy and synthetic tokens.
+ * The actors section starts its own server with fake sandboxes.
  */
 
+import { matchesSection } from "./check-sections.js";
 import "./check-secret.js";
 import { localListeners } from "./check-listeners.js";
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
@@ -73,10 +47,6 @@ for (const method of ["log", "warn", "error"] as const) {
 		real(line.startsWith("[wlp] ") ? `      ${line}` : line);
 	};
 }
-const only = (process.env.WLP_CHECK_SECTIONS ?? "")
-	.split(",")
-	.map((name) => name.trim())
-	.filter((name) => name !== "");
 let failures = 0;
 let passes = 0;
 
@@ -95,7 +65,7 @@ function info(text: string): void {
 	console.log(`      ${text}`);
 }
 async function section(name: string, body: () => Promise<void>): Promise<void> {
-	if (only.length > 0 && name !== "cleanup" && !only.some((prefix) => name.startsWith(prefix))) return;
+	if (name !== "cleanup" && !matchesSection(name)) return;
 	console.log(`\n== ${name}`);
 	try {
 		await body();

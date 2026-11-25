@@ -1,31 +1,9 @@
 /**
- * Check of what browsers connect with (server/src/connection-tokens.ts and `GET /platform/connection`),
- * without a Rivet engine. Run with:
- *
- *   cd server && npx tsx ../scripts/connection-check.ts
- *
- * The engine is played by a stand-in in this process: an HTTP server on a port of its own that answers
- * `POST /auth/tokens` as the engine does (it wants the admin token as a bearer, and answers `token`,
- * `issued_ts`, `expires_ts` by a clock of its own), counts what it is asked, and can be told to refuse,
- * to answer nonsense or to be gone. The server's code asks it over real HTTP. Every token here is made
- * up (`FAKE-ADMIN-...`, `FAKE-CONNECTION-...`), and time is a number this check moves by hand.
- *
- * What it shows: what the engine is asked, and with which grants; that any number of browsers at the
- * same moment cause one request; that a token is handed out until half of its life is gone and no
- * longer; that this holds when the engine's clock and the server's disagree; what is handed out while
- * the engine cannot be asked; that two servers each hold a token of their own; that no failure, log
- * line or answer holds the admin token; the route itself, with its origin check; and what the server
- * says at its start.
- *
- * The last section, `cluster`, is skipped unless it is given a real engine. It makes about ten
- * requests to it, only `POST /auth/tokens` and `GET /auth/tokens/inspect`, takes forty seconds (it
- * waits for a token to run out), and prints no token:
- *
- *   WLP_CHECK_ENGINE=https://<name>-api.onrivet.dev RIVET_ADMIN_TOKEN=... npx tsx ../scripts/connection-check.ts
- *
- *   WLP_CHECK_SECTIONS=issuing,route   run only the sections whose names start with one of these
+ * Test connection tokens against a local HTTP stand-in and a controlled clock. WLP_CHECK_SECTIONS=issuing,route selects sections.
+ * The optional cluster section needs WLP_CHECK_ENGINE and RIVET_ADMIN_TOKEN. It issues and inspects tokens, then waits for expiry.
  */
 
+import { matchesSection } from "./check-sections.js";
 import { execFile } from "node:child_process";
 import { type IncomingMessage, type ServerResponse, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -49,10 +27,6 @@ for (const method of ["log", "warn", "error"] as const) {
 		real(line.startsWith("[wlp] ") ? `      ${line}` : line);
 	};
 }
-const only = (process.env.WLP_CHECK_SECTIONS ?? "")
-	.split(",")
-	.map((name) => name.trim())
-	.filter((name) => name !== "");
 let failures = 0;
 let passes = 0;
 
@@ -71,7 +45,7 @@ function info(text: string): void {
 	console.log(`      ${text}`);
 }
 async function section(name: string, body: () => Promise<void>): Promise<void> {
-	if (only.length > 0 && name !== "output" && !only.some((prefix) => name.startsWith(prefix))) return;
+	if (name !== "output" && !matchesSection(name)) return;
 	console.log(`\n== ${name}`);
 	try {
 		await body();
