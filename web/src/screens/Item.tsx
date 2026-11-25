@@ -1,36 +1,10 @@
-/**
- * A work item's page: where a person decides whether to trust a pull request they did not watch being
- * made. It says, each at a glance: where the item is and what it waits for, what it asks, what ran
- * (the run and its step, and the log), whether the pull request is ready and what is open (the Checks
- * panel: CI, the user's checks, the second review, feedback from GitHub, the flags), and what it cost
- * against its budget.
- *
- * Everything is the user's actor's (`ItemView`): read when the page opens, and again when the item's
- * revision in the user's live feed (`onItems`) is higher than the one shown, and when that feed comes
- * back after a drop. Nothing is asked on a timer. Every sentence about why it waits, what it asks and
- * what happened is the server's, shown as it was written; the agent's and the person's words in it
- * are plain text, never links.
- *
- * Actions are offered where `ItemAction` allows them: Start (a draft), Cancel (anything not ended),
- * Retry (a failed item), Send back (in review), and the open question's answers. The server refuses
- * one the item no longer allows with `item_conflict` and says why; that sentence is shown.
- *
- * An item filed from a GitHub issue says so under its title, with the issue's link, who filed it and,
- * where someone else wrote the issue, who wrote it. A draft of such an item (`origin.issue.trusted`
- * false) holds a snapshot of that person's text: its page shows the task first, as plain text, with
- * one line that says whose words they are, and Start stands under it rather than in the header.
- *
- * An item on one of the user's machines (`place`) says which, from the user's live list of machines.
- * Hosted sandbox time is no limit of such an item: its cost and the new budget for "Give it more"
- * leave it out. Once its machine was removed, the item can only be handed over or given up: the page
- * offers neither Retry nor Send back, and no note to an agent that cannot work any more.
- */
 import { originIssue } from "../lib/origin";
 import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemSummary, type ItemView, type SessionSummary, type StepKind, type Verdict } from "@contract";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
-import { Inline, PlacementQuestion, PlanQuestion, PlanSection, planOpen, usePlanReview, type PlanActing } from "./FeaturePlan";
+import { Inline, PlacementQuestion, PlanQuestion, PlanSection } from "./FeaturePlan";
+import { usePlanReview, type PlanActing as Acting } from "./usePlanReview";
 import { ItemSpend } from "../components/ItemSpend";
 import { agentFacts, agentLine, subscriptionSpend } from "../lib/item-agent";
 import { Dialog } from "../components/Dialog";
@@ -44,7 +18,7 @@ import type { AllowHostContext } from "../components/BlockedNetwork";
 import { reviewShots } from "../components/SecondReview";
 import { SecretAsk, withoutValue } from "../components/SecretAsk";
 import { ItemChecks } from "./ItemChecks";
-import { absoluteTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
+import { absoluteTime, clockTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow, useSessions } from "../state/hooks";
@@ -55,7 +29,6 @@ import { AgentGlyph } from "../components/ui/Pill";
 import { childrenBehind } from "../lib/subtasks";
 import { partOf, showsSubtasks, SubtasksBlock, SubtaskStrip } from "./Subtasks";
 
-/** The steps in words. Planning is not offered yet; the rest are every step a run goes through. */
 const STEP_WORD: Record<StepKind, string> = {
 	subtasks: "Subtasks", integration: "Testing the repositories together", summary: "Feature summary",
 	refine: "Planning",
@@ -73,7 +46,6 @@ const STEP_WORD: Record<StepKind, string> = {
 	merged: "Waiting for the merge",
 };
 
-/** What a working item is doing at each step. */
 const STEP_DOING: Partial<Record<StepKind, string>> = {
 	refine: "Its agent plans the work.",
 	implement: "Its agent works on the task.",
@@ -91,13 +63,6 @@ const TRIED: ReadonlySet<StepKind> = new Set(["refine", "implement", "ci_fix", "
 const ORDINAL = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
 const ordinal = (n: number) => ORDINAL[n - 1] ?? `${n}th`;
 
-/** A time of day, with the day when it is not today: "14:02", "17 Nov, 14:02". */
-function clockTime(at: number, now: number): string {
-	const date = new Date(at);
-	const time = date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-	return date.toDateString() === new Date(now).toDateString() ? time : `${date.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}, ${time}`;
-}
-
 function When({ at, now }: { at: number; now: number }) {
 	return (
 		<time dateTime={new Date(at).toISOString()} title={absoluteTime(at)}>
@@ -106,15 +71,12 @@ function When({ at, now }: { at: number; now: number }) {
 	);
 }
 
-// ---- reading it ---------------------------------------------------------------------------------
-
 interface ItemPage {
 	/** Null until it was read. */
 	view: ItemView | null;
 	/** Why it could not be read; `missing` when it is not the user's. */
 	error: string | null;
 	missing: boolean;
-	/** Reads it again; settled once it was read (or could not be). */
 	reload(): Promise<void> | void;
 	replace(view: ItemView): void;
 }
@@ -184,7 +146,6 @@ export function useItem(id: string, enabled = true): ItemPage {
 	return { ...state, reload, replace };
 }
 
-/** What the top bar shows on this page: the way back to its repository, and which item it is. */
 export function ItemCrumb({ view }: { view: ItemView | null }) {
 	const repository = view?.repository ?? null;
 	return (
@@ -212,10 +173,6 @@ export function ItemCrumb({ view }: { view: ItemView | null }) {
 		</nav>
 	);
 }
-
-// ---- acting on it -------------------------------------------------------------------------------
-
-interface Acting extends PlanActing {}
 
 /** `onConflict`: the server refused an action because the item moved on (`item_conflict`); the page reads it again. */
 function useActing(id: string, onDone: (view: ItemView) => void, onConflict?: (kind: string) => void): Acting {
@@ -253,7 +210,6 @@ function Failure({ error }: { error: string | null }) {
 	);
 }
 
-/** Cancelling: what stops, and what stays on GitHub. */
 function CancelDialog({ view, acting, onClose }: { view: ItemView; acting: Acting; onClose(): void }) {
 	const busy = acting.busy === "cancel";
 	return (
@@ -282,7 +238,6 @@ function CancelDialog({ view, acting, onClose }: { view: ItemView; acting: Actin
 	);
 }
 
-/** Sending work back: the note is what the agent is given; it goes on on the same branch. */
 function SendBackDialog({ view, acting, onClose }: { view: ItemView; acting: Acting; onClose(): void }) {
 	const [note, setNote] = useState("");
 	const ids = { form: useId(), note: useId() };
@@ -353,9 +308,6 @@ function NoteBox({ id, label, onDone }: { id: string; label: string; onDone(view
 
 const TAKES_NOTES = new Set<ItemSummary["state"]>(["queued", "working", "waiting"]);
 
-// ---- where it is --------------------------------------------------------------------------------
-
-/** Where the item is now, in a sentence or two: the server's while it waits, and the log's last line once it ended. */
 function Now({ view, now }: { view: ItemView; now: number }) {
 	const last = view.events[view.events.length - 1] ?? null;
 	const step = view.run?.step ?? null;
@@ -413,7 +365,6 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 	);
 }
 
-/** The builder's sandbox started from a validated environment (SessionSummary.environment): said in one short fact. */
 export function ValidatedEnvironment({ environment, now }: { environment: SessionSummary["environment"] | undefined; now: number }) {
 	if (!environment) return null;
 	return (
@@ -423,10 +374,6 @@ export function ValidatedEnvironment({ environment, now }: { environment: Sessio
 	);
 }
 
-/**
- * The run it is in, or ended last: its step, and the rounds of fixing it took. Rounds are not capped: a run stops when the
- * same failure comes back or its budget is used, and asks. The second review's fixes are shown once there were some.
- */
 export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView["run"]>; events: ItemEvent[]; asks: boolean; now: number }) {
 	const { step, rounds } = run;
 	const sentBack = events.filter((event) => event.step === null && event.said.startsWith("Sent back")).length;
@@ -469,17 +416,13 @@ export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView
 	);
 }
 
-// ---- what it asks -------------------------------------------------------------------------------
-
 const BUDGET_FIELDS: Array<{ key: keyof ItemBudget; label: string; unit: string; toInput(value: number): string; fromInput(text: string): number; spelled(value: number): string }> = [
 	{ key: "tokens", label: "Tokens", unit: "millions, cost-weighted", toInput: (value) => String(Number((value / 1e6).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 1e6), spelled: compact },
 	{ key: "hostedSeconds", label: "Hosted sandbox time", unit: "hours", toInput: (value) => String(Number((value / 3600).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 3600), spelled: sandboxTime },
 ];
 
-/** The figures of an item's budget that limit it: hosted sandbox time only for an item on a hosted sandbox. */
 const budgetFields = (view: Pick<ItemView, "place">) => BUDGET_FIELDS.filter((field) => field.key !== "hostedSeconds" || view.place.kind === "hosted");
 
-/** Another amount than the question's "Give it N more": the new budget, each figure as it is, raised where it was reached. */
 function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: boolean; onRaise(budget: Partial<ItemBudget>): void; onBack(): void }) {
 	const fields = budgetFields(view);
 	const [values, setValues] = useState(() => Object.fromEntries(fields.map((field) => [field.key, field.toInput(view.budget[field.key])])) as Record<keyof ItemBudget, string>);
@@ -520,7 +463,6 @@ function RaiseBudget({ view, busy, onRaise, onBack }: { view: ItemView; busy: bo
 	);
 }
 
-/** The open question: its text, its answers, and a note to the agent with any of them. */
 function Question({ view, question, acting, now }: { view: ItemView; question: ItemQuestion; acting: Acting; now: number }) {
 	// No agent is left to read a note once its machine was removed.
 	const noted = !["machine_removed", "feedback_feature", "feedback_more", "push_ci"].includes(question.kind);
@@ -592,15 +534,6 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 	);
 }
 
-/**
- * The builder's request for a secret it lacks (`secret_needed`). "Add it and continue" goes through its session
- * (`setRequestedSecret`), which saves the value and answers the question; the other two are the question's answers,
- * with no note, as the server takes them. `onSaved` is told the name once the value was taken.
- *
- * A save that fails once the item claimed the question (`secret_exists`: the name was saved under Secrets since) reopens it
- * under a new id. So on any failure the item is read again before the error is shown, and a retry answers the new id; the
- * error, without the value, goes to `onFailed`, for the new question's card to show from the start.
- */
 function SecretQuestion({ view, question, secret, acting, now, failure, reload, onSaved, onFailed }: { view: ItemView; question: ItemQuestion; secret: NonNullable<ItemQuestion["secret"]>; acting: Acting; now: number; failure: string | null; reload(): Promise<void> | void; onSaved(name: string): void; onFailed(message: string | null): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
@@ -629,6 +562,7 @@ function SecretQuestion({ view, question, secret, acting, now, failure, reload, 
 				try {
 					await client.session(auth, view.sessionId).setRequestedSecret({ requestId: question.id, name: secret.name, value });
 				} catch (refused) {
+					// A failed save can reopen the question under a new ID. Keep its secret out of the retry error.
 					const message = withoutValue(explain(refused), value);
 					onFailed(message);
 					await reload();
@@ -642,7 +576,6 @@ function SecretQuestion({ view, question, secret, acting, now, failure, reload, 
 	);
 }
 
-/** A check the sandbox could not run (`check_environment`): its command and the end of what it printed, as the session shows a check's result. */
 function EnvironmentCheck({ check }: { check: NonNullable<ItemQuestion["check"]> }) {
 	return (
 		<section className="item-check" aria-label={`The check ${check.name}`}>
@@ -661,11 +594,7 @@ function EnvironmentCheck({ check }: { check: NonNullable<ItemQuestion["check"]>
 	);
 }
 
-/**
- * The agent's question in its own words. They are the agent's, and what it read (the repository, an issue) may have steered
- * them, so they are shown as a quotation of the agent's: plain text, never Markdown or links, apart from the platform's own
- * words. An option fills the answer box; nothing is answered until the person sends it.
- */
+// Third-party input may steer the question. Render it as plain text until the person answers.
 function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullable<ItemQuestion["asked"]>; busy: boolean; onPick: (text: string) => void }) {
 	// Options of a sentence's length stack as full-width rows rather than wrapping as pills.
 	const stacked = asked.options.some((option) => option.length > LONG_OPTION);
@@ -694,15 +623,12 @@ function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullabl
 /** An option longer than this stacks all of a question's options as rows. */
 const LONG_OPTION = 40;
 
-// ---- what the agent says ------------------------------------------------------------------------
-
 /** The verdict a report's references are read against: the one at the commit it was filed at, else its run's last, else none. */
 function verdictFor(report: ItemReport, verdicts: Verdict[]): Verdict | null {
 	const at = report.head === null ? undefined : verdicts.findLast((verdict) => verdict.head === report.head);
 	return at ?? verdicts.findLast((verdict) => verdict.run === report.run) ?? null;
 }
 
-/** The agent that made the change, in its own words: below the checks, labelled as its own, and never what the verdict rests on. */
 function Report({ view, report, links, now }: { view: ItemView; report: ItemReport; links: ScreenshotLinks; now: number }) {
 	const latest = view.verdicts[view.verdicts.length - 1];
 	const earlierRun = view.run !== null && report.run !== view.run.n;
@@ -732,9 +658,6 @@ function Report({ view, report, links, now }: { view: ItemView; report: ItemRepo
 	);
 }
 
-// ---- what it cost -------------------------------------------------------------------------------
-
-/** What an item spent that no budget of its holds: its turns and its working time, said and not metered. */
 function spendFacts(view: ItemView): { label: string; value: string }[] {
 	return [
 		{ label: "Turns", value: plural(view.spent.turns, "turn") },
@@ -788,8 +711,6 @@ function Cost({ view, now }: { view: ItemView; now: number }) {
 		</section>
 	);
 }
-
-// ---- what happened ------------------------------------------------------------------------------
 
 interface RunPart {
 	run: number;
@@ -878,12 +799,9 @@ function Log({ view, now }: { view: ItemView; now: number }) {
 	);
 }
 
-// ---- where it came from, and what it asks the agent to do ---------------------------------------
-
 /** A draft from an issue someone else wrote: its task is that person's text, which its person reads before starting it. */
 const readFirst = (item: Pick<ItemView, "state" | "origin">) => item.state === "draft" && item.origin !== null && item.origin !== undefined && !originIssue(item.origin).trusted;
 
-/** The issue an item was filed from, under its title: its link, who filed it, and who wrote it where that is someone else. */
 function IssueOrigin({ origin }: { origin: NonNullable<ItemView["origin"]> }) {
 	const { url, label, trusted, author, sender } = originIssue(origin);
 	return (
@@ -900,8 +818,7 @@ function IssueOrigin({ origin }: { origin: NonNullable<ItemView["origin"]> }) {
 	);
 }
 
-/** What the agent is given, as it is given it: plain text, never Markdown or links. */
-/** `codeSpans`: `code` in the criteria drawn in the mono face; not for text shown as the agent will be given it. */
+// Issue text stays plain. Only platform criteria may style inline code.
 function TaskText({ task, codeSpans = false }: { task: ItemView["task"]; codeSpans?: boolean }) {
 	return (
 		<>
@@ -926,7 +843,6 @@ function TaskText({ task, codeSpans = false }: { task: ItemView["task"]; codeSpa
 	);
 }
 
-/** A draft's task in someone else's words: whose they are, the text itself, and Start under it. */
 function ReadFirst({ view, acting }: { view: ItemView; acting: Acting }) {
 	const origin = view.origin ? originIssue(view.origin) : null;
 	const author = origin?.author ?? "";
@@ -954,13 +870,7 @@ function ReadFirst({ view, acting }: { view: ItemView; acting: Acting }) {
 	);
 }
 
-// ---- the page -----------------------------------------------------------------------------------
-
-/**
- * "Allow for this repository" on the item's Network block, sent through its builder's session, whose
- * repository is the item's. None for a feature over several repositories, which names no repository for
- * a host, or before the item has a session.
- */
+// Cross-repository features have no single repository to authorize.
 function useAllowHost(view: ItemView | null): AllowHostContext | null {
 	const { client, explain } = useApp();
 	const auth = useAuth();
@@ -1148,7 +1058,7 @@ export function Item({ page }: { page: ItemPage }) {
 				</p>
 			) : null}
 			{dialog === null && !view.question && !reading ? <Failure error={acting.error} /> : null}
-			{conflicted && !planOpen(view) ? (
+			{conflicted && !review.open ? (
 				<p className="callout callout-warn" role="status">
 					<WarnIcon />
 					<span>The plan changed while you read it, and is no longer waiting for approval. What is shown now is the latest.</span>
@@ -1166,7 +1076,7 @@ export function Item({ page }: { page: ItemPage }) {
 					</p>
 				) : null}
 				{/* A question is where the item is: its own block says so, with when it was asked. */}
-				{view.question && planOpen(view) ? (
+				{view.question && review.open ? (
 					<PlanQuestion view={view} review={review} acting={acting} conflicted={conflicted} when={<When at={view.question.askedAt} now={now} />} />
 				) : view.question?.kind === "placement_refused" && view.plan ? (
 					<PlacementQuestion key={view.question.id} view={view} question={view.question} review={review} acting={acting} when={<When at={view.question.askedAt} now={now} />} />

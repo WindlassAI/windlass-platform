@@ -68,6 +68,12 @@ export function relativeTime(at: number, now: number): string {
 	return new Date(at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
 }
 
+export function clockTime(at: number, now: number): string {
+	const date = new Date(at);
+	const time = date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+	return date.toDateString() === new Date(now).toDateString() ? time : `${date.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}, ${time}`;
+}
+
 export function absoluteTime(at: number): string {
 	return new Date(at).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }

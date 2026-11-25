@@ -104,12 +104,6 @@ export function placementProblem(task: PlanSubtask, parent: SandboxPlace, overfl
 	return fit && "refused" in fit ? fit.refused : null;
 }
 
-/** What the subtask would wait for if the plan were approved now; null when it would start, or cannot be placed. */
-export function placementWait(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, machines: MachineSummary[], models?: AgentModels): string | null {
-	const fit = placementFit(task, parent, overflow, machines, models);
-	return fit && "wait" in fit ? fit.wait : null;
-}
-
 /**
  * The subtask a "placement_refused" question is about: the server prefixes its words with the subtask's
  * title (blueprint.ts, `askPlacement`). The longest title that matches, as one title may begin another.

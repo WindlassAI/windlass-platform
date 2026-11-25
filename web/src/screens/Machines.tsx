@@ -1,18 +1,3 @@
-/**
- * Machines: the user's own Linux machines with Docker, on which their agents can run. A program on
- * the machine, the runner, connects out to the platform; the user pairs it here by typing the code it
- * prints, after seeing what the machine says about itself.
- *
- * Everything on the page is the user's actor's (`MachineSummary`): the list is read when the page
- * opens, replaced whenever the actor says it changed (the user's live feed, `onMachines`), and read
- * again when that feed comes back after a drop, since what was said meanwhile is lost. Nothing is
- * asked on a timer. The install command is the deployment's (`PlatformInfo.machines`), and so are the
- * runner versions the page compares.
- *
- * `/machines/add` opens the dialog that pairs a machine: it is the address a runner prints with its code.
- *
- * Each machine shows its runner's last sign-in report and a copyable terminal command for each agent.
- */
 import { MAX_MACHINES, type MachineClaim, type MachineSandbox, type MachineSummary, type MachineWarning, type MachinesInfo } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { hasReason } from "../api/client";
@@ -23,7 +8,7 @@ import { ArrowLeftIcon, CheckIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, Pen
 import { RowsSkeleton } from "../components/Skeleton";
 import { SandboxState } from "../components/Status";
 import { HARNESS_NAMES, loginCommand, signInWords, type ReportedHarness } from "../lib/acp";
-import { absoluteTime, plural, relativeTime, spelledDuration } from "../lib/format";
+import { absoluteTime, clockTime, plural, relativeTime, spelledDuration } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow } from "../state/hooks";
@@ -33,7 +18,8 @@ import { Check } from "../components/ui/Check";
 import { AgentGlyph } from "../components/ui/Pill";
 import { readTwice } from "../lib/retry";
 
-/** What the top bar shows on this page: the way back and where one is. */
+export { clockTime };
+
 export function MachinesCrumb() {
 	return (
 		<nav className="crumb" aria-label="Where you are">
@@ -67,13 +53,6 @@ function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode
 /** The one-line install the platform serves (server/src/install-script.ts); null while no runner image is published. */
 export function oneLineInstall(info: MachinesInfo): string | null {
 	return info.runnerImage === null ? null : `curl -fsSL ${info.platformUrl}/install.sh | sh`;
-}
-
-/** A time of day, with the day when it is not today: "14:02", "17 Nov, 14:02". */
-export function clockTime(at: number, now: number): string {
-	const date = new Date(at);
-	const time = date.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-	return date.toDateString() === new Date(now).toDateString() ? time : `${date.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}, ${time}`;
 }
 
 /** Free disk in a sentence: "61 GB", "3.2 GB", "820 MB". */
@@ -317,7 +296,6 @@ function PlacementPolicy({ machine, onChanged }: { machine: MachineSummary; onCh
 	);
 }
 
-/** An agent's sandbox on a machine: the agent, whether the sandbox runs, and when it was last used. */
 /** How many sandboxes the machine's runner may run and keep, as its owner started it: "no limit" unless a cap is set. */
 export function sandboxLimit(machine: MachineSummary): string {
 	const caps = [machine.maxRunning === undefined ? null : `at most ${machine.maxRunning} running at once`, machine.maxSandboxes === undefined ? null : `at most ${machine.maxSandboxes} kept`].filter((cap) => cap !== null);
