@@ -12,8 +12,8 @@ import { WarnIcon } from "./Icons";
 import { Button } from "./ui/Button";
 
 const SCHEDULE_WORDS: Record<EnvironmentSchedule, string> = { 24: "Nightly", 12: "Every 12 hours", 6: "Every 6 hours", 0: "Off" };
-const STATE_WORDS: Record<RepositoryEnvironment["state"], string> = { ready: "Ready", building: "Building", failed: "Failed", stale: "Stale" };
-const DOT: Record<RepositoryEnvironment["state"], string> = { ready: "ok", building: "changed", failed: "warn", stale: "off" };
+const STATE_WORDS: Record<RepositoryEnvironment["state"], string> = { ready: "Ready", building: "Building", retrying: "Build interrupted — trying again", interrupted: "Build interrupted after two retries", failed: "Failed", stale: "Stale" };
+const DOT: Record<RepositoryEnvironment["state"], string> = { ready: "ok", building: "changed", retrying: "off", interrupted: "warn", failed: "warn", stale: "off" };
 const TRIGGER_WORDS: Record<EnvironmentBuild["trigger"], string> = { schedule: "on its schedule", push: "after a push", rebuild: "on Rebuild", change: "after a settings change", first_use: "for a first session", image: "after an image change" };
 const KIND_WORDS: Record<NonNullable<EnvironmentBuild["failure"]>["kind"], string> = {
 	package_manager: "Environment problem: the image's package manager is not the one the repository pins",
@@ -47,7 +47,7 @@ function Checks({ build }: { build: EnvironmentBuild }) {
 	);
 }
 
-function Row({ env, now, busy, onRebuild }: { env: RepositoryEnvironment; now: number; busy: boolean; onRebuild(): void }) {
+export function EnvironmentRow({ env, now, busy, onRebuild }: { env: RepositoryEnvironment; now: number; busy: boolean; onRebuild(): void }) {
 	const failure = env.state === "failed" ? env.attempt?.failure ?? null : null;
 	const ready = env.ready;
 	const validated = ready ? ready.finishedAt ?? ready.startedAt : null;
@@ -120,11 +120,12 @@ export function EnvironmentSection({ repositoryId, labelledBy }: { repositoryId:
 	}, [client, auth, repositoryId, explain]);
 	useEffect(() => { void load(); }, [load]);
 	const building = view?.environments.some((e) => e.state === "building") ?? false;
+	const polling = building || view?.environments.some(e => e.state === "retrying");
 	useEffect(() => {
-		if (!building) return;
+		if (!polling) return;
 		const timer = setInterval(() => void load(), 3000);
 		return () => clearInterval(timer);
-	}, [building, load]);
+	}, [polling, load]);
 
 	const act = async (work: () => Promise<RepositoryEnvironments>, done: string) => {
 		setBusy(true);
@@ -164,7 +165,7 @@ export function EnvironmentSection({ repositoryId, labelledBy }: { repositoryId:
 					{view.environments.length ? (
 						<ul className="env-rows">
 							{view.environments.map((env) => (
-								<Row key={env.place} env={env} now={now} busy={busy} onRebuild={() => void act(() => user.rebuildEnvironment(repositoryId, env.place), "Rebuilding.")} />
+								<EnvironmentRow key={env.place} env={env} now={now} busy={busy} onRebuild={() => void act(() => user.rebuildEnvironment(repositoryId, env.place), "Rebuilding.")} />
 							))}
 						</ul>
 					) : (

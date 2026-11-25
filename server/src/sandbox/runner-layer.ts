@@ -38,7 +38,7 @@ import { type ChannelSocket, type ConversationRecord, ConversationLost, ServerCh
 import { machineProfiles } from "../machines/profiles.js";
 import { PROFILE_DENIED, type Args, type Name, type Value } from "../runner/protocol.js";
 import { AttachTickets } from "../machines/ticket.js";
-import { type ConnectOptions, type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type RunnerStartTimes, type SandboxLayer, type Sandboxes, ENVIRONMENT_SLOT_WAIT, SandboxUserError } from "./api.js";
+import { type ConnectOptions, type CreateSandboxInput, type ExecOptions, type ExecResult, type ListedSandbox, type RunnerStartTimes, type SandboxLayer, type Sandboxes, MachineUnreachable, ENVIRONMENT_SLOT_WAIT, SandboxUserError } from "./api.js";
 import { SESSION_VOLUME_PROFILES, findProfile } from "./profiles.js";
 import { forwardKeyLease } from "./relay-leases.js";
 import { type Answer, type ProcessEnd, type SandboxProcess, type StartOptions, type TurnModelRelay, type TurnSandbox, markTurnSandbox, randomId } from "./provider.js";
@@ -88,15 +88,7 @@ export function machineActor(client: () => any, uid: string, machineId: string) 
 	};
 }
 
-/** The machine cannot be reached; `message` is the sentence a person reads. */
-export class MachineUnreachable extends SandboxUserError {
-	constructor(
-		readonly reason: "offline" | "removed",
-		message: string,
-	) {
-		super(message);
-	}
-}
+export { MachineUnreachable } from "./api.js";
 
 const REMOVED = "This agent's machine was removed. Its files were there. Start a new agent to go on.";
 const SLEPT = "The session went to sleep.";

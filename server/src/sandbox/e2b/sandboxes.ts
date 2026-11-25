@@ -5,7 +5,7 @@ import { readsModelRelay, SETTINGS_KEY_WINDLASS } from "../../model-relay-url.js
 import { INIT_WORKSPACE } from "../../github/git-flags.js";
 import { hostedProfiles, machineHarnesses } from "../harnesses.js";
 import type { SandboxProfile, SandboxProfileId } from "../../contract.js";
-import { type ConnectOptions, type CreateSandboxInput, DeploymentFull, type ExecOptions, type ExecResult, type ListedSandbox, type OutOfMemory, type SandboxPrice, type SandboxObservation, SandboxUserError } from "../api.js";
+import { type ConnectOptions, type CreateSandboxInput, DeploymentFull, type ExecOptions, type ExecResult, type ListedSandbox, type OutOfMemory, type SandboxPrice, type SandboxObservation, SandboxConnectionLost, SandboxUserError } from "../api.js";
 import { HostedSandboxes, type HostedSandboxProvider } from "../hosted.js";
 import { findProfile, profilesFor } from "../profiles.js";
 import {
@@ -284,7 +284,7 @@ export class E2bSandboxHandle implements TurnSandbox {
 						const signal = /^signal: (.+)$/.exec(result.error?.trim() ?? "")?.[1] ?? null;
 						return { code: signal === null ? result.exitCode : null, signal, error: null };
 					},
-					(error: unknown): ProcessEnd => ({ code: null, signal: null, error: new Error(`the connection to the command in the sandbox broke: ${messageOf(error)}`) }),
+					(error: unknown): ProcessEnd => ({ code: null, signal: null, error: new SandboxConnectionLost(`the connection to the command in the sandbox broke: ${messageOf(error)}`) }),
 				),
 			(error: unknown): ProcessEnd => ({ code: null, signal: null, error: new Error(`could not start the command in the sandbox: ${messageOf(error)}`) }),
 		);

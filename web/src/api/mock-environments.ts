@@ -1,7 +1,6 @@
 /**
- * The mock's prepared environments (server/src/environments.ts): acme/signal-flags is ready here and failed on the
- * machine "nas", where the image's pnpm is not the one the repository pins. Rebuild runs for a few seconds and
- * passes. Kept per repository for as long as the page is open.
+ * acme/signal-flags is ready hosted, retrying on "build-box" and failed on "nas" (its pnpm version).
+ * Rebuild runs for a few seconds and passes. Records last as long as the page is open.
  */
 import type { EnvironmentBuild, EnvironmentPlace, EnvironmentSchedule, GithubId, RepositoryEnvironment, RepositoryEnvironments } from "@contract";
 
@@ -30,9 +29,11 @@ function seed(repositoryId: GithubId, now: number): RepositoryEnvironments {
 		environments: [
 			// Main is red: "lint" fails on its code, which does not keep the environment from being promoted.
 			{ place: "hosted", placeName: "Hosted", state: "ready", ready: build(now - 9 * HOUR, { checks: [passed("test", 41_000), passed("types", 63_000), { name: "lint", status: "failed", exitCode: 1, durationMs: 8_000, environment: null }], codeFailures: ["lint"] }), attempt: null, note: null, nextAt: now + 14 * HOUR },
+			{ place: "m_build", placeName: "‘build-box’", state: "retrying", ready: null,
+				attempt: build(now - 5 * 60_000, { interrupted: true, snapshot: false, checks: [] }), note: null, nextAt: now + 90_000 },
 			{ place: "m_nas", placeName: "‘nas’", state: "failed", ready: null, attempt: failed, note: null, nextAt: now + 14 * HOUR },
 		],
-		places: [{ place: "m_build", placeName: "‘build-box’" }],
+		places: [],
 	};
 }
 
@@ -42,14 +43,28 @@ const kept = new Map<string, RepositoryEnvironments>();
 export function mockEnvironments(repositoryId: GithubId, now: number, unavailable: string | null = null): RepositoryEnvironments {
 	if (unavailable) return { available: false, unavailableReason: unavailable, schedule: 0, scheduleChosen: false, environments: [], places: [] };
 	const key = String(repositoryId);
-	if (!kept.has(key)) kept.set(key, seed(repositoryId, now));
-	return structuredClone(kept.get(key)!);
+	const view = kept.get(key) ?? seed(repositoryId, now);
+	for (const env of view.environments) {
+		if (env.state === "retrying" && env.nextAt !== null && now >= env.nextAt) {
+			env.attempt = build(env.nextAt, { retries: 1, finishedAt: null, checks: [], snapshot: false });
+			env.state = "building";
+			env.nextAt = null;
+		}
+		if (env.state === "building" && env.attempt?.retries && now >= env.attempt.startedAt + 4_000) {
+			env.ready = build(env.attempt.startedAt, { retries: 1, finishedAt: env.attempt.startedAt + 4_000 });
+			env.state = "ready";
+			env.attempt = null;
+			env.nextAt = view.schedule ? env.ready.startedAt + view.schedule * HOUR : null;
+		}
+	}
+	kept.set(key, view);
+	return structuredClone(view);
 }
 
 export function mockSchedule(repositoryId: GithubId, schedule: EnvironmentSchedule, now: number, unavailable: string | null = null): RepositoryEnvironments {
 	if (unavailable) return mockEnvironments(repositoryId, now, unavailable);
 	const view = mockEnvironments(repositoryId, now);
-	kept.set(String(repositoryId), { ...view, schedule, scheduleChosen: true, environments: view.environments.map(e => ({ ...e, nextAt: schedule === 0 ? null : now + schedule * HOUR })) });
+	kept.set(String(repositoryId), { ...view, schedule, scheduleChosen: true, environments: view.environments.map(e => e.state === "retrying" ? e : ({ ...e, nextAt: schedule === 0 ? null : now + schedule * HOUR })) });
 	return mockEnvironments(repositoryId, now);
 }
 

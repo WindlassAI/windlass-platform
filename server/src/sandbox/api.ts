@@ -486,6 +486,23 @@ export class SandboxUserError extends Error {
 	}
 }
 
+/** The machine cannot be reached; `message` is the sentence a person reads. */
+export class MachineUnreachable extends SandboxUserError {
+	constructor(
+		readonly reason: "offline" | "removed",
+		message: string,
+	) {
+		super(message);
+	}
+}
+
+/** The connection ended without returning the sandbox operation's result. */
+export class SandboxConnectionLost extends Error {}
+
+export function sandboxConnectionLost(error: unknown): boolean {
+	return error instanceof SandboxConnectionLost || (error instanceof MachineUnreachable && error.reason === "offline");
+}
+
 /** A deployment capacity refusal makes factory work wait. Callers distinguish the class, not the message. */
 export class DeploymentFull extends SandboxUserError {
 	constructor(

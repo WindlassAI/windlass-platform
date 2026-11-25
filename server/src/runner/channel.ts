@@ -4,7 +4,7 @@
 import { plain } from "./check.js";
 import type { KeyObject } from "node:crypto";
 import { authFailure, FrameAuthError, platformWelcome, runnerHandshake, type FrameAuth, type PlatformIdentity, type Trust } from "./frame-auth.js";
-import { SandboxUserError } from "../sandbox/api.js";
+import { SandboxConnectionLost, SandboxUserError } from "../sandbox/api.js";
 import type { ProcessEnd } from "../sandbox/provider.js";
 import {
 	ACK_MS, DEAD_MS, MAX_FRAME_BYTES, MAX_MESSAGE_BYTES, MAX_OPS_IN_FLIGHT, OP_MS, PING_MS, PROTOCOL_VERSION, RUNNER_GRACE_MS, WINDOW_BYTES, WINDOW_FRAMES,
@@ -20,7 +20,7 @@ export interface ChannelSocket {
 }
 
 /** The conversation an operation was sent in has ended: whether it ran is unknown. */
-export class ConversationLost extends Error {}
+export class ConversationLost extends SandboxConnectionLost {}
 
 // The session journal resumes a conversation within the runner's grace period.
 // Only committed incoming frames may be acknowledged. Unacknowledged outgoing frames replay in sequence.

@@ -578,7 +578,7 @@ export interface RepositoryChecks {
 
 /** Where an environment is kept: "hosted", or the id of one of the user's machines. */
 export type EnvironmentPlace = string;
-export type EnvironmentState = "building" | "ready" | "failed" | "stale";
+export type EnvironmentState = "building" | "retrying" | "interrupted" | "ready" | "failed" | "stale";
 /** What started a build. "first_use": a session started cold where the repository has none. */
 export type EnvironmentTrigger = "schedule" | "push" | "rebuild" | "change" | "first_use" | "image";
 /** Why the sandbox could not run a check (factory/check-environment.ts); "code": it ran and failed on the base's code. */
@@ -597,6 +597,10 @@ export interface EnvironmentCheckResult {
 /** One build of an environment, as the record keeps it. */
 export interface EnvironmentBuild {
 	trigger: EnvironmentTrigger;
+	/** Automatic retries started for this trigger. */
+	retries?: number;
+	/** This attempt ended before the place could report its result. */
+	interrupted?: true;
 	startedAt: number;
 	/** When setup and the checks finished; null while it runs. For the ready part, when it was validated. */
 	finishedAt: number | null;
