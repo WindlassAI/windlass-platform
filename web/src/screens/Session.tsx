@@ -26,7 +26,7 @@ import { MissingPageLinks } from "../components/MissingPageLinks";
 import { HarnessStatus } from "../components/HarnessStatus";
 import { Composer, ItemNote } from "../components/Composer";
 import { Conversation } from "../components/Conversation";
-import { ArrowLeftIcon, CheckIcon, Mark, PauseIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "../components/Icons";
+import { CheckIcon, Mark, PauseIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "../components/Icons";
 import { SecretAsk, withoutValue } from "../components/SecretAsk";
 import { hasReason } from "../api/client";
 import { InteractiveProvider, QuestionDock, useQuestionFlow, type Interactive } from "../components/Question";
@@ -37,6 +37,8 @@ import { STATUS_WORD, StatusBadge, StatusGlyph } from "../components/Status";
 import { AgentGlyph, Popover, Tooltip } from "../components/ui";
 import { clockDuration, localTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
+import { sessionTrail } from "../lib/nav";
+import { PageTrail } from "../components/Nav";
 import type { ToolBlock } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { takeHandover } from "../state/handover";
@@ -175,55 +177,9 @@ export function SessionCrumb({ title, status, place, machine, item, harness, sum
 	const live = summary !== null && (summary.status === "running" || summary.status === "starting" || summary.status === "waiting");
 	return (
 		<>
-			<nav className="crumb" aria-label="Where you are">
-				{item && itemView?.parent ? (
-					<>
-						<a className="crumb-back" {...linkProps({ name: "item", id: itemView.parent.itemId })} title={itemView.parent.title}>
-							<ArrowLeftIcon size={14} />
-							<span className="crumb-feature">{itemView.parent.title}</span>
-						</a>
-						<span className="crumb-sep" aria-hidden="true">
-							/
-						</span>
-						<a className="crumb-repo crumb-feature" {...linkProps({ name: "item", id: item.id })} title={itemView.title}>
-							{itemView.title}
-						</a>
-					</>
-				) : (
-					<a className="crumb-back" {...linkProps(item ? { name: "item", id: item.id } : { name: "home" })} title={itemView?.title}>
-						<ArrowLeftIcon size={14} />
-						<span className={itemView ? "crumb-feature" : undefined}>{item ? (itemView?.title ?? "Work item") : "Agents"}</span>
-					</a>
-				)}
-				{repository && !item ? (
-					<>
-						<span className="crumb-sep" aria-hidden="true">
-							/
-						</span>
-						<a className="crumb-repo" {...linkProps({ name: "repository", id: repository.id })} title={`${repository.owner}/${repository.name}`}>
-							{repository.name}
-						</a>
-					</>
-				) : null}
-				{title !== null ? (
-					<>
-						<span className="crumb-sep" aria-hidden="true">
-							/
-						</span>
-						{/* A work item's agent is named by its item, just before: the last part says only what this page is. */}
-						<h1 className="crumb-title" title={title}>
-							{item && itemView ? (
-								<>
-									session<span className="visually-hidden"> of {title}</span>
-								</>
-							) : (
-								title
-							)}
-						</h1>
-					</>
-				) : null}
+			<PageTrail trail={sessionTrail({ title, repository, item }, itemView)} heading>
 				{status !== null ? <CrumbState status={status} since={live ? summary.updatedAt : null} /> : null}
-			</nav>
+			</PageTrail>
 			<div className="crumb-end">
 				<p className="crumb-facts">
 					{place?.kind === "machine" ? (

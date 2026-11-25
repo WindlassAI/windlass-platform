@@ -283,9 +283,6 @@
 	color: var(--ink);
 	background: var(--bg-hover);
 }
-.crumb-sep {
-	color: var(--ink-faint);
-}
 .crumb-title {
 	min-width: 0;
 	font-size: var(--text-13);
@@ -293,6 +290,125 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
+}
+
+/*
+ * Further in: the way back, a labelled chip that names where it leads, then the page's trail from its
+ * section, quieter, with › between its steps and the page itself in ink.
+ */
+.nav-back {
+	flex: 0 1 auto;
+	gap: 5px;
+	min-width: 0;
+	max-width: 24ch;
+	height: 26px;
+	padding: 0 9px 0 7px;
+	margin-left: 0;
+	box-shadow: inset 0 0 0 1px var(--line);
+	color: var(--ink);
+}
+.nav-back:hover {
+	box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+.nav-back svg {
+	flex: none;
+	color: var(--ink-dim);
+	transition: transform var(--dur-hover) var(--ease);
+}
+.nav-back:hover svg {
+	transform: translateX(-2px);
+}
+.nav-back-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.trail {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.trail-step {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	flex: 0 1 auto;
+}
+.trail-step:not(.trail-here) {
+	flex-shrink: 4;
+}
+/* The section and the page itself keep their words; the steps between give way first. */
+.trail-step.trail-section {
+	flex: none;
+}
+.trail-here {
+	flex: 0 0 auto;
+	min-width: 0;
+	max-width: 44ch;
+}
+.trail-here .crumb-title {
+	display: block;
+}
+.trail-link {
+	min-width: 0;
+	max-width: 24ch;
+	padding: 3px 4px;
+	margin: 0 -4px;
+	border-radius: var(--r-item);
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+	text-decoration: none;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+a.trail-link:hover {
+	color: var(--ink);
+	background: var(--bg-hover);
+}
+.trail-section .trail-link {
+	font-weight: var(--weight-medium);
+}
+.trail-sep {
+	flex: none;
+	color: var(--ink-faint);
+}
+.trail .crumb-title {
+	margin: 0;
+}
+
+/* The section's name, standing for the tabs where they have no room: it opens them as a menu. */
+.topbar-section {
+	display: none;
+	flex: none;
+}
+.topbar-section-button {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	height: 28px;
+	padding: 0 8px 0 10px;
+	border: 0;
+	border-radius: var(--r-item);
+	background: var(--bg-active);
+	color: var(--ink);
+	font: inherit;
+	font-size: var(--text-13);
+	font-weight: var(--weight-medium);
+	cursor: pointer;
+}
+.topbar-section-button svg {
+	color: var(--ink-faint);
+}
+.topbar-section-button:focus-visible {
+	outline: var(--focus-width) solid var(--accent);
+	outline-offset: 1px;
 }
 
 /* The app's places: rounded tabs, the one you are on filled. */
@@ -363,10 +479,36 @@
 	.topbar-tab {
 		padding: 0 8px;
 	}
-	/* Further in, where you are takes the tabs' place; the places are in the account's menu. */
+	/* Further in, the section's name takes the tabs' place and opens them; the way back keeps its words. */
 	.topbar-deep .topbar-tabs,
 	.topbar .topbar-docs {
 		display: none;
+	}
+	.topbar-deep .topbar-section {
+		display: inline-flex;
+	}
+	.topbar-deep .topbar-home {
+		display: none;
+	}
+	/* Only the way back and, where the page has no heading of its own, its title. */
+	.topbar-deep .trail-step:not(.trail-here),
+	.topbar-deep .trail:not(.trail-heading) {
+		display: none;
+	}
+	.trail-here {
+		flex-shrink: 1;
+		min-width: 0;
+	}
+	.topbar .nav-back {
+		flex-shrink: 0;
+		max-width: 30vw;
+	}
+	.topbar-deep .topbar-middle {
+		overflow: hidden;
+	}
+	.topbar-section-button {
+		gap: 3px;
+		padding: 0 6px 0 8px;
 	}
 	.menu-action-phone {
 		display: flex;
@@ -379,8 +521,6 @@
 		padding-left: 8px;
 	}
 	.topbar-home .wordmark-name,
-	.crumb-sep,
-	.crumb-back span,
 	.mock-flag {
 		display: none;
 	}
@@ -389,6 +529,7 @@
 		padding-left: 8px;
 	}
 	.crumb .status-badge {
+		flex: none;
 		font-size: 0;
 		gap: 0;
 	}

@@ -20,16 +20,18 @@
  */
 import { minutes, monthReset } from "../lib/hosted";
 import { USAGE_LOW_SHARE, type GithubId, type MachineSummary, type UsageNumbers } from "@contract";
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from "react";
-import { ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, PlusIcon, RepoIcon, RingIcon, SearchIcon, SlidersIcon } from "../components/Icons";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type RefObject } from "react";
+import { Badges, EverythingIcon, moveFocus, RailFoldButton, RailFrame, RailLink, useRailFold } from "../components/Rail";
+import { ChevronDownIcon, PlusIcon, RepoIcon, RingIcon, SearchIcon, SlidersIcon } from "../components/Icons";
 import { OwnerAvatar, RepoTile } from "../components/RepoTile";
 import { FilterMenu } from "../components/WorkspaceFilters";
 import { Sheet } from "../components/ui/Sheet";
 import { PHONE_QUERY, useMediaQuery } from "../components/ui/useMediaQuery";
 import { count, localTime, plural, sandboxTime } from "../lib/format";
 import { workingCounts } from "../lib/repositories";
-import { linkProps, navigate, type RepositoryPaneView, type Route } from "../lib/router";
-import { activeRepositories, filterCount, loadFilters, loadFoldedOwners, loadRailFolded, railBadge, railOf, saveFilters, saveFoldedOwners, saveRailFolded, searchRail, type Filters, type Rail, type RailRepository, type RailTotals } from "../lib/workspace";
+import { repositoryLabel } from "../lib/nav";
+import { linkProps, navigate, usePageLabel, type RepositoryPaneView } from "../lib/router";
+import { activeRepositories, filterCount, loadFilters, loadFoldedOwners, railBadge, railOf, saveFilters, saveFoldedOwners, searchRail, type Filters, type Rail, type RailRepository } from "../lib/workspace";
 import { useApp } from "../state/app";
 import { allowanceState, useAllowance, useFactoryLimits, useSessions } from "../state/hooks";
 import { Home, useSavedRepositories } from "./Home";
@@ -57,8 +59,8 @@ export function Workspace({ selection, items }: { selection: Selection; items: I
 	const state = useSessions();
 	const { sessions } = state;
 	const [filters, setFilters] = useFilters();
-	const [folded, setFolded] = useState(() => loadRailFolded());
 	const phone = useMediaQuery(PHONE_QUERY);
+	const [folded, fold] = useRailFold(phone);
 	const search = useRef<HTMLInputElement>(null);
 	const saved = useSavedRepositories(sessions);
 	const machinesOffered = platform.info?.machines != null;
@@ -70,14 +72,12 @@ export function Workspace({ selection, items }: { selection: Selection; items: I
 	const ceiling = useFactoryLimits().value?.hostedRunning ?? null;
 	const chosen = selection.kind === "repository" ? selection.id : null;
 	const rail = railOf({ sessions, items: items.list, feed: items.feed, saved, filters, keep: chosen });
+	// What the back control of a page opened from here calls it: "tide-tables · Work items".
+	const chosenName = chosen === null ? null : (rail.groups.flatMap((group) => group.repositories).find((repository) => String(repository.id) === String(chosen))?.name ?? null);
+	usePageLabel(selection.kind === "repository" ? (chosenName ? repositoryLabel(chosenName, selection.view) : null) : selection.kind === "none" ? "No repository" : "Agents");
 	const [sheet, setSheet] = useState(false);
 
-	const fold = useCallback((next: boolean) => {
-		setFolded(next);
-		saveRailFolded(next);
-	}, []);
-
-	// "/" finds a repository from anywhere but a field; Ctrl+B (⌘B) folds the rail.
+	// "/" finds a repository from anywhere but a field.
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
 			if (event.defaultPrevented) return;
@@ -89,11 +89,6 @@ export function Workspace({ selection, items }: { selection: Selection; items: I
 					fold(false);
 					requestAnimationFrame(() => search.current?.focus());
 				} else search.current?.focus();
-				return;
-			}
-			if ((event.key === "b" || event.key === "B") && (event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && !phone) {
-				event.preventDefault();
-				fold(!folded);
 			}
 		};
 		window.addEventListener("keydown", onKey);
@@ -109,33 +104,32 @@ export function Workspace({ selection, items }: { selection: Selection; items: I
 	const body = (inSheet: boolean) => <RailBody rail={rail} selection={selection} filters={filters} onFilters={setFilters} machines={machineList} search={inSheet ? undefined : search} onFold={inSheet ? undefined : () => fold(true)} />;
 
 	return (
-		<div className={`ws${folded && !phone ? " ws-folded" : ""}`}>
-			{phone ? null : (
-				<nav className="ws-rail" aria-label="Repositories" hidden={folded}>
-					{body(false)}
-					{meter}
-				</nav>
-			)}
-			<div className="ws-main">
+		<>
+			<RailFrame
+				label="Repositories"
+				folded={folded}
+				phone={phone}
+				onUnfold={() => fold(false)}
+				rail={
+					<>
+						{body(false)}
+						{meter}
+					</>
+				}
+			>
 				{phone ? <PhoneSwitcher rail={rail} selection={selection} onOpen={() => setSheet(true)} /> : null}
-				{folded && !phone ? (
-					<button type="button" className="ws-unfold" onClick={() => fold(false)} aria-label="Show the repositories" title="Show the repositories (Ctrl+B)">
-						<ChevronRightIcon size={14} />
-						<span>Repositories</span>
-					</button>
-				) : null}
 				{selection.kind === "repository" ? (
 					<RepositorySide key={selection.id} id={selection.id} view={selection.view} launching={selection.launching ?? false} items={items} filters={filters} onFilters={setFilters} machines={machineList} />
 				) : (
 					<Home state={state} items={platform.info?.items ? items.list : []} usage={usage} scope={selection.kind === "none" ? "none" : "all"} filters={filters} onFilters={setFilters} machines={machineList} />
 				)}
-			</div>
+			</RailFrame>
 			{phone ? (
 				<Sheet open={sheet} onClose={() => setSheet(false)} title="Repositories" footer={meter}>
 					{body(true)}
 				</Sheet>
 			) : null}
-		</div>
+		</>
 	);
 }
 
@@ -145,34 +139,6 @@ function RepositorySide({ id, ...props }: { id: GithubId; view?: RepositoryPaneV
 }
 
 // ---- the rail --------------------------------------------------------------------------------------
-
-/** Three dots in a row: everything at once. */
-function EverythingIcon() {
-	return (
-		<svg width={14} height={14} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" focusable="false">
-			<circle cx="3" cy="8" r="1.4" />
-			<circle cx="8" cy="8" r="1.4" />
-			<circle cx="13" cy="8" r="1.4" />
-		</svg>
-	);
-}
-
-/** The rows a key moves between: the rail's links, in the order they stand. */
-function moveFocus(event: ReactKeyboardEvent<HTMLElement>, list: HTMLElement | null) {
-	if (!list) return;
-	const rows = [...list.querySelectorAll<HTMLElement>("[data-rail-row]")];
-	if (rows.length === 0) return;
-	const at = rows.indexOf(document.activeElement as HTMLElement);
-	const to = event.key === "ArrowDown" ? Math.min(rows.length - 1, at + 1) : event.key === "ArrowUp" ? (at <= 0 ? -1 : at - 1) : event.key === "Home" ? 0 : event.key === "End" ? rows.length - 1 : null;
-	if (to === null) return;
-	event.preventDefault();
-	if (to === -1) {
-		list.closest(".ws-rail-body")?.querySelector<HTMLInputElement>(".ws-search input")?.focus();
-		return;
-	}
-	rows[to]?.focus();
-	rows[to]?.scrollIntoView?.({ block: "nearest" });
-}
 
 function RailBody({ rail, selection, filters, onFilters, machines, search, onFold }: { rail: Rail; selection: Selection; filters: Filters; onFilters(filters: Filters): void; machines: readonly MachineSummary[]; search?: RefObject<HTMLInputElement | null>; onFold?: () => void }) {
 	const [query, setQuery] = useState("");
@@ -217,17 +183,13 @@ function RailBody({ rail, selection, filters, onFilters, machines, search, onFol
 					) : null}
 				</label>
 				<FilterMenu compact filters={filters} onChange={onFilters} machines={machines} />
-				{onFold ? (
-					<button type="button" className="ws-fold" onClick={onFold} aria-label="Hide the repositories" title="Hide the repositories (Ctrl+B)">
-						<ChevronLeftIcon size={14} />
-					</button>
-				) : null}
+				{onFold ? <RailFoldButton label="Repositories" onFold={onFold} /> : null}
 			</div>
 			<div className="ws-rail-list" ref={list} onKeyDown={(event) => moveFocus(event, list.current)}>
 				{query.trim() === "" ? (
 					<ul className="ws-rail-rows">
-						<ScopeRow route={{ name: "home" }} current={selection.kind === "everything"} label="Everything" icon={<EverythingIcon />} totals={rail.everything} />
-						<ScopeRow route={{ name: "home", scope: "none" }} current={selection.kind === "none"} label="No repository" icon={<PlusIcon size={13} />} totals={rail.none} />
+						<RailLink route={{ name: "home" }} current={selection.kind === "everything"} label="Everything" icon={<EverythingIcon />} badges={<Badges running={rail.everything.running > 0 ? rail.everything.running : false} needs={rail.everything.needs} count={null} label="Everything" />} />
+						<RailLink route={{ name: "home", scope: "none" }} current={selection.kind === "none"} label="No repository" icon={<PlusIcon size={13} />} badges={<Badges running={rail.none.running > 0 ? rail.none.running : false} needs={rail.none.needs} count={null} label="No repository" />} />
 					</ul>
 				) : null}
 				{active.length > 0 ? (
@@ -275,52 +237,21 @@ function RailBody({ rail, selection, filters, onFilters, machines, search, onFol
 	);
 }
 
-/** A ring while something runs, the amber count of what asks, otherwise how many. */
-function Badges({ running, needs, count: total, saved = false, label }: { running: boolean | number; needs: number; count: number | null; saved?: boolean; label: string }) {
-	const words = [running ? (typeof running === "number" ? `${running} running` : "something running") : null, needs > 0 ? `${needs} ${needs === 1 ? "needs" : "need"} you` : null, total !== null ? plural(total, "thing") : null, saved ? "saved settings only" : null].filter((part) => part !== null);
-	return (
-		<span className="ws-rail-badges">
-			{running ? (
-				<span className="ws-badge-running">
-					<RingIcon size={12} className="ws-ring" />
-					{typeof running === "number" ? <span className="ws-badge-number">{running}</span> : null}
-				</span>
-			) : null}
-			{needs > 0 ? <span className="ws-badge-needs">{needs}</span> : null}
-			{total !== null ? <span className="ws-badge-count">{total}</span> : null}
-			{saved ? <span className="ws-badge-saved">saved</span> : null}
-			<span className="visually-hidden">{words.length > 0 ? `, ${words.join(", ")}` : `, ${label} has nothing yet`}</span>
-		</span>
-	);
-}
-
-function ScopeRow({ route, current, label, icon, totals }: { route: Route; current: boolean; label: string; icon: ReactNode; totals: RailTotals }) {
-	return (
-		<li className="ws-rail-item">
-			<a className="ws-rail-row" data-rail-row="" aria-current={current ? "page" : undefined} {...linkProps(route)}>
-				<span className="ws-rail-icon">{icon}</span>
-				<span className="ws-rail-name">{label}</span>
-				<Badges running={totals.running > 0 ? totals.running : false} needs={totals.needs} count={null} label={label} />
-			</a>
-		</li>
-	);
-}
-
 /** A repository's row: its tile, its name and its state; `owned` (in "Active now") says its owner too, quietly. */
 function RepoRow({ repository, current, owned = false }: { repository: RailRepository; current: boolean; owned?: boolean }) {
 	const badge = railBadge(repository);
 	const name = `${repository.owner ? `${repository.owner}/` : ""}${repository.name}`;
-	const quiet = !badge.running && badge.needs === 0;
 	return (
-		<li className={`ws-rail-item ws-rail-item-repo${quiet ? " ws-rail-quiet" : ""}`}>
-			<a className="ws-rail-row" data-rail-row="" aria-current={current ? "page" : undefined} title={name} {...linkProps({ name: "repository", id: repository.id })}>
-				<span className="ws-rail-icon">
-					<RepoTile name={repository.name} />
-				</span>
-				{owned && repository.owner ? <span className="visually-hidden">{repository.owner}/</span> : null}
-				<span className="ws-rail-name">{repository.name}</span>
-				<Badges running={badge.running} needs={badge.needs} count={badge.count} saved={badge.saved} label={name} />
-			</a>
+		<RailLink
+			route={{ name: "repository", id: repository.id }}
+			current={current}
+			label={repository.name}
+			title={name}
+			quiet={!badge.running && badge.needs === 0}
+			icon={<RepoTile name={repository.name} />}
+			before={owned && repository.owner ? <span className="visually-hidden">{repository.owner}/</span> : null}
+			badges={<Badges running={badge.running} needs={badge.needs} count={badge.count} saved={badge.saved} label={name} />}
+		>
 			<span className="ws-rail-actions">
 				<a className="ws-rail-action" {...linkProps({ name: "new", repository: repository.id })} aria-label={`New agent on ${name}`} title="New agent here">
 					<PlusIcon size={13} />
@@ -329,7 +260,7 @@ function RepoRow({ repository, current, owned = false }: { repository: RailRepos
 					<SlidersIcon size={13} />
 				</a>
 			</span>
-		</li>
+		</RailLink>
 	);
 }
 

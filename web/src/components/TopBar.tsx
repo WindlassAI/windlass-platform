@@ -4,12 +4,14 @@
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useIdentity, type Identity } from "../lib/identity";
+import type { Section } from "../lib/nav";
 import { linkProps, useRoute } from "../lib/router";
 import type { Theme } from "../lib/theme";
 import { useApp } from "../state/app";
 import { useGithub } from "../state/github";
 import { useChatgpt } from "../state/hooks";
 import { shownInSettings } from "./GithubSettings";
+import { SectionMenu } from "./Nav";
 import { CheckIcon, Mark, MoonIcon, SunIcon, UserIcon, WarnIcon } from "./Icons";
 import { PickerPanel } from "./ui/Menu";
 import { Tooltip } from "./ui/Tooltip";
@@ -159,16 +161,14 @@ function SignedInMenu() {
 
 /**
  * The app's places: Agents, the Factory where the deployment offers work items, Machines where it
- * offers them, and Settings. `current` is the one you are on; `asking`, how many work items ask their person
- * something, said beside "Factory" when there are any.
+ * offers them, and Settings, the account's. `current` is the section of the page you are on, on every
+ * page; `asking`, how many work items ask their person something, said beside "Factory" when there are any.
  */
-export type Place = "home" | "factory" | "machines" | "settings";
-
-export function ListTabs({ current, asking = 0 }: { current?: Place; asking?: number }) {
+export function ListTabs({ current, asking = 0 }: { current?: Section | null; asking?: number }) {
 	const { platform } = useApp();
 	return (
 		<nav className="topbar-tabs" aria-label="Main">
-			<a className="topbar-tab" aria-current={current === "home" ? "page" : undefined} {...linkProps({ name: "home" })}>
+			<a className="topbar-tab" aria-current={current === "agents" ? "page" : undefined} {...linkProps({ name: "home" })}>
 				Agents
 			</a>
 			{platform.info?.items ? (
@@ -191,15 +191,19 @@ export function ListTabs({ current, asking = 0 }: { current?: Place; asking?: nu
 				</a>
 			) : null}
 			{/* On a phone there is no room for it: it is in the account menu there. */}
-			<a className="topbar-tab topbar-tab-wide" aria-current={current === "settings" ? "page" : undefined} {...linkProps({ name: "settings" })}>
+			<a className="topbar-tab topbar-tab-wide" aria-current={current === "account" ? "page" : undefined} {...linkProps({ name: "settings" })}>
 				Settings
 			</a>
 		</nav>
 	);
 }
 
-/** `current`: the place in the bar's tabs you are on; `children`, where you are further in (a breadcrumb). */
-export function TopBar({ theme, onToggleTheme, current, asking, children }: { theme: Theme; onToggleTheme(): void; current?: Place; asking?: number; children?: ReactNode }) {
+/**
+ * `current`: the section of the page you are on; `asking`, the Factory's needs-you count; `children`,
+ * where you are further in (lib/nav.ts: the back control and the trail). On a phone's page further
+ * in, the section's name stands for the tabs and opens them.
+ */
+export function TopBar({ theme, onToggleTheme, current, asking, children }: { theme: Theme; onToggleTheme(): void; current?: Section | null; asking?: number; children?: ReactNode }) {
 	const { auth, client } = useApp();
 	return (
 		<header className={`topbar${children ? " topbar-deep" : ""}`}>
@@ -212,6 +216,7 @@ export function TopBar({ theme, onToggleTheme, current, asking, children }: { th
 				</span>
 			) : null}
 			{auth ? <ListTabs current={current} asking={asking} /> : null}
+			{auth && children ? <SectionMenu current={current ?? null} asking={asking} /> : null}
 			<div className="topbar-middle">{children}</div>
 			<div className="topbar-end">
 				<a className="topbar-docs" {...linkProps({ name: "docs", slug: "" })}>

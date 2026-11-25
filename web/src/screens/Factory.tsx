@@ -19,13 +19,15 @@
  * heading says so and no row says a word of it.
  */
 import { type GithubId, type ItemState, type ItemSummary } from "@contract";
-import { useId, useState, type ReactNode } from "react";
+import { useId, type ReactNode } from "react";
+import { Badges, EverythingIcon, moveFocus, RailFoldButton, RailFrame, RailLink, useRailFold } from "../components/Rail";
+import { RepoTile } from "../components/RepoTile";
 import { StartComposer } from "../components/StartComposer";
 import { ChevronIcon, FileIcon, Mark, RepoIcon, WarnIcon } from "../components/Icons";
-import { Menu, Pill, useMediaQuery, type MenuSpec } from "../components/ui";
+import { Menu, PHONE_QUERY, Pill, useMediaQuery, type MenuSpec } from "../components/ui";
 import { plural } from "../lib/format";
 import { feedCounts, feedRepositories, repositoryName, workingCounts } from "../lib/repositories";
-import { ITEM_SOURCES, linkProps, navigate, type ItemSource } from "../lib/router";
+import { ITEM_SOURCES, linkProps, navigate, useHistoryState, type ItemSource } from "../lib/router";
 import { useApp } from "../state/app";
 import { useFactoryLimits, useNow, useSessions } from "../state/hooks";
 import { BOARD_QUERY } from "../lib/board";
@@ -152,7 +154,10 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	const now = useNow(15_000);
 	const limits = useFactoryLimits().value;
 	const reviewer = platform.info?.items?.reviewer !== false;
-	const [showEnded, setShowEnded] = useState(false);
+	// Kept in the history entry: Back from an item opens the ended ones again.
+	const [showEnded, setShowEnded] = useHistoryState("ended", false);
+	const phone = useMediaQuery(PHONE_QUERY);
+	const [folded, fold] = useRailFold(phone);
 	// A phone has the list; anything wider the board.
 	const view = useMediaQuery(BOARD_QUERY) ? "board" : "list";
 	const ended = useId();
@@ -186,164 +191,220 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	const turnsUsed = limits && sessions !== null ? Math.min(hosted, limits.hostedRunning) : null;
 
 	return (
-		<main className={`home factory${view === "board" ? " factory-wide" : ""}`}>
-			<header className="home-head factory-head">
-				<div>
-					<h1 className="display">Factory</h1>
-					<p className="eyebrow factory-facts">
-						{shown === null ? (
-							"work items"
+		<RailFrame label="Repositories" folded={folded} phone={phone} onUnfold={() => fold(false)} rail={<FactoryRail list={list ?? []} repositories={repositories} filters={filters} onFold={() => fold(true)} />}>
+			<main className={`home factory${view === "board" ? " factory-wide" : ""}`}>
+				<header className="home-head factory-head">
+					<div>
+						<h1 className="display">Factory</h1>
+						<p className="eyebrow factory-facts">
+							{shown === null ? (
+								"work items"
+							) : (
+								<>
+									<span className="factory-fact">
+										<strong>{shownCount}</strong> {shownCount === 1 ? "work item" : "work items"}
+									</span>
+									{facts.map((fact) => (
+										<span key={fact.tone} className={`factory-fact factory-fact-${fact.tone}${fact.tone === "needs" ? " eyebrow-waiting" : ""}`}>
+											<span className="factory-fact-dot" aria-hidden="true" />
+											{fact.n} {fact.word}
+										</span>
+									))}
+								</>
+							)}
+						</p>
+						{reviewer ? null : <p className="home-account factory-reviewer-off">No second review on this deployment: the verdict rests on CI and your checks.</p>}
+					</div>
+					<div className="home-account factory-turns">
+						{limits ? (
+							<>
+								<span className="factory-turns-line">
+									{turnsUsed !== null ? (
+										<span className="factory-meter" role="img" aria-label={`${turnsUsed} of ${limits.hostedRunning} hosted sandboxes in use`}>
+											{Array.from({ length: limits.hostedRunning }, (_, index) => (
+												<i key={index} className={index < turnsUsed ? "on" : undefined} />
+											))}
+										</span>
+									) : null}
+									{sessions === null ? (
+										<span>Up to {plural(limits.hostedRunning, "hosted slot", "hosted slots")} at once</span>
+									) : (
+										<span>
+											<span className="factory-turns-n">{hosted}</span> of {plural(limits.hostedRunning, "hosted slot", "hosted slots")} busy
+										</span>
+									)}
+								</span>
+								<span className="factory-turns-line">
+									Machines unlimited
+									<span className="home-account-sep" aria-hidden="true">
+										·
+									</span>
+									<a className="link factory-usage-link" {...linkProps({ name: "usage" })}>
+										Usage
+									</a>
+								</span>
+							</>
+						) : (
+							<a className="link factory-usage-link" {...linkProps({ name: "usage" })}>
+								Usage
+							</a>
+						)}
+					</div>
+				</header>
+
+				<section className="home-start" aria-label="File a work item">
+					<StartComposer sessions={sessions} items={list} kind="item" repositoryId={filters.repository} />
+				</section>
+
+				{list === null ? (
+					items.error ? (
+						<div className="state state-error" role="alert">
+							<WarnIcon size={22} />
+							<h2>The work items could not be loaded</h2>
+							<p>{items.error}</p>
+							<button type="button" className="button button-outline" onClick={items.reload}>
+								Try again
+							</button>
+						</div>
+					) : (
+						<ul className="agents agents-loading" aria-busy="true" aria-label="Loading the work items">
+							{[0, 1, 2].map((row) => (
+								<li key={row} className="agent-row agent-row-skeleton">
+									<span className="skeleton skeleton-dot" />
+									<div className="agent-main">
+										<span className="skeleton skeleton-title" style={{ width: `${46 - row * 7}%` }} />
+										<span className="skeleton skeleton-meta" style={{ width: `${62 - row * 5}%` }} />
+									</div>
+								</li>
+							))}
+						</ul>
+					)
+				) : list.length === 0 ? (
+					<FactoryEmpty github={Boolean(platform.info?.github)} />
+				) : (
+					<>
+						{items.error ? (
+							<p className="callout callout-warn" role="status">
+								<WarnIcon />
+								<span>{items.error} <button className="link" onClick={items.reload}>Try again</button></span>
+							</p>
+						) : null}
+						<div className="factory-filters" role="group" aria-label="Filters">
+							{/* Wider than a phone, the rail chooses the repository. */}
+							{phone ? (
+								<FilterMenu
+									name="repository"
+									label="Repository"
+									icon={<RepoIcon size={14} />}
+									value={chosenRepository?.name ?? (filters.repository === undefined ? "all" : "none of yours")}
+									choices={repositories.map((repository) => ({ key: String(repository.id), name: repository.name, note: plural(repository.items, "work item") }))}
+									chosen={filters.repository === undefined ? null : String(filters.repository)}
+									onChoose={(key) => choose({ repository: key === null ? undefined : (repositories.find((repository) => String(repository.id) === key)?.id ?? undefined), from: filters.from })}
+								/>
+							) : null}
+							<FilterMenu
+								name="from"
+								label="Filed from"
+								icon={<FileIcon size={14} />}
+								value={filters.from ? SOURCE_WORD[filters.from] : "all"}
+								choices={ITEM_SOURCES.map((source) => ({ key: source, name: SOURCE_WORD[source] }))}
+								chosen={filters.from ?? null}
+								onChoose={(key) => choose({ repository: filters.repository, from: ITEM_SOURCES.find((source) => source === key) })}
+							/>
+							{filtered ? (
+								<button type="button" className="link factory-clear" onClick={() => choose({})}>
+									Clear
+								</button>
+							) : null}
+						</div>
+						{shown && shown.length === 0 && filtered ? (
+							<p className="usage-empty factory-none">
+								No work item matches.{" "}
+								<button type="button" className="link" onClick={() => choose({})}>
+									Show them all
+								</button>
+							</p>
+						) : null}
+						{view === "board" && shown ? (
+							<FactoryBoard key={`${filters.repository ?? ""}/${filters.from ?? ""}`} list={shown} children={items.feed?.children} filters={filters} endedCount={endedCount} now={now} reviewer={reviewer} />
 						) : (
 							<>
-								<span className="factory-fact">
-									<strong>{shownCount}</strong> {shownCount === 1 ? "work item" : "work items"}
-								</span>
-								{facts.map((fact) => (
-									<span key={fact.tone} className={`factory-fact factory-fact-${fact.tone}${fact.tone === "needs" ? " eyebrow-waiting" : ""}`}>
-										<span className="factory-fact-dot" aria-hidden="true" />
-										{fact.n} {fact.word}
-									</span>
-								))}
+							<Group id={ids.needs} name="Needs you" items={groups.needs} now={now} reviewer={reviewer} tone="needs" />
+							<Group id={ids.ready} name="Ready for you" items={groups.ready} now={now} reviewer={reviewer} />
+							<Group id={ids.progress} name="In progress" items={groups.progress} now={now} reviewer={reviewer} subtasks={items.feed?.children} count={progressCount(groups.progress, items.feed?.children)} />
+							<Group id={ids.drafts} name="Drafts" items={groups.drafts} now={now} reviewer={reviewer} />
+							{endedCount > 0 ? (
+								<>
+									<p className="agents-fold items-fold factory-fold">
+										<button type="button" className="link machine-toggle" aria-expanded={showEnded} aria-controls={ended} onClick={() => setShowEnded(!showEnded)}>
+											<ChevronIcon size={11} className="machine-chevron" />
+											{showEnded ? "Hide the ended ones" : `Show ${plural(endedCount, "ended item")}`}
+										</button>
+										{showEnded ? null : <span>{endedWords(counted)}</span>}
+									</p>
+									<div id={ended} hidden={!showEnded}>
+										<Group id={ids.ended} name="Ended" items={endedPages.items} count={endedPages.items.length < endedCount ? `${endedPages.items.length} of ${plural(endedCount, "work item")}` : undefined} now={now} reviewer={reviewer} filed>
+											<EndedFoot pages={endedPages} />
+										</Group>
+									</div>
+								</>
+							) : null}
 							</>
 						)}
-					</p>
-					{reviewer ? null : <p className="home-account factory-reviewer-off">No second review on this deployment: the verdict rests on CI and your checks.</p>}
-				</div>
-				<div className="home-account factory-turns">
-					{limits ? (
-						<>
-							<span className="factory-turns-line">
-								{turnsUsed !== null ? (
-									<span className="factory-meter" role="img" aria-label={`${turnsUsed} of ${limits.hostedRunning} hosted sandboxes in use`}>
-										{Array.from({ length: limits.hostedRunning }, (_, index) => (
-											<i key={index} className={index < turnsUsed ? "on" : undefined} />
-										))}
-									</span>
-								) : null}
-								{sessions === null ? (
-									<span>Up to {plural(limits.hostedRunning, "hosted slot", "hosted slots")} at once</span>
-								) : (
-									<span>
-										<span className="factory-turns-n">{hosted}</span> of {plural(limits.hostedRunning, "hosted slot", "hosted slots")} busy
-									</span>
-								)}
-							</span>
-							<span className="factory-turns-line">
-								Machines unlimited
-								<span className="home-account-sep" aria-hidden="true">
-									·
-								</span>
-								<a className="link factory-usage-link" {...linkProps({ name: "usage" })}>
-									Usage
-								</a>
-							</span>
-						</>
-					) : (
-						<a className="link factory-usage-link" {...linkProps({ name: "usage" })}>
-							Usage
-						</a>
-					)}
-				</div>
-			</header>
+					</>
+				)}
+			</main>
+		</RailFrame>
+	);
+}
 
-			<section className="home-start" aria-label="File a work item">
-				<StartComposer sessions={sessions} items={list} kind="item" repositoryId={filters.repository} />
-			</section>
+/** A repository's work items, by what they ask of their person: what needs you and what is in progress. */
+export function railCounts(list: readonly ItemSummary[]): { needs: number; progress: number } {
+	return { needs: list.filter((item) => item.question !== null).length, progress: list.filter((item) => item.question === null && IN_PROGRESS.includes(item.state)).length };
+}
 
-			{list === null ? (
-				items.error ? (
-					<div className="state state-error" role="alert">
-						<WarnIcon size={22} />
-						<h2>The work items could not be loaded</h2>
-						<p>{items.error}</p>
-						<button type="button" className="button button-outline" onClick={items.reload}>
-							Try again
-						</button>
-					</div>
-				) : (
-					<ul className="agents agents-loading" aria-busy="true" aria-label="Loading the work items">
-						{[0, 1, 2].map((row) => (
-							<li key={row} className="agent-row agent-row-skeleton">
-								<span className="skeleton skeleton-dot" />
-								<div className="agent-main">
-									<span className="skeleton skeleton-title" style={{ width: `${46 - row * 7}%` }} />
-									<span className="skeleton skeleton-meta" style={{ width: `${62 - row * 5}%` }} />
-								</div>
-							</li>
-						))}
-					</ul>
-				)
-			) : list.length === 0 ? (
-				<FactoryEmpty github={Boolean(platform.info?.github)} />
-			) : (
-				<>
-					{items.error ? (
-						<p className="callout callout-warn" role="status">
-							<WarnIcon />
-							<span>{items.error} <button className="link" onClick={items.reload}>Try again</button></span>
-						</p>
-					) : null}
-					<div className="factory-filters" role="group" aria-label="Filters">
-						<FilterMenu
-							name="repository"
-							label="Repository"
-							icon={<RepoIcon size={14} />}
-							value={chosenRepository?.name ?? (filters.repository === undefined ? "all" : "none of yours")}
-							choices={repositories.map((repository) => ({ key: String(repository.id), name: repository.name, note: plural(repository.items, "work item") }))}
-							chosen={filters.repository === undefined ? null : String(filters.repository)}
-							onChoose={(key) => choose({ repository: key === null ? undefined : (repositories.find((repository) => String(repository.id) === key)?.id ?? undefined), from: filters.from })}
-						/>
-						<FilterMenu
-							name="from"
-							label="Filed from"
-							icon={<FileIcon size={14} />}
-							value={filters.from ? SOURCE_WORD[filters.from] : "all"}
-							choices={ITEM_SOURCES.map((source) => ({ key: source, name: SOURCE_WORD[source] }))}
-							chosen={filters.from ?? null}
-							onChoose={(key) => choose({ repository: filters.repository, from: ITEM_SOURCES.find((source) => source === key) })}
-						/>
-						{filtered ? (
-							<button type="button" className="link factory-clear" onClick={() => choose({})}>
-								Clear
-							</button>
-						) : null}
-					</div>
-					{shown && shown.length === 0 && filtered ? (
-						<p className="usage-empty factory-none">
-							No work item matches.{" "}
-							<button type="button" className="link" onClick={() => choose({})}>
-								Show them all
-							</button>
-						</p>
-					) : null}
-					{view === "board" && shown ? (
-						<FactoryBoard key={`${filters.repository ?? ""}/${filters.from ?? ""}`} list={shown} children={items.feed?.children} filters={filters} endedCount={endedCount} now={now} reviewer={reviewer} />
-					) : (
-						<>
-						<Group id={ids.needs} name="Needs you" items={groups.needs} now={now} reviewer={reviewer} tone="needs" />
-						<Group id={ids.ready} name="Ready for you" items={groups.ready} now={now} reviewer={reviewer} />
-						<Group id={ids.progress} name="In progress" items={groups.progress} now={now} reviewer={reviewer} subtasks={items.feed?.children} count={progressCount(groups.progress, items.feed?.children)} />
-						<Group id={ids.drafts} name="Drafts" items={groups.drafts} now={now} reviewer={reviewer} />
-						{endedCount > 0 ? (
-							<>
-								<p className="agents-fold items-fold factory-fold">
-									<button type="button" className="link machine-toggle" aria-expanded={showEnded} aria-controls={ended} onClick={() => setShowEnded((value) => !value)}>
-										<ChevronIcon size={11} className="machine-chevron" />
-										{showEnded ? "Hide the ended ones" : `Show ${plural(endedCount, "ended item")}`}
-									</button>
-									{showEnded ? null : <span>{endedWords(counted)}</span>}
-								</p>
-								<div id={ended} hidden={!showEnded}>
-									<Group id={ids.ended} name="Ended" items={endedPages.items} count={endedPages.items.length < endedCount ? `${endedPages.items.length} of ${plural(endedCount, "work item")}` : undefined} now={now} reviewer={reviewer} filed>
-										<EndedFoot pages={endedPages} />
-									</Group>
-								</div>
-							</>
-						) : null}
-						</>
-					)}
-				</>
-			)}
-		</main>
+/**
+ * The Factory's rail: "Everything" and each repository with work items, each with how many need you and
+ * how many are in progress (under the "from" filter). Choosing one is the repository filter, in the address.
+ */
+function FactoryRail({ list, repositories, filters, onFold }: { list: readonly ItemSummary[]; repositories: ReturnType<typeof repositoriesOf>; filters: { repository?: GithubId; from?: ItemSource }; onFold(): void }) {
+	const kept = filterItems(list, { from: filters.from });
+	const badges = (items: readonly ItemSummary[], label: string) => {
+		const counts = railCounts(items);
+		return <Badges running={counts.progress > 0 ? counts.progress : false} needs={counts.needs} count={null} label={label} runningWord="in progress" />;
+	};
+	return (
+		<div className="ws-rail-body">
+			<div className="ws-rail-top factory-rail-top">
+				<h2 className="ws-rail-label factory-rail-label">Repositories</h2>
+				<RailFoldButton label="Repositories" onFold={onFold} />
+			</div>
+			<div className="ws-rail-list" onKeyDown={(event) => moveFocus(event, event.currentTarget)}>
+				<ul className="ws-rail-rows">
+					<RailLink route={{ name: "factory", from: filters.from }} replace current={filters.repository === undefined} label="Everything" icon={<EverythingIcon />} badges={badges(kept, "Everything")} />
+				</ul>
+				<ul className="ws-rail-rows">
+					{repositories.map((repository) => {
+						const own = kept.filter((item) => String(item.repository.id) === String(repository.id));
+						const counts = railCounts(own);
+						const slash = repository.name.indexOf("/");
+						return (
+							<RailLink
+								key={String(repository.id)}
+								route={{ name: "factory", repository: repository.id, from: filters.from }}
+								replace
+								current={String(filters.repository) === String(repository.id)}
+								label={repository.name.slice(slash + 1)}
+								before={slash > 0 ? <span className="visually-hidden">{repository.name.slice(0, slash + 1)}</span> : null}
+								title={`${repository.name}: ${plural(repository.items, "work item")}`}
+								quiet={counts.needs === 0 && counts.progress === 0}
+								icon={<RepoTile name={repository.name.slice(slash + 1)} />}
+								badges={badges(own, repository.name)}
+							/>
+						);
+					})}
+				</ul>
+			</div>
+		</div>
 	);
 }

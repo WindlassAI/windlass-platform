@@ -1,11 +1,11 @@
 import type { ItemSummary } from "@contract";
 import { useCallback, useEffect, useId, useState } from "react";
-import { BOARD_COLUMNS, boardCards, columnName, type BoardCard, type BoardColumn } from "../lib/board";
+import { boardCards, boardTracks, columnName, PIPELINE_COLUMNS, type BoardCard, type BoardColumn } from "../lib/board";
 import { HARNESS_NAMES } from "../lib/acp";
 import { absoluteTime, compact, plural, relativeTime } from "../lib/format";
 import { machineLabel } from "../lib/machines";
 import type { FeedFilters } from "../lib/repositories";
-import { linkProps } from "../lib/router";
+import { linkProps, useHistoryState } from "../lib/router";
 import { itemDoing, subtaskState } from "../lib/subtasks";
 import { EndedFoot, ItemStanding, questionLine, useEndedPages } from "./Items";
 import { useMachines } from "./Machines";
@@ -99,7 +99,8 @@ function Card({ card, now, reviewer, machines }: { card: BoardCard; now: number;
 export function FactoryBoard({ list, children, filters, endedCount, now, reviewer }: { list: readonly ItemSummary[]; children?: readonly ItemSummary[]; filters: FeedFilters; endedCount: number; now: number; reviewer: boolean }) {
 	const columns = boardCards(list, children, reviewer);
 	const id = useId();
-	const [expanded, setExpanded] = useState<Partial<Record<BoardColumn, boolean>>>({});
+	// Kept in the history entry: Back from an item brings the columns shown in full back.
+	const [expanded, setExpanded] = useHistoryState<Partial<Record<BoardColumn, boolean>>>("board", {});
 	const [trayLimit, setTrayLimit] = useState(2);
 	const measureTray = useCallback((grid: HTMLUListElement | null) => {
 		if (!grid) return;
@@ -133,6 +134,16 @@ export function FactoryBoard({ list, children, filters, endedCount, now, reviewe
 		const open = !!expanded[column];
 		const listId = `${id}-${column}`;
 		const Heading = tray ? "h2" : "h3";
+		if (!tray && total === 0) {
+			// Nothing in it: a slim strip, its name and count standing up.
+			return (
+				<section key={column} className={`board-column board-column-${column} board-column-slim`} aria-labelledby={`${listId}-heading`}>
+					<Heading id={`${listId}-heading`} className="board-heading">
+						{columnName(column, reviewer)} <span className="board-column-count">0</span>
+					</Heading>
+				</section>
+			);
+		}
 		return (
 			<section key={column} className={tray ? "board-tray" : `board-column board-column-${column}`} aria-labelledby={`${listId}-heading`}>
 				<Heading id={`${listId}-heading`} className="board-heading">
@@ -143,9 +154,8 @@ export function FactoryBoard({ list, children, filters, endedCount, now, reviewe
 						<Card key={card.item.id} card={card} now={now} reviewer={reviewer} machines={machines} />
 					))}
 				</ul>
-				{!total && <p className="board-column-empty">Nothing here</p>}
 				{total > limit && (
-					<button type="button" className="link board-toggle" aria-expanded={open} aria-controls={listId} onClick={() => setExpanded((prev) => ({ ...prev, [column]: !prev[column] }))}>
+					<button type="button" className="link board-toggle" aria-expanded={open} aria-controls={listId} onClick={() => setExpanded({ ...expanded, [column]: !expanded[column] })}>
 						{open ? "Show fewer" : tray ? `Show all ${total}` : `Show ${total - limit} more`}
 					</button>
 				)}
@@ -157,8 +167,8 @@ export function FactoryBoard({ list, children, filters, endedCount, now, reviewe
 	return (
 		<div className="factory-board">
 			{columnView("needs")}
-			<div className="board-pipeline" role="group" aria-label="Where each work item is" tabIndex={0}>
-				{BOARD_COLUMNS.filter((column) => column !== "needs").map(columnView)}
+			<div className="board-pipeline" role="group" aria-label="Where each work item is" tabIndex={0} style={{ gridTemplateColumns: boardTracks({ planning: columns.planning.length, building: columns.building.length, ci: columns.ci.length, review: columns.review.length, ready: columns.ready.length, ended: endedCount }) }}>
+				{PIPELINE_COLUMNS.map(columnView)}
 			</div>
 		</div>
 	);

@@ -15,29 +15,28 @@
  * The session's bar: the way back, its repository, the title and the turn's pill on the left; what runs
  * it, the way out and the panel's toggle on the right. The app's tabs give way to the crumb here.
  */
-.app-fixed > .topbar .topbar-tabs {
-	display: none;
+/* The session's bar is full: the way back is shorter, and only the step just before the agent stays between its section and it. */
+@media (min-width: 641px) {
+	.app-fixed .nav-back {
+		max-width: 20ch;
+	}
+}
+@media (max-width: 1600px) {
+	.app-fixed .trail-step:not(.trail-section):not(.trail-here):not(:nth-last-child(2)) {
+		display: none;
+	}
+}
+/* Below a wide screen, its section's name stands for the tabs. */
+@media (max-width: 1100px) {
+	.app-fixed > .topbar .topbar-tabs {
+		display: none;
+	}
+	.app-fixed > .topbar .topbar-section {
+		display: inline-flex;
+	}
 }
 .app-fixed > .topbar .topbar-middle {
 	gap: 12px;
-}
-.crumb-repo {
-	flex: none;
-	max-width: 22ch;
-	padding: 4px 6px;
-	margin: 0 -6px;
-	border-radius: var(--r-item);
-	font-size: var(--text-13);
-	font-weight: var(--weight-medium);
-	color: var(--ink-dim);
-	text-decoration: none;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-.crumb-repo:hover {
-	color: var(--ink);
-	background: var(--bg-hover);
 }
 .crumb .crumb-title {
 	font-size: var(--text-14);
@@ -215,12 +214,6 @@
 	height: 7px;
 	border-radius: 50%;
 	background: var(--needs);
-}
-.crumb .crumb-feature {
-	max-width: 24ch;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
 }
 .banner .link {
 	margin-left: 6px;
@@ -3062,7 +3055,6 @@ dd.kv-clip > svg {
 
 /* A phone: the toolbar keeps one row; the pills give way before Send does, and the key hints are not drawn. */
 @media (max-width: 640px) {
-	.crumb-repo,
 	.crumb-pill > span:not(.crumb-pill-time) {
 		display: none;
 	}

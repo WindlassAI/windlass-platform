@@ -144,5 +144,19 @@ export function boardCards(list: readonly ItemSummary[], children: readonly Item
 	return columns;
 }
 
+/** The pipeline's columns, after the tray. */
+export const PIPELINE_COLUMNS = BOARD_COLUMNS.filter((column) => column !== "needs") as Exclude<BoardColumn, "needs">[];
+
+/** The width of a column with nothing in it: a slim strip with its name and "0" standing up. */
+export const SLIM_COLUMN = "44px";
+
+/**
+ * The pipeline's grid tracks by how many each column holds: an empty column is a slim strip, and the
+ * ones with cards share the width ("Ended", narrower).
+ */
+export function boardTracks(totals: Record<Exclude<BoardColumn, "needs">, number>): string {
+	return PIPELINE_COLUMNS.map((column) => (totals[column] === 0 ? SLIM_COLUMN : column === "ended" ? "minmax(160px, 0.8fr)" : "minmax(188px, 1fr)")).join(" ");
+}
+
 /** Wider than a phone: the Factory shows the board; a phone has the list. */
 export const BOARD_QUERY = "(min-width: 761px)";

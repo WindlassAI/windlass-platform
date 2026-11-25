@@ -6,7 +6,8 @@
  */
 import { githubId } from "../../../server/src/github/ids.js";
 import type { GithubId, ItemSummary } from "@contract";
-import { useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { routeLabel } from "./nav";
 
 export type Route =
 	/** The Agents home, with everything in it; with `scope: "none"`, the agents on no repository (`/repositories/none`). */
@@ -177,13 +178,130 @@ function subscribe(listener: () => void): () => void {
 	};
 }
 
+/** The page a pushed entry was left from, kept in its history state: the back control's way and words. */
+export interface PageFrom {
+	href: string;
+	label: string;
+}
+
+const here = () => location.pathname + location.search + location.hash;
+
+/** What each page called itself, by its address, for the back control of the page opened from it. */
+const labels = new Map<string, string>();
+
+/** Names the page you are on for the back control of the next one ("Factory · tide-tables", an item's title). */
+export function usePageLabel(label: string | null | undefined): void {
+	const route = useRoute();
+	const hash = useHash();
+	useEffect(() => {
+		if (label) labels.set(here(), label);
+	}, [label, route, hash]);
+}
+
+/** What the entry you are on keeps: where it was opened from, its scroll, and what a page put there (`useHistoryState`). */
+function entryState(): Record<string, unknown> {
+	const state: unknown = history.state;
+	return state !== null && typeof state === "object" ? (state as Record<string, unknown>) : {};
+}
+
+/**
+ * Pushes a page, or replaces the one you are on (a filter's change, which keeps where it was opened
+ * from). A push first writes the scroll into the entry it leaves, and gives the new one `from`: the
+ * page left and what it called itself. A new page starts at the top.
+ */
 export function navigate(route: Route, options: { replace?: boolean } = {}): void {
 	const target = href(route);
-	if (target === location.pathname + location.search + location.hash) return;
+	const current = here();
+	if (target === current) return;
 	if (route.name === "docs") rememberAppPage();
-	if (options.replace) history.replaceState(null, "", target);
-	else history.pushState({ fromPage: parseRoute(location.pathname).name }, "", target);
+	if (options.replace) history.replaceState({ from: entryState().from }, "", target);
+	else {
+		history.replaceState({ ...entryState(), scroll: window.scrollY }, "", current);
+		const from: PageFrom = { href: current, label: labels.get(current) ?? routeLabel(parseRoute(location.pathname, location.search)) };
+		history.pushState({ from, fromPage: parseRoute(location.pathname).name }, "", target);
+		window.scrollTo?.(0, 0);
+	}
 	for (const listener of listeners) listener();
+}
+
+/** A click the app handles: not one that opens a new tab or window. */
+const plainClick = (event: React.MouseEvent) => !event.defaultPrevented && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+
+/** Where the entry you are on was opened from, when an app link opened it. */
+export function pageFrom(): PageFrom | null {
+	const from = entryState().from as PageFrom | undefined;
+	return from && typeof from.href === "string" && typeof from.label === "string" ? from : null;
+}
+
+/**
+ * The header's back control: back to where you came from (the browser's own back, so the history and
+ * the scroll stay right), or on a direct visit, a reload in a new tab or a page opened by a filter's
+ * change, to `fallback`, the trail's parent. Null where neither is.
+ */
+export function useBack(fallback: { route: Route; label: string } | null): { label: string; href: string; onClick(event: React.MouseEvent<HTMLAnchorElement>): void } | null {
+	useRoute();
+	const from = pageFrom();
+	if (from) {
+		return {
+			label: from.label,
+			href: from.href,
+			onClick: (event) => {
+				if (!plainClick(event)) return;
+				event.preventDefault();
+				history.back();
+			},
+		};
+	}
+	return fallback ? { label: fallback.label, ...linkProps(fallback.route) } : null;
+}
+
+/**
+ * A page's state that Back brings back (groups shown in full, a fold opened): kept in the history
+ * entry under `key`, read once when the page opens, written on each change.
+ */
+export function useHistoryState<T>(key: string, initial: T): [T, (next: T) => void] {
+	const [value, setValue] = useState<T>(() => (key in entryState() ? (entryState()[key] as T) : initial));
+	const set = useCallback(
+		(next: T) => {
+			setValue(next);
+			history.replaceState({ ...entryState(), [key]: next }, "", here());
+		},
+		[key],
+	);
+	return [value, set];
+}
+
+let restoring = 0;
+
+/** Scrolls to `top` once the page is tall enough for it, trying for a second and a half while its lists arrive. */
+function restoreScroll(top: unknown): void {
+	const mine = ++restoring;
+	const target = typeof top === "number" && top > 0 ? top : 0;
+	let frames = 0;
+	const step = () => {
+		if (mine !== restoring) return;
+		const room = document.documentElement.scrollHeight - window.innerHeight;
+		if (room >= target - 1 || ++frames > 90) {
+			window.scrollTo(0, target);
+			return;
+		}
+		requestAnimationFrame(step);
+	};
+	step();
+}
+
+/**
+ * The scroll is the app's to keep: Back and Forward bring back each entry's own, once its lists have
+ * rendered, and a reload its last. Called once, at start.
+ */
+export function keepScroll(): void {
+	if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+	window.addEventListener("popstate", () => restoreScroll(entryState().scroll));
+	window.addEventListener("pagehide", () => history.replaceState({ ...entryState(), scroll: window.scrollY }, "", here()));
+	// A user's own scroll stops a restore still waiting for the page to grow.
+	window.addEventListener("wheel", () => restoring++, { passive: true });
+	window.addEventListener("touchmove", () => restoring++, { passive: true });
+	restoreScroll(entryState().scroll);
 }
 
 let cachedPath = "";
@@ -214,14 +332,17 @@ export function useHash(): string {
 	return useSyncExternalStore(subscribeHash, () => location.hash);
 }
 
-/** Props for an anchor that navigates without a page load, and still opens in a new tab on a modified click. */
-export function linkProps(route: Route): { href: string; onClick: (event: React.MouseEvent<HTMLAnchorElement>) => void } {
+/**
+ * Props for an anchor that navigates without a page load, and still opens in a new tab on a modified click.
+ * `replace`: a link that changes what the page shows (a filter), not the page, replaces the entry you are on.
+ */
+export function linkProps(route: Route, options: { replace?: boolean } = {}): { href: string; onClick: (event: React.MouseEvent<HTMLAnchorElement>) => void } {
 	return {
 		href: href(route),
 		onClick: (event) => {
-			if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+			if (!plainClick(event)) return;
 			event.preventDefault();
-			navigate(route);
+			navigate(route, options);
 		},
 	};
 }

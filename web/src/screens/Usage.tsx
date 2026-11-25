@@ -6,7 +6,7 @@ import { Dialog } from "../components/Dialog";
 import { FoldRows } from "../components/Fold";
 import { FactoryUsage } from "../components/FactoryUsage";
 import { MachineUsage } from "../components/MachineUsage";
-import { ArrowLeftIcon, WarnIcon } from "../components/Icons";
+import { WarnIcon } from "../components/Icons";
 import { moveBetweenTabs } from "../components/Tabs";
 import { SandboxState } from "../components/Status";
 import { absoluteTime, compact, count, localTime, plural, relativeTime, sandboxClock, sandboxTime as spelledTime, usd, utcDay } from "../lib/format";
@@ -18,23 +18,6 @@ import { readTwice } from "../lib/retry";
 
 /** A length of sandbox time in a sentence: the number and its unit stay on one line. */
 const sandboxTime = (seconds: number) => spelledTime(seconds).replace(/ /g, "\u00a0");
-
-export function UsageCrumb() {
-	return (
-		<nav className="crumb" aria-label="Where you are">
-			<a className="crumb-back" {...linkProps({ name: "home" })}>
-				<ArrowLeftIcon size={14} />
-				<span>Agents</span>
-			</a>
-			<span className="crumb-sep" aria-hidden="true">
-				/
-			</span>
-			<span className="crumb-title" aria-current="page">
-				Usage
-			</span>
-		</nav>
-	);
-}
 
 function useUsage(): { view: UsageView | null; error: string | null; items: Map<string, string> | null; reload(): void; replace(view: UsageView): void } {
 	const { client, explain } = useApp();

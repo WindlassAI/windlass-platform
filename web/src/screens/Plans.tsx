@@ -2,29 +2,11 @@
  * The upgrade page (`/plans`): Free and Pro side by side, monthly or yearly, and the way to the provider's checkout.
  * A deployment without billing has no such page.
  */
-import { ArrowLeftIcon, WarnIcon } from "../components/Icons";
+import { WarnIcon } from "../components/Icons";
 import { HOSTED_SIZES } from "@contract";
 import { SIZE_WEIGHT } from "../../../server/src/billing/meter";
 import { sizeName } from "../lib/sizes";
 import { PlanCompare, useBilling } from "../components/Plan";
-import { linkProps } from "../lib/router";
-
-export function PlansCrumb() {
-	return (
-		<nav className="crumb" aria-label="Where you are">
-			<a className="crumb-back" {...linkProps({ name: "settings" })}>
-				<ArrowLeftIcon size={14} />
-				<span>Settings</span>
-			</a>
-			<span className="crumb-sep" aria-hidden="true">
-				/
-			</span>
-			<span className="crumb-title" aria-current="page">
-				Plans
-			</span>
-		</nav>
-	);
-}
 
 export function Plans() {
 	const { view, error, reload } = useBilling();
