@@ -12,7 +12,8 @@
  */
 import type { ReactNode } from "react";
 import { ClaudeLogo } from "../components/AgentLogos";
-import { ArrowUpIcon, AskIcon, BranchIcon, CheckIcon, CloudIcon, FileIcon, LockIcon, MachineIcon, Mark, MoonIcon, PullRequestIcon, RepoIcon, ShieldIcon, SteerIcon, StopIcon, SunIcon, ThoughtIcon, WarnIcon } from "../components/Icons";
+import { machineProfileName } from "../lib/machines";
+import { ArrowUpIcon, AskIcon, BranchIcon, CheckIcon, CloudIcon, FileIcon, LockIcon, MachineIcon, Mark, MoonIcon, PullRequestIcon, RepoIcon, ShieldIcon, SteerIcon, StopIcon, SunIcon, ThoughtIcon } from "../components/Icons";
 import { ACCESS_URL } from "./config";
 import { AGENTS, FACTORY_STEPS, FAQ, SESSION_FEATURES, type Feature } from "./content";
 
@@ -151,7 +152,7 @@ function Hero() {
 						<div>
 							<dt>sandbox</dt>
 							<dd>
-								<b>Hosted microVM, or your machine</b>
+								<b>Hosted or on your machine</b>
 								<span>a runner that dials out; nothing exposed</span>
 							</dd>
 						</div>
@@ -283,12 +284,12 @@ function SessionFrame() {
 					</div>
 				</div>
 				<aside className="lp-frame-side">
-					<p className="lp-side-h">Session</p>
+					<p className="lp-side-h">Agent</p>
 					<dl className="lp-side-dl">
 						<dt>Agent</dt>
 						<dd>Windlass</dd>
 						<dt>Sandbox</dt>
-						<dd>E2B microVM</dd>
+						<dd>Hosted</dd>
 						<dt>Mode</dt>
 						<dd>Auto</dd>
 						<dt>Branch</dt>
@@ -566,15 +567,11 @@ function PublishTile() {
 }
 
 /** The sandbox line, as the composer shows it under the task: what the chosen sandbox lets commands do. */
-function SandboxLine({ facts, open = false }: { facts: { text: string; open?: boolean }[]; open?: boolean }) {
+function SandboxLine({ facts }: { facts: string[] }) {
 	return (
-		<p className={`lp-sandbox-line${open ? " lp-sandbox-open" : ""}`}>
-			{open ? <WarnIcon size={13} /> : <ShieldIcon size={13} />}
-			{facts.map((fact) => (
-				<span key={fact.text} className={fact.open ? "lp-fact-open" : undefined}>
-					{fact.text}
-				</span>
-			))}
+		<p className="lp-sandbox-line">
+			<ShieldIcon size={13} />
+			{facts.map(fact => <span key={fact}>{fact}</span>)}
 		</p>
 	);
 }
@@ -589,21 +586,21 @@ function WhereItRuns() {
 					kicker="Where it runs"
 					title="Hosted, or on your own machine."
 					dim="Always in a box."
-					lede="You choose the sandbox when you start an agent, and the composer says what it promises before anything runs. Your sign-in never goes in: each turn is lent a short-lived token."
+					lede="Choose where the agent runs and what its commands can reach before you start."
 				/>
 				<div className="lp-places">
 					<article className="lp-place">
 						<p className="lp-place-kicker">
 							<CloudIcon size={15} /> hosted
 						</p>
-						<h3 className="lp-place-title">A microVM of its own</h3>
-						<p className="lp-place-text">Each hosted session gets a Firecracker microVM from E2B. Nothing to install: start an agent from the browser.</p>
+						<h3 className="lp-place-title">A workspace for each agent</h3>
+						<p className="lp-place-text">Start an agent from your browser. Windlass runs it in its own workspace.</p>
 						<div className="lp-layers" aria-hidden="true">
 							<div className="lp-layer">
 								<p className="lp-layer-name">
-									<span>1</span> E2B microVM
+									<span>1</span> Hosted workspace
 								</p>
-								<p className="lp-layer-detail">Firecracker, hosted by E2B</p>
+								<p className="lp-layer-detail">Isolated from other agents</p>
 								<div className="lp-layer-core">the agent’s commands, as a non-root user</div>
 							</div>
 						</div>
@@ -614,19 +611,19 @@ function WhereItRuns() {
 							</div>
 							<div>
 								<dt>time</dt>
-								<dd>Sandbox time counts against a daily allowance, shown on your usage page.</dd>
+								<dd>See the hosted time you’ve used on the Usage page.</dd>
 							</div>
 						</dl>
-						<SandboxLine facts={[{ text: "runs hosted" }, { text: "own microVM" }, { text: "suspends when idle" }]} />
+						<SandboxLine facts={["Hosted", "Pauses when idle"]} />
 					</article>
 
 					<article className="lp-place">
 						<p className="lp-place-kicker">
 							<MachineIcon size={15} /> your machine
 						</p>
-						<h3 className="lp-place-title">A runner that dials out</h3>
+						<h3 className="lp-place-title">Connect your computer</h3>
 						<p className="lp-place-text">
-							Pair a Mac, Linux or Windows (WSL) machine with Docker. A small runner on it connects out to the platform and runs each session in a container there. <strong>Nothing on your machine needs to be reachable from outside.</strong>
+							Pair a Mac, Linux or Windows (WSL) computer with Docker. It connects to Windlass. <strong>No inbound connection is needed.</strong>
 						</p>
 						<div className="lp-dial" aria-hidden="true">
 							<div className="lp-dial-box">
@@ -650,12 +647,12 @@ function WhereItRuns() {
 						</div>
 						<div className="lp-profiles">
 							<div className="lp-profile">
-								<p className="lp-profile-name">Docker + Windlass sandbox</p>
-								<SandboxLine facts={[{ text: "commands sandboxed" }, { text: "no network" }, { text: "token hidden from commands" }]} />
+								<p className="lp-profile-name">{machineProfileName("docker-windlass-sandbox")}</p>
+								<SandboxLine facts={["Commands are locked down", "No internet"]} />
 							</div>
 							<div className="lp-profile">
-								<p className="lp-profile-name">Hardened Docker</p>
-								<SandboxLine open facts={[{ text: "runs every call", open: true }, { text: "network on", open: true }, { text: "token readable", open: true }]} />
+								<p className="lp-profile-name">{machineProfileName("docker-hardened")}</p>
+								<SandboxLine facts={["Commands run freely", "Internet access"]} />
 							</div>
 						</div>
 					</article>
@@ -663,7 +660,7 @@ function WhereItRuns() {
 				<p className="lp-note">
 					<LockIcon size={14} />
 					<span>
-						In the Windlass sandbox profile, a command that wants the network or a write outside the workspace has to ask you first. The hardened profile runs commands directly in the container, with network; the composer says which promise each profile makes.
+						Use Strict for untrusted code. In Open, commands can reach the network and read credentials available to the agent.
 					</span>
 				</p>
 			</div>

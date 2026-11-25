@@ -45,11 +45,10 @@ describe("the user's models", () => {
 		expect(modelsNote(plan)).toMatch(/^The models of your ChatGPT plan, as read at \d\d:\d\d /);
 		expect(modelsNoteShort(plan)).toBe("your plan's models");
 		for (const source of SOURCES) {
-			expect(modelsNote(mockStandInModels(source))).toMatch(/^A stand-in list: /);
 			expect(modelsNoteShort(mockStandInModels(source))).toMatch(/^stand-in models: /);
 		}
-		expect(modelsNote(mockStandInModels("unavailable"))).toContain("could not be read just now");
-		expect(modelsNote(mockStandInModels("signed-out"))).toContain("signed in with ChatGPT");
+		expect(modelsNote(mockStandInModels("unavailable"))).toContain("could not be loaded");
+		expect(modelsNote(mockStandInModels("signed-out"))).toBe("Connect ChatGPT to see your plan’s models.");
 		expect(modelsNote(mockStandInModels("demo"))).toContain("scripted model");
 	});
 });

@@ -2653,7 +2653,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** Why a repository can have no prepared environment, by the server's rules (user-environments.ts); null when it can. */
 	function environmentInputs(world: World, repositoryId: GithubId): string | null {
 		if (!world.setups.get(repositoryId)?.command) return "Save a setup command first: an environment is what it prepares.";
-		if ((world.secrets.get(repositoryId)?.size ?? 0) > 0) return "A repository with saved secrets always starts cold, so it has no prepared environment.";
+		if ((world.secrets.get(repositoryId)?.size ?? 0) > 0) return "Not available for repositories with saved secrets.";
 		return null;
 	}
 	function setupOf(world: World, repositoryId: GithubId): RepositorySetup {

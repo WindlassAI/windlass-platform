@@ -51,7 +51,7 @@ export type ReportedHarness = NonNullable<MachineSummary["harnesses"]>[number];
 /** Its sign-in in a few words: "signed in", "sign in needed", "couldn't check the sign-in". */
 export function signInWords(harness: ReportedHarness): string {
 	// Signed in there, it uses its own sign-in first; a key only where that is all it has.
-	if (harness.platformKeys?.length && !harness.machineSignIns?.length) return "Settings key";
+	if (harness.platformKeys?.length && !harness.machineSignIns?.length) return "your API key";
 	return harness.signIn === "token" ? "signed in" : harness.signIn === "none" ? "sign in needed" : "couldn't check the sign-in";
 }
 

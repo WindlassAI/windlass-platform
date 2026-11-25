@@ -76,7 +76,7 @@ export const DOCS_PAGES: readonly DocsPage[] = [
 	{
 		slug: "security",
 		title: "Sandboxes and security",
-		description: "What isolates each agent, what the two Docker profiles protect, what the platform can and cannot do on your machine, and where secrets go.",
+		description: "Where agents run, what they can reach, and where secrets go.",
 		section: "Platform",
 		file: "security.md",
 	},

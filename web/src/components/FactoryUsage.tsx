@@ -17,7 +17,7 @@ import type { FactoryLimits } from "@contract";
 function Of({ spent, budget, spell }: { spent: number; budget: number; spell(value: number): string }) {
 	return (
 		<>
-			<span className={spent >= budget ? "tone-warn" : undefined}>{spell(spent)}</span>
+			<span>{spell(spent)}</span>
 			<span className="tone-faint"> / {spell(budget)}</span>
 		</>
 	);
@@ -31,13 +31,12 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 	const list = items.list;
 	// The feed carries the newest ended items only; the older ones are on the Factory page.
 	const older = items.feed ? items.feed.counts.ended - items.feed.ended.length : 0;
-	const machines = Boolean(platform.info?.machines);
 	return (
 		<section className="usage-section" aria-labelledby="usage-items">
 			<h2 className="usage-title" id="usage-items">
 				Work items
 			</h2>
-			<p className="usage-lede">What the platform runs for you at once, and what each item may spend before it asks you for more. Set by this deployment's owner. Your machines have no limit here: their runners' slots are theirs.</p>
+			<p className="usage-lede">Limits for hosted work. Your machines aren’t limited here.</p>
 			<dl className="usage-facts factory-limits">
 				<div>
 					<dt>Hosted sandboxes</dt>
@@ -48,7 +47,7 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 					<dt>Each item</dt>
 					<dd className="usage-number">{compact(value.item.tokens)} tokens</dd>
 					<dd className="usage-gloss">
-						cost-weighted: cached input counts at a tenth; and {sandboxTime(value.item.hostedSeconds)} of hosted sandbox time{machines ? " (none on your machines)" : ""}. Used up, the item asks you for more and keeps its work
+						{sandboxTime(value.item.hostedSeconds)} of hosted time. An item asks before spending more.
 					</dd>
 				</div>
 				<div>

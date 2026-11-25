@@ -76,7 +76,7 @@ function NewTokenDialog({ onClose, onMade }: { onClose(): void; onMade(token: Ap
 					</pre>
 					<CopyButton text={secret} label="Copy the token" />
 				</div>
-				<p className="field-note">Send it as <code>Authorization: Bearer {secret.slice(0, 8)}…</code>. Anyone who has it can do what its scopes allow until you revoke it.</p>
+				<p className="field-note">To file an item, send <code>POST /api/items</code> with <code>Authorization: Bearer {secret.slice(0, 8)}…</code>. Anyone who has it can do what its scopes allow until you revoke it.</p>
 			</Dialog>
 		);
 	}
@@ -206,7 +206,7 @@ export function ApiTokens() {
 				</button>
 			</h2>
 			<p className="usage-lede">
-				For a script that files your work items and reads them: it sends one as <code>Authorization: Bearer &lt;token&gt;</code> with <code>POST /api/items</code>. A token works until you revoke it.
+				For scripts that file work items.
 			</p>
 			{full ? <p className="usage-note tone-warn">An account can keep {MAX_API_TOKENS} tokens: revoke one to make another.</p> : null}
 			{list === null ? (

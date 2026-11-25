@@ -185,7 +185,7 @@ function Meter({ view }: { view: UsageView }) {
 	const spent = view.usedSeconds + view.heldSeconds;
 	const share = (seconds: number) => `${Math.min(100, (seconds / Math.max(allowance, spent)) * 100)}%`;
 	return (
-		<div className="usage-meter" role="meter" aria-label="Sandbox time used today" aria-valuemin={0} aria-valuemax={allowance} aria-valuenow={Math.min(allowance, spent)} aria-valuetext={`${sandboxTime(spent)} of ${sandboxTime(allowance)}`}>
+		<div className="usage-meter" role="meter" aria-label="Hosted time used or held today" aria-valuemin={0} aria-valuemax={allowance} aria-valuenow={Math.min(allowance, spent)} aria-valuetext={`${sandboxTime(spent)} of ${sandboxTime(allowance)}`}>
 			{view.usedSeconds > 0 ? <span className="usage-meter-used" style={{ width: share(view.usedSeconds) }} /> : null}
 			{view.heldSeconds > 0 ? <span className="usage-meter-held" style={{ width: share(view.heldSeconds) }} /> : null}
 		</div>
@@ -196,6 +196,7 @@ export function Usage() {
 	const { platform } = useApp();
 	const { view, error, items, reload, replace } = useUsage();
 	const now = useNow(15_000);
+	const [showHeld, setShowHeld] = useState(false);
 	const [freeing, setFreeing] = useState<KeptSandbox | null>(null);
 
 	if (view === null) {
@@ -229,7 +230,7 @@ export function Usage() {
 	}
 
 	const allowance = view.allowanceSeconds;
-	const spent = view.usedSeconds + view.heldSeconds;
+	const spent = view.usedSeconds;
 	const left = view.leftSeconds;
 	const price = view.price;
 	// Where there are hosted sizes, each agent's time is priced at its own size's rate; the allowance counts seconds alike.
@@ -261,24 +262,24 @@ export function Usage() {
 				<div>
 					<p className="eyebrow">usage · the day ends {resets}</p>
 					<h1 className="display">Usage</h1>
-					<p className="home-account">Sandbox time is the time your agents' sandboxes run: while an agent works, and for a short while after. A paused sandbox uses none.</p>
+					<p className="home-account">Hosted time counts while an agent’s sandbox runs.</p>
 				</div>
 			</header>
 
 			{error ? (
 				<p className="callout callout-warn" role="status">
 					<WarnIcon />
-					<span>{error} What is shown may be behind.</span>
+					<span>{error} <button className="link" onClick={reload}>Try again</button></span>
 				</p>
 			) : null}
 
 			{view.hosted ? (
 				<section className="usage-section" aria-labelledby="usage-month">
 					<h2 className="usage-title" id="usage-month">
-						Hosted minutes{view.hosted.plan === "pro" ? "" : " this month"}
+						Hosted time{view.hosted.plan === "pro" ? "" : " this month"}
 						<span className="usage-count">{monthName(view.hosted)}</span>
 					</h2>
-					<p className="usage-lede">One hosted minute is a minute of a standard sandbox; a small one counts half, a large one twice. Agents on your own machines are never counted. The allowance resets on {monthReset(view.hosted)} at {new Date(view.hosted.resetsAt).toISOString().slice(11, 16)} UTC.</p>
+					<p className="usage-lede">Monthly hosted time depends on sandbox size. The allowance resets on {monthReset(view.hosted)} at {new Date(view.hosted.resetsAt).toISOString().slice(11, 16)} UTC.</p>
 					<HostedNotice numbers={view} pro={platform.info?.billing?.plans.find((plan) => plan.id === "pro") ?? null} />
 					<div className="usage-card billing-card">
 						<div className="billing-month">
@@ -300,76 +301,69 @@ export function Usage() {
 			<section className="usage-section" aria-labelledby="usage-tokens">
 				<h2 className="usage-title" id="usage-tokens">Model tokens today</h2>
 				<p className="usage-figure"><strong>{count(view.usedModelTokens)}</strong> {view.factoryLimits.dailyTokens === null ? "used · no daily cap" : `of ${count(view.factoryLimits.dailyTokens)} used`}</p>
-				<p>Counts input and output reported by model requests using the platform’s model sign-in. The day resets at 00:00 UTC.</p>
+				<p>Model tokens on Windlass’s sign-in today.</p>
 				{view.providerTokens?.length ? <dl className="usage-facts">{view.providerTokens.map(row =>
-					<div key={row.provider}><dt>Selected provider · {row.provider} Settings key</dt><dd>{count(row.tokens)} reported tokens</dd></div>)}</dl> : null}
+					<div key={row.provider}><dt>Your {row.provider} API key</dt><dd>{count(row.tokens)} reported tokens</dd></div>)}</dl> : null}
 			</section>
 			<section className="usage-section" aria-labelledby="usage-today">
 				<h2 className="usage-title" id="usage-today">
-					Sandbox time today
+					Hosted time today
 				</h2>
 				<div className="usage-card usage-today">
 				<p className="usage-figure">
 					<strong>{sandboxTime(spent)}</strong>
 					{allowance === null ? <span> used. {view.hosted ? "Hosted time is counted by the month, above; there is no daily limit." : "This deployment sets no daily limit."}</span> : <span> of {sandboxTime(allowance)} used</span>}
-					{left !== null ? <span className={`usage-figure-left${left < view.startSeconds ? " tone-warn" : ""}`}>{left < view.startSeconds ? (left === 0 ? "none left" : `${sandboxTime(left)} left, too little for a turn`) : `${sandboxTime(left)} left`}</span> : null}
+					{left !== null ? <span className="usage-figure-left">{left < view.startSeconds ? (left === 0 ? "none left" : `${sandboxTime(left)} left, too little for a turn`) : `${sandboxTime(left)} left`}</span> : null}
 				</p>
 				<Meter view={view} />
-				<dl className="usage-facts">
-					<div>
-						<dt>
-							<span className="usage-swatch usage-swatch-used" aria-hidden="true" />
-							Counted
-						</dt>
-						<dd className="usage-number">{sandboxClock(view.usedSeconds)}</dd>
-						<dd className="usage-gloss">what your sandboxes ran today before they stopped</dd>
-					</div>
-					<div>
-						<dt>
-							<span className="usage-swatch usage-swatch-held" aria-hidden="true" />
-							Held
-						</dt>
-						<dd className="usage-number">{sandboxClock(view.heldSeconds)}</dd>
-						<dd className="usage-gloss">
-							{running === 0 ? "no sandbox is running now" : `for ${plural(running, "sandbox", "sandboxes")} running now, a few minutes at a time; what one does not use is free again when it stops`}
-						</dd>
-					</div>
-					{left !== null ? (
+				{price && <p className="usage-note" title="Estimate">≈ {todayUsd !== null ? usd(todayUsd) : cost(view.usedSeconds)} today</p>}
+				<details className="usage-note">
+					<summary>Details</summary>
+					<dl className="usage-facts">
 						<div>
 							<dt>
-								<span className="usage-swatch usage-swatch-left" aria-hidden="true" />
-								Left
+								<span className="usage-swatch usage-swatch-used" aria-hidden="true" />
+								Counted
 							</dt>
-							<dd className="usage-number">{sandboxClock(left)}</dd>
-							<dd className="usage-gloss">{left < view.startSeconds ? "a turn needs more than this to start, and one that is running is stopped when the time it holds is over" : "for turns that start now"}</dd>
+							<dd className="usage-number">{sandboxClock(view.usedSeconds)}</dd>
+							<dd className="usage-gloss">what your sandboxes ran today before they stopped</dd>
 						</div>
-					) : null}
-					{allowance !== null ? (
 						<div>
-							<dt>Resets</dt>
-							<dd className="usage-number">{resets}</dd>
+							<dt>
+								<span className="usage-swatch usage-swatch-held" aria-hidden="true" />
+								Held
+							</dt>
+							<dd className="usage-number">{sandboxClock(view.heldSeconds)}</dd>
 							<dd className="usage-gloss">
-								in {untilReset}
-								{abroad ? ", at 00:00 UTC" : ""}, when the allowance is whole again
+								{running === 0 ? "no sandbox is running now" : `for ${plural(running, "sandbox", "sandboxes")} running now, a few minutes at a time; what one does not use is free again when it stops`}
 							</dd>
 						</div>
-					) : null}
-					<div>
-						<dt>Cost</dt>
-						<dd className="usage-number">{todayUsd !== null ? usd(todayUsd) : (cost(view.usedSeconds) ?? "–")}</dd>
-						<dd className="usage-gloss">
-							{price === null
-								? "nothing is estimated: this deployment's sandboxes run on its own machine and are not billed by the second"
-								: sizes
-									? `an estimate: ${count(view.usedSeconds)} s counted, each agent's at its sandbox size's price (below). The provider's bill is what counts`
-									: `an estimate: ${count(view.usedSeconds)} s counted, at $${price.usdPerSecond.toFixed(7)} a second for ${price.basis}. The provider's bill is what counts`}
-						</dd>
-					</div>
-				</dl>
+						{left !== null ? (
+							<div>
+								<dt>
+									<span className="usage-swatch usage-swatch-left" aria-hidden="true" />
+									Left
+								</dt>
+								<dd className="usage-number">{sandboxClock(left)}</dd>
+								<dd className="usage-gloss">{left < view.startSeconds ? "a turn needs more than this to start, and one that is running is stopped when the time it holds is over" : "for turns that start now"}</dd>
+							</div>
+						) : null}
+						{allowance !== null ? (
+							<div>
+								<dt>Resets</dt>
+								<dd className="usage-number">{resets}</dd>
+								<dd className="usage-gloss">
+									in {untilReset}
+									{abroad ? ", at 00:00 UTC" : ""}, when the allowance is whole again
+								</dd>
+							</div>
+						) : null}
+					</dl>
+				</details>
 				{sizes ? (
 					<div className="usage-sizes">
 						<p className="usage-lede">
-							Hosted sandboxes come in sizes. A larger one costs more an hour; the daily allowance counts its time the same, second for second. Estimates at E2B's published prices.
+							Estimated prices.
 						</p>
 						<ul className="usage-size-list">
 							{sizes.map((size) => (
@@ -392,14 +386,19 @@ export function Usage() {
 				{view.today.length === 0 ? (
 					<p className="usage-empty">No sandbox has run today.</p>
 				) : (
+					<>
+					<details className="usage-note" onToggle={event => setShowHeld(event.currentTarget.open)}>
+						<summary>Details</summary>
+						Running sandboxes hold time in advance. Unused time becomes available when they stop.
+					</details>
 					<table className="usage-table">
 						<thead>
 							<tr>
 								<th scope="col">Agent</th>
 								<th scope="col" className="usage-number">
-									Counted
+									Used
 								</th>
-								<th scope="col" className="usage-number usage-wide">
+								<th scope="col" className="usage-number" hidden={!showHeld}>
 									Held
 								</th>
 								{price === null ? null : (
@@ -429,7 +428,7 @@ export function Usage() {
 										) : null}
 									</th>
 									<td className="usage-number">{sandboxClock(row.seconds)}</td>
-									<td className="usage-number usage-wide">{row.heldSeconds > 0 ? sandboxClock(row.heldSeconds) : <span className="tone-faint">–</span>}</td>
+									<td className="usage-number" hidden={!showHeld}>{row.heldSeconds > 0 ? sandboxClock(row.heldSeconds) : <span className="tone-faint">–</span>}</td>
 									{price === null ? null : <td className="usage-number">{costAt(row.seconds, row.hostedSize)}</td>}
 								</tr>
 							))}
@@ -447,7 +446,7 @@ export function Usage() {
 										) : null}
 									</th>
 									<td className="usage-number">{sandboxClock(itemTotal.seconds)}</td>
-									<td className="usage-number usage-wide">{itemTotal.held > 0 ? sandboxClock(itemTotal.held) : <span className="tone-faint">–</span>}</td>
+									<td className="usage-number" hidden={!showHeld}>{itemTotal.held > 0 ? sandboxClock(itemTotal.held) : <span className="tone-faint">–</span>}</td>
 									{price === null ? null : <td className="usage-number">{sizes ? usd(itemRows.reduce((sum, row) => sum + row.seconds * rate(row.hostedSize), 0)) : cost(itemTotal.seconds)}</td>}
 								</tr>
 							) : null}
@@ -456,33 +455,28 @@ export function Usage() {
 							<tr>
 								<th scope="row">Today</th>
 								<td className="usage-number">{sandboxClock(view.usedSeconds)}</td>
-								<td className="usage-number usage-wide">{view.heldSeconds > 0 ? sandboxClock(view.heldSeconds) : <span className="tone-faint">–</span>}</td>
+								<td className="usage-number" hidden={!showHeld}>{view.heldSeconds > 0 ? sandboxClock(view.heldSeconds) : <span className="tone-faint">–</span>}</td>
 								{price === null ? null : <td className="usage-number">{todayUsd !== null ? usd(todayUsd) : cost(view.usedSeconds)}</td>}
 							</tr>
 						</tfoot>
 					</table>
+					</>
 				)}
-				{itemRows.length > 0 ? <p className="usage-note">The work items' row is their agents' sandboxes together, today. What each item has spent in all, against its budget, is under Work items below.</p> : null}
+				{itemRows.length > 0 ? <p className="usage-note">Work items are grouped here. See each item’s budget below.</p> : null}
 				{unreported > 0 ? (
 					<p className="usage-note">
-						* {sandboxTime(unreported)} of this were counted in full without a measurement: the server an agent was on stopped while its sandbox ran, so nobody saw when the sandbox stopped. It ran that long at most.
+						* Includes up to {sandboxTime(unreported)} estimated.
 					</p>
 				) : null}
 			</section>
 
 			<section className="usage-section" aria-labelledby="usage-kept">
 				<h2 className="usage-title" id="usage-kept">
-					Hosted sandboxes you keep
+					Kept sandboxes
 					<span className="usage-count">{limit === null ? count(kept) : `${count(kept)} of ${count(limit)}`}</span>
 				</h2>
 				<p className="usage-lede">
-					Each agent that has worked on the platform's own sandboxes has one with its files, running or paused. Those on your own machines are not counted here.{" "}
-					{limit === null
-						? "This deployment sets no limit on how many you keep."
-						: kept >= limit
-							? `You keep as many as an account may have, so an agent that has none cannot start until you free one here or delete an agent.`
-							: `An account may keep ${count(limit)}; an agent that needs one beyond that cannot start until you free one here or delete an agent.`}{" "}
-					Nothing is removed to make room by itself.
+					{limit === null ? "Your hosted workspaces, running or paused." : "Free one to make room for more agents."}
 				</p>
 				{view.kept.length === 0 ? (
 					<p className="usage-empty">You keep no sandbox.</p>
@@ -531,7 +525,7 @@ export function Usage() {
 							<th scope="col">Day</th>
 							<th scope="col" aria-hidden="true" />
 							<th scope="col" className="usage-number">
-								Sandbox time
+								Hosted time
 							</th>
 							{price === null ? null : (
 								<th scope="col" className="usage-number">

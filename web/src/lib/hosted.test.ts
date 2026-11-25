@@ -20,7 +20,7 @@ describe("the month's hosted minutes", () => {
 	});
 
 	it("says N of 120 near the limit, and the ways on at it", () => {
-		expect(monthSentence({ hosted: month(97), startSeconds: 30 }, pro)).toBe("You've used 97 of 120 hosted minutes this month. Your own machines are never counted.");
+		expect(monthSentence({ hosted: month(97), startSeconds: 30 }, pro)).toBe("You've used 97 of 120 min of hosted time this month. Your own machines are never counted.");
 		const stop = monthSentence({ hosted: month(120), startSeconds: 30 }, pro)!;
 		expect(stop).toContain("can't start until 1 December");
 		expect(stop).toContain("own machines");
@@ -33,7 +33,7 @@ describe("the month's hosted minutes", () => {
 
 	it("says what launching does at the limit, where agents are launched", () => {
 		const free = monthSentence({ hosted: month(120), startSeconds: 30 }, pro, { launch: true })!;
-		expect(free).toBe("You've used all 120 hosted minutes this month. A hosted agent launched now is created, and waits until 1 December; one on your own machine starts at once, and is never counted. Or move to Pro for 1,800 a month.");
+		expect(free).toBe("You've used all 120 min of hosted time this month. A hosted agent launched now is created, and waits until 1 December; one on your own machine starts at once, and is never counted. Or move to Pro for 1,800 a month.");
 		const capped = monthSentence({ hosted: month(5133, { plan: "pro", includedSeconds: 108_000, limitSeconds: 307_980, leftSeconds: 0 }), startSeconds: 30 }, pro, { launch: true })!;
 		expect(capped).toContain("your spend cap included");
 		expect(capped).toContain("Or raise your spend cap in Settings.");

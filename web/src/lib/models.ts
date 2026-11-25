@@ -21,11 +21,11 @@ export function modelsNote(list: ModelList): string {
 		case "account":
 			return `The models of your ChatGPT plan${list.fetchedAt === null ? "" : `, as read at ${localTime(list.fetchedAt)}`}.`;
 		case "demo":
-			return "A stand-in list: the demo's scripted model answers under any of these names.";
+			return "The demo uses a scripted model for every choice.";
 		case "signed-out":
-			return "A stand-in list: your plan's models are read once you are signed in with ChatGPT.";
+			return "Connect ChatGPT to see your plan’s models.";
 		case "unavailable":
-			return "A stand-in list: your ChatGPT plan's models could not be read just now, so one of yours may be missing.";
+			return "Your plan’s models could not be loaded. Some may be missing.";
 	}
 }
 

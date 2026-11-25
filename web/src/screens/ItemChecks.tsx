@@ -503,7 +503,6 @@ export function ItemChecks({ view, links, when }: { view: ItemView; links: Scree
 				) : null}
 			</dl>
 			<p className="usage-note">
-				{summary.reviewing ? "From the platform's own records. Its word is given when the second review is filed and the work is handed over." : "From the platform's own records, never the agent's words; it merges nothing."}
 				{view.report === null && view.state === "review" ? " The agent that made the change filed no report." : null}
 				{check ? <> {check.state === "not_posted" ? check.said : `On GitHub as windlass/verified: ${checkLabel} at ${check.sha.slice(0, 7)}.${check.conclusion === "action_required" ? " " + check.said + "." : ""}`}</> : null}
 			</p>

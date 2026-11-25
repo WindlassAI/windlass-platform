@@ -2594,7 +2594,7 @@ function askBudget(c: Change, cause: keyof ItemBudget, sentence: string, resume:
 	const { item } = c;
 	const n = extraOf(item, cause);
 	const label = `Give it ${spellExtra(cause, n)}`;
-	const text = sentence + (item.parent ? ` More for it adds to the feature's budget.` : "") + " Going on keeps its session, sandbox and work as they are.";
+	const text = sentence + " Give it more to continue." + (item.parent ? " This also increases the feature's budget." : "");
 	ask(c, "budget", text, [{ id: "raise", label }, ...handOverAny(item), choice("give_up")], cause, resume);
 }
 

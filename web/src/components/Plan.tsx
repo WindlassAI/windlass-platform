@@ -6,6 +6,7 @@
  */
 import type { BillingPeriod, BillingView, HostedMonth, PlanInfo, UsageNumbers } from "@contract";
 import { useCallback, useEffect, useId, useState } from "react";
+import { sizeName } from "../lib/sizes";
 import { count } from "../lib/format";
 import { dollars, minutes, monthName, monthReset, monthSentence, monthState, periodWords, withOverage } from "../lib/hosted";
 import { linkProps } from "../lib/router";
@@ -55,7 +56,7 @@ function MonthMeter({ month }: { month: HostedMonth }) {
 	const scale = Math.max(month.limitSeconds, used, 1);
 	const share = (seconds: number) => `${Math.min(100, (seconds / scale) * 100)}%`;
 	return (
-		<div className="usage-meter billing-meter" role="meter" aria-label={`Hosted minutes used ${periodWords(month)}`} aria-valuemin={0} aria-valuemax={month.limitSeconds} aria-valuenow={Math.min(used, month.limitSeconds)} aria-valuetext={`${minutes(used)} of ${minutes(month.limitSeconds)} hosted minutes`}>
+		<div className="usage-meter billing-meter" role="meter" aria-label={`Hosted time used or held ${periodWords(month)}`} aria-valuemin={0} aria-valuemax={month.limitSeconds} aria-valuenow={Math.min(used, month.limitSeconds)} aria-valuetext={`${minutes(used)} of ${minutes(month.limitSeconds)} min of hosted time`}>
 			{month.usedSeconds > 0 ? <span className="usage-meter-used" style={{ width: share(month.usedSeconds) }} /> : null}
 			{month.heldSeconds > 0 ? <span className="usage-meter-held" style={{ width: share(month.heldSeconds) }} /> : null}
 			{withOverage(month) ? <span className="billing-meter-mark" style={{ left: share(month.includedSeconds) }} aria-hidden="true" /> : null}
@@ -71,17 +72,16 @@ function leftWords(month: HostedMonth): string {
 	return withOverage(month) ? `${minutes(month.leftSeconds)} left under your cap` : `${minutes(month.leftSeconds)} left`;
 }
 
-/** "642 of 1,800 hosted minutes used", with what is left on the right. */
+/** Counted time and the allowance still available to start work. */
 export function MonthFigure({ month }: { month: HostedMonth }) {
-	const used = month.usedSeconds + month.heldSeconds;
+	const used = month.usedSeconds;
 	const over = Math.max(0, used - month.includedSeconds);
-	const state = monthState({ hosted: month, startSeconds: 30 });
 	return (
 		<>
 			<p className="usage-figure">
 				<strong>{minutes(used)}</strong>
-				<span> of {minutes(month.includedSeconds)} hosted minutes used{over > 0 ? `, and ${minutes(over)} past them` : ""}</span>
-				<span className={`usage-figure-left${state !== "plenty" ? " tone-warn" : ""}`}>{leftWords(month)}</span>
+				<span> of {minutes(month.includedSeconds)} min of hosted time used{over > 0 ? `, and ${minutes(over)} past them` : ""}</span>
+				<span className="usage-figure-left">{leftWords(month)}</span>
 			</p>
 			<MonthMeter month={month} />
 		</>
@@ -140,7 +140,7 @@ function PlanBody({ view, replace, go, busy, goError }: { view: Enabled; replace
 	return (
 		<>
 			<p className="usage-lede">
-				Hosted minutes count the time your agents' sandboxes run on the platform, {view.plan === "pro" ? "from your subscription’s monthly reset date" : "by the calendar month in UTC"}. A minute of a standard sandbox is one, a small one counts half and a large one twice. Agents on your own machines are never counted.
+				Your plan includes hosted time. Runs on your machines are free.
 			</p>
 			{view.status === "paused" ? (
 				<p className="callout callout-warn" role="status">Your subscription is paused. {view.plan === "pro" && view.graceUntil ? `Pro’s limits stay until ${date(view.graceUntil)}. ` : ""}Open Manage billing to resume it.</p>
@@ -170,7 +170,7 @@ function PlanBody({ view, replace, go, busy, goError }: { view: Enabled; replace
 					<div>
 						<dt>Includes</dt>
 						<dd>
-							{count(plan.hostedMinutes)} hosted minutes a month, {plan.hostedRunning} hosted at once, up to {plan.machines} machines
+							{count(plan.hostedMinutes)} min of hosted time a month, {plan.hostedRunning} hosted at once, up to {plan.machines} machines
 						</dd>
 					</div>
 					{month ? (
@@ -209,7 +209,7 @@ function PlanBody({ view, replace, go, busy, goError }: { view: Enabled; replace
 						<a className="button button-primary" {...linkProps({ name: "plans" })}>
 							Upgrade to Pro
 						</a>
-						<span className="billing-gloss">{pro ? `${dollars(pro.monthlyCents)} a month, ${count(pro.hostedMinutes)} hosted minutes` : null}</span>
+						<span className="billing-gloss">{pro ? `${dollars(pro.monthlyCents)} a month, ${count(pro.hostedMinutes)} min of hosted time` : null}</span>
 					</>
 				) : (
 					<>
@@ -277,10 +277,10 @@ function CapForm({ view, plan, onSaved }: { view: Enabled; plan: PlanInfo; onSav
 }
 
 const FEATURES: Array<{ label: string; of(plan: PlanInfo, period: BillingPeriod): string | boolean }> = [
-	{ label: "Your own machines", of: (plan) => `Unlimited runs, up to ${plan.machines} machines` },
-	{ label: "Hosted minutes", of: (plan) => `${count(plan.hostedMinutes)} a month` },
+	{ label: "My machines", of: (plan) => `Unlimited runs, up to ${plan.machines} machines` },
+	{ label: "Hosted time", of: (plan) => `${count(plan.hostedMinutes)} min a month` },
 	{ label: "Hosted at once", of: (plan) => String(plan.hostedRunning) },
-	{ label: "Sandbox sizes", of: (plan) => plan.sizes.map((size) => size[0]!.toUpperCase() + size.slice(1)).join(", ") },
+	{ label: "Sandbox sizes", of: (plan) => plan.sizes.map(sizeName).join(", ") },
 	{ label: "The Factory", of: () => "All of it: plan first, checks, CI fixes, review" },
 	{ label: "Features over two repositories", of: (plan) => plan.crossRepo },
 	{ label: "Items filed from GitHub or Linear", of: (plan) => `${count(plan.githubItemsPerDay)} a day, GitHub and Linear together` },
@@ -389,7 +389,7 @@ export function HostedNotice({ numbers, pro }: { numbers: UsageNumbers | null; p
 				<p className="billing-notice-links">
 					{platform.info?.machines ? (
 						<a className="link" {...linkProps({ name: "machines" })}>
-							Your machines
+							My machines
 						</a>
 					) : null}
 					{month.plan === "free" ? (

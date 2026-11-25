@@ -71,8 +71,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 				<span className="item-question-when">{when}</span>
 			</p>
 			<p className="item-question-text">
-				{single ? view.question.text : <>{replan ? `${view.replanWhy ? view.replanWhy + ". " : ""}Review the revised plan` : "Review the plan"}: {tasks} subtasks{finished ? " to run" : ""}, {compact(totalTokens)} tokens of the {compact(plan.budget.tokens)} the feature may spend.</>}
-				{" "}<span className="plan-version">Version {plan.version}</span>
+				{single ? view.question.text : <>{replan ? `${view.replanWhy ? view.replanWhy + ". " : ""}Review the revised plan` : "Review the plan"}: {tasks} subtasks{finished ? " to run" : ""}, {compact(totalTokens)} of {compact(plan.budget.tokens)} tokens.</>}
 			</p>
 
 			{view.question.criticFindings && <div className="callout callout-warn"><div>Critic recommends revision<ul>{view.question.criticFindings.map((finding, i) => <li key={i}>{finding}</li>)}</ul></div></div>}
@@ -159,7 +158,11 @@ export function PlanQuestion({ view, review, acting, when, conflicted }: { view:
 				</p>
 			) : null}
 
-			{!single && plan.subtasks.some((task) => task.needs?.cpus !== undefined || task.needs?.memoryGiB !== undefined) ? <p className="field-note">On hosted, a subtask's CPUs and memory choose the least sandbox size that has them, at most 4 vCPU and 8 GiB; on a machine, its slots.</p> : null}
+			{!single && plan.subtasks.some(task => task.needs?.cpus !== undefined || task.needs?.memoryGiB !== undefined) && (
+				<details className="field-note"><summary>How subtask sizes are chosen</summary>
+					Hosted uses the smallest size that fits the requested CPU and memory. A machine uses its own slots.
+				</details>
+			)}
 		</section>
 	);
 }
@@ -404,12 +407,16 @@ function PlanTotal({ view, pool, single, total }: { view: ItemView; pool: Subtas
 							<span className="usage-meter-used" style={{ width: `${share}%` }} />
 						</span>
 					</dd>
-					{spent && <dd className="tone-dim">Spent by subtasks: {compact(spent.tokens)} <span className="tone-faint">({compact(spent.raw)} as reported)</span></dd>}
+					{spent && <dd className="tone-dim">Spent by subtasks: {compact(spent.tokens)}</dd>}
 				</div>
 			</dl>
 			<p className="usage-note plan-total-note">
-				The feature may spend {compact(pool.tokens)} in all: its subtasks' budgets, and the rest for planning, the summary and the review. One token figure per subtask, cost-weighted: cached input counts at a tenth. A subtask gets at most {compact(single)}. One that uses its budget asks you for more, and what you give it adds to the feature's.
+				{compact(pool.tokens)} tokens total, up to {compact(single)} per subtask.
 			</p>
+			<details className="usage-note">
+				<summary>Details</summary>
+				<p>{spent && <>{compact(spent.raw)} raw tokens reported by subtasks. </>}The remaining tokens cover planning, the summary and review. Cached input counts at a tenth. Giving a subtask more tokens increases the feature’s budget.</p>
+			</details>
 		</div>
 	);
 }
@@ -485,13 +492,12 @@ function SubtaskRow({ task, place, agent, n, numbers, child, setAside, editing, 
 				{editing && draft !== undefined ? (
 					<div className="plan-budget" role="group" aria-label={`Budget of ${task.title}`}>
 						<div className="plan-budget-field">
-							<label className="plan-budget-label" htmlFor={input}>tokens</label>
+							<label className="plan-budget-label" htmlFor={input}>Millions of tokens</label>
 							<span className={`plan-budget-input${invalid ? " plan-budget-invalid" : ""}`}>
 								<input id={input} className="input input-mono" inputMode="decimal" value={draft} readOnly={disabled} aria-invalid={invalid || undefined} aria-describedby={`${input}-range`} onChange={event => onChange(event.target.value)} />
-								<span className="plan-budget-unit">M</span>
 							</span>
 							<span className={`plan-budget-range${invalid ? " tone-bad" : ""}`} id={`${input}-range`}>
-								{compact(floor.tokens)}–{compact(single.tokens)}
+								{compact(floor.tokens)}–{compact(single.tokens)} tokens
 							</span>
 						</div>
 					</div>
@@ -588,26 +594,25 @@ function FeaturePlacement({ parent, editing, overflow, disabled, onOverflow }: {
 			<p className="plan-placement-line">
 				<span className="plan-placement-term">placement</span>
 				<span>
-					A subtask with no place runs where the feature does: <strong className="plan-place-name">{placeWord(parent)}</strong>.
+					Default place: <strong className="plan-place-name">{placeWord(parent)}</strong>.
 				</span>
 			</p>
 			<div className="plan-placement-line">
 				<span className="plan-placement-term" id={id}>
-					overflow
+					When busy
 				</span>
 				{editing ? (
 					<div className="segmented plan-overflow" role="radiogroup" aria-labelledby={id}>
 						{[false, true].map((on) => (
 							<label key={String(on)} className={`segment${overflow === on ? " segment-chosen" : ""}`}>
 								<input className="segment-radio" type="radio" name={id} checked={overflow === on} disabled={disabled} onChange={() => onOverflow(on)} />
-								{on ? "Allowed" : "Off"}
+								{on ? "Use another free place" : "Wait for the chosen place"}
 							</label>
 						))}
 					</div>
 				) : (
-					<strong className="plan-overflow-word">{overflow ? "allowed" : "off"}</strong>
+					<strong className="plan-overflow-word">{overflow ? "Use another free place" : "Wait for the chosen place"}</strong>
 				)}
-				<span className="tone-dim">{overflow ? "A subtask whose machine is busy may run on one of the alternatives it lists." : "Each subtask waits for its preferred place."}</span>
 			</div>
 		</div>
 	);
@@ -621,7 +626,7 @@ function placeMenu(row: PlaceRow, current: string | null): MenuSpec {
 			id: `m:${machine.machineId}`,
 			label: name,
 			textValue: name,
-			description: policy === "never" ? "Its owner keeps it out of features." : [machine.status, ...(machine.slots ? [`${machine.slots.busy} of ${machine.slots.max} slots busy`] : []), ...(policy === "named" ? ["when named"] : []), machine.sendSecrets ? "secrets sent" : "no secrets"].join(" · "),
+			description: policy === "never" ? "Its owner keeps it out of features." : [machine.status, ...(machine.slots ? [`${machine.slots.busy} of ${machine.slots.max} slots busy`] : []), ...(policy === "named" ? ["when named"] : []), machine.sendSecrets ? "gets secrets" : "no secrets"].join(" · "),
 			disabled: policy === "never",
 			wrap: true,
 			checked: current === name,
@@ -633,8 +638,8 @@ function placeMenu(row: PlaceRow, current: string | null): MenuSpec {
 		width: 320,
 		groups: [
 			{ id: "feature", items: [{ id: "inherit", label: "Same as the feature", description: placeWord(row.parent), checked: current === null, onSelect: () => row.onPlace({ prefer: null, allow: [] }) }] },
-			...(machineItems.length > 0 ? [{ id: "machines", label: "Your machines", items: machineItems }] : []),
-			{ id: "hosted", items: [{ id: "hosted", label: "This platform", description: "A hosted sandbox · secrets sent", checked: current === HOSTED, onSelect: () => row.onPlace({ prefer: HOSTED, allow: row.draft.allow.filter((other) => other !== HOSTED) }) }] },
+			...(machineItems.length > 0 ? [{ id: "machines", label: "My machines", items: machineItems }] : []),
+			{ id: "hosted", items: [{ id: "hosted", label: "Hosted", description: "Gets secrets", checked: current === HOSTED, onSelect: () => row.onPlace({ prefer: HOSTED, allow: row.draft.allow.filter((other) => other !== HOSTED) }) }] },
 		],
 	};
 }
@@ -645,14 +650,14 @@ function allowMenu(row: PlaceRow): MenuSpec {
 	return {
 		label: "Alternatives",
 		width: 300,
-		header: row.overflow ? undefined : <span className="tone-dim">Overflow is off for this feature: alternatives are used once it is allowed.</span>,
+		header: row.overflow ? undefined : <span className="tone-dim">Enable another free place to use alternatives.</span>,
 		groups: [
 			{
 				id: "allow",
 				items: names.map((place) => ({
 					id: place.name,
-					label: place.name === HOSTED ? "This platform" : place.name,
-					description: place.never ? "Its owner keeps it out of features." : place.secrets ? "secrets sent" : "no secrets",
+					label: place.name === HOSTED ? "Hosted" : place.name,
+					description: place.never ? "Its owner keeps it out of features." : place.secrets ? "gets secrets" : "no secrets",
 					disabled: place.never,
 					checked: row.draft.allow.includes(place.name),
 					keepOpen: true,
@@ -702,7 +707,7 @@ function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubta
 									<span className={row.overflow ? "plan-place-alt" : "plan-place-alt tone-faint"}>
 										{" "}
 										or {allow.map(placeWord).join(", ")}
-										{row.overflow ? null : " · overflow off"}
+										{row.overflow ? null : " · waits for its chosen place"}
 									</span>
 								) : null}
 							</>
@@ -783,7 +788,9 @@ function agentMenu(row: AgentRow, title: string): MenuSpec {
 				items: agentChoices(row.machine, row.hostedKeys, row.keyProfile).map((choice) => ({
 					id: choice.id,
 					label: choice.name,
-					description: choice.problem ?? (worksWithoutAsking(choice.id) ? row.machine ? `In its hardened container; ${UNATTENDED_WORDS}.` : `Uses your Settings key and ${UNATTENDED_WORDS}.` : choice.id === "windlass" ? "On the feature's model unless you choose one." : undefined),
+					description: choice.problem ?? (worksWithoutAsking(choice.id)
+						? row.machine ? `Runs on ${machineLabel(row.machine)} without asking.` : `Uses your ${choice.id === "claude" ? "Anthropic" : "API"} key.`
+						: choice.id === "windlass" ? "On the feature's model unless you choose one." : undefined),
 					disabled: choice.problem !== null,
 					wrap: true,
 					checked: current === choice.id,
@@ -898,8 +905,8 @@ function UnattendedConfirm({ plan, review, disabled }: { plan: FeaturePlan; revi
 }
 
 function SecretsTag({ sent, done = false }: { sent: boolean | null; done?: boolean }) {
-	const words = sent === true ? (done ? "secrets were sent" : "secrets sent") : sent === false ? "no secrets" : "secrets unknown";
-	const means = sent === true ? "Repository and account secrets this item is allowed are sent to this place." : sent === false ? "No saved secret is sent to this machine: what needs one fails there." : "This place is not among your machines as last read.";
+	const words = sent === true ? (done ? "received secrets" : "gets secrets") : sent === false ? "no secrets" : "secrets unknown";
+	const means = sent === null ? "This place is missing from your machine list." : "Hosted gets the secrets allowed for this item. A machine gets them only when Send saved secrets is on in Machines.";
 	// The space keeps the place and its secrets apart when read aloud.
 	return (
 		<>
@@ -922,7 +929,7 @@ function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, ref
 			<p className="plan-routes-head">
 				<span id={heading}>Where each subtask runs</span>
 				<span className="plan-routes-overflow">
-					overflow <strong>{overflow ? "allowed" : "off"}</strong>
+					<strong>{overflow ? "Use another free place" : "Wait for the chosen place"}</strong>
 				</span>
 			</p>
 			<ol className="plan-routes-list">
@@ -964,14 +971,13 @@ function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, ref
 							<ul className="plan-route-places" aria-label={`Places for ${task.title}`}>
 								<li>
 									<span className="plan-place-name">{placeWord(route.prefer)}</span>
-									{route.inherited ? <span className="tone-faint"> the feature's</span> : null}
 									<SecretsTag sent={secrets(route.prefer)} />
 								</li>
 								{route.alternatives.map((name) => (
 									<li key={name} className={overflow ? undefined : "plan-route-unused"}>
 										<span className="tone-faint">or </span>
 										<span className="plan-place-name">{placeWord(name)}</span>
-										{overflow ? <SecretsTag sent={secrets(name)} /> : <span className="tone-faint"> not used: overflow off</span>}
+										{overflow ? <SecretsTag sent={secrets(name)} /> : <span className="tone-faint"> unused while waiting</span>}
 									</li>
 								))}
 							</ul>
@@ -979,13 +985,6 @@ function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, ref
 					);
 				})}
 			</ol>
-			<p className="plan-routes-note">
-				This platform always gets the repository's secrets; a machine gets them only while its <strong>Send saved secrets</strong> switch is on, on{" "}
-				<a className="link" {...linkProps({ name: "machines" })}>
-					Machines
-				</a>
-				.
-			</p>
 		</div>
 	);
 }
@@ -1041,7 +1040,7 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 								<span className={overflow ? "plan-place-alt" : "plan-place-alt tone-faint"}>
 									{" "}
 									or {route.alternatives.map(placeWord).join(", ")}
-									{overflow ? null : " · overflow off"}
+									{overflow ? null : " · waits for its chosen place"}
 								</span>
 							) : null}
 						</dd>

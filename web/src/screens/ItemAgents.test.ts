@@ -120,7 +120,7 @@ describe("a work item's agent session", () => {
 			return createElement(Item, { page: useItem(child.id, true) });
 		}, { items: "features" });
 		const review = host.querySelector('section[aria-labelledby="item-checks"]');
-		expect(review?.textContent).toContain("the feature’s combined change is reviewed once its parts are done");
+		expect(review?.textContent).toContain("Reviewed with the whole feature.");
 		expect(review?.textContent).not.toContain("turned off for this deployment");
 	});
 
@@ -151,7 +151,7 @@ describe("a work item's agent session", () => {
 		for (const session of itemSessions()) expect(linksTo(table, `/agents/${session.id}`)).toEqual([]);
 		const row = linksTo(table, "#usage-items")[0];
 		expect(row?.textContent).toMatch(/^\d+ work items?$/);
-		expect(host.textContent).toContain("The work items' row is their agents' sandboxes together, today.");
+		expect(table.querySelector("thead th[hidden]")?.textContent).toBe("Held");
 		// The rows still add up to the day's total.
 		const clock = (text: string | null | undefined) => (text ?? "").split(":").reduce((sum, part) => sum * 60 + Number(part), 0);
 		const counted = [...table.querySelectorAll("tbody tr")].reduce((sum, tr) => sum + clock(tr.querySelector("td")?.textContent), 0);

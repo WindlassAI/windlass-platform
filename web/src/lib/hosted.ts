@@ -53,7 +53,7 @@ export function monthSentence(numbers: Pick<UsageNumbers, "hosted" | "startSecon
 	const state = monthState(numbers ?? null);
 	if (!month || state === "plenty") return null;
 	const used = month.usedSeconds + month.heldSeconds;
-	const of = withOverage(month) ? `${minutes(month.limitSeconds)} hosted minutes ${periodWords(month)}, your spend cap included` : `${minutes(month.includedSeconds)} hosted minutes ${periodWords(month)}`;
+	const of = withOverage(month) ? `${minutes(month.limitSeconds)} min of hosted time ${periodWords(month)}, your spend cap included` : `${minutes(month.includedSeconds)} min of hosted time ${periodWords(month)}`;
 	if (state === "low") return `You've used ${minutes(used)} of ${of}. Your own machines are never counted.`;
 	if (launch) {
 		const more = month.plan === "free" && pro ? ` Or move to Pro for ${count(pro.hostedMinutes)} a month.` : month.period === "year" ? " Or switch to monthly Pro for overage." : withOverage(month) ? " Or raise your spend cap in Settings." : "";

@@ -594,7 +594,7 @@ it.each([true, false])("offers OpenCode setup and import only for a runner image
 		// Windlass's command sandbox is allowed unless the person turns it off, in both commands.
 		expect(command()).toMatch(/ --allow-profile docker-windlass-sandbox$/);
 		expect(background()).toMatch(/ --allow-profile docker-windlass-sandbox$/);
-		act(() => checkbox("Allow Windlass's command sandbox").click());
+		act(() => checkbox("Allow locked-down commands").click());
 		// Turned off, both say so: the setup wizard then starts with the sandbox off as well.
 		expect(command()).toMatch(/ --allow-profile docker-hardened$/);
 		expect(background()).toMatch(/ --allow-profile docker-hardened$/);

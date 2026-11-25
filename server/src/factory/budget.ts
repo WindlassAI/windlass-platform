@@ -157,7 +157,7 @@ export function spellTokens(tokens: number): string {
 }
 
 const BUDGET_WORDS: Record<keyof ItemBudget, (spent: ItemSpend, budget: number) => string> = {
-	tokens: (spent, budget) => `This item has used ${spellTokens(spent.tokens)} of its ${spellTokens(budget)} tokens (cost-weighted, cached input at a tenth; ${spellTokens(rawTokens(spent))} as reported).`,
+	tokens: (_spent, budget) => `Used its ${spellTokens(budget)}-token budget.`,
 	hostedSeconds: (spent, budget) => `This item's hosted sandbox has run for ${spellSeconds(spent.hostedSeconds)} of its ${spellSeconds(budget)}.`,
 };
 

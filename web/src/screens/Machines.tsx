@@ -340,7 +340,7 @@ export function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: nu
 }
 
 export function settingsKeyUpgrade(machine: MachineSummary) {
-	return machine.harnesses?.some(h => !h.keyRelay) ? "Update the runner to use Settings keys on this machine." : null;
+	return machine.harnesses?.some(h => !h.keyRelay) ? "Update the machine software to use your API keys here." : null;
 }
 
 function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChanged(list: MachineSummary[]): void }) {
@@ -372,7 +372,7 @@ function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChan
 								: {signInWords(harness)}{harness.signInReason ? ` (${harness.signInReason})` : ""}
 							</span>
 						)}
-						{harness.signIn === "unknown" ? null : (
+						{harness.signIn !== "none" ? null : (
 							<span className="machine-agent-command">
 								<code>{command}</code>
 								<CopyButton text={command} label={`Copy the command that signs ${HARNESS_NAMES[harness.id]} in`} />
@@ -391,15 +391,15 @@ function CredentialChoice({ machine, harness, providers, onChanged }: { machine:
 	const auth = useAuth();
 	const [busy, setBusy] = useState<CredentialSource | null>(null);
 	const [error, setError] = useState<string | null>(null);
-	const ids = { label: useId(), means: useId() };
+	const label = useId();
 	const saved: CredentialSource = harness.source ?? "machine";
 	const shown = busy ?? saved;
 	const here = machine.os.toLowerCase().startsWith("mac") || machine.os === "Darwin" ? "this Mac" : `“${machineLabel(machine)}”`;
 	const keys = anyOf(providers.map((provider) => SOURCE_NAMES[provider]));
 	const plan = harness.id === "claude" ? "Claude subscription" : harness.machineMethod === "chatgpt" || (providers.includes("openai") && harness.machineProviders?.includes("chatgpt")) ? "ChatGPT plan" : `${keys} login${providers.length > 1 ? "s" : ""}`;
-	const choices: Array<{ id: CredentialSource; label: string; means: string }> = [
-		{ id: "machine", label: `Use ${here}'s ${plan}`, means: `Your ${plan} on ${here} pays for its turns. Your ${keys} key is used only if ${here} is signed out.` },
-		{ id: "key", label: `Use your ${keys} key${providers.length > 1 ? "s" : ""}`, means: `Each turn is billed to your ${keys} key by the token, even while ${here} is signed in.` },
+	const choices: Array<{ id: CredentialSource; label: string }> = [
+		{ id: "machine", label: `Use ${here}'s ${plan}` },
+		{ id: "key", label: `Use your ${keys} key${providers.length > 1 ? "s" : ""}` },
 	];
 	const set = (source: CredentialSource) => {
 		if (source === saved || busy) return;
@@ -421,20 +421,16 @@ function CredentialChoice({ machine, harness, providers, onChanged }: { machine:
 	};
 	return (
 		<div className="machine-credential">
-			<span className="visually-hidden" id={ids.label}>
-				Whose credential {HARNESS_NAMES[harness.id]} uses on {machineLabel(machine)}
-			</span>
-			<div className="segmented machine-credential-choice" role="radiogroup" aria-labelledby={ids.label} aria-describedby={ids.means}>
+			<span className="label" id={label}>Pays with</span>
+			<div className="segmented machine-credential-choice" role="radiogroup" aria-labelledby={label}>
 				{choices.map((choice) => (
 					<label key={choice.id} className={`segment${shown === choice.id ? " segment-chosen" : ""}`} data-source={choice.id}>
-						<input className="segment-radio" type="radio" name={ids.label} value={choice.id} checked={shown === choice.id} disabled={busy !== null} onChange={() => set(choice.id)} />
+						<input className="segment-radio" type="radio" name={label} value={choice.id} checked={shown === choice.id} disabled={busy !== null} onChange={() => set(choice.id)} />
 						{choice.label}
 					</label>
 				))}
 			</div>
-			<p className={`field-note${error ? " tone-bad" : ""}`} id={ids.means} role={error ? "alert" : undefined}>
-				{error ?? choices.find((choice) => choice.id === shown)!.means}
-			</p>
+			{error && <p className="field-note tone-bad" role="alert">{error}</p>}
 		</div>
 	);
 }
@@ -559,20 +555,20 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 							<span className="chip">{machine.arch}</span>
 						</>
 					) : (
-						<span className="machine-host" title="The host name its runner reported: a Docker container's id, so the machine is called by its OS and architecture here.">
+						<span className="machine-host">
 							host {host}
 						</span>
 					)}
 				</div>
 				<p className="agent-meta">
-					<span>runner {machine.runnerVersion}</span>
+					{machine.warnings.some(warning => warning.kind === "outdated") && <span>Update available</span>}
 					{orchestratorNote(machine) ? (
 						<span className={`machine-policy-note machine-policy-note-${orchestratorOf(machine)}`} title={ORCHESTRATOR_CHOICES.find((choice) => choice.id === orchestratorOf(machine))!.means}>
 							{orchestratorNote(machine)}
 						</span>
 					) : null}
 					<span className="machine-sandbox-count">
-						{machine.sandboxes.length === 0 ? "no sandbox on it" : plural(machine.sandboxes.length, "agent's sandbox", "agents' sandboxes")}
+						{machine.sandboxes.length === 0 ? "No kept sandboxes" : plural(machine.sandboxes.length, "kept sandbox", "kept sandboxes")}
 						{machine.maxSandboxes ? (
 							<span className="machine-meter" role="img" aria-label={`${machine.sandboxes.length} of at most ${machine.maxSandboxes} kept`}>
 								<span style={{ width: `${Math.min(100, (machine.sandboxes.length / machine.maxSandboxes) * 100)}%` }} />
@@ -590,7 +586,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 				<MachineAgents machine={machine} onChanged={onChanged} />
 				{upgrade && <p className="field-note">{upgrade}</p>}
 				{machine.providerAccounts?.filter(a => a.state === "limited" && (a.limitedUntil ?? 0) > now).map(a =>
-					<p className="field-note" key={a.key}>{a.provider ? `${a.provider} Settings key` : HARNESS_NAMES[a.harness]}: limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
+					<p className="field-note" key={a.key}>{a.provider ? `Your ${SOURCE_NAMES[a.provider]} key` : HARNESS_NAMES[a.harness]} is rate-limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
 			</div>
 			<MachineState machine={machine} now={now} />
 			<button type="button" className="button button-outline button-small machine-remove" onClick={() => onRemove(machine)}>
@@ -646,12 +642,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						<dd>
 							{machine.storeLimits ? storeLimits(machine.storeLimits) : <span className="tone-faint">not reported yet</span>}
 							<p className="field-note">
-								{machine.storeLimits?.builtIn
-									? "This runner's built-in limits. Runner 0.3.2 or later takes "
-									: machine.storeLimits?.capped
-										? "Held to this platform's limits. Set on the machine with "
-										: "Set on the machine, not here: start its runner with "}
-								<code>--snapshot-disk</code>, <code>--snapshot-user</code> or <code>--keep-free</code>.
+								Set on the machine. <a className="link" href="/docs/runner#run-options">Runner reference →</a>
 							</p>
 						</dd>
 					</div>
@@ -660,7 +651,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						<dd>
 							{reported ? sandboxLimit(machine) : <span className="tone-faint">not reported yet</span>}
 							<p className="field-note">
-								Set on the machine, not here: start its runner with <code>--max-running</code> or <code>--max-sandboxes</code>.
+								Set on the machine. <a className="link" href="/docs/runner#run-options">Runner reference →</a>
 							</p>
 						</dd>
 					</div>
@@ -799,7 +790,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 							<dt>Name</dt>
 							<dd>
 								{claim.name || <span className="tone-faint">none reported</span>}
-								{machineHostNote(claim) === null ? null : <span className="field-note machine-claim-note">A Docker container's id: the page calls it “{machineLabel(claim)}”.</span>}
+								{machineHostNote(claim) === null ? null : <span className="field-note machine-claim-note">Shown as “{machineLabel(claim)}”.</span>}
 							</dd>
 							<dt>OS</dt>
 							<dd>{claim.os}</dd>
@@ -875,7 +866,7 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 	return (
 		<Dialog
 			title="Add a machine"
-			lede="Run this in a terminal on a machine with Docker: Linux, a Mac with Docker Desktop or OrbStack, or Windows with Docker Desktop, in a WSL terminal. The runner connects out to the platform; nothing needs to reach your machine from outside."
+			lede="Use a terminal on your Mac, Linux computer or Windows machine (WSL) with Docker."
 			onClose={onClose}
 			footer={
 				<>
@@ -891,11 +882,12 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 			<div className="machine-dialog">
 				{oneLine ? (
 					<div>
-						<p className="machine-step">Install</p>
+						<p className="machine-step">1. Install</p>
 						<Command text={oneLine} label="The install command" />
-						<p className="field-note">
-							It checks Docker (Docker Desktop, OrbStack or Docker Engine), fetches the runner and opens its setup in your terminal. Setup pairs the machine, asks its name, signs its agents in, asks whether to allow Windlass's command sandbox (recommended, and on by default), its network and its limits, then starts the runner in the background. Nothing else is installed. <a href={`${info.platformUrl}/install.sh`} target="_blank" rel="noreferrer">Read the script</a>.
-						</p>
+						<details className="field-note">
+							<summary>What setup asks</summary>
+							<p>Choose a name, sign in your agents and set network access, isolation and limits. Setup starts the machine software in the background. <a href={`${info.platformUrl}/install.sh`} target="_blank" rel="noreferrer">Read the script</a>.</p>
+						</details>
 					</div>
 				) : (
 					<p className="callout callout-info">
@@ -918,17 +910,11 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 									{offersOpenCode && <Check checked={openCode} onChange={setOpenCode} label="Enable OpenCode" />}
 									{agents.openCode && importKeys && <p>If you use a custom XDG data directory, replace the source path in the setup command with your OpenCode directory.</p>}
 									{agents.openCode && <Check checked={importKeys} onChange={setImportKeys} label="Import existing OpenCode API keys during setup" />}
-									<Check checked={windlassSandbox} onChange={setWindlassSandbox} label="Allow Windlass's command sandbox (recommended for Windlass and Codex)" />
-									<p>
-										{windlassSandbox ? (
-											<>Adds <code>--allow-profile docker-windlass-sandbox</code> to both commands: sessions may also run each command in a sandbox without network. Their container is loosened so that the sandbox can run inside it.</>
-										) : (
-											<>Adds <code>--allow-profile docker-hardened</code> to both commands: sessions run only on hardened Docker, and setup starts with the sandbox turned off.</>
-										)}
-									</p>
+									<Check checked={windlassSandbox} onChange={setWindlassSandbox} label="Allow locked-down commands (recommended for Windlass and Codex)" />
+									<p>{windlassSandbox ? "Commands can run without internet access." : "Only unrestricted commands are available on this machine."}</p>
 								</div>
 								<Command text={setup} label="The setup command" />
-								<p className="field-note">It pairs the machine and signs its agents in, asking in the terminal as it goes, then prints the command that starts the runner. With no agent ticked it is the same setup as the install. Sign an agent in or out later with <code>windlass-runner login</code> or <code>logout</code> and the agent's name. Under Docker Desktop the machine is named <code>docker-desktop</code> unless you add <code>--name</code> and a name of your own.</p>
+								<p className="field-note">Follow the prompts to pair the machine and sign in your agents. <a className="link" href="/docs/runner">Runner reference →</a></p>
 							</div>
 							<div>
 								<p className="machine-step">Or start the runner in the background</p>
@@ -940,7 +926,8 @@ function AddDialog({ info, onClose, onAdded }: { info: MachinesInfo; onClose(): 
 						</div>
 					</details>
 				) : null}
-				<p>The runner prints a code to pair the machine with: the next step asks for it.</p>
+				<p className="machine-step">2. Enter the code from your terminal</p>
+				<p className="machine-step">3. Confirm the machine key to finish</p>
 			</div>
 		</Dialog>
 	);
@@ -1046,7 +1033,7 @@ export function Machines({ adding }: { adding: boolean }) {
 				<div className="repo-head">
 					<p className="eyebrow">account</p>
 					<h1 className="display display-small">Machines</h1>
-					<p className="home-account">Run agents on your own computer with Docker: a Mac, a Linux machine, or Windows with WSL. The runner on it connects out to the platform; nothing needs to reach your machine from outside.</p>
+					<p className="home-account">Run agents on your own computer with Docker (Mac, Linux or Windows with WSL). No inbound connection is needed.</p>
 				</div>
 				<div className="machines-add">
 					<button type="button" className="button button-outline" onClick={add} disabled={info === null || full}>
@@ -1084,13 +1071,13 @@ export function Machines({ adding }: { adding: boolean }) {
 					{machines.error ? (
 						<p className="callout callout-warn" role="status">
 							<WarnIcon />
-							<span>{machines.error} What is shown may be behind.</span>
+							<span>{machines.error} <button className="link" onClick={machines.reload}>Try again</button></span>
 						</p>
 					) : null}
 
 					<section className="usage-section" aria-labelledby="machines-list">
 						<h2 className="usage-title" id="machines-list">
-							Your machines
+							My machines
 							{list.length > 0 ? <span className="usage-count">{`${list.length} of ${maxMachines}`}</span> : null}
 						</h2>
 						{list.length === 0 ? (
@@ -1109,7 +1096,7 @@ export function Machines({ adding }: { adding: boolean }) {
 										<MachineRow key={machine.machineId} machine={machine} info={info} now={now} onChanged={machines.replace} onRemove={setRemoving} />
 									))}
 								</ul>
-								<p className="usage-note">The platform does not control these machines. It sends one only what its own agents need, and nothing once it is removed.</p>
+								<p className="usage-note">Windlass sends a machine only what its agents need.</p>
 							</>
 						)}
 					</section>

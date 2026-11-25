@@ -69,7 +69,7 @@ function AccountLine() {
 	return (
 		<p className="home-account">
 			<span className="home-account-who">{auth.profile.email ?? auth.profile.uid}</span>
-			{status === null ? <span className="tone-faint">checking ChatGPT…</span> : status.connected ? <span className="home-account-ok">ChatGPT connected</span> : <span className="tone-warn">ChatGPT not connected</span>}
+			{status === null ? <span className="tone-faint">checking ChatGPT…</span> : status.connected ? <span className="home-account-ok">ChatGPT connected</span> : <span className="tone-faint">ChatGPT not connected · <a className="link" href="/settings#settings-providers">Connect</a></span>}
 		</p>
 	);
 }
@@ -86,16 +86,16 @@ export function UsageMeter({ numbers }: { numbers: UsageNumbers | null }) {
 	const state = allowanceState(numbers, USAGE_LOW_SHARE);
 	const full = sandboxes.limit !== null && sandboxes.kept >= sandboxes.limit;
 	const share = allowanceSeconds === null || allowanceSeconds === 0 ? null : Math.min(1, spent / allowanceSeconds);
-	const kept = sandboxes.limit === null ? plural(sandboxes.kept, "sandbox kept", "sandboxes kept") : `${count(sandboxes.kept)} of ${count(sandboxes.limit)} kept`;
+	const kept = sandboxes.limit === null ? plural(sandboxes.kept, "sandbox kept", "sandboxes kept") : `${count(sandboxes.kept)} of ${count(sandboxes.limit)} kept sandboxes`;
 	return (
-		<a className={`home-usage${state !== "plenty" ? " home-usage-warn" : ""}`} {...linkProps({ name: "usage" })} title="Usage: sandbox time and sandboxes">
+		<a className={`home-usage${state !== "plenty" ? " home-usage-warn" : ""}`} {...linkProps({ name: "usage" })} title="Hosted time and kept sandboxes">
 			<span className="home-usage-time">
-				Sandbox today <strong>{sandboxTime(spent)}</strong>
+				Hosted time today <strong>{sandboxTime(spent)}</strong>
 				{allowanceSeconds === null ? null : ` of ${sandboxTime(allowanceSeconds)}`}
 				{state !== "plenty" && leftSeconds !== null ? <span className="home-usage-left">{state === "used" ? `, used up until ${localTime(numbers.resetsAt)}` : `, ${sandboxTime(leftSeconds)} left`}</span> : null}
 			</span>
 			{share === null ? null : (
-				<span className="home-meter" role="meter" aria-label="Sandbox time used today" aria-valuemin={0} aria-valuemax={allowanceSeconds ?? 0} aria-valuenow={Math.min(spent, allowanceSeconds ?? spent)} aria-valuetext={`${sandboxTime(spent)} of ${sandboxTime(allowanceSeconds ?? 0)}`}>
+				<span className="home-meter" role="meter" aria-label="Hosted time used today" aria-valuemin={0} aria-valuemax={allowanceSeconds ?? 0} aria-valuenow={Math.min(spent, allowanceSeconds ?? spent)} aria-valuetext={`${sandboxTime(spent)} of ${sandboxTime(allowanceSeconds ?? 0)}`}>
 					<span className="home-meter-fill" style={{ width: `${Math.max(share, spent > 0 ? 0.04 : 0) * 100}%` }} />
 				</span>
 			)}
@@ -116,17 +116,17 @@ function MonthMeter({ numbers }: { numbers: UsageNumbers }) {
 	const full = sandboxes.limit !== null && sandboxes.kept >= sandboxes.limit;
 	const share = month.limitSeconds === 0 ? null : Math.min(1, spent / month.limitSeconds);
 	return (
-		<a className={`home-usage${state !== "plenty" ? " home-usage-warn" : ""}`} {...linkProps({ name: "usage" })} title="Usage: hosted minutes and sandboxes">
+		<a className={`home-usage${state !== "plenty" ? " home-usage-warn" : ""}`} {...linkProps({ name: "usage" })} title="Hosted time and kept sandboxes">
 			<span className="home-usage-time">
 				Hosted {periodWords(month)} <strong>{minutes(spent)}</strong> of {minutes(month.limitSeconds)} min
 				{state !== "plenty" ? <span className="home-usage-left">{state === "used" ? `, used up until ${monthReset(month)}` : `, ${minutes(month.leftSeconds)} left`}</span> : null}
 			</span>
 			{share === null ? null : (
-				<span className="home-meter" role="meter" aria-label={`Hosted minutes used ${periodWords(month)}`} aria-valuemin={0} aria-valuemax={month.limitSeconds} aria-valuenow={Math.min(spent, month.limitSeconds)} aria-valuetext={`${minutes(spent)} of ${minutes(month.limitSeconds)} hosted minutes`}>
+				<span className="home-meter" role="meter" aria-label={`Hosted time used ${periodWords(month)}`} aria-valuemin={0} aria-valuemax={month.limitSeconds} aria-valuenow={Math.min(spent, month.limitSeconds)} aria-valuetext={`${minutes(spent)} of ${minutes(month.limitSeconds)} min of hosted time`}>
 					<span className="home-meter-fill" style={{ width: `${Math.max(share, spent > 0 ? 0.04 : 0) * 100}%` }} />
 				</span>
 			)}
-			<span className={full ? "home-usage-full" : undefined}>{sandboxes.limit === null ? plural(sandboxes.kept, "sandbox kept", "sandboxes kept") : `${count(sandboxes.kept)} of ${count(sandboxes.limit)} kept`}</span>
+			<span className={full ? "home-usage-full" : undefined}>{sandboxes.limit === null ? plural(sandboxes.kept, "sandbox kept", "sandboxes kept") : `${count(sandboxes.kept)} of ${count(sandboxes.limit)} kept sandboxes`}</span>
 		</a>
 	);
 }

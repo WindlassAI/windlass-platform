@@ -1350,7 +1350,7 @@ drive("the item's budget runs out, and the person gives it more", newItem({ budg
 		wait: "budget",
 		effects: ["ask"],
 		also: (o) => holds(o.item.question?.kind === "budget"
-			&& o.item.wait?.sentence === "This item has used 200k of its 200k tokens (cost-weighted, cached input at a tenth; 200k as reported). Going on keeps its session, sandbox and work as they are."
+			&& o.item.wait?.sentence === "Used its 200k-token budget. Give it more to continue."
 			&& o.item.question.choices.map(c => `${c.id}:${c.label}`).join() === "raise:Give it 200k more tokens,hand_over:Hand it over as it is,give_up:Give up", `asked, with the numbers: ${o.item.wait?.sentence} ${JSON.stringify(o.item.question?.choices)}`),
 	},
 	{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.budget.tokens === 400_000 && o.item.run?.n === 1 && effect(o, "deliver")?.text.includes("Continue fixing") === true, `Give it more goes on with the same run: ${o.item.budget.tokens}`) },
@@ -1474,7 +1474,7 @@ for (const [name, input, reason, words, when] of admissions) {
 }
 expect("retries are spaced 30 s, 60 s, … up to 5 min", [0, 1, 2, 3, 4].map((attempt) => retryAt(0, attempt)).join() === "30000,60000,120000,240000,300000");
 const spentAll = { tokens: 2_000_000, rawTokens: 18_000_000, turns: 3, activeSeconds: 600, hostedSeconds: 9000 };
-expect("a budget: tokens used up, said with the numbers, weighted and as reported", budgetStop(FACTORY_DEFAULTS.item, spentAll, { kind: "hosted" })?.sentence === "This item has used 2M of its 2M tokens (cost-weighted, cached input at a tenth; 18M as reported).", budgetStop(FACTORY_DEFAULTS.item, spentAll, { kind: "hosted" })?.sentence);
+expect("a budget: tokens used up, names the exhausted budget", budgetStop(FACTORY_DEFAULTS.item, spentAll, { kind: "hosted" })?.sentence === "Used its 2M-token budget.", budgetStop(FACTORY_DEFAULTS.item, spentAll, { kind: "hosted" })?.sentence);
 {
 	const { weightedTokens, CACHED_INPUT_WEIGHT } = await import("../server/src/factory/budget.js");
 	// The dogfood turn: 3.95M in, 97.5% of it read from the cache.

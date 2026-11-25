@@ -88,35 +88,11 @@ const ACCOUNT_OWNER: SecretsOwner = {
 	remove: (api, profile, name) => api.deleteAccountSecret(profile, name),
 };
 
-/** What the wider scope lets in, for either owner. */
-const COMMANDS_RISK = "Whatever those commands can read, a manipulated agent could send out once a command has network access, and whatever a command prints goes to the model.";
-
-/** The two scopes, as each owner's secret has them: an account's has no setup command to go to. */
-const SCOPES: Record<SecretsOwner["kind"], Array<{ scope: SecretScope; name: string; means: string }>> = {
-	repository: [
-		{
-			scope: "setup",
-			name: "Setup and MCP servers",
-			means: "The repository's setup command gets it, and so do the MCP servers the repository names, where their definition reads it as ${NAME}. The commands the agent runs do not.",
-		},
-		{ scope: "agent", name: "Also the agent's commands", means: `The commands the agent runs get it as well. ${COMMANDS_RISK}` },
-	],
-	account: [
-		{
-			scope: "setup",
-			name: "MCP servers only",
-			means: "MCP servers get it where their definition reads it as ${NAME}: your own, and a project's once you have approved that server. The commands the agent runs do not. In a sandbox that does not sandbox those commands, MCP servers go without it too, and a server that reads it does not start there.",
-		},
-		{
-			scope: "agent",
-			name: "Also the agent's commands",
-			means: `The commands the agent runs get it as well, so it is handed over in every sandbox, and a server that reads it starts where commands are not sandboxed too. ${COMMANDS_RISK}`,
-		},
-	],
-};
-
-/** What stands in for a secret of the same name, or never gets one, said under an account's scopes. */
-const ACCOUNT_NEVER = "A repository's setup command never gets it. Where a repository has a secret of the same name, its agents are handed that one instead, with its scope.";
+/** The narrow scope includes setup only for repository secrets. */
+const SCOPES = [
+	{ scope: "setup", means: "the agent's commands never see it." },
+	{ scope: "agent", means: "they can read it and, with network access, send it out." },
+] as const;
 
 const scopeName = (scope: SecretScope, owner: SecretsOwner["kind"]) => (scope === "agent" ? "also the agent's commands" : owner === "account" ? "MCP servers only" : "setup and MCP servers");
 
@@ -175,7 +151,7 @@ function sharedName(secret: ListedSecret, owner: SecretsOwner): string | null {
 	if (repositories.length === 0) return null;
 	const named = repositories.length <= 3 ? repositories : [...repositories.slice(0, 2), `${repositories.length - 2} more`];
 	const list = named.length === 1 ? named[0] : `${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}`;
-	return `${list} ${repositories.length === 1 ? "has a secret" : "have secrets"} of ${repositories.length === 1 ? "its" : "their"} own under this name: ${repositories.length === 1 ? "its" : "their"} agents are handed that one, with its scope, and not this.`;
+	return `${list} ${repositories.length === 1 ? "overrides" : "override"} this.`;
 }
 
 function Secret({ secret, owner, onChange }: { secret: ListedSecret; owner: SecretsOwner; onChange(): void }) {
@@ -197,7 +173,7 @@ function Secret({ secret, owner, onChange }: { secret: ListedSecret; owner: Secr
 					Change…
 				</button>
 			</p>
-			{secret.reach.note ? <p className="secret-note">{secret.reach.note}</p> : null}
+			{secret.reach.note && (owner.kind === "account" ? <details className="secret-note"><summary>Details</summary>{secret.reach.note}</details> : <p className="secret-note">{secret.reach.note}</p>)}
 			{shared ? <p className="secret-note">{shared}</p> : null}
 		</li>
 	);
@@ -411,7 +387,7 @@ function SecretsDialog({ owner, profile, secrets, start, workspace, onSaved, onC
 							aria-invalid={nameProblem !== null}
 						/>
 						<p className={`field-note${nameProblem ? " tone-warn" : ""}`} id={ids.nameNote}>
-							{nameProblem ?? (account ? "The environment variable a server's definition reads it as: ${NAME} in its env or headers." : "The environment variable it is handed over as.")}
+							{nameProblem ?? "Servers read it as ${NAME}."}
 						</p>
 					</div>
 				)}
@@ -438,10 +414,7 @@ function SecretsDialog({ owner, profile, secrets, start, workspace, onSaved, onC
 						/>
 					)}
 					<p className={`field-note${valueProblem ? " tone-warn" : ""}`} id={ids.valueNote}>
-						{valueProblem ??
-							(editing
-								? "The saved value cannot be shown. Leave this empty to keep it."
-								: `${MIN_SECRET_VALUE_CHARS} characters or more, so that it can be taken out of what is shown, and at most ${count(MAX_SECRET_VALUE_BYTES)} bytes. It is not shown again once saved.`)}{" "}
+						{valueProblem ?? (editing ? "Leave empty to keep the saved value." : "Not shown again after saving.")}{" "}
 						{lines ? null : (
 							<button type="button" className="link" onClick={() => setLines(true)} disabled={busy !== null}>
 								Several lines
@@ -449,23 +422,24 @@ function SecretsDialog({ owner, profile, secrets, start, workspace, onSaved, onC
 						)}
 					</p>
 				</div>
-				<fieldset className="secret-scopes" aria-describedby={ids.scope}>
+				<fieldset className="secret-scopes">
 					<legend className="label">Who gets it</legend>
-					{SCOPES[owner.kind].map((choice) => (
+					{SCOPES.map((choice) => (
 						<label key={choice.scope} className={`secret-choice${scope === choice.scope ? " secret-choice-chosen" : ""}`}>
 							<input className="secret-radio" type="radio" name={ids.scope} value={choice.scope} checked={scope === choice.scope} onChange={() => setScope(choice.scope)} disabled={busy !== null} />
 							<span className="secret-pick" aria-hidden="true" />
 							<span className="secret-choice-text">
-								<span className="secret-choice-name">{choice.name}</span>
-								<span className="secret-choice-means">{choice.means}</span>
+								<span className="secret-choice-name">{choice.scope === "agent" ? "Also the agent's commands" : account ? "MCP servers only" : "Setup and MCP servers"}</span>
+								<span className="secret-choice-means"> — {choice.means}</span>
 							</span>
 						</label>
 					))}
-					<p className="field-note" id={ids.scope}>
-						What a choice comes to also depends on the agent's sandbox. Where a secret reaches less than chosen here, the list says so under it.{account ? ` ${ACCOUNT_NEVER}` : ""}
-					</p>
 				</fieldset>
-				<p className="secret-about">{REMOVED}</p>
+				<details className="field-note">
+					<summary>Details</summary>
+					<p>The sandbox can limit which tools receive a secret. The saved list shows any limits.{account && " A repository secret with the same name takes precedence. Setup commands never receive account secrets."}</p>
+					<p>{REMOVED}</p>
+				</details>
 				{full ? (
 					<p className="secret-about tone-warn">
 						{account ? "Your account" : "This repository"} has {owner.limit} secrets, which is the most it can have. Delete one first.
@@ -530,9 +504,12 @@ function OwnedSecrets({ owner, profile, session, title, onChanged }: { owner: Se
 	return (
 		<>
 			{title(
-				<button type="button" className="link secret-add" onClick={() => setOpen("add")} disabled={list === null} aria-label={`Add a secret for ${owner.name}`}>
-					Add…
-				</button>,
+				<>
+					{account && list && <span className="usage-count">{list.secrets.length} of {owner.limit}</span>}
+					<button type="button" className="link secret-add" onClick={() => setOpen("add")} disabled={list === null} aria-label={`Add a secret for ${owner.name}`}>
+						Add…
+					</button>
+				</>,
 			)}
 			{list === null ? (
 				error ? null : (
@@ -542,9 +519,14 @@ function OwnedSecrets({ owner, profile, session, title, onChanged }: { owner: Se
 				)
 			) : (
 				<>
-					{list.secrets.length > 0 ? <p className="panel-empty secret-lede">{account ? "Environment variables for MCP servers. A saved value is not shown again." : `Environment variables for ${owner.name}'s agents. A saved value is not shown again.`}</p> : null}
+					{account || list.secrets.length > 0 ? <p className="panel-empty secret-lede">{account ? "Values for MCP servers and, if you allow it, the agent's commands." : `Environment variables for ${owner.name}'s agents. A saved value is not shown again.`}</p> : null}
 					<SecretList secrets={list.secrets} owner={owner} onChange={(chosen) => setOpen({ name: chosen })} />
-					<p className="panel-empty secret-applies">{applies(workspace, owner.kind)}</p>
+					{account ? (
+						<details className="panel-empty secret-applies">
+							<summary>Who gets which secret</summary>
+							<p>A repository secret with the same name takes precedence. Changes apply from the next turn. Setup commands never receive account secrets.</p>
+						</details>
+					) : <p className="panel-empty secret-applies">{applies(workspace, owner.kind)}</p>}
 				</>
 			)}
 			{error ? (

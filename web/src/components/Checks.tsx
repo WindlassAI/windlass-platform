@@ -52,7 +52,7 @@ export function checksOf(drafts: readonly CheckDraft[]): RepositoryCheck[] {
 
 /** What it is and whose it is: the same wherever the list is shown. */
 export const CHECKS_ABOUT =
-	"Windlass runs these before it calls a turn done, in the agent's own sandbox, and sends the agent back with what fails, three times at most. A pull request the platform opens says which ran and how each ended.";
+	"Checks run before each turn ends. Failed checks go back to the agent up to three times.";
 
 /**
  * The checks of one repository, read and changed in place. `labelledBy` is the heading it stands
@@ -131,7 +131,7 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 
 	return (
 		<>
-			{drafts.length === 0 ? <p className="usage-empty">No checks are set for {name}. An agent's turn ends without anything being run, and a pull request says that nothing was verified{items ? "; a work item's verdict then rests on CI alone" : ""}.</p> : null}
+			{drafts.length === 0 ? <p className="usage-empty">No checks saved for {name}.{items && " Work items use CI."}</p> : null}
 			<ul className="verify-list" aria-labelledby={labelledBy} aria-describedby={note}>
 				{drafts.map((draft, index) => (
 					<li key={draft.key} className="verify-check">
@@ -181,7 +181,7 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 								<span>only when these change</span>
 								<input
 									className="input input-mono verify-small"
-									placeholder="any file"
+									placeholder="Any file, or globs: src/**, test/**"
 									spellCheck={false}
 									autoCapitalize="off"
 									autoCorrect="off"
@@ -237,9 +237,8 @@ export function ChecksEditor({ repositoryId, name, labelledBy, onSaved }: { repo
 				</p>
 			) : null}
 			<p className="panel-empty setup-note" id={note}>
-				{CHECKS_ABOUT} File patterns are globs, separated by commas (<code>src/**, test/**</code>).
+				{CHECKS_ABOUT}
 			</p>
-			<p className="panel-empty setup-note">These checks are required. The repository’s .windlass/config.json can add its own checks. The pull request shows which ran and who set each one.</p>
 		</>
 	);
 }
