@@ -2674,7 +2674,8 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			common.reviewDirectory = await app.withToken(installation.id, { repositoryId: repo.id, permissions: { contents: "read", metadata: "read" } },
 				token => readOnlyReview(sandbox, app.cloneUrl(owner, name), token, setup.commit, setup.commit, signal, inputs), { revokeAfter: true });
 			if (draft) {
-				const { previous, answers } = draft;
+				const { answers } = draft;
+				const previous = draft.previous?.pull;
 				if (answers && previous) {
 					const guides = await app.withToken(installation.id, { repositoryId: repo.id, permissions: { metadata: "read", contents: "read", pull_requests: "read" } }, async token => {
 						const pull = await app.pull(token, owner, name, previous.number);

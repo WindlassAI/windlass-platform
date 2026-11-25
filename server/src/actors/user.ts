@@ -840,7 +840,7 @@ async function assessRepository(c: CreateCtx, profile: UserProfile, id: GithubId
 			const { notes, publication } = await setupKnowledge(c.db, profile.uid, project);
 			if (!Array.isArray(selected) || selected.length > 200 || selected.some(id => !notes.some(n => n.id === id)) || new Set(selected).size !== selected.length) throw new UserError("A selected note is unavailable.", { code: "bad_input" });
 			if (answers && Object.entries(answers).some(([id, answer]) => !selected.includes(id) || !notes.find(n => n.id === id)?.decision?.question || !["keep", "drop"].includes(answer))) throw new UserError("Choose an answer for a current question.", { code: "bad_input" });
-			draft = { areas: scan.areas, later: scan.later, noteIds: selected, previous: publication?.pull ?? null, answers };
+			draft = { areas: scan.areas, later: scan.later, noteIds: selected, previous: publication, answers };
 		}
 		await c.db.execute("UPDATE readiness SET inputs=? WHERE session=?", inputs.key, session);
 		const prompt = readinessPrompt(inputs.evidence, draft);

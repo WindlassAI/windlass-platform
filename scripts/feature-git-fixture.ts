@@ -51,7 +51,7 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 			score: ["setup", "checks", "guide"].map(id => ({ id, pass: false, reason: "Missing proof." })),
 			files: [{ kind: "guide", path: "AGENTS.md", content: (revise ? "# Read the repository guide" : "# Working here") + "\n## Terms\nSee `README.md`.\nRun `missing.sh`.\nRun `echo hello`.\npassword=fixture-only\n",
 				lines: [{ line: 3, noteId, evidence: ref }, { line: 4, evidence: ref }, { line: 6, evidence: ref }] },
-				{ kind: "area", path: "src/AGENTS.md", content: "# Source files\nSee [the readme](../README.md).\n", lines: [{ line: 2, evidence: ref }] }, skill("read-source", "README.md"), skill("bad-read", "missing")],
+				{ kind: "area", path: "src/AGENTS.md", content: "# Source files\nSee [the readme](../README.md).\n", lines: [{ line: 2, evidence: ref }] }, skill("read-source", "README.md"), ...(notes.some(n => n.verdict === "question") ? [skill("first-draft", "README.md")] : []), skill("bad-read", "missing")],
 			notes,
 		} };
 		const invoke = host.get("file_repo_setup")!;
@@ -71,8 +71,9 @@ FakeHandle.prototype.run = async function(command, options = {}) {
 	const platformGit = command.includes("wlp_git clone --quiet") || command.includes("/tmp/wlp-git") || command.includes("/tmp/wlp-transport") || command.includes(".windlass-inputs");
 	const setup = options.env?.WLP_SETUP === "1" && command === "exec 2>&1; sh index/setup.sh";
 	const guideWrite = command.startsWith("test ! -L") || command.startsWith("if test -d .claude");
+	const restore = command.startsWith("git -c core.hooksPath=/dev/null restore");
 	const guideRead = command.startsWith("test -f ") && options.cwd?.startsWith("/tmp/wlp-");
-	if (!platformGit && !setup && !guideWrite && !guideRead) return fakeRun.call(this, command, options);
+	if (!platformGit && !setup && !guideWrite && !guideRead && !restore) return fakeRun.call(this, command, options);
 	const dir = join(root, this.id), work = join(dir, "workspace"), scratch = join(dir, "tmp");
 	mkdirSync(work, {recursive:true});
 	mkdirSync(scratch, {recursive:true});
@@ -85,7 +86,7 @@ FakeHandle.prototype.run = async function(command, options = {}) {
 	}
 	return new Promise(resolve => {
 		const child = execFile("bash", ["-c", command.replaceAll("/tmp/wlp-", scratch + "/wlp-")], {
-			cwd: guideRead ? join(dir, options.cwd!.replace("/tmp/", "tmp/")) : guideWrite && options.cwd ? options.cwd.replace(this.cwd, work) : work, env: { PATH:"/usr/bin:/bin", HOME:dir, LANG:"C.UTF-8", ...(setup && { SETUP_FIXTURE: options.secretEnv?.SETUP_FIXTURE }) },
+			cwd: guideRead ? join(dir, options.cwd!.replace("/tmp/", "tmp/")) : (guideWrite || restore) && options.cwd ? options.cwd.replace(this.cwd, work) : work, env: { PATH:"/usr/bin:/bin", HOME:dir, LANG:"C.UTF-8", ...(setup && { SETUP_FIXTURE: options.secretEnv?.SETUP_FIXTURE }) },
 			timeout: options.timeoutMs ?? 60_000, signal: options.signal,
 		}, (error, stdout, stderr) => {
 			if (setup) options.onStdout?.(stdout);

@@ -79,15 +79,29 @@ export async function publishSetup(turn: SetupTurn, draft: AcceptedDraft, signal
 		const wrote = await sandbox.run(guard + " && mkdir -p -- './" + (parts.slice(0, -1).join("/") || ".") + "' && cat > './" + path + "'", { cwd: directory, stdin: content, signal, timeoutMs: 5000 });
 		if (wrote.exitCode !== 0) throw Error("A guide target is missing or is a symbolic link.");
 	}
+	let linkedToClaude = !!(draft.skills.size && request.previous?.linkedToClaude && request.previous.pull.number === available?.number);
 	if (draft.skills.size) {
-		const linked = await sandbox.run("if test -d .claude && test ! -L .claude && test ! -e .claude/skills && test ! -L .claude/skills; then ln -s ../.agents/skills .claude/skills; fi", { cwd: directory, signal, timeoutMs: 5000 });
+		const linked = await sandbox.run("if test -d .claude && test ! -L .claude && test ! -e .claude/skills && test ! -L .claude/skills; then ln -s ../.agents/skills .claude/skills && echo linked; fi", { cwd: directory, signal, timeoutMs: 5000 });
 		if (linked.exitCode !== 0) throw Error("Could not link the repository skills.");
+		if (linked.stdout.trim() === "linked") linkedToClaude = true;
+	}
+	// A collection of draft files replaces the previous publication, including files dropped by the reviewer.
+	const previous = request.previous;
+	if (available && previous?.pull.number === available.number) {
+		const dropped = previous.files.filter(path => !draft.files.has(path));
+		if (previous.linkedToClaude && !draft.skills.size) dropped.push(".claude/skills");
+		if (dropped.length) {
+			if (previous.head !== available.headSha || dropped.some(path => !safeTarget(path) || path !== ".claude/skills" && !isGuide(path))) throw Error("The earlier draft changed. Review the pull request before changing this repository again.");
+			const paths = dropped.map(path => `"${path}"`).join(" ");
+			const restored = await sandbox.run(`git -c core.hooksPath=/dev/null restore --source=${commit} --staged --worktree -- ${paths}`, { cwd: directory, signal, timeoutMs: 5000 });
+			if (restored.exitCode !== 0) throw Error("Could not remove earlier setup changes.");
+		}
 	}
 	const { body, privateBody } = setupBodies(draft, turn);
-	const pull = available ? infoOf(available, request.previous?.pushedAt ?? Date.now(), "") : null;
+	const pull = available ? infoOf(available, request.previous?.pull.pushedAt ?? Date.now(), "") : null;
 	signal.throwIfAborted();
 	const result = await publishWork({ app, connection, repository, sandbox, sessionId, branch, pull, pushed: cloned.workAt, retitle: true, shownIsEnough: true,
 		message: { title: "Add repository guides", commit: "docs: add repository guides", body }, privateBody,
 		evidence: { verified: null, checks: [], during: null, redact: turn.redact } });
-	return { pull: result.pull, head: result.head ?? undefined, files: [...draft.files.keys()] };
+	return { pull: result.pull, linkedToClaude: linkedToClaude || undefined, head: result.head ?? undefined, files: [...draft.files.keys()] };
 }

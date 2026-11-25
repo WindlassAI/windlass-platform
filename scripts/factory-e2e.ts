@@ -266,6 +266,7 @@ await check("repo-setup: draft guides with imported notes and delete them on clo
 		assert(standin.fileOn(repo, p.head, "src/AGENTS.md")?.includes("../README.md"), "Missing area guide");
 		assert(p.body.includes("1 line from 1 imported note") && !/source-note|hidden.md|fixture-only/.test(p.body), "Public citations disclosed source details");
 		assert(guide.includes("# Read the repository guide") && p.body.includes("— ran"), "The draft must include the revision and publish the skill check result.");
+		assert(standin.fileOn(repo, p.head, ".agents/skills/first-draft/SKILL.md") === null, "The earlier skill survived its removal from the review.");
 		assert(standin.fileOn(repo, p.head, ".agents/skills/bad-read/SKILL.md") === null, "A failing skill escaped review.");
 		assert(standin.fileOn(repo, p.head, ".claude/skills") === "../.agents/skills", "Missing installation link.");
 		const baseline = standin.commit(repo, "main", { "AGENTS.md": "Read `README.md`.\n" }, "Send documentation");

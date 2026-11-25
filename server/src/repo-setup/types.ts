@@ -6,12 +6,12 @@ export interface NoteDecision { noteId: string; verdict: Verdict; reason: string
 export interface SetupNote extends NoteInput { id: string; decision?: NoteDecision }
 export interface NoteInput { label: string; text: string }
 export interface GuideCheckStatus { enabled: boolean; result: { conclusion: "failure" | "success"; title: string; url: string } | null }
-export interface SetupPublication { head?: string; pull: PullRequestInfo; files: string[] }
+export interface SetupPublication { head?: string; linkedToClaude?: boolean; pull: PullRequestInfo; files: string[] }
 export interface SetupKnowledge { notes: SetupNote[]; publication: SetupPublication | null }
 export interface DraftRequest {
 	areas: string[];
 	later: number;
 	noteIds: string[];
-	previous: PullRequestInfo | null;
+	previous: SetupPublication | null;
 	answers?: Record<string, "keep" | "drop">;
 }
