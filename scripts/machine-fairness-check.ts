@@ -132,7 +132,9 @@ export async function machineFairnessChecks(check: Check, client: ReturnType<typ
 				await until("updated session profile", async () => {
 					const profile = (await handle.snapshot()).profile;
 					const text = mode === "restricted" ? /public/ : mode === "none" ? /no network/ : /local network/;
-					return profile.name.includes("Workshop") && profile.claudeRelay === (mode ? true : undefined) && profile.commandNetwork === (mode !== "none") && text.test(profile.commandNetworkText ?? "");
+					return profile.name === "Open" && profile.details?.includes("Workshop")
+						&& profile.claudeRelay === (mode ? true : undefined)
+						&& profile.commandNetwork === (mode !== "none") && text.test(profile.commandNetworkText ?? "");
 				});
 			}
 		} finally {
