@@ -1,28 +1,9 @@
 /**
- * Check of the GitHub connection (server/src/github/), without GitHub: no GitHub App exists while this
- * runs, and nothing here calls GitHub. Run with:
- *
- *   cd server && npx tsx ../scripts/github-check.ts
- *   cd server && npx tsx ../scripts/github-check.ts --docker   and the git commands again, in a
- *                                                                container of the sandbox image
- *
- * GitHub is played by scripts/github-standin.ts: its API, its authorization and installation pages, and
- * a git remote over HTTP in front of real bare repositories. The server's own code talks to it over
- * real HTTP, and the git commands are run by real git, in a directory that plays a sandbox's workspace
- * (`run` with standard input and a timeout, as `SandboxHandle` has it). No server and no actor runs
- * here: the `user` actor's part in connecting (the list of states that were issued) is played by a list
- * in memory, and the actors themselves are checked by scripts/e2e.ts.
- *
- * What it shows: the configuration and when the feature is off; the app's JWT; the connect flow with a
- * forged, an expired and a reused state, with an installation that is not the user's, with a refusal;
- * that every token is asked for with one repository and the permissions of its step, and is of no use
- * elsewhere; a private repository cloned with nothing of the token left behind; a pull request opened
- * and updated; each failure a user can act on, in its sentence; a workspace whose repository was set
- * up to catch the token, which catches nothing; and that nothing printed here holds a token or a secret.
- *
- *   WLP_CHECK_SECTIONS=connect,publish   run only the sections whose names start with one of these
+ * Check the App against a local HTTP stand-in and a real bare git remote.
+ * WLP_CHECK_SECTIONS=connect,publish selects those sections. Pass --docker to repeat git commands in the sandbox image.
  */
 
+import { matchesSection } from "./check-sections.js";
 import assert from "node:assert/strict";
 import { gitMirrorMount, MIRROR_ROOT, MIRROR_VOLUME, type MirrorStore, mirrorOwner, mirrorSavesSettled, mirrorSlot, referencedSlots, saveSessionMirror, slotsInInspect } from "../server/src/sandbox/git-mirrors.js";
 import { sweepSessionProcesses } from "../server/src/sandbox/provider.js";
@@ -73,10 +54,6 @@ for (const method of ["log", "warn", "error"] as const) {
 		real(line.startsWith("[wlp] ") ? `      ${line}` : line);
 	};
 }
-const only = (process.env.WLP_CHECK_SECTIONS ?? "")
-	.split(",")
-	.map((name) => name.trim())
-	.filter((name) => name !== "");
 let failures = 0;
 let passes = 0;
 let skips = 0;
@@ -94,7 +71,7 @@ function expect(name: string, ok: boolean, detail = ""): boolean {
 }
 
 async function section(name: string, body: () => Promise<void>): Promise<void> {
-	if (only.length > 0 && !only.some((prefix) => name.startsWith(prefix))) return;
+	if (!matchesSection(name)) return;
 	console.log(`\n== ${name}`);
 	try {
 		await body();

@@ -3,6 +3,14 @@ import { readFileSync } from "node:fs";
 import { createSocket, type Socket } from "node:dgram";
 import { createServer } from "node:net";
 
+export function portFree(port: number): Promise<boolean> {
+	return new Promise((done) => {
+		const probe = createServer();
+		probe.once("error", () => done(false));
+		probe.listen(port, "127.0.0.1", () => probe.close(() => done(true)));
+	});
+}
+
 // A UDP reservation coordinates the checks, but cannot stop the kernel from assigning the same
 // TCP port to an outgoing connection before Rivet binds it. Keep all three engine ports and HTTP
 // out of the automatic port range. Above 10080, fetch also accepts every HTTP port.

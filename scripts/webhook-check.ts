@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { pollUntil, readProvenance } from "./issue-intake-fixture.js";
 import { GithubStandin } from "./github-standin.js";
 import { localListeners } from "./check-listeners.js";
 import { edge, isAddressed } from "../server/src/github/events.js";
@@ -102,12 +103,9 @@ async function testNode() {
 			requireServiceFor(c, "call");
 			return (await c.db.execute("SELECT 1 FROM effects WHERE id LIKE 'verified_check:%' LIMIT 1")).length > 0;
 		},
-		// What the item keeps of the issue it was filed from: the GitHub binding (polling, comments, "Closes #n") and the Linear provenance are apart.
 		checkProvenance: async (c: ItemCtx) => {
 			requireServiceFor(c, "call");
-			const { meta, item } = c.vars.stored!;
-			const [binding] = await c.db.execute<{ n: number }>("SELECT count(*) AS n FROM github_binding");
-			return { github: meta.github ?? null, linear: meta.linear ?? null, untrusted: item.untrusted ?? null, bindingRows: binding?.n ?? 0, issueEffects: (await c.db.execute("SELECT 1 FROM effects WHERE id LIKE '%issue%'")).length };
+			return readProvenance(c);
 		},
 		checkIssuePending: async (c: ItemCtx) => {
 			requireServiceFor(c, "call");
@@ -253,15 +251,7 @@ async function testNode() {
 	await import("../server/src/index.js");
 }
 
-async function until<T>(label: string, probe: () => Promise<T>, timeout = 12_000) {
-	const end = Date.now() + timeout;
-	do {
-		const answer = await probe();
-		if (answer) return answer;
-		await sleep(60);
-	} while (Date.now() < end);
-	throw new Error("timed out waiting for " + label);
-}
+const until = pollUntil(12_000);
 
 async function run() {
 	const { engine, http: [http] } = await localListeners();

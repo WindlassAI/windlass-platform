@@ -18,6 +18,8 @@
     "rules": {
       "timeout": 15,
       "paths": [
+        "scripts/check-bucket.ts",
+        "scripts/check-sections.ts",
         "server/src/*.ts",
         "server/src/bucket/**",
         "server/src/factory/attachments.ts",
@@ -95,6 +97,7 @@
     "actors": {
       "timeout": 20,
       "paths": [
+        "scripts/check-sections.ts",
         "server/src/index.ts",
         "server/src/registry.ts",
         "server/src/startup.ts",
@@ -161,6 +164,7 @@
     "factory": {
       "timeout": 25,
       "paths": [
+        "scripts/check-listeners.ts",
         "server/src/factory/**",
         "server/src/github/**",
         "server/src/item-pages.ts",
@@ -197,6 +201,8 @@
     "webhook": {
       "timeout": 20,
       "paths": [
+        "scripts/check-listeners.ts",
+        "scripts/issue-intake-fixture.ts",
         "server/src/github/**",
         "server/src/factory/**",
         "server/src/actors/{github-item,github-intake,github-inbox,github-repository,github-account,user-github,work-item,user-items}.ts",
@@ -212,6 +218,8 @@
     "linear": {
       "timeout": 20,
       "paths": [
+        "scripts/check-listeners.ts",
+        "scripts/issue-intake-fixture.ts",
         "server/src/linear/**",
         "server/src/factory/**",
         "server/src/github/**",
@@ -234,6 +242,7 @@
       "timeout": 25,
       "images": ["base"],
       "paths": [
+        "scripts/check-sections.ts",
         "sandbox/Dockerfile",
         "sandbox/wlp-run",
         "sandbox/wlp-pnpm",

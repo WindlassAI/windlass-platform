@@ -20,11 +20,10 @@ import { commitsBehindBase, subtaskBranch } from "../server/src/github/feature.j
 import { BaseMergeConflict, branchFor, updateBranchFromBase } from "../server/src/github/publish.js";
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
 import { verdictWords } from "../server/src/factory/verdict.js";
-import { localListeners } from "./check-listeners.js";
+import { localListeners, portFree } from "./check-listeners.js";
 import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createWriteStream, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -87,14 +86,6 @@ async function refused(call: () => Promise<unknown>, code: string): Promise<stri
 		return (error as Error).message;
 	}
 	throw new Error(`expected ${code}, but the call succeeded`);
-}
-
-function portFree(port: number): Promise<boolean> {
-	return new Promise((done) => {
-		const probe = createServer();
-		probe.once("error", () => done(false));
-		probe.listen(port, "127.0.0.1", () => probe.close(() => done(true)));
-	});
 }
 
 class Server {

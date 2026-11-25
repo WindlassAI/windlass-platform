@@ -25,11 +25,10 @@
  * the second delivery is RivetKit's own, 25 ms later.
  */
 
-import { localListeners } from "./check-listeners.js";
+import { localListeners, portFree } from "./check-listeners.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -146,14 +145,6 @@ async function stopServer(signal: "SIGTERM" | "SIGKILL" = "SIGTERM"): Promise<vo
 		// No engine left.
 	}
 	await waitFor("the server's ports to be free", async () => (await portFree(ENGINE_PORT)) && (await portFree(HTTP_PORT)), 20_000, 200);
-}
-
-function portFree(port: number): Promise<boolean> {
-	return new Promise((done) => {
-		const probe = createServer();
-		probe.once("error", () => done(false));
-		probe.listen(port, "127.0.0.1", () => probe.close(() => done(true)));
-	});
 }
 
 /** Puts an actor to sleep through the engine's control plane, whatever it is doing. */
