@@ -2940,7 +2940,7 @@ fi`, { signal, timeoutMs: 5000 });
 				setupStage = "record";
 				result = reviewed.result;
 				accepted = reviewed.filed;
-				if (setup && accepted.leftOut?.length) setup.diagnosis = setupPhase.diagnosis();
+				if (setup) setup.diagnosis = setupPhase.diagnosis();
 			} else result = await harness.runTurn(sandbox, windlassInput);
 			// On a checks-only delivery run every saved command the native diff-based gate omitted.
 			if (item?.row.agent === "run_checks" && result.summary?.outcome === "succeeded" && !result.failure && !signal.aborted) {

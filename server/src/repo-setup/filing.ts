@@ -1,9 +1,11 @@
+import { parse } from "yaml";
+import { requireGuideStructure } from "./guide-structure.js";
 import { record as row } from "../github/app.js";
 import { readinessJudgment } from "../factory/readiness-filing.js";
 import type { Judgment } from "../factory/readiness.js";
 import { pushTokenKinds, redact } from "../github/redact.js";
 import { checkGuide, guideTree, skillPath } from "./guide-check.js";
-import type { DraftRequest, NoteDecision, SetupNote, Verdict } from "./types.js";
+import type { DraftRequest, NoteDecision, SetupNote, SkillFiling, Verdict } from "./types.js";
 
 interface DraftContext {
 	revision?: boolean;
@@ -69,7 +71,7 @@ function evidence(value: unknown, ctx: DraftContext, claim = "") {
 	return null;
 }
 
-export function validateDraft(args: unknown, ctx: DraftContext): AcceptedDraft {
+export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFiling): AcceptedDraft {
 	const a = row(args);
 	const safe = (v: unknown) => { const s = short(v); return privateLine(s, ctx) ? "Details withheld." : s; };
 	const score = readinessJudgment(a.score, safe);
@@ -88,29 +90,46 @@ export function validateDraft(args: unknown, ctx: DraftContext): AcceptedDraft {
 	if (decisions.filter(d => d.question).length > 8) throw Error("Ask up to eight questions.");
 	const files = new Map<string, string>();
 	const allowed = new Set(["AGENTS.md", ...ctx.request.areas.map(d => d + "/AGENTS.md")]);
-	const tree = guideTree([...ctx.paths, ...allowed], path => ctx.read.get(path));
+	const entries = list(a.files, 20);
+	const repoFiles = new Set(ctx.paths);
+	const tree = guideTree([...ctx.paths, ...entries.map(f => f.path).filter((p): p is string => typeof p === "string" && allowed.has(p))], path => ctx.read.get(path));
 	const skills: AcceptedDraft["skills"] = new Map();
 	const seen = new Set<string>();
 	let skillCount = 0, bytes = 0;
-	for (const f of list(a.files, 20)) {
+	for (const f of entries) {
 		if (typeof f.path !== "string" || typeof f.content !== "string" || seen.has(f.path)) throw Error("File each guide once.");
 		seen.add(f.path);
 		const skill = skillPath.exec(f.path)?.[1];
-		if (skill) {
-			if (f.kind !== "skill" || ++skillCount > 5) throw Error("Use at most five skill files.");
+		const rejectSkill = (reason: string) => stats?.staticallyRejected.push({ path: skill ? String(f.path) : "(invalid skill path)", reason });
+		if (skill || f.kind === "skill") {
+			if (++skillCount > 5) throw Error("Use at most five skill files.");
+			if (!skill || f.kind !== "skill") {
+				rejectSkill("Use kind skill and .agents/skills/<kebab-name>/SKILL.md.");
+				continue;
+			}
 		} else if (!allowed.delete(f.path) || f.kind !== (f.path === "AGENTS.md" ? "guide" : "area")) throw Error("File the requested guides.");
 		if (!safeTarget(f.path) || privateLine(f.path, ctx)) throw Error("An area name cannot be published safely.");
 		if (ctx.paths.includes(f.path) && !ctx.read.has(f.path)) throw Error("An existing guide could not be read safely.");
 		if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(f.content)) throw Error("Remove the entire private key before filing.");
 		const size = Buffer.byteLength(f.content);
 		bytes += size;
-		if (size > 12 * 1024 || bytes > 80 * 1024 || f.content.trimEnd().split("\n").length > (skill ? 60 : f.path === "AGENTS.md" ? 150 : 40) || f.content.includes("\0")) throw Error("Shorten the guides to the requested limits.");
+		if (bytes > 80 * 1024) throw Error("Keep the total filing under 80 KiB.");
+		if (size > 12 * 1024 || f.content.trimEnd().split("\n").length > (skill ? 60 : f.path === "AGENTS.md" ? 150 : 40) || f.content.includes("\0")) {
+			if (!skill) throw Error("Shorten the guides to the requested limits.");
+			rejectSkill("Use at most 60 lines and 12 KiB of text.");
+			continue;
+		}
 		if (ctx.redact(f.content) !== f.content) throw Error("Remove saved secret values before filing.");
 		const path = f.path;
 		const command = skill && smokeCommand(f.content);
 		const proposed = f.content.split(/\r?\n/);
 		const issues = checkGuide(path, f.content, tree);
-		if (skill && (issues.length || !skillFormat(proposed, skill))) continue;
+		const headerEnd = skill ? skillHeaderEnd(proposed, skill) : -1;
+		if (skill && (headerEnd < 0 || issues.length)) {
+			rejectSkill(headerEnd < 0 ? "Supply matching YAML name and description and nonempty When to use, Steps and Check sections."
+				: `Line ${issues[0].line}: ${issues[0].message}`);
+			continue;
+		}
 		const original = ctx.read.get(path)?.split(/\r?\n/) ?? [];
 		const old = new Set(original);
 		const removed = list(f.removed ?? [], 150);
@@ -118,33 +137,38 @@ export function validateDraft(args: unknown, ctx: DraftContext): AcceptedDraft {
 			throw Error("Keep existing guide text, or cite evidence for each removed line.");
 		const refs = list(f.lines, 450);
 		const kept: string[] = [];
+		let skillIssue = "";
 		for (const [i, line] of proposed.entries()) {
 			const claims = refs.filter(r => r.line === i + 1);
 			const sources = claims.map(r => decisions.find(n => n.noteId === r.noteId));
-			if (privateLine(line, ctx) || issues.some(e => e.line === i + 1)) continue;
-			if (claims.some((r, j) => r.noteId && (!sources[j] || !["team", "duplicate"].includes(sources[j]!.verdict) || ctx.request.answers?.[String(r.noteId)] === "drop"))) continue;
-			if (excludedLines.some(q => line.includes(q))) continue;
 			const proofs = claims.map(r => evidence(r.evidence, ctx, line));
 			const layout = /^\s*(?:$|`{3}\w*$|[| :\-]+$|#{1,6} [\w &-]{1,50}$)/.test(line);
-			const format = skill && (i < 4 || command && (line === command || line === "`" + command + "`"));
-			if ((!layout && !format && !old.has(line) && !claims.length) || proofs.some(p => !p)) continue;
+			const format = skill && (i <= headerEnd || command && (line === command || line === "`" + command + "`"));
+			let issue = "";
+			if (privateLine(line, ctx) || excludedLines.some(q => line.includes(q))) issue = "Contains private or excluded content.";
+			else if (issues.some(e => e.line === i + 1)) issue = "Contains an unresolved repository reference.";
+			else if (claims.some((r, j) => r.noteId && (!sources[j] || !["team", "duplicate"].includes(sources[j]!.verdict) || ctx.request.answers?.[String(r.noteId)] === "drop")))
+				issue = "The cited note was excluded.";
+			else if (!layout && !format && !old.has(line) && !claims.length) issue = "A new instruction needs a repository citation.";
+			else if (proofs.some(p => !p)) issue = "The cited evidence does not support this line.";
+			if (issue) {
+				if (!skill) continue;
+				skillIssue = `Line ${i + 1}: ${issue}`;
+				break;
+			}
 			kept.push(line);
 			sources.forEach((d, j) => d?.uses.push({ path, line: kept.length, evidence: proofs[j]! }));
 		}
 		if (skill) {
-			if (kept.length !== proposed.length) continue;
+			if (skillIssue) {
+				rejectSkill(skillIssue);
+				continue;
+			}
 			skills.set(path, "static only");
-		}
-		if (!kept.some(l => l.trim()) || (path === "AGENTS.md" && !kept.includes("## Terms"))) throw Error("Include a Terms section in the root guide.");
-		if (path === "AGENTS.md") {
-			const start = kept.indexOf("## Terms") + 1;
-			const end = kept.findIndex((l, i) => i >= start && /^##? /.test(l));
-			const terms = kept.slice(start, end < 0 ? undefined : end).filter(l => l.trim());
-			if (!terms.length || terms.length > 15) throw Error("Include one to fifteen verified terms.");
-		}
+		} else requireGuideStructure(path, kept, repoFiles);
 		files.set(path, kept.join("\n").trimEnd() + "\n");
 	}
-	if (allowed.size && !ctx.revision) throw Error("Include the root guide and every chosen area.");
+	if (allowed.has("AGENTS.md") && !ctx.revision) throw Error("Include the root AGENTS.md guide.");
 	const draft = { score, files, decisions, skills };
 	pruneCitations(draft);
 	return draft;
@@ -170,14 +194,20 @@ export function safeTarget(path: string) {
 	return path.split("/").every(p => /^[\w.-]+$/.test(p) && !["..", ".", ".git"].includes(p.toLowerCase()));
 }
 
-function skillFormat(lines: string[], name: string) {
-	const header = lines.slice(1, 3);
-	if (lines[0] !== "---" || lines[3] !== "---" || !header.includes("name: " + name) ||
-		!header.some(l => /^description: \S/.test(l))) return false;
-	return ["When to use", "Steps", "Check"].every(title => {
+function skillHeaderEnd(lines: string[], name: string) {
+	const end = lines.indexOf("---", 1);
+	if (lines[0] !== "---" || end < 2) return -1;
+	try {
+		const header = parse(lines.slice(1, end).join("\n"), { maxAliasCount: 0 });
+		if (header?.name !== name || typeof header.description !== "string" || !header.description.trim() ||
+			Object.keys(header).some(key => key !== "name" && key !== "description")) return -1;
+	} catch { return -1; }
+	for (const title of ["When to use", "Steps", "Check"]) {
 		const start = lines.indexOf("## " + title);
-		return start >= 4 && lines.slice(start + 1).find(l => l.trim())?.startsWith("#") === false;
-	});
+		const first = lines.slice(start + 1).find(l => l.trim());
+		if (start <= end || !first || first.startsWith("#")) return -1;
+	}
+	return end;
 }
 
 // Only these single, read-only checks may be replayed by the host in the pinned checkout.

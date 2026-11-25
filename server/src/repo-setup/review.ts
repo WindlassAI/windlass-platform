@@ -61,7 +61,17 @@ export async function reviewSetup(turn: SetupTurn, input: RunTurnInput, run: (in
 	const draftDeadline = endsAt - REVIEW_MS - PUBLISH_MS;
 	async function draft(prompt: string, session: string | undefined, deadline: number, revision = false) {
 		return observation.file({ ...input, ...phase(deadline), prompt, windlassSessionId: session }, run,
-			(args, signal) => checkSetupFiling(turn, args, signal, revision));
+			async (args, signal) => {
+				const stats = observation.startSkillFiling(args.files, revision);
+				try {
+					const filed = await checkSetupFiling(turn, args, signal, revision, stats);
+					stats.kept = filed.skills.size;
+					return filed;
+				} catch (error) {
+					stats.refused = observation.clean(error instanceof Error ? error.message : "Filing failed.");
+					throw error;
+				}
+			});
 	}
 
 	let { filed, result } = await draft(input.prompt, input.windlassSessionId, draftDeadline);
@@ -83,6 +93,14 @@ export async function reviewSetup(turn: SetupTurn, input: RunTurnInput, run: (in
 		({ filed, result } = await draft(prompt, result.windlassSessionId ?? undefined, Math.min(endsAt - PUBLISH_MS, draftDeadline + Date.now() - reviewAt), true));
 	}
 	const accepted = reconcileReview(original, filed, review);
+	observation.skills.kept = accepted.skills.size;
+	for (const path of new Set([...original.skills.keys(), ...filed.skills.keys()])) {
+		if (accepted.skills.has(path)) continue;
+		const decision = review.find(r => r.path === path);
+		const reason = decision?.verdict === "drop" ? "Reviewer dropped the skill: " + decision.findings.join(" ")
+			: decision ? "The revision did not supply the requested fix." : "Added during revision without review.";
+		observation.skills.droppedByReview.push({ path, reason });
+	}
 	observation.leftOut = accepted.leftOut;
 	if (!accepted.files.size) throw Error("The review left no files to publish.");
 	return { filed: accepted, result };

@@ -89,6 +89,8 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 	}
 
 	const checkingSkill = skillPath.test(guide);
+	// Skill procedures use the checkout as their working directory. Markdown links remain document-relative.
+	const proseDir = (target: string) => checkingSkill && !target.startsWith(".") && paths.has(target) ? root : here;
 	let fence: string | undefined;
 	let cwd = root;
 	for (const contents of lines) {
@@ -103,7 +105,7 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 		} else {
 			const prose = contents.replace(/`([^`]+)`/g, (_, code: string) => {
 				if (commandStart.test(code)) command(code, root);
-				else if (!/\s/.test(code) && pathLike.test(code)) checkPath(code, here);
+				else if (!/\s/.test(code) && pathLike.test(code)) checkPath(code, proseDir(code));
 				return "";
 			}).replace(/\]\(([^)]+)\)/g, (_, link: string) => {
 				const target = link.split("#")[0];
@@ -111,7 +113,7 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 				return "";
 			});
 			for (const match of prose.matchAll(/(?:^|[\s(])((?:[.\w*-]+\/)*[\w*-][\w.*-]*\.(?:[cm]?[jt]sx?|md|json|ya?ml|sh|py|css)|(?:server|web|runner|scripts|sandbox|docs|fixtures|deploy|\.github)\/[\w./*-]+)(?=[\s.,:;)!?]|$)/g)) {
-				checkPath(match[1], here);
+				checkPath(match[1], proseDir(match[1]));
 			}
 		}
 		line++;

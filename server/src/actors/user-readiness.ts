@@ -32,8 +32,8 @@ export function buildProof(build: EnvironmentBuild | undefined, checks: Reposito
 	const results = build?.checks ?? [];
 	const durationMs = results.reduce((total, check) => total + check.durationMs, 0);
 	return {
-		setupPassed: !!build && build.failure?.kind !== "setup" && build.failure?.kind !== "clone" && !!build.commit,
-		checksPassed: checks.length > 0 && results.length === checks.length && checks.every(c => results.some(r => r.name === c.name && r.status === "passed")) && durationMs <= 300_000,
+		setupPassed: !!build && !build.interrupted && build.failure?.kind !== "setup" && build.failure?.kind !== "clone" && !!build.commit,
+		checksPassed: !!build?.commit && !build.interrupted && checks.length > 0 && results.length === checks.length && checks.every(c => results.some(r => r.name === c.name && r.status === "passed")) && durationMs <= 300_000,
 		durationMs, measured: results.map(({ name, status, durationMs }) => ({ name, status, durationMs })),
 	};
 }
@@ -63,8 +63,14 @@ export async function repositoryReadiness(db: Db, project: string, inputs: Await
 		const findings = inputs.findings.map(f => {
 			const answer = result?.findings.find(r => r.id === f.id);
 			if (f.pass !== null || !answer) return f;
-			if (f.id === "setup" && !inputs.evidence.setupPassed) return { ...f, pass: false, reason: "No matching build shows that setup completed." };
-			if (f.id === "checks" && !inputs.evidence.checksPassed) return { ...f, pass: false, reason: "No matching build passed all saved checks within five minutes." };
+			if (f.id === "setup" || f.id === "checks") {
+				const setup = f.id === "setup";
+				const pass = setup ? inputs.evidence.setupPassed : inputs.evidence.checksPassed;
+				const subject = setup ? "Setup" : "All saved checks";
+				const reason = pass ? `${subject} passed on ${inputs.evidence.buildCommit!.slice(0, 7)}, setup unchanged since.`
+					: setup ? "No matching build shows that setup completed." : "No matching build passed all saved checks within five minutes.";
+				return { ...f, pass, reason };
+			}
 			return answer;
 		});
 		latest = scoreReadiness(findings, last?.at ?? inputs.at);

@@ -4,14 +4,14 @@ import type { StoredConnection } from "../github/repos.js";
 import type { SandboxHandle } from "../sandbox/api.js";
 import { evidencePaths, privateLine, safeTarget, smokeCommand, pruneCitations, validateDraft, type AcceptedDraft } from "./filing.js";
 import { isGuide } from "./guide-check.js";
-import type { DraftRequest, SetupNote } from "./types.js";
+import type { DraftRequest, SetupNote, SkillFiling } from "./types.js";
 
 export interface SetupTurn {
 	app: GithubApp; repository: StoredRepository; connection: StoredConnection; sandbox: SandboxHandle;
 	sessionId: string; commit: string; request: DraftRequest; directory: string; notes: SetupNote[]; redact(text: string): string;
 }
 
-export async function checkSetupFiling(turn: SetupTurn, args: unknown, signal: AbortSignal, revision: boolean) {
+export async function checkSetupFiling(turn: SetupTurn, args: unknown, signal: AbortSignal, revision: boolean, stats: SkillFiling) {
 	const { app, repository, connection, commit } = turn;
 	const { installation } = await sessionRepository(app, connection, repository, "read");
 	const wanted = evidencePaths(args);
@@ -28,14 +28,20 @@ export async function checkSetupFiling(turn: SetupTurn, args: unknown, signal: A
 			return { paths: read.slice(0, 160), maxFileBytes: 128 * 1024, maxBytes: 4 * 1024 * 1024, more: false };
 		}), { revokeAfter: true });
 	if (scan.commit !== commit) throw Error("The repository changed. Run setup again.");
-	const draft = validateDraft(args, { ...turn, revision, paths, read: new Map(scan.files.map(f => [f.path, f.text])), owner: repository.owner, host: new URL(repository.url).hostname });
+	const draft = validateDraft(args, { ...turn, revision, paths, read: new Map(scan.files.map(f => [f.path, f.text])), owner: repository.owner, host: new URL(repository.url).hostname }, stats);
 	for (const path of draft.skills.keys()) {
 		const command = smokeCommand(draft.files.get(path)!);
 		if (!command) continue;
+		stats.smokeTested++;
 		const check = await turn.sandbox.run(command, { cwd: turn.directory + "/repo", signal, timeoutMs: 3000 });
 		signal.throwIfAborted();
-		if (check.exitCode === 0) draft.skills.set(path, "ran");
-		else { draft.skills.delete(path); draft.files.delete(path); }
+		if (check.exitCode === 0 && !check.timedOut && !check.aborted) draft.skills.set(path, "ran");
+		else {
+			const reason = check.timedOut ? "Smoke check timed out." : check.aborted ? "Smoke check was interrupted." : `Smoke check exited ${check.exitCode ?? "without a status"}.`;
+			stats.droppedBySmoke.push({ path, reason });
+			draft.skills.delete(path);
+			draft.files.delete(path);
+		}
 	}
 	pruneCitations(draft);
 	return draft;
@@ -47,7 +53,9 @@ export function setupBodies(draft: AcceptedDraft, turn: Pick<SetupTurn, "request
 	const counts = new Map<string, number>();
 	for (const d of draft.decisions) if (!d.uses.length) counts.set(d.verdict, (counts.get(d.verdict) ?? 0) + 1);
 	const count = (n: number, word: string) => n + " " + word + (n === 1 ? "" : "s");
-	const text = ["Adds contributor guides for the repository.", turn.request.later ? `${turn.request.areas.length} folders drafted. ${turn.request.later} more can be covered later.` : "",
+	const covered = turn.request.areas.filter(area => draft.files.has(area + "/AGENTS.md")).length;
+	const later = turn.request.areas.length - covered + turn.request.later;
+	const text = ["Adds contributor guides for the repository.", `${count(covered, "folder")} covered.` + (later ? ` ${later} more can be covered later.` : ""),
 		draft.decisions.length ? `${count(lines.size, "line")} from ${count(used.length, "imported note")}. ${count(draft.decisions.length - used.length, "note")} unused${counts.size ? " (" + [...counts].map(([v,n]) => n + " " + v).join(", ") + ")" : ""}. Details are on the Repo setup page.` : ""].filter(Boolean).join("\n\n");
 	const skillChecks = [...draft.skills].map(([path, status]) => `- \`${path}\` — ${status}`).join("\n");
 	const sections = [text];
@@ -105,6 +113,6 @@ export async function publishSetup(turn: SetupTurn, draft: AcceptedDraft, signal
 	signal.throwIfAborted();
 	const result = await publishWork({ app, connection, repository, sandbox, sessionId, branch, pull, pushed: cloned.workAt, retitle: true, shownIsEnough: true,
 		message: { title: "Add repository guides", commit: "docs: add repository guides", body }, privateBody,
-		evidence: { verified: null, checks: [], during: null, redact: turn.redact } });
+		evidence: null, redact: turn.redact });
 	return { pull: result.pull, linkedToClaude: linkedToClaude || undefined, head: result.head ?? undefined, files: [...draft.files.keys()] };
 }
