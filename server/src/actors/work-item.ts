@@ -1,36 +1,10 @@
+// One actor per [uid, itemId] applies blueprint facts and owns the durable outbox.
+// Commit the revision, events and keyed effects together before any I/O. Wake retries pending effects under the same keys.
+// Creation requires the user actor’s grant for this item.
+
 import { randomUUID } from "node:crypto";
 import type { LinearWrite } from "../linear/app.js";
 import { newAgent } from "../factory/budget.js";
-/**
- * `workItem`, key [uid, itemId]: one work item of the software factory (Plans "software factory" §1,
- * §2), and the run controller that carries it through the blueprint (server/src/factory/blueprint.ts).
- *
- * The whole loop is: a fact arrives (a person's action, the session's report of a turn, the answer of
- * a push or a poll); `advance` decides, as a pure function, what the item becomes and what is to be
- * done; the new item, the effects and the events go into SQLite in one transaction, guarded by the
- * revision the decision was made over; then each effect is performed by its key, and what comes of it
- * comes back as the next fact. Every decision is that one synchronous step, so actions that interleave
- * at an `await` cannot both decide from the same item. A fact whose key is not the current one changes
- * nothing (blueprint.ts), so a fact delivered twice, or performed again after a restart, is harmless.
- *
- * Stored: the item as one row (`FactoryItem` and what the actor knows around it), the effects not yet
- * performed (`effects`), the item's log (`events`) and its verdicts (`verdicts`). There are no tables
- * of runs, steps or questions: the item holds its current run, its current step and its one open
- * question, and everything before them is in the log, each entry with the step it happened in, which
- * is what the item's page shows them from. An effect stays in its table until it was performed: one
- * cut off by a deploy is performed again when the actor wakes, under the same key, so the session,
- * the user's turn queue and GitHub see the same request (an effect's key names it exactly once).
- *
- * Waits are rows and one durable schedule (`c.schedule`): an effect with a time (a CI poll, the check
- * whether a turn still runs, a push tried again) is performed when the schedule fires, and an effect
- * that could not be performed (its session or GitHub did not answer) is tried again later the same
- * way. The item keeps one schedule, for the earliest of its effects, so it never has more than a few.
- *
- * Only the `user` actor creates an item: its input carries a grant made for exactly this key, and an
- * actor made any other way has no row and removes itself. The item's agent session is made before the
- * item, with an id derived from the item's, so a creation tried again reaches the same two actors.
- */
-
 import { networkBody, unionNetwork } from "../blocked-network.js";
 import type { NetworkReceipt } from "./internal.js";
 import { HIDDEN } from "../agent-publish.js";
@@ -183,10 +157,6 @@ function startsRun(key: string): boolean {
 	return step === "1" && attempt === "1";
 }
 
-// ---------------------------------------------------------------------------------------------
-// The summary and the page
-// ---------------------------------------------------------------------------------------------
-
 function secondReview(item: FactoryItem, meta: ItemMeta): ItemSummary["review"] {
 	if (item.awaitingPlace) return null;
 	if (!item.reviewer || "off" in item.reviewer) return { state: "off", recommendation: null };
@@ -227,11 +197,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 	};
 }
 
-/**
- * The item's page, read from what is stored, in the write queue: the item and its log are then one
- * state. Read from memory, a question decided a moment ago could be shown before the log line that led
- * to it was written.
- */
+// Read through the write queue so the current question and its log come from the same revision.
 async function viewOf(c: Ctx): Promise<ItemView> {
 	const { stored, view } = await queued(c, async () => {
 		const stored = await load(c.db);
@@ -367,10 +333,6 @@ function report(c: Ctx): void {
 	c.vars.reporting = loop;
 	void c.keepAwake(loop);
 }
-
-// ---------------------------------------------------------------------------------------------
-// Deciding and storing
-// ---------------------------------------------------------------------------------------------
 
 function queued<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
 	const run = c.vars.writing.then(job, job);
@@ -614,10 +576,6 @@ async function load(db: RawAccess): Promise<Stored | null> {
 	} else if (!stored.item.awaitingPlace) stored.item.reviewer ??= { off: "deployment" };
 	return stored;
 }
-
-// ---------------------------------------------------------------------------------------------
-// Performing
-// ---------------------------------------------------------------------------------------------
 
 /**
  * Performs every effect that is due and not being performed, in the order they were stored, then sets
@@ -1344,13 +1302,17 @@ export function rescheduleChildPoll(db: Pick<RawAccess, "execute">, row: EffectR
 	return db.execute("UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE id = ? AND effect = ?", retryAt(now, row.attempts + 1), row.id, row.effect);
 }
 
-/**
- * Whether `error` says the platform cannot reach a repository or PR any more (the App lost access, the
- * repository was archived or removed, the PR is gone), so trying again changes nothing. A rate limit or an
- * outage is not that: it is tried again.
- */
+function repositoryDenied(error: unknown): error is GithubProblem {
+	return error instanceof GithubProblem && (error.code === "github_denied" || error.code === "github_gone");
+}
+
+function featureRefusal(error: unknown): error is GithubProblem | GithubError {
+	return repositoryDenied(error) || (error instanceof GithubError && [403, 404, 409, 422].includes(error.status));
+}
+
+// Rate limits and outages must stay on the retry queue.
 export function lostAccess(error: unknown): boolean {
-	if (error instanceof GithubProblem) return error.code === "github_denied" || error.code === "github_gone";
+	if (error instanceof GithubProblem) return repositoryDenied(error);
 	return error instanceof GithubError && !error.rateLimited && !error.unreachable && [401, 403, 404, 410, 422].includes(error.status);
 }
 
@@ -1405,8 +1367,7 @@ async function crossOpenOrDescribe(c: Ctx, meta: ItemMeta, item: FactoryItem, ef
 		}
 		await take(c, { kind: "published", key, at: Date.now(), pr: item.pr, head: item.head!, openItems: 1, webhooks: githubConfig().pollFallback });
 	} catch (error) {
-		const denied = error instanceof GithubProblem && (error.code === "github_denied" || error.code === "github_gone");
-		if (!denied && !(error instanceof GithubError && [403, 404, 409, 422].includes(error.status))) throw error;
+		if (!featureRefusal(error)) throw error;
 		const where = opening ? `${opening.repo.owner}/${opening.repo.name}: ` : "";
 		await take(c, { kind: "feature_problem", key, at: Date.now(), reason: where + error.message });
 	}
@@ -1447,8 +1408,7 @@ async function integrationStep(c: Ctx, meta: ItemMeta, item: FactoryItem, effect
 		} else if (!run.runId) await take(c, { ...base, kind: "integration_started", runId: reading.runId, url: reading.url });
 		else await take(c, { ...base, kind: "integration_read", state: reading.state, url: reading.url, said: reading.said, ...(reading.seconds !== undefined && { seconds: reading.seconds }) });
 	} catch (error) {
-		const denied = error instanceof GithubProblem && (error.code === "github_denied" || error.code === "github_gone");
-		if (!denied && !(error instanceof ForeignRun) && !refusedByGithub(error)) throw error;
+		if (!repositoryDenied(error) && !(error instanceof ForeignRun) && !refusedByGithub(error)) throw error;
 		await take(c, { ...base, kind: "integration_read", state: "unavailable", url: null, said: error.message });
 	}
 }
@@ -1461,10 +1421,101 @@ async function steerNote(c: Ctx, stored: Stored, note: string): Promise<boolean>
 		.catch((error: unknown) => { if (isSessionGone(error)) return false; throw error; });
 }
 
-/**
- * Performs one effect: what comes of it is taken as a fact. Throws when it could not be done, to be
- * tried again; answers false when the item as it is now does not want it, and nothing was done.
- */
+async function dispatchFeature(c: Ctx, { item, meta }: Stored, effect: Extract<Effect, { kind: "dispatch" | "describe_feature" }>, row: EffectRow): Promise<boolean | "deferred"> {
+	const key = effect.key;
+	const job = effect.kind === "dispatch" && effect.child ? item.jobs?.find(j => j.id === effect.child) : item.jobs?.at(-1);
+	if (crossRepo(item) && (effect.kind === "describe_feature" || nextOpening(item))) {
+		await crossOpenOrDescribe(c, meta, item, effect);
+		return true;
+	}
+	if (effect.kind === "dispatch" && item.pr && job) {
+		if (job.route && !job.placement && job.state === "draft" && !job.cancelRequested) {
+			await take(c, { kind: "place_child", child: job.id, key, inventory: await placementInventory(c, meta.uid, item.agent?.model, crossRepo(item) ? undefined : meta.repository.id), at: Date.now() });
+			return true;
+		}
+		const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });
+		const changed = v && await take(c, { kind: "child_update", key, child: v.id, state: v.state, startedAt: v.run?.startedAt, wait: v.wait?.sentence, placement: v.placement, head: v.head, spent: v.spent, budget: v.budget, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
+		if (!changed && live(c.vars.stored!.item, effect)) {
+			// The child notice replaces this keyed effect immediately. An unchanged observation only moves its fallback timer.
+			await queued(c, () => rescheduleChildPoll(c.db, row, Date.now()));
+			return "deferred";
+		}
+		return true;
+	}
+	try {
+		const hub = await github(c, meta, "write");
+		await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { contents: "write", metadata: "read", pull_requests: "write" } }, async token => {
+			if (!live(c.vars.stored!.item, effect)) return;
+			const { app, owner, name } = hub;
+			if (effect.kind === "describe_feature") {
+				const report = await latestReport(c.db, item.run!.n);
+				const body = [report?.title, ...report?.blocks.map(b => "text" in b ? b.text : "") ?? [], meta.github && "Closes #" + meta.github.origin.issue.number + "."].filter(Boolean).join("\n\n");
+				await app.updatePull(token, owner, name, item.pr!.number, { title: item.task.title, body: networkBody(body, itemNetwork(meta), hub.repository.private) });
+				await take(c, { kind: "published", key, at: Date.now(), pr: item.pr, head: item.head!, openItems: 1, webhooks: githubConfig().pollFallback });
+			} else if (!item.seed) {
+				const sha = await refHead(app, token, owner, name, meta.repository.branch);
+				await take(c, { kind: "feature_seed", key, sha, at: Date.now() });
+			} else {
+				const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: meta.repository.branch, seed: item.seed, author: hub.author, created: meta.createdAt, body: networkBody(item.featurePlan!.spec.goal, itemNetwork(meta), hub.repository.private) });
+				await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart: (await repositoryAutonomy(c, meta)).waitForCiOnEachPart, at: Date.now() });
+			}
+		});
+	} catch (error) {
+		if (!featureRefusal(error)) throw error;
+		await take(c, { kind: "feature_problem", key, at: Date.now(), reason: error.message });
+	}
+	return true;
+}
+
+async function pollCi(c: Ctx, stored: Stored, effect: Extract<Effect, { kind: "poll_ci" }>, row: EffectRow, session: ReturnType<typeof sessionActor>) {
+	const { item, meta } = stored;
+	const repo = effect.repo ? repoOf(item, effect.repo) : undefined;
+	const branch = repo ?? item;
+	const number = branch.pr?.number ?? 0;
+	const autoMergeSingles = item.run?.step.kind === "handoff" && item.mode !== "orchestrate" && !item.parent &&
+		(await repositoryAutonomy(c, meta)).autoMergeSingles;
+	const read = async () => {
+		const hub = await github(c, meta, "read", repo);
+		// Some push receipts hold a branch name. Encode it as one path segment.
+		const target = { installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: encodeURIComponent(effect.head) };
+		const ci = item.run?.ci;
+		const reading = await readCi(hub.app, target, { since: branch.featureCi?.since ?? ci?.since, branch: branch.featureCi ? featureBranch(item.id) : undefined });
+		// GitHub can still be computing mergeability, or the PR may have moved past the pushed head.
+		const pull = item.parent ? null : await hub.pull(number).catch(() => null);
+		const featureHead = branch.featureCi && pull?.headSha && pull.headSha !== effect.head && !item.joining
+			? await hub.app.withToken(hub.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", contents: "read" } },
+				token => refHead(hub.app, token, hub.owner, hub.name, featureBranch(item.id)), { reuse: true }) : undefined;
+		const state = ciState(reading);
+		const elapsed = ci ? Date.now() - ci.since : 0;
+		const timedOut = workflowOverdue(reading, Date.now());
+		const noChildCi = item.parent && (state === "not_permitted" || state === "incomplete" ||
+			((state === "none" || state === "skipped") && elapsed >= CI_POLLING.noneAfterMs));
+		const head = reading.kind === "read" && !/^[0-9a-f]{40}$/.test(effect.head) ? reading.head : effect.head;
+		const itemCi = item.run?.step.kind === "ci" && item.mode !== "orchestrate" && (!pull?.headSha || pull.headSha === head);
+		const mergeCheck = autoMergeSingles && pull?.state === "open" && pull.base === item.task.base && pull.headSha === effect.head;
+		const needsPaths = !!branch.featureCi && state === "failed" && pull?.headSha === head && !item.jobs?.some(j => j.ciFix && activeJob(j));
+		const compare = needsPaths || mergeCheck || itemCi && /^[0-9a-f]{40}$/.test(head) && (state === "failed" || state === "cancelled" || timedOut || noChildCi);
+		const comparison = compare ? await hub.app.withToken(hub.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", contents: "read" } },
+			token => compareBranches(hub.app, token, hub.owner, hub.name, needsPaths ? branch.seed! : item.task.base, head), { reuse: true }).catch(() => null) : null;
+		if (itemCi && state === "failed" && reading.kind === "read" && reading.head === head) {
+			const base = comparison?.base ?? (pull?.base === item.task.base ? pull.baseSha : null);
+			if (base) await checkBaseFailures(hub.app, { ...target, head: base }, reading, tests =>
+				session.internalBaseTests({ head, base, tests }).catch(() => "unknown"));
+			else for (const check of reading.runs) if (check.state === "failed" && !check.environment) check.baseResult = "pending";
+		}
+		const paths = needsPaths ? comparison?.files?.map(f => f.filename) : undefined;
+		return { reading, featureHead, paths, baseAhead: comparison?.behind, baseTip: comparison?.base, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
+	};
+	const { reading, featureHead, paths, baseAhead, baseTip, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, featureHead: undefined, paths: undefined, baseAhead: 0, baseTip: undefined, mergeable: null, prHead: null, baseSha: null }));
+	const target = item.run?.step.kind === "ci" && (item.parent || item.mode === "orchestrate") && (ciState(reading) !== "passed" || mergeable === false)
+		? await targetStatus(c, stored).catch(() => null) : null;
+	const featureTarget = target?.available && target.value > 0 ? target.branch : undefined;
+	const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
+	await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, repo: effect.repo, featureHead, paths, reading, autoMergeSingles, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
+	return true;
+}
+
+// A throw retries the effect. False rechecks the durable item before dropping a stale effect.
 async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	const effect: Effect = JSON.parse(row.effect);
 	const stored = c.vars.stored;
@@ -1673,52 +1724,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return true;
 		}
 		case "dispatch":
-		case "describe_feature": {
-			const key = effect.key;
-			const job = effect.kind === "dispatch" && effect.child ? item.jobs?.find(j => j.id === effect.child) : item.jobs?.at(-1);
-			if (crossRepo(item) && (effect.kind === "describe_feature" || nextOpening(item))) {
-				await crossOpenOrDescribe(c, meta, item, effect);
-				return true;
-			}
-			if (effect.kind === "dispatch" && item.pr && job) {
-				if (job.route && !job.placement && job.state === "draft" && !job.cancelRequested) {
-					await take(c, { kind: "place_child", child: job.id, key, inventory: await placementInventory(c, meta.uid, item.agent?.model, crossRepo(item) ? undefined : meta.repository.id), at: Date.now() });
-					return true;
-				}
-				const v = await userActor(c, meta.uid).internalFeatureChild({ parent: item.id, child: job.id });
-				const changed = v && await take(c, { kind: "child_update", key, child: v.id, state: v.state, startedAt: v.run?.startedAt, wait: v.wait?.sentence, placement: v.placement, head: v.head, spent: v.spent, budget: v.budget, failure: v.run?.failureFingerprint, report: JSON.stringify({ title: v.report?.title, blocks: v.report?.blocks, verdict: v.verdict, stop: v.run?.stopReason, question: v.question?.text }).slice(0, 5000), at: Date.now() });
-				if (!changed && live(c.vars.stored!.item, effect)) {
-					// The child notice replaces this keyed effect immediately. An unchanged observation only moves its fallback timer.
-					await queued(c, () => rescheduleChildPoll(c.db, row, Date.now()));
-					return "deferred";
-				}
-				return true;
-			}
-			try {
-				const hub = await github(c, meta, "write");
-				await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { contents: "write", metadata: "read", pull_requests: "write" } }, async token => {
-					if (!live(c.vars.stored!.item, effect)) return;
-					const { app, owner, name } = hub;
-					if (effect.kind === "describe_feature") {
-						const report = await latestReport(c.db, item.run!.n);
-						const body = [report?.title, ...report?.blocks.map(b => "text" in b ? b.text : "") ?? [], meta.github && "Closes #" + meta.github.origin.issue.number + "."].filter(Boolean).join("\n\n");
-						await app.updatePull(token, owner, name, item.pr!.number, { title: item.task.title, body: networkBody(body, itemNetwork(meta), hub.repository.private) });
-						await take(c, { kind: "published", key, at: Date.now(), pr: item.pr, head: item.head!, openItems: 1, webhooks: githubConfig().pollFallback });
-					} else if (!item.seed) {
-						const sha = await refHead(app, token, owner, name, meta.repository.branch);
-						await take(c, { kind: "feature_seed", key, sha, at: Date.now() });
-					} else {
-						const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: meta.repository.branch, seed: item.seed, author: hub.author, created: meta.createdAt, body: networkBody(item.featurePlan!.spec.goal, itemNetwork(meta), hub.repository.private) });
-						await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart: (await repositoryAutonomy(c, meta)).waitForCiOnEachPart, at: Date.now() });
-					}
-				});
-			} catch (error) {
-				const denied = error instanceof GithubProblem && (error.code === "github_denied" || error.code === "github_gone");
-				if (!denied && !(error instanceof GithubError && [403,404,409,422].includes(error.status))) throw error;
-				await take(c, { kind: "feature_problem", key, at: Date.now(), reason: error.message });
-			}
-			return true;
-		}
+		case "describe_feature":
+			return dispatchFeature(c, stored, effect, row);
 		case "check_issue":
 			await c.db.execute("UPDATE item SET issue_checked_at=? WHERE id=1", Date.now());
 			await checkIssue(c, meta, effect);
@@ -1890,53 +1897,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			await take(c, { kind: "ci_rerun_result", at: Date.now(), head: effect.head, ...result });
 			return true;
 		}
-		case "poll_ci": {
-			const repo = effect.repo ? repoOf(item, effect.repo) : undefined;
-			const branch = repo ?? item;
-			const number = branch.pr?.number ?? 0;
-			const autoMergeSingles = item.run?.step.kind === "handoff" && item.mode !== "orchestrate" && !item.parent &&
-				(await repositoryAutonomy(c, meta)).autoMergeSingles;
-			const read = async () => {
-				const hub = await github(c, meta, "read", repo);
-				// A commit's SHA, or the branch where git did not say which commit it pushed: as part of the address, in one piece.
-				const target = { installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: encodeURIComponent(effect.head) };
-				const ci = item.run?.ci;
-				const reading = await readCi(hub.app, target, { since: branch.featureCi?.since ?? ci?.since, branch: branch.featureCi ? featureBranch(item.id) : undefined });
-				// GitHub works out whether a pull request can merge after a push, and says null until it has. Its head is the
-				// commit it holds now, which may be one pushed after the agent's.
-				const pull = item.parent ? null : await hub.pull(number).catch(() => null);
-				const featureHead = branch.featureCi && pull?.headSha && pull.headSha !== effect.head && !item.joining
-					? await hub.app.withToken(hub.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", contents: "read" } },
-						token => refHead(hub.app, token, hub.owner, hub.name, featureBranch(item.id)), { reuse: true }) : undefined;
-				const state = ciState(reading);
-				const elapsed = ci ? Date.now() - ci.since : 0;
-				const timedOut = workflowOverdue(reading, Date.now());
-				const noChildCi = item.parent && (state === "not_permitted" || state === "incomplete" ||
-					((state === "none" || state === "skipped") && elapsed >= CI_POLLING.noneAfterMs));
-				const head = reading.kind === "read" && !/^[0-9a-f]{40}$/.test(effect.head) ? reading.head : effect.head;
-				const itemCi = item.run?.step.kind === "ci" && item.mode !== "orchestrate" && (!pull?.headSha || pull.headSha === head);
-				const mergeCheck = autoMergeSingles && pull?.state === "open" && pull.base === item.task.base && pull.headSha === effect.head;
-				const needsPaths = !!branch.featureCi && state === "failed" && pull?.headSha === head && !item.jobs?.some(j => j.ciFix && activeJob(j));
-				const compare = needsPaths || mergeCheck || itemCi && /^[0-9a-f]{40}$/.test(head) && (state === "failed" || state === "cancelled" || timedOut || noChildCi);
-				const comparison = compare ? await hub.app.withToken(hub.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", contents: "read" } },
-					token => compareBranches(hub.app, token, hub.owner, hub.name, needsPaths ? branch.seed! : item.task.base, head), { reuse: true }).catch(() => null) : null;
-				if (itemCi && state === "failed" && reading.kind === "read" && reading.head === head) {
-					const base = comparison?.base ?? (pull?.base === item.task.base ? pull.baseSha : null);
-					if (base) await checkBaseFailures(hub.app, { ...target, head: base }, reading, tests =>
-						session.internalBaseTests({ head, base, tests }).catch(() => "unknown"));
-					else for (const check of reading.runs) if (check.state === "failed" && !check.environment) check.baseResult = "pending";
-				}
-				const paths = needsPaths ? comparison?.files?.map(f => f.filename) : undefined;
-				return { reading, featureHead, paths, baseAhead: comparison?.behind, baseTip: comparison?.base, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
-			};
-			const { reading, featureHead, paths, baseAhead, baseTip, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, featureHead: undefined, paths: undefined, baseAhead: 0, baseTip: undefined, mergeable: null, prHead: null, baseSha: null }));
-			const target = item.run?.step.kind === "ci" && (item.parent || item.mode === "orchestrate") && (ciState(reading) !== "passed" || mergeable === false)
-				? await targetStatus(c, stored).catch(() => null) : null;
-			const featureTarget = target?.available && target.value > 0 ? target.branch : undefined;
-			const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
-			await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, repo: effect.repo, featureHead, paths, reading, autoMergeSingles, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
-			return true;
-		}
+		case "poll_ci":
+			return pollCi(c, stored, effect, row, session);
 		case "poll_pr": {
 			// In review, too: the last turn's sandbox time is settled while the person reviews.
 			await factsOf(c, meta);
@@ -1973,10 +1935,6 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return true;
 	}
 }
-
-// ---------------------------------------------------------------------------------------------
-// A person's actions
-// ---------------------------------------------------------------------------------------------
 
 const MAX_RAISE = { tokens: 1_000_000_000, hostedSeconds: 7 * 86_400 } as const;
 
@@ -2053,10 +2011,6 @@ const CONFLICT: Record<ItemAction["kind"], string> = {
 	note: "This item has ended, or its plan's parts take the notes.",
 	answer: "That question is not open any more, or does not offer that choice.",
 };
-
-// ---------------------------------------------------------------------------------------------
-// The actor
-// ---------------------------------------------------------------------------------------------
 
 export const workItem = actor({
 	options: { name: "Work item", icon: "list-check", actionTimeout: 60_000 },
