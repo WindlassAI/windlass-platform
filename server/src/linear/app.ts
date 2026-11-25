@@ -3,6 +3,10 @@ import { linearClientSecret, linearConfig } from "../config.js";
 
 const USER_AGENT = "windlass-platform";
 const REQUEST_TIMEOUT_MS = 20_000;
+/**
+ * The Linear OAuth app. It is authorized with `actor=app`, so the token acts as Linear's application user, never as
+ * the person who authorized it: `viewer` answers with the app user, and a token that answers with a human is refused.
+ */
 /** The most of an answer that is read. */
 const MAX_ANSWER_BYTES = 1024 * 1024;
 const MAX_PAGES = 10;
