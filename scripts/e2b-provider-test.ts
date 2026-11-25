@@ -23,6 +23,7 @@
  */
 
 import assert from "node:assert/strict";
+import { SandboxWindlass } from "../server/src/sandbox/turn.js";
 import { HostedSandboxes } from "../server/src/sandbox/hosted.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -1312,7 +1313,7 @@ if (withDocker) {
 			}
 
 			// A turn that is not scripted is handed its user's token in a file. A stand-in for the engine says what it found and exits.
-			const standIn = new (layer.windlass.constructor as new (tokens: AccessTokens, options: { engineCommand: string[]; tokenFile: { log: (line: string) => void } }) => typeof layer.windlass)(tokens, {
+			const standIn = new SandboxWindlass(tokens, layer.windlass, {
 				engineCommand: ["sh", "-c", 'echo "file=$WINDLASS_ACCESS_TOKEN_FILE mode=$(stat -c %a "$WINDLASS_ACCESS_TOKEN_FILE") holds=$(grep -c accessToken "$WINDLASS_ACCESS_TOKEN_FILE") $(cat "$WINDLASS_ACCESS_TOKEN_FILE")" >&2; exit 7'],
 				tokenFile: { log: (line) => lines.push(line) },
 			});
