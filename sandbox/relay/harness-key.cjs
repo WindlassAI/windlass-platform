@@ -1,6 +1,6 @@
 // A machine relay takes the turn's local placeholder. Only the platform can resolve the forwarded one.
 const { readFile } = require('node:fs/promises');
-const { wires, wirePath, harnessMethod, forwardProof, proofHeader } = require('./wires.cjs');
+const { wires, allowedBetas, wirePath, harnessMethod, forwardProof, proofHeader } = require('./wires.cjs');
 
 function keyRoute(harness, url) {
 	if (harness === 'claude') {
@@ -48,8 +48,8 @@ exports.harnessKeyProvider = function(harness, machine, incoming, scrub, load = 
 			if (method === 'POST') headers['content-type'] = 'application/json';
 			if (method === 'POST' && provider === 'openai' && incoming['content-encoding'] === 'zstd') headers['content-encoding'] = 'zstd';
 			if (method === 'POST' && wire.betas) {
-				const betas = (incoming['anthropic-beta'] ?? '').split(',').map(v => v.trim()).filter(v => wire.betas.includes(v));
-				if (betas.length) headers['anthropic-beta'] = betas.join(',');
+				const betas = allowedBetas(incoming['anthropic-beta'] ?? '', wire.betas);
+				if (betas) headers['anthropic-beta'] = betas;
 			}
 			return { hostname: key.host, path: '/model-relay' + path, headers, secrets: [key.placeholder, proof] };
 		},

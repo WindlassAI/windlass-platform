@@ -30,6 +30,11 @@ function catalogPage(provider, path) {
 	return false;
 }
 
+// Ignore unknown beta names while preserving the order chosen by the client.
+function allowedBetas(value, allowed) {
+	return value.split(',').map(name => name.trim()).filter(name => allowed.includes(name)).join(',');
+}
+
 function wireMethod(provider, path) {
 	const wire = wires[provider];
 	if (wirePath(provider, path) === wire.models || catalogPage(provider, path)) return 'GET';
@@ -56,4 +61,4 @@ const proofHeader = 'x-wlp-machine-proof';
 function forwardProof(key, machine, method, path, time) {
 	return time + '.' + createHmac('sha256', key).update(JSON.stringify([machine, method, path, time])).digest('base64url');
 }
-module.exports = { wires, wirePath, wireMethod, harnessMethod, forwardHost, forwardPlaceholder, validProofKey, proofHeader, forwardProof };
+module.exports = { wires, allowedBetas, wirePath, wireMethod, harnessMethod, forwardHost, forwardPlaceholder, validProofKey, proofHeader, forwardProof };
