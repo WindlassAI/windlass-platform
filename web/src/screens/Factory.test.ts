@@ -473,3 +473,36 @@ describe("a deployment without the second review", () => {
 		expect(host.querySelectorAll(".item-row-review").length).toBeGreaterThan(0);
 	});
 });
+
+describe("the Factory page's board", () => {
+	afterEach(() => localStorage.removeItem("wlp.factory.view"));
+	const choice = (name: string) => host.querySelector(`.factory-view`)?.querySelector(`button:nth-child(${name === "List" ? 1 : 2})`) as HTMLButtonElement;
+
+	it("switches List | Board, remembers the choice, and shows a feature as one card with its parts", async () => {
+		await show("/factory", { items: "features" });
+		expect(choice("List").getAttribute("aria-pressed")).toBe("true");
+		expect(host.querySelector(".factory-board")).toBeNull();
+		act(() => choice("Board").click());
+		await settle(2);
+		expect(choice("Board").getAttribute("aria-pressed")).toBe("true");
+		expect(localStorage.getItem("wlp.factory.view")).toBe("board");
+		expect(host.querySelector(".factory-group")).toBeNull();
+		const titles = [...host.querySelectorAll(".board-card-title")].map((title) => title.firstChild?.textContent ?? "");
+		// Every top-level item is one card; a part that asks is in its feature's card, not one of its own.
+		const top = (await listed()).filter((item) => !item.parent);
+		expect(titles.slice().sort()).toEqual(top.map((item) => item.title).sort());
+		const feature = [...host.querySelectorAll(".board-card")].find((card) => card.querySelector(".board-part-asks"));
+		expect(feature?.closest(".board-tray")).not.toBeNull();
+		expect(feature?.querySelector(".board-card-action")?.textContent).toBe("Answer");
+		// Opened again, the board is what it opens on.
+		act(() => root?.unmount());
+		root = null;
+		client.dispose();
+		await show("/factory", { items: "features" });
+		expect(host.querySelector(".factory-board")).not.toBeNull();
+		act(() => choice("List").click());
+		await settle(2);
+		expect(localStorage.getItem("wlp.factory.view")).toBe("list");
+		expect(host.querySelector(".factory-board")).toBeNull();
+	});
+});
