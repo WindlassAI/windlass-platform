@@ -816,6 +816,11 @@ async function run() {
 			const person = standin.addUser(login); projectG2.access.set(login, "write");
 			return { person, account: (await connectUser(login)).user };
 		};
+		const issueReactions = (issue: Issue) => {
+			const base = `/api/v3/repos/${owner}/factory/issues`;
+			const paths = [`${base}/${issue.number}/reactions`, ...issue.comments.map(c => `${base}/comments/${c.id}/reactions`)];
+			return standin.requests.filter(r => paths.includes(r.path));
+		};
 		const bots = (issue: Issue) => issue.comments.filter(c => c.user.login.endsWith("[bot]"));
 		type FeedbackClock = {checkAdvance(kind: "feedback" | "poll", ms: number): Promise<void>; checkWindow(): Promise<number>};
 		const feedbackItem = async (ownerPush = false) => {
@@ -1528,10 +1533,19 @@ async function run() {
 			assert.deepEqual(await (await standin.deliver(web, "issues", fields, { secret, guid })).json(), { taken: "duplicate" });
 			await notify(issue, "labeled"); await change(issue, "labeled");
 			const msg = standin.issueComment(issue, writer, "@windlass-fk4w again"); await mention(issue, msg.id);
+			await until("eyes on the labelled issue", async () => standin.reactions.has("issue:" + issue.number));
 			const first = await items(issue); assert.equal(first.length, 1);
 			await g2User.actOnItem({ id: first[0].id, action: { kind: "cancel" } });
 			await mention(issue, msg.id); await notify(issue, "labeled"); assert.equal((await items(issue)).length, 1);
 			const next = standin.issueComment(issue, writer, "@windlass-fk4w actual note"); await mention(issue, next.id);
+			await until("eyes on the filing comment", async () => standin.reactions.has("issues:" + next.id));
+			await mention(issue, next.id);
+			const reactions = issueReactions(issue);
+			const base = `/api/v3/repos/${owner}/factory/issues`;
+			assert.deepEqual(reactions.map(r => [r.method, r.path, r.auth, r.body, r.status]), [
+				["POST", `${base}/47/reactions`, "installation", { content: "eyes" }, 200],
+				["POST", `${base}/comments/${next.id}/reactions`, "installation", { content: "eyes" }, 200],
+			]);
 			const all = await items(issue); assert.equal(all.length, 2);
 			const second = all.find(i => i.id !== first[0].id)!;
 			assert.ok((await g2User.item(second.id)).task.body.endsWith("The person adds: actual note"));
@@ -1557,6 +1571,7 @@ async function run() {
 			assert.ok(logs.includes(`github.intake.unlinked installation=${installation.id} delivery=${standin.deliveries[0].guid}`));
 			await change(issue, "labeled", reader); await change(issue, "labeled", reader); assert.equal(bots(issue).length, 1);
 			assert.match(bots(issue)[0].body, /read access/); assert.equal((await readerAccount.user.listItems()).length, 0);
+			assert.deepEqual(issueReactions(issue), []);
 			const second = make(50, stranger); await change(second, "labeled"); await change(second, "labeled", peer);
 			assert.ok(bots(second).some(c => c.body.includes("another Windlass user"))); assert.equal((await peerAccount.user.listItems()).length, 0);
 			const removed = make(51); standin.issueEvent(removed, "labeled", writer); standin.issueEvent(removed, "unlabeled", peer); await notify(removed, "labeled");

@@ -53,6 +53,7 @@ With `WLP_FACTORY_ORCHESTRATE=0`, ordinary requests run **Quick** and the web fo
 - If you wrote the issue yourself, the item starts at once.
 - If someone else wrote it, the item is filed as a draft for you to start. Its page says the text was written by them, not by you, and the agent is told to take it as a description of what is wanted, not as instructions. Windlass is also told the text is theirs: see [Text from someone else](#text-from-someone-else).
 
+When a label files an item, the App reacts 👀 on the issue. When a comment files an item, it reacts 👀 on that comment.
 The App comments on the issue to say it took the item, and links to it. It also says when the pull request is opened and when the item ends.
 
 On GitHub, removing the label cancels a draft. Closing the issue cancels an item that has not reached review. Editing the issue later does not change the item: it keeps the text it was filed with.
