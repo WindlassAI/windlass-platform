@@ -524,6 +524,10 @@ export function canSeedOnResume(meta: Pick<SessionMeta, "place" | "repoUrl">, en
 	return meta.place.kind === "machine" && !!meta.repoUrl && !environment?.usable;
 }
 
+function usesScreenshotImage(meta: SessionMeta, sandbox: SandboxHandle, allowed = false): boolean {
+	return sessionSandboxInput(meta, allowed).screenshots === true && (meta.place.kind === "hosted" || sandbox.runnerScreenshots === true);
+}
+
 /** Connects to the session's sandbox for a turn, creating it (and cloning the repository) when needed. */
 async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: AbortSignal, layer: SandboxLayer, secrets: HeldSecrets | null, allowSnapshot = true): Promise<SandboxHandle> {
 	let plan: SnapshotPlan | null = null;
@@ -616,7 +620,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		// The repository's environment at this place: its image went missing (stale, build again), or it has none yet (build one).
 		if (!meta.environmentBuild && meta.repo && secrets?.snapshotSetup && canReuseSnapshot(snapshotsFor(meta.place), meta.harness, secrets.opened.length)) {
 			const kind = secrets.environment?.usable ? (plan && !handle.snapshot ? "missed" : null) : "cold";
-			if (kind) void c.keepAwake(userActor(c, meta.uid).internalEnvironmentNudge(meta.sessionId, kind).catch(() => undefined));
+			if (kind) void c.keepAwake(userActor(c, meta.uid).internalEnvironmentNudge(meta.sessionId, kind, usesScreenshotImage(meta, handle, secrets.screenshots)).catch(() => undefined));
 		}
 		// Recorded for this sandbox from what it has, not from what the provider would make now.
 		meta.ownDataSandbox = handle.ownData ? id : null;
@@ -979,8 +983,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 		requestedNames: sealed.requestedNames,
 		snapshotSetup: project && sealed.project === project.key ? sealed.snapshotSetup : undefined,
 		environment: project && sealed.project === project.key ? sealed.environment : undefined,
-		// Off for the whole deployment wins over the repository's choice, also for a sandbox made before it was turned off.
-		screenshots: sealed.screenshots === true && config.factory.screenshots,
+		screenshots: sealed.screenshots === true,
 		opened: sealed.redactOnly ? [] : opened,
 		account: sealed.redactOnly ? [] : account,
 		servers: (sealed.account?.servers ?? []).map(({ name, definition, unasked }) => ({ name, definition, unasked })),
@@ -1158,7 +1161,7 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 async function buildEnvironment(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal, secrets: HeldSecrets | null, plan: SnapshotPlan | null, layer: SandboxLayer,
 	setup: { result: Awaited<ReturnType<typeof runSetupCommand>>; output: string; original: string | null; command: string }): Promise<EnvironmentBuildResult> {
 	const commit = setup.original ?? meta.repo?.baseSha ?? "";
-	const base: EnvironmentBuildResult = { finishedAt: null, commit: /^[a-f0-9]{40}$/.test(commit) ? commit : "", image: sandbox.image ?? "", checks: [], failure: null, snapshot: false };
+	const base: EnvironmentBuildResult = { finishedAt: null, commit: /^[a-f0-9]{40}$/.test(commit) ? commit : "", image: sandbox.image ?? "", ...(usesScreenshotImage(meta, sandbox, secrets?.screenshots) && { screenshots: true }), checks: [], failure: null, snapshot: false };
 	if (setup.result.state !== "succeeded") {
 		const how = setup.result.state === "timed_out" ? "ran out of time" : setup.result.exitCode !== null ? `exited with ${setup.result.exitCode}` : "did not finish";
 		return { ...base, finishedAt: Date.now(), failure: { kind: "setup", check: null, line: `The setup command ${how}.`, excerpt: outputExcerpt(setup.output) } };
@@ -2550,9 +2553,9 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		// Told once, to whichever agent takes the next prompt: what setup left, and whether the workspace is a new one.
 		const notes = platformNotes(meta, reviewer);
 		const store = item ? attachmentStore() : null;
+		if (planning) text += `\n\nSet needs.screenshots only for subtasks that change what users see and whose repository allows screenshots (${item.crossRepoPlan ? "the primary" : "this"} repository ${held.screenshots ? "allows" : "does not allow"} them).`;
 		// A builder can reconnect to a sandbox created before a setting changed.
-		const browser = !!item && !requested && caps.reportScreenshots && held.screenshots
-			&& (meta.place.kind !== "machine" || sandbox.runnerScreenshots === true)
+		const browser = !!item && !requested && caps.reportScreenshots && usesScreenshotImage(meta, sandbox, held.screenshots)
 			&& (await sandbox.run("test -x /usr/local/bin/wlp-shot", { signal, timeoutMs: 5000 })).exitCode === 0;
 		const unavailable = held.screenshots ? "Screenshots are unavailable in this sandbox. File without screenshots." : NO_REPO_SHOTS;
 		let filings = Promise.resolve("");

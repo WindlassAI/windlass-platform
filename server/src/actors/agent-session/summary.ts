@@ -30,7 +30,7 @@ export function summaryOf(meta: SessionMeta): SessionSummary {
 		...(meta.startTimes?.length ? { startTimes: meta.startTimes } : {}),
 		sandbox: meta.sandbox,
 		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt } } : {}),
-		...(meta.origin ? { item: { id: meta.origin.itemId, role: meta.origin.role ?? "builder", ...(meta.origin.planCritic && { planCritic: true }) } } : {}),
+		...(meta.origin ? { item: { id: meta.origin.itemId, role: meta.origin.role ?? "builder", subtaskScreenshots: meta.origin.subtaskScreenshots, ...(meta.origin.planCritic && { planCritic: true }) } } : {}),
 		...(meta.environmentBuild ? { environmentBuild: true as const } : {}),
 		...(meta.environment ? { environment: meta.environment } : {}),
 	};

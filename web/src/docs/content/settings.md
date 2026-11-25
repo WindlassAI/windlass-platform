@@ -93,7 +93,7 @@ Where the platform offers more than one, **Hosted size** sets the CPUs and memor
 
 ### Screenshots
 
-**Take screenshots for work items** lets builders and reviewers attach pictures of the app to their work item reports. It is off by default. When it is on, new work item sandboxes include a browser where available.
+**Allow screenshots for work items** lets builders and reviewers attach pictures of the app to their work item reports. It is off by default. For a feature, only subtasks marked in the approved plan get a browser.
 
 ### Setup command
 

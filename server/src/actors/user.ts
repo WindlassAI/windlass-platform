@@ -103,7 +103,7 @@ import { billing } from "../billing/config.js";
 import { hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
 
 
-import { type SealedSecrets, type RequestedSecretSave, createSessionActor, isSessionGone, isDuplicateKey, itemActor, modelKeyCaller, secretsCaller, sessionActor } from "./internal.js";
+import { type SealedSecrets, type RequestedSecretSave, createSessionActor, isSessionGone, isDuplicateKey, itemActor, itemScreenshots, modelKeyCaller, secretsCaller, sessionActor } from "./internal.js";
 import { boundedText, type UserVars, type UserCtx } from "./user/state.js";
 import { modelInput, modelsOf, signinActions, writeActorProfile, type ModelsCtx } from "./user/signin.js";
 import { readUsage, sizesOf, queueOverageReport, usageActions } from "./user/usage.js";
@@ -649,6 +649,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
 
 		const now = Date.now();
+		const itemRole = item && { role: item.role, subtaskScreenshots: item.subtaskScreenshots, ...(item.planCritic && { planCritic: true as const }) };
 		summary = {
 			id: item?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
 			title: givenTitle ?? DEFAULT_TITLE,
@@ -668,11 +669,11 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			turns: 0,
 			lastOutcome: null,
 			sandbox: "none",
-			...(item ? { item: { id: item.itemId, role: item.role, ...(item.planCritic && { planCritic: true as const }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
+			...(item ? { item: { id: item.itemId, ...itemRole, ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(build && { environmentBuild: true as const }),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
-			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.planCritic && { planCritic: true as const }), ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && offered?.platformKeys?.length && { filedWithKey: true as const }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, ...itemRole, ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && offered?.platformKeys?.length && { filedWithKey: true as const }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(!item && size > 1 && { size }),
 			...(build && { environmentBuild: build }),
 			...(hostedSize && { hostedSize }),
@@ -1800,12 +1801,12 @@ export const user = actor({
 			if ("waiting" in result) return;
 			console.log(`[wlp] environment.built uid=${c.key[0]} session=${sessionId} passed=${passed} failure=${result.failure?.kind ?? "none"}`);
 		},
-		internalEnvironmentNudge: async (c, sessionId: string, kind: "missed" | "cold"): Promise<void> => {
+		internalEnvironmentNudge: async (c, sessionId: string, kind: "missed" | "cold", screenshots: boolean): Promise<void> => {
 			requireService(c);
 			const session = c.vars.sessions.get(boundedText(sessionId, 200));
 			const project = setupProjectKey(session?.repository?.id);
 			if (!session || !project || session.environmentBuild || (kind !== "missed" && kind !== "cold")) return;
-			await environmentNudge(environmentHost(c), project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, kind, session.hostedSize);
+			await environmentNudge(environmentHost(c), project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, kind, session.hostedSize, screenshots);
 		},
 		internalEnvironmentPushed: async (c, repositoryId: GithubId): Promise<void> => {
 			requireService(c);
@@ -1935,8 +1936,10 @@ export const user = actor({
 			const setup = includeSnapshotSetup && snapshotsFor(session.place) && connectedAt !== undefined && !rows.length ? await setupRow(c.db, project) : undefined;
 			const snapshotSetup = setup && connectedAt !== undefined ? { command: setup.command, updatedAt: setup.updated_at,
 				connectedAt, previouslySaved: setup.snapshot_connection === connectedAt } : undefined;
-			const environment = snapshotSetup?.command ? await sessionEnvironment(c, project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, snapshotSetup.command, checks, session.hostedSize) : undefined;
-			return { project, requestedNames, network, ...(snapshotSetup?.command && { snapshotSetup }), ...(environment && { environment }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
+			const screenshots = (await readDefaults(c.db, project)).screenshots && config.factory.screenshots;
+			const browserImage = itemScreenshots(session.item, session.harness, screenshots) && (session.place.kind === "hosted" || c.vars.machines.get(session.place.machineId)?.screenshots === true);
+			const environment = snapshotSetup?.command ? await sessionEnvironment(c, project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, snapshotSetup.command, checks, session.hostedSize, browserImage) : undefined;
+			return { project, requestedNames, network, ...(snapshotSetup?.command && { snapshotSetup }), ...(environment && { environment }), ...(redactOnly && { redactOnly }), screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
 		repository: async (c, repositoryId: GithubId): Promise<RepositoryView> => {

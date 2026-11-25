@@ -304,7 +304,8 @@ describe("the repository's screenshots setting", () => {
 		expect((await user.repository(7102)).defaults.screenshots).toBe(true);
 		await render();
 		expect(box()?.checked).toBe(true);
-		expect(host.textContent).toContain("New work item sandboxes include a browser");
+		expect(host.textContent).toContain("Allow screenshots for work items");
+		expect(host.textContent).toContain("only subtasks marked in the plan get a browser");
 		expect(host.querySelector("[role=status]")?.textContent).toBe("Saved.");
 		// Deleting what is saved restores the default.
 		expect((await user.forgetRepository(7102)).defaults.screenshots).toBe(false);

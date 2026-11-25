@@ -7,7 +7,8 @@
  * every rule here checkable with a stand-in host (scripts/environment-check.ts).
  */
 
-import type { EnvironmentBuildReport } from "./internal.js";
+import { config } from "../config.js";
+import { itemScreenshots, type EnvironmentBuildReport } from "./internal.js";
 import type { RawAccess } from "rivetkit/db";
 import type { EnvironmentBuild, EnvironmentPlace, EnvironmentSchedule, EnvironmentTrigger, HostedSize, MachineSummary, RepositoryCheck, RepositoryDefaults, RepositoryEnvironments, SessionSummary } from "../contract.js";
 import { ITEM_HOSTED_SIZE } from "../contract.js";
@@ -30,6 +31,10 @@ export interface BuildRequest { project: string; place: EnvironmentPlace; profil
  */
 export function sameSize(built: Pick<EnvironmentBuild, "hostedSize"> | null | undefined, session: HostedSize | undefined): boolean {
 	return (built?.hostedSize ?? "small") === (session ?? "small");
+}
+
+function matchesImage(ready: EnvironmentBuild, place: EnvironmentPlace, hostedSize: HostedSize | undefined, screenshots: boolean): boolean {
+	return (ready.screenshots === true) === screenshots && (place !== HOSTED || sameSize(ready, hostedSize));
 }
 
 export interface EnvironmentHost {
@@ -129,10 +134,10 @@ function buildSandbox(host: EnvironmentHost, project: string, place: Environment
 	const latest = host.sessions()
 		.filter(s => !s.environmentBuild && String(s.repository?.id ?? "") === repoOf(project) && placeOf(s) === place && (s.harness ?? "windlass") === "windlass")
 		.sort((a, b) => b.updatedAt - a.updatedAt)[0];
-	// Only an item's sandbox is made with the screenshots image (internal.ts `sessionSandboxInput`): a build for items matches it.
+	const allowed = config.factory.screenshots && saved.defaults.screenshots;
 	const hostedSize = place === HOSTED ? (latest?.hostedSize ?? saved.defaults.hostedSize ?? ITEM_HOSTED_SIZE) : undefined;
-	if (latest) return { profile: latest.profile, screenshots: !!latest.item && saved.defaults.screenshots, ...(hostedSize && { hostedSize }) };
-	return saved.defaults.profile ? { profile: saved.defaults.profile, screenshots: saved.defaults.screenshots, ...(hostedSize && { hostedSize }) } : null;
+	if (latest) return { profile: latest.profile, screenshots: itemScreenshots(latest.item, latest.harness, allowed), ...(hostedSize && { hostedSize }) };
+	return saved.defaults.profile ? { profile: saved.defaults.profile, screenshots: allowed, ...(hostedSize && { hostedSize }) } : null;
 }
 
 /**
@@ -269,13 +274,12 @@ export async function rebuild(host: EnvironmentHost, project: string, place?: En
  * changed, or the store evicted it), so it is stale and builds again; `cold`, it started cold where the repository
  * has no environment yet, so one is built.
  */
-export async function nudge(host: EnvironmentHost, project: string, place: EnvironmentPlace, kind: "missed" | "cold", hostedSize?: HostedSize): Promise<void> {
+export async function nudge(host: EnvironmentHost, project: string, place: EnvironmentPlace, kind: "missed" | "cold", hostedSize?: HostedSize, screenshots = false): Promise<void> {
 	const saved = await host.saved(project);
 	if (unavailable(host, saved)) return;
 	const row = await rowFor(host, project, place);
-	// A session of another size than the environment's starts cold by design: that is no missing image, and building
-	// for it would only take the environment away from the size the repository's latest work runs in.
-	if (place === HOSTED && row.ready && !sameSize(row.ready, hostedSize)) return;
+	// A different image variant or hosted size starts cold and leaves the ready build available to matching sessions.
+	if (row.ready && !matchesImage(row.ready, place, hostedSize, screenshots)) return;
 	if (kind === "missed") {
 		if (!row.ready) return;
 		await writeEnvironment(host.db, { ...row, stale: "Its prepared image is no longer at this place: the image changed or was removed.", dueAt: row.dueAt ?? host.now() + 60_000, dueTrigger: row.dueTrigger ?? "image" });
@@ -289,10 +293,10 @@ export async function nudge(host: EnvironmentHost, project: string, place: Envir
 }
 
 /** What a session at a place is told: whether it may start from the ready image, and of what. */
-export async function sessionEnvironment(host: Pick<EnvironmentHost, "db">, project: string, place: EnvironmentPlace, command: string, checks: RepositoryCheck[], hostedSize?: HostedSize): Promise<{ usable: boolean; commit: string; validatedAt: number; checks: number } | undefined> {
+export async function sessionEnvironment(host: Pick<EnvironmentHost, "db">, project: string, place: EnvironmentPlace, command: string, checks: RepositoryCheck[], hostedSize?: HostedSize, screenshots = false): Promise<{ usable: boolean; commit: string; validatedAt: number; checks: number } | undefined> {
 	const row = (await readEnvironments(host.db, project)).find(r => r.place === place);
 	if (!row?.ready) return undefined;
-	return { usable: usable(row, environmentInputs(command, checks)) && (place !== HOSTED || sameSize(row.ready, hostedSize)), commit: row.ready.commit, validatedAt: row.ready.finishedAt ?? row.ready.startedAt, checks: row.ready.checks.length };
+	return { usable: usable(row, environmentInputs(command, checks)) && matchesImage(row.ready, place, hostedSize, screenshots), commit: row.ready.commit, validatedAt: row.ready.finishedAt ?? row.ready.startedAt, checks: row.ready.checks.length };
 }
 
 /** The Settings section's view. */
