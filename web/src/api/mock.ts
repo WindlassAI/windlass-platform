@@ -12,6 +12,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
 import { listedHarness, windlassModels, windlassProvider, hostedCatalog, hostedKeyMessage, hostedProfiles, hostedProvider, initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
 import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
+import { mockSetupChecks } from "./mock-readiness";
 import { mockEnvironments, mockRebuild, mockSchedule } from "./mock-environments";
 import { PROFILES, initialSessionModes, offeredProfiles, profilesFor } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
@@ -748,6 +749,7 @@ type SavedDefaults = AccountDefaults & { updatedAt: number };
 
 interface World {
 	planConnected: boolean;
+	readiness: Map<GithubId, { at: number; finished: boolean; weekly: boolean }>;
 	profile: UserProfile;
 	sessions: Map<string, MockSession>;
 	feeds: Set<UserFeed>;
@@ -954,7 +956,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { planConnected: recall("wlp.mock.plan." + uid) === "1", profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { providers: new Map(), checks: { minute: 0, used: 0 }, defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
+			world = { readiness: new Map(), planConnected: recall("wlp.mock.plan." + uid) === "1", profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { providers: new Map(), checks: { minute: 0, used: 0 }, defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
 			// The seeded user starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "user"))) world.github = connectionFor(world.profile);
@@ -2694,9 +2696,15 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			if (listed) listed.definitions += 1;
 			else approvals.set(approval.name, { name: approval.name, approvedAt: approval.approvedAt, expiresAt: approval.expiresAt, definitions: 1 });
 		}
+		let setup = world.readiness.get(repositoryId);
+		if (!setup && world.github && GITHUB_REPOSITORIES.some(r => r.id === repositoryId)) {
+			setup = { at: now(), finished: false, weekly: false };
+			world.readiness.set(repositoryId, setup);
+		}
 		return {
 			id: repositoryId,
 			name: repositoryNameOf(world, repositoryId),
+			readiness: setup ? mockSetupChecks(setup.at, world.setups.has(repositoryId), !!world.checks.get(repositoryId)?.checks.length, setup.finished, setup.weekly) : { latest: null, running: false, weekly: false, error: null },
 			defaults: defaultsOf(world, repositoryId),
 			approvals: [...approvals.values()],
 			forgetting: MOCK_FORGETTING,
@@ -3520,6 +3528,16 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (world().secrets.get(repositoryId)?.size === 0) world().secrets.delete(repositoryId);
 				return secretsOf(world(), repositoryId, profile);
 			},
+			async setSetupWeekly(repositoryId, enabled) {
+				if (enabled) await this.githubRepository(repositoryId);
+				const current = world().readiness.get(repositoryId) ?? { at: now(), finished: false };
+				world().readiness.set(repositoryId, { ...current, weekly: enabled });
+			},
+			async runReadiness(repositoryId: GithubId): Promise<RepositoryView> {
+				await this.githubRepository(repositoryId);
+				world().readiness.set(repositoryId, { at: now(), finished: true, weekly: world().readiness.get(repositoryId)?.weekly ?? false });
+				return repositoryViewOf(world(), repositoryId);
+			},
 			async repository(repositoryId: GithubId): Promise<RepositoryView> {
 				await latency(180);
 				return repositoryViewOf(world(), repositoryId);
@@ -3559,6 +3577,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				current.secrets.delete(repositoryId);
 				current.setups.delete(repositoryId);
 				current.checks.delete(repositoryId);
+				current.readiness.delete(repositoryId);
 				current.network.delete(repositoryId);
 				current.defaults.delete(repositoryId);
 				current.autonomy.delete(repositoryId);

@@ -25,6 +25,7 @@ import { issueServiceToken, verifyToken } from "../tokens.js";
 
 /** What `user` passes when it creates an `agentSession`. */
 export interface SessionCreateInput {
+	readiness?: string;
 	size?: number;
 	/** Hosted only, where the layer offers sizes (`Sandboxes.sizes`): the sandbox's size. */
 	hostedSize?: HostedSize;
@@ -71,10 +72,10 @@ export function itemScreenshots(item: { subtaskScreenshots?: boolean } | undefin
 }
 
 /** The image requested when creating or replacing a session's sandbox. */
-export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "size" | "origin" | "harness" | "environmentBuild" | "hostedSize">, screenshots = false): CreateSandboxInput {
+export function sessionSandboxInput(session: Pick<CreateSandboxInput, "uid" | "sessionId" | "profile"> & Pick<SessionCreateInput, "size" | "origin" | "harness" | "environmentBuild" | "hostedSize" | "readiness">, screenshots = false): CreateSandboxInput {
 	const { uid, sessionId, profile, origin } = session;
 	const size = session.size ?? origin?.size;
-	return { uid, sessionId, profile, ...(session.environmentBuild && { environmentBuild: true }), ...(size && { size }), ...(session.hostedSize && { hostedSize: session.hostedSize }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: origin?.role === "reviewer", screenshots: session.environmentBuild ? screenshots && session.environmentBuild.screenshots : itemScreenshots(origin, session.harness, screenshots) };
+	return { uid, sessionId, profile, ...(session.environmentBuild && { environmentBuild: true }), ...(size && { size }), ...(session.hostedSize && { hostedSize: session.hostedSize }), ...(session.harness && session.harness !== "windlass" ? { harness: session.harness } : {}), privateData: !!session.readiness || origin?.role === "reviewer", screenshots: session.environmentBuild ? screenshots && session.environmentBuild.screenshots : itemScreenshots(origin, session.harness, screenshots) };
 }
 
 /** What a session asks for when its sandbox is about to run or goes on running (usage.ts, `ReserveInput`). */
@@ -100,6 +101,8 @@ export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: st
 
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
+	internalReadinessResult(session: string, report: import("../factory/readiness.js").Judgment | null): Promise<void>;
+	internalReadinessLevel(id: GithubId): Promise<import("../factory/readiness.js").ReadinessLevel | null>;
 	internalLinearHoldsTeam(workspaceId: string, teamId: string): Promise<boolean>;
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
 	internalDefaultBuilder(input: { id: string; job: import("./user-items.js").DefaultBuilder }): ReturnType<typeof import("./user-items.js").itemActions.internalDefaultBuilder>;
@@ -221,6 +224,7 @@ export interface UserSecretsInternal {
 
 /** Actions of `agentSession` that only actors may call. */
 export interface SessionInternal {
+	internalAssessRepository(prompt: string): Promise<void>;
 	internalDisconnectRevoked(generation: number): Promise<void>;
 	internalSummary(): Promise<SessionSummary>;
 	internalRename(title: string): Promise<SessionSummary>;

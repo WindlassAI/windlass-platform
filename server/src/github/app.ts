@@ -107,6 +107,7 @@ export interface Installation {
 }
 
 export interface Repository {
+	secretScanning?: true;
 	id: GithubId;
 	owner: string;
 	name: string;
@@ -504,7 +505,7 @@ export class GithubApp {
 		const name = text(fields.name);
 		if (id === null || owner === "" || name === "") return null;
 		const pushed = Date.parse(text(fields.pushed_at));
-		return { id, owner, name, private: fields.private === true, archived: fields.archived === true, defaultBranch: text(fields.default_branch) || "main", pushedAt: Number.isFinite(pushed) ? pushed : null };
+		return { id, owner, name, ...(record(record(fields.security_and_analysis).secret_scanning).status === "enabled" && { secretScanning: true as const }), private: fields.private === true, archived: fields.archived === true, defaultBranch: text(fields.default_branch) || "main", pushedAt: Number.isFinite(pushed) ? pushed : null };
 	}
 
 	/** Every repository the token's installation covers (the first thousand). */
@@ -689,7 +690,7 @@ export class GithubApp {
 	 * tree short or `pick` left files out. What `pick` says of size holds whatever the tree said: a blob
 	 * larger than `maxFileBytes` is passed over, and reading stops once the files read come to `maxBytes`.
 	 */
-	async scanFiles(token: string, owner: string, name: string, revision: string, pick: (tree: Array<{ path: string; type: string; size: number | null }>) => { paths: string[]; more: boolean; maxBytes: number; maxFileBytes: number }): Promise<{ commit: string; files: Array<{ path: string; text: string }>; incomplete: boolean }> {
+	async scanFiles(token: string, owner: string, name: string, revision: string, pick: (tree: Array<{ path: string; type: string; size: number | null }>, truncated: boolean) => { paths: string[]; more: boolean; maxBytes: number; maxFileBytes: number }): Promise<{ commit: string; files: Array<{ path: string; text: string }>; incomplete: boolean }> {
 		const prefix = `/repos/${owner}/${name}`;
 		const auth = { bearer: token };
 		const { body } = await this.call({ path: prefix + "/commits/" + encodeURIComponent(revision), auth, what: "resolve the branch to read" });
@@ -700,7 +701,7 @@ export class GithubApp {
 			const e = record(entry);
 			return { path: text(e.path), type: text(e.type), sha: text(e.sha), size: typeof e.size === "number" ? e.size : null };
 		}).filter((entry) => entry.path !== "" && SHA.test(entry.sha));
-		const picked = pick(entries);
+		const picked = pick(entries, tree.truncated === true);
 		const shaOf = new Map(entries.map((entry) => [entry.path, entry.sha]));
 		const files: Array<{ path: string; text: string }> = [];
 		let bytes = 0;

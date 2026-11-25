@@ -31,6 +31,7 @@ export function summaryOf(meta: SessionMeta): SessionSummary {
 		sandbox: meta.sandbox,
 		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt } } : {}),
 		...(meta.origin ? { item: { id: meta.origin.itemId, role: meta.origin.role ?? "builder", subtaskScreenshots: meta.origin.subtaskScreenshots, ...(meta.origin.planCritic && { planCritic: true }) } } : {}),
+		...(meta.readiness && { readiness: true as const }),
 		...(meta.environmentBuild ? { environmentBuild: true as const } : {}),
 		...(meta.environment ? { environment: meta.environment } : {}),
 	};

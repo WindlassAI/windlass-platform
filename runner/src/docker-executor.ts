@@ -826,7 +826,7 @@ export class Executor extends MachineDocker {
 			}
 		}
 	}
-	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness, size = 1, prepared?: SnapshotSelection & { privateData: boolean }, mirrorRepo?: string, spare?: SpareRecipe, environmentBuild = false): Promise<string> {
+	async create(sessionId: string, profile: Profile, screenshots = false, harness?: MachineHarness, size = 1, prepared?: SnapshotSelection & { privateData: boolean }, mirrorRepo?: string, spare?: SpareRecipe, environmentBuild = false, privateData = false): Promise<string> {
 		// Another create could have finished while this one waited for the image.
 		if (harness) this.requireHarness(profile, harness);
 		const existing = await this.existing(sessionId, profile, harness);
@@ -835,7 +835,7 @@ export class Executor extends MachineDocker {
 		if (this.limits.maxSandboxes !== undefined && this.boxes.size >= this.limits.maxSandboxes)
 			throw new SandboxUserError("This machine has reached its own limit on kept sandboxes, set by --max-sandboxes.");
 		this.room();
-		const candidate = !environmentBuild && spare && { context: this.spareContext(), args: { spare, profile, harness, screenshots, size, prepared, mirrorRepo } };
+		const candidate = !privateData && !environmentBuild && spare && { context: this.spareContext(), args: { spare, profile, harness, screenshots, size, prepared, mirrorRepo } };
 		const spec = this.warmSpares && this.sessionVolumes && (this.limits.spares ?? 1) > 0 && validSpec(candidate) ? candidate : undefined;
 		const readyBefore = this.spares.ready;
 		const taken = spec && await this.spares.take(spec, (raw, built) => this.verifySpare(raw, built, spec));
@@ -856,7 +856,7 @@ export class Executor extends MachineDocker {
 			if (this.freeDiskBytes < 5_000_000_000) throw new Refusal("Docker needs at least 5 GB free to create a sandbox.");
 		}
 		const input = { uid: this.identity.uid, sessionId, profile, size, mirrorRepo };
-		const raw = claimed ?? (harness ? await withLoginVolume(this, () => this.providerFor(harness).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: prepared?.privateData, screenshots: this.screenshots && screenshots, ownData: this.sessionVolumes }));
+		const raw = claimed ?? (harness ? await withLoginVolume(this, () => this.providerFor(harness).create({ ...input, harness })) : await this.provider.create({ ...input, fromSnapshot: prepared, privateData: privateData || prepared?.privateData, screenshots: this.screenshots && screenshots, ownData: this.sessionVolumes }));
 		const id = externalId(this.identity.machineId, raw);
 		this.boxes.set(id, { raw, sessionId, profile, harness, size, claim: claimed ? claim : undefined, snapshotCandidate: !!prepared?.writer && !prepared.privateData && !harness, egress: this.network.policy.mode, state: "running", usedAt: Date.now(), busy: 0, workspaceChecked: true });
 		try { await this.network.attach(raw, containerName(raw)); }

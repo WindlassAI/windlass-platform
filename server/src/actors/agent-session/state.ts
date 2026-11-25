@@ -15,6 +15,7 @@ import type { VerificationLog } from "../../verified.js";
 import type { HoldReport, OpenStretch, PendingAsk } from "../../usage.js";
 import type { EnvironmentBuildOrigin, EnvironmentBuildReport, SealedSecrets, SessionCreateInput } from "../internal.js";
 import type { AgentAsk, AgentReport } from "../../agent-publish.js";
+import type { Judgment } from "../../factory/readiness.js";
 import type { PlanReview } from "../../factory/autonomy.js";
 import type { ItemProviderRefusal, UntrustedRefusal } from "../../factory/types.js";
 import type { StartClock } from "../../start-times.js";
@@ -25,6 +26,9 @@ import type { InboxRow } from "../session-inbox.js";
 export type FeedbackPrompt = { text: string; entries: FeedbackEntry[] };
 
 export interface SessionMeta {
+	/** Pinned default-branch commit for this one-turn setup check. */
+	readiness?: string;
+	assessment?: Judgment;
 	githubFeedback?: { pending?: FeedbackPrompt; seen: { id: string; at: number }[] };
 	secretRequest?: SessionSnapshot["secretRequest"];
 	/** Plain sessions have no item run. Count requests and remember skipped names across their turns. */

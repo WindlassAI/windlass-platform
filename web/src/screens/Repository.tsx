@@ -37,6 +37,7 @@ import { useApp, useAuth } from "../state/app";
 import { useGithub, type Github } from "../state/github";
 import { useNow, useSessions } from "../state/hooks";
 import { RepositoryItems, type ItemsState } from "./Items";
+import { RepositorySetupChecks } from "../components/RepositorySetupChecks";
 import { RepositorySettings } from "./RepositorySettings";
 import { readTwice } from "../lib/retry";
 
@@ -97,6 +98,7 @@ export function useRepository(id: GithubId): RepositoryPage {
 			);
 	}, [client, auth, explain, id]);
 
+	const connected = github.enabled ? (github.status === null ? null : (github.status.connection?.connectedAt ?? 0)) : 0;
 	useEffect(() => {
 		setView(null);
 		setError(null);
@@ -104,10 +106,9 @@ export function useRepository(id: GithubId): RepositoryPage {
 		return () => {
 			reading.current += 1;
 		};
-	}, [reload]);
+	}, [reload, connected]);
 
 	// GitHub is asked when the page opens, when the connection changes, and when the user asks again.
-	const connected = github.enabled ? (github.status === null ? null : (github.status.connection?.connectedAt ?? 0)) : 0;
 	const connectionError = github.status === null ? github.error : null;
 	// biome-ignore lint/correctness/useExhaustiveDependencies: `asked` is not read here; a change of it is when to ask again
 	useEffect(() => {
@@ -490,6 +491,7 @@ export function RepositoryPane({ page, view, launching = false, items, filters, 
 					<TabPanel id="repo-views" selected={tab}>
 						{tab === "overview" ? (
 							<>
+								<RepositorySetupChecks key={page.id} page={page} offersItems={offersItems} />
 								<AgentsSection page={page} filters={filters} limit={OVERVIEW_AGENTS} overview />
 								<ItemsOverview page={page} items={items} filters={filters} />
 							</>

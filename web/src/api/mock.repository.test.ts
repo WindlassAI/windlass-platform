@@ -8,6 +8,7 @@ import type { ModelList, SandboxProfile, TimelineItem } from "@contract";
 import { ChecksProblem, cleanChecks } from "../../../server/src/repository-checks";
 import { DefaultsProblem, cleanDefaults } from "../../../server/src/repository-defaults";
 import { NetworkProblem, cleanEntries } from "../../../server/src/repository-network";
+import { readinessItem } from "../../../server/src/factory/readiness";
 import { PlatformError, type SessionFeed } from "./client";
 import { MOCK_FORGETTING, MOCK_PROFILES, createMockClient } from "./mock";
 
@@ -44,6 +45,27 @@ describe("the mock's repository page", () => {
 		expect(JSON.stringify(view)).not.toMatch(/NPM_TOKEN|value|sealed/);
 		// A repository nothing is saved for has a page all the same, with nothing on it.
 		expect(await mock.user(ada).repository(7110)).toMatchObject({ name: null, defaults: { profile: null, model: null, updatedAt: null }, approvals: [], saved: { setup: false, secrets: 0 } });
+		mock.dispose();
+	});
+
+	it("shows a partial score, finishes setup and files a failed check once", async () => {
+		const mock = make();
+		const user = mock.user(ada);
+		const partial = (await user.repository(7101)).readiness;
+		expect(partial.weekly).toBe(false);
+		expect(partial.latest?.passed).toBe(3);
+		expect(partial.latest?.findings.filter(f => f.pass === null)).toHaveLength(3);
+		await user.setSetupWeekly(7101, true);
+		const { readiness } = await user.runReadiness(7101);
+		expect(readiness.weekly).toBe(true);
+		expect(readiness.latest?.passed).toBe(6);
+		const task = readinessItem(7101, readiness.latest!, "areas");
+		const item = await user.createItem(task);
+		expect(item).toMatchObject({ title: "Guides for large folders", state: "draft", repository: { id: 7101 } });
+		expect((await user.item(item.id)).task.body).toBe(task.body);
+		expect((await user.createItem(task)).id).toBe(item.id);
+		await user.forgetRepository(7101);
+		expect((await user.repository(7101)).readiness).toMatchObject({ weekly: false, latest: { passed: 3 } });
 		mock.dispose();
 	});
 

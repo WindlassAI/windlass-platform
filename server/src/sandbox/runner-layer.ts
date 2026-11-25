@@ -729,7 +729,7 @@ class RunnerSandboxes implements Sandboxes {
 		const screenshots = !!(input.screenshots && !input.harness && report?.screenshots);
 		const spare = report?.warmSpares && input.spareRecipe ? await input.spareRecipe(report.warmSpares.ready).catch(() => undefined) : undefined;
 		if (input.environmentBuild && !report?.environmentBuild && report?.warmSpares?.ready) throw new SandboxUserError(ENVIRONMENT_SLOT_WAIT);
-		const args = { profile: input.profile, ...(input.environmentBuild && report?.environmentBuild && { environmentBuild: true as const }), ...(spare && { spare }), ...(report?.gitMirrors && input.mirrorRepo && { mirrorRepo: input.mirrorRepo }), ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
+		const args = { profile: input.profile, ...(input.privateData && !input.fromSnapshot && { privateData: true as const }), ...(input.environmentBuild && report?.environmentBuild && { environmentBuild: true as const }), ...(spare && { spare }), ...(report?.gitMirrors && input.mirrorRepo && { mirrorRepo: input.mirrorRepo }), ...(input.size && input.size > 1 && { size: input.size }), ...(input.harness && { harness: input.harness }), ...(screenshots && { screenshots }) };
 		if (input.fromSnapshot && !input.harness && config.machines?.identity) {
 			await link.ready();
 			if (link.channel.authenticated) {
