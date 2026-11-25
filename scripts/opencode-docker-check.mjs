@@ -179,6 +179,10 @@ async function settingsKeyTurns() {
 	await channelTurn(owner, 'keys', id, 'default', undefined, undefined, { providers: ['anthropic'] });
 	await storeProvider(owner, {provider:'anthropic', key:token+'-key'});
 	await storeProvider(owner, {provider:'openai', key:token+'-key'});
+	await owner.loginChanged(true);
+	const offered = owner.report().harnesses.find(entry => entry.id === 'opencode');
+	assert.equal(offered.signIn, 'token');
+	assert.deepEqual([...offered.machineProviders].sort(), ['anthropic', 'openai']);
 	await channelTurn(owner, 'keys', id, anth, undefined, undefined, { providers: ['anthropic','google'], source: 'key' });
 	await channelTurn(owner, 'keys', id, 'openai/gpt-5.4', undefined, undefined, { providers: ['anthropic','openai'] });
 	await channelTurn(owner, 'keys', id, anth);
