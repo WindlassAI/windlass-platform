@@ -1,98 +1,23 @@
+// One actor per uid owns the account, session index and turn admission.
+// Keep launch and submission claims synchronous. Service-only actions check their caller before reading account data.
+
 import { changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
 import type { ItemPlaceDefaults, RepositoryAutonomy } from "../contract.js";
 import { snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
 import type { AgentModels } from "../factory/placement.js";
-/**
- * `user`, key [uid]: a user's profile, the index of their sessions, and their ChatGPT sign-in.
- *
- * Stored in SQLite: the profile last seen on a valid token, one row per session holding its summary,
- * and the sign-in. The summaries are also held in memory so that counting the running sessions and
- * marking one as running happen in one synchronous step. A session that was created with the key of
- * its submission (submissions.ts; docs/architecture.md, "A message sent twice") has that key in its row, and in
- * memory with the summaries: `createSession` with the same key answers with that session and makes none.
- *
- * The sign-in is what Windlass saves of it (`auth.json`, `host-id`), in one row, sealed with a key that
- * is derived from the server's secret and is never in this storage (signin/seal.ts): whoever holds the
- * storage and not the secret reads that the row exists, how long it is and when it last changed. This
- * actor is also the one place that asks for the user's access token (signin/holder.ts): it runs in one
- * place at a time, so one request to Windlass runs per user whichever servers ask, and a refreshed
- * sign-in is saved here before its token leaves. What leaves is sealed for the server that asked
- * (`internalAccessToken`): the engine that carries the answer does not see the token either.
- *
- * The user's GitHub connection is here too (docs/github-and-repositories.md, "GitHub"): the GitHub user who connected and the
- * installations of the deployment's GitHub App that user could reach then, as GitHub confirmed them to
- * the server's callback route (github/connect.ts). It is one row of plain JSON: names and ids, and no
- * credential, because there is none to keep. What the platform does at GitHub it does with a token of
- * the installation, which any server asks for when it needs one and then drops. Beside it, the numbers
- * of connections that were begun and not yet finished, each good once.
- *
- * And the user's approvals of MCP servers that projects name (server-approvals.ts), one row each: the
- * project, the server's name, Windlass's fingerprint of its definition, when the user approved and
- * until when that holds. The user's sessions are actors of their own, on whichever servers, and each
- * asks here before it puts the question; no session and no server keeps a copy. The rows are plain:
- * they name repositories and servers, and hold no credential.
- *
- * And the setup commands the user saved for repositories of their GitHub connection (setup-command.ts),
- * one row per repository: the command a session runs once in each new sandbox, after the clone. A
- * session reads it here when its sandbox is new, so what is saved holds for every session of the user
- * on whichever server; nothing but the user's own calls writes a row.
- *
- * And the checks the user saved for those repositories (repository-checks.ts), one row per repository
- * with the whole list: the commands Windlass runs before it calls a turn done. A session is handed
- * them with its repository's secrets when a turn starts, and no file of a repository is read for them.
- *
- * And the secrets the user saved for those repositories (repo-secrets.ts), one row per repository and
- * name: the name, the scope, when it was last changed, and the value, sealed like the sign-in with a
- * key of its own purpose and bound to this user, that repository and that name. A value comes in
- * from the user's browser once and is never sent back to one: the listing reads no value at all.
- * The one caller that is handed the sealed values is a session of this user, for the repository
- * this actor's own index says that session is on (`internalSessionSecrets`); it opens them on the
- * server that runs its turn. Whoever holds this storage and not the servers' secret reads which
- * repositories have secrets, their names, scopes and times, and how long each value is.
- *
- * And what new sessions on those repositories start with, where the user said so
- * (repository-defaults.ts), one row per repository: a sandbox profile and a model. A repository is not
- * an object here: it is the key those five tables share, GitHub's id for it, and its page
- * (`repository`) is what they hold under that key, beside the user's sessions on it.
- *
- * And what the user keeps for their account, whatever the repository (docs/github-and-repositories.md, "Account settings"):
- * the defaults a new session starts with where neither the form nor its repository says
- * (account-defaults.ts), the user's own MCP servers (personal-servers.ts), one row each, and the
- * secrets those servers read (account-secrets.ts), one row per name, the value sealed as a
- * repository's secret is. A session is handed the servers and the sealed values with its
- * repository's secrets, in the one answer (`internalSessionSecrets`). Each save is one statement
- * that reads nothing first, so saves that run together all stay and a limit holds between them.
- *
- * And the models the user may choose (account-models.ts): what their ChatGPT plan offers, as Windlass
- * listed it with an access token of the sign-in above, in one row with the generation of that sign-in.
- * It is listed again when somebody asks and the row is older than an hour, by one request to Windlass
- * however many ask, and a row of an earlier sign-in is nobody's list.
- *
- * And the deleted sessions whose copy of Windlass's data the bucket still holds (`backup_removal`),
- * one row each: a session that could not remove its copy as it was deleted hands it here, and this
- * actor, which outlives its sessions, tries again on its durable schedule, further apart each time.
- *
- * And the user's sandbox time and the sandboxes they keep (usage.ts): a ledger of the seconds their
- * sessions' sandboxes ran, one entry per hold that was closed; the holds of sandboxes that run now;
- * and one row per session that has a place among the kept sandboxes. A `UsageBook` holds the same in
- * memory, and every decision about a limit is one synchronous step on it: the user's sessions are on
- * whichever servers, and each takes its hold and its place here, so no server counts for itself.
- */
-
 import { mayUse } from "../access.js";
 import { githubId, isGithubId } from "../github/ids.js";
 import type { MachineUpdate } from "./machine.js";
 import { accountLimits, changeUserLimit, limitsSubject, type LimitAuditRow, type LimitChange } from "../user-limits.js";
 import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage, type AccountLocation } from "./provider-accounts.js";
 import type { UsageObservation } from "../provider-usage.js";
-import { changed as machinesChanged, machineCatalog, itemMachines, launchPlace, listMachines, launchMachineProfiles, logoutMachines, machineActions, machineSecrets, machineTables } from "./user-machines.js";
-import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type ItemsState, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
+import { changed as machinesChanged, machineCatalog, itemMachines, launchPlace, listMachines, launchMachineProfiles, machineActions, machineSecrets, machineTables } from "./user-machines.js";
+import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { EnvironmentPlace, EnvironmentSchedule, RepositoryEnvironments, SandboxProfileId } from "../contract.js";
 import { ENVIRONMENT_SCHEDULES } from "../contract.js";
-import { USAGE_HISTORY_DAYS, HOSTED_SIZES, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, type HostedSize, type HostedSizeOption } from "../contract.js";
-import type { GithubId, ApiToken, ApiTokenScope, CreateItemInput, FactoryLimits, ItemAction, ItemFeed, ItemListPage, ItemSummary, ItemView } from "../contract.js";
-import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
+import { HOSTED_SIZES, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, type HostedSize } from "../contract.js";
+import type { GithubId, CreateItemInput, ItemListPage, ItemSummary } from "../contract.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
@@ -104,7 +29,6 @@ import {
 	type AccountDefaults,
 	type AccountSecrets,
 	type AccountSettings,
-	type ChatgptStatus,
 	type CreateSessionInput,
 	type GithubBranchList,
 	type GithubRepository,
@@ -113,12 +37,10 @@ import {
 	type LinearStatus,
 	type LinearTeamList,
 	listedSessions,
-	type KeptSandbox,
 	MAX_ACCOUNT_SECRETS,
 	MAX_PERSONAL_SERVERS,
 	MAX_SERVER_DEFINITION_BYTES,
 	MAX_TITLE_CHARS,
-	type ModelList,
 	type ModelProvider,
 	MAX_SECRETS_PER_REPOSITORY,
 	type RepositoryApproval,
@@ -131,17 +53,13 @@ import {
 	type RepositorySecrets,
 	type RepositorySetup,
 	type RepositoryView,
-	type SandboxPlace,
 	type MachineSummary,
-	type MachineClaim,
 	type MachineHostUpdate,
-	type UserActions,
 	type SandboxProfile,
 	type SavedRepository,
 	type SecretScope,
 	type SessionSummary,
 	type UsageNumbers,
-	type UsageView,
 	type UserProfile,
 } from "../contract.js";
 import { LINEAR_TABLES, type LinearItemWrite, linearHoldsTeam, writeLinearItem, beginLinearConnect, claimLinearState, completeLinearConnection, fileLinearDelivery, linearStatus, linearTeams, removeLinearMapping, disconnectLinear, saveLinearMapping } from "./user-linear.js";
@@ -155,8 +73,8 @@ import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
-import { windlassModels, hostedCatalog, hostedHarness, hostedKeyMessage, hostedProvider, availableCatalog, harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
-import { AccountModels, MODELS_TABLE, ModelProblem, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
+import { hostedCatalog, hostedHarness, hostedKeyMessage, hostedProvider, availableCatalog, harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, sessionCapabilities } from "../sandbox/harnesses.js";
+import { AccountModels, MODELS_TABLE, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
 import { MODEL_PROVIDER_TABLES, modelProviderActions, providerStatuses } from "../model-providers.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishAsksEveryTime, publishUnaskedProblem } from "../agent-publish.js";
@@ -166,204 +84,47 @@ import { criticAllowed } from "../factory/review.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, unavailableSecretName, validRequestedSecretName, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
 import { criticSessionId } from "../factory/feature-ids.js";
 import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, repositoryDefaultsLog, migrateDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
-import type { ChatgptAccount, ListedSandbox } from "../sandbox/api.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { forgettingWords, personalServerReach } from "../server-question.js";
 import { CHECKS_TABLE, ChecksProblem, cleanChecks, readChecks, saveChecks } from "../repository-checks.js";
 import { NETWORK_TABLE, NetworkProblem, REQUESTS_TABLE, addEntry, cleanEntries, cleanEntry, dismissRequest, fileRequests, mayChangeNetwork, networkLimit, networkPresets, readNetwork, readRequests, saveNetwork, scanForHosts, scanPaths, unionHosts } from "../repository-network.js";
 import { MAX_SETUP_COMMANDS, SetupCommandProblem, cleanSetupCommand, setupProjectKey } from "../setup-command.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
-import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../signin/directory.js";
-import { SignInHolder, type StoredSignIn } from "../signin/holder.js";
-import { getSignIns } from "../signin/index.js";
 import { serverSealer } from "../signin/seal.js";
-import { ownerOfAccount } from "./account-email.js";
-import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, type HoldReport, type UsageLimits, USAGE_KEPT_DAYS, UsageBook, type UsageChange, DAY_MS, dayOf, hostedLimitsApply, isEmptyChange } from "../usage.js";
+import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, hostedLimitsApply } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/e2b/network.js";
 import { readE2bSettings } from "../sandbox/e2b/config.js";
-import { BUILD_LOST_MS, ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
+import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, type EnvironmentHost } from "./user-environments.js";
 import type { EnvironmentBuildOrigin, EnvironmentBuildReport } from "./internal.js";
-import { customerDirectory } from "../billing/customer-index.js";
-import { AccountCheckout, CheckoutBlocked, CheckoutEmailRequired, applyBillingEvent, billingTables, billingView, readBilling, setCapCents, reportOverage } from "../billing/account.js";
+import { AccountCheckout, billingTables, readBilling } from "../billing/account.js";
 import { billing } from "../billing/config.js";
-import { sessionWeight } from "../billing/meter.js";
 import { hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
-import type { BillingEvent } from "../billing/provider.js";
-import type { BillingPeriod, BillingView } from "../contract.js";
-import { type ReserveAnswer, type ReserveRequest, type SealedSecrets, type RequestedSecretSave, createSessionActor, isSessionGone, isDuplicateKey, itemActor, secretsCaller, sessionActor } from "./internal.js";
+
+
+import { type SealedSecrets, type RequestedSecretSave, createSessionActor, isSessionGone, isDuplicateKey, itemActor, secretsCaller, sessionActor } from "./internal.js";
+import { boundedText, type UserVars, type UserCtx } from "./user/state.js";
+import { modelInput, modelsOf, signinActions, type ModelsCtx } from "./user/signin.js";
+import { readUsage, sizesOf, queueOverageReport, usageActions } from "./user/usage.js";
+export { itemSharing, readUsage } from "./user/usage.js";
 
 export const DEFAULT_TITLE = "New agent";
+
 const MAX_REPO_URL_CHARS = 300;
-// The session normally acknowledges the next turn after its meter call (10 s timeout).
-// If that launch dies first, reconcile its claim with the session after a minute.
+
+// Reconcile a launch that dies before its first meter acknowledgement.
 const LAUNCH_LEASE_MS = 60_000;
-/**
- * How often a deleted session's copy is tried again, and how long before the first try: each wait is
- * twice the one before, so the tries come 1, 2, 4, ... 128 minutes apart, the last about four hours
- * and a quarter after the session was deleted.
- */
+
 const BACKUP_REMOVE_TRIES = 8;
+
 const BACKUP_REMOVE_FIRST_MS = 60_000;
+
 /** A try this far past its time when the actor wakes lost its schedule, and is set again. */
 const BACKUP_REMOVE_LATE_MS = 10 * 60_000;
 
 interface ConnParams {
 	token?: string;
-}
-
-interface UserVars {
-	/** A retry that fires during a slow sweep waits for its batch checkpoints. */
-	disconnectSweep?: Promise<void>;
-	tokenGen: number;
-	profile: UserProfile | null;
-	/** False until a valid token of this user has been seen: until then the actor may be a stranger's doing. */
-	reached: boolean;
-	sessions: Map<string, SessionSummary>;
-	launchUntil: Map<string, number>;
-	/**
-	 * The name of each session's outstanding launch claim (`internalAcquireRun`), what `internalReleaseRun`
-	 * is given back: a generation from a counter stored with the actor (`launch_counter`), so two claims
-	 * never share one, not even made in one millisecond or across a reload. Goes with the claim's lease.
-	 */
-	launchClaim: Map<string, number>;
-	/** The last generation handed out, as `launch_counter` has it. */
-	launchGen: number;
-	/**
-	 * The sessions that were created with a key (submissions.ts), by that key: the digest of what was
-	 * asked for, and the session it made. As the `sessions` table has them, one for each such session
-	 * and for as long as that session exists: a `createSession` with one of these keys answers with
-	 * its session and makes none.
-	 */
-	created: Map<string, Submission & { id: string }>;
-	/** The `createSession` calls with a key that are being decided: another attempt of one of them ends as it does. */
-	creating: Attempts<SessionSummary>;
-	/** The user's sign-in and token source, made when first needed: a demo user never has one. */
-	signIn: Promise<SignInHolder> | null;
-	/** The database as the action that is running now has it: what the holder's store reads and writes. */
-	signInDb: RawAccess | null;
-	/** The user's remembered approvals of projects' MCP servers, as the table has them. */
-	approvals: ApprovalBook;
-	/** The user's GitHub connection; null when there is none. */
-	github: StoredConnection | null;
-	githubWriting: Promise<void>;
-	/** The models of the user's ChatGPT plan, as the table has them, and the listing that runs now. */
-	models: AccountModels;
-	/** The user's sandbox time and kept sandboxes, as the tables have them. */
-	usage: UsageBook;
-	/** The overage report under way (billing/account.ts `reportOverage`): one at a time. */
-	overageReport: Promise<void>;
-	checkout: AccountCheckout;
-	/** The user's sandboxes as the provider last listed them, and when; null until it was asked. */
-	listed: { at: number; sandboxes: ListedSandbox[] } | null;
-	/** Changes that can invalidate an in-flight provider listing: a create, release, or settled hold. */
-	keptGeneration: number;
-	/** The user's work items, the turn queue and its slots (user-items.ts), as the tables have them. */
-	items: ItemsState;
-	machines: Map<string, MachineSummary>;
-}
-
-interface SignInCtx {
-	client(): unknown;
-	vars: UserVars;
-	db: RawAccess;
-	key: string[];
-}
-
-type SignInRow = { sealed: string | null; generation: number; short_noted: number };
-
-/**
- * The holder of this user's sign-in, over this actor's storage. The store's `save` resolves when the
- * database has taken the row, which is what "saved before the token is handed out" rests on.
- */
-function signIn(c: SignInCtx): Promise<SignInHolder> {
-	c.vars.signInDb = c.db;
-	const vars = c.vars;
-	const uid = c.key[0]!;
-	const db = () => vars.signInDb as RawAccess;
-	vars.signIn ??= getSignIns()
-		.then(
-			({ commands, sealer, hooks }) =>
-				new SignInHolder({
-					uid,
-					commands,
-					sealer,
-					revoke: hooks.revoke,
-					ownerOf: (account) => ownerOfAccount(c, account),
-					store: {
-						load: async (): Promise<StoredSignIn | null> => {
-							const [row] = await db().execute<SignInRow>("SELECT sealed, generation, short_noted FROM signin WHERE id = 1");
-							return row ? { sealed: row.sealed, generation: row.generation, shortNoted: row.short_noted === 1 } : null;
-						},
-						save: async (row) => {
-							await db().execute(
-								"INSERT INTO signin (id, sealed, generation, short_noted, updated_at) VALUES (1, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET sealed = excluded.sealed, generation = excluded.generation, short_noted = excluded.short_noted, updated_at = excluded.updated_at",
-								row.sealed,
-								row.generation,
-								row.shortNoted ? 1 : 0,
-								Date.now(),
-							);
-						},
-					},
-				}),
-		)
-		.catch((error: unknown) => {
-			vars.signIn = null;
-			throw error;
-		});
-	return vars.signIn;
-}
-
-/** A step on the sign-in for another server: its failure goes back as data, with its kind (signin/directory.ts). */
-async function answered<T>(c: { log: { error: (entry: unknown) => void } }, step: () => Promise<T>): Promise<SignInAnswer<T>> {
-	try {
-		return { ok: true, value: await step() };
-	} catch (error) {
-		const problem = problemOf(error);
-		if (problem.kind === "other") c.log.error({ msg: "a step on the user's sign-in failed", error: problem.message });
-		return { ok: false, problem };
-	}
-}
-
-interface ModelsCtx extends SignInCtx {
-	keepAwake<T>(promise: Promise<T>): Promise<T>;
-}
-
-/**
- * The models the user may choose (account-models.ts). The demo's scripted model answers under any
- * name, so a demo user is given the stand-in and Windlass is asked nothing. For anyone else the list
- * is their plan's: Windlass lists it with the user's access token when the one kept here is older
- * than an hour. The actor stays awake while it does, as for any request for the token: a sign-in
- * that had to be refreshed for it is saved before the actor may sleep or move.
- */
-async function modelsOf(c: ModelsCtx, demo: boolean): Promise<ModelList> {
-	if (demo) return standInModels("demo");
-	const account = await c.vars.models.current({
-		db: c.db,
-		generation: async () => {
-			const [row] = await c.db.execute<{ generation: number }>("SELECT generation FROM signin WHERE id = 1 AND sealed IS NOT NULL");
-			return row?.generation ?? null;
-		},
-		list: () => c.keepAwake((async () => (await getSignIns()).commands.models(await (await signIn(c)).accessToken()))()),
-	});
-	return windlassModels(account, await providerStatuses(c.db));
-}
-
-/** A model a client named, held against the user's list, or the UserError that says what is wrong with it. */
-function modelInput<T>(pick: () => T, refusalCode?: "bad_input"): T {
-	try {
-		return pick();
-	} catch (error) {
-		if (error instanceof ModelProblem) throw new UserError(error.message, { code: refusalCode ?? error.code });
-		throw error;
-	}
-}
-
-interface UserCtx {
-	vars: UserVars;
-	db: RawAccess;
-	broadcast(name: string, ...args: unknown[]): void;
 }
 
 function sessionList(vars: UserVars): SessionSummary[] {
@@ -374,7 +135,6 @@ function broadcastSessions(c: UserCtx): void {
 	c.broadcast("sessions", sessionList(c.vars));
 }
 
-/** Writes a session's row: its summary, and for a new session the key it was created with, which stays with the row. */
 async function storeSession(c: UserCtx, summary: SessionSummary, submission: Submission | null = null): Promise<void> {
 	await c.db.execute(
 		"INSERT INTO sessions (id, created_at, summary, key, sent) VALUES (?, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET summary = excluded.summary",
@@ -407,10 +167,7 @@ interface BackupRemovalCtx {
 	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string> };
 }
 
-/**
- * Sets the next try at removing a deleted session's copy, after `tries` of this actor's own. The
- * schedule is set before the row names it: a firing that the row does not name does nothing.
- */
+// Schedule the retry before recording it so wake can repair an interrupted write.
 async function armBackupRemoval(c: BackupRemovalCtx, session: string, tries: number): Promise<void> {
 	const at = Date.now() + BACKUP_REMOVE_FIRST_MS * 2 ** tries;
 	const id = await c.schedule.at(at, "internalRemoveBackup", session);
@@ -431,14 +188,8 @@ async function rememberProfile(c: UserCtx, profile: UserProfile): Promise<void> 
 	);
 }
 
-// ---------------------------------------------------------------------------------------------
-// GitHub
-// ---------------------------------------------------------------------------------------------
-
-/** How many connections may be begun and left unfinished. */
 const MAX_GITHUB_PENDING = 20;
 
-/** The deployment's GitHub App, or a UserError: without one there is nothing to connect. */
 function requireGithub(): GithubApp {
 	const app = githubApp();
 	if (!app) throw new UserError("This deployment has no GitHub App, so GitHub cannot be connected here.", { code: "github_off" });
@@ -467,24 +218,17 @@ function githubStatus(vars: UserVars): GithubStatus {
 	};
 }
 
-/** A failure at GitHub as the client is told it: the sentence, under the problem's own code. */
 function githubError(log: { error: (entry: unknown) => void }, error: unknown, fallback: string): UserError {
 	if (error instanceof GithubProblem) return new UserError(error.message, { code: error.code });
 	return clientError(log, error, fallback);
 }
 
-/** Keeps the number of a connection that was begun: a state's, with the PKCE verifier its code is exchanged with. */
 async function rememberPending(c: UserCtx, nonce: string, verifier: string | null): Promise<void> {
 	const now = Date.now();
 	await c.db.execute("DELETE FROM github_nonce WHERE expires_at <= ?", now);
-	// Somebody who begins again and again leaves no more than a few behind; the oldest go first.
 	await c.db.execute("DELETE FROM github_nonce WHERE kind = 'state' AND nonce NOT IN (SELECT nonce FROM github_nonce WHERE kind = 'state' ORDER BY expires_at DESC LIMIT ?)", MAX_GITHUB_PENDING - 1);
 	await c.db.execute("INSERT INTO github_nonce (nonce, kind, verifier, expires_at) VALUES (?, 'state', ?, ?)", nonce, verifier, now + STATE_TTL_MS);
 }
-
-// ---------------------------------------------------------------------------------------------
-// Approvals of projects' MCP servers
-// ---------------------------------------------------------------------------------------------
 
 type ApprovalRow = { project: string; label: string; name: string; fingerprint: string; approved_at: number; expires_at: number };
 
@@ -493,11 +237,7 @@ async function readApprovals(db: RawAccess): Promise<ServerApproval[]> {
 	return rows.map((row) => ({ project: row.project, label: row.label, name: row.name, fingerprint: row.fingerprint, approvedAt: row.approved_at, expiresAt: row.expires_at }));
 }
 
-/**
- * Makes a change to the book and to the table. The book changes first, in one step, so two calls
- * cannot both decide from the same rows; if the table cannot be written, the book is read from it
- * again and the call fails: what is remembered is what is stored.
- */
+// Mutate the in-memory book before awaiting. Reload from storage after a failed write.
 async function changeApprovals(c: UserCtx, change: (book: ApprovalBook) => BookChange): Promise<BookChange> {
 	const done = change(c.vars.approvals);
 	try {
@@ -520,21 +260,12 @@ async function changeApprovals(c: UserCtx, change: (book: ApprovalBook) => BookC
 	return done;
 }
 
-/** A project's key and a server's name or fingerprint, as a session hands them over: text of a sane length, or nothing. */
-function approvalText(value: unknown, max: number): string {
-	return typeof value === "string" && value.length <= max ? value : "";
-}
-
-// ---------------------------------------------------------------------------------------------
-// Setup commands of repositories
-// ---------------------------------------------------------------------------------------------
-
-/** The setup command saved for a project (setup-command.ts, `SetupProject.key`); none when there is no row. */
 async function setupRow(db: RawAccess, project: string) {
 	const [row] = await db.execute<{ command: string; updated_at: number; snapshot_connection: number | null }>(
 		"SELECT command, updated_at, snapshot_connection FROM setup_command WHERE project = ?", project);
 	return row;
 }
+
 async function readSetup(db: RawAccess, project: string): Promise<RepositorySetup> {
 	const row = await setupRow(db, project);
 	return { command: row?.command ?? "", updatedAt: row?.updated_at ?? null, timeoutMs: config.setupTimeoutMs };
@@ -546,7 +277,6 @@ async function dropHostedSnapshots(uid: string, repo?: string) {
 	});
 }
 
-/** Saves a command that was cleaned already, in place of the project's earlier one; "" removes the row. */
 async function saveSetup(c: UserCtx, uid: string, project: string, label: string, command: string): Promise<RepositorySetup> {
 	const previous = await readSetup(c.db, project);
 	if (previous.command === command) return previous;
@@ -560,16 +290,13 @@ async function saveSetup(c: UserCtx, uid: string, project: string, label: string
 			command,
 			Date.now(),
 		);
-		// Somebody who saves for one repository after another leaves no more than this many rows.
 		await c.db.execute("DELETE FROM setup_command WHERE project NOT IN (SELECT project FROM setup_command ORDER BY updated_at DESC LIMIT ?)", MAX_SETUP_COMMANDS);
 	}
-	// The command is the user's text and may hold what they would not want in a log: only its length is said.
 	await dropHostedSnapshots(uid, project.slice("github:".length));
 	console.log(`[wlp] setup.saved uid=${uid} project=${project} chars=${command.length}`);
 	return readSetup(c.db, project);
 }
 
-/** A setup command as a client sent it, cleaned, or the UserError that says what is wrong with it. */
 function setupCommandOf(raw: unknown): string {
 	try {
 		return cleanSetupCommand(raw);
@@ -579,18 +306,12 @@ function setupCommandOf(raw: unknown): string {
 	}
 }
 
-/** The key a repository's setup command is saved under, from GitHub's id as a client sent it. */
 function setupKeyOf(repositoryId: unknown): string {
 	const key = setupProjectKey(repositoryId);
 	if (key === null) throw new UserError("Choose one of the listed repositories.", { code: "bad_input" });
 	return key;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Secrets of repositories
-// ---------------------------------------------------------------------------------------------
-
-/** The profile a list of secrets is asked for, as this deployment's sandbox layer describes it. */
 async function secretProfile(id: unknown): Promise<SandboxProfile> {
 	const { sandboxes } = await getLayer();
 	const profile = sandboxes.profiles().find((item) => item.id === id);
@@ -610,10 +331,6 @@ async function requestedSecretConflict(db: Pick<RawAccess, "execute">, project: 
 		: `${name} already exists for this ${row.source}, so nothing was saved. To let agents use it, change its scope under Secrets.`;
 }
 
-/**
- * A repository's secrets as a client may see them: name, scope, when each was last changed, and what
- * it reaches in a sandbox of `profile`. The value's column is not read, so no value can be in the answer.
- */
 async function listSecrets(db: RawAccess, project: string, profile: SandboxProfile): Promise<RepositorySecrets> {
 	const rows = await db.execute<{ name: string; scope: string; updated_at: number }>("SELECT name, scope, updated_at FROM repo_secret WHERE project = ? ORDER BY name", project);
 	const listed = listedSecrets(rows, profile);
@@ -627,11 +344,6 @@ function checkSecretLimit(result: Awaited<ReturnType<typeof saveRepoSecret>>): v
 	if (result === "account_full") throw new UserError(`You have ${MAX_SECRETS_PER_USER.toLocaleString("en-US")} secrets saved over all your repositories, which is the limit. Delete one first.`, { code: "too_many_secrets" });
 }
 
-/**
- * Saves a secret whose name, value and scope were cleaned already. With a value: a new secret, or a
- * new value for the one of that name, sealed for this user, repository and name before it is stored.
- * Without: the scope of the one of that name.
- */
 async function saveSecret(c: UserCtx, uid: string, project: string, label: string, name: string, value: string | undefined, scope: SecretScope): Promise<void> {
 	let saved: "kept" | "new" | "replaced" = "kept";
 	if (value === undefined) {
@@ -648,7 +360,6 @@ async function saveSecret(c: UserCtx, uid: string, project: string, label: strin
 	console.log(`[wlp] secret.saved uid=${uid} project=${project} name=${name} scope=${scope} value=${saved}`);
 }
 
-/** What a client sent about a secret, cleaned, or the UserError that says what is wrong with it. */
 function secretInput<T>(clean: () => T): T {
 	try {
 		return clean();
@@ -658,7 +369,6 @@ function secretInput<T>(clean: () => T): T {
 	}
 }
 
-/** The repository in words, for a reader of the table: as the newest of the user's sessions on it has it. */
 function repositoryLabel(vars: UserVars, repositoryId: unknown): string {
 	let newest: SessionSummary | null = null;
 	for (const session of vars.sessions.values()) if (session.repository?.id === repositoryId && (newest === null || session.createdAt > newest.createdAt)) newest = session;
@@ -666,11 +376,6 @@ function repositoryLabel(vars: UserVars, repositoryId: unknown): string {
 	return known ? `${known.owner}/${known.name}` : "";
 }
 
-// ---------------------------------------------------------------------------------------------
-// A repository's page: what the tables above hold under one repository's key
-// ---------------------------------------------------------------------------------------------
-
-/** How many repositories `savedRepositories` names. */
 const MAX_SAVED_REPOSITORIES = 500;
 
 /** GitHub's id for the repository a key names; null for the key of a pasted address or of a session. */
@@ -679,10 +384,6 @@ function repositoryIdOf(project: string): GithubId | null {
 	return githubId(id);
 }
 
-/**
- * "owner/name" of a repository without asking GitHub: as the newest session on it has it, and with no
- * session, as it was called when something was last saved for it. "" when nothing names it.
- */
 async function repositoryName(c: UserCtx, repositoryId: GithubId, project: string): Promise<string> {
 	const known = repositoryLabel(c.vars, repositoryId);
 	if (known !== "") return known;
@@ -697,15 +398,9 @@ async function repositoryName(c: UserCtx, repositoryId: GithubId, project: strin
 	return row?.label ?? c.vars.approvals.of(project, Date.now()).find((approval) => approval.label !== "")?.label ?? "";
 }
 
-/** How long a save waits for GitHub to say what a repository is called, when nothing here does. */
 const NAMING_MS = 4_000;
 
-/**
- * The repository in words, for a row that is about to be saved. Where neither a session nor an earlier
- * row names it, GitHub is asked once, for a few seconds at most: somebody who saves a secret in the
- * launch form and never launches would otherwise leave a row no page could name. Never throws: a
- * repository GitHub does not name now is saved for all the same, without a name.
- */
+// Repository saves can use a cached label when GitHub is slow or unreachable.
 async function labelFor(c: UserCtx, repositoryId: GithubId, project: string): Promise<string> {
 	const known = await repositoryName(c, repositoryId, project);
 	const app = githubApp();
@@ -719,7 +414,6 @@ async function labelFor(c: UserCtx, repositoryId: GithubId, project: string): Pr
 	}
 }
 
-/** What is kept for a repository beside its setup command and its secrets, which have their own actions. No value of a secret is read. */
 async function repositoryView(c: UserCtx, repositoryId: GithubId, project: string): Promise<RepositoryView> {
 	const defaults = await readDefaults(c.db, project);
 	const [setup] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM setup_command WHERE project = ?", project);
@@ -728,11 +422,9 @@ async function repositoryView(c: UserCtx, repositoryId: GithubId, project: strin
 	const network = await readNetwork(c.db, project);
 	const name = await repositoryName(c, repositoryId, project);
 	const { sandboxes } = await getLayer();
-	// The book is read last and in one step: what is listed is what is remembered when the answer is made.
 	const approvals = new Map<string, RepositoryApproval>();
 	for (const approval of c.vars.approvals.of(project, Date.now())) {
 		const listed = approvals.get(approval.name);
-		// The newest comes first: its times are the ones shown, and an older definition is counted.
 		if (listed) listed.definitions += 1;
 		else approvals.set(approval.name, { name: approval.name, approvedAt: approval.approvedAt, expiresAt: approval.expiresAt, definitions: 1 });
 	}
@@ -758,7 +450,6 @@ async function hostedNetwork(): Promise<{ mode: EgressMode; hosts: string[] } | 
 	return hosts === undefined || mode === undefined ? null : { mode, hosts: [...hosts] };
 }
 
-/** A repository's network list as its settings show it. */
 async function networkView(c: UserCtx, project: string): Promise<RepositoryNetwork> {
 	const hosted = await hostedNetwork();
 	const saved = await readNetwork(c.db, project);
@@ -766,7 +457,6 @@ async function networkView(c: UserCtx, project: string): Promise<RepositoryNetwo
 	return { ...saved, requests: await readRequests(c.db, project, [...saved.hosts, ...deploymentHosts]), presets: networkPresets(), hosted, limit: networkLimit(deploymentHosts) };
 }
 
-/** The deployment's hosts a repository's list is held against: only where the list applies, in `restricted`. */
 async function deploymentHostsForLimit(): Promise<string[]> {
 	const hosted = await hostedNetwork();
 	return hosted?.mode === "restricted" ? hosted.hosts : [];
@@ -784,11 +474,6 @@ function networkInput<T>(read: () => T): T {
 /** A name a client sent, for a log line: what is printable of it. */
 const logged = (text: string) => text.replace(/[^\x21-\x7e]/g, "?");
 
-// ---------------------------------------------------------------------------------------------
-// The account's settings: defaults, the user's own MCP servers, and their secrets
-// ---------------------------------------------------------------------------------------------
-
-/** The account's settings as their page shows them. No value of a secret is read. */
 async function accountView(db: RawAccess): Promise<AccountSettings> {
 	const defaults = await readAccountDefaults(db);
 	const lastStart = await readLastStart(db);
@@ -815,7 +500,6 @@ async function listAccountSecrets(db: RawAccess, profile: SandboxProfile): Promi
 	return listedAccountSecrets(rows, shared, profile);
 }
 
-/** What a client sent about a server of the user's own, cleaned, or the UserError that says what is wrong with it. */
 function serverInput<T>(clean: () => T): T {
 	try {
 		return clean();
@@ -823,292 +507,6 @@ function serverInput<T>(clean: () => T): T {
 		if (error instanceof ServerProblem) throw new UserError(error.message, { code: error.code });
 		throw error;
 	}
-}
-
-// ---------------------------------------------------------------------------------------------
-// Sandbox time and kept sandboxes (usage.ts)
-// ---------------------------------------------------------------------------------------------
-
-/** How long the provider's list of the user's sandboxes is taken as it was read before it is asked for again. */
-const KEPT_FRESH_MS = 30_000;
-
-interface UsageCtx extends UserCtx {
-	schedule: {
-		list(): Promise<{ action: string; runAt: number }[]>;
-		at(at: number, action: string): Promise<unknown>;
-	};
-	key: string[];
-	log: { warn(entry: unknown): void };
-	keepAwake?<T>(promise: Promise<T>): Promise<T>;
-}
-
-type UsageEntryRow = { started_at: number | null; day: number; session: string; hold: string; kind: string; seconds: number; weight: number | null; at: number; note: string | null };
-type UsageHoldRow = { id: string; session: string; day: number; seconds: number; weight: number | null; started_at: number; expires_at: number };
-
-/** The book as the tables have it: the open holds, the places, and the entries of the days the usage page shows. */
-/** A work item's reviewer shares its builder's place among the kept sandboxes (`UsageBook.sharing`): an item counts as one. */
-export function itemSharing(sessions: ReadonlyMap<string, SessionSummary>): (session: string) => string | undefined {
-	return (session) => {
-		const item = sessions.get(session)?.item;
-		if (item?.role !== "reviewer") return undefined;
-		for (const other of sessions.values()) if (other.item?.id === item.id && other.item.role !== "reviewer") return other.id;
-		return undefined;
-	};
-}
-
-export async function readUsage(db: RawAccess, limits: UsageLimits, sessions: ReadonlyMap<string, SessionSummary>): Promise<UsageBook> {
-	const today = dayOf(Date.now());
-	// A hold whose entry was written and whose own row was then not removed, because the server stopped in between, is closed.
-	await db.execute("DELETE FROM usage_hold WHERE id IN (SELECT hold FROM usage_entry)");
-	await db.execute("DELETE FROM usage_start WHERE day < ?", today - USAGE_KEPT_DAYS);
-	await db.execute("DELETE FROM usage_entry WHERE day < ?", today - USAGE_KEPT_DAYS);
-	await db.execute("DELETE FROM token_usage WHERE day < ?", today - USAGE_KEPT_DAYS);
-	await db.execute("DELETE FROM model_key_usage WHERE day < ?", today - USAGE_KEPT_DAYS);
-	// Reload the retained ledger, including both sides of a subscription renewal.
-	const since = today - (limits.plan ? USAGE_KEPT_DAYS : USAGE_HISTORY_DAYS);
-	const entries = await db.execute<UsageEntryRow>("SELECT e.*, s.started_at FROM usage_entry e LEFT JOIN usage_start s USING (hold) WHERE e.day > ? ORDER BY e.id", since);
-	const holds = await db.execute<UsageHoldRow>("SELECT id, session, day, seconds, weight, started_at, expires_at FROM usage_hold");
-	const kept = await db.execute<{ session: string; since: number }>("SELECT session, since FROM kept_sandbox");
-	const book = new UsageBook(limits, {
-		entries: entries.map((row) => ({ day: row.day, startedAt: row.started_at ?? undefined, session: row.session, hold: row.hold, kind: row.kind === "unreported" || row.kind === "corrected" ? row.kind : "used", seconds: row.seconds, weight: row.weight, at: row.at, note: row.note })),
-		holds: holds.map((row) => ({ id: row.id, session: row.session, day: row.day, seconds: row.seconds, weight: row.weight, startedAt: row.started_at, expiresAt: row.expires_at })),
-		kept,
-	});
-	book.sharing = itemSharing(sessions);
-	book.weightOf = (session) => sessionWeight(sessions.get(session));
-	const at = Date.now();
-	book.noteModelTokens(at, await tokensOn(db, at));
-	return book;
-}
-
-/**
- * For scripts/e2e.ts only, and only with the fake layer (WLP_SANDBOX=fake), as the fake layer's own
- * settings are (sandbox-fake.ts): WLP_FAKE_RESERVE_FAULT, read once, plays the reply between a session
- * and this actor going wrong in `internalReserve`. Parts, comma-separated: `lose:<n>` has the next n
- * reserves that start something (`fresh`) do their work and commit, then throw, which is what a reply
- * lost on its way back looks like to the session; `lose-renewal:<n>` the same for the next n renewals;
- * `delay:<ms>` delays fresh reserves; `down:<ms>` refuses every reserve for that long from the first renewal on (this actor unreachable).
- * In this process's memory: a restart starts it again.
- */
-const reserveFault = ((): { fresh: number; renewal: number; delayMs: number; downMs: number; downUntil: number | null } | null => {
-	const spec = process.env.WLP_FAKE_RESERVE_FAULT;
-	if (!spec || config.sandbox !== "fake") return null;
-	const fault = { fresh: 0, renewal: 0, delayMs: 0, downMs: 0, downUntil: null };
-	for (const part of spec.split(",")) {
-		const [kind, value] = part.trim().split(":");
-		const n = Number(value);
-		if (!Number.isSafeInteger(n) || n < 0) throw new Error(`WLP_FAKE_RESERVE_FAULT: "${part}" is not lose:<n>, lose-renewal:<n>, delay:<ms> or down:<ms>`);
-		if (kind === "lose") fault.fresh = n;
-		else if (kind === "lose-renewal") fault.renewal = n;
-		else if (kind === "delay") fault.delayMs = n;
-		else if (kind === "down") fault.downMs = n;
-		else throw new Error(`WLP_FAKE_RESERVE_FAULT: "${part}" is not lose:<n>, lose-renewal:<n>, delay:<ms> or down:<ms>`);
-	}
-	return fault;
-})();
-
-/** Decide synchronously and enqueue the entire change in one transaction so a later release stays released on disk. */
-async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step: (book: UsageBook) => T): Promise<T> {
-	// A plan's limits change with the clock (a grace period that ends): the book decides with them as they are now.
-	Object.assign(c.vars.usage.limits, accountLimits(c.vars.items.limits).usage);
-	const done = step(c.vars.usage);
-	const { change } = done;
-	if (isEmptyChange(change)) return done;
-	if (change.kept.length || change.released.length || change.closed.length) c.vars.keptGeneration++;
-	try {
-		await c.db.transaction(async tx => {
-			for (const entry of change.entries) {
-				if (entry.startedAt !== undefined) await tx.execute("INSERT OR IGNORE INTO usage_start (hold, day, started_at) VALUES (?, ?, ?)", entry.hold, entry.day, entry.startedAt);
-				await tx.execute("INSERT OR IGNORE INTO usage_entry (day, session, hold, kind, seconds, weight, at, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", entry.day, entry.session, entry.hold, entry.kind, entry.seconds, entry.weight!, entry.at, entry.note);
-			}
-			for (const id of change.closed) await tx.execute("DELETE FROM usage_hold WHERE id = ?", id);
-			for (const hold of change.opened) {
-				await tx.execute("INSERT OR REPLACE INTO usage_hold (session, id, day, seconds, weight, started_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)", hold.session, hold.id, hold.day, hold.seconds, hold.weight!, hold.startedAt, hold.expiresAt);
-			}
-			for (const session of change.released) await tx.execute("DELETE FROM kept_sandbox WHERE session = ?", session);
-			for (const claim of change.kept) await tx.execute("INSERT OR REPLACE INTO kept_sandbox (session, since) VALUES (?, ?)", claim.session, claim.since);
-		}, { name: "changeUsage" });
-	} catch (error) {
-		const restored = await readUsage(c.db, c.vars.usage.limits, c.vars.sessions).catch(() => c.vars.usage);
-		const now = Date.now();
-		restored.noteModelTokens(now, c.vars.usage.modelTokens(now));
-		c.vars.usage = restored;
-		throw error;
-	}
-	// One line per entry: what was counted, for whoever reads the log beside the provider's bill.
-	for (const entry of change.entries) {
-		console.log(`[wlp] usage.counted uid=${c.key[0]} session=${entry.session} hold=${entry.hold} kind=${entry.kind} seconds=${entry.seconds}${entry.note === null ? "" : `: ${entry.note}`}`);
-	}
-	c.broadcast("usage", c.vars.usage.numbers(Date.now()));
-	if (change.entries.length > 0) queueOverageReport(c);
-	return done;
-}
-
-/**
- * Tells the payment provider of overage it has not been told of (billing/account.ts), one report at a time, after the
- * request that counted it has been answered. The actor also drains the durable outbox on wake and scheduled retry.
- */
-function queueOverageReport(c: UsageCtx): void {
-	const settings = billing();
-	const state = c.vars.items.limits.billing;
-	if (!settings || !state?.customerId) return;
-	const now = Date.now();
-	const { includedSeconds } = accountLimits(c.vars.items.limits, now).usage;
-	c.vars.overageReport = c.vars.overageReport.then(async () => {
-		try {
-			const sent = await reportOverage(c.db, settings.provider, {
-				uid: c.key[0]!, state, now, usedSeconds: period => c.vars.usage.usedInPeriod(period), includedSeconds,
-			});
-			for (const report of sent) console.log(`[wlp] billing.usage_reported uid=${c.key[0]} event=${report.eventId}`);
-		} catch {
-			console.warn(`[wlp] billing.usage_report_failed uid=${c.key[0]}`);
-			const scheduled = await c.schedule.list();
-			if (!scheduled.some(job => job.action === "internalRetryOverage" && job.runAt > Date.now())) {
-				await c.schedule.at(Date.now() + 15 * 60_000, "internalRetryOverage");
-			}
-		}
-	}).catch(() => { console.warn(`[wlp] billing.retry_schedule_failed uid=${c.key[0]}`); });
-	void c.keepAwake?.(c.vars.overageReport);
-}
-
-/** Counts the holds that ran out, so that what is read next has them as entries. */
-function sweepUsage(c: UsageCtx, now: number): Promise<{ change: UsageChange }> {
-	return changeUsage(c, (book) => ({ change: book.sweep(now) }));
-}
-
-/** A list read before this release must not put the removed sandbox back in the book. */
-function releaseKept(c: UsageCtx, session: string) {
-	// A sandbox can be freed before the book has discovered it.
-	if (!c.vars.usage.keeps(session)) c.vars.keptGeneration++;
-	c.vars.listed = null;
-	return changeUsage(c, (book) => ({ change: book.release(session) }));
-}
-
-function keepsWorkspace(session: SessionSummary | undefined): boolean {
-	return session !== undefined && !session.environmentBuild;
-}
-
-/**
- * Holds the count of kept sandboxes against the provider's own list of the user's sandboxes (usage.ts,
- * `reconcile`): at most once in KEPT_FRESH_MS, unless `force`. Never throws: when the provider cannot
- * be asked, the count stays as it is.
- */
-async function reconcileKept(c: UsageCtx, force = false): Promise<void> {
-	if (!force && c.vars.listed !== null && Date.now() - c.vars.listed.at < KEPT_FRESH_MS) return;
-	const generation = c.vars.keptGeneration;
-	try {
-		const { sandboxes } = await getLayer();
-		const found = await sandboxes.list(c.key[0]!);
-		const listed: ListedSandbox[] = [];
-		for (const sandbox of found) {
-			const session = c.vars.sessions.get(sandbox.sessionId);
-			// A session keeps its own workspace, including one that used a snapshot.
-			if (keepsWorkspace(session)) {
-				listed.push(sandbox);
-				continue;
-			}
-			const buildStartedAt = sandbox.buildStartedAt ?? session?.createdAt;
-			if (buildStartedAt !== undefined) {
-				if (Date.now() - buildStartedAt < BUILD_LOST_MS) continue;
-			} else if (!sandbox.sessionId) continue;
-			const why = buildStartedAt === undefined ? "its session no longer exists" : "its environment build expired";
-			await sandboxes.destroy(sandbox.id).then(
-				() => console.warn(`[wlp] sandbox.orphan_removed uid=${c.key[0]} id=${sandbox.id} session=${sandbox.sessionId} state=${sandbox.state}: ${why}`),
-				(error: unknown) => c.log.warn({ msg: "an orphaned sandbox could not be removed", id: sandbox.id, session: sandbox.sessionId, error: String(error) }),
-			);
-		}
-		if (generation !== c.vars.keptGeneration) return reconcileKept(c, force);
-		const now = Date.now();
-		c.vars.listed = { at: now, sandboxes: listed };
-		const done = await changeUsage(c, (book) =>
-			book.reconcile(
-				now,
-				listed.map((sandbox) => sandbox.sessionId),
-				id => keepsWorkspace(c.vars.sessions.get(id)),
-			),
-		);
-		// A count that was wrong means a sandbox was made or removed without this actor being told: worth a look.
-		if (done.added.length > 0 || done.dropped.length > 0) {
-			console.warn(`[wlp] usage.kept_corrected uid=${c.key[0]}: counted ${done.added.length} sandbox(es) nobody had claimed (${done.added.join(",") || "none"}) and dropped ${done.dropped.length} place(s) with no sandbox behind them (${done.dropped.join(",") || "none"}); ${c.vars.usage.kept().length} kept now`);
-		}
-	} catch (error) {
-		c.log.warn({ msg: "could not hold the count of kept sandboxes against the provider's list", error: String(error) });
-	}
-}
-
-function billingOn() {
-	const settings = billing();
-	if (!settings) throw new UserError("This deployment has no plans or billing.", { code: "billing_off" });
-	return settings;
-}
-
-function billingOrigin(raw: unknown): string {
-	const origin = typeof raw === "string" ? raw.replace(/\/+$/, "") : "";
-	if (!config.origins.includes(origin)) throw new UserError("Billing can only be opened from the web app's own address.", { code: "origin_not_allowed" });
-	return origin;
-}
-
-async function billingAnswer(c: UsageCtx): Promise<BillingView> {
-	const state = c.vars.items.limits.billing;
-	if (!billing() || !state) return { enabled: false };
-	const now = Date.now();
-	Object.assign(c.vars.usage.limits, accountLimits(c.vars.items.limits).usage);
-	return billingView(c.db, state, c.vars.usage.numbers(now).hosted ?? null, now);
-}
-
-/** The plan's limits changed: the book, the queue and every open page hear of it. */
-function billingChanged(c: UsageCtx & Parameters<typeof queueChanged>[0]): void {
-	Object.assign(c.vars.usage.limits, accountLimits(c.vars.items.limits).usage);
-	c.broadcast("usage", c.vars.usage.numbers(Date.now()));
-	queueChanged(c);
-	queueOverageReport(c);
-}
-
-/** The usage page: the numbers, today by agent, the kept sandboxes as the provider lists them, the history and the price. */
-async function usageView(c: UsageCtx): Promise<UsageView> {
-	const layer = await getLayer();
-	await reconcileKept(c);
-	const now = Date.now();
-	await sweepUsage(c, now);
-	const book = c.vars.usage;
-	const listed = new Map<string, ListedSandbox>();
-	// A session with more than one sandbox at the provider is shown as running when any of them is.
-	for (const sandbox of c.vars.listed?.sandboxes ?? []) if (sandbox.state === "running" || !listed.has(sandbox.sessionId)) listed.set(sandbox.sessionId, sandbox);
-	const kept: KeptSandbox[] = book
-		.kept()
-		.map((claim) => {
-			const session = c.vars.sessions.get(claim.session);
-			return {
-				sessionId: claim.session,
-				// A work item's reviewer is named for its item, and shares its builder's place (`itemSharing`).
-				title: session ? (session.item?.role === "reviewer" ? `Reviewer of “${session.title}”` : session.title) : null,
-				...(session?.item && { item: { id: session.item.id, role: session.item.role ?? "builder" } }),
-				...(book.shares(claim.session) && { sharesPlace: true as const }),
-				state: listed.get(claim.session)?.state ?? (session && session.sandbox !== "none" ? session.sandbox : ("starting" as const)),
-				usedAt: session?.updatedAt ?? null,
-				busy: session !== undefined && session.status !== "idle",
-				repository: session?.repository ? `${session.repository.owner}/${session.repository.name}` : null,
-				pushed: Boolean(session?.pullRequest),
-				...(session?.hostedSize && { hostedSize: session.hostedSize }),
-			};
-		})
-		.sort((a, b) => (b.usedAt ?? 0) - (a.usedAt ?? 0) || (a.sessionId < b.sessionId ? -1 : 1));
-	return {
-		...book.numbers(now),
-		usedModelTokens: book.modelTokens(now),
-		providerTokens: await c.db.execute<{ provider: ModelProvider; tokens: number }>("SELECT provider, SUM(tokens) AS tokens FROM model_key_usage WHERE day=? GROUP BY provider ORDER BY provider", dayOf(now)),
-		factoryLimits: accountLimits(c.vars.items.limits).factory,
-		today: book.today(now).map((row) => {
-			const session = c.vars.sessions.get(row.sessionId);
-			return { ...row, title: session?.title ?? null, ...(session?.hostedSize && { hostedSize: session.hostedSize }) };
-		}),
-		days: book.days(now),
-		kept,
-		price: layer.sandboxes.price(),
-		...((() => { const sizes = sizesOf(c, layer); return sizes.length > 1 ? { hostedSizes: sizes } : {}; })()),
-		// Where Windlass's data is on the sandbox's own disk, the agent's memory goes with it unless a copy is kept in a bucket.
-		memory: layer.sandboxes.sessionsLiveInSandbox ? (layer.backups ? "copied" : "lost") : "kept",
-	};
 }
 
 export function cleanTitle(title: unknown): string | null {
@@ -1137,39 +535,14 @@ export function cleanRepoUrl(raw: unknown): string | null {
 	return url.toString();
 }
 
-/** What `makeSession` needs of an action's context. */
 interface CreateCtx extends UserCtx, ModelsCtx {
 	log: { error(entry: unknown): void };
 	// biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
 	client(): any;
 }
 
-/** What a key belongs to in a user's actor, in the words of a refusal (submissions.ts). */
 const KEYED = "agent";
 
-/**
- * Makes a session from what `createSession` was sent: checks it, asks GitHub about a repository of the
- * connection, creates the session's actor, and puts the session in the user's index. It waits on
- * several of those, and other calls run meanwhile; the session is in the index, and its key with it,
- * in one synchronous step at the end, or the call is refused and nothing of it is kept.
- */
-/** The hosted sizes offered to this account, with their prices. */
-function sizesOf(c: UserCtx, layer: Awaited<ReturnType<typeof getLayer>>): HostedSizeOption[] {
-	return hostedSizesForPlan(layer.sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan);
-}
-
-/** A replacement sandbox can be smaller than the sandbox the account kept through a downgrade. */
-function clampedSandboxSize(c: UserCtx, size: HostedSize | undefined): HostedSize | undefined {
-	const plan = accountLimits(c.vars.items.limits).plan;
-	if (!plan || !size || planAllowsSize(plan, size)) return undefined;
-	return plan.sizes.at(-1);
-}
-
-/**
- * The size of a hosted session's sandboxes: the one asked for, else the repository's saved size, else small for a
- * person's agent and standard for a work item's (contract.ts). One the layer does not offer is the largest it
- * offers below it. Undefined where the layer has one size.
- */
 async function sessionHostedSize(c: CreateCtx, asked: unknown, project: string | null, item: Parameters<MakeSession>[4] | undefined): Promise<HostedSize | undefined> {
 	const layer = await getLayer();
 	if (asked !== undefined && asked !== null && !isHostedSize(asked)) throw new UserError(`Choose a hosted size: ${HOSTED_SIZES.join(", ")}.`, { code: "bad_input" });
@@ -1394,7 +767,6 @@ async function applyPlaceChange(change: DefaultsChange, input: ItemPlaceDefaults
 	change.item_place = policy.place ? policy : null;
 }
 
-/** Forget the durable index and its launch and submission keys after the actor is gone. */
 async function forgetSession(c: UserCtx, id: string): Promise<void> {
 	await c.db.execute("DELETE FROM session_secret_grant WHERE session_id = ?", id);
 	await c.db.execute("DELETE FROM requested_secret_receipt WHERE session_id = ?", id);
@@ -1406,7 +778,6 @@ async function forgetSession(c: UserCtx, id: string): Promise<void> {
 	broadcastSessions(c);
 }
 
-/** A session leaves the user's index and its actor goes: `deleteSession` without the caller's checks, for build sessions. */
 async function removeSession(c: CreateCtx, uid: string, id: string): Promise<void> {
 	if (!c.vars.sessions.delete(id)) return;
 	try { await sessionActor(c, uid, id).internalDestroy(); }
@@ -1414,7 +785,6 @@ async function removeSession(c: CreateCtx, uid: string, id: string): Promise<voi
 	await forgetSession(c, id);
 }
 
-/** The user actor as user-environments.ts takes it. */
 function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 	const uid = c.vars.profile?.uid ?? "";
 	return {
@@ -1549,6 +919,57 @@ async function revokeTokens(c: RevocationContext, revokeApiTokens = false): Prom
 	await sweep(c, gen);
 }
 
+async function loadUserState(c: { key: string[]; db: RawAccess }): Promise<UserVars> {
+	const [{ gen }] = await c.db.execute<{ gen: number }>("SELECT gen FROM token_generation WHERE id = 1");
+	const [row] = await c.db.execute<{ uid: string; email: string | null; demo: number }>("SELECT uid, email, demo FROM profile WHERE id = 1");
+	const rows = await c.db.execute<{ summary: string; key: string | null; sent: string | null; launch_until: number | null; launch_claim: number | null }>("SELECT summary, key, sent, launch_until, launch_claim FROM sessions");
+	const launchUntil = new Map<string, number>();
+	const launchClaim = new Map<string, number>();
+	const [counter] = await c.db.execute<{ last: number }>("SELECT last FROM launch_counter WHERE id = 1");
+	const sessions = new Map<string, SessionSummary>();
+	const created = new Map<string, Submission & { id: string }>();
+	for (const { summary, key, sent, launch_until, launch_claim } of rows) {
+		// A summary stored before it carried its agent's capabilities, or with those of an older build, takes this build's.
+		const parsed = { ...(JSON.parse(summary) as SessionSummary) };
+		parsed.capabilities = sessionCapabilities(parsed.harness);
+		sessions.set(parsed.id, parsed);
+		if (launch_until !== null) launchUntil.set(parsed.id, launch_until);
+		if (launch_until !== null && launch_claim !== null) launchClaim.set(parsed.id, launch_claim);
+		if (key !== null && sent !== null) created.set(key, { key, sent, id: parsed.id });
+	}
+	// An actor that holds a sign-in is a user's, also before that user's own token was seen here.
+	const [held] = await c.db.execute<{ id: number }>("SELECT id FROM signin WHERE id = 1");
+	const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
+	const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
+	const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
+	const items = await loadItems(c.db);
+	items.limits.billing = billing() ? await readBilling(c.db) : null;
+	return {
+		tokenGen: gen,
+		profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null,
+		reached: gen > 0 || row !== undefined || held !== undefined,
+		sessions,
+		launchUntil,
+		launchClaim,
+		launchGen: counter?.last ?? 0,
+		created,
+		creating: new Attempts(),
+		signIn: null,
+		signInDb: null,
+		approvals,
+		github,
+		githubWriting: Promise.resolve(),
+		models: new AccountModels({ uid: c.key[0]! }),
+		usage: await readUsage(c.db, accountLimits(items.limits).usage, sessions),
+		overageReport: Promise.resolve(),
+		checkout: new AccountCheckout(),
+		keptGeneration: 0,
+		listed: null,
+		machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])),
+		items,
+	};
+}
+
 export const user = actor({
 	options: { name: "User", icon: "user", actionTimeout: 180_000 },
 
@@ -1576,7 +997,6 @@ export const user = actor({
 					launch_claim INTEGER
 				)
 			`);
-			// `sealed` is the sign-in, encrypted (signin/seal.ts); NULL once it was forgotten.
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS signin (
 					id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1586,7 +1006,7 @@ export const user = actor({
 					updated_at INTEGER NOT NULL
 				)
 			`);
-			// The GitHub connection: who connected and which installations, as JSON. No credential.
+			// Only installation metadata is stored here. Each GitHub request uses its own scoped token.
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS github (
 					id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -1594,13 +1014,10 @@ export const user = actor({
 					updated_at INTEGER NOT NULL
 				)
 			`);
-			// The Linear connection, its team mappings and the states of connections that were begun (user-linear.ts).
 			for (const table of LINEAR_TABLES) await db.execute(table);
 			await db.execute("DROP TABLE IF EXISTS github_grant");
-			// A retry series for the webhook directories after a failed update (user-github.ts).
 			await db.execute(GITHUB_SYNC_TABLE);
-			// Numbers used once: a state that was issued and waits for GitHub's answer (`state`, with its
-			// PKCE verifier), and a ticket that was taken (`ticket`), kept until it would have expired.
+			// Consumed tickets stay until expiry to prevent replay.
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS github_nonce (
 					nonce TEXT PRIMARY KEY,
@@ -1609,8 +1026,6 @@ export const user = actor({
 					expires_at INTEGER NOT NULL
 				)
 			`);
-			// The approvals of MCP servers that projects name (server-approvals.ts): one per project, server and
-			// definition, good until `expires_at`. `label` is the project in words, for a reader of the table.
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS server_approval (
 					project TEXT NOT NULL,
@@ -1622,8 +1037,6 @@ export const user = actor({
 					PRIMARY KEY (project, name, fingerprint)
 				)
 			`);
-			// The setup commands of repositories (setup-command.ts): one per repository of the GitHub connection,
-			// `project` being "github:<GitHub's id>". `label` is the repository in words, for a reader of the table.
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS setup_command (
 					project TEXT PRIMARY KEY,
@@ -1632,8 +1045,7 @@ export const user = actor({
 					updated_at INTEGER NOT NULL
 				)
 			`);
-			// The secrets of repositories (repo-secrets.ts): one per repository and name, `project` as above.
-			// `sealed` is the value, encrypted for this user, repository and name; nothing else here is secret.
+			// Bind ciphertext to the user, repository and secret name.
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS repo_secret (
 					project TEXT NOT NULL,
@@ -1645,12 +1057,9 @@ export const user = actor({
 					PRIMARY KEY (project, name)
 				)
 			`);
-			// What new sessions on a repository start with (repository-defaults.ts): one row per repository, `project` as above.
 			await db.execute(DEFAULTS_TABLE);
 			await migrateDefaults(db);
-			// The checks of repositories (repository-checks.ts): one row per repository, `project` as above, the list as JSON.
 			await db.execute(CHECKS_TABLE);
-			// The network lists of repositories and the hosts their sessions could not reach (repository-network.ts), `project` as above.
 			await db.execute(NETWORK_TABLE);
 			await db.execute(REQUESTS_TABLE);
 			// What the user keeps for their account: the defaults for new sessions (account-defaults.ts), their own MCP
@@ -1659,7 +1068,6 @@ export const user = actor({
 			if (!(await db.execute<{ name: string }>("PRAGMA table_info(account_defaults)")).some(col => col.name === "item_place")) await db.execute("ALTER TABLE account_defaults ADD COLUMN item_place TEXT");
 			// Where the newest agent was started, its agent and its mode (account-defaults.ts): one row, written when an agent is made.
 			await db.execute(LAST_START_TABLE);
-			// The models of the user's ChatGPT plan as Windlass last listed them (account-models.ts): one row.
 			await db.execute(MODELS_TABLE);
 			await db.execute(PERSONAL_SERVERS_TABLE);
 			await db.execute(ACCOUNT_SECRETS_TABLE);
@@ -1689,12 +1097,9 @@ export const user = actor({
 			// Where a post-setup snapshot of a project was last saved (`internalSnapshotSaved`), for placement's snapshot bonus.
 			await db.execute("CREATE TABLE IF NOT EXISTS snapshot_place (project TEXT NOT NULL, place TEXT NOT NULL, saved_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, connected_at INTEGER NOT NULL, PRIMARY KEY (project, place))");
 			// The last launch claim's generation (`UserVars.launchClaim`): kept on its own, so that it only ever grows.
-			// A repository's prepared environments (environments.ts).
 			await db.execute(ENVIRONMENT_TABLE);
 			await db.execute(ENVIRONMENT_SCHEDULE_TABLE);
 			await db.execute("CREATE TABLE IF NOT EXISTS launch_counter (id INTEGER PRIMARY KEY CHECK (id = 1), last INTEGER NOT NULL)");
-			// The deleted sessions whose copy in the bucket is still to be removed: how often this actor
-			// tried, when it tries next, and the schedule that is to do it.
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS backup_removal (
 					session TEXT PRIMARY KEY,
@@ -1703,9 +1108,7 @@ export const user = actor({
 					schedule_id TEXT NOT NULL
 				)
 			`);
-			// The ledger of sandbox time (usage.ts): one row per hold that was closed, with the seconds counted
-			// for it and the UTC day they count against. Rows are added and never changed; `hold` is unique, so a
-			// hold is counted once. `note` says why a count is not simply what the session reported.
+			// A unique hold makes settlement idempotent.
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS usage_entry (
 					id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1721,7 +1124,6 @@ export const user = actor({
 			// Preserve the opening instant for period attribution without changing the usage ledger.
 			await db.execute("CREATE TABLE IF NOT EXISTS usage_start (hold TEXT PRIMARY KEY, day INTEGER NOT NULL, started_at INTEGER NOT NULL)");
 			await db.execute("CREATE INDEX IF NOT EXISTS usage_entry_day ON usage_entry (day)");
-			// The holds of sandboxes that run now, one per session, each counted in full at `expires_at` unless settled before.
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS usage_hold (
 					session TEXT PRIMARY KEY,
@@ -1737,41 +1139,13 @@ export const user = actor({
 				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
 				if (!columns.some(column => column.name === "weight")) await db.execute(`ALTER TABLE ${table} ADD COLUMN weight REAL`);
 			}
-			// The sessions that have a place among the sandboxes the user keeps.
 			await db.execute("CREATE TABLE IF NOT EXISTS kept_sandbox (session TEXT PRIMARY KEY, since INTEGER NOT NULL)");
 			await machineTables(db);
 			await billingTables(db);
 		},
 	}),
 
-	createVars: async (c): Promise<UserVars> => {
-		const [{ gen }] = await c.db.execute<{ gen: number }>("SELECT gen FROM token_generation WHERE id = 1");
-		const [row] = await c.db.execute<{ uid: string; email: string | null; demo: number }>("SELECT uid, email, demo FROM profile WHERE id = 1");
-		const rows = await c.db.execute<{ summary: string; key: string | null; sent: string | null; launch_until: number | null; launch_claim: number | null }>("SELECT summary, key, sent, launch_until, launch_claim FROM sessions");
-		const launchUntil = new Map<string, number>();
-		const launchClaim = new Map<string, number>();
-		const [counter] = await c.db.execute<{ last: number }>("SELECT last FROM launch_counter WHERE id = 1");
-		const sessions = new Map<string, SessionSummary>();
-		const created = new Map<string, Submission & { id: string }>();
-		for (const { summary, key, sent, launch_until, launch_claim } of rows) {
-			// A summary stored before it carried its agent's capabilities, or with those of an older build, takes this build's.
-			const parsed = { ...(JSON.parse(summary) as SessionSummary) };
-			parsed.capabilities = sessionCapabilities(parsed.harness);
-			sessions.set(parsed.id, parsed);
-			if (launch_until !== null) launchUntil.set(parsed.id, launch_until);
-			if (launch_until !== null && launch_claim !== null) launchClaim.set(parsed.id, launch_claim);
-			if (key !== null && sent !== null) created.set(key, { key, sent, id: parsed.id });
-		}
-		// An actor that holds a sign-in is a user's, also before that user's own token was seen here.
-		const [held] = await c.db.execute<{ id: number }>("SELECT id FROM signin WHERE id = 1");
-		const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
-		const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
-		const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
-		const items = await loadItems(c.db);
-		// Where the deployment has billing, the account's subscription sets its plan's limits (billing/plans.ts).
-		items.limits.billing = billing() ? await readBilling(c.db) : null;
-		return { tokenGen: gen, profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null, reached: gen > 0 || row !== undefined || held !== undefined, sessions, launchUntil, launchClaim, launchGen: counter?.last ?? 0, created, creating: new Attempts(), signIn: null, signInDb: null, approvals, github, githubWriting: Promise.resolve(), models: new AccountModels({ uid: c.key[0]! }), usage: await readUsage(c.db, accountLimits(items.limits).usage, sessions), overageReport: Promise.resolve(), checkout: new AccountCheckout(), keptGeneration: 0, listed: null, machines: new Map((await listMachines({ db: c.db, vars: { sessions } })).map(m => [m.machineId, m])), items };
-	},
+	createVars: loadUserState,
 
 	events: {
 		machineHost: event<MachineHostUpdate>({ canSubscribe: (c) => maySubscribe(c) }),
@@ -1811,7 +1185,6 @@ export const user = actor({
 				await syncGithubWebhooks(c, c.key[0]);
 			} catch { console.warn(`github.installations.sync_failed uid=${c.key[0]}`); }
 		}
-		// Turn requests that waited while the actor was away are tried, and their schedule set again (user-items.ts).
 		queueChanged(c);
 		await notifyRemovedMachines(c);
 		await notifyProviderWaits(c, c.vars.items.items.values());
@@ -1876,11 +1249,11 @@ export const user = actor({
 			requireServiceFor(c, "revoke:" + c.key[0]);
 			await revokeTokens(c);
 		},
-		machines: (c): Promise<MachineSummary[]> => machineActions.machines(c),
-		machineCatalog: (c, input: Parameters<UserActions["machineCatalog"]>[0]): ReturnType<UserActions["machineCatalog"]> => machineActions.machineCatalog(c, input),
-		claimMachine: (c, input: { code: string }): Promise<MachineClaim> => machineActions.claimMachine(c, input),
-		confirmMachine: (c, input: { code: string; keyConfirmed: true }): Promise<MachineSummary> => machineActions.confirmMachine(c, input),
-		removeMachine: (c, input: { machineId: string; removeSandboxes: boolean }): Promise<MachineSummary[]> => machineActions.removeMachine(c, input),
+		machines: machineActions.machines,
+		machineCatalog: machineActions.machineCatalog,
+		claimMachine: machineActions.claimMachine,
+		confirmMachine: machineActions.confirmMachine,
+		removeMachine: machineActions.removeMachine,
 		internalProviderGeneration: (c, location: AccountLocation) => { requireServiceFor(c, "call"); return loginGeneration(c.db, location); },
 		internalLimitedAccounts: async c => { requireServiceFor(c, "call"); return limitedAccounts(await providerAccounts(c.db, Date.now())); },
 		internalObserveUsage: async (c, location: AccountLocation, generation: string, observation: UsageObservation) => {
@@ -1893,14 +1266,14 @@ export const user = actor({
 		internalPlannerMachines: (c) => { requireService(c); return plannerMachines([...c.vars.machines.values()], config.factory.screenshots); },
 		internalAgentModels: (c): Promise<AgentModels> => { requireService(c); return agentModels(c); },
 		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
-		setMachineSecrets: (c, input: { machineId: string; send: boolean }): Promise<MachineSummary[]> => machineActions.setMachineSecrets(c, input),
-		internalMachineCreated: (c, id: string): Promise<boolean> => machineActions.internalMachineCreated(c, id),
+		setMachineSecrets: machineActions.setMachineSecrets,
+		internalMachineCreated: machineActions.internalMachineCreated,
 		internalMachineSystem: async (c, id: string): Promise<{ os: string; arch: string } | null> => {
 			requireServiceFor(c, "call");
 			const [row] = await c.db.execute<{ os: string; arch: string }>("SELECT os, arch FROM machines WHERE id = ?", id);
 			return row ?? null;
 		},
-		internalMachineApproval: (c, id: string): Promise<{ login: string | null } | null> => machineActions.internalMachineApproval(c, id),
+		internalMachineApproval: machineActions.internalMachineApproval,
 		internalMachineChanged: async (c, id: string, facts: MachineUpdate | null): Promise<void> => {
 			const before = c.vars.machines.get(id);
 			const inventoryChanged = await machineActions.internalMachineChanged(c, id, facts);
@@ -1916,18 +1289,17 @@ export const user = actor({
 				}
 			}
 		},
-		// --- work items, the turn queue and API tokens (user-items.ts) ---
-		internalReserveAttachment: (c, input: import("../sandbox/attach.js").Reservation) => itemActions.internalReserveAttachment(c, input),
-		internalRecordAttachment: (c, input: { id: string; width: number; height: number }) => itemActions.internalRecordAttachment(c, input),
-		internalReleaseAttachment: (c, input: string) => itemActions.internalReleaseAttachment(c, input),
-		internalSettleAttachments: (c, input: { sessionId: string; key: string; keep: string[] }) => itemActions.internalSettleAttachments(c, input),
-		internalDeleteItemAttachments: (c, input: string) => itemActions.internalDeleteItemAttachments(c, input),
+		internalReserveAttachment: itemActions.internalReserveAttachment,
+		internalRecordAttachment: itemActions.internalRecordAttachment,
+		internalReleaseAttachment: itemActions.internalReleaseAttachment,
+		internalSettleAttachments: itemActions.internalSettleAttachments,
+		internalDeleteItemAttachments: itemActions.internalDeleteItemAttachments,
 		[ATTACHMENT_SWEEP_ACTION]: (c) => itemActions.internalAttachmentSweep(c),
-		itemAttachmentLinks: (c, input: string) => itemActions.itemAttachmentLinks(c, input),
-		internalApiItemAttachment: (c, input: { token: string; id: string; attachment: string }) => itemActions.internalApiItemAttachment(c, input),
+		itemAttachmentLinks: itemActions.itemAttachmentLinks,
+		internalApiItemAttachment: itemActions.internalApiItemAttachment,
 		listItems: (c, page?: ItemListPage): ItemSummary[] => itemActions.listItems(c, page),
-		itemFeed: (c): ItemFeed => itemActions.itemFeed(c),
-		item: (c, id: string): Promise<ItemView> => itemActions.item(c, id),
+		itemFeed: itemActions.itemFeed,
+		item: itemActions.item,
 		internalSessionForPull: (c, installation: GithubId, repository: GithubId, pr: number): { sessionId: string | null } | null => {
 			requireServiceFor(c, "call");
 			const { github, profile } = c.vars;
@@ -1945,7 +1317,6 @@ export const user = actor({
 			return null;
 		},
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) => itemActions.internalGithubIntake(c, input, itemSession(c)),
-		// --- Linear: the owner's Settings, and the services behind the routes (user-linear.ts) ---------
 
 		linear: async (c): Promise<LinearStatus> => {
 			requireUser(c);
@@ -1983,74 +1354,37 @@ export const user = actor({
 			requireServiceFor(c, "call");
 			return writeLinearItem(c, input);
 		},
-		/** Takes a state's number out of the list (linear/connect.ts): it is there once. */
 		internalLinearClaim: async (c, nonce: string) => {
 			requireService(c);
 			return claimLinearState(c, nonce);
 		},
-		/** One verified delivery of the webhook route, for the user its team was claimed by (user-linear.ts). Throws when Linear should redeliver it. */
 		internalLinearDelivery: (c, delivery: import("../linear/webhook.js").LinearDelivery) => {
 			requireServiceFor(c, "call");
 			return fileLinearDelivery(c, delivery, filing => itemActions.internalLinearIntake(c, filing, itemSession(c)));
 		},
 		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),
-		actOnItem: (c, input: { id: string; action: ItemAction }): Promise<ItemView> => itemActions.actOnItem(c, input),
-		factoryLimits: (c): FactoryLimits => itemActions.factoryLimits(c),
-		apiTokens: (c): Promise<ApiToken[]> => itemActions.apiTokens(c),
-		createApiToken: (c, input: { name: string; scopes: ApiTokenScope[] }): Promise<{ token: ApiToken; secret: string }> => itemActions.createApiToken(c, input),
-		revokeApiToken: (c, id: string): Promise<ApiToken[]> => itemActions.revokeApiToken(c, id),
+		actOnItem: itemActions.actOnItem,
+		factoryLimits: itemActions.factoryLimits,
+		apiTokens: itemActions.apiTokens,
+		createApiToken: itemActions.createApiToken,
+		revokeApiToken: itemActions.revokeApiToken,
 		internalApiCreateItem: (c, input: { token: string; item: CreateItemInput }): Promise<ItemSummary> => itemActions.internalApiCreateItem(c, input, itemSession(c)),
-		internalApiItem: (c, input: { token: string; id: string }): Promise<ItemView> => itemActions.internalApiItem(c, input),
+		internalApiItem: itemActions.internalApiItem,
 		internalFeatureChild: (c, input: { parent: string; child: string; cancel?: boolean }) => itemActions.internalFeatureChild(c, input, itemSession(c), () => agentModels(c)),
-		internalItemChanged: (c, summary: ItemSummary): Promise<void> => itemActions.internalItemChanged(c, summary),
+		internalItemChanged: itemActions.internalItemChanged,
 		internalItemFacts: (c, ids: string[] | string): ItemFacts => itemActions.internalItemFacts(c, typeof ids === "string" ? [ids] : ids),
-		internalRequestTurn: (c, request: TurnRequest): Promise<TurnAnswer> => itemActions.internalRequestTurn(c, request),
-		internalTurnDone: (c, input: TurnRelease): Promise<void> => itemActions.internalTurnDone(c, input),
-		internalWithdrawTurn: (c, input: { sessionId: string; key: string }): Promise<void> => itemActions.internalWithdrawTurn(c, input),
+		internalRequestTurn: itemActions.internalRequestTurn,
+		internalTurnDone: itemActions.internalTurnDone,
+		internalWithdrawTurn: itemActions.internalWithdrawTurn,
 		[QUEUE_ACTION]: (c): Promise<void> => itemActions.internalTurnQueue(c),
 		me: async (c): Promise<UserProfile> => {
 			const profile = requireUser(c);
 			await rememberProfile(c, profile);
 			return profile;
 		},
-
-		chatgpt: async (c): Promise<ChatgptStatus> => {
-			const profile = requireUser(c);
-			if (profile.demo) return { connected: false, email: null, accessExpiresAt: null };
-			try {
-				const account = await (await signIn(c)).status();
-				if (!account) return { connected: false, email: null, accessExpiresAt: null };
-				return { connected: true, email: account.email ?? null, accessExpiresAt: account.accessExpiresAt ?? null };
-			} catch (error) {
-				throw clientError(c.log, error, "The ChatGPT sign-in could not be checked.");
-			}
-		},
-
-		/**
-		 * Forgets the user's ChatGPT sign-in: no access token of it is handed out again, and the token
-		 * files of turns still running are removed. The platform's own token stays as it is.
-		 */
-		forgetChatgpt: async (c): Promise<void> => {
-			const profile = requireUser(c);
-			if (profile.demo) { await logoutMachines(c); return; }
-			try {
-				await (await signIn(c)).logout();
-				await c.vars.models.forget(c.db);
-				await logoutMachines(c);
-				console.log(`[wlp] sign-in.forgotten uid=${profile.uid}`);
-			} catch (error) {
-				throw clientError(c.log, error, "The ChatGPT sign-in could not be forgotten. Try again.");
-			}
-		},
-
-		models: async (c): Promise<ModelList> => {
-			const profile = requireUser(c);
-			try {
-				return await modelsOf(c, profile.demo);
-			} catch (error) {
-				throw clientError(c.log, error, "Your models could not be read. Try again.");
-			}
-		},
+		chatgpt: signinActions.chatgpt,
+		forgetChatgpt: signinActions.forgetChatgpt,
+		models: signinActions.models,
 
 		listSessions: (c): SessionSummary[] => {
 			requireUser(c);
@@ -2060,7 +1394,6 @@ export const user = actor({
 		createSession: async (c, input: CreateSessionInput): Promise<SessionSummary> => {
 			const profile = requireUser(c);
 			if (typeof input !== "object" || input === null) throw new UserError("Choose a sandbox for the agent.", { code: "bad_input" });
-			// Without a key every call makes a session, as it always did.
 			let attempt: Promise<SessionSummary>;
 			try {
 				const { idempotencyKey, ...asked } = input;
@@ -2120,152 +1453,15 @@ export const user = actor({
 			// A session with no repository was its own project: what was approved for it goes with it.
 			await changeApprovals(c, (book) => book.forgetProject(sessionProjectKey(id))).catch((error) => c.log.warn({ msg: "could not forget the deleted session's approvals of MCP servers", session: id, error: String(error) }));
 		},
-
-		// --- sandbox time and kept sandboxes (usage.ts) ---------------------------------------------
-
-		allowance: async (c): Promise<UsageNumbers> => {
-			requireUser(c);
-			try {
-				const now = Date.now();
-				await sweepUsage(c, now);
-				return c.vars.usage.numbers(now);
-			} catch (error) {
-				throw clientError(c.log, error, "Your sandbox time could not be read. Try again.");
-			}
-		},
-
-		// --- plans and billing (billing/) -------------------------------------------------------------
-
-		billing: async (c): Promise<BillingView> => {
-			requireUser(c);
-			return billingAnswer(c);
-		},
-
-		billingCheckout: async (c, input: { period: BillingPeriod; origin: string }): Promise<{ url: string }> => {
-			const profile = requireUser(c);
-			const settings = billingOn();
-			if (input?.period !== "month" && input?.period !== "year") throw new UserError("Choose monthly or yearly.", { code: "bad_input" });
-			const origin = billingOrigin(input?.origin);
-			if (profile.demo) throw new UserError("The demo account cannot subscribe.", { code: "billing_off" });
-			try {
-				const checkout = await c.vars.checkout.open(c.db, settings.provider, {
-					uid: profile.uid, email: profile.email, period: input.period,
-					returnUrl: `${origin}/settings?billing=checkout#plan`,
-					claimCustomer: async id => (await customerDirectory(c.client()).claim(id, profile.uid)) === profile.uid,
-				}, Date.now());
-				c.vars.items.limits.billing = await readBilling(c.db);
-				return checkout;
-			} catch (error) {
-				if (error instanceof CheckoutEmailRequired) throw new UserError(error.message, { code: "bad_input" });
-				if (error instanceof CheckoutBlocked) throw new UserError(error.message, { code: "already_subscribed" });
-				console.warn(`[wlp] billing.checkout_failed uid=${c.key[0]}`);
-				throw new UserError("The checkout could not be opened. Try again in a moment.", { code: "billing_unavailable" });
-			}
-		},
-
-		billingPortal: async (c, input: { origin: string }): Promise<{ url: string }> => {
-			requireUser(c);
-			const settings = billingOn();
-			const origin = billingOrigin(input?.origin);
-			const { customerId } = await readBilling(c.db);
-			if (customerId === null) throw new UserError("There is no subscription to manage yet.", { code: "no_customer" });
-			try {
-				return await settings.provider.portalLink({ customerId, returnUrl: `${origin}/settings#plan` });
-			} catch {
-				console.warn(`[wlp] billing.portal_failed uid=${c.key[0]} customer=${customerId}`);
-				throw new UserError("The billing portal could not be opened. Try again in a moment.", { code: "billing_unavailable" });
-			}
-		},
-
-		setOverageCap: async (c, input: { cents: number }): Promise<BillingView> => {
-			requireUser(c);
-			billingOn();
-			try {
-				c.vars.items.limits.billing = await setCapCents(c.db, input?.cents);
-			} catch (error) {
-				if (error instanceof RangeError) throw new UserError(error.message, { code: "bad_input" });
-				throw error;
-			}
-			console.log(`[wlp] billing.cap uid=${c.key[0]}`);
-			billingChanged(c);
-			return billingAnswer(c);
-		},
-
-		internalRetryOverage: async (c): Promise<void> => {
-			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
-			queueOverageReport(c);
-			await c.vars.overageReport;
-		},
-
-		/** A webhook's event for this account (billing/route.ts), applied once. */
-		internalBillingEvent: async (c, event: BillingEvent): Promise<string> => {
-			requireServiceFor(c, "billing");
-			const settings = billingOn();
-			const done = await applyBillingEvent(c.db, event, Date.now(), settings.graceMs, async id =>
-				(await customerDirectory(c.client()).claim(id, c.key[0]!)) === c.key[0]);
-			if (done.outcome === "applied") {
-				c.vars.items.limits.billing = done.state;
-				billingChanged(c);
-			}
-			return done.outcome;
-		},
-
-		usage: async (c): Promise<UsageView> => {
-			requireUser(c);
-			try {
-				return await usageView(c);
-			} catch (error) {
-				throw clientError(c.log, error, "Your usage could not be read. Try again.");
-			}
-		},
-
-		/**
-		 * Removes the sandbox of one of the user's agents to make room. The agent does it itself where it
-		 * is there, with every other sandbox the provider lists for it, so its timeline says so and nothing
-		 * is removed under a turn. For an agent that was deleted, what the provider still lists for it is
-		 * removed here.
-		 */
-		freeSandbox: async (c, sessionId: string): Promise<UsageView> => {
-			const profile = requireUser(c);
-			const id = approvalText(sessionId, 200);
-			if (id === "") throw new UserError("Say which agent's sandbox to free.", { code: "bad_input" });
-			try {
-				let gone = !c.vars.sessions.has(id);
-				if (!gone) {
-					await sessionActor(c, profile.uid, id)
-						.internalFreeSandbox()
-						.catch((error: unknown) => {
-							if (isSessionGone(error)) {
-								gone = true;
-								return;
-							}
-							// What the session itself refused (it is working) is said in its words.
-							const { group, code, message } = (typeof error === "object" && error !== null ? error : {}) as { group?: unknown; code?: unknown; message?: unknown };
-							if (group === "user" && typeof message === "string") throw new UserError(message, { code: typeof code === "string" ? code : "sandbox_busy" });
-							throw error;
-						});
-				}
-				// A living session removed its sandboxes and gave its place back itself, inside its own exclusion: a
-				// list read here could hold one a prompt has just made it. Only what a session that is gone left is removed here.
-				if (gone) {
-					const { sandboxes } = await getLayer();
-					for (const left of await sandboxes.list(profile.uid)) {
-						if (left.sessionId !== id) continue;
-						await sandboxes.destroy(left.id);
-						console.log(`[wlp] sandbox.freed id=${left.id} uid=${profile.uid} session=${id}: it was left at the provider without its agent`);
-					}
-					await releaseKept(c, id);
-				}
-				// The session also swept any extra sandboxes after releasing its own.
-				c.vars.keptGeneration++;
-				c.vars.listed = null;
-				return await usageView(c);
-			} catch (error) {
-				throw clientError(c.log, error, "The sandbox could not be freed. Try again.");
-			}
-		},
-
-		// --- GitHub ------------------------------------------------------------------------------
+		allowance: usageActions.allowance,
+		billing: usageActions.billing,
+		billingCheckout: usageActions.billingCheckout,
+		billingPortal: usageActions.billingPortal,
+		setOverageCap: usageActions.setOverageCap,
+		internalRetryOverage: usageActions.internalRetryOverage,
+		internalBillingEvent: usageActions.internalBillingEvent,
+		usage: usageActions.usage,
+		freeSandbox: usageActions.freeSandbox,
 
 		github: (c): GithubStatus => {
 			requireUser(c);
@@ -2321,7 +1517,6 @@ export const user = actor({
 			return githubStatus(c.vars);
 		},
 
-		/** Forgets the connection. The app stays installed at GitHub, which is the account owner's to change. */
 		githubDisconnect: async (c): Promise<GithubStatus> => {
 			const profile = requireUser(c);
 			requireGithub();
@@ -2341,7 +1536,6 @@ export const user = actor({
 			const connection = requireConnection(c);
 			if (typeof query !== "string" || query.length > 200) throw new UserError("Search for part of a repository's name.", { code: "bad_input" });
 			try {
-				// Asked for anew: somebody who has just added a repository at GitHub wants to see it.
 				return await listRepositories(app, fresh === true ? { ...connection, refreshedAt: Date.now() } : connection, query);
 			} catch (error) {
 				throw githubError(c.log, error, "The repositories could not be listed. Try again.");
@@ -2359,8 +1553,6 @@ export const user = actor({
 				throw githubError(c.log, error, "The repository's branches could not be listed. Try again.");
 			}
 		},
-
-		// --- setup commands of repositories (setup-command.ts) --------------------------------------
 
 		repositorySetup: async (c, repositoryId: GithubId): Promise<RepositorySetup> => {
 			requireUser(c);
@@ -2385,8 +1577,6 @@ export const user = actor({
 				throw clientError(c.log, error, "The setup command could not be saved. Try again.");
 			}
 		},
-
-		// --- checks of repositories (repository-checks.ts) -------------------------------------------
 
 		internalDiscardPlacement: (c, id: string) => itemActions.internalDiscardPlacement(c, id, async session => {
 			try { await sessionActor(c, c.key[0], session).internalDestroy(); }
@@ -2438,7 +1628,6 @@ export const user = actor({
 			try {
 				// The list is written whole, in one statement: of two saves that run together, one stays as it was sent.
 				const saved = await saveChecks(c.db, project, await labelFor(c, input.repositoryId, project), checks, Date.now());
-				// A command is the user's text and may hold what they would not want in a log: only how many there are is said.
 				console.log(`[wlp] checks.saved uid=${profile.uid} project=${project} checks=${checks.length}`);
 				await rememberProfile(c, profile);
 				await settingsChanged(environmentHost(c), project).catch((error: unknown) => c.log.warn({ msg: "environments could not be marked stale", error: String(error) }));
@@ -2447,8 +1636,6 @@ export const user = actor({
 				throw clientError(c.log, error, "The checks could not be saved. Try again.");
 			}
 		},
-
-		// --- network lists of repositories (repository-network.ts) ------------------------------------
 
 		repositoryNetwork: async (c, repositoryId: GithubId): Promise<RepositoryNetwork> => {
 			requireUser(c);
@@ -2478,7 +1665,7 @@ export const user = actor({
 		dismissNetworkRequest: async (c, input: { repositoryId: GithubId; host: string }): Promise<RepositoryNetwork> => {
 			requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
-			const host = approvalText(input?.host, 260);
+			const host = boundedText(input?.host, 260);
 			try {
 				await dismissRequest(c.db, project, host);
 				return await networkView(c, project);
@@ -2524,7 +1711,7 @@ export const user = actor({
 		 */
 		internalAllowHost: async (c, input: { sessionId: string; host: string; by: string }): Promise<{ allowed: boolean; hosts: string[]; network: RepositoryNetwork }> => {
 			requireService(c);
-			const session = c.vars.sessions.get(approvalText(input?.sessionId, 200));
+			const session = c.vars.sessions.get(boundedText(input?.sessionId, 200));
 			const project = setupProjectKey(session?.repository?.id);
 			if (!session || project === null) throw new UserError("This agent has no repository of your GitHub connection, so there is no list to allow a host in. The deployment's operator can allow it for every sandbox (WLP_E2B_NETWORK_ALLOW).", { code: "bad_network" });
 			const host = cleanEntry(input?.host);
@@ -2546,16 +1733,14 @@ export const user = actor({
 			}
 		},
 
-		/** Hosts a session's sandbox looked up and could not reach: filed as requests on its repository. */
 		internalNetworkRequests: async (c, input: { sessionId: string; hosts: string[] }): Promise<{ filed: string[]; full: string[] }> => {
 			requireService(c);
-			const session = c.vars.sessions.get(approvalText(input?.sessionId, 200));
+			const session = c.vars.sessions.get(boundedText(input?.sessionId, 200));
 			const project = setupProjectKey(session?.repository?.id);
 			if (!session || project === null || !Array.isArray(input?.hosts)) return { filed: [], full: [] };
 			return await fileRequests(c.db, project, input.hosts.filter((host): host is string => typeof host === "string").slice(0, 50), input.sessionId, Date.now());
 		},
 
-		/** The setup command of a session's repository, for that session when its sandbox is new. */
 		internalHasChecks: async (c, repositoryId: GithubId): Promise<boolean> => {
 			requireService(c);
 			return (await readChecks(c.db, setupKeyOf(repositoryId))).checks.length > 0;
@@ -2578,7 +1763,6 @@ export const user = actor({
 			const rows = await c.db.execute<{project: string; updated_at: number}>("SELECT project, updated_at FROM setup_command");
 			return rows.map(row => snapshotGeneration(row.project.slice("github:".length), row.updated_at, connection.connectedAt));
 		},
-		// --- prepared environments of repositories (environments.ts, user-environments.ts) ---------------
 
 		repositoryEnvironments: async (c, repositoryId: GithubId): Promise<RepositoryEnvironments> => {
 			await rememberProfile(c, requireUser(c));
@@ -2612,13 +1796,13 @@ export const user = actor({
 		},
 		internalEnvironmentResult: async (c, sessionId: string, result: EnvironmentBuildReport): Promise<void> => {
 			requireService(c);
-			const passed = await buildResult(environmentHost(c), approvalText(sessionId, 200), result);
+			const passed = await buildResult(environmentHost(c), boundedText(sessionId, 200), result);
 			if ("waiting" in result) return;
 			console.log(`[wlp] environment.built uid=${c.key[0]} session=${sessionId} passed=${passed} failure=${result.failure?.kind ?? "none"}`);
 		},
 		internalEnvironmentNudge: async (c, sessionId: string, kind: "missed" | "cold"): Promise<void> => {
 			requireService(c);
-			const session = c.vars.sessions.get(approvalText(sessionId, 200));
+			const session = c.vars.sessions.get(boundedText(sessionId, 200));
 			const project = setupProjectKey(session?.repository?.id);
 			if (!session || !project || session.environmentBuild || (kind !== "missed" && kind !== "cold")) return;
 			await environmentNudge(environmentHost(c), project, session.place.kind === "hosted" ? HOSTED : session.place.machineId, kind, session.hostedSize);
@@ -2630,10 +1814,8 @@ export const user = actor({
 		},
 		internalSetupCommand: async (c, project: string): Promise<RepositorySetup> => {
 			requireService(c);
-			return readSetup(c.db, approvalText(project, 600));
+			return readSetup(c.db, boundedText(project, 600));
 		},
-
-		// --- secrets of repositories (repo-secrets.ts) ----------------------------------------------
 
 		repositorySecrets: async (c, input: { repositoryId: GithubId; profile: string }): Promise<RepositorySecrets> => {
 			requireUser(c);
@@ -2665,7 +1847,7 @@ export const user = actor({
 			const user = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			const profile = await secretProfile(input?.profile);
-			const name = approvalText(input?.name, 200);
+			const name = boundedText(input?.name, 200);
 			try {
 				await c.db.execute("DELETE FROM repo_secret WHERE project = ? AND name = ?", project, name);
 				console.log(`[wlp] secret.deleted uid=${user.uid} project=${project} name=${name.replace(/[^A-Za-z0-9_]/g, "?")}`);
@@ -2720,16 +1902,9 @@ export const user = actor({
 			}
 		},
 
-		/**
-		 * The secrets of a session's repository, each value still sealed, for that session's turn, and with
-		 * them what its user keeps for the account: the account's secrets, sealed too, and the user's own
-		 * MCP servers. The caller must hold a service token made for exactly this user and session
-		 * (`secretsCaller`), and which repository it is is read from this actor's own index of the user's
-		 * sessions, not from the call: a session is handed the secrets of the repository it was launched
-		 * on and of no other, and a session this user does not have is handed none.
-		 */
+		// Release sealed secrets only to the indexed session and its recorded repositories.
 		internalSessionSecrets: async (c, sessionId: string, includeSnapshotSetup = false): Promise<SealedSecrets> => {
-			const id = approvalText(sessionId, 200);
+			const id = boundedText(sessionId, 200);
 			requireServiceFor(c, secretsCaller(c.key[0]!, id));
 			// A session this user does not have is handed nothing, of the account's either.
 			const session = c.vars.sessions.get(id);
@@ -2764,8 +1939,6 @@ export const user = actor({
 			return { project, requestedNames, network, ...(snapshotSetup?.command && { snapshotSetup }), ...(environment && { environment }), ...(redactOnly && { redactOnly }), screenshots: (await readDefaults(c.db, project)).screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
-		// --- a repository's page ----------------------------------------------------------------------
-
 		repository: async (c, repositoryId: GithubId): Promise<RepositoryView> => {
 			requireUser(c);
 			const project = setupKeyOf(repositoryId);
@@ -2776,7 +1949,6 @@ export const user = actor({
 			}
 		},
 
-		/** Asks GitHub whether the user's connection still reaches the repository, and what it is called now. */
 		githubRepository: async (c, repositoryId: GithubId): Promise<GithubRepository> => {
 			requireUser(c);
 			const project = setupKeyOf(repositoryId);
@@ -2788,7 +1960,6 @@ export const user = actor({
 			} catch (error) {
 				throw githubError(c.log, error, "The repository could not be checked at GitHub. Try again.");
 			}
-			// What is saved for it is named as GitHub names it now: its page then says the name without asking, also once GitHub no longer answers for it.
 			const name = `${found.owner}/${found.name}`;
 			try {
 				for (const table of ["setup_command", "repository_checks", "repo_secret", "repository_defaults", "repository_network"]) await c.db.execute(`UPDATE ${table} SET label = ? WHERE project = ? AND label != ?`, name, project, name);
@@ -2826,7 +1997,7 @@ export const user = actor({
 		forgetRepositoryApproval: async (c, input: { repositoryId: GithubId; name: string }): Promise<RepositoryView> => {
 			const profile = requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
-			const name = approvalText(input?.name, 200);
+			const name = boundedText(input?.name, 200);
 			try {
 				const done = await changeApprovals(c, (book) => book.forget(project, name));
 				if (done.removed.length > 0) console.log(`[wlp] server.approval_forgotten uid=${profile.uid} project=${project} server=${logged(name)}`);
@@ -2873,15 +2044,12 @@ export const user = actor({
 				for (const approval of c.vars.approvals.all()) if (approval.expiresAt > now) note(approval.project, approval.label);
 				return [...found]
 					.map(([id, label]) => ({ id, name: repositoryLabel(c.vars, id) || label || null }))
-					// By name, and those nothing names after them.
 					.sort((a, b) => Number(a.name === null) - Number(b.name === null) || (a.name ?? "").localeCompare(b.name ?? "") || String(a.id).localeCompare(String(b.id), "en", { numeric: true }))
 					.slice(0, MAX_SAVED_REPOSITORIES);
 			} catch (error) {
 				throw clientError(c.log, error, "The repositories something is saved for could not be listed. Try again.");
 			}
 		},
-
-		// --- the account's settings (account-defaults.ts, personal-servers.ts, account-secrets.ts) ----
 
 		account: async (c): Promise<AccountSettings> => {
 			requireUser(c);
@@ -2939,7 +2107,6 @@ export const user = actor({
 				if (error instanceof ServerProblem) throw new UserError(error.message, { code: error.code });
 				throw clientError(c.log, error, "The server could not be saved. Try again.");
 			}
-			// The name and the kind, never anything of the definition: an argument or an address may hold what its user would not want in a log.
 			console.log(`[wlp] server.saved uid=${profile.uid} name=${name} kind=${typeof definition.url === "string" ? "address" : "command"} unasked=${unasked} definition=${existing ? "replaced" : "new"}`);
 			try {
 				return await accountView(c.db);
@@ -2950,7 +2117,7 @@ export const user = actor({
 
 		deletePersonalServer: async (c, name: string): Promise<AccountSettings> => {
 			const profile = requireUser(c);
-			const named = approvalText(name, 200);
+			const named = boundedText(name, 200);
 			try {
 				await deleteServer(c.db, named);
 				console.log(`[wlp] server.deleted uid=${profile.uid} name=${logged(named)}`);
@@ -2996,14 +2163,12 @@ export const user = actor({
 			const scope = secretInput(() => cleanSecretScope(input?.scope));
 			const value = input?.value === undefined || input?.value === null ? undefined : secretInput(() => cleanSecretValue(input.value));
 			try {
-				// Sealed for this user, the account and the name before it is stored.
 				await saveAccountSecret(c.db, name, scope, value === undefined ? undefined : sealSecret(serverSealer(), user.uid, ACCOUNT_SECRET_PROJECT, name, value), Date.now());
 			} catch (error) {
 				if (error instanceof TooManySecrets) throw new UserError(error.message, { code: "too_many_secrets" });
 				if (error instanceof SecretNotFound) throw new UserError(error.message, { code: "secret_not_found" });
 				throw clientError(c.log, error, "The secret could not be saved. Try again.");
 			}
-			// The name, never anything of the value: not its length either.
 			console.log(`[wlp] secret.saved uid=${user.uid} project=${ACCOUNT_SECRET_PROJECT} name=${name} scope=${scope} value=${value === undefined ? "kept" : "saved"}`);
 			try {
 				return await listAccountSecrets(c.db, profile);
@@ -3015,7 +2180,7 @@ export const user = actor({
 		deleteAccountSecret: async (c, input: { profile: string; name: string }): Promise<AccountSecrets> => {
 			const user = requireUser(c);
 			const profile = await secretProfile(input?.profile);
-			const name = approvalText(input?.name, 200);
+			const name = boundedText(input?.name, 200);
 			try {
 				await deleteAccountSecret(c.db, name);
 				console.log(`[wlp] secret.deleted uid=${user.uid} project=${ACCOUNT_SECRET_PROJECT} name=${name.replace(/[^A-Za-z0-9_]/g, "?")}`);
@@ -3025,9 +2190,6 @@ export const user = actor({
 			}
 		},
 
-		// --- GitHub, for the servers and the sessions ---------------------------------------------
-
-		/** Takes a state's number out of the list (github/connect.ts): it is there once. Answers with its PKCE verifier. */
 		internalGithubClaim: async (c, nonce: string): Promise<{ ok: boolean; verifier: string | null }> => {
 			requireService(c);
 			if (typeof nonce !== "string" || nonce === "") return { ok: false, verifier: null };
@@ -3055,32 +2217,29 @@ export const user = actor({
 			await retryGithubSync(c, c.key[0]!, c.scheduledFire.id, attempt);
 		},
 
-		/** The connection, for a session that is about to clone or push. */
 		internalGithubConnection: (c): StoredConnection | null => {
 			requireService(c);
 			return c.vars.github;
 		},
-
-		// --- approvals of projects' MCP servers, for the user's sessions (server-approvals.ts) -----
 
 		internalServerApprovals: async (c, project: string): Promise<ServerApproval[]> => {
 			requireService(c);
 			const now = Date.now();
 			// What has run out is dropped when somebody looks: nothing is scheduled for it.
 			await changeApprovals(c, (book) => book.prune(now));
-			return c.vars.approvals.of(approvalText(project, 600), now);
+			return c.vars.approvals.of(boundedText(project, 600), now);
 		},
 
 		internalServerApprove: async (c, input: { project: string; label: string; name: string; fingerprint: string }): Promise<ServerApproval[]> => {
 			requireService(c);
-			const project = approvalText(input?.project, 600);
-			const name = approvalText(input?.name, 200);
-			const fingerprint = approvalText(input?.fingerprint, 200);
+			const project = boundedText(input?.project, 600);
+			const name = boundedText(input?.name, 200);
+			const fingerprint = boundedText(input?.fingerprint, 200);
 			if (project === "" || name === "" || fingerprint === "") throw new UserError("That approval names no project, server or definition.", { code: "bad_input" });
 			const now = Date.now();
 			await changeApprovals(c, (book) => {
 				const pruned = book.prune(now);
-				const approved = book.approve({ project, label: approvalText(input.label, 600), name, fingerprint }, now);
+				const approved = book.approve({ project, label: boundedText(input.label, 600), name, fingerprint }, now);
 				return { added: approved.added, removed: [...pruned.removed, ...approved.removed] };
 			});
 			console.log(`[wlp] server.approval_remembered uid=${c.key[0]} project=${project} server=${name}`);
@@ -3089,81 +2248,24 @@ export const user = actor({
 
 		internalServerForget: async (c, input: { project: string; name: string }): Promise<{ forgotten: number; approvals: ServerApproval[] }> => {
 			requireService(c);
-			const project = approvalText(input?.project, 600);
-			const name = approvalText(input?.name, 200);
+			const project = boundedText(input?.project, 600);
+			const name = boundedText(input?.name, 200);
 			const now = Date.now();
 			const done = await changeApprovals(c, (book) => book.forget(project, name));
 			const forgotten = done.removed.filter((row) => row.expiresAt > now).length;
 			if (done.removed.length > 0) console.log(`[wlp] server.approval_forgotten uid=${c.key[0]} project=${project} server=${name}`);
 			return { forgotten, approvals: c.vars.approvals.of(project, now) };
 		},
-
-		// --- the sign-in, for the servers (signin/directory.ts) -----------------------------------
-
-		/** Takes a finished sign-in, sealed for this user by the server that finished it, in place of an earlier one. */
-		internalAdoptSignIn: async (c, sealed: string): Promise<SignInAnswer<null>> => {
-			requireService(c);
-			return answered(c, async () => {
-				await (await signIn(c)).adopt(sealed);
-				if (c.vars.machines.size) await machinesChanged(c);
-				queueChanged(c);
-				await notifyProviderWaits(c, c.vars.items.items.values(), "adopted");
-				// From here on the actor is a user's, and stays.
-				c.vars.reached = true;
-				console.log(`[wlp] sign-in.adopted uid=${c.key[0]}`);
-				return null;
-			});
-		},
-
-		internalSignInStatus: async (c): Promise<SignInAnswer<ChatgptAccount | null>> => {
-			requireService(c);
-			return answered(c, async () => (await signIn(c)).status());
-		},
-
-		internalSignOut: async (c): Promise<SignInAnswer<null>> => {
-			requireService(c);
-			return answered(c, async () => {
-				await (await signIn(c)).logout();
-				await c.vars.models.forget(c.db);
-				await logoutMachines(c);
-				console.log(`[wlp] sign-in.forgotten uid=${c.key[0]}`);
-				return null;
-			});
-		},
-
-		/**
-		 * The user's current access token (`AccessTokens.current`, sandbox/api.ts), sealed for the request
-		 * that asked: `nonce` is the asking server's. The actor stays awake until the answer is made, so a
-		 * refreshed sign-in is saved before the actor may sleep or move.
-		 */
-		internalAccessToken: async (c, nonce: string): Promise<SealedTokenAnswer> => {
-			requireService(c);
-			if (typeof nonce !== "string" || !/^[A-Za-z0-9_-]{16,64}$/.test(nonce)) return { ok: false, problem: { kind: "other", message: "the request for an access token carries no nonce" } };
-			try {
-				const holder = await signIn(c);
-				const token = await c.keepAwake(holder.accessToken());
-				const { sealer } = await getSignIns();
-				return { ok: true, sealed: sealer.seal("transit", tokenSubject(c.key[0]!, nonce), JSON.stringify(token)) };
-			} catch (error) {
-				const problem = problemOf(error);
-				if (problem.kind === "other") c.log.error({ msg: "the user's access token could not be had", error: problem.message });
-				return { ok: false, problem };
-			}
-		},
-
-		/** The user's models, for a session of theirs whose prompt names a model or an effort. Never a demo user's: their sessions have the stand-in (account-models.ts). */
-		internalModels: async (c): Promise<ModelList> => {
-			requireService(c);
-			return modelsOf(c, false);
-		},
-
-		// --- called by the actor's own schedule only ------------------------------------------------
+		internalAdoptSignIn: signinActions.internalAdoptSignIn,
+		internalSignInStatus: signinActions.internalSignInStatus,
+		internalSignOut: signinActions.internalSignOut,
+		internalAccessToken: signinActions.internalAccessToken,
+		internalModels: signinActions.internalModels,
 
 		internalRemoveBackup: async (c, sessionId: string): Promise<void> => {
 			// RivetKit sets `scheduledFire` on the context of a call its schedule makes; a client cannot.
 			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
 			const [row] = await c.db.execute<{ tries: number; schedule_id: string }>("SELECT tries, schedule_id FROM backup_removal WHERE session = ?", sessionId);
-			// Done already, or a firing that a later schedule took the place of.
 			if (!row || row.schedule_id !== c.scheduledFire.id) return;
 			const owner = { uid: c.key[0]!, sessionId };
 			const tries = row.tries + 1;
@@ -3187,8 +2289,6 @@ export const user = actor({
 			}
 		},
 
-		// --- called by `agentSession` only -------------------------------------------------------
-
 		internalSessionChanged: async (c, summary: SessionSummary): Promise<void> => {
 			requireService(c);
 			if (typeof summary?.id !== "string" || !c.vars.sessions.has(summary.id)) return;
@@ -3196,7 +2296,6 @@ export const user = actor({
 			if (c.vars.sessions.get(summary.id)?.status === "idle") queueChanged(c);
 		},
 
-		/** A deleted session's copy that the session could not remove: it is tried again from here. */
 		internalRemoveBackupLater: async (c, sessionId: string): Promise<void> => {
 			requireService(c);
 			if (typeof sessionId !== "string" || sessionId === "") throw new UserError("A session id is needed.", { code: "bad_request" });
@@ -3276,14 +2375,7 @@ export const user = actor({
 			return { ok: true, running: running + factorySlots(c) + 1, known: true, until, claim };
 		},
 
-		/**
-		 * Gives back the running slot `internalAcquireRun` claimed for a prompt that the session then refused
-		 * (its sandbox time or its place, or a delete meanwhile), so that the user's other agents are not kept
-		 * from starting until the launch check, a minute later. Only the claim named by `claim` is given back:
-		 * a release that arrives after a newer claim of the same session, or after a report or the launch
-		 * check settled this one, finds another name or none, and changes nothing. `summary` is the session's
-		 * own after the refusal. A release that never arrives leaves the claim to the launch check, as before.
-		 */
+		// A stale release must never clear a later claim.
 		internalReleaseRun: async (c, input: { sessionId: string; claim: number; summary: SessionSummary }): Promise<{ released: boolean }> => {
 			requireService(c);
 			const sessionId = input?.sessionId;
@@ -3299,93 +2391,10 @@ export const user = actor({
 			console.log(`[wlp] run.released uid=${c.key[0]} session=${sessionId}`);
 			return { released: true };
 		},
-
-		// --- sandbox time and kept sandboxes, for the user's sessions (usage.ts) --------------------
-
-		/**
-		 * A session's sandbox is about to run, or goes on running: takes a hold of the day's allowance for
-		 * it, and a place among the kept sandboxes when the session has none (`UsageBook.reserve`). Before
-		 * a place is given or refused, the count is held against the provider's list, so that nobody is
-		 * kept out by a count that is wrong. From there the count, the claim and the hold are one step.
-		 */
-		internalReserve: async (c, input: ReserveRequest): Promise<ReserveAnswer> => {
-			requireService(c);
-			const id = approvalText(input?.id, 64);
-			const session = approvalText(input?.sessionId, 200);
-			if (id === "" || session === "") throw new UserError("A hold needs an id and a session.", { code: "bad_input" });
-			const settle = typeof input.settle?.hold === "string" && typeof input.settle.seconds === "number" ? { hold: input.settle.hold, seconds: input.settle.seconds, observedUntil: input.settle.observedUntil } : undefined;
-			const renewal = input.fresh !== true && settle !== undefined;
-			if (reserveFault) {
-				if (input.fresh && reserveFault.delayMs) await new Promise((done) => setTimeout(done, reserveFault.delayMs));
-				if (renewal && reserveFault.downMs > 0 && reserveFault.downUntil === null) reserveFault.downUntil = Date.now() + reserveFault.downMs;
-				if (reserveFault.downUntil !== null && Date.now() < reserveFault.downUntil) {
-					console.log(`[wlp] usage.fault_down uid=${c.key[0]} session=${session} hold=${id}: refused (WLP_FAKE_RESERVE_FAULT)`);
-					throw new Error("the user's actor is away (WLP_FAKE_RESERVE_FAULT)");
-				}
-			}
-			if (input.keep === true) await reconcileKept(c, c.vars.usage.atCap(session));
-
-			const now = Date.now();
-			// Recheck the session after the provider listing, in case it was deleted meanwhile.
-			const summary = c.vars.sessions.get(session);
-			if (!summary) return { ok: false, reason: "gone", numbers: c.vars.usage.numbers(now) };
-			const keep = input.keep === true && keepsWorkspace(summary);
-			const size = isHostedSize(input.hostedSize) ? input.hostedSize : summary.hostedSize;
-			const clampedSize = input.keep === true ? clampedSandboxSize(c, size) : undefined;
-			const weight = size ? sessionWeight({ hostedSize: clampedSize ?? size }) : undefined;
-			const done = await changeUsage(c, (book) => book.reserve(now, { id, session, keep, weight, fresh: input.fresh === true, settle }));
-			const numbers = c.vars.usage.numbers(now);
-			const lose = reserveFault === null ? null : input.fresh === true ? "fresh" : renewal ? "renewal" : null;
-			if (reserveFault && lose && reserveFault[lose] > 0) {
-				reserveFault[lose] -= 1;
-				console.log(`[wlp] usage.fault_lost uid=${c.key[0]} session=${session} hold=${id} ${lose}: done, and its reply lost (WLP_FAKE_RESERVE_FAULT)`);
-				throw new Error("reply lost (WLP_FAKE_RESERVE_FAULT)");
-			}
-			if (!done.ok) {
-				console.log(`[wlp] usage.refused uid=${c.key[0]} session=${session} limit=${done.reason} used=${numbers.usedSeconds} held=${numbers.heldSeconds} allowance=${numbers.allowanceSeconds ?? "none"} kept=${numbers.sandboxes.kept} of ${numbers.sandboxes.limit ?? "any"}`);
-				return { ok: false, reason: done.reason, numbers };
-			}
-			return { ok: true, ...(clampedSize && { clampedSize }), hold: { id: done.hold.id, seconds: done.hold.seconds }, numbers };
-		},
-
-		/**
-		 * The session is about to make its sandbox: its place among the kept ones, taken where the sandbox is
-		 * made (`UsageBook.claim`). A reserve's place was the session's as it stood then, and a sandbox found
-		 * gone since is replaced here. Held against the provider's list first, as a reserve is.
-		 */
-		internalClaimPlace: async (c, sessionId: string, hostedSize?: HostedSize): Promise<{ ok: boolean; clampedSize?: HostedSize; numbers: UsageNumbers } | { ok: false; reason: "gone" }> => {
-			requireService(c);
-			const session = approvalText(sessionId, 200);
-			if (c.vars.sessions.get(session)?.environmentBuild)
-				return { ok: true, clampedSize: clampedSandboxSize(c, hostedSize), numbers: c.vars.usage.numbers(Date.now()) };
-			await reconcileKept(c, c.vars.usage.atCap(session));
-			// From the check to the claim nothing is awaited: a session being deleted is given nothing new.
-			if (!c.vars.sessions.has(session)) return { ok: false, reason: "gone" };
-			const now = Date.now();
-			const done = await changeUsage(c, (book) => book.claim(now, session));
-			const numbers = c.vars.usage.numbers(now);
-			if (!done.ok) console.log(`[wlp] usage.refused uid=${c.key[0]} session=${session} limit=sandboxes kept=${numbers.sandboxes.kept} of ${numbers.sandboxes.limit ?? "any"}: at the making of its sandbox`);
-			const clampedSize = clampedSandboxSize(c, hostedSize);
-			return { ok: done.ok, ...(clampedSize && { clampedSize }), numbers };
-		},
-
-		internalSettle: async (c, input: HoldReport & { sessionId: string }): Promise<{ known: boolean }> => {
-			requireService(c);
-			const session = approvalText(input?.sessionId, 200);
-			const hold = approvalText(input?.hold, 64);
-			const done = await changeUsage(c, (book) => book.settle(Date.now(), { session, hold, observedUntil: input?.observedUntil, seconds: typeof input?.seconds === "number" ? input.seconds : Number.NaN }));
-			return { known: done.known };
-		},
-
-		/** The server's sweep (index.ts): the user's hosted sandboxes whose session is gone are removed, and the count held against the rest. */
-internalSweepSandboxes: async (c): Promise<void> => {
-	requireService(c);
-	await reconcileKept(c, true);
-},
-
-internalRelease: async (c, sessionId: string): Promise<void> => {
-			requireService(c);
-			await releaseKept(c, approvalText(sessionId, 200));
-		},
+		internalReserve: usageActions.internalReserve,
+		internalClaimPlace: usageActions.internalClaimPlace,
+		internalSettle: usageActions.internalSettle,
+		internalSweepSandboxes: usageActions.internalSweepSandboxes,
+		internalRelease: usageActions.internalRelease,
 	},
 });
