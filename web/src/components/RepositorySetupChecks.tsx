@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { readinessCriteria, readinessItem, readinessLevels, type CriterionId } from "../../../server/src/factory/readiness";
 import { plural } from "../lib/format";
-import { startingSize } from "../lib/sizes";
 import { linkProps } from "../lib/router";
 import type { RepositoryPage } from "../screens/Repository";
 import { useApp, useAuth } from "../state/app";
 
 export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryPage; offersItems: boolean }) {
-	const { client, explain, platform } = useApp();
+	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [busy, setBusy] = useState<"run" | "notes" | "weekly" | "guides" | CriterionId | null>(null);
 	const [error, setError] = useState("");
@@ -49,9 +48,6 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 	if (!data) return null;
 	const disabled = !!busy || page.access.state !== "usable";
 	const checking = busy === "run" || running;
-	const sizes = platform.info?.hostedSizes ?? [];
-	const rate = sizes.find(s => s.id === startingSize(sizes, page.view?.defaults.hostedSize, false))?.usdPerHour;
-	const cost = rate ? ` (about $${(rate * 26 / 60).toFixed(2)} in running time)` : "";
 	const pending = report?.findings.filter(f => f.pass === null).length ?? 0;
 	const score = report && <p className="setup-score"><strong>{report.passed} of {readinessCriteria.length} setup checks passed</strong> · Level: {report.level}{pending > 0 && ` · ${pending} pending`}</p>;
 	return <section id="repo-setup" className="usage-section ws-section repo-setup" aria-labelledby="setup-title">
@@ -63,7 +59,6 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 			})}>{checking ? "Checking…" : data.run === "finished" ? "Run again" : "Finish setup"}</button>
 		</header>
 		<p className="usage-note">Draft contributor guides and skills from the repository and its latest build. A second reviewer checks the files before the pull request opens.</p>
-		<p className="usage-note">Allow up to 26 hosted minutes{cost}, or use your machine for no hosted minutes. Both use your model allowance.</p>
 		{check && <label className="check setup-weekly"><input role="switch" type="checkbox" checked={check.enabled} disabled={disabled} onChange={e => submit("guides", async () =>
 			page.replace(await client.user(auth).setGuideCheck(page.id, e.target.checked)))} /> Check pull requests for broken guide references</label>}
 		{publication && <div className="setup-result">
