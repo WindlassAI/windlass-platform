@@ -43,6 +43,7 @@ COPY web web
 # The files the web app shares with the server, and the recorded runs its mock replays.
 # The web app imports shared server modules (contract, plan and placement rules); copy them all so a new import cannot break the image.
 COPY server/src server/src
+COPY sandbox/relay/wires.cjs sandbox/relay/
 COPY fixtures fixtures
 # `vite build` alone: the web app's own `build` type-checks first, tests included, and those reach into the server's sources.
 RUN pnpm --filter @windlass-platform/web exec vite build
