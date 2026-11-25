@@ -5,9 +5,9 @@ import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMP
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
-import { HARNESS_NAMES, signInWords } from "../lib/acp";
+import { HARNESS_NAMES } from "../lib/acp";
 import { count, localTime, sandboxTime } from "../lib/format";
-import { MODEL_SOURCES, SOURCE_NAMES, cleanModelName, credentialWords, effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault, sourceOf, type ModelSource } from "../lib/models";
+import { MODEL_SOURCES, SOURCE_NAMES, cleanModelName, credentialWords, effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault, modelsBySource, type ModelSource } from "../lib/models";
 import { safeStorage } from "../lib/workspace";
 import { OPEN_MODES, launchModes } from "../lib/modes";
 import { itemOf, lastUsed, layerChoices, repositoryName, startedOn, startingChoices, startingModel, startingProfile } from "../lib/repositories";
@@ -335,8 +335,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			? null
 			: `Your last agent was ${HARNESS_NAMES[started.harness]}, which ${chosenMachine ? `“${machineLabel(chosenMachine)}” does not offer now` : "is unavailable here"}, so this one is ${HARNESS_NAMES[harness]}.`;
 	const catalogs = { codex: useCatalog(chosenMachine, "codex"), claude: useCatalog(chosenMachine, "claude"), opencode: useCatalog(chosenMachine, "opencode") };
-	const optionsFor = (id: HarnessId) => harnessOptions(chosenMachine, id, id === "windlass" ? undefined : catalogs[id].options, keys);
-	const options = optionsFor(harness);
+	const options = harnessOptions(chosenMachine, harness, harness === "windlass" ? undefined : catalogs[harness].options, keys);
 	const lastOf = last.of[harness] ?? null;
 
 	const hasCodexSandbox = (machine: MachineSummary | null) => harness === "codex" && machine?.harnesses?.some(h => h.id === "codex" && h.modes?.includes("workspace-write"));
@@ -768,93 +767,49 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 
 	const whereWarn = placeProblem !== null || chosenMachine?.status === "offline" || (!item && sandboxWarn);
 
-	const modelRows = (harnessId: HarnessId, list: typeof modelList): MenuItem[] => {
-		if (list === null || list.models.length === 0) return [];
-		const isOther = harnessId !== "windlass";
-		return list.models.map(({ id, name: reportedName }) => {
-			const isDefault = id === list.defaultModel;
-			const name = cleanModelName(id, isOther ? reportedName : null);
-			const here = harness === harnessId;
-			const checked = here && (isOther && model === "" ? isDefault : model === id);
-			const source = sourceOf(harnessId, id);
-			return {
-				id: `${harnessId}:${id}`,
-				label: name,
-				textValue: `${name} ${id}`,
-				icon: source ? <ProviderGlyph source={source} /> : <AgentGlyph harness={HARNESS_NAMES[harnessId]} />,
-				trailing: isDefault && !saysDefault(name) ? <span className="ui-tag">default</span> : undefined,
-				checked,
-				onSelect: () => {
-					setHarness(harnessId);
-					setModel(id);
-				},
-			};
-		});
-	};
-	const machineHarnesses = harnessesHere(chosenMachine);
-	const offersOther = machineHarnesses.length > 0;
-	const windlassList = models.list;
-	const agentGroups: MenuGroup[] = [
-		{
-			id: "windlass",
-			label: "Windlass",
-			note: chosenMachine ? `on ${machineLabel(chosenMachine)}` : "hosted or any machine",
-			items:
-				windlassList === null || windlassList.models.length === 0
-					? [{ id: "windlass:default", label: model && !other ? model : "Your default model", icon: <AgentGlyph harness="Windlass" accent />, description: models.reading ? "Reading your models…" : `${models.error ?? "Your models could not be read."} The agent starts on your default model.`, checked: harness === "windlass", onSelect: () => setHarness("windlass") }]
-					: modelRows("windlass", windlassList),
-		},
-		...(!chosenMachine ? (["claude", "codex", "opencode"] as const).map(id => {
-			const name = HARNESS_NAMES[id], problem = hostedProblem(id);
-			const rows = problem ? [] : modelRows(id, optionsFor(id).models);
-			return { id, label: name, note: "hosted", items: rows.length ? rows : [{ id: id + ":default", label: name, icon: <AgentGlyph harness={name} />,
-				description: problem ?? "Use your Settings key", disabled: !!problem, checked: harness === id, onSelect: () => setHarness(id) }] };
-		}) : []),
-		...(chosenMachine && offersOther
-			? machineHarnesses.map((offered) => {
-					const options = optionsFor(offered.id);
-					const name = HARNESS_NAMES[offered.id];
-					const rows = modelRows(offered.id, options.models);
-					return {
-						id: offered.id,
-						label: name,
-						note: signInWords(offered),
-						items: !hardened
-							? [{ id: `${offered.id}:none`, label: name, icon: <AgentGlyph harness={name} />, description: `Runs only in the hardened container, which “${machineLabel(chosenMachine)}” cannot make now.`, disabled: true }]
-							: rows.length > 0
-								? rows
-								: [{ id: `${offered.id}:default`, value: offered.id, label: `${name}'s default model`, icon: <AgentGlyph harness={name} />, description: catalogs[offered.id].reading ? "Reading models…" : `“${machineLabel(chosenMachine)}”'s runner reports ${name}'s models once it has checked.`, checked: harness === offered.id, onSelect: () => setHarness(offered.id) }],
-					};
-				})
-			: []),
-		...(["claude", "opencode", "codex"] as const).flatMap(id => {
-			if (!chosenMachine || machineHarnesses.some(h => h.id === id)) return [];
-			const hosts = mine.filter(machine => why(machine) === null && harnessesHere(machine).some(h => h.id === id));
-			if (hosts.length === 0) return [];
-			const name = HARNESS_NAMES[id];
-			return [{
-				id,
-				label: name,
-				note: "on your machines",
-				items: [{
-					id: id + ":elsewhere",
-					label: name,
-					icon: <AgentGlyph harness={name} />,
-					description: `On ${hosts.map(machineLabel).join(", ")}: choose that machine first`,
-					disabled: true,
-				}],
-			}];
-		}),
-	];
-	// The menu lists the chosen agent's models only, under a header per provider with the credential it uses there.
-	const chosenGroup = agentGroups.find((group) => group.id === harness) ?? agentGroups[0]!;
-	const machineEntry = chosenMachine?.harnesses?.find((entry) => entry.id === harness) ?? null;
+	const machineEntry = chosenMachine?.harnesses?.find(entry => entry.id === harness) ?? null;
 	const machineName = chosenMachine ? machineLabel(chosenMachine) : null;
-	const bySource = new Map<ModelSource | null, MenuItem[]>();
-	for (const row of chosenGroup.items) {
-		const id = row.id.slice(row.id.indexOf(":") + 1);
-		const source = row.id.startsWith(`${harness}:`) && offers(id) ? sourceOf(harness, id) : null;
-		bySource.set(source, [...(bySource.get(source) ?? []), row]);
+	const machineProblem = chosenMachine && !hardened ? `Runs only in the hardened container, which “${machineName}” cannot make now.` : null;
+	const agentButtons: { id: HarnessId; reason?: string | null }[] = [{ id: "windlass" }];
+	if (chosenMachine) {
+		const here = harnessesHere(chosenMachine);
+		for (const { id } of here) agentButtons.push({ id, reason: machineProblem });
+		for (const id of ["claude", "opencode", "codex"] as const) {
+			if (here.some(h => h.id === id)) continue;
+			const hosts = mine.filter(m => why(m) === null && harnessesHere(m).some(h => h.id === id));
+			if (hosts.length) agentButtons.push({ id, reason: `On ${hosts.map(machineLabel).join(", ")}: choose that machine first` });
+		}
+	} else {
+		for (const id of ["claude", "codex", "opencode"] as const) agentButtons.push({ id, reason: hostedProblem(id) });
+	}
+
+	const bySource = modelsBySource(harness, other && machineProblem ? null : modelList);
+	const rowsFor = (source: ModelSource | null): MenuItem[] => (bySource.get(source) ?? []).map(({ id, name: reportedName }) => {
+		const name = cleanModelName(id, other ? reportedName : null);
+		const isDefault = id === modelList?.defaultModel;
+		return {
+			id: `${harness}:${id}`, label: name, textValue: `${name} ${id}`,
+			icon: source ? <ProviderGlyph source={source} /> : <AgentGlyph harness={HARNESS_NAMES[harness]} />,
+			trailing: isDefault && !saysDefault(name) ? <span className="ui-tag">default</span> : undefined,
+			checked: other && !model ? isDefault : model === id,
+			onSelect: () => { setHarness(harness); setModel(id); },
+		};
+	});
+	const defaultRows = rowsFor(null);
+	if (!bySource.size) {
+		const name = HARNESS_NAMES[harness];
+		let label: string = name;
+		let description: string;
+		if (harness === "windlass") {
+			label = model || "Your default model";
+			description = models.reading ? "Reading your models…" : `${models.error ?? "Your models could not be read."} The agent starts on your default model.`;
+		} else if (chosenMachine && !machineProblem) {
+			label = `${name}'s default model`;
+			description = catalogs[harness].reading ? "Reading models…" : `“${machineName}”'s runner reports ${name}'s models once it has checked.`;
+		} else description = machineProblem ?? "Use your Settings key";
+		const blocked = !!(other && machineProblem);
+		defaultRows.push({ id: `${harness}:${blocked ? "none" : "default"}`, label, description, icon: <AgentGlyph harness={name} accent={!other} />,
+			...(chosenMachine && other && !blocked && { value: harness }), disabled: blocked, checked: !blocked, onSelect: () => setHarness(harness) });
 	}
 	const sources = MODEL_SOURCES.filter((source) => bySource.has(source));
 	// One tab per provider: a ChatGPT plan's models and an OpenAI key's are both OpenAI's.
@@ -862,19 +817,14 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const tabs = [...new Set(sources.map(tabOf))];
 	const shownTab = providerTab !== null && tabs.includes(providerTab) ? providerTab : null;
 	const modelGroups: MenuGroup[] = [
-		...(bySource.has(null) && shownTab === null ? [{ id: "agent-default", items: bySource.get(null)! }] : []),
+		...(defaultRows.length && shownTab === null ? [{ id: "agent-default", items: defaultRows }] : []),
 		...sources.filter((source) => shownTab === null || tabOf(source) === shownTab).map((source) => ({
 			id: `provider:${source}`,
 			label: SOURCE_NAMES[source],
 			note: credentialWords(harness, source, machineEntry, machineName) || undefined,
-			items: bySource.get(source)!,
+			items: rowsFor(source),
 		})),
 	];
-	const agentButtons = agentGroups.map((group) => {
-		const id = group.id as HarnessId;
-		const blocked = group.items.every((row) => row.disabled);
-		return { id, blocked, why: blocked ? (group.items[0]?.description as string | undefined) : undefined };
-	});
 	const chooseAgent = (id: HarnessId) => {
 		if (id === harness) return;
 		setHarness(id);
@@ -884,7 +834,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const agentSwitch = (
 		<div className="picker-agents">
 			<div className="agent-switch" role="group" aria-label="Switch agent">
-				{agentButtons.map(({ id, blocked, why: reason }) => {
+				{agentButtons.map(({ id, reason }) => {
 					const chosen = harness === id;
 					return (
 						<Tooltip key={id} content={reason ? `${HARNESS_NAMES[id]}: ${reason}` : HARNESS_NAMES[id]}>
@@ -893,9 +843,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								className={`agent-switch-button${chosen ? " agent-switch-chosen" : ""}`}
 								aria-pressed={chosen}
 								aria-label={HARNESS_NAMES[id]}
-								aria-disabled={blocked || undefined}
+								aria-disabled={!!reason || undefined}
 								onPointerDown={(event) => event.preventDefault()}
-								onClick={() => !blocked && chooseAgent(id)}
+								onClick={() => !reason && chooseAgent(id)}
 							>
 								<AgentLogo id={id} size={17} />
 							</button>
@@ -924,12 +874,14 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				))}
 			</div>
 		) : null;
-	const agentModel = !other ? (model ? cleanModelName(model) : "default model") : model !== "" ? cleanModelName(model, modelName(modelList, model)) : reportedDefault !== null && modelList ? cleanModelName(reportedDefault, modelLabel(modelList, reportedDefault)) : "default model";
+	const displayModel = model || reportedDefault;
+	const reportedName = other && displayModel ? (model ? modelName(modelList, model) : modelLabel(modelList, displayModel)) : null;
+	const agentModel = displayModel ? cleanModelName(displayModel, reportedName) : "default model";
 	const agentSpec: MenuSpec = {
 		label: "Agent and model",
 		width: 340,
 		maxHeight: 540,
-		filter: chosenGroup.items.length > 7 ? { placeholder: "Filter models…" } : undefined,
+		filter: bySource.size && (modelList?.models.length ?? 0) > 7 ? { placeholder: "Filter models…" } : undefined,
 		header: (
 			<>
 				{agentSwitch}
@@ -962,7 +914,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			</>
 		),
 	};
-	const effortSpec: MenuSpec | null = efforts.length > 0 ? { label: "Effort", width: 220, groups: [effortGroup(efforts, effort, agentModel, setEffort)!], hints: false } : null;
+	const effortSpec: MenuSpec | null = efforts.length > 0 ? { label: "Effort", width: 220, groups: [effortGroup(efforts, effort, agentModel, setEffort)], hints: false } : null;
 	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}`;
 	const agentWarn = harnessProblem !== null || (!other && ignored.model !== null);
 

@@ -1,11 +1,6 @@
-/**
- * The models a user may choose (`ModelList`), as the screens read them: what is offered, which efforts
- * go with the chosen model, and the one quiet line that says whose list it is, so that a model that
- * is missing from it is no mystery. The list is the user's ChatGPT plan's where it could be read, and
- * the platform's stand-in where not; the server says which, and the words here only repeat it.
- */
-import type { HarnessId, MachineSummary, ModelChoice, ModelList, ModelProvider, SessionMode } from "@contract";
+import { MODEL_PROVIDERS, isModelProvider, type HarnessId, type MachineSummary, type ModelChoice, type ModelList, type ModelProvider, type SessionMode } from "@contract";
 import { hostedCatalog, windlassProvider, type CheckedProvider } from "../../../server/src/sandbox/harnesses.js";
+import type { ReportedHarness } from "./acp";
 import { localTime } from "./format";
 
 /** The ids of the list's models, in its order; none while the list is not known. */
@@ -15,7 +10,7 @@ export const modelIds = (list: ModelList | null): string[] => list?.models.map((
 export const effortsOf = (list: ModelList | null, model: string): string[] => list?.models.find((candidate) => candidate.id === model)?.efforts ?? [];
 
 /** Use an adapter's explicit reset value when it offers one. Other models reset by omitting effort. */
-export const effortChoices = (efforts: string[]): string[] =>
+export const effortChoices = (efforts: readonly string[]): string[] =>
 	[efforts.includes("default") ? "default" : "", ...efforts.filter(level => level !== "default")];
 
 /** Whose list it is, in a sentence, for under a field. */
@@ -82,16 +77,15 @@ export const modelName = (list: ModelList | null, id: string): string => list?.m
 export const saysDefault = (name: string): boolean => /\bdefault\b/i.test(name);
 
 /** A model in a few words, its list's default marked: "Opus (default)", "Haiku". What a harness starts on when no model is sent is its default. */
-export function modelLabel(list: ModelList, id: string): string {
-	const name = modelName(list, id);
-	return id === list.defaultModel && !saysDefault(name) ? `${name} (default)` : name;
+export function modelLabel(list: ModelList | null, id: string, name = modelName(list, id)): string {
+	return id === list?.defaultModel && !saysDefault(name) ? `${name} (default)` : name;
 }
 
 /** Who serves a model: a provider of Settings keys, a ChatGPT plan, OpenCode's own free models, or another OpenCode provider. */
 export type ModelSource = ModelProvider | "chatgpt" | "opencode" | "other";
 
 /** The order a picker lists them in. */
-export const MODEL_SOURCES: readonly ModelSource[] = ["chatgpt", "openai", "anthropic", "google", "openrouter", "opencode", "other"];
+export const MODEL_SOURCES: readonly ModelSource[] = ["chatgpt", ...MODEL_PROVIDERS, "opencode", "other"];
 
 export const SOURCE_NAMES: Record<ModelSource, string> = { chatgpt: "ChatGPT", openai: "OpenAI", anthropic: "Anthropic", google: "Gemini", openrouter: "OpenRouter", opencode: "OpenCode Zen", other: "Other" };
 
@@ -101,8 +95,19 @@ export function sourceOf(harness: HarnessId, id: string): ModelSource | null {
 	if (harness === "claude") return "anthropic";
 	if (harness === "codex") return "openai";
 	if (id === "default") return null;
-	const prefix = id.split("/")[0] ?? "";
-	return (MODEL_SOURCES as readonly string[]).includes(prefix) && prefix !== "chatgpt" ? (prefix as ModelSource) : "other";
+	const [provider] = id.split("/", 1);
+	return provider === "opencode" || isModelProvider(provider) ? provider : "other";
+}
+
+export function modelsBySource(harness: HarnessId, list: ModelList | null) {
+	const groups = new Map<ModelSource | null, ModelChoice[]>();
+	for (const model of list?.models ?? []) {
+		const source = sourceOf(harness, model.id);
+		const group = groups.get(source);
+		if (group) group.push(model);
+		else groups.set(source, [model]);
+	}
+	return groups;
 }
 
 const UPPER = new Set(["oss", "gpt", "glm"]);
@@ -128,15 +133,8 @@ export function cleanModelName(id: string, reported?: string | null): string {
 	return modelWords(id);
 }
 
-/** A machine agent as the Machines page lists it. */
-type ListedHarness = NonNullable<MachineSummary["harnesses"]>[number];
 
-/**
- * Whose credential serves a source for this agent, in a few words: "Claude subscription · mac-mini",
- * "Anthropic key". `entry` is the agent on its machine; none for Windlass and hosted agents, which use
- * the platform's ChatGPT sign-in and Settings keys.
- */
-export function credentialWords(harness: HarnessId, source: ModelSource, entry: ListedHarness | null, machine: string | null): string {
+export function credentialWords(harness: HarnessId, source: ModelSource, entry: ReportedHarness | null, machine: string | null): string {
 	if (source === "chatgpt") return "ChatGPT plan";
 	if (source === "opencode") return entry?.machineProviders?.includes("free") ? "free" : machine ? `OpenCode Zen login · ${machine}` : "";
 	if (source === "other") return entry && machine ? `login on ${machine}` : "";

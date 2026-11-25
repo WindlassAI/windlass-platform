@@ -12,7 +12,8 @@ import { absoluteTime, clockTime, plural, relativeTime, spelledDuration } from "
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useHostedProviders, useNow } from "../state/hooks";
-import { anyOf, keyProviders } from "../../../server/src/sandbox/harnesses.js";
+import { SOURCE_NAMES } from "../lib/models";
+import { anyOf } from "../../../server/src/sandbox/harnesses.js";
 import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, tagsOf } from "../lib/machines";
 import { ORCHESTRATOR_CHOICES, orchestratorNote, orchestratorOf, type Orchestrator } from "../lib/placement";
 import { Check } from "../components/ui/Check";
@@ -342,12 +343,6 @@ export function settingsKeyUpgrade(machine: MachineSummary) {
 	return machine.harnesses?.some(h => !h.keyRelay) ? "Update the runner to use Settings keys on this machine." : null;
 }
 
-/**
- * A machine's agents as a status list: each one signed in or not, as its runner last said, with the
- * command that signs it in on the machine. Signing in is done in the machine's terminal only. Where
- * the machine's sign-in and one of the owner's Settings keys could both serve an agent, its credential
- * choice follows it (`CredentialChoice`).
- */
 function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChanged(list: MachineSummary[]): void }) {
 	const harnesses = machine.harnesses ?? [];
 	const saved = useHostedProviders(harnesses.some((harness) => harness.machineSignIns?.length));
@@ -356,7 +351,7 @@ function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChan
 		<ul className="machine-agents" aria-label="Agents on this machine">
 			{harnesses.map((harness) => {
 				const command = loginCommand(harness);
-				const both = harness.keyRelay ? (harness.machineSignIns ?? []).filter((provider) => keyProviders(harness.id).includes(provider) && saved?.some((key) => key.provider === provider)) : [];
+				const both = harness.keyRelay ? (harness.machineSignIns ?? []).filter((provider) => saved?.some((key) => key.provider === provider)) : [];
 				return (
 					<li key={harness.id} className={`machine-agent machine-agent-${harness.signIn}`}>
 						<span className="machine-agent-name">
@@ -391,13 +386,6 @@ function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChan
 	);
 }
 
-const KEY_NAMES: Record<ModelProvider, string> = { openai: "OpenAI", anthropic: "Anthropic", google: "Gemini", openrouter: "OpenRouter" };
-
-/**
- * Whose credential an agent uses where the machine's own sign-in and a Settings key could both serve
- * it: the machine's by default, the key then used only for what the machine is not signed in to.
- * Saved as soon as it is chosen; the line under it says who pays.
- */
 function CredentialChoice({ machine, harness, providers, onChanged }: { machine: MachineSummary; harness: ReportedHarness; providers: ModelProvider[]; onChanged(list: MachineSummary[]): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
@@ -407,7 +395,7 @@ function CredentialChoice({ machine, harness, providers, onChanged }: { machine:
 	const saved: CredentialSource = harness.source ?? "machine";
 	const shown = busy ?? saved;
 	const here = machine.os.toLowerCase().startsWith("mac") || machine.os === "Darwin" ? "this Mac" : `“${machineLabel(machine)}”`;
-	const keys = anyOf(providers.map((provider) => KEY_NAMES[provider]));
+	const keys = anyOf(providers.map((provider) => SOURCE_NAMES[provider]));
 	const plan = harness.id === "claude" ? "Claude subscription" : harness.machineMethod === "chatgpt" || (providers.includes("openai") && harness.machineProviders?.includes("chatgpt")) ? "ChatGPT plan" : `${keys} login${providers.length > 1 ? "s" : ""}`;
 	const choices: Array<{ id: CredentialSource; label: string; means: string }> = [
 		{ id: "machine", label: `Use ${here}'s ${plan}`, means: `Your ${plan} on ${here} pays for its turns. Your ${keys} key is used only if ${here} is signed out.` },

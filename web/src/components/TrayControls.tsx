@@ -1,9 +1,3 @@
-/**
- * The pieces of the start composer's one-line tray (components/StartComposer.tsx), shared by the Agents
- * composer and the Factory's: the agent pill with its model, the effort button beside it where the
- * model takes an effort (`EffortButton`, `effortGroup`), the one "where" pill (place · repository /
- * branch), the options icon, and the lock whose tooltip says what the sandbox lets the agent's commands do.
- */
 import type { ReactNode } from "react";
 import { effortChoices } from "../lib/models";
 import { ChevronDownIcon, CloudIcon, LockIcon, MachineIcon, SlidersIcon, WarnIcon } from "./Icons";
@@ -13,7 +7,7 @@ import { AgentGlyph } from "./ui/Pill";
 import { Tooltip } from "./ui/Tooltip";
 
 /** An effort as bars, filled to its level. */
-export function EffortBars({ level, of }: { level: number; of: number }) {
+function EffortBars({ level, of }: { level: number; of: number }) {
 	const bars = Math.max(of, 3);
 	return (
 		<span className="effort-bars" aria-hidden="true">
@@ -25,16 +19,14 @@ export function EffortBars({ level, of }: { level: number; of: number }) {
 }
 
 /** Where the effort stands among its model's: 0 for the default, one more for each level up. */
-export const effortLevel = (efforts: readonly string[], effort: string): number => Math.max(0, effortChoices([...efforts]).indexOf(effort));
+const effortLevel = (efforts: readonly string[], effort: string): number => Math.max(0, effortChoices(efforts).indexOf(effort));
 
-/** The effort's rows, for the effort button's menu. Null for a model with no efforts. */
-export function effortGroup(efforts: readonly string[], effort: string, model: string, onChoose: (level: string) => void): MenuGroup | null {
-	if (efforts.length === 0) return null;
+export function effortGroup(efforts: readonly string[], effort: string, model: string, onChoose: (level: string) => void): MenuGroup {
 	return {
 		id: "effort",
 		label: "Effort",
 		note: model,
-		items: effortChoices([...efforts]).map((level, index) => ({
+		items: effortChoices(efforts).map((level, index) => ({
 			id: `effort:${level || "default"}`,
 			value: level || "default",
 			label: level || "default",
@@ -54,7 +46,7 @@ function PillDot({ dot, label }: { dot: Dot; label?: string }) {
 }
 
 /** The agent: its logo, name and model. */
-export function AgentPill({ trigger, harness, name, model, dot, dotLabel, changed, ...data }: { trigger: TriggerProps; harness: string; name: string; model: string; dot: Dot; dotLabel?: string; changed: boolean; "data-value": string; disabled?: boolean }) {
+export function AgentPill({ trigger, harness, name, model, dot, dotLabel, changed, ...data }: { trigger: TriggerProps; harness: string; name: string; model: string; dot: Dot; dotLabel?: string; changed: boolean; "data-value": string }) {
 	return (
 		<button type="button" {...trigger} {...data} className={`ui-pill tray-pill tray-agent${dot === "warn" ? " ui-pill-warn" : ""}${changed ? " ui-pill-changed" : ""}`} data-picker="agent" aria-label={`Agent: ${name} · ${model}`}>
 			<span className="ui-pill-icon">
