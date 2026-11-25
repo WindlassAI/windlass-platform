@@ -37,7 +37,9 @@ const DISMISS_PX = 96;
 
 export function Sheet({ open, ...props }: SheetProps) {
 	if (!open || typeof document === "undefined") return null;
-	return createPortal(<SheetPanel {...props} />, document.body);
+	// Inside a modal dialog it is drawn in the dialog's own top layer, or the dialog would cover it.
+	const opener = props.returnFocus?.current ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+	return createPortal(<SheetPanel {...props} />, opener?.closest("dialog") ?? document.body);
 }
 
 function SheetPanel({ onClose, title, onBack, backLabel, done = "Done", returnFocus, toolbar, footer, id, children }: Omit<SheetProps, "open">) {

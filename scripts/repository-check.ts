@@ -13,7 +13,9 @@
  */
 
 import { DatabaseSync } from "node:sqlite";
-import { MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryDefaults, type SandboxProfile } from "../server/src/contract.js";
+import { MAX_REPOSITORY_DEFAULTS, type MachineSummary, type ModelList, type RepositoryDefaults, type SandboxProfile } from "../server/src/contract.js";
+import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../server/src/account-defaults.js";
+import { resolveStartPlace } from "../server/src/start-place.js";
 import { DEFAULTS_TABLE, type DefaultsChange, type DefaultsDb, DefaultsProblem, cleanDefaults, migrateDefaults, readDefaults, saveDefaults } from "../server/src/repository-defaults.js";
 
 let failed = 0;
@@ -98,6 +100,51 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 	expect("clearing one field keeps the other", values(cleared) === plain([null, "gpt-6.1-sol"]) && rows().length === 2);
 	const gone = await saveDefaults(db, HARBOR, "", { model: null }, 60);
 	expect("clearing the last one leaves no row", plain(gone) === plain({ place: null, harness: null, machineProfile: null, placeFallback: null, screenshots: false, profile: null, model: null, hostedSize: null, updatedAt: null }) && rows().length === 1 && rows()[0]?.project === QUAY, plain(rows()));
+}
+
+// ---- where interactive agents start ---------------------------------------------------------------
+
+{
+	const { db } = database();
+	await db.execute(ACCOUNT_DEFAULTS_TABLE);
+	const nas: MachineSummary = {
+		machineId: "nas", name: "nas", os: "linux", arch: "arm64", status: "offline", runnerVersion: "1", since: 0, agents: 0,
+		sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: PROFILES.slice(0, 2), sendSecrets: false, warnings: [],
+	};
+	const laptop = { ...nas, machineId: "laptop", name: "laptop" };
+	const machines = [nas, laptop];
+	const machine = { kind: "machine", machineId: nas.machineId, profile: "docker-hardened" } as const;
+	const hosted = { kind: "hosted" } as const;
+	const clean = (startPlace: unknown) => cleanDefaults({ startPlace }, PROFILES, MODELS, [], machines);
+	for (const bad of [{ ...machine, machineId: "foreign" }, { ...machine, profile: "e2b" }, { kind: "machine", machineId: "nas" }, "any-machine"]) {
+		let rejected = false;
+		try { clean(bad); } catch (e) { rejected = e instanceof DefaultsProblem && e.code === "bad_input"; }
+		expect("rejects an invalid start place " + plain(bad), rejected);
+	}
+	await saveAccountDefaults(db, clean(machine), 1);
+	await saveAccountDefaults(db, { profile: "docker-windlass-sandbox" }, 2);
+	await saveDefaults(db, HARBOR, "", { ...clean({ ...machine, machineId: "laptop" }), item_place: { place: "hosted" } }, 3);
+	const account = (await readAccountDefaults(db)).startPlace;
+	const repo = await readDefaults(db, HARBOR);
+	expect("each scope retains its machine and profile independently of hosted sandbox and work items",
+		plain(account) === plain(machine) && plain(repo.startPlace) === plain({ ...machine, machineId: "laptop" }) && repo.place === "hosted");
+	const saved = { machines, account, repository: repo.startPlace };
+	expect("a launch choice precedes even a remembered hosted launch", resolveStartPlace({ ...saved, launch: machine, last: hosted }).source === "launch");
+	expect("the remembered launch precedes saved places", resolveStartPlace({ ...saved, last: hosted }).machine === null && resolveStartPlace({ ...saved, last: hosted }).source === "last launch");
+	const chosen = resolveStartPlace(saved);
+	expect("after Forget, a repository machine and its own profile win", chosen.machine === laptop && chosen.profile === machine.profile);
+	const unpaired = resolveStartPlace({ ...saved, machines: [nas] });
+	expect("an unpaired repository machine falls through to the account with an explanation", unpaired.machine === nas && unpaired.notes[0]?.includes("no longer paired") === true);
+	const disallowed = resolveStartPlace({ ...saved, machines: [nas, { ...laptop, allowedProfiles: ["docker-windlass-sandbox"] }] });
+	expect("a withdrawn profile falls through too", disallowed.machine === nas && disallowed.notes.length === 1);
+	expect("with no usable machine the deployment wins", resolveStartPlace({ ...saved, machines: [] }).source === "deployment default");
+	expect("a pending inventory cannot launch the fallback early", resolveStartPlace({ ...saved, machines: null }).pending === true);
+	await saveDefaults(db, HARBOR, "", clean(hosted), 4);
+	expect("explicit Hosted overrides an account machine", resolveStartPlace({ ...saved, repository: (await readDefaults(db, HARBOR)).startPlace }).source === "repository default");
+	await saveDefaults(db, HARBOR, "", clean(null), 5);
+	await saveAccountDefaults(db, clean(null), 6);
+	expect("clearing the start place leaves work-item placement and the hosted profile intact", !(await readDefaults(db, HARBOR)).startPlace && (await readDefaults(db, HARBOR)).place === "hosted" &&
+		!(await readAccountDefaults(db)).startPlace && (await readAccountDefaults(db)).profile === "docker-windlass-sandbox");
 }
 
 // ---- the hosted size ------------------------------------------------------------------------------

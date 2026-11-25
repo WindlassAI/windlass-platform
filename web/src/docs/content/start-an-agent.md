@@ -141,7 +141,7 @@ A machine has no hosted sizes: the runner sets the memory of each slot (`--slot-
 
 A new agent starts from saved defaults, so you rarely need to change the choices. When a choice differs from the default, its menu offers **Back to the default**.
 
-The platform takes each choice from the first of these that has one:
+For the hosted sandbox and Windlass model, the platform takes the first available choice in this order:
 
 1. what you choose when you launch the agent;
 2. the repository's default, in its settings;
@@ -149,6 +149,8 @@ The platform takes each choice from the first of these that has one:
 4. what your newest agent on that repository was launched with, or your newest agent overall if none is on it;
 5. the platform's own default.
 
-**Where it runs, the agent and the mode** have no saved default. They start where your last agent started, on any browser, even if you deleted that agent. A work item does not count. If that machine is gone or cannot be used, or it no longer offers that agent, the agent starts on **this platform** with Windlass, and the control shows a warning dot whose menu says why.
+For **where it runs**, a choice in the composer wins. Otherwise Windlass uses the place of your last personal launch, then the repository default, then the account default, then Hosted. A saved machine includes its sandbox profile. If that machine is unpaired or its profile becomes unavailable, the composer explains which choice it skipped.
+
+The last launch also remembers its agent and mode across browsers, even if you delete the agent. Choose **Forget** in Defaults to clear it. Starting a work item leaves that memory intact.
 
 See [Settings, usage and limits](/docs/settings) to save defaults.

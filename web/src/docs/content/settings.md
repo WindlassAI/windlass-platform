@@ -2,13 +2,13 @@
 
 Open the account menu and choose **Settings**. What you save here holds for every agent of yours, whatever the repository. What you save for one repository is under **Saved settings** when you choose it in **Agents**.
 
-### Defaults for new agents
+### Defaults
 
-Choose a default **Sandbox** and **Model**, or **No default**. They save as soon as you choose. A new agent starts from these where its repository has no default of its own. See [Defaults](/docs/start-an-agent#defaults) for the full order.
+Each choice saves as soon as you make it. A field you leave unset shows what it comes to in quiet text: the deployment's default here, your account's default on a repository's page.
 
-**Where work items run** sets the place for new work items. Choose Hosted, a paired machine, or Any of my machines. For machine places, choose the agent, its model and effort, the profile, and whether an unavailable machine should wait or fall back to hosted Windlass. A repository can inherit your account setting or save its own.
+**Agents you start here** shows where your next agent starts. **Where** saves Hosted or one of your paired machines. Choose a sandbox for Hosted or a profile the machine offers. Your last launch takes precedence until you choose **Forget**. If a saved machine or profile becomes unavailable, **Starts on** shows the next usable default and explains the change. [Launch defaults](/docs/start-an-agent#defaults)
 
-**Where new agents start** shows where your last agent started. A new agent starts there too. Choose **Forget** to start the next one on this platform with Windlass.
+**Work items** sets where new work items run: a hosted sandbox, a paired machine, or Any of my machines. For a machine, choose its profile, whether an unavailable machine waits or runs hosted with Windlass, the agent, and for Claude Code, Codex or OpenCode its model and effort. Windlass work items use the model above. A repository can inherit your account setting or save its own.
 
 ### Model providers
 
@@ -79,11 +79,11 @@ Without plans, the platform's operator sets your limits, and **Usage** shows the
 
 Choose a repository in the rail of **Agents**, then **Saved settings**. Sections such as **Checks** have a direct address, for example `/repositories/<id>/settings#checks`.
 
-### Defaults for new agents
+### Defaults
 
-The sandbox and model a new agent on this repository starts from. You can still change them when you launch an agent. An agent that exists keeps what it was launched with.
+The same two groups as in account settings, for this repository: unset fields show your account's default. You can still change any of them when you launch an agent. An agent that exists keeps what it was launched with.
 
-Where the platform offers more than one, **Hosted size** sets the CPUs and memory of the repository's hosted sandboxes, for its agents and its work items. Each choice shows its estimated price an hour. Without a saved size, agents start on **Small** and work items on **Standard**. A size chosen when you launch an agent or file an item wins over the saved one. See [Hosted sizes](/docs/start-an-agent#hosted-sizes).
+Where the platform offers more than one, **Hosted size** sets the CPUs and memory of the repository's hosted sandboxes, for its agents and its work items. Each choice shows its estimated price an hour. It shows where it applies: beside the agents' sandbox, and under work items that run hosted or fall back to hosted (**Hosted size if it falls back**). Without a saved size, agents start on **Small** and work items on **Standard**. A size chosen when you launch an agent or file an item wins over the saved one. See [Hosted sizes](/docs/start-an-agent#hosted-sizes).
 
 ### Work item approvals
 

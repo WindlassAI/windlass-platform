@@ -13,7 +13,6 @@
  * sandbox, so the list of secrets is said for the sandbox a new agent starts in when nothing else is
  * chosen: the account's default, or the deployment's first.
  */
-import type { AccountSettings, LastStart } from "@contract";
 import { useState } from "react";
 import { Dialog } from "../components/Dialog";
 import { ApiTokens } from "../components/ApiTokens";
@@ -25,67 +24,13 @@ import { LoginMethods } from "../components/LoginMethods";
 import { ModelProviders } from "../components/ModelProviders";
 import { PersonalServers } from "../components/PersonalServers";
 import { PlanSection } from "../components/Plan";
-import { HARNESS_NAMES } from "../lib/acp";
 import { machineLabel } from "../lib/machines";
-import { modeName } from "../lib/modes";
 import { startingChoices } from "../lib/repositories";
 import { settingsKeyUpgrade, useMachines } from "./Machines";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useAccount, useModels } from "../state/hooks";
 import { Check } from "../components/ui/Check";
-import { AgentGlyph } from "../components/ui/Pill";
-
-/**
- * Where a new agent runs, which agent it is, and its mode: not saved on purpose, but where the last
- * agent started, which the server remembers (`AccountSettings.lastStart`). Said in one line, with a
- * way to forget it; the next agent started is remembered again.
- */
-function LastStartLine({ machines, lastStart, forget, onForgotten }: { machines: ReturnType<typeof useMachines>; lastStart: LastStart | null; forget(): Promise<AccountSettings>; onForgotten(next: AccountSettings): void }) {
-	const { explain } = useApp();
-	const [busy, setBusy] = useState(false);
-	const [failed, setFailed] = useState<string | null>(null);
-	const machine = lastStart?.place.kind === "machine" ? (machines.list?.find((candidate) => candidate.machineId === (lastStart.place as { machineId: string }).machineId) ?? null) : null;
-	const where = lastStart === null ? null : lastStart.place.kind === "hosted" ? "a hosted sandbox" : machine ? machineLabel(machine) : machines.list ? "a machine that is no longer yours" : "one of your machines";
-	const run = async () => {
-		setBusy(true);
-		setFailed(null);
-		try {
-			onForgotten(await forget());
-		} catch (failure) {
-			setFailed(explain(failure));
-		} finally {
-			setBusy(false);
-		}
-	};
-	return (
-		<div className="field last-start">
-			<span className="label">Where new agents start</span>
-			<p className="last-start-value" data-testid="last-start">
-				{lastStart === null ? (
-					<span className="last-start-none">Nothing remembered yet</span>
-				) : (
-					<>
-						<span>{where}</span>
-						<span className="last-start-sep" aria-hidden="true">·</span>
-						<span>
-							<AgentGlyph harness={lastStart.harness} size={11} inline />
-							{HARNESS_NAMES[lastStart.harness]}
-						</span>
-						<span className="last-start-sep" aria-hidden="true">·</span>
-						<span>{modeName(lastStart.harness, lastStart.mode)}</span>
-						<button type="button" className="link last-start-forget" onClick={() => void run()} disabled={busy}>
-							{busy ? "Forgetting…" : "Forget"}
-						</button>
-					</>
-				)}
-			</p>
-			<p className={`field-note${failed ? " tone-bad" : ""}`} role={failed ? "alert" : undefined}>
-				{failed ?? "A new agent starts where your last one did, with the same agent and mode, until you choose otherwise. A machine or agent that cannot be used then leaves it on a hosted sandbox with Windlass, and the launch says so."}
-			</p>
-		</div>
-	);
-}
 
 /** What the top bar shows on this page: the way back and where one is. */
 export function SettingsCrumb() {
@@ -161,16 +106,18 @@ export function Settings() {
 
 					<DefaultsSection
 						id="settings-defaults"
-						lede="A new agent starts from these where its repository has no default of its own, and on no repository. A choice made when it is launched comes first, then the repository's default, then these, then what your newest agent was launched with, then the deployment's. Where it runs, the agent and the mode start where your last agent did."
+						lede="Used wherever a repository has no default of its own. A choice made at launch always comes first."
 						defaults={settings.defaults}
 						whose="account"
 						under={null}
+						account={null}
 						models={models}
 						save={(change) => client.user(auth).saveAccountDefaults(change)}
 						onSaved={(next) => account.replace({ ...settings, defaults: next })}
-					>
-						<LastStartLine machines={machines} lastStart={settings.lastStart} forget={() => client.user(auth).forgetLastStart()} onForgotten={account.replace} />
-					</DefaultsSection>
+						lastStart={settings.lastStart}
+						forgetLastStart={() => client.user(auth).forgetLastStart()}
+						onForgotten={account.replace}
+					/>
 
 					<PersonalServers settings={settings} onChanged={account.replace} />
 

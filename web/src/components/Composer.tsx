@@ -32,14 +32,16 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent
 import { errorMessage, hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { count } from "../lib/format";
-import { effortChoices, effortsOf, modelIds, modelLabel, modelsNote, modelsNoteShort } from "../lib/models";
+import { effortsOf, modelIds, modelsNote, modelsNoteShort } from "../lib/models";
+import { modelDisplay, modelMenu as sharedModelMenu } from "./ModelPicker";
+import { effortGroup } from "./TrayControls";
 import { linkProps } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { ArrowUpIcon, ChevronIcon, PauseIcon, SteerIcon, StopIcon, WarnIcon } from "./Icons";
 import { ModePicker } from "./Modes";
 import { KeyHints } from "./ui/Kbd";
 import { Menu, type MenuSpec } from "./ui/Menu";
-import { Pill } from "./ui/Pill";
+import { agentId, Pill } from "./ui/Pill";
 
 export interface ComposerProps {
 	status: SessionStatus;
@@ -195,9 +197,9 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 	const currentEffort = efforts.includes(effort) ? effort : "";
 	// An agent's own list draws its pickers only where it offers a choice.
 	const modelPicker = harness === null || offered.length > 1;
-	// Another harness's models by the names it gave them, its default marked as the start composer marks it; Windlass's by their ids, as before.
-	const modelById = new Map(models?.models.map(row => [row.id, row]));
-	const harnessModelLabel = (id: string) => harness ? modelLabel(models, id, modelById.get(id)?.name || id) : id;
+	// A model by the name every picker gives it: an agent's own name where it gave one, the id in words otherwise.
+	const harnessId = harness === null ? "windlass" : agentId(harness);
+	const harnessModelLabel = (id: string) => modelDisplay(harnessId, models, id);
 	const tooLong = text.length > MAX_PROMPT_CHARS;
 	const keyProblem = idle ? modelProblem?.(currentModel) : null;
 	const canSend = !keyProblem && writable && online && !sending && text.trim() !== "" && !tooLong;
@@ -311,27 +313,16 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 		void send();
 	};
 
-	// The model and its efforts, as a menu: the model's efforts in its submenu.
-	const listed = offered.includes(currentModel) ? offered : [currentModel, ...offered];
+	// The model, as every picker lists it: by provider, with whose credential it uses; the effort is its own picker beside it.
 	const standIn = models !== null && harness === null && models.source !== "account" && models.source !== "harness";
-	const modelMenu: MenuSpec = {
-		label: "Model",
-		width: 280,
-		groups: [
-			{
-				id: "models",
-				label: harness === null ? "Model" : `${harness}'s models`,
-				note: models && harness === null ? modelsNoteShort(models) : undefined,
-				items: listed.map((id) => ({
-					id,
-					label: harnessModelLabel(id),
-					checked: id === currentModel,
-					onSelect: () => setChosenModel(id),
-				})),
-			},
-		],
-		footer: models ? <p className="ui-menu-note">{harness === null ? modelsNote(models) : `The models ${harness} offered for this agent.`}</p> : undefined,
-	};
+	const modelMenu: MenuSpec = sharedModelMenu({
+		harness: harnessId,
+		list: models,
+		chosen: currentModel,
+		onChoose: setChosenModel,
+		credentials: harness === null,
+		footer: harness !== null && models ? <p className="ui-menu-note">{`The models ${harness} offered for this agent.`}</p> : undefined,
+	});
 	const modelTitle = idle ? undefined : "For the next turn; a message to the running turn uses its model and effort";
 	const modelPill = (
 		<Menu
@@ -346,11 +337,7 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 	);
 
 	// The chosen model's efforts, as their own picker beside the model: every agent whose model has efforts.
-	const effortMenu: MenuSpec = {
-		label: "Effort",
-		width: 200,
-		groups: [{ id: "efforts", label: `Effort for ${harnessModelLabel(currentModel)}`, items: effortChoices(efforts).map((level) => ({ id: level || "default", label: level || "default", checked: (currentEffort || "default") === (level || "default"), onSelect: () => setEffort(level) })) }],
-	};
+	const effortMenu: MenuSpec = { label: "Effort", width: 220, groups: [effortGroup(efforts, currentEffort, harnessModelLabel(currentModel), setEffort)], hints: false };
 	const effortPill =
 		efforts.length > 0 ? (
 			<Menu

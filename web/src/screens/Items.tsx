@@ -34,7 +34,8 @@ import { StatusBadge } from "../components/Status";
 import { useApp, useAuth } from "../state/app";
 import { useAccount, useHostedProviders, useModels, useNow } from "../state/hooks";
 import { useDefaults, useCatalog } from "../components/StartComposer";
-import { effortChoices, effortsOf, harnessOptions, modelLabel } from "../lib/models";
+import { effortChoices, effortsOf, harnessOptions } from "../lib/models";
+import { EffortSelect, ModelSelect, agentDefaultLabel, modelDisplay } from "../components/ModelPicker";
 import { clockTime, useMachines } from "./Machines";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
 import { ItemModeCost, ItemModePicker } from "../components/ItemModePicker";
@@ -868,28 +869,24 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 							<label className="label" htmlFor={ids.model}>
 								Model
 							</label>
-							<select id={ids.model} className="select" value={model} disabled={busy} onChange={(event) => setModel(event.target.value)}>
-								<option value="">{`${HARNESS_NAMES[modelAgent]}'s default (${modelLabel(modelList, modelList.defaultModel).replace(/ \(default\)$/, "")})`}</option>
-								{modelList.models.map((one) => (
-									<option key={one.id} value={one.id}>
-										{modelLabel(modelList, one.id)}
-									</option>
-								))}
-							</select>
+							<ModelSelect
+								id={ids.model}
+								harness={modelAgent}
+								list={modelList}
+								value={model}
+								inherit={{ label: agentDefaultLabel(modelAgent, modelList) }}
+								entry={chosenMachine?.harnesses?.find((one) => one.id === modelAgent) ?? null}
+								machine={chosenMachine ? machineLabel(chosenMachine) : null}
+								onChange={setModel}
+								disabled={busy}
+							/>
 						</div>
 						{efforts.length > 0 ? (
 							<div>
 								<label className="label" htmlFor={ids.effort}>
 									Effort
 								</label>
-								<select id={ids.effort} className="select" value={effort} disabled={busy} onChange={(event) => setEffort(event.target.value)} aria-describedby={ids.effortNote}>
-									<option value="">Default</option>
-									{efforts.map((level) => (
-										<option key={level} value={level}>
-											{level}
-										</option>
-									))}
-								</select>
+								<EffortSelect id={ids.effort} efforts={efforts} value={effort} model={modelDisplay(modelAgent, modelList, model || modelList.defaultModel)} onChange={setEffort} disabled={busy} />
 							</div>
 						) : null}
 						<p className="field-note" id={ids.effortNote}>

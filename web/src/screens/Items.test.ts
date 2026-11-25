@@ -129,19 +129,27 @@ describe("filing a work item", () => {
 	});
 
 	it("files the model and effort chosen for the item's agent, offering only the efforts its model takes", async () => {
+		// The model and the effort are the composer's pickers: a button that opens a menu of rows.
+		const control = (label: string) => [...host.querySelectorAll("label")].find((one) => one.textContent === label)?.control as HTMLButtonElement | null;
+		const rows = () => [...document.querySelectorAll<HTMLElement>('.ui-pop [role="menuitemradio"]')];
 		const choose = (label: string, value: string) => {
-			const select = [...host.querySelectorAll("label")].find((one) => one.textContent === label)?.control as HTMLSelectElement;
-			act(() => {
-				Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(select, value);
-				select.dispatchEvent(new Event("change", { bubbles: true }));
-			});
+			act(() => control(label)!.click());
+			const row = rows().find((one) => one.dataset.value === value)!;
+			act(() => row.click());
 		};
-		const efforts = () => [...((([...host.querySelectorAll("label")].find((one) => one.textContent === "Effort")?.control as HTMLSelectElement | null)?.options) ?? [])].map((one) => one.value);
+		const efforts = () => {
+			const button = control("Effort");
+			if (!button) return [];
+			act(() => button.click());
+			const values = rows().map((one) => one.dataset.value);
+			act(() => button.click());
+			return values;
+		};
 		await start("online");
 		// Windlass on this platform: the account's models, and the efforts of the chosen one.
-		expect(efforts()).toEqual(["", "low", "medium", "high", "xhigh"]);
+		expect(efforts()).toEqual(["default", "low", "medium", "high", "xhigh", "max"]);
 		choose("Model", "gpt-6-luna");
-		expect(efforts()).toEqual(["", "low", "medium"]);
+		expect(efforts()).toEqual(["default", "low", "medium", "high", "xhigh", "max"]);
 		choose("Effort", "medium");
 		typeTitle("Cache the station list");
 		await file();
@@ -159,7 +167,7 @@ describe("filing a work item", () => {
 		expect(efforts()).toEqual([]);
 		expect(text()).toContain("This model takes no reasoning effort.");
 		choose("Model", "opus");
-		expect(efforts()).toEqual(["", "low", "high", "max"]);
+		expect(efforts()).toEqual(["default", "low", "high", "max"]);
 		choose("Effort", "high");
 		typeTitle("Cache the station list");
 		await file();

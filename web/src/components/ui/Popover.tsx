@@ -60,7 +60,8 @@ const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:n
 
 export function Popover({ open, ...props }: PopoverProps) {
 	if (!open || typeof document === "undefined") return null;
-	return createPortal(<Panel {...props} />, document.body);
+	// Inside a modal dialog it is drawn in the dialog's own top layer, or the dialog would cover it.
+	return createPortal(<Panel {...props} />, props.anchor.current?.closest("dialog") ?? document.body);
 }
 
 function Panel({ onClose, anchor, side = "bottom", align = "start", offset = 6, maxHeight = 360, width = "auto", minWidth = 220, maxWidth = 360, role = "dialog", label, labelledBy, id, className, initialFocus = "first", dismissable = true, children }: Omit<PopoverProps, "open">) {
