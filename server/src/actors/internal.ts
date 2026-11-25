@@ -52,7 +52,7 @@ export interface SessionCreateInput {
 	 * Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's.
 	 * `signIn`: how the machine's agent signed in when the item was filed, where that counts its tokens (harnesses.ts, `itemTokensOf`).
 	 */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; planCritic?: true; owns?: string[]; childBranch?: { name: string; start: string }; size?: number; effort?: string; signIn?: SignInMethod };
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; planCritic?: true; owns?: string[]; childBranch?: { name: string; start: string }; size?: number; effort?: string; signIn?: SignInMethod; filedWithKey?: true };
 	/** Set for a session that only builds the repository's prepared environment at its place (user-environments.ts). */
 	environmentBuild?: EnvironmentBuildOrigin;
 }
@@ -330,6 +330,7 @@ export const modelKeyCaller = (uid: string) => `model-key/${uid}`;
 
 export function modelKeyActor(c: HasClient, uid: string): {
 	internalModelKeys(): Promise<import("../sandbox/provider.js").ModelKeyLease[]>;
+	internalCredentialSource(machineId: string, harness: string): Promise<import("../contract.js").CredentialSource | null>;
 	internalModelKeyGeneration(provider: ModelProvider): Promise<string | null>;
 	internalModelKey(provider: ModelProvider, nonce: string): Promise<string | null>;
 } {

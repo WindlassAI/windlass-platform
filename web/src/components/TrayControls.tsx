@@ -1,9 +1,3 @@
-/**
- * The pieces of the start composer's one-line tray (components/StartComposer.tsx), shared by the Agents
- * composer and the Factory's: the agent pill with its model and effort bars (effort is chosen inside
- * the agent's menu, `effortGroup`), the one "where" pill (place · repository / branch), the options
- * icon, and the lock whose tooltip says what the sandbox lets the agent's commands do.
- */
 import type { ReactNode } from "react";
 import { effortChoices } from "../lib/models";
 import { ChevronDownIcon, CloudIcon, LockIcon, MachineIcon, SlidersIcon, WarnIcon } from "./Icons";
@@ -13,7 +7,7 @@ import { AgentGlyph } from "./ui/Pill";
 import { Tooltip } from "./ui/Tooltip";
 
 /** An effort as bars, filled to its level. */
-export function EffortBars({ level, of }: { level: number; of: number }) {
+function EffortBars({ level, of }: { level: number; of: number }) {
 	const bars = Math.max(of, 3);
 	return (
 		<span className="effort-bars" aria-hidden="true">
@@ -25,16 +19,14 @@ export function EffortBars({ level, of }: { level: number; of: number }) {
 }
 
 /** Where the effort stands among its model's: 0 for the default, one more for each level up. */
-export const effortLevel = (efforts: readonly string[], effort: string): number => Math.max(0, effortChoices([...efforts]).indexOf(effort));
+const effortLevel = (efforts: readonly string[], effort: string): number => Math.max(0, effortChoices(efforts).indexOf(effort));
 
-/** The effort's rows, as the agent menu's last group. Null for a model with no efforts. */
-export function effortGroup(efforts: readonly string[], effort: string, model: string, onChoose: (level: string) => void): MenuGroup | null {
-	if (efforts.length === 0) return null;
+export function effortGroup(efforts: readonly string[], effort: string, model: string, onChoose: (level: string) => void): MenuGroup {
 	return {
 		id: "effort",
 		label: "Effort",
 		note: model,
-		items: effortChoices([...efforts]).map((level, index) => ({
+		items: effortChoices(efforts).map((level, index) => ({
 			id: `effort:${level || "default"}`,
 			value: level || "default",
 			label: level || "default",
@@ -53,18 +45,28 @@ function PillDot({ dot, label }: { dot: Dot; label?: string }) {
 	return <span className={`ui-dot ui-dot-${dot}`} role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : true} />;
 }
 
-/** The agent: its logo, name and model, and the effort as bars. */
-export function AgentPill({ trigger, harness, name, model, effort, efforts, dot, dotLabel, changed, ...data }: { trigger: TriggerProps; harness: string; name: string; model: string; effort: string; efforts: readonly string[]; dot: Dot; dotLabel?: string; changed: boolean; "data-value": string; "data-effort": string; disabled?: boolean }) {
+/** The agent: its logo, name and model. */
+export function AgentPill({ trigger, harness, name, model, dot, dotLabel, changed, ...data }: { trigger: TriggerProps; harness: string; name: string; model: string; dot: Dot; dotLabel?: string; changed: boolean; "data-value": string }) {
 	return (
-		<button type="button" {...trigger} {...data} className={`ui-pill tray-pill tray-agent${dot === "warn" ? " ui-pill-warn" : ""}${changed ? " ui-pill-changed" : ""}`} data-picker="agent" aria-label={`Agent: ${name} · ${model}${efforts.length > 0 ? `, effort ${effort || "default"}` : ""}`}>
+		<button type="button" {...trigger} {...data} className={`ui-pill tray-pill tray-agent${dot === "warn" ? " ui-pill-warn" : ""}${changed ? " ui-pill-changed" : ""}`} data-picker="agent" aria-label={`Agent: ${name} · ${model}`}>
 			<span className="ui-pill-icon">
 				<AgentGlyph harness={harness} accent={harness === "windlass"} />
 			</span>
 			<span className="ui-pill-value tray-hide-phone">{name}</span>
 			<span className="ui-pill-secondary tray-hide-phone">{model}</span>
-			{efforts.length > 0 ? <EffortBars level={effortLevel(efforts, effort)} of={efforts.length} /> : null}
 			<PillDot dot={dot} label={dotLabel} />
 			<ChevronDownIcon size={12} className="ui-pill-chevron" />
+		</button>
+	);
+}
+
+/** The model's effort: its bars and level, beside the agent; the caller leaves it out for a model that takes none. */
+export function EffortButton({ trigger, effort, efforts }: { trigger: TriggerProps; effort: string; efforts: readonly string[] }) {
+	const level = effort || "default";
+	return (
+		<button type="button" {...trigger} className="ui-pill tray-pill tray-effort" data-picker="effort" data-effort={level} aria-label={`Effort: ${level}`}>
+			<EffortBars level={effortLevel(efforts, effort)} of={efforts.length} />
+			<span className="ui-pill-value tray-effort-level tray-hide-phone">{level}</span>
 		</button>
 	);
 }

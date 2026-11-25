@@ -83,7 +83,7 @@ export const noSpend = (): ItemSpend => ({ tokens: 0, rawTokens: 0, turns: 0, ac
  * What a machine harness reported of a turn, read from the turn's usage (the `session/prompt` answer) and
  * its last ACP usage update. Its tokens count against the item's budget only where the harness bills by
  * token (`itemTokensOf`: "budget", or an API key where the sign-in decides): a subscription's are shown,
- * not counted. `signIn`: the method the item was filed with. Undefined for Windlass.
+ * not counted. `signIn`: the method used for this turn. Undefined for Windlass.
  */
 export function agentTurn(harness: HarnessId | undefined, usage: TurnUsage | null, context?: { cost: { amount: number; currency: string } | null; fiveHourUsedPct?: number } | null, fiveHourAtStart?: number, signIn?: SignInMethod): AgentTurn | undefined {
 	const machine = machineHarness(harness);
@@ -117,8 +117,13 @@ export function unmeasuredTurn(spend: TurnSpend, agent: Pick<ItemAgent, "harness
 export function noteAgentTurn(item: FactoryItem, turn: AgentTurn): void {
 	const agent = item.agent ?? itemAgent(item);
 	if (turn.reported !== null) {
+		const subscribed = agent.tokens === "subscription" ? agent.reportedTokens : agent.subscriptionTokens ?? 0;
 		agent.reportedTokens += turn.reported;
-		agent.tokens = turn.counted ? "counted" : "subscription";
+		agent.tokens = turn.counted || agent.tokens === "counted" ? "counted" : "subscription";
+		if (agent.tokens === "counted") {
+			const total = subscribed + (turn.counted ? 0 : turn.reported);
+			if (total) agent.subscriptionTokens = total;
+		}
 	}
 	if (turn.cost) agent.cost = turn.cost;
 	if (turn.fiveHour) agent.fiveHour = { first: agent.fiveHour?.first ?? turn.fiveHour.start, latest: turn.fiveHour.end };
@@ -131,7 +136,10 @@ export function noteAgentTurn(item: FactoryItem, turn: AgentTurn): void {
  */
 export function tokenWords(spent: Pick<ItemSpend, "tokens" | "rawTokens">, budget: Pick<ItemBudget, "tokens">, agent?: ItemAgent): string {
 	const name = agent ? machineHarness(agent.harness)?.name ?? "Windlass" : "Windlass";
-	if (!agent || agent.tokens === "counted") return `${spent.tokens.toLocaleString("en-US")} of ${budget.tokens.toLocaleString("en-US")} tokens (cost-weighted; ${rawTokens(spent).toLocaleString("en-US")} as reported)`;
+	if (!agent || agent.tokens === "counted") {
+		const subscription = agent?.subscriptionTokens ? `, plus ${agent.subscriptionTokens.toLocaleString("en-US")} subscription tokens` : "";
+		return `${spent.tokens.toLocaleString("en-US")} of ${budget.tokens.toLocaleString("en-US")} tokens (cost-weighted; ${rawTokens(spent).toLocaleString("en-US")} as reported)${subscription}`;
+	}
 	if (agent.tokens === "subscription") return `${agent.reportedTokens.toLocaleString("en-US")} tokens reported by ${name}, not counted (subscription)`;
 	return `tokens not reported by ${name}`;
 }

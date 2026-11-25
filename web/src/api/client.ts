@@ -1,4 +1,4 @@
-import type { ItemPlaceDefaults, RepositoryAutonomy } from "@contract";
+import type { CredentialSource, HarnessId, ItemPlaceDefaults, RepositoryAutonomy } from "@contract";
 /**
  * `PlatformClient`: the one interface the screens use to reach the backend. Two implementations:
  * `mock.ts` (in memory, no network) and `rivet.ts` (the real actors over `rivetkit/client`).
@@ -266,6 +266,8 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelP
 	/** Turns the sending of saved secrets to a machine's agents on or off. Throws as `removeMachine` does. */
 	setMachineDetails(input: { machineId: string; whenToUse: string; tags: string[]; orchestrator?: "yes" | "named" | "never" }): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
+	/** Whose credential an agent on a machine uses where its sign-in and a Settings key both serve it. Throws as `removeMachine` does. */
+	setCredentialSource(input: { machineId: string; harness: Exclude<HarnessId, "windlass">; source: CredentialSource }): Promise<MachineSummary[]>;
 	/** The user's work items, the newest first. */
 	/** With `page`, a page of them (`ItemListPage`); a page shorter than its limit is the last. */
 	listItems(page?: ItemListPage): Promise<ItemSummary[]>;

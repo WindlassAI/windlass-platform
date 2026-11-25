@@ -7,11 +7,11 @@ import type { AddressInfo } from "node:net";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { test } from "node:test";
 import { format } from "node:util";
-import { accountFor, PROVIDER_TABLE, providerAccounts, recordProviderUsage } from "../server/src/actors/provider-accounts.js";
+import { accountFor, limitedAccounts, PROVIDER_TABLE, providerAccounts, recordProviderUsage } from "../server/src/actors/provider-accounts.js";
 import { recordTurnTokens, TOKEN_USAGE_TABLE, tokensOn } from "../server/src/usage.js";
-import { availableCatalog, hostedCatalog, selectedKey, withSettingsKeys } from "../server/src/sandbox/harnesses.js";
+import { availableCatalog, hostedCatalog, listedHarness, selectedKey, withSettingsKeys } from "../server/src/sandbox/harnesses.js";
 import { modelKeyCaller } from "../server/src/actors/internal.js";
-import { MODEL_PROVIDERS, validModelKey, type ModelProvider } from "../server/src/contract.js";
+import { MODEL_PROVIDERS, validModelKey, type MachineSummary, type ModelProvider } from "../server/src/contract.js";
 import { MODEL_PROVIDER_TABLES, openModelKeyTransit, modelProviderActions as actions } from "../server/src/model-providers.js";
 import type { DefaultsDb } from "../server/src/repository-defaults.js";
 import { createSealer, serverSealer } from "../server/src/signin/seal.js";
@@ -253,8 +253,85 @@ test("machine readiness and the OpenCode model menu use the owner's available pr
 	const models = ["anthropic/claude", "google/gemini", "openai/gpt"].map(id => ({ id, name: id, efforts: [] }));
 	const catalog = availableCatalog({ models, defaultModel: models[0]!.id, modes: [], checkedAt: 1 }, effective);
 	assert.deepEqual(catalog?.models.map(m => m.id), ["default", "google/gemini", "openai/gpt"]);
+	const unchecked = listedHarness({ ...entry, signIn: "unknown" }, saved);
+	assert.deepEqual(availableCatalog({ models, defaultModel: "default", modes: [], checkedAt: 1 }, unchecked)?.models.map(m => m.id), ["default", "google/gemini"]);
 	assert.equal(catalog?.defaultModel, "default");
 	assert.equal(withSettingsKeys({keyRelay: true, id: "claude", signIn: "token", method: undefined}, []).method, "subscription");
 	assert.equal(withSettingsKeys({keyRelay: true, id: "claude", signIn: "token", method: undefined}, ["anthropic"]).method, "api-key");
 	assert.equal(withSettingsKeys({id: "codex", signIn: "none"}, ["google"]).signIn, "none");
+	// The Machines page: the machine's sign-in first, the owner's key on request, a signed-out machine on its key.
+	const claude = { keyRelay: true as const, id: "claude" as const, signIn: "token" as const };
+	assert.deepEqual(listedHarness(claude, ["anthropic"]), { ...claude, method: "subscription", machineSignIns: ["anthropic"] });
+	assert.deepEqual(listedHarness(claude, ["anthropic"], "key"), { ...claude, method: "api-key", platformKeys: ["anthropic"], machineSignIns: ["anthropic"], source: "key" });
+	assert.deepEqual(listedHarness({ ...claude, signIn: "none" }, ["anthropic"]), { ...claude, method: "api-key", platformKeys: ["anthropic"] });
+	const opencode = { keyRelay: true as const, id: "opencode" as const, signIn: "token" as const, machineProviders: ["chatgpt", "free"] };
+	assert.deepEqual(listedHarness(opencode, ["openai", "google"]).platformKeys, ["google"]);
+	assert.deepEqual(listedHarness(opencode, ["openai", "google"]).machineSignIns, ["openai"]);
+	// An old runner relays no key, whatever the choice.
+	assert.equal(listedHarness({ ...claude, keyRelay: undefined }, ["anthropic"], "key").platformKeys, undefined);
+});
+
+test("machine credential source lifecycle", async t => {
+	const { user } = await import("../server/src/actors/user.js");
+	const { listMachines, machineTables } = await import("../server/src/actors/user-machines.js");
+	const { config } = await import("../server/src/config.js");
+	const before = config.machines;
+	config.machines = { runnerImage: null, publicUrl: "http://localhost" };
+	t.after(() => { config.machines = before; });
+	const { sql, context, internal } = account("owner");
+	t.after(() => sql.close());
+	await machineTables(context.db as never);
+	const report = { docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], freeDiskBytes: 8e9,
+		harnesses: [{ id: "claude", signIn: "token", keyRelay: true, adapter: "fixture", image: "fixture" }] };
+	sql.prepare("INSERT INTO machines(id,name,os,arch,facts) VALUES ('desk','Desk','linux','x64',?)").run(JSON.stringify({ report, status: "online" }));
+	sql.exec("INSERT INTO model_provider(provider,generation,sealed,last4,added_at) VALUES ('anthropic','first','fixture','1234',1)");
+	const until = Date.now() + 60_000;
+	const usage = { backoff: 0, lastRefusal: Date.now(), lastSuccess: -1, account: {
+		key: "settings/anthropic/first", harness: "claude", provider: "anthropic", state: "limited", limitedUntil: until, windows: [] } };
+	sql.prepare("INSERT INTO provider_usage VALUES ('settings','anthropic','first',?)").run(JSON.stringify(usage));
+	const retried: number[] = [];
+	const item = { id: "feature", revision: 7, state: "waiting", step: { kind: "subtasks" }, wait: { reason: "provider", accountKey: usage.account.key } };
+	const ctx = { ...context, vars: { ...context.vars, sessions: new Map(), machines: new Map(), items: {
+		slots: new Map(), requests: new Map(), items: new Map([[item.id, item]]) } }, broadcast() {},
+		client: () => ({ workItem: { get: () => ({ internalProviderChanged: async (revision: number) => retried.push(revision) }) } }) };
+	const actions = user.config.actions!;
+	const choice = { machineId: "desk", harness: "claude", source: "key" as const };
+	const set = (input = choice) => actions.setCredentialSource(ctx as never, input);
+	const { plannerMachines } = await import("../server/src/machines/details.js");
+	const { choosePlacement } = await import("../server/src/factory/placement.js");
+	const place = async (machine: MachineSummary) => choosePlacement(
+		{ key: "part", title: "Part", brief: "", acceptance: [], dependsOn: [], owns: [], budget: { tokens: 100 }, agent: { harness: "claude" } },
+		{ preferred: { kind: "machine", machineId: machine.machineId }, alternatives: [] },
+		{ machines: plannerMachines([machine]), hostedProfiles: [], limited: limitedAccounts(await providerAccounts(context.db as never, Date.now())) },
+	);
+	await t.test("only the owner can set a known agent and source on a paired machine", async () => {
+		await assert.rejects(actions.setCredentialSource(internal as never, choice), /for users/);
+		for (const input of [{ ...choice, harness: "constructor" }, { ...choice, harness: "windlass" }, { ...choice, source: "anthropic" }]) {
+			await assert.rejects(set(input as typeof choice), { code: "bad_input" });
+		}
+		await assert.rejects(set({ ...choice, harness: "codex" }), { code: "bad_input" });
+		await assert.rejects(set({ ...choice, machineId: "foreign" }), { code: "machine_not_found" });
+		await assert.rejects(actions.internalCredentialSource(ctx as never, "desk", "claude"), /internal/);
+		await assert.rejects(actions.internalCredentialSource(internal as never, "foreign", "claude"), { code: "machine_not_found" });
+	});
+	await t.test("the machine lists limits only for usable Settings keys", async () => {
+		const [machine] = await listMachines(ctx as never);
+		assert.deepEqual(machine.providerAccounts, []);
+		assert.equal((await place(machine)).decision?.name, "Desk");
+	});
+	await t.test("source changes wake work waiting on its previous account", async () => {
+		const [machine] = await set();
+		assert.equal(machine.providerAccounts?.[0]?.provider, "anthropic");
+		assert.deepEqual(retried, [7]);
+		assert.equal((await place(machine)).accountKey, usage.account.key);
+	});
+	await t.test("deleting the key falls back to the machine and unpairing retires the preference", async () => {
+		sql.exec("DELETE FROM model_provider");
+		const [machine] = await listMachines(ctx as never);
+		assert.equal(machine.harnesses?.[0]?.method, "subscription");
+		assert.equal(machine.harnesses?.[0]?.platformKeys, undefined);
+		sql.exec("DELETE FROM machines");
+		assert.deepEqual(sql.prepare("SELECT * FROM credential_sources").all(), []);
+		await assert.rejects(set(), { code: "machine_not_found" });
+	});
 });

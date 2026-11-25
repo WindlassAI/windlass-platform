@@ -32,7 +32,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent
 import { errorMessage, hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { count } from "../lib/format";
-import { effortChoices, effortsOf, modelIds, saysDefault, modelsNote, modelsNoteShort } from "../lib/models";
+import { effortChoices, effortsOf, modelIds, modelLabel, modelsNote, modelsNoteShort } from "../lib/models";
 import { linkProps } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { ArrowUpIcon, ChevronIcon, PauseIcon, SteerIcon, StopIcon, WarnIcon } from "./Icons";
@@ -197,11 +197,7 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 	const modelPicker = harness === null || offered.length > 1;
 	// Another harness's models by the names it gave them, its default marked as the start composer marks it; Windlass's by their ids, as before.
 	const modelById = new Map(models?.models.map(row => [row.id, row]));
-	const harnessModelLabel = (id: string) => {
-		if (!harness) return id;
-		const name = modelById.get(id)?.name || id;
-		return id === models?.defaultModel && !saysDefault(name) ? `${name} (default)` : name;
-	};
+	const harnessModelLabel = (id: string) => harness ? modelLabel(models, id, modelById.get(id)?.name || id) : id;
 	const tooLong = text.length > MAX_PROMPT_CHARS;
 	const keyProblem = idle ? modelProblem?.(currentModel) : null;
 	const canSend = !keyProblem && writable && online && !sending && text.trim() !== "" && !tooLong;

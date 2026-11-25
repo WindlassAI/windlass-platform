@@ -27,7 +27,9 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 			return keys.find(k => k.provider === provider)?.generation ?? null;
 		},
 		internalModelKeys: async () => { calls.push("keys"); return keys; },
+		internalCredentialSource: async () => source,
 	};
+	let source: "machine" | "key" | null = null;
 	const ctx = { client: () => ({ user: { get: () => keyActor } }),
 		vars:{runner:{request:async (op: string) => { calls.push(op); return "google/gemini"; }}} };
 	const resolve = (place: typeof machine | typeof hosted, model: string, keyRelay?: true, defaultModel?: string) =>
@@ -46,7 +48,55 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	assert.deepEqual(await resolve(machine, "opencode/free", true), {model:"opencode/free",key:undefined});
 	assert.deepEqual(calls.splice(0), ["keys","openCodeDefault","keys","keys"]);
 	assert.deepEqual(await resolve(machine, "default", true, "anthropic/removed"), {model:"google/gemini",key:keys[1]});
-	assert.deepEqual(calls, ["keys","openCodeDefault"]);
+	assert.deepEqual(calls.splice(0), ["keys","openCodeDefault"]);
+	// The machine's own sign-in first; a Settings key only for what it does not serve, or when the owner chose keys.
+	const claude = (place: typeof machine | typeof hosted, signIn: "token" | "none", saved = [{provider:"anthropic",generation:"a"}]) => {
+		keys.splice(0, keys.length, ...saved);
+		return turnCredential(ctx as never, {place, uid:"owner", harness:"claude"} as never, {id:"claude", keyRelay:true, signIn} as never, "opus");
+	};
+	assert.deepEqual(await claude(machine, "token"), {model:"opus", key:undefined});
+	assert.deepEqual(await claude(machine, "none"), {model:"opus", key:{provider:"anthropic",generation:"a"}});
+	source = "key";
+	assert.deepEqual(await claude(machine, "token"), {model:"opus", key:{provider:"anthropic",generation:"a"}});
+	source = "machine";
+	assert.deepEqual(await claude(machine, "token"), {model:"opus", key:undefined});
+	assert.deepEqual(await claude(hosted, "token"), {model:"opus", key:{provider:"anthropic",generation:"a"}});
+	const opencode = (model: string, machineProviders: string[]) => turnCredential(ctx as never, {place:machine, uid:"owner", harness:"opencode"} as never,
+		{id:"opencode", keyRelay:true, signIn:"token", machineProviders} as never, model);
+	keys.splice(0, keys.length, {provider:"anthropic",generation:"a"}, {provider:"openai",generation:"o"});
+	source = null;
+	assert.deepEqual(await opencode("anthropic/claude-haiku-5-5", ["anthropic"]), {model:"anthropic/claude-haiku-5-5", key:undefined});
+	assert.deepEqual(await opencode("openai/gpt-5.4", ["anthropic"]), {model:"openai/gpt-5.4", key:{provider:"openai",generation:"o"}});
+	assert.deepEqual(await opencode("openai/gpt-5.4", ["chatgpt"]), {model:"openai/gpt-5.4", key:undefined});
+	calls.length = 0;
+	assert.deepEqual(await opencode("default", ["anthropic", "chatgpt"]), {model:"default", key:undefined});
+	assert.deepEqual(calls, ["keys"]);
+	source = "key";
+	assert.deepEqual(await opencode("anthropic/claude-haiku-5-5", ["anthropic"]), {model:"anthropic/claude-haiku-5-5", key:{provider:"anthropic",generation:"a"}});
+	const { agentTurn, newAgent, noteAgentTurn, tokenWords } = await import("../server/src/factory/budget.js");
+	const item = (signIn: "api-key" | "subscription", filedWithKey = false) =>
+		turnCredential(ctx as never, {place:machine, uid:"owner", harness:"claude", origin:{signIn, filedWithKey}} as never,
+			{id:"claude", keyRelay:true, signIn:"token"} as never, "opus");
+	const switched = await item("subscription");
+	await assert.rejects(turnCredential(ctx as never, { place: machine, uid: "owner", harness: "claude" } as never,
+		{ id: "claude", signIn: "token" } as never, "opus", undefined, switched), /relay/);
+	assert.equal(switched.itemSignIn, "api-key");
+	assert.equal(agentTurn("claude", null, null, undefined, switched.itemSignIn)?.counted, true);
+	keys.length = 0;
+	const fallback = await item("api-key", true);
+	assert.equal(fallback.key, undefined);
+	assert.equal(fallback.itemSignIn, "subscription");
+	assert.equal(agentTurn("claude", null, null, undefined, fallback.itemSignIn)?.counted, false);
+	for (const order of [[true, false], [false, true]]) {
+		const item = { agent: newAgent("claude", "opus") };
+		for (const counted of order) noteAgentTurn(item as never, { counted, reported: counted ? 8 : 12, cost: null, fiveHour: null });
+		assert.equal(item.agent.tokens, "counted");
+		assert.equal(item.agent.reportedTokens, 20);
+		assert.equal(item.agent.subscriptionTokens, 12);
+		assert.match(tokenWords({ tokens: 8, rawTokens: 8 }, { tokens: 100 }, item.agent), /12 subscription tokens/);
+	}
+	source = null;
+	calls.length = 0;
 	for (const place of [hosted, machine]) {
 		const meta = { place, uid: "owner", harness: "windlass" } as never;
 		assert.deepEqual(await turnCredential(ctx as never, meta, undefined, "gpt-5"), { model: "gpt-5" });
@@ -66,7 +116,7 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 			await assert.rejects(turnCredential(ctx as never, meta, undefined, model), /key in Settings/);
 		}
 	}
-	console.log("ok  selected and default provider generation, legacy runner and hosted placement");
+	console.log("ok  selected and default provider generation, legacy runner, machine sign-in first and hosted placement");
 }
 if (process.argv.includes("--turn-provider")) process.exit(0);
 {

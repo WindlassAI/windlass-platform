@@ -28,6 +28,7 @@ export function agentTokens(agent: ItemAgent | undefined): string | null {
 export function agentFacts(agent: ItemAgent | undefined): { label: string; value: string }[] {
 	if (!agent) return [];
 	const facts: { label: string; value: string }[] = [];
+	if (agent.subscriptionTokens) facts.push({ label: "Subscription tokens", value: agent.subscriptionTokens.toLocaleString("en-US") });
 	if (agent.cost) facts.push({ label: "Cost", value: `${agent.cost.amount.toLocaleString("en-US", { style: "currency", currency: agent.cost.currency, maximumFractionDigits: 2 })}, as ${HARNESS_NAMES[agent.harness] ?? agent.harness} reported it` });
 	if (agent.fiveHour) facts.push({ label: "5-hour window", value: `${Math.round(agent.fiveHour.first)}% used at the first turn, ${Math.round(agent.fiveHour.latest)}% after the latest` });
 	// Claude Code sends the share of the window used only with a usage warning (its rate_limit_event carries

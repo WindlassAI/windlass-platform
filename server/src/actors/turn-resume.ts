@@ -13,7 +13,7 @@
 import { sources, untrustedWords } from "../factory/untrusted.js";
 import type { TimelineItem, TurnUsage, WindlassEvent } from "../contract.js";
 
-export type TurnCredential = { model: string; key?: import("../sandbox/provider.js").ModelKeyLease };
+export type TurnCredential = { model: string; itemSignIn?: import("../sandbox/harnesses.js").SignInMethod; key?: import("../sandbox/provider.js").ModelKeyLease };
 
 export type PauseReason = "restart" | "machine";
 

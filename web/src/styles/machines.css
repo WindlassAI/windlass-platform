@@ -466,6 +466,28 @@
 .machine-agent-command .copy-button {
 	opacity: 1;
 }
+/* Whose credential the agent uses, under its line where both could serve it; who pays under the choice. */
+.machine-credential {
+	display: grid;
+	flex-basis: 100%;
+	justify-items: start;
+	gap: 5px;
+	margin: 4px 0 6px;
+}
+.machine-credential-choice .segment {
+	padding: 4px 11px;
+	font-size: 12.5px;
+	font-weight: var(--weight-medium);
+}
+.machine-credential .field-note {
+	margin: 0;
+}
+@media (max-width: 560px) {
+	.machine-credential-choice {
+		display: grid;
+		width: 100%;
+	}
+}
 /* The steps of adding a machine, each a short heading over its command. */
 .machine-setup-agents {
 	display: grid;

@@ -4,7 +4,7 @@ import type { ModelList } from "@contract";
 import { ModelProblem, checkEffort, chosenModel, standInModels } from "../../../server/src/account-models";
 import { PlatformError } from "../api/client";
 import { createMockClient, mockStandInModels } from "../api/mock";
-import { effortsOf, modelIds, modelsNote, modelsNoteShort } from "./models";
+import { cleanModelName, credentialWords, effortsOf, modelIds, modelWords, modelsNote, modelsNoteShort, sourceOf } from "./models";
 import { sessionModelWords } from "./acp";
 
 const ada = { token: "mock:chatgpt:u_models:ada@example.com", profile: { uid: "u_models", email: "ada@example.com", demo: false } };
@@ -117,5 +117,44 @@ describe("sessionModelWords", () => {
 
 	it("keeps a Windlass session's model id", () => {
 		expect(sessionModelWords({ harness: "windlass", harnessModels: null, model: "gpt-6.1-sol" })).toBe("gpt-6.1-sol");
+	});
+});
+
+describe("the picker's model names and credentials", () => {
+	it("names a model in words, not by its id", () => {
+		expect(modelWords("anthropic/claude-haiku-5-5")).toBe("Claude Haiku 5.5");
+		expect(modelWords("gpt-6.1-sol")).toBe("GPT-6.1 Sol");
+		expect(modelWords("google/gemini-3-pro")).toBe("Gemini 3 Pro");
+		expect(modelWords("o3-mini-2025-01-31")).toBe("o3 Mini");
+		expect(cleanModelName("openai/gpt-5.4", "OpenAI/GPT-5.4")).toBe("GPT-5.4");
+		expect(cleanModelName("opus", "Opus")).toBe("Opus");
+	});
+
+	it("distinguishes a paid OpenCode Zen login from its free models", () => {
+		const entry = { id: "opencode" as const, adapter: "", image: "", signIn: "token" as const };
+		expect(credentialWords("opencode", "opencode", { ...entry, machineProviders: ["opencode"] }, "nas")).toBe("OpenCode Zen login · nas");
+		expect(credentialWords("opencode", "opencode", { ...entry, machineProviders: ["free"] }, "nas")).toBe("free");
+	});
+
+	it("puts each model under its provider", () => {
+		expect(sourceOf("windlass", "gpt-6.1-sol")).toBe("chatgpt");
+		expect(sourceOf("windlass", "anthropic/claude-opus-5-5")).toBe("anthropic");
+		expect(sourceOf("claude", "opus")).toBe("anthropic");
+		expect(sourceOf("opencode", "default")).toBeNull();
+		expect(sourceOf("opencode", "opencode/grok-code")).toBe("opencode");
+		expect(sourceOf("opencode", "xai/grok-4")).toBe("other");
+	});
+
+	it("says whose credential serves a provider: the machine's sign-in first, the key where chosen, keys when hosted", () => {
+		const claude = { id: "claude" as const, adapter: "", image: "", signIn: "token" as const, machineSignIns: ["anthropic" as const] };
+		expect(credentialWords("claude", "anthropic", claude, "mac-mini")).toBe("Claude subscription · mac-mini");
+		expect(credentialWords("claude", "anthropic", { ...claude, platformKeys: ["anthropic"], source: "key" }, "mac-mini")).toBe("Anthropic key");
+		expect(credentialWords("claude", "anthropic", null, null)).toBe("Anthropic key");
+		const opencode = { id: "opencode" as const, adapter: "", image: "", signIn: "token" as const, machineProviders: ["chatgpt"], machineSignIns: ["openai" as const], platformKeys: ["google" as const] };
+		const legacy = { id: "opencode" as const, adapter: "", image: "", signIn: "token" as const };
+		expect(credentialWords("opencode", "openai", legacy, "nas")).toBe("login on nas");
+		expect(credentialWords("opencode", "openai", opencode, "nas")).toBe("ChatGPT plan · nas");
+		expect(credentialWords("opencode", "google", opencode, "nas")).toBe("Gemini key");
+		expect(credentialWords("windlass", "chatgpt", null, null)).toBe("ChatGPT plan");
 	});
 });

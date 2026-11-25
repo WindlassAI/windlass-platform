@@ -2,7 +2,7 @@
 // Keep launch and submission claims synchronous. Service-only actions check their caller before reading account data.
 
 import { changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
-import type { ItemPlaceDefaults, RepositoryAutonomy } from "../contract.js";
+import type { CredentialSource, ItemPlaceDefaults, RepositoryAutonomy } from "../contract.js";
 import { snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
 import type { AgentModels } from "../factory/placement.js";
@@ -12,7 +12,7 @@ import type { MachineUpdate } from "./machine.js";
 import { accountLimits, changeUserLimit, limitsSubject, type LimitAuditRow, type LimitChange } from "../user-limits.js";
 import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage, type AccountLocation } from "./provider-accounts.js";
 import type { UsageObservation } from "../provider-usage.js";
-import { changed as machinesChanged, machineCatalog, itemMachines, launchPlace, listMachines, launchMachineProfiles, machineActions, machineSecrets, machineTables } from "./user-machines.js";
+import { changed as machinesChanged, machineCatalog, itemMachines, launchPlace, listMachines, launchMachineProfiles, machineActions, machineSecrets, machineTables, credentialSource } from "./user-machines.js";
 import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { EnvironmentPlace, EnvironmentSchedule, RepositoryEnvironments, SandboxProfileId } from "../contract.js";
 import { ENVIRONMENT_SCHEDULES } from "../contract.js";
@@ -103,7 +103,7 @@ import { billing } from "../billing/config.js";
 import { hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
 
 
-import { type SealedSecrets, type RequestedSecretSave, createSessionActor, isSessionGone, isDuplicateKey, itemActor, secretsCaller, sessionActor } from "./internal.js";
+import { type SealedSecrets, type RequestedSecretSave, createSessionActor, isSessionGone, isDuplicateKey, itemActor, modelKeyCaller, secretsCaller, sessionActor } from "./internal.js";
 import { boundedText, type UserVars, type UserCtx } from "./user/state.js";
 import { modelInput, modelsOf, signinActions, type ModelsCtx } from "./user/signin.js";
 import { readUsage, sizesOf, queueOverageReport, usageActions } from "./user/usage.js";
@@ -688,7 +688,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(build && { environmentBuild: true as const }),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
-			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.planCritic && { planCritic: true as const }), ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, role: item.role, ...(item.planCritic && { planCritic: true as const }), ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && offered?.platformKeys?.length && { filedWithKey: true as const }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(!item && size > 1 && { size }),
 			...(build && { environmentBuild: build }),
 			...(hostedSize && { hostedSize }),
@@ -1267,6 +1267,12 @@ export const user = actor({
 		internalAgentModels: (c): Promise<AgentModels> => { requireService(c); return agentModels(c); },
 		setMachineDetails: (c, input: { machineId: string; whenToUse: string; tags: string[] }) => machineActions.setMachineDetails(c, input),
 		setMachineSecrets: machineActions.setMachineSecrets,
+		setCredentialSource: async (c, input: { machineId: string; harness: string; source: CredentialSource }) => {
+			const machines = await machineActions.setCredentialSource(c, input);
+			queueChanged(c);
+			await notifyProviderWaits(c, c.vars.items.items.values(), "settings");
+			return machines;
+		},
 		internalMachineCreated: machineActions.internalMachineCreated,
 		internalMachineSystem: async (c, id: string): Promise<{ os: string; arch: string } | null> => {
 			requireServiceFor(c, "call");
@@ -2143,6 +2149,10 @@ export const user = actor({
 			await notifyProviderWaits(c, c.vars.items.items.values(), "settings");
 		},
 		internalModelKeys: c => modelProviderActions.internalModelKeys(c),
+		internalCredentialSource: async (c, machineId: string, harness: string): Promise<CredentialSource | null> => {
+			requireServiceFor(c, modelKeyCaller(c.key[0]!));
+			return credentialSource(c.db, machineId, harness);
+		},
 		internalModelKeyGeneration: (c, provider: ModelProvider) => modelProviderActions.internalModelKeyGeneration(c, provider),
 		internalModelKey: (c, provider: ModelProvider, nonce: string) => modelProviderActions.internalModelKey(c, provider, nonce),
 
