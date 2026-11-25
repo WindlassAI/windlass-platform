@@ -26,7 +26,7 @@ async function wait(steps = 6): Promise<void> {
 	for (let step = 0; step < steps; step++) await act(async () => void (await vi.advanceTimersByTimeAsync(400)));
 }
 
-/** Signs in to a mock whose machines stand as `machine` says, and keeps what `createItem` is asked. */
+/** Signs in with a connected ChatGPT plan and records the requests to file an item. */
 async function start(machine: MockMachineState): Promise<void> {
 	client = createMockClient({ origin: "http://localhost:5173", machine });
 	const begun = client.login.start();
@@ -35,6 +35,9 @@ async function start(machine: MockMachineState): Promise<void> {
 	const finished = client.login.finish(`${redirectPrefix}?code=abc&state=${new URL(url).searchParams.get("state")}`);
 	await vi.advanceTimersByTimeAsync(1000);
 	const auth: AuthResult = await finished;
+	const account = client.user(auth);
+	const plan = await account.startChatgpt();
+	await account.finishChatgpt(plan.redirectPrefix + "?code=plan&state=" + new URL(plan.url).searchParams.get("state"));
 	saveAuth("mock", auth);
 	const user = client.user.bind(client);
 	(client as { user: (auth: AuthResult) => UserApi }).user = (who) => {
