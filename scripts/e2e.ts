@@ -946,23 +946,26 @@ async function main(server: Server | null): Promise<void> {
 		await refused(() => userHandle.internalReleaseRun({ sessionId: "s_x", claim: 1, summary: fake }), "forbidden");
 		return "user.internalSessionChanged, user.internalAcquireRun, user.internalReleaseRun";
 	});
-	await check("auth: an actor made by an unauthenticated call does not stay", async () => {
+	await check("auth: idle cleanup removes only the unclaimed user actor", async () => {
 		const stranger = `u_${randomBytes(10).toString("hex")}`;
 		await refused(() => client.user.getOrCreate([stranger]).me(), "unauthorized");
 		await waitFor(
 			"the empty user actor to be removed",
 			async () => {
 				try {
-					await client.user.get([stranger]).me();
+					// Looking up the key lets the unused actor go idle.
+					await client.user.get([stranger]).resolve();
 					return false;
 				} catch (error) {
 					return (error as { code?: string }).code === "not_found";
 				}
 			},
-			10_000,
-			200,
+			60_000,
+			500,
 		);
-		return "user actor removed";
+		// B signed in but has only received refused calls so far. Its original actor must still exist.
+		await client.user.get([userB.profile.uid], { params: { token: userB.token } }).me();
+		return "unclaimed actor removed, signed-in user kept";
 	});
 	await check("auth: a session cannot be created around the user actor", async () => {
 		const forged = `s_${randomBytes(8).toString("hex")}`;

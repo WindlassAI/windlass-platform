@@ -216,10 +216,10 @@ export const login = actor({
 					if (attempt.state !== "new") throw new UserError("This attempt is in use.", { code: "attempt_started" });
 					const { logins } = await getLayer();
 					const uid = `demo_${randomBytes(6).toString("hex")}`;
-					const generation: number = await c.client().user.getOrCreate([uid], { params: serviceParams() }).internalTokenGeneration();
+					const profile: UserProfile = { uid, email: null, demo: true };
+					const generation: number = await c.client().user.getOrCreate([uid], { params: serviceParams() }).internalLogin(profile);
 					await logins.ensureUserVolume(uid);
 
-					const profile: UserProfile = { uid, email: null, demo: true };
 					const token = issueUserToken(profile, generation);
 					const replaced = attempt.scheduleId;
 					attempt.scheduleId = await c.schedule.after(CLEANUP_DELAY_MS, "expire");

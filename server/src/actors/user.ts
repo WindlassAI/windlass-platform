@@ -1257,13 +1257,15 @@ export const user = actor({
 				if (c.vars.profile === null) return writeActorProfile(c, caller.profile, false);
 			}
 		} catch (error) {
-			// `getOrCreate` makes the actor before this hook runs, so a call without a valid token can
-			// leave an empty actor behind under any key. One that no user has ever reached is removed.
-			if (!c.vars.reached && c.vars.sessions.size === 0) c.destroy();
+			c.vars.refused = true;
 			throw error;
 		}
 	},
 
+	// Destroying an unused getOrCreate actor during the handshake can cut off its auth error frame.
+	onSleep: c => {
+		if (c.vars.refused && !c.vars.reached && c.vars.sessions.size === 0) c.destroy();
+	},
 	onDestroy: async c => { await dropHostedSnapshots(c.key[0]); },
 	onWake: async (c) => {
 		await c.db.execute("DELETE FROM model_attempt WHERE attempt_id IS NULL OR expires<=?", Date.now());
