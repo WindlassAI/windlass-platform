@@ -2188,7 +2188,7 @@ function startClock(c: Ctx, meta: SessionMeta, turn: number, waited: number | nu
 }
 
 async function resizeOptions(c: Ctx, meta: SessionMeta, layer: SandboxLayer): Promise<HostedSize[]> {
-	if (meta.place.kind === "hosted" && billing()) return userActor(c, meta.uid).internalHostedSizes();
+	if (meta.place.kind === "hosted" && billing(meta.uid)) return userActor(c, meta.uid).internalHostedSizes();
 	return layer.sandboxes.sizes?.().map(size => size.id) ?? [];
 }
 
@@ -5115,7 +5115,7 @@ export const agentSession = actor({
 			if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 			if (throughReviewRun !== undefined && (meta.origin?.role !== "reviewer" || (meta.reviewRun ?? 0) > throughReviewRun)) return { freed: false };
 			// A stored OOM choice can outlive Pro. Check again before touching the old sandbox.
-			if (meta.place.kind === "hosted" && hostedSize && billing() && !(await userActor(c, meta.uid).internalHostedSizes()).includes(hostedSize)) {
+			if (meta.place.kind === "hosted" && hostedSize && billing(meta.uid) && !(await userActor(c, meta.uid).internalHostedSizes()).includes(hostedSize)) {
 				return { freed: false, sizeUnavailable: hostedSize };
 			}
 			if (c.vars.turn || c.vars.accepting || meta.status !== "idle") throw new UserError(`${meta.title} is working. Stop its turn first, then free its sandbox.`, { code: "sandbox_busy" });

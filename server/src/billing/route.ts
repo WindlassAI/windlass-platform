@@ -13,11 +13,10 @@ import { ownEngineEndpoint } from "../config.js";
 import type { Registry } from "../registry.js";
 import { issueServiceToken } from "../tokens.js";
 import { customerDirectory } from "./customer-index.js";
-import { billing } from "./config.js";
+import { BILLING_UID, billing } from "./config.js";
 
 export const BILLING_WEBHOOK_PATH = "/billing/webhook";
 const MAX_BODY_BYTES = 256 * 1024;
-const UID = /^u_[A-Za-z0-9_-]{1,62}$/;
 
 const answer = (status: number, text: string) => new Response(`${text}\n`, { status, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
 
@@ -25,7 +24,7 @@ const answer = (status: number, text: string) => new Response(`${text}\n`, { sta
 export function webhookOwner(owner: string | null, metadata: string | null): string | null {
 	if (owner !== null && metadata !== null && owner !== metadata) return null;
 	const uid = owner ?? metadata;
-	return uid !== null && UID.test(uid) ? uid : null;
+	return uid !== null && BILLING_UID.test(uid) ? uid : null;
 }
 
 export async function billingWebhookRoute(request: Request): Promise<Response> {
@@ -71,7 +70,7 @@ export async function billingWebhookRoute(request: Request): Promise<Response> {
 			const uid = webhookOwner(owner, event.uid);
 			if (uid === null) {
 				if (owner && event.uid !== null) {
-					console.warn(`[wlp] billing.customer_mismatch ${ids} owner=${owner} metadata=${UID.test(event.uid) ? event.uid : "-"}`);
+					console.warn(`[wlp] billing.customer_mismatch ${ids} owner=${owner} metadata=${BILLING_UID.test(event.uid) ? event.uid : "-"}`);
 					continue;
 				}
 				console.warn(`[wlp] billing.unmatched ${ids}: the event names no account of this deployment`);

@@ -4,6 +4,12 @@ A deployment can take payment for plans. Billing is **off** unless `WLP_BILLING_
 nothing changes: there are no plans, every account has the deployment's limits ([configuration.md](configuration.md#usage-limits)),
 and no page shows anything about billing. A self-hosted deployment needs none of this.
 
+To keep an operator account on deployment limits when billing is on, set
+`WLP_BILLING_EXEMPT_USERS=u_owner` and restart the server. List multiple account uids separated by commas.
+Exempt accounts retain their per-user limit overrides and see the same usage allowance as with billing off.
+Settings shows the exemption, checkout is disabled, and the platform sends no overage reports for these accounts.
+If an account already has a paid subscription, manage its recurring charge separately in Dodo.
+
 ## The plans
 
 | | Free | Pro |

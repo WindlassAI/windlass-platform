@@ -69,8 +69,8 @@ export interface PlanInfo {
 	overageCentsPer1000: number | null;
 }
 
-/** The Plan section of Settings and the upgrade page. `enabled` false: the deployment has no billing, and nothing of it is shown. */
-export type BillingView = { enabled: false } | {
+/** The Plan section of Settings and the upgrade page. `exempt` identifies an account using deployment limits where billing is enabled. */
+export type BillingView = { enabled: false; exempt?: true } | {
 	enabled: true;
 	/** The plan whose limits apply now: Pro while its subscription is active or in its grace period, otherwise Free. */
 	plan: PlanId;

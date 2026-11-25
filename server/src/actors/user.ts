@@ -927,7 +927,7 @@ async function loadUserState(c: { key: string[]; db: RawAccess }): Promise<UserV
 	const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 	const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
 	const items = await loadItems(c.db);
-	items.limits.billing = billing() ? await readBilling(c.db) : null;
+	items.limits.billing = billing(c.key[0]!) ? await readBilling(c.db) : null;
 	return {
 		tokenGen: gen,
 		profile: row ? { uid: row.uid, email: row.email, demo: row.demo === 1 } : null,

@@ -187,12 +187,12 @@ export interface MockOptions {
 export type MockUsageState = "plenty" | "low" | "used" | "full";
 
 /**
- * Plans and billing (`?billing=`): "off" (the default) a deployment without billing, as before; "free" a Free account
+ * Plans and billing (`?billing=`): "off" (the default) a deployment without billing, "exempt" an exempt account, "free" a Free account
  * early in the month, "free-low" one near its 120 hosted minutes, "free-used" one that used them all; "pro" a Pro
  * subscriber, "pro-capped" one at the overage spend cap, "pro-past-due" one in the grace period after a failed payment.
  */
-export type MockBillingState = "off" | "free" | "free-low" | "free-used" | "pro" | "pro-capped" | "pro-past-due";
-export const MOCK_BILLING_STATES: readonly MockBillingState[] = ["off", "free", "free-low", "free-used", "pro", "pro-capped", "pro-past-due"];
+export type MockBillingState = "off" | "exempt" | "free" | "free-low" | "free-used" | "pro" | "pro-capped" | "pro-past-due";
+export const MOCK_BILLING_STATES: readonly MockBillingState[] = ["off", "exempt", "free", "free-low", "free-used", "pro", "pro-capped", "pro-past-due"];
 
 /** The plans as the server has them (server/src/billing/plans.ts). */
 export const MOCK_PLANS: PlanInfo[] = [
@@ -914,7 +914,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		status: (billingState === "pro-past-due" ? "past_due" : billingState.startsWith("pro") ? "active" : "none") as "none" | "active" | "past_due" | "ended",
 		capCents: 2000,
 		/** Weighted hosted minutes used this month. */
-		usedMinutes: ({ off: 0, free: 34, "free-low": 97, "free-used": 120, pro: 642, "pro-capped": 1800 + 3333, "pro-past-due": 1210 } as Record<MockBillingState, number>)[billingState],
+		usedMinutes: ({ off: 0, exempt: 0, free: 34, "free-low": 97, "free-used": 120, pro: 642, "pro-capped": 1800 + 3333, "pro-past-due": 1210 } as Record<MockBillingState, number>)[billingState],
 	};
 	const billingPlan = () => MOCK_PLANS.find((plan) => plan.id === billing.plan)!;
 	function hostedMonth(at: number): HostedMonth {
@@ -932,6 +932,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		};
 	}
 	function billingView(at: number): BillingView {
+		if (billingState === "exempt") return { enabled: false, exempt: true };
 		if (billingState === "off") return { enabled: false };
 		const month = hostedMonth(at);
 		const plan = billingPlan();
@@ -1207,7 +1208,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		for (const seconds of world.spent.values()) used += seconds;
 		const day = Math.floor(at / 86_400_000);
 		// With billing, the month's hosted minutes take the place of the day's allowance, as on the server (user-limits.ts).
-		if (billingState !== "off") {
+		if (billingState !== "off" && billingState !== "exempt") {
 			const plan = billingPlan();
 			return {
 				at, day: new Date(day * 86_400_000).toISOString().slice(0, 10), resetsAt: (day + 1) * 86_400_000,
@@ -3823,6 +3824,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			},
 			async billingCheckout(input: { period: BillingPeriod; origin: string }): Promise<{ url: string }> {
 				await latency(500);
+				if (billingState === "exempt") throw new PlatformError("user", "Billing doesn't apply to this account.", { reason: "billing_off" });
 				if (billingState === "off") throw new PlatformError("user", "This deployment has no plans or billing.", { reason: "billing_off" });
 				if (billing.plan === "pro") throw new PlatformError("user", "You already have Pro. Manage it from Settings.", { reason: "already_subscribed" });
 				// The mock has no checkout page: it plays one that was paid at once and comes back to Settings.
@@ -3835,11 +3837,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			},
 			async billingPortal(input: { origin: string }): Promise<{ url: string }> {
 				await latency(400);
+				if (billingState === "exempt") throw new PlatformError("user", "Billing doesn't apply to this account.", { reason: "billing_off" });
 				if (billing.plan !== "pro") throw new PlatformError("user", "There is no subscription to manage yet.", { reason: "no_customer" });
 				return { url: `${input.origin}/settings?mock=1&billing=${billingState}#plan` };
 			},
 			async setOverageCap(input: { cents: number }): Promise<BillingView> {
 				await latency(300);
+				if (billingState === "exempt") throw new PlatformError("user", "Billing doesn't apply to this account.", { reason: "billing_off" });
 				if (billing.period === "year") throw new PlatformError("user", "Yearly Pro has no overage spend cap.", { reason: "bad_input" });
 				if (!Number.isSafeInteger(input.cents) || input.cents < 0 || input.cents > 2000) throw new PlatformError("user", "Set the cap in whole cents from 0 to 2000.", { reason: "bad_input" });
 				billing.capCents = input.cents;

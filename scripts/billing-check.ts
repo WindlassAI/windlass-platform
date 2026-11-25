@@ -60,6 +60,55 @@ const NOW = Date.UTC(2026, 10, 23, 12);
 const event = (over: Partial<BillingEvent>): BillingEvent => ({ id: `e${Math.random()}`, kind: "active", occurredAt: NOW, uid: "u_check", customerId: "cus_1", subscriptionId: "sub_1", period: "month", periodStart: NOW, periodEnd: NOW + 30 * DAY_MS, cancelAtPeriodEnd: false, type: "subscription.active", ...over });
 const pro = (over: Partial<BillingState> = {}): BillingState => ({ ...NO_SUBSCRIPTION, plan: "pro", status: "active", period: "month", periodStart: Date.UTC(2026, 10, 5, 12), periodEnd: Date.UTC(2026, 11, 5, 12), customerId: "cus_1", subscriptionId: "sub_1", ...over });
 
+// WLP_CHECK_SECTIONS=exempt runs just the account admission and reporting regression.
+Object.assign(process.env, { WLP_BILLING_PROVIDER: "dodo", WLP_DODO_API_KEY: FAKE_KEY, WLP_DODO_WEBHOOK_SECRET: FAKE_SECRET,
+	WLP_DODO_PRODUCT_PRO_MONTHLY: PRODUCTS.month, WLP_DODO_PRODUCT_PRO_YEARLY: PRODUCTS.year, WLP_BILLING_EXEMPT_USERS: " u_owner, u_operator, " });
+{
+	const fake = new FakeDodo();
+	billing()!.provider = new DodoProvider(SETTINGS, fake.fetch);
+	expect("exempt uids are trimmed and match exactly", billing("u_owner") === null && billing("u_operator") === null && !!billing("u_OWNER"));
+	expect("malformed exempt uids are rejected at startup", (() => {
+		try { readBillingConfig({ ...process.env, WLP_BILLING_EXEMPT_USERS: "u_owner,owner@example.test" }); return false; }
+		catch (error) { return String(error).includes("WLP_BILLING_EXEMPT_USERS"); }
+	})());
+	const { user } = await import("../server/src/actors/user.js");
+	const { serviceParams } = await import("../server/src/auth.js");
+	const { issueUserToken } = await import("../server/src/tokens.js");
+	if (!("db" in user.config && "createVars" in user.config)) throw new Error("Missing account database");
+	const { db: schema, createVars, actions } = user.config;
+	const db = memoryDb();
+	await schema.onMigrate(db as never);
+	const now = Date.now();
+	await db.execute("INSERT INTO usage_entry(day, session, hold, kind, seconds, weight, at) VALUES(?, 'agent', 'prior', 'used', ?, 1, ?)", dayOf(now), 189 * 60, now);
+	const originalDaily = config.usage.dailySeconds;
+	config.usage.dailySeconds = 5 * 3600;
+	for (const uid of ["u_regular", "u_owner"]) {
+		const base = { db, key: [uid], broadcast: () => {} };
+		const vars = await createVars(base as never, undefined);
+		vars.sessions.set("agent", { id: "agent" } as never);
+		const personal = { ...base, vars, conn: { params: { token: issueUserToken({ uid, email: null, demo: false }, 0) } } };
+		const reserve = await actions!.internalReserve({ ...base, vars, conn: { params: serviceParams() } } as never, { sessionId: "agent", id: "next", fresh: true });
+		if (uid === "u_regular") {
+			expect("Free blocks a start at 189 of 120 hosted minutes", !reserve.ok && reserve.reason === "allowance" && reserve.numbers.hosted?.usedSeconds === 189 * 60);
+			continue;
+		}
+		expect("exemption admits the same usage under deployment limits and shows the daily allowance",
+			reserve.ok && reserve.numbers.hosted === undefined && reserve.numbers.allowanceSeconds === config.usage.dailySeconds);
+		const view = await actions!.billing(personal as never);
+		expect("the exempt account sees its exemption and cannot open checkout", !view.enabled && view.exempt === true &&
+			String(await rejects(actions!.billingCheckout(personal as never, { period: "month", origin: config.origins[0]! }))).includes("doesn't apply"));
+		// A report and paid subscription from before exemption must stay inert even on a scheduled retry.
+		await db.execute("INSERT INTO billing VALUES(1, ?)", JSON.stringify(pro()));
+		await db.execute("INSERT INTO billing_usage VALUES('pending', 'cus_1', 'sub_1', ?, 1, 1, 0)", now);
+		const reloaded = await createVars(base as never, undefined);
+		await actions!.internalRetryOverage({ ...base, vars: reloaded, scheduledFire: { id: "retry" } } as never);
+		expect("an exempt account with a stored paid subscription sends no overage", fake.calls.length === 0 &&
+			(await db.execute("SELECT 1 FROM billing_usage WHERE sent = 0")).length === 1);
+	}
+	config.usage.dailySeconds = originalDaily;
+}
+if (process.env.WLP_CHECK_SECTIONS === "exempt") process.exit(failed === 0 ? 0 : 1);
+
 // --- Billing off: today's behaviour --------------------------------------------------------------------------------
 {
 	expect("no WLP_BILLING_PROVIDER: billing is off", readBillingConfig({}) === null);
@@ -389,8 +438,6 @@ async function memoryDbWithTables() {
 
 // Exercise the actor entry points, including their migration, durable rows and reload.
 {
-	Object.assign(process.env, { WLP_BILLING_PROVIDER: "dodo", WLP_DODO_API_KEY: FAKE_KEY, WLP_DODO_WEBHOOK_SECRET: FAKE_SECRET,
-		WLP_DODO_PRODUCT_PRO_MONTHLY: PRODUCTS.month, WLP_DODO_PRODUCT_PRO_YEARLY: PRODUCTS.year });
 	billing()!.provider = dodo;
 	config.sandbox = "fake";
 	const { user, readUsage } = await import("../server/src/actors/user.js");

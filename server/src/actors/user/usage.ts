@@ -132,7 +132,7 @@ async function changeUsage<T extends { change: UsageChange }>(c: UsageCtx, step:
  * request that counted it has been answered. The actor also drains the durable outbox on wake and scheduled retry.
  */
 export function queueOverageReport(c: UsageCtx): void {
-	const settings = billing();
+	const settings = billing(c.key[0]!);
 	const state = c.vars.items.limits.billing;
 	if (!settings || !state?.customerId) return;
 	const now = Date.now();
@@ -217,9 +217,10 @@ async function reconcileKept(c: UsageCtx, force = false): Promise<void> {
 	}
 }
 
-function billingOn() {
+function billingOn(uid?: string) {
 	const settings = billing();
 	if (!settings) throw new UserError("This deployment has no plans or billing.", { code: "billing_off" });
+	if (uid !== undefined && settings.exemptUsers.has(uid)) throw new UserError("Billing doesn't apply to this account.", { code: "billing_off" });
 	return settings;
 }
 
@@ -231,7 +232,8 @@ function billingOrigin(raw: unknown): string {
 
 async function billingAnswer(c: UsageCtx): Promise<BillingView> {
 	const state = c.vars.items.limits.billing;
-	if (!billing() || !state) return { enabled: false };
+	if (billing()?.exemptUsers.has(c.key[0]!)) return { enabled: false, exempt: true };
+	if (!state) return { enabled: false };
 	const now = Date.now();
 	Object.assign(c.vars.usage.limits, accountLimits(c.vars.items.limits).usage);
 	return billingView(c.db, state, c.vars.usage.numbers(now).hosted ?? null, now);
@@ -318,7 +320,7 @@ export const usageActions = {
 	},
 	billingCheckout: async (c: UsageActionCtx, input: { period: BillingPeriod; origin: string }): Promise<{ url: string }> => {
 		const profile = requireUser(c);
-		const settings = billingOn();
+		const settings = billingOn(c.key[0]!);
 		if (input?.period !== "month" && input?.period !== "year") throw new UserError("Choose monthly or yearly.", { code: "bad_input" });
 		const origin = billingOrigin(input?.origin);
 		if (profile.demo) throw new UserError("The demo account cannot subscribe.", { code: "billing_off" });
@@ -339,7 +341,7 @@ export const usageActions = {
 	},
 	billingPortal: async (c: UsageActionCtx, input: { origin: string }): Promise<{ url: string }> => {
 		requireUser(c);
-		const settings = billingOn();
+		const settings = billingOn(c.key[0]!);
 		const origin = billingOrigin(input?.origin);
 		const { customerId } = await readBilling(c.db);
 		if (customerId === null) throw new UserError("There is no subscription to manage yet.", { code: "no_customer" });
@@ -352,7 +354,7 @@ export const usageActions = {
 	},
 	setOverageCap: async (c: UsageActionCtx, input: { cents: number }): Promise<BillingView> => {
 		requireUser(c);
-		billingOn();
+		billingOn(c.key[0]!);
 		try {
 			c.vars.items.limits.billing = await setCapCents(c.db, input?.cents);
 		} catch (error) {
@@ -373,7 +375,7 @@ export const usageActions = {
 		const settings = billingOn();
 		const done = await applyBillingEvent(c.db, event, Date.now(), settings.graceMs, async id =>
 			(await customerDirectory(c.client()).claim(id, c.key[0]!)) === c.key[0]);
-		if (done.outcome === "applied") {
+		if (done.outcome === "applied" && !settings.exemptUsers.has(c.key[0]!)) {
 			c.vars.items.limits.billing = done.state;
 			billingChanged(c);
 		}
