@@ -578,12 +578,12 @@ require("node:module").syncBuiltinESMExports();`);
 				clean(output);
 				return { code, output };
 			}
-			const { E2bSandboxes } = await import("../server/src/sandbox/e2b/sandboxes.js");
+			const { e2bSandboxes } = await import("../server/src/sandbox/e2b/sandboxes.js");
 			const { FakeE2b } = await import("../server/src/sandbox/e2b/fake.js");
 			const { readE2bSettings } = await import("../server/src/sandbox/e2b/config.js");
 			const { createFakeSandboxLayer } = await import("../server/src/sandbox-fake.js");
 			const hostedDocker = new DockerSandboxes({ machine: null, dataVolume: async () => { throw new Error("unexpected volume"); }, dropDataVolume: async () => {} });
-			const hostedE2b = new E2bSandboxes(new FakeE2b(), readE2bSettings({}));
+			const hostedE2b = e2bSandboxes(new FakeE2b(), readE2bSettings({}));
 			for (const provider of [hostedDocker, hostedE2b, createFakeSandboxLayer({ signIns: "memory" }).sandboxes]) {
 				for (const harness of ["claude", "opencode", "codex"] as const) {
 					const name = harness === "codex" ? "Codex" : harness === "claude" ? "Claude Code" : "OpenCode";

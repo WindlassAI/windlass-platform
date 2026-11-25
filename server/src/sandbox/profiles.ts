@@ -14,7 +14,7 @@
 
 import type { EgressMode, HarnessId, SandboxProfile, SandboxProfileId, SessionMode, SessionSummary } from "../contract.js";
 import { itemModeOf, machineHarness } from "./harnesses.js";
-import { hostedNetworkSentence, hostedNetworkText } from "./e2b/network.js";
+import { hostedNetworkSentence, hostedNetworkText } from "./hosted-network.js";
 import { codexDefaultMode } from "./codex-modes.js";
 
 export function cpuFlags(cpus: number) {
@@ -141,7 +141,7 @@ export const PROFILES: SandboxProfile[] = [
  *
  * `windlassSandbox: true` is for a deployment whose owner has seen the check pass and set
  * WLP_E2B_WINDLASS_SANDBOX=1: then the stronger promise of the first Docker profile is made, and
- * `E2bSandboxes.create` holds every new sandbox to it (it runs Windlass's own probe and removes a
+ * `E2bProvider.provision` holds every new sandbox to it (it runs Windlass's own probe and removes a
  * sandbox in which it fails).
  */
 export function e2bProfile(options: { windlassSandbox: boolean; network?: EgressMode }): SandboxProfile {

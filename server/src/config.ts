@@ -116,8 +116,7 @@
  *                              minute, and at most the 24 hours a Rivet Cloud cluster issues one for).
  *                              A server hands one token to every browser until half of that is gone
  *
- * With WLP_SANDBOX=e2b (read in sandbox/e2b/config.ts; docs/operating.md, "E2B"). The defaults are sized for E2B's
- * free Hobby plan, which runs on a one-time credit: every one of them errs on the side of using less.
+ * With WLP_SANDBOX=e2b (read in sandbox/e2b/config.ts; docs/operating.md, "E2B"). Hosted deployment settings and defaults are listed there.
  *
  *   E2B_API_KEY                the E2B account's API key. Required: without it the server does not start
  *   WLP_E2B_TEMPLATE           the template sandboxes are made from (default windlass-platform-sandbox,
@@ -133,15 +132,13 @@
  *                              every server of a deployment; different for another deployment that
  *                              shares the E2B account
  *   WLP_E2B_MAX_RUNNING        how many of the deployment's sandboxes may run at the same time, counted
- *                              from E2B's own list, so it holds across servers (default 3; the Hobby
- *                              plan itself allows 10). At the cap a user is told to try again later
+ *                              from E2B's own list across servers (default 3). At the cap a user is told to try again later
  *   WLP_E2B_IDLE_TIMEOUT_MS    a sandbox's own timeout while no turn runs in it: E2B pauses it by itself
  *                              this long after it was last connected to (default 120000, two minutes)
  *   WLP_E2B_TURN_LEASE_MS      a sandbox's own timeout while a turn runs, set again every third of it by
  *                              the server that runs the turn (default 180000): a sandbox whose server
  *                              died is paused by E2B within this time
- *   WLP_E2B_MAX_RUNTIME_MS     how long the plan lets a sandbox run without a pause (default 3600000,
- *                              the Hobby plan's hour; 86400000 on Pro). A sandbox with too little of it
+ *   WLP_E2B_MAX_RUNTIME_MS     how long the account lets a sandbox run without a pause (default 3600000). A sandbox with too little of it
  *                              left for a turn is paused and resumed before the turn starts
  *   WLP_E2B_PAUSE=0            for an account that cannot pause: a sandbox is killed where it would be
  *                              paused (its timeout, `suspend`), and the session's files and its Windlass
@@ -279,6 +276,7 @@
  */
 
 import { type ModelRelayUrl, parseModelRelayUrl } from "./model-relay-url.js";
+import { type E2bSettings, readE2bSettings } from "./sandbox/e2b/config.js";
 import { SNAPSHOT_MIN_SETUP_MS } from "./sandbox/snapshot-key.js";
 import { storeSettings, type StoreCaps, type StoreLimits } from "./sandbox/store-limits.js";
 
@@ -369,8 +367,8 @@ export interface Config {
 	modelRelay: { on: boolean; requests: number; turnRequests: number; url: ModelRelayUrl | null };
 	/** A Docker setup must finish successfully and reach this duration to be saved. */
 	snapshots: boolean;
-	/** WLP_E2B_SNAPSHOTS=on: post-setup snapshots of hosted E2B sessions (e2b/snapshots.ts). Docker and machines keep `snapshots`. */
-	e2bSnapshots: boolean;
+	/** Selected remote provider settings, without credentials. */
+	hosted: E2bSettings | null;
 	snapshotMinSetupMs: number;
 	/**
 	 * The snapshot and Git mirror stores' limits on the platform's own Docker (WLP_SNAPSHOT_MACHINE_MAX_GB,
@@ -874,11 +872,12 @@ function readMachines(httpPort: number): MachinesConfig | null {
 
 const httpPort = readHttpPort();
 
+const sandbox = readSandboxMode();
 export const config: Config = {
 	demo: process.env.WLP_DEMO === "1",
 	machines: readMachines(httpPort),
 	access: readAccessRules(),
-	sandbox: readSandboxMode(),
+	sandbox,
 	allowDockerHosted: process.env.WLP_ALLOW_DOCKER_HOSTED === "1",
 	signingKeys: configuredKeys("WLP_SECRET_KEYS", 16) ?? [{ id: "default", secret: readSecret() }],
 	secretConfigured: !engine.remote || Boolean(process.env.WLP_SECRET_KEYS || process.env.WLP_SECRET),
@@ -900,7 +899,7 @@ hostedQuestionTimeoutMs: Math.min(readQuestionTimeout(), readDuration("WLP_HOSTE
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
 	modelRelay: readModelRelay(),
 	snapshots: process.env.WLP_SNAPSHOTS === "on",
-	e2bSnapshots: process.env.WLP_E2B_SNAPSHOTS === "on",
+	hosted: sandbox === "e2b" ? readE2bSettings() : null,
 	snapshotMinSetupMs: readDuration("WLP_SNAPSHOT_MIN_SETUP_MS", SNAPSHOT_MIN_SETUP_MS, SNAPSHOT_MIN_SETUP_MS),
 	storeLimits: readStoreLimits(),
 	setupTimeoutMs: readDuration("WLP_SETUP_TIMEOUT_MS", 10 * 60 * 1000, 1_000),
@@ -928,6 +927,6 @@ export const crossRepoFactory = (): boolean => process.env.WLP_FACTORY_CROSS_REP
  * Whether post-setup snapshots are on for a session's place: a hosted session on E2B follows
  * WLP_E2B_SNAPSHOTS, every other place (hosted Docker, a machine's runner) WLP_SNAPSHOTS.
  */
-export function snapshotsFor(place: { kind: "hosted" | "machine" }, settings: Pick<Config, "sandbox" | "snapshots" | "e2bSnapshots"> = config): boolean {
-	return place.kind === "hosted" && settings.sandbox === "e2b" ? settings.e2bSnapshots : settings.snapshots;
+export function snapshotsFor(place: { kind: "hosted" | "machine" }, settings: Pick<Config, "hosted" | "snapshots"> = config): boolean {
+	return place.kind === "hosted" && settings.hosted ? !!settings.hosted.snapshots : settings.snapshots;
 }

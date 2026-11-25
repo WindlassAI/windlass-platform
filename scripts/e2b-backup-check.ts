@@ -198,8 +198,8 @@ async function main(): Promise<number> {
 			() => false,
 		);
 		expect("nothing of this run is left in the bucket", removed);
-		console.log(`\ne2b-backup-check: the sandboxes ran ${describeUsage(usage.ms / 1000, usage.cpuCount, usage.memoryMB)}. The check itself took ${Math.round((Date.now() - startedAt) / 1000)} s.`);
-		console.log("e2b-backup-check: that is an estimate from E2B's published prices and this script's own clock; the account's usage page has what was billed.");
+		console.log(`\ne2b-backup-check: the sandboxes ran ${describeUsage(usage.ms / 1000, usage.cpuCount, usage.memoryMB, settings.rateCard)}. The check itself took ${Math.round((Date.now() - startedAt) / 1000)} s.`);
+		console.log("e2b-backup-check: that is an estimate from the deployment's rate card and this script's own clock; the account's usage page has what was billed.");
 	}
 	console.log(`\n${passes} passed, ${failures} failed`);
 	return timedOut ? 3 : failures === 0 ? 0 : 1;

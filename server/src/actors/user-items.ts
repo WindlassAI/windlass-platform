@@ -1010,7 +1010,7 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	const machines = plannerMachines([...c.vars.machines.values()]);
 	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
 	// Where a fresh post-setup snapshot of the child's repository is: a bonus among the places the route allows.
-	const fresh = repositoryId === undefined ? [] : await snapshotPlaces(c.db, setupProjectKey(repositoryId) ?? "", c.vars.github?.connectedAt).catch(() => []);
+	const fresh = repositoryId === undefined ? [] : await snapshotPlaces(c.db, setupProjectKey(repositoryId) ?? "", c.vars.github?.connectedAt, config.hosted?.snapshots?.ttlMs).catch(() => []);
 	const hostedSizes = hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(size => size.id);
 	const hostedKeys = await providerStatuses(c.db);
 	const inventory: PlacementInventory = { hostedKeys, keyProfiles: profiles.filter(p => p.available && p.platformKeys).map(p => p.id), dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(), ...(hostedSizes.length > 1 && { hostedSizes }),

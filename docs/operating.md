@@ -162,6 +162,35 @@ cd server && E2B_API_KEY=e2b_... npx tsx ../scripts/e2b-check.ts    # one sandbo
 WLP_SANDBOX=e2b E2B_API_KEY=e2b_... WLP_WINDLASS_BIN=/path/to/windlass npx tsx src/index.ts
 ```
 
+### Hosted deployment settings
+
+Set these on each server in a deployment. An explicit `WLP_HOSTED_*` value takes precedence over its existing E2B setting. Windlass reports conflicting names at startup. The deployment running cap applies across its servers. E2B also enforces the account's own limits.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WLP_HOSTED_DEPLOYMENT` | `default` | Inventory and cleanup label |
+| `WLP_HOSTED_MAX_RUNNING` | 3 | Concurrent running sandboxes in this deployment |
+| `WLP_HOSTED_MAX_CONTINUOUS_MS` | 3600000 | Continuous runtime available for a turn (`WLP_E2B_MAX_RUNTIME_MS`) |
+| `WLP_HOSTED_IDLE_TIMEOUT_MS` / `WLP_HOSTED_TURN_LEASE_MS` | 120000 / 180000 | Idle and active leases |
+| `WLP_HOSTED_IDLE_ACTION` | `pause` | `pause` retains disk and memory. `destroy` discards both, as with `WLP_E2B_PAUSE=0` |
+| `WLP_HOSTED_SIZES` | `small` | Enabled sizes, comma-separated, always including small |
+| `WLP_HOSTED_MAX_VCPUS` / `WLP_HOSTED_MAX_MEMORY_MIB` | 8 / 8192 | Upper bounds for template builds |
+| `WLP_HOSTED_INNER_SANDBOX` / `WLP_HOSTED_OPEN_PROFILE` | 0 / 0 | Existing profile switches (`WLP_E2B_WINDLASS_SANDBOX` / `WLP_E2B_OPEN_PROFILE`) |
+| `WLP_HOSTED_WINDLASS_VERSION` | unset | Version in the deployed template |
+| `WLP_HOSTED_NETWORK` / `WLP_HOSTED_NETWORK_ALLOW` | `open` / `@npm,@pypi,@github` | Deployment network policy and restricted-mode presets |
+| `WLP_HOSTED_NETWORK_MAX_HOSTS` | 64 | Total allowed hosts in a restricted list, including platform hosts |
+| `WLP_HOSTED_SNAPSHOTS` | `off` | Enable prepared environments with `on` |
+| `WLP_HOSTED_SNAPSHOT_MAX` / `WLP_HOSTED_SNAPSHOT_USER_MAX` | 10 / 3 | Deployment and per-user image counts |
+| `WLP_HOSTED_SNAPSHOT_MAX_GIB` | 4 | Maximum used disk to capture (`WLP_E2B_SNAPSHOT_MAX_GB`) |
+| `WLP_HOSTED_SNAPSHOT_TTL_MS` | 1209600000 | Retention for hosted image reuse, pruning and placement hints |
+| `WLP_HOSTED_RATE_CARD_FILE` | unset | JSON file with running compute rates in USD per second |
+
+The built-in rate card is equivalent to the following file. A zero rate is valid. These estimates do not change usage allowances or settled receipts.
+
+```json
+{ "e2b": { "microvm": { "usdPerVcpuSecond": 0.000014, "usdPerGiBSecond": 0.0000045 } } }
+```
+
 The default template is `windlass-platform-sandbox`. Build `windlass-platform-sandbox-shots` with
 `WLP_SANDBOX_VARIANT=shots sandbox/e2b/build.sh` for repositories that enable screenshots.
 `WLP_E2B_TEMPLATE` and `WLP_E2B_SHOTS_TEMPLATE` override their respective names for both build and server.
@@ -373,7 +402,7 @@ with its secrets when a turn starts (`SealedSecrets.network`), keeps it in its s
 sandbox sets E2B's configuration and the pinned names to the deployment's hosts and the list's together. A
 session has one repository, so it gets that repository's hosts. If the deployment's own list grew so that the
 whole passes 64, the repository's hosts that do not fit are left out and logged (`e2b.network.dropped`). The
-changes of one sandbox's network run one at a time on the server (`E2bSandboxes.serial`), and the root script
+changes of one sandbox's network run one at a time on the server (`E2bProvider.serial`), and the root script
 holds `/run/wlp-network.lock` and stages the names file under a `mktemp` name in `/run`, so a connect and an
 allow at the same moment cannot leave `/etc/hosts` empty or E2B's list and the names file from different calls.
 
@@ -392,7 +421,7 @@ hundred cannot push out one the person wants. The settings show requests with Al
 read whole (the stub stops at 256 KiB), and names the timeline named already are left out before the 50-name
 cut, so earlier ones cannot hide a later one. A TCP client of the stub has one second in all, so a slow one
 cannot hold it. Allowing from the timeline saves the host to the list, and while a turn holds the sandbox it
-changes the sandbox at once (`updateNetwork` and the pinned names, `E2bSandboxes.setNetwork`); otherwise it
+changes the sandbox at once (`updateNetwork` and the pinned names, `E2bProvider.applyEgress`); otherwise it
 applies from the next turn, since a change between turns would start a paused sandbox or push a running one's
 timeout out with no meter counting it. In `none` it is refused, since nothing but the model API is reached
 there. Only the person whose settings it is can allow (`mayChangeNetwork`). A call from anyone else would file

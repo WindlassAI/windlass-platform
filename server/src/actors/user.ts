@@ -93,8 +93,7 @@ import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } 
 import { serverSealer } from "../signin/seal.js";
 import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, hostedLimitsApply } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
-import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/e2b/network.js";
-import { readE2bSettings } from "../sandbox/e2b/config.js";
+import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/hosted-network.js";
 import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, type EnvironmentHost } from "./user-environments.js";
 import type { EnvironmentBuildOrigin, EnvironmentBuildReport } from "./internal.js";
@@ -258,7 +257,7 @@ async function readSetup(db: RawAccess, project: string): Promise<RepositorySetu
 }
 
 async function dropHostedSnapshots(uid: string, repo?: string) {
-	if ((config.snapshots && config.sandbox === "docker") || (config.e2bSnapshots && config.sandbox === "e2b")) await (await getLayer()).sandboxes.dropSnapshots?.(uid, repo).catch(() => {
+	if (config.sandbox !== "fake" && snapshotsFor({ kind: "hosted" })) await (await getLayer()).sandboxes.dropSnapshots?.(uid, repo).catch(() => {
 		console.warn("[wlp] snapshot cleanup deferred");
 	});
 }
@@ -440,7 +439,7 @@ async function networkView(c: UserCtx, project: string): Promise<RepositoryNetwo
 	const hosted = await hostedNetwork();
 	const saved = await readNetwork(c.db, project);
 	const deploymentHosts = hosted?.mode === "restricted" ? hosted.hosts : [];
-	return { ...saved, requests: await readRequests(c.db, project, [...saved.hosts, ...deploymentHosts]), presets: networkPresets(), hosted, limit: networkLimit(deploymentHosts) };
+	return { ...saved, requests: await readRequests(c.db, project, [...saved.hosts, ...deploymentHosts]), presets: networkPresets(), hosted, limit: networkLimit(deploymentHosts, config.hosted?.network.maxHosts) };
 }
 
 async function deploymentHostsForLimit(): Promise<string[]> {
@@ -793,7 +792,7 @@ function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 			}, { revokeAfter: true });
 		},
 		snapshots: { hosted: snapshotsFor({ kind: "hosted" }), machines: snapshotsFor({ kind: "machine" }) },
-		hostedUserMax: config.sandbox === "e2b" ? readE2bSettings().snapshots?.maxPerUser ?? null : null,
+		hostedUserMax: config.hosted?.snapshots?.maxPerUser ?? null,
 		startBuild: async (request) => {
 			const profile = c.vars.profile;
 			if (!profile) throw new Error("Sign in again so the platform can build environments.");
@@ -1652,7 +1651,7 @@ export const user = actor({
 			const project = setupKeyOf(input?.repositoryId);
 			if (!mayChangeNetwork(profile.uid, c.key[0]!)) throw new UserError("Only whoever changes this repository's settings can change its network list.", { code: "forbidden" });
 			const limitHosts = await deploymentHostsForLimit();
-			const entries = networkInput(() => cleanEntries(input?.entries, limitHosts));
+			const entries = networkInput(() => cleanEntries(input?.entries, limitHosts, config.hosted?.network.maxHosts));
 			try {
 				const saved = await saveNetwork(c.db, project, await labelFor(c, input.repositoryId, project), entries, Date.now());
 				console.log(`[wlp] network.saved uid=${profile.uid} project=${project} entries=${entries.length} hosts=${saved.hosts.length}`);
@@ -1720,7 +1719,7 @@ export const user = actor({
 			try {
 				if (allowed) {
 					const label = session.repository ? `${session.repository.owner}/${session.repository.name}` : "";
-					const saved = await addEntry(c.db, project, label, host, await deploymentHostsForLimit(), Date.now());
+					const saved = await addEntry(c.db, project, label, host, await deploymentHostsForLimit(), Date.now(), config.hosted?.network.maxHosts);
 					console.log(`[wlp] network.allowed uid=${c.key[0]} project=${project} host=${host} session=${input.sessionId}`);
 					return { allowed, hosts: saved.hosts, network: await networkView(c, project) };
 				}
@@ -1754,7 +1753,7 @@ export const user = actor({
 		},
 		internalSnapshotPlaces: async (c, repositoryId: GithubId): Promise<string[]> => {
 			requireService(c);
-			return snapshotPlaces(c.db, setupKeyOf(repositoryId), c.vars.github?.connectedAt);
+			return snapshotPlaces(c.db, setupKeyOf(repositoryId), c.vars.github?.connectedAt, config.hosted?.snapshots?.ttlMs);
 		},
 		internalSnapshotGenerations: async (c): Promise<string[]> => {
 			requireService(c);
@@ -1927,7 +1926,7 @@ export const user = actor({
 			const others = (feature?.repositories ?? []).filter(r => String(r.repositoryId) !== String(session.repository?.id));
 			const lists = session.place.kind === "hosted" ? [await readNetwork(c.db, project), ...await Promise.all(others.map(r => readNetwork(c.db, setupProjectKey(r.repositoryId)!)))] : [];
 			// The others fill only the room the deployment's own hosts leave: the primary's list comes first.
-			const network = lists.length > 1 ? unionHosts(lists.map(list => list.hosts), networkLimit(await deploymentHostsForLimit())) : lists[0]?.hosts ?? [];
+			const network = lists.length > 1 ? unionHosts(lists.map(list => list.hosts), networkLimit(await deploymentHostsForLimit(), config.hosted?.network.maxHosts)) : lists[0]?.hosts ?? [];
 			const rows = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], project, rows);
 			const { checks } = await readChecks(c.db, project);

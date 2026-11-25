@@ -32,7 +32,8 @@ async function main(): Promise<number> {
 		console.error("e2b-cleanup: E2B_API_KEY is not set. It needs the API key of the E2B account the deployment runs on.");
 		return 2;
 	}
-	const deployment = named === -1 ? readE2bSettings().deployment : (args[named + 1] ?? "");
+	const settings = readE2bSettings();
+	const deployment = named === -1 ? settings.deployment : (args[named + 1] ?? "");
 	if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(deployment)) {
 		console.error('e2b-cleanup: --deployment needs a label: 1 to 64 letters, digits, "_" or "-"');
 		return 2;
@@ -40,11 +41,11 @@ async function main(): Promise<number> {
 	// Loaded here and not before: without a key E2B's SDK is not needed.
 	const { createE2bSdkClient } = await import("../server/src/sandbox/e2b/sdk.js");
 	const client = createE2bSdkClient(apiKey);
-	const report = await cleanupDeployment(client, deployment, { kill });
+	const report = await cleanupDeployment(client, deployment, { kill, rateCard: settings.rateCard });
 	for (const line of report.lines) console.log(line);
 	const { E2bSnapshots } = await import("../server/src/sandbox/e2b/snapshots.js");
-	const { DEFAULT_SNAPSHOT_LIMITS } = await import("../server/src/sandbox/e2b/config.js");
-	const store = new E2bSnapshots(client, { ...readE2bSettings(), deployment, snapshots: DEFAULT_SNAPSHOT_LIMITS }, () => undefined, Date.now);
+	const { DEFAULT_SNAPSHOT_LIMITS } = await import("../server/src/sandbox/hosted-settings.js");
+	const store = new E2bSnapshots(client, { ...settings, deployment, snapshots: settings.snapshots ?? DEFAULT_SNAPSHOT_LIMITS }, () => undefined, Date.now);
 	const snapshots = await store.rows();
 	let failed = report.failed.length;
 	for (const row of snapshots) {

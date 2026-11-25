@@ -24,10 +24,11 @@ import { choosePlacement, SNAPSHOT_BONUS } from "../server/src/factory/placement
 import type { PlanSubtask } from "../server/src/contract.js";
 import { digest, DEFERRED_INPUTS, type SnapshotSelection } from "../server/src/sandbox/snapshot-key.js";
 import type { E2bClient } from "../server/src/sandbox/e2b/client.js";
-import { DEFAULT_SNAPSHOT_LIMITS, type E2bSettings, readE2bSettings } from "../server/src/sandbox/e2b/config.js";
+import { DEFAULT_SNAPSHOT_LIMITS } from "../server/src/sandbox/hosted-settings.js";
+import { type E2bSettings, readE2bSettings } from "../server/src/sandbox/e2b/config.js";
 import { FakeE2b, ScriptedMachine } from "../server/src/sandbox/e2b/fake.js";
 import { describeUsage } from "../server/src/sandbox/e2b/pricing.js";
-import { type E2bSandboxHandle, E2bSandboxes, META } from "../server/src/sandbox/e2b/sandboxes.js";
+import { type E2bSandboxHandle, e2bSandboxes, META } from "../server/src/sandbox/e2b/sandboxes.js";
 import { AUDIT_SCRIPT, E2bSnapshots, RECORD_PATH, SNAP_META } from "../server/src/sandbox/e2b/snapshots.js";
 import { DATA_DIR, randomId } from "../server/src/sandbox/provider.js";
 import { docker, IMAGE } from "../server/src/sandbox/docker.js";
@@ -56,18 +57,9 @@ async function section(name: string, body: () => Promise<void>): Promise<void> {
 const MINUTE = 60_000;
 const DAY = 86_400_000;
 const SETTINGS: E2bSettings = {
-	template: "windlass-platform-sandbox",
-	shotsTemplate: "windlass-platform-sandbox-shots",
+	...readE2bSettings({}),
 	deployment: "snapcheck",
 	maxRunning: 50,
-	idleTimeoutMs: 2 * MINUTE,
-	turnLeaseMs: 3 * MINUTE,
-	maxRuntimeMs: 60 * MINUTE,
-	turnLimitMs: 45 * MINUTE,
-	pause: true,
-	windlassSandbox: false,
-	openProfile: false,
-	windlassVersion: null,
 	snapshots: { ...DEFAULT_SNAPSHOT_LIMITS },
 };
 const GEN = digest(["generation", 1]);
@@ -96,7 +88,7 @@ function world(settings: Partial<E2bSettings> = {}) {
 	const lines: string[] = [];
 	const state = { audit: "ok 1048576", roots: [] as string[] };
 	const fake = new FakeE2b({ now: () => clock.now, machine: machineFor(state) });
-	const make = (extra: Partial<E2bSettings> = {}) => new E2bSandboxes(fake, { ...SETTINGS, ...settings, ...extra }, { log: (line) => lines.push(line), now: () => clock.now, sleep: async () => {} });
+	const make = (extra: Partial<E2bSettings> = {}) => e2bSandboxes(fake, { ...SETTINGS, ...settings, ...extra }, { log: (line) => lines.push(line), now: () => clock.now, sleep: async () => {} });
 	const sandboxes = make();
 	const create = (uid: string, fromSnapshot?: SnapshotSelection, sessionId = "s-" + randomId(3)) => sandboxes.create({ uid, sessionId, profile: "e2b", fromSnapshot });
 	const store = new E2bSnapshots(fake, { ...SETTINGS, ...settings, snapshots: { ...DEFAULT_SNAPSHOT_LIMITS, ...settings.snapshots } }, () => undefined, () => clock.now);
@@ -112,7 +104,7 @@ function world(settings: Partial<E2bSettings> = {}) {
 
 async function fakeChecks() {
 	await section("the switch", async () => {
-		const off = new E2bSandboxes(new FakeE2b(), { ...SETTINGS, snapshots: undefined }, { log: () => undefined });
+		const off = e2bSandboxes(new FakeE2b(), { ...SETTINGS, snapshots: undefined }, { log: () => undefined });
 		expect("off: the provider offers none of the four snapshot calls", off.hasSnapshot === undefined && off.saveSnapshot === undefined && off.dropSnapshots === undefined && off.sweepSnapshots === undefined);
 		const on = world().sandboxes;
 		expect("on: all four are there", !!on.hasSnapshot && !!on.saveSnapshot && !!on.dropSnapshots && !!on.sweepSnapshots);
@@ -122,9 +114,9 @@ async function fakeChecks() {
 		let threw = false;
 		try { readE2bSettings({ WLP_E2B_SNAPSHOTS: "yes" }); } catch { threw = true; }
 		expect("a value that is neither on nor off stops the server", threw);
-		const base = { sandbox: "e2b" as const, snapshots: false, e2bSnapshots: true };
+		const base = { hosted: SETTINGS, snapshots: false };
 		expect("hosted on E2B follows WLP_E2B_SNAPSHOTS, a machine WLP_SNAPSHOTS, hosted Docker WLP_SNAPSHOTS",
-			snapshotsFor({ kind: "hosted" }, base) && !snapshotsFor({ kind: "machine" }, base) && !snapshotsFor({ kind: "hosted" }, { ...base, sandbox: "docker" }) && snapshotsFor({ kind: "hosted" }, { sandbox: "docker", snapshots: true, e2bSnapshots: false }));
+			snapshotsFor({ kind: "hosted" }, base) && !snapshotsFor({ kind: "machine" }, base) && !snapshotsFor({ kind: "hosted" }, { ...base, hosted: null }) && snapshotsFor({ kind: "hosted" }, { hosted: null, snapshots: true }));
 	});
 
 	await section("a cold writer saves, and a later session of the same user and repository starts from it", async () => {
@@ -348,10 +340,10 @@ async function liveCheck() {
 	const limitMs = Math.min(4 * MINUTE, Number(process.env.WLP_E2B_CHECK_LIMIT_MS) || 4 * MINUTE);
 	const timer = setTimeout(() => { console.log(`FAIL  the live check reached its ${limitMs / 1000} s limit`); process.exitCode = 3; void cleanup().finally(() => process.exit(3)); }, limitMs);
 	const client: E2bClient = createE2bSdkClient(apiKey);
-	const base = readE2bSettings({ ...process.env, WLP_E2B_SNAPSHOTS: "on" });
+	const base = readE2bSettings({ ...process.env, WLP_HOSTED_SNAPSHOTS: "on" });
 	const settings: E2bSettings = { ...base, deployment: `snapcheck-${randomId(3)}`, maxRunning: 1, snapshots: { ...base.snapshots!, maxTotal: 2, maxPerUser: 1 } };
 	const lines: string[] = [];
-	const sandboxes = new E2bSandboxes(client, settings, { log: (line) => { lines.push(line); console.log(`      ${line}`); } });
+	const sandboxes = e2bSandboxes(client, settings, { log: (line) => { lines.push(line); console.log(`      ${line}`); } });
 	const store = new E2bSnapshots(client, { ...settings, snapshots: settings.snapshots! }, () => undefined, Date.now);
 	const ran: { id: string; ms: number }[] = [];
 	async function cleanup() {
@@ -402,7 +394,7 @@ async function liveCheck() {
 		const left = await store.rows().catch(() => []);
 		expect("the run's snapshots are deleted", left.length === 0);
 		const seconds = ran.reduce((n, r) => n + r.ms, 0) / 1000;
-		console.log(`INFO  ${ran.length} sandboxes ran about ${describeUsage(seconds, 1, 1024)} (E2B's published prices; the template's real size may differ)`);
+		console.log(`INFO  ${ran.length} sandboxes ran about ${describeUsage(seconds, 1, 1024, settings.rateCard)} (the template's real size may differ)`);
 	}
 }
 

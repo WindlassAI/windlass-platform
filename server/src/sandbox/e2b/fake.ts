@@ -121,7 +121,7 @@ export interface FakeE2bOptions {
 	now?: () => number;
 	/** Makes the machine of a new sandbox; `from` is what its snapshot's machine gave (`FakeMachine.snapshot`), when made from one. Default a `ScriptedMachine` that answers everything with exit code 0. */
 	machine?: (sandboxId: string, from?: unknown) => FakeMachine | Promise<FakeMachine>;
-	/** The account's own limit on sandboxes running at once (the Hobby plan: 10). */
+	/** The account's own limit on sandboxes running at once (default 10). */
 	accountMaxRunning?: number;
 	/** What every sandbox is made with, as a template's build decides. */
 	cpuCount?: number;

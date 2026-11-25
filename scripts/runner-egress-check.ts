@@ -149,7 +149,7 @@ test("the restricted OpenCode broker refuses registry and login hosts before DNS
 
 test("--egress-domains: presets as hosted names them, the platform's hosts always, and refused lists", async () => {
 	const policy = await import("../runner/src/egress-policy.js");
-	const { PRESETS } = await import("../server/src/sandbox/e2b/network.js");
+	const { PRESETS } = await import("../server/src/sandbox/hosted-network.js");
 	const listed = policy.egressFlags(undefined, undefined, "@npm, @github, *.Example.org.")!;
 	assert.equal(listed.mode, "restricted");
 	assert.deepEqual(listed.domains, [...new Set(["*.example.org", ...PRESETS["@npm"]!, ...PRESETS["@github"]!])].sort());

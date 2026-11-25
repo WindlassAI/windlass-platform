@@ -17,6 +17,7 @@ import {
 	afterChange, afterPush, CHANGE_DEBOUNCE_MS, ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, environmentInputs, environmentPlaces, HOSTED, judgeChecks, nextBuild, nextScheduled, nightlyMinute,
 	PUSH_CAP_MS, PUSH_DEBOUNCE_MS, readEnvironments, RETRY_MS, stateOf, usable, type EnvironmentRow,
 } from "../server/src/environments.js";
+import { snapshotPlaces } from "../server/src/snapshot-places.js";
 import { edge } from "../server/src/github/events.js";
 import { buildResult, environmentsView, nudge, pushed, rebuild, sameSize, saveSchedule, sessionEnvironment, settingsChanged, tick, type BuildRequest, type EnvironmentHost } from "../server/src/actors/user-environments.js";
 
@@ -163,6 +164,15 @@ const passed = (over: Partial<EnvironmentBuild> = {}) => ({ finishedAt: null, co
 const failedBuild = { ...passed(), snapshot: false, failure: { kind: "package_manager" as const, check: "types", line: "ERR_PNPM_BAD_PM_VERSION", excerpt: "ERR_PNPM_BAD_PM_VERSION…" } };
 
 async function run(): Promise<void> {
+	{
+		const db = database();
+		await db.execute("CREATE TABLE snapshot_place (project TEXT, place TEXT, updated_at INTEGER, connected_at INTEGER, saved_at INTEGER)");
+		await db.execute("CREATE TABLE repo_secret (project TEXT)");
+		await db.execute("INSERT INTO setup_command VALUES (?, '', 'npm ci', 1)", PROJECT);
+		for (const place of [HOSTED, "m1"]) await db.execute("INSERT INTO snapshot_place VALUES (?, ?, 1, 2, ?)", PROJECT, place, Date.now() - HOUR);
+		expect("both placement hints use the existing retention by default", (await snapshotPlaces(db, PROJECT, 2)).join() === "hosted,m1");
+		expect("short hosted retention expires only the hosted placement hint", (await snapshotPlaces(db, PROJECT, 2, HOUR / 2)).join() === "m1");
+	}
 	// Rebuild, one place at a time, promoted on a pass.
 	{
 		const s = stand();

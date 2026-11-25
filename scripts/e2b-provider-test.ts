@@ -22,6 +22,8 @@
  * Exit code 0 when every check passed.
  */
 
+import assert from "node:assert/strict";
+import { HostedSandboxes } from "../server/src/sandbox/hosted.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -32,19 +34,21 @@ import { type AccessTokens, type ChatgptLogins, type OutOfMemory, DeploymentFull
 import { IMAGE, LABEL_ARG, docker } from "../server/src/sandbox/docker.js";
 import { cleanupDeployment } from "../server/src/sandbox/e2b/cleanup.js";
 import type { E2bClient, E2bCommand, E2bCommandOptions } from "../server/src/sandbox/e2b/client.js";
-import { DEFAULT_MAX_RUNNING, DEFAULT_SNAPSHOT_LIMITS, type E2bSettings, HOBBY_MAX_CPUS, HOBBY_MAX_MEMORY_MB, HOBBY_MAX_RUNNING, offeredSize, refusesSize, readE2bConfig, readE2bSettings, templateFor } from "../server/src/sandbox/e2b/config.js";
+import { DEFAULT_SNAPSHOT_LIMITS, offeredSize } from "../server/src/sandbox/hosted-settings.js";
+import { type E2bSettings, buildShape, refusesSize, readE2bKey, readE2bSettings, templateFor } from "../server/src/sandbox/e2b/config.js";
 import { E2bSnapshots } from "../server/src/sandbox/e2b/snapshots.js";
-import { HOSTED_SIZE_SPECS, outOfMemoryWords } from "../server/src/contract.js";
+import { outOfMemoryWords } from "../server/src/contract.js";
 import { FakeE2b, type FakeMachine, ScriptedMachine } from "../server/src/sandbox/e2b/fake.js";
 import { createE2bSandboxLayer } from "../server/src/sandbox/e2b/index.js";
 import { describeUsage, estimatedCostUsd } from "../server/src/sandbox/e2b/pricing.js";
-import { ACCOUNT_LIMIT, E2bSandboxHandle, E2bSandboxes, META, RESTARTED_NOTICE, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
+import { ACCOUNT_LIMIT, E2bSandboxHandle, e2bSandboxes, META, RESTARTED_NOTICE, capReached } from "../server/src/sandbox/e2b/sandboxes.js";
 import { RESTARTED_COMMAND, restartShellResult, resumePrompt } from "../server/src/actors/turn-resume.js";
 import { sessionSandboxInput } from "../server/src/actors/internal.js";
 import { describeTemplate } from "../server/src/sandbox/e2b/template.js";
 import { PROFILE_RUN_FLAGS } from "../server/src/sandbox/docker-flags.js";
 import { OPEN_PROFILE_NOT_OFFERED, PROFILES, e2bProfile, profilesFor } from "../server/src/sandbox/profiles.js";
-import { HOSTED_OFFLINE_REPOSITORY, type E2bNetworkConfig, guestDnsArgv, guestNetworkStep, hostedNetworkText, networkConfig, readE2bNetwork, withHosts } from "../server/src/sandbox/e2b/network.js";
+import { HOSTED_OFFLINE_REPOSITORY, hostedNetworkText, readHostedNetwork, withHosts } from "../server/src/sandbox/hosted-network.js";
+import { type E2bNetworkConfig, guestDnsArgv, guestNetworkStep, networkConfig } from "../server/src/sandbox/e2b/network.js";
 import { personalServerReach } from "../server/src/server-question.js";
 import { choosePlacement } from "../server/src/factory/placement.js";
 import { cloneWithToken, commitWork, discardHandover, fetchWithToken, outgoingPatch, pushWithToken } from "../server/src/github/git.js";
@@ -94,18 +98,9 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 const MINUTE = 60_000;
 const SETTINGS: E2bSettings = {
-	template: "windlass-platform-sandbox",
-	shotsTemplate: "windlass-platform-sandbox-shots",
+	...readE2bSettings({}),
 	deployment: "test",
 	maxRunning: 2,
-	idleTimeoutMs: 2 * MINUTE,
-	turnLeaseMs: 3 * MINUTE,
-	maxRuntimeMs: 60 * MINUTE,
-	turnLimitMs: 45 * MINUTE,
-	pause: true,
-	windlassSandbox: false,
-	openProfile: false,
-	windlassVersion: null,
 };
 
 /** A machine that answers as the sandbox image would to what the provider itself runs. */
@@ -130,7 +125,7 @@ function world(settings: Partial<E2bSettings> = {}, fakeOptions: { accountMaxRun
 			}),
 	});
 	const versions: string[] = [];
-	const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, ...settings }, { log: (line) => lines.push(line), now: () => clock.now, sleep: async () => {}, onVersion: (version) => versions.push(version) });
+	const sandboxes = e2bSandboxes(fake, { ...SETTINGS, ...settings }, { log: (line) => lines.push(line), now: () => clock.now, sleep: async () => {}, onVersion: (version) => versions.push(version) });
 	const make = (uid = "u1", sessionId = "s1") => sandboxes.create({ uid, sessionId, profile: "e2b" });
 	return { clock, lines, fake, sandboxes, machines, versions, make };
 }
@@ -245,11 +240,11 @@ await section("a profile per session", async () => {
 	expect("each sandbox carries the profile it was made with", w.fake.sandboxes.get(strict)?.metadata[META.profile] === "e2b" && w.fake.sandboxes.get(open)?.metadata[META.profile] === "e2b-open");
 	expect("only the profile that promises Windlass's sandbox holds a new sandbox to bubblewrap's probe", probed(strict) && !probed(open));
 	// Another server, which made neither: what it knows of a sandbox's profile is what E2B keeps.
-	const other = new E2bSandboxes(w.fake, { ...SETTINGS, windlassSandbox: true, openProfile: true }, { log: () => undefined, now: () => w.clock.now, sleep: async () => {} });
+	const other = e2bSandboxes(w.fake, { ...SETTINGS, windlassSandbox: true, openProfile: true }, { log: () => undefined, now: () => w.clock.now, sleep: async () => {} });
 	const a = (await other.connect(strict)) as E2bSandboxHandle;
 	const b = (await other.connect(open)) as E2bSandboxHandle;
 	expect("Windlass runs with --approval auto in the one and full in the other, on any server", a.profile === "e2b" && a.approval === "auto" && b.profile === "e2b-open" && b.approval === "full", `${a.profile} ${a.approval}, ${b.profile} ${b.approval}`);
-	const withdrawn = new E2bSandboxes(w.fake, { ...SETTINGS, windlassSandbox: true }, { log: () => undefined, now: () => w.clock.now, sleep: async () => {} });
+	const withdrawn = e2bSandboxes(w.fake, { ...SETTINGS, windlassSandbox: true }, { log: () => undefined, now: () => w.clock.now, sleep: async () => {} });
 	const kept = (await withdrawn.connect(open)) as E2bSandboxHandle;
 	expect("a session made with it keeps it after the operator stops offering it to new ones", kept.profile === "e2b-open" && kept.approval === "full");
 	w.fake.sandboxes.get(strict)!.metadata = Object.fromEntries(Object.entries(w.fake.sandboxes.get(strict)!.metadata).filter(([key]) => key !== META.profile));
@@ -292,7 +287,7 @@ await section("the cap", async () => {
 			return connection;
 		},
 	});
-	const second = new E2bSandboxes(racing, { ...SETTINGS, maxRunning: 1 }, { log: (line) => race.lines.push(line), now: () => race.clock.now });
+	const second = e2bSandboxes(racing, { ...SETTINGS, maxRunning: 1 }, { log: (line) => race.lines.push(line), now: () => race.clock.now });
 	const lost = await userError(() => second.create({ uid: "u1", sessionId: "s1", profile: "e2b" }));
 	const left = [...race.fake.sandboxes.values()];
 	expect(
@@ -304,8 +299,7 @@ await section("the cap", async () => {
 	const account = world({ maxRunning: 5 }, { accountMaxRunning: 1 });
 	await account.fake.plant({});
 	const refusedByE2b = await userError(() => account.make());
-	expect("when E2B itself refuses (the account's own limit), the user reads that", refusedByE2b === ACCOUNT_LIMIT && /limit of its plan/.test(ACCOUNT_LIMIT), refusedByE2b ?? "did not throw");
-	expect(`the default cap (${DEFAULT_MAX_RUNNING}) is well under the Hobby plan's ${HOBBY_MAX_RUNNING}`, DEFAULT_MAX_RUNNING * 2 <= HOBBY_MAX_RUNNING && readE2bSettings({}).maxRunning === DEFAULT_MAX_RUNNING);
+	expect("when E2B itself refuses (the account's own limit), the user reads that", refusedByE2b === ACCOUNT_LIMIT && /account limit/.test(ACCOUNT_LIMIT), refusedByE2b ?? "did not throw");
 });
 
 await section("only this deployment's sandboxes", async () => {
@@ -413,7 +407,7 @@ await section("the dead-man switch", async () => {
 	const quick = await repoHandle.run("git status");
 	expect("a short command asks E2B for nothing about the timeout", quick.exitCode === 0 && callsOf(cloning.fake, "setTimeout").length === 0);
 	// The provider waits a third of the idle timeout (10 s here) before it vouches; the test does not: it shortens that wait.
-	(cloning.sandboxes as unknown as { holdCommandsAfterMs: number }).holdCommandsAfterMs = 200;
+	(cloning.sandboxes.provider as unknown as { holdCommandsAfterMs: number }).holdCommandsAfterMs = 200;
 	const clone = repoHandle.run("git clone https://example.invalid/repo.git");
 	await sleep(600);
 	const whileCloning = callsOf(cloning.fake, "setTimeout");
@@ -552,12 +546,12 @@ await section("a sandbox that does not answer", async () => {
 			if (this.curedByReboot) this.wedged = false;
 		}
 	}
-	const restrictedNetwork = readE2bNetwork({ WLP_E2B_NETWORK: "restricted" });
+	const restrictedNetwork = readHostedNetwork({ WLP_E2B_NETWORK: "restricted" });
 	const setup = (settings: Partial<E2bSettings> = {}) => {
 		const lines: string[] = [];
 		const machines = new Map<string, Wedged>();
 		const fake = new FakeE2b({ machine: (id) => { const machine = new Wedged(); machines.set(id, machine); return machine; } });
-		const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, network: restrictedNetwork, ...settings }, { log: (line) => lines.push(line), sleep: async () => {}, probeMs: 50, networkMs: 100 });
+		const sandboxes = e2bSandboxes(fake, { ...SETTINGS, network: restrictedNetwork, ...settings }, { log: (line) => lines.push(line), sleep: async () => {}, probeMs: 50, networkMs: 100 });
 		return { lines, fake, machines, sandboxes };
 	};
 
@@ -624,12 +618,12 @@ await section("sizes", async () => {
 	expect("a size that is not one is refused at startup", (() => { try { readE2bSettings({ WLP_E2B_SIZES: "small,huge" }); return false; } catch (error) { return /WLP_E2B_SIZES/.test(String(error)); } })());
 	const named = readE2bSettings({ WLP_E2B_TEMPLATE_LARGE: "big-one" });
 	expect("each size's templates by default, and by their own variables", templateFor(named, "standard", false) === "windlass-platform-sandbox-standard" && templateFor(named, "standard", true) === "windlass-platform-sandbox-standard-shots" && templateFor(named, "large", false) === "big-one" && templateFor(named, "small", false) === "windlass-platform-sandbox");
-	expect("a size not offered gets the largest offered below it", offeredSize({ sizes: ["small", "standard"] }, "large") === "standard" && offeredSize({ sizes: ["small", "large"] }, "standard") === "small" && offeredSize({}, "large") === "small");
+	expect("a size not offered gets the largest offered below it", offeredSize({ sizes: ["small", "standard"] }, "large") === "standard" && offeredSize({ sizes: ["small", "large"] }, "standard") === "small" && offeredSize({ sizes: ["small"] }, "large") === "small");
 
 	const lines: string[] = [];
 	const clock = { now: Date.parse("2026-11-15T12:00:00Z") };
 	const fake = new FakeE2b({ now: () => clock.now, machine: () => imageLike(), templateSizes: { "windlass-platform-sandbox-standard": { cpuCount: 2, memoryMB: 4096 }, "windlass-platform-sandbox-large-shots": { cpuCount: 4, memoryMB: 8192 } } });
-	const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, maxRunning: 5, sizes: ["small", "standard", "large"] }, { log: (line) => lines.push(line), now: () => clock.now, sleep: async () => {} });
+	const sandboxes = e2bSandboxes(fake, { ...SETTINGS, maxRunning: 5, sizes: ["small", "standard", "large"] }, { log: (line) => lines.push(line), now: () => clock.now, sleep: async () => {} });
 	const standard = await sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b", hostedSize: "standard" });
 	const made = fake.sandboxes.get(standard)!;
 	expect("a standard sandbox is made from the standard template, and says its size in its metadata and the log", made.template === "windlass-platform-sandbox-standard" && made.metadata[META.size] === "standard" && lines.some((line) => line.includes(`e2b.sandbox.created id=${standard}`) && line.includes("size=standard")), lines.join("\n"));
@@ -647,17 +641,16 @@ await section("sizes", async () => {
 	expect("the usage page's base price stays the small size's", Math.abs(sandboxes.price().usdPerSecond - estimatedCostUsd(1, 1, 1024)) < 1e-12);
 
 	const fallback = new FakeE2b({ machine: () => imageLike() });
-	const smallOnly = new E2bSandboxes(fallback, SETTINGS, { log: () => {}, sleep: async () => {} });
+	const smallOnly = e2bSandboxes(fallback, SETTINGS, { log: () => {}, sleep: async () => {} });
 	const asked = await smallOnly.create({ uid: "u1", sessionId: "s1", profile: "e2b", hostedSize: "large" });
 	expect("a deployment that built only small offers one size, and makes small for any size asked", smallOnly.sizes().length === 1 && fallback.sandboxes.get(asked)?.template === "windlass-platform-sandbox");
 
 	// The account's plan refuses a size: the person reads the plan's limits, not E2B's words alone.
 	const refusing = Object.assign(Object.create(fake) as FakeE2b, { create: async () => { throw new Error("400: memory 8192 MB exceeds the maximum allowed for your team's plan"); } });
 	const planLines: string[] = [];
-	const onPlan = new E2bSandboxes(refusing, { ...SETTINGS, maxRunning: 5, sizes: ["small", "standard", "large"] }, { log: (line) => planLines.push(line), now: () => clock.now, sleep: async () => {} });
+	const onPlan = e2bSandboxes(refusing, { ...SETTINGS, maxRunning: 5, sizes: ["small", "standard", "large"] }, { log: (line) => planLines.push(line), now: () => clock.now, sleep: async () => {} });
 	const refusal = await userError(() => onPlan.create({ uid: "u1", sessionId: "s9", profile: "e2b", hostedSize: "large" }));
-	expect("a size the plan refuses names the plan's limits, the size and E2B's words, and is logged", refusal?.startsWith("E2B refused a large sandbox (4 vCPU, 8 GiB) for the account's plan: the Hobby plan allows at most 8 vCPU and 8 GiB a sandbox, 10 sandboxes at once") === true && refusal.includes("exceeds the maximum") && planLines.some((line) => line.includes("e2b.size_refused size=large")), refusal ?? "");
-	expect("no size is beyond the Hobby plan's 8 vCPU and 8 GiB", Object.values(HOSTED_SIZE_SPECS).every((spec) => spec.cpus <= HOBBY_MAX_CPUS && spec.memoryMiB <= HOBBY_MAX_MEMORY_MB) && HOSTED_SIZE_SPECS.large.cpus === 4 && HOSTED_SIZE_SPECS.large.memoryMiB === 8192);
+	expect("a size the plan refuses names the size and E2B's words, and is logged", refusal?.startsWith("E2B refused a large sandbox (4 vCPU, 8 GiB) for the account's plan. E2B said:") === true && refusal.includes("exceeds the maximum") && planLines.some((line) => line.includes("e2b.size_refused size=large")), refusal ?? "");
 	expect("a template that is not there, or the account's count of sandboxes, is no size refusal", !refusesSize("404: template 'windlass-platform-sandbox-large' not found") && !refusesSize("429: rate limit exceeded"));
 
 	// A snapshot is of one template's sandbox: its key differs by size, so one size's never starts another's.
@@ -685,7 +678,7 @@ await section("a sandbox that ran out of memory", async () => {
 	}
 	const machines = new Map<string, Wedged>();
 	const fake = new FakeE2b({ machine: (id) => { const machine = new Wedged(); machines.set(id, machine); return machine; } });
-	const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, sizes: ["small", "standard"] }, { log: (line) => lines.push(line), sleep: async () => {}, probeMs: 50 });
+	const sandboxes = e2bSandboxes(fake, { ...SETTINGS, sizes: ["small", "standard"] }, { log: (line) => lines.push(line), sleep: async () => {}, probeMs: 50 });
 	const id = await sandboxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" });
 	// The incident's figures: 942 of 977 MiB, as E2B sampled them while the guest answered nothing.
 	const MiB = 2 ** 20;
@@ -834,7 +827,7 @@ await section("settings and prices", async () => {
 	expect("a value that makes no sense is refused, not guessed at", rejects({ WLP_E2B_MAX_RUNNING: "0" }) && rejects({ WLP_E2B_MAX_RUNNING: "many" }) && rejects({ WLP_E2B_IDLE_TIMEOUT_MS: "5" }) && rejects({ WLP_E2B_DEPLOYMENT: "a b" }) && rejects({ WLP_E2B_PAUSE: "yes" }));
 	let noKey = "";
 	try {
-		readE2bConfig({});
+		readE2bKey({});
 	} catch (error) {
 		noKey = error instanceof Error ? error.message : String(error);
 	}
@@ -853,26 +846,94 @@ await section("settings and prices", async () => {
 	expect("an hour of the default sandbox is estimated at about 6.7 cents", Math.abs(hour - 0.0666) < 1e-9 && describeUsage(3600, 1, 1024) === "3600 s at 1 vCPU and 1024 MiB, $0.0666 (estimated)", describeUsage(3600, 1, 1024));
 });
 
+await section("hosted deployment settings", async () => {
+	const defaults = readE2bSettings({});
+	assert.deepEqual(defaults.sizes, ["small"]);
+	assert.equal(defaults.turnLimitMs, 2_700_000);
+	assert.equal(defaults.openProfile, false);
+	assert.equal(defaults.windlassVersion, null);
+	assert.equal(defaults.network.maxHosts, 64);
+	assert.equal(defaults.snapshots, undefined);
+	assert.deepEqual(readE2bSettings({ WLP_HOSTED_SNAPSHOTS: "on" }).snapshots, { maxTotal: 10, maxPerUser: 3, maxBytes: 4 * 2 ** 30, ttlMs: 1_209_600_000 });
+	assert.deepEqual(defaults.rateCard, { usdPerVcpuSecond: 0.000014, usdPerGiBSecond: 0.0000045 });
+
+	const settings = readE2bSettings({
+		WLP_HOSTED_DEPLOYMENT: "prod-2", WLP_HOSTED_MAX_RUNNING: "1500", WLP_E2B_MAX_RUNNING: "9",
+		WLP_HOSTED_IDLE_TIMEOUT_MS: "45000", WLP_HOSTED_TURN_LEASE_MS: "90000", WLP_HOSTED_MAX_CONTINUOUS_MS: "172800000",
+		WLP_HOSTED_IDLE_ACTION: "destroy", WLP_HOSTED_INNER_SANDBOX: "1", WLP_HOSTED_OPEN_PROFILE: "1", WLP_HOSTED_WINDLASS_VERSION: "0.7.1",
+		WLP_HOSTED_SIZES: "large,standard", WLP_HOSTED_NETWORK: "restricted", WLP_HOSTED_NETWORK_ALLOW: "repo.example", WLP_HOSTED_NETWORK_MAX_HOSTS: "3",
+		WLP_HOSTED_SNAPSHOTS: "on", WLP_HOSTED_SNAPSHOT_MAX: "8", WLP_HOSTED_SNAPSHOT_USER_MAX: "2",
+		WLP_HOSTED_SNAPSHOT_MAX_GIB: "1", WLP_HOSTED_SNAPSHOT_TTL_MS: "1000",
+	});
+	assert.equal(settings.deployment, "prod-2");
+	assert.equal(settings.maxRunning, 1500);
+	assert.equal(settings.idleTimeoutMs, 45000);
+	assert.equal(settings.turnLeaseMs, 90000);
+	assert.equal(settings.openProfile && settings.windlassSandbox, true);
+	assert.equal(settings.windlassVersion, "0.7.1");
+	assert.deepEqual(settings.snapshots, { maxTotal: 8, maxPerUser: 2, maxBytes: 2 ** 30, ttlMs: 1000 });
+	assert.deepEqual(settings.network.hosts, ["api.openai.com", "github.com", "repo.example"]);
+	assert.deepEqual(withHosts(settings.network, ["other.example"]).dropped, ["other.example"]);
+	const { provider } = world(settings).sandboxes;
+	const caps = provider.capabilities;
+	assert.deepEqual(caps.sizes.map(s => s.id), ["small", "standard", "large"]);
+	assert.equal(caps.canPause, false);
+	assert.equal(caps.persistenceOnStop, "unsupported");
+	assert.equal(caps.snapshots.filesystemCapture, "running");
+	assert.equal(caps.egress.allowList, true);
+	assert.equal(caps.concurrency.source, "account-count");
+	assert.deepEqual(caps.maxSession.continuousMs, { value: 172800000, source: "config" });
+	assert.deepEqual((await provider.capacity()).scope, "deployment");
+	assert.throws(() => readE2bSettings({ WLP_HOSTED_IDLE_ACTION: "stop" }), /IDLE_ACTION/);
+	assert.throws(() => readE2bSettings({ WLP_HOSTED_SNAPSHOTS: "on", WLP_HOSTED_SNAPSHOT_TTL_MS: "0" }), /TTL_MS/);
+	assert.throws(() => readE2bSettings({ WLP_HOSTED_NETWORK: "restricted", WLP_HOSTED_NETWORK_MAX_HOSTS: "1" }), /at most 1/);
+	assert.throws(() => buildShape({ WLP_E2B_CPU: "9" }, "small"), /WLP_E2B_CPU/);
+	assert.throws(() => buildShape({ WLP_HOSTED_MAX_MEMORY_MIB: "4096" }, "large"), /MEMORY/);
+	assert.deepEqual(buildShape({ WLP_HOSTED_MAX_VCPUS: "12", WLP_E2B_CPU: "12" }, "large"), { cpuCount: 12, memoryMB: 8192 });
+
+	const file = join(mkdtempSync(join(tmpdir(), "wlp-rates-")), "rates.json");
+	try {
+		writeFileSync(file, JSON.stringify({ e2b: { microvm: { usdPerVcpuSecond: 0.001, usdPerGiBSecond: 0 } } }));
+		const prices = world(readE2bSettings({ WLP_HOSTED_RATE_CARD_FILE: file })).sandboxes;
+		assert.equal(prices.price().usdPerSecond, 0.001);
+		assert.equal(prices.sizes()[0]?.usdPerHour, 3.6);
+		writeFileSync(file, JSON.stringify({ e2b: { microvm: { usdPerVcpuSecond: -1 } } }));
+		assert.throws(() => readE2bSettings({ WLP_HOSTED_RATE_CARD_FILE: file }), /RATE_CARD_FILE/);
+	} finally {
+		rmSync(dirname(file), { recursive: true, force: true });
+	}
+
+	// An account without per-sandbox filtering must refuse both the selection and a direct create.
+	const unfiltered = Object.create(provider);
+	Object.defineProperty(unfiltered, "capabilities", { value: { ...caps, egress: { allowList: false } } });
+	assert.throws(() => new HostedSandboxes(unfiltered), /cannot enforce/);
+	Object.defineProperty(unfiltered, "network", { value: { mode: "open", hosts: [] } });
+	const boxes = new HostedSandboxes(unfiltered);
+	assert.deepEqual(boxes.profiles().filter(p => p.available).map(p => p.id), ["e2b-open"]);
+	await assert.rejects(boxes.create({ uid: "u1", sessionId: "s1", profile: "e2b" }), /cannot enforce/);
+	expect("hosted policy, rates, build bounds and account capabilities", true);
+});
+
 await section("network modes", async () => {
 	const restrictedEnv = { WLP_E2B_NETWORK: "restricted" };
-	const open = readE2bNetwork({});
+	const open = readHostedNetwork({});
 	expect("without WLP_E2B_NETWORK the deployment is open and nothing is listed", open.mode === "open" && open.hosts.length === 0 && networkConfig(open) === null);
-	const restricted = readE2bNetwork(restrictedEnv);
+	const restricted = readHostedNetwork(restrictedEnv);
 	expect(
 		"restricted lists the model API, the git host and the default presets, sorted, each once",
 		restricted.mode === "restricted" && ["api.openai.com", "github.com", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org", "objects.githubusercontent.com"].every((host) => restricted.hosts.includes(host)) && JSON.stringify(restricted.hosts) === JSON.stringify([...new Set(restricted.hosts)].sort()),
 		restricted.hosts.join(","),
 	);
 	const bucketEnv = { WLP_BUCKET_ENDPOINT: "https://acct.r2.cloudflarestorage.com", WLP_BUCKET_NAME: "memory", WLP_BUCKET_ACCESS_KEY_ID: "id", WLP_BUCKET_SECRET_ACCESS_KEY: "secret" };
-	const withBucket = readE2bNetwork({ ...restrictedEnv, ...bucketEnv, WLP_E2B_NETWORK_ALLOW: "@crates,git.example.org", WLP_GITHUB_URL: "https://ghe.example.com" });
+	const withBucket = readHostedNetwork({ ...restrictedEnv, ...bucketEnv, WLP_E2B_NETWORK_ALLOW: "@crates,git.example.org", WLP_GITHUB_URL: "https://ghe.example.com" });
 	expect("the bucket's host, the GitHub of WLP_GITHUB_URL and the operator's hosts are added; the default presets are replaced", ["acct.r2.cloudflarestorage.com", "ghe.example.com", "crates.io", "git.example.org", "api.openai.com"].every((host) => withBucket.hosts.includes(host)) && !withBucket.hosts.includes("registry.npmjs.org") && !withBucket.hosts.includes("github.com"), withBucket.hosts.join(","));
-	const virtual = readE2bNetwork({ ...restrictedEnv, ...bucketEnv, WLP_BUCKET_STYLE: "virtual" });
+	const virtual = readHostedNetwork({ ...restrictedEnv, ...bucketEnv, WLP_BUCKET_STYLE: "virtual" });
 	expect("in virtual style the bucket's name comes before the endpoint's host, as in a signed link", virtual.hosts.includes("memory.acct.r2.cloudflarestorage.com"), virtual.hosts.join(","));
-	const none = readE2bNetwork({ WLP_E2B_NETWORK: "none", ...bucketEnv });
+	const none = readHostedNetwork({ WLP_E2B_NETWORK: "none", ...bucketEnv });
 	expect("none lists only the model API and the bucket: no git host, no presets", JSON.stringify(none.hosts) === JSON.stringify(["acct.r2.cloudflarestorage.com", "api.openai.com"]), none.hosts.join(","));
 	const config = networkConfig(restricted);
 	expect("E2B is asked to deny every destination, allow the names, and allow no DNS server", config !== null && JSON.stringify(config.denyOut) === '["0.0.0.0/0"]' && JSON.stringify(config.allowOut) === JSON.stringify(restricted.hosts) && config.dnsServers.length === 0);
-	const refusal = (env: NodeJS.ProcessEnv) => { try { readE2bNetwork(env); return ""; } catch (error) { return error instanceof Error ? error.message : String(error); } };
+	const refusal = (env: NodeJS.ProcessEnv) => { try { readHostedNetwork(env); return ""; } catch (error) { return error instanceof Error ? error.message : String(error); } };
 	expect("a wildcard, an address, a port or an unknown preset is refused", [ "*.example.com", "93.184.216.34", "example.com:8443", "@cargo", "localhost" ].every((entry) => refusal({ ...restrictedEnv, WLP_E2B_NETWORK_ALLOW: entry }) !== ""), refusal({ ...restrictedEnv, WLP_E2B_NETWORK_ALLOW: "*.example.com" }));
 	expect("WLP_E2B_NETWORK_ALLOW without restricted is refused", /only with WLP_E2B_NETWORK=restricted/.test(refusal({ WLP_E2B_NETWORK: "none", WLP_E2B_NETWORK_ALLOW: "pypi.org" })) && /only with/.test(refusal({ WLP_E2B_NETWORK_ALLOW: "pypi.org" })));
 	expect("a git host or bucket E2B could not match by name (a port, plain http) stops the server", /WLP_GITHUB_URL/.test(refusal({ ...restrictedEnv, WLP_GITHUB_URL: "https://git.example.com:8443" })) && /WLP_BUCKET_ENDPOINT/.test(refusal({ WLP_E2B_NETWORK: "none", ...bucketEnv, WLP_BUCKET_ENDPOINT: "http://minio.local:9000" })));
@@ -908,7 +969,7 @@ await section("network modes", async () => {
 	expect("restricted: a resumed sandbox is set again too", callsOf(w.fake, "updateNetwork").length === 2 && w.fake.sandboxes.get(id)?.state === "running");
 
 	// The operator turns the deployment back to open: a kept sandbox is opened at its next connect.
-	const reopened = new E2bSandboxes(w.fake, { ...SETTINGS, network: open }, { log: () => {}, now: () => w.clock.now, sleep: async () => {} });
+	const reopened = e2bSandboxes(w.fake, { ...SETTINGS, network: open }, { log: () => {}, now: () => w.clock.now, sleep: async () => {} });
 	w.fake.calls.length = 0;
 	await reopened.connect(id);
 	const roots = (w.machines.get(id)?.commands ?? []).filter((entry) => entry.options.root);
@@ -1341,8 +1402,8 @@ if (withDocker) {
 			const url = "https://github.com/acme/demo.git";
 			for (const mode of ["open", "restricted", "none"] as const) {
 				const fake = new FakeE2b({ machine: async (id) => { const machine = await ContainerMachine.make(id, image); machines.push(machine); return machine; } });
-				const deploymentNetwork = readE2bNetwork({ ...bucket, ...(mode === "open" ? {} : { WLP_E2B_NETWORK: mode }) });
-				const sandboxes = new E2bSandboxes(fake, { ...SETTINGS, deployment: `test-${run}`, idleTimeoutMs: 10 * MINUTE, network: deploymentNetwork }, { log: () => {}, pinAddress: address });
+				const deploymentNetwork = readHostedNetwork({ ...bucket, ...(mode === "open" ? {} : { WLP_E2B_NETWORK: mode }) });
+				const sandboxes = e2bSandboxes(fake, { ...SETTINGS, deployment: `test-${run}`, idleTimeoutMs: 10 * MINUTE, network: deploymentNetwork }, { log: () => {}, pinAddress: address });
 				// A repository's list adds a host in restricted; open and none take no list. The fixture certificate does not name these hosts: -k, since what is checked is whether the filter lets them through.
 				const repoHosts = ["repo-allowed.example"];
 				const id = await sandboxes.create({ uid: "u1", sessionId: `net-${mode}`, profile: "e2b", network: repoHosts });
