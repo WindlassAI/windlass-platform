@@ -227,7 +227,7 @@ export function ApiTokens() {
 			) : list.length === 0 ? (
 				<p className="usage-empty">No API token yet.</p>
 			) : (
-				<ul className="usage-kept" aria-label="Your API tokens">
+				<ul className="settings-list" aria-label="Your API tokens">
 					{list.map((token) => (
 						<li key={token.id} className="usage-kept-row">
 							<div className="usage-kept-main">

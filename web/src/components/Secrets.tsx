@@ -10,7 +10,7 @@
  * depends on the sandbox profile and the secret's scope. Each list carries the server's explanation.
  *
  * The account's secrets are managed with the same list and the same dialog, on the account's settings
- * page (`AccountSecretsBlock`). They are for MCP servers, the user's own and a project's that reads
+ * page. They are for MCP servers, the user's own and a project's that reads
  * one, and have a repository's two scopes without the setup command: MCP servers only, or the
  * agent's commands as well. Where a repository has a secret of the same name, its agents are handed
  * the repository's; both lists say so.
@@ -485,12 +485,24 @@ export function SecretsBlock({
 	return <OwnedSecrets owner={owner} profile={profile} session={session} title={title} onChanged={onChanged} />;
 }
 
-/**
- * The account's secrets, listed and changed in place, as a sandbox of `profile` made now gets them:
- * the list and the dialog a repository's secrets have. `title` and `onChanged` as for `SecretsBlock`.
- */
-export function AccountSecretsBlock({ profile, title, onChanged }: { profile: SandboxProfileId | null; title(add: ReactNode): ReactNode; onChanged?(): void }) {
-	return <OwnedSecrets owner={ACCOUNT_OWNER} profile={profile} title={title} onChanged={onChanged} />;
+export function SettingsSecrets({ repository, profile, onChanged }: { repository?: { id: GithubId; name: string; count: number }; profile: SandboxProfileId | null; onChanged(): void }) {
+	// A secret's reach depends on the sandbox an agent will start in.
+	const { platform } = useApp();
+	const profiles = platform.info?.profiles;
+	const reach = profiles?.find(one => one.id === profile) ?? profiles?.find(one => one.available) ?? profiles?.[0];
+	const id = repository ? "repo-secrets" : "settings-secrets";
+	const title = (add: ReactNode) => (
+		<h3 className="usage-title" id={id}>
+			Secrets{repository?.count ? <span className="usage-count">{repository.count}</span> : null}{add}
+		</h3>
+	);
+	return (
+		<section className="usage-section repo-saved" aria-labelledby={id}>
+			{repository
+				? <SecretsBlock repositoryId={repository.id} name={repository.name} profile={reach?.id ?? null} title={title} onChanged={onChanged} />
+				: <OwnedSecrets owner={ACCOUNT_OWNER} profile={reach?.id ?? null} title={title} onChanged={onChanged} />}
+		</section>
+	);
 }
 
 function OwnedSecrets({ owner, profile, session, title, onChanged }: { owner: SecretsOwner; profile: SandboxProfileId | null; session?: SessionSummary; title(add: ReactNode): ReactNode; onChanged?(): void }) {

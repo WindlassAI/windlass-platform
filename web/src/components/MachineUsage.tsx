@@ -1,22 +1,12 @@
-/**
- * Usage, the "My machines" tab: the sandboxes of the user's agents on their own machines, each machine
- * with its own. They are outside the platform's limits: their time is not metered (no cost, no hours,
- * no allowance here), and they are not counted among the user's running agents or hosted kept sandboxes.
- * Each machine shows the only limits it has, the ones its owner set on its runner. Shown only where the
- * deployment offers machines; with none paired, the way to add one.
- */
-import { useApp } from "../state/app";
 import { useNow } from "../state/hooks";
 import { linkProps } from "../lib/router";
 import { MachineState, SandboxLine, sandboxLimit, storeLimits, useMachines } from "../screens/Machines";
 import { machineLabel } from "../lib/machines";
 
 export function MachineUsage() {
-	const { platform } = useApp();
-	const offered = Boolean(platform.info?.machines);
-	const { list, error } = useMachines(offered);
+	const { list, error } = useMachines();
 	const now = useNow(30_000);
-	if (!offered || (list === null && error === null)) return null;
+	if (list === null && error === null) return null;
 	if (list !== null && list.length === 0)
 		return (
 			<p className="usage-empty">
@@ -47,7 +37,6 @@ export function MachineUsage() {
 								<h3 className="usage-machine-name">{machineLabel(machine)}</h3>
 								<MachineState machine={machine} now={now} />
 							</div>
-							{/* The only limits a machine has: the ones its owner set on its runner. */}
 							<p className="usage-machine-limits">
 								Sandboxes: {sandboxLimit(machine)}
 								{machine.storeLimits ? <>; snapshots and mirrors: {storeLimits(machine.storeLimits)}</> : null}

@@ -226,14 +226,9 @@ a.agent-group-name:hover .agent-group-owner {
 }
 
 /* What is saved is a column of fields, not a table: it keeps a readable measure on a wide page. */
-.repo-fields,
-.repo-saved > *,
 .repo-forget {
 	max-width: 660px;
 }
-.repo-saved > .input,
-.repo-saved > .secrets,
-.repo-saved > .servers,
 .repo-saved > .panel-empty:first-of-type {
 	margin-top: 12px;
 }
@@ -356,11 +351,6 @@ a.agent-group-name:hover .agent-group-owner {
 	}
 }
 
-/* The grid has no margin of its own: here it follows a paragraph. */
-.repo-fields {
-	margin-top: 14px;
-}
-
 /* ---- a repository's checks ------------------------------------------------------------------------ */
 
 /* Each check is a name and a command on one line, and under them what narrows it: set smaller, as options are. */
@@ -446,45 +436,15 @@ a.agent-group-name:hover .agent-group-owner {
 	margin-top: 12px;
 }
 
-/*
- * Saved settings, on the account's and a repository's pages, in Helm's cards: the defaults' fields in
- * one form card, the MCP servers, the secrets and the API tokens as hairline rows in a card the full
- * width of the page. "Add…" in a section's head is a quiet secondary button.
- */
-.usage .repo-fields,
-.usage .repo-saved > * {
-	max-width: none;
-}
 .usage .repo-saved > p {
 	max-width: 74ch;
 }
-.usage .repo-fields {
-	margin-top: 14px;
-	padding: 18px 20px 20px;
-	border: 1px solid var(--line);
-	border-radius: var(--r-box);
-	background: var(--bg-raised);
-	box-shadow: var(--shadow-box);
-}
-.usage .repo-saved > .secrets,
-.usage .repo-saved > .servers {
+.repo-saved > :is(.secrets, .servers) {
 	gap: 0;
-	margin-top: 14px;
-	overflow: hidden;
-	border: 1px solid var(--line);
-	border-radius: var(--r-box);
-	background: var(--bg-raised);
-	box-shadow: var(--shadow-box);
 }
-.usage .repo-saved > .secrets > .secret,
-.usage .repo-saved > .servers > .server {
-	padding: 13px 16px 10px;
-	border-bottom: 1px solid var(--line);
+.repo-saved > .secrets > .secret,
+.repo-saved > .servers > .server {
 	transition: background-color var(--dur-hover) var(--ease);
-}
-.usage .repo-saved > .secrets > .secret:last-child,
-.usage .repo-saved > .servers > .server:last-child {
-	border-bottom: 0;
 }
 .usage .repo-saved > .secrets > .secret:hover,
 .usage .repo-saved > .servers > .server:hover {
@@ -533,38 +493,18 @@ a.agent-group-name:hover .agent-group-owner {
 	text-decoration: underline;
 	text-underline-offset: 3px;
 }
-@media (max-width: 760px) {
-	.usage .repo-fields {
-		padding: 14px;
-	}
-	.usage .repo-saved > .secrets > .secret,
-	.usage .repo-saved > .servers > .server {
-		padding-left: 14px;
-		padding-right: 14px;
-	}
-}
-/* A setting's form in its card: the fields, their actions and their notes together. */
 .repo-form {
 	display: grid;
 	gap: 12px;
-	margin-top: 14px;
-	padding: 18px 20px;
+	margin-top: 12px;
 }
 .repo-form > :first-child,
-.repo-form .usage-note:first-child {
-	margin-top: 0;
-}
 .repo-form .usage-note,
 .repo-form .usage-lede {
 	margin-top: 0;
 }
-@media (max-width: 760px) {
-	.repo-form {
-		padding: 14px;
-	}
-}
 /* Fields inside a card sit on the page's ground, a step below the card, rather than the sunk well. */
-:is(.repo-form, .repo-fields) :is(.input, .select) {
+:is(.repo-form, .defaults) :is(.input, .select) {
 	background-color: var(--bg);
 }
 
@@ -773,18 +713,18 @@ a.agent-group-name:hover .agent-group-owner {
  * Each group's fields flow three to a row on a wide screen and stack on a phone; a field that is not
  * chosen says what it comes to in quiet ink (`is-inherited`).
  */
-.repo-fields.defaults {
+.defaults {
 	display: grid;
 	gap: 0;
 }
 .defaults-group + .defaults-group {
-	margin-top: 18px;
-	padding-top: 16px;
+	margin: 18px calc(-1 * var(--card-gutter)) 0;
+	padding: 16px var(--card-gutter) 0;
 	border-top: 1px solid var(--line);
 }
 .defaults-title {
 	margin: 0 0 12px;
-	font-size: var(--text-13);
+	font-size: var(--text-14);
 	font-weight: var(--weight-strong);
 	color: var(--ink);
 }

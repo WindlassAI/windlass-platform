@@ -154,7 +154,7 @@ function PlanBody({ view, replace, go, busy, goError }: { view: Enabled; replace
 					</span>
 				</p>
 			) : null}
-			<div className="usage-card billing-card">
+			<div className="billing-card">
 				{month ? (
 					<div className="billing-month">
 						<p className="billing-month-name">{monthName(month)}</p>

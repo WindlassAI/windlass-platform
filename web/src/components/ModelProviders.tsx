@@ -222,7 +222,7 @@ export function ModelProviders() {
 					</p>
 				)
 			) : (
-				<ul className="usage-kept" aria-label="Your model providers">
+				<ul className="settings-list" aria-label="Your model providers">
 					{!auth.profile.demo && <ChatgptPlan />}
 					{MODEL_PROVIDERS.map((provider) => {
 						const { name } = PROVIDERS[provider];

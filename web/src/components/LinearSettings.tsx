@@ -145,7 +145,7 @@ export function LinearSettings() {
 							<span className="skeleton skeleton-meta" style={{ width: "58%" }} />
 						</div>
 					) : (
-						<ul className="usage-kept" aria-label="Teams">
+						<ul className="settings-list" aria-label="Teams">
 							{teams.map((team) => (
 								<li key={team.id} className="usage-kept-row" data-testid={`linear-team-${team.key}`}>
 									<div className="usage-kept-main">

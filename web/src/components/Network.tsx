@@ -168,7 +168,7 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 	return (
 		<>
 			<p className="usage-lede">{appliesHere(network)}</p>
-			<div className="usage-card repo-form repo-network-form">
+			<div className="repo-form">
 				<fieldset className="repo-network-presets" aria-labelledby={labelledBy}>
 					<legend className="label">Presets</legend>
 					{network.presets.map((preset) => {

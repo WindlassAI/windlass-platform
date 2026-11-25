@@ -279,13 +279,9 @@ function SendBackDialog({ view, acting, onClose }: { view: ItemView; acting: Act
 	);
 }
 
-/**
- * The person's note to a running builder: into the turn that runs, or with its next turn. Logged as
- * theirs. One box on the page: a feature's running parts are chosen in it, not given a box each.
- */
 function NoteBox({ targets, onDone }: { targets: { id: string; label: string }[]; onDone(view: ItemView): void }) {
 	const [note, setNote] = useState("");
-	const [chosen, setChosen] = useState(targets[0]?.id ?? "");
+	const [chosen, setChosen] = useState("");
 	const target = targets.find((one) => one.id === chosen) ?? targets[0];
 	const ids = { note: useId(), to: useId() };
 	const acting = useActing(target?.id ?? "", onDone);
@@ -299,7 +295,7 @@ function NoteBox({ targets, onDone }: { targets: { id: string; label: string }[]
 	return (
 		<form className="item-form item-steer" onSubmit={send}>
 			{targets.length > 1 ? (
-				<div className="item-steer-to">
+				<div>
 					<label className="label" htmlFor={ids.to}>
 						Note to
 					</label>
@@ -712,7 +708,6 @@ function Cost({ view, now }: { view: ItemView; now: number }) {
 			{view.state === "working" && view.spent.turns === 0 && step?.turn === "started" && (
 				<p className="usage-note">Spend is counted when the running turn ends. This step started {sandboxTime((now - step.startedAt) / 1000)} ago.</p>
 			)}
-			{/* One card: each budget with its bar side by side, and the rest of what it spent in one line under them. */}
 			<div className="usage-card item-cost-card">
 				<ItemSpend spent={view.spent} budget={view.budget} fields={rows} agent={view.agent} />
 				{facts.length > 0 ? (
@@ -985,6 +980,12 @@ export function Item({ page }: { page: ItemPage }) {
 	// A subtask's place in its feature's plan, once the feature is read: "Part 2 of 5 of <feature>".
 	const part = view.parent && feature.view?.plan ? partOf(feature.view.plan, view.parent.key) : null;
 
+	const noteTargets = view.mode === "orchestrate"
+		? (view.children ?? []).filter(child => TAKES_NOTES.has(child.state)).map(child => {
+			const n = view.plan && child.parent ? partOf(view.plan, child.parent.key)?.n : undefined;
+			return { id: child.id, label: `${n ? `Part ${n}` : "The part"}: ${child.title}` };
+		})
+		: TAKES_NOTES.has(view.state) ? [{ id: view.id, label: view.parent ? "Note to this part" : "Note to the agent" }] : [];
 	const moreActions: MenuItem[] = [];
 	if (view.canUpdateFeature && !view.question?.choices.some(choice => choice.id === "update_feature")) {
 		moreActions.push({ id: "update_feature", label: `Update the feature from ${view.task.base}`, onSelect: () => acting.act({ kind: "update_feature" }) });
@@ -1108,18 +1109,8 @@ export function Item({ page }: { page: ItemPage }) {
 					<Now view={view} now={now} />
 				)}
 				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
-				{/* What it asks has its own note: then no second box. */}
-				{view.question ? null : view.mode !== "orchestrate" ? (
-					TAKES_NOTES.has(view.state) ? <NoteBox targets={[{ id: view.id, label: view.parent ? "Note to this part" : "Note to the agent" }]} onDone={page.replace} /> : null
-				) : (
-					<NoteBox
-						key={view.children?.filter((child) => TAKES_NOTES.has(child.state)).map((child) => child.id).join(" ")}
-						targets={(view.children ?? []).filter((child) => TAKES_NOTES.has(child.state)).map((child) => {
-							const n = view.plan && child.parent ? partOf(view.plan, child.parent.key)?.n : undefined;
-							return { id: child.id, label: `${n ? `Part ${n}` : "The part"}: ${child.title}` };
-						})}
-						onDone={() => void page.reload()}
-					/>
+				{!view.question && noteTargets.length > 0 && (
+					<NoteBox key={view.mode === "orchestrate" ? noteTargets.map(target => target.id).join(" ") : undefined} targets={noteTargets} onDone={view.mode === "orchestrate" ? () => void page.reload() : page.replace} />
 				)}
 			</section>
 

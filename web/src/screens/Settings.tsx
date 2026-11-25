@@ -1,24 +1,9 @@
-/**
- * Settings: what a user keeps for their account, whatever the repository an agent works on. Three
- * things, each in the component its counterpart on a repository's page uses:
- *
- *   - the defaults a new agent starts with where neither its launch nor its repository says
- *     (`DefaultsSection`);
- *   - the user's own MCP servers, which Windlass starts in every agent of theirs (`PersonalServers`);
- *   - the secrets those servers read (`AccountSecretsBlock`), which reach MCP servers and, where
- *     their user says so for one, the agent's commands.
- *
- * Everything on the page is the user's actor's (`account`, `accountSecrets`): it is read when the
- * page opens, and every save answers with what is saved then. What a secret reaches depends on the
- * sandbox, so the list of secrets is said for the sandbox a new agent starts in when nothing else is
- * chosen: the account's default, or the deployment's first.
- */
 import { useState } from "react";
 import { Dialog } from "../components/Dialog";
 import { ApiTokens } from "../components/ApiTokens";
-import { AccountSecretsBlock } from "../components/Secrets";
+import { SettingsSecrets } from "../components/Secrets";
 import { DefaultsSection } from "../components/Defaults";
-import { ArrowLeftIcon, WarnIcon } from "../components/Icons";
+import { ArrowLeftIcon } from "../components/Icons";
 import { LinearSettings } from "../components/LinearSettings";
 import { LoginMethods } from "../components/LoginMethods";
 import { ModelProviders } from "../components/ModelProviders";
@@ -31,9 +16,8 @@ import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useAccount, useModels } from "../state/hooks";
 import { Check } from "../components/ui/Check";
-import { SettingsGroup, SettingsLayout, SettingsNav } from "../components/SettingsGroups";
+import { SettingsGroup, SettingsLayout, SettingsPending, SettingsRefreshError } from "../components/SettingsGroups";
 
-/** What the top bar shows on this page: the way back and where one is. */
 export function SettingsCrumb() {
 	return (
 		<nav className="crumb" aria-label="Where you are">
@@ -59,18 +43,12 @@ export function Settings() {
 	const { settings } = account;
 	const info = platform.info;
 	const machines = useMachines(!!info?.machines);
-	// What a secret reaches depends on the sandbox: the list is said for the one a new agent starts in when nothing else is chosen.
 	const choices = startingChoices(settings?.defaults ?? null, info, models.list, "account");
-	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
 
-	const items = Boolean(info?.items);
-	const groups = [
-		{ id: "settings-account", title: "Account" },
-		{ id: "settings-defaults", title: "Defaults" },
-		{ id: "settings-models", title: "Models" },
-		...(settings === null ? [] : [{ id: "settings-tools", title: "Tools" }]),
-		...(items ? [{ id: "settings-integrations", title: "Integrations" }] : []),
-	];
+	const upgrades = machines.list?.flatMap(machine => {
+		const note = settingsKeyUpgrade(machine);
+		return note ? [<p className="field-note" key={machine.machineId}>{machineLabel(machine)}: {note}</p>] : [];
+	}) ?? [];
 	const paired = machines.list?.length ?? null;
 
 	return (
@@ -82,14 +60,9 @@ export function Settings() {
 				</div>
 			</header>
 
-			{account.error && settings !== null ? (
-				<p className="callout callout-warn" role="status">
-					<WarnIcon />
-					<span>{account.error} <button className="link" onClick={account.reload}>Try again</button></span>
-				</p>
-			) : null}
+			{account.error && settings !== null && <SettingsRefreshError error={account.error} reload={account.reload} />}
 
-			<SettingsLayout nav={<SettingsNav label="Settings sections" groups={groups} />}>
+			<SettingsLayout label="Settings sections">
 				<SettingsGroup id="settings-account" title="Account" lede="How you sign in, and your plan.">
 					{!auth.profile.demo && <LoginMethods />}
 					{info?.billing ? <PlanSection /> : null}
@@ -98,20 +71,18 @@ export function Settings() {
 
 				<SettingsGroup id="settings-defaults" title="Defaults" lede="Used wherever a repository has no default of its own. A choice made at launch always comes first.">
 					{settings === null ? (
-						<SettingsLoading error={account.error} reload={account.reload} />
+						<SettingsPending subject="Your settings" error={account.error} reload={account.reload} />
 					) : (
 						<DefaultsSection
 							id="settings-defaults-fields"
 							defaults={settings.defaults}
 							whose="account"
 							under={null}
-							account={null}
+							account={account}
 							models={models}
 							save={(change) => client.user(auth).saveAccountDefaults(change)}
 							onSaved={(next) => account.replace({ ...settings, defaults: next })}
-							lastStart={settings.lastStart}
-							forgetLastStart={() => client.user(auth).forgetLastStart()}
-							onForgotten={account.replace}
+
 						/>
 					)}
 					{info?.machines ? (
@@ -131,36 +102,17 @@ export function Settings() {
 					lede={<>Hosted agents use these. Keys stay on Windlass. <a className="link" href="/docs/settings#model-providers">How keys are used →</a></>}
 				>
 					<ModelProviders />
-					{machines.list?.some((machine) => settingsKeyUpgrade(machine)) ? (
-						<div className="settings-row settings-row-notes">
-							{machines.list.map((machine) => {
-								const upgrade = settingsKeyUpgrade(machine);
-								return upgrade && <p className="field-note" key={machine.machineId}>{machineLabel(machine)}: {upgrade}</p>;
-							})}
-						</div>
-					) : null}
+					{upgrades.length > 0 && <div className="settings-row settings-row-notes">{upgrades}</div>}
 				</SettingsGroup>
 
 				{settings !== null ? (
 					<SettingsGroup id="settings-tools" title="Tools" lede="MCP servers every agent gets, and the secrets they read.">
 						<PersonalServers settings={settings} onChanged={account.replace} />
-						<section className="usage-section repo-saved" aria-labelledby="settings-secrets">
-							<AccountSecretsBlock
-								profile={reachProfile?.id ?? null}
-								// A server's line says whether a secret sets the variable it reads: the servers are read again.
-								onChanged={account.reload}
-								title={(add) => (
-									<h3 className="usage-title" id="settings-secrets">
-										Secrets
-										{add}
-									</h3>
-								)}
-							/>
-						</section>
+						<SettingsSecrets profile={choices.profile} onChanged={account.reload} />
 					</SettingsGroup>
 				) : null}
 
-				{items ? (
+				{info?.items ? (
 					<SettingsGroup id="settings-integrations" title="Integrations" lede="File work items from other places.">
 						<LinearSettings />
 						<ApiTokens />
@@ -168,28 +120,6 @@ export function Settings() {
 				) : null}
 			</SettingsLayout>
 		</main>
-	);
-}
-
-/** What stands in a group whose settings are not read yet, or could not be. */
-function SettingsLoading({ error, reload }: { error: string | null; reload(): void }) {
-	return error ? (
-		<div className="usage-section">
-			<div className="state state-error" role="alert">
-				<WarnIcon size={22} />
-				<h3>Your settings could not be loaded</h3>
-				<p>{error}</p>
-				<button type="button" className="button button-outline" onClick={reload}>
-					Try again
-				</button>
-			</div>
-		</div>
-	) : (
-		<div className="usage-section usage-loading" aria-busy="true" aria-label="Loading your settings">
-			<span className="skeleton skeleton-title" style={{ width: "34%" }} />
-			<span className="skeleton skeleton-meta" style={{ width: "100%" }} />
-			<span className="skeleton skeleton-meta" style={{ width: "58%" }} />
-		</div>
 	);
 }
 

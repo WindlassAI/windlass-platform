@@ -143,7 +143,7 @@ export function EnvironmentSection({ repositoryId, labelledBy }: { repositoryId:
 	if (error) return <p className="field-note tone-bad" role="alert">{error}</p>;
 	if (!view) return <p className="usage-lede">Reading the environments…</p>;
 	return (
-		<div className="usage-card repo-form env" aria-labelledby={labelledBy}>
+		<div className="repo-form" aria-labelledby={labelledBy}>
 			{!view.available ? (
 				<p className="env-note">{view.unavailableReason}</p>
 			) : (

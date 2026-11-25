@@ -35,7 +35,6 @@ export function ChatgptPlan() {
 	}
 
 	const connected = Boolean(status?.connected);
-	// A row of the model keys' list: the plan stands where a key would, with its state and one action.
 	return (
 		<li className="usage-kept-row provider-row chatgpt-plan" data-provider="chatgpt">
 			<div className="usage-kept-main">

@@ -60,28 +60,6 @@
 	margin-top: 36px;
 }
 
-/* The day at a glance: one card, the figure and its bar over the facts the bar is made of. */
-.usage-today {
-	margin-top: 14px;
-	overflow: hidden;
-}
-.usage-today > .usage-figure {
-	margin: 0;
-	padding: 18px 20px 0;
-}
-.usage-today > .usage-meter {
-	margin: 14px 20px 18px;
-	height: 8px;
-	border-radius: 4px;
-}
-.usage-today > .usage-facts {
-	margin: 0;
-	border: 0;
-	border-top: 1px solid var(--line);
-	border-radius: 0;
-	box-shadow: none;
-	background: transparent;
-}
 .usage-swatch {
 	display: inline-block;
 	width: 8px;
@@ -89,16 +67,6 @@
 	margin-right: 8px;
 	border-radius: 2px;
 	vertical-align: 0;
-}
-.usage-swatch-used {
-	background: var(--accent-text);
-}
-.usage-swatch-held {
-	background: repeating-linear-gradient(-45deg, var(--accent-text) 0 2px, color-mix(in srgb, var(--accent-text) 28%, transparent) 2px 4px);
-}
-.usage-swatch-left {
-	background: var(--bg-active);
-	box-shadow: inset 0 0 0 1px var(--line-strong);
 }
 .usage-figure {
 	display: flex;
@@ -136,10 +104,12 @@
 	border-radius: 3px;
 	transition: width 400ms var(--ease-out);
 }
+.usage-swatch-used,
 .usage-meter-used {
 	background: var(--accent-text);
 }
 /* What running sandboxes hold: the same hue in stripes, not counted yet, and as legible as the count in both themes. */
+.usage-swatch-held,
 .usage-meter-held {
 	background: repeating-linear-gradient(-45deg, var(--accent-text) 0 2px, color-mix(in srgb, var(--accent-text) 28%, transparent) 2px 4px);
 }
@@ -401,10 +371,6 @@
 }
 
 @media (max-width: 760px) {
-	.usage-sizes {
-		padding-left: 14px;
-		padding-right: 14px;
-	}
 	/* What each agent's sandbox holds is in the day's figures above; a narrow table leaves it out. */
 	.usage-wide {
 		display: none;
@@ -523,25 +489,10 @@
 	line-height: 1.5;
 	color: var(--ink-dim);
 }
-.usage-today .usage-facts > div {
-	padding-left: 20px;
-	padding-right: 20px;
-}
 
-/* Hosted sizes: one quiet row each, under the day's figures; and an agent's size beside its name. */
-.usage-sizes {
-	padding: 14px 20px 18px;
-	border-top: 1px solid var(--line);
-}
-.usage-sizes .usage-lede {
-	margin-top: 0;
-}
 .usage-size-list {
 	display: grid;
 	gap: 6px;
-	margin: 10px 0 0;
-	padding: 0;
-	list-style: none;
 	max-width: 420px;
 }
 .usage-size-list li {
@@ -574,17 +525,8 @@
 	min-width: 0;
 }
 
-/*
- * The page at a glance: one card with today's figures side by side (hosted time with its bar, model
- * tokens, the estimate), the month where a plan counts by month, and a foot with the kept and running
- * sandboxes and a fold for how the day is counted. The detail is in tabs under it.
- */
 .usage-summary {
 	margin-top: 24px;
-	border: 1px solid var(--line);
-	border-radius: var(--r-box);
-	background: var(--bg-raised);
-	box-shadow: var(--shadow-box);
 }
 .usage-summary-figures {
 	display: grid;
@@ -623,7 +565,6 @@
 	color: var(--ink);
 }
 .usage-summary-main .usage-meter {
-	height: 6px;
 	margin-top: 14px;
 }
 .usage-summary-sub {
@@ -682,24 +623,15 @@
 	box-shadow: none;
 }
 .usage-summary-more .usage-facts > div {
-	padding-left: 0;
-	padding-right: 0;
-}
-.usage-summary-more .usage-size-list {
-	margin: 0;
+	padding-inline: 0;
 }
 
-/* The tabs under it and the view each shows. */
 .usage-tabs {
 	margin-top: 36px;
 }
 .usage-tabs .tab {
-	border-top: 0;
-	border-left: 0;
-	border-right: 0;
+	border-width: 0 0 2px;
 	background: none;
-	cursor: pointer;
-	font-family: inherit;
 }
 .tab-count {
 	font-family: var(--font-mono);
@@ -717,7 +649,7 @@
 .usage-panel .usage-kept {
 	margin-top: 0;
 }
-.usage-panel .fold-rows-toggle {
+.usage-panel .fold-list-toggle {
 	margin-top: 10px;
 }
 .usage-panel-notes {
@@ -726,9 +658,6 @@
 	align-items: baseline;
 	justify-content: space-between;
 	gap: 4px 16px;
-}
-.usage-panel-notes .usage-note {
-	margin-top: 10px;
 }
 .usage-panel-toggle {
 	margin-top: 10px;
@@ -769,14 +698,12 @@
 	}
 	.usage-summary-month,
 	.usage-summary-foot {
-		padding-left: 16px;
-		padding-right: 16px;
+		padding-inline: 16px;
 	}
 	.usage-tabs {
 		flex-wrap: nowrap;
 		gap: 0 20px;
-		margin-left: calc(-1 * var(--gutter));
-		margin-right: calc(-1 * var(--gutter));
+		margin-inline: calc(-1 * var(--gutter));
 		padding: 0 var(--gutter);
 		overflow-x: auto;
 		scrollbar-width: none;

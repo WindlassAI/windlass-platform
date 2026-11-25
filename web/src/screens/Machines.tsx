@@ -541,8 +541,10 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 	const paired = relativeTime(machine.since, now);
 
 	const host = machineHostNote(machine);
+	const outdated = machine.warnings.some(warning => warning.kind === "outdated");
+	const limited = machine.providerAccounts?.filter(account => account.state === "limited" && (account.limitedUntil ?? 0) > now) ?? [];
 	return (
-		<li className={`usage-kept-row machine-row machine-row-${machine.warnings.some((warning) => warning.kind === "outdated") ? "outdated" : machine.status}`}>
+		<li className={`usage-kept-row machine-row machine-row-${outdated ? "outdated" : machine.status}`}>
 			<div className="machine-head">
 				<span className="machine-glyph" aria-hidden="true">
 					<MachineIcon size={17} />
@@ -559,7 +561,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 							host {host}
 						</span>
 					)}
-					{machine.warnings.some(warning => warning.kind === "outdated") && <span className="machine-update">Update available</span>}
+					{outdated && <span className="machine-update">Update available</span>}
 				</div>
 				<MachineState machine={machine} now={now} />
 				<button type="button" className="button button-outline button-small machine-remove" onClick={() => onRemove(machine)}>
@@ -573,11 +575,11 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 			<div className="machine-part">
 				<MachineUse machine={machine} onChanged={onChanged} />
 			</div>
-			{machine.harnesses?.length || upgrade || machine.providerAccounts?.some(a => a.state === "limited" && (a.limitedUntil ?? 0) > now) ? (
+			{machine.harnesses?.length || upgrade || limited.length > 0 ? (
 				<div className="machine-part">
 					<MachineAgents machine={machine} onChanged={onChanged} />
 					{upgrade && <p className="field-note">{upgrade}</p>}
-					{machine.providerAccounts?.filter(a => a.state === "limited" && (a.limitedUntil ?? 0) > now).map(a =>
+					{limited.map(a =>
 						<p className="field-note" key={a.key}>{a.provider ? `Your ${SOURCE_NAMES[a.provider]} key` : HARNESS_NAMES[a.harness]} is rate-limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}
 				</div>
 			) : null}
@@ -601,7 +603,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 						{orchestratorNote(machine)}
 					</span>
 				) : null}
-				<span className="machine-sandbox-count">
+				<span>
 					{machine.sandboxes.length === 0 ? "No kept sandboxes" : plural(machine.sandboxes.length, "kept sandbox", "kept sandboxes")}
 					{machine.maxSandboxes ? (
 						<span className="machine-meter" role="img" aria-label={`${machine.sandboxes.length} of at most ${machine.maxSandboxes} kept`}>

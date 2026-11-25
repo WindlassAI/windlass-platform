@@ -1,20 +1,9 @@
-/**
- * The usage page's part for work items: the limits for the user, which the deployment's owner sets and
- * nobody can raise from here (one line, the rest in a fold), and what each item has spent so far against
- * its budget, the first rows with the way to the rest.
- * The usage view supplies the effective limits alongside the user's live items: every open one and
- * the newest ended ones (`ItemFeed`), and how many older ended ones there are, which the Factory page lists.
- * Shown only where the deployment offers work items. Hosted sandbox time is a limit only of an item on a
- * hosted sandbox: an item on one of the user's machines shows none.
- */
 import { byteSize, compact, count, plural, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { FoldRows } from "./Fold";
 import { useItems } from "../screens/Items";
-import { useApp } from "../state/app";
 import type { FactoryLimits } from "@contract";
 
-/** A figure spent, and of how much: "1.2M of 4M". */
 function Of({ spent, budget, spell }: { spent: number; budget: number; spell(value: number): string }) {
 	return (
 		<>
@@ -25,13 +14,9 @@ function Of({ spent, budget, spell }: { spent: number; budget: number; spell(val
 }
 
 export function FactoryUsage({ value }: { value: FactoryLimits }) {
-	const { platform } = useApp();
-	const offered = Boolean(platform.info?.items);
-	const items = useItems(offered);
-	if (!offered) return null;
-	const list = items.list;
+	const { feed, list, error } = useItems();
 	// The feed carries the newest ended items only; the older ones are on the Factory page.
-	const older = items.feed ? items.feed.counts.ended - items.feed.ended.length : 0;
+	const older = feed ? feed.counts.ended - feed.ended.length : 0;
 	return (
 		<>
 			<p className="usage-lede">
@@ -67,7 +52,7 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 			</details>
 
 			{list === null ? (
-				items.error ? <p className="usage-empty tone-bad">The work items could not be loaded: {items.error}</p> : null
+				error ? <p className="usage-empty tone-bad">The work items could not be loaded: {error}</p> : null
 			) : list.length === 0 ? (
 				<div className="state state-empty factory-empty">
 					<p>No work items yet.</p>
@@ -79,15 +64,9 @@ export function FactoryUsage({ value }: { value: FactoryLimits }) {
 							<thead>
 								<tr>
 									<th scope="col">Item, spent so far</th>
-									<th scope="col" className="usage-number">
-										Tokens
-									</th>
-									<th scope="col" className="usage-number usage-wide">
-										Working
-									</th>
-									<th scope="col" className="usage-number">
-										Hosted
-									</th>
+									<th scope="col" className="usage-number">Tokens</th>
+									<th scope="col" className="usage-number usage-wide">Working</th>
+									<th scope="col" className="usage-number">Hosted</th>
 								</tr>
 							</thead>
 							<tbody>

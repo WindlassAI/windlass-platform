@@ -1,44 +1,47 @@
-/**
- * The layout of the pages that keep settings (an account's, a repository's): the settings in a few
- * groups named for what one does there, each one raised card with its parts divided by hairlines,
- * and on a wide screen a list of the groups beside them that follows the scroll. A part keeps its
- * own section and heading (an h3 under the group's h2); the card only takes away the box each part
- * used to draw for itself.
- */
-import { useEffect, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useState, type MouseEvent, type ReactElement, type ReactNode } from "react";
+import { WarnIcon } from "./Icons";
 
-export interface SettingsGroupLink {
+interface GroupProps {
 	id: string;
 	title: string;
-	/** A short count or state beside the title in the list, in mono; nothing when it has none. */
-	meta?: ReactNode;
+	lede?: ReactNode;
+	children: ReactNode;
 }
 
-/** The groups beside the page on a wide screen, and as a row of links above it on a narrow one. The one in view is marked. */
-export function SettingsNav({ groups, label }: { groups: SettingsGroupLink[]; label: string }) {
-	const [current, setCurrent] = useState(groups[0]?.id ?? "");
-	const key = groups.map((group) => group.id).join(" ");
+export function SettingsGroup({ id, title, lede, children }: GroupProps) {
+	return (
+		<section className="settings-group" id={id} aria-labelledby={`${id}-title`}>
+			<h2 id={`${id}-title`}>{title}</h2>
+			{lede && <p>{lede}</p>}
+			<div className="usage-card settings-card">{children}</div>
+		</section>
+	);
+}
+
+export function SettingsLayout({ label, children }: { label: string; children: (ReactElement<GroupProps> | null)[] }) {
+	const groups = children.filter(group => group !== null);
+	const ids = groups.map(group => group.props.id).join(" ");
+	const [current, setCurrent] = useState(groups[0]?.props.id);
 	useEffect(() => {
 		if (typeof IntersectionObserver === "undefined") return;
-		const shown = new Map<string, boolean>();
-		const observer = new IntersectionObserver(
-			(entries) => {
-				for (const entry of entries) shown.set(entry.target.id, entry.isIntersecting);
-				const first = groups.find((group) => shown.get(group.id));
-				if (first) setCurrent(first.id);
-			},
-			// A group is the current one while it crosses a band a little below the top of the screen.
-			{ rootMargin: "-20% 0px -60% 0px" },
-		);
-		for (const group of groups) {
-			const node = document.getElementById(group.id);
+		const order = ids.split(" ");
+		const shown = new Set<string>();
+		const observer = new IntersectionObserver(entries => {
+			for (const entry of entries) {
+				if (entry.isIntersecting) shown.add(entry.target.id);
+				else shown.delete(entry.target.id);
+			}
+			const first = order.find(id => shown.has(id));
+			if (first) setCurrent(first);
+		}, { rootMargin: "-20% 0px -60% 0px" });
+		for (const id of order) {
+			const node = document.getElementById(id);
 			if (node) observer.observe(node);
 		}
 		return () => observer.disconnect();
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [key]);
+	}, [ids]);
 
-	const go = (event: MouseEvent<HTMLAnchorElement>, id: string) => {
+	function go(event: MouseEvent<HTMLAnchorElement>, id: string) {
 		const node = document.getElementById(id);
 		if (!node || event.metaKey || event.ctrlKey || event.shiftKey) return;
 		event.preventDefault();
@@ -46,41 +49,57 @@ export function SettingsNav({ groups, label }: { groups: SettingsGroupLink[]; la
 		node.scrollIntoView({ block: "start", behavior: still ? "auto" : "smooth" });
 		history.replaceState(history.state, "", `#${id}`);
 		setCurrent(id);
-	};
+	}
 
 	return (
-		<nav className="settings-nav" aria-label={label}>
-			{groups.map((group) => (
-				<a key={group.id} href={`#${group.id}`} className="settings-nav-link" aria-current={current === group.id ? "true" : undefined} onClick={(event) => go(event, group.id)}>
-					<span>{group.title}</span>
-					{group.meta ? <span className="settings-nav-meta">{group.meta}</span> : null}
-				</a>
-			))}
-		</nav>
+		<div className="settings-frame">
+			<div className="settings-layout">
+				<nav className="settings-nav" aria-label={label}>
+					{groups.map(({ props: { id, title } }) => (
+						<a key={id} href={`#${id}`} aria-current={current === id || undefined} onClick={event => go(event, id)}>{title}</a>
+					))}
+				</nav>
+				<div>{children}</div>
+			</div>
+		</div>
 	);
 }
 
-/** One group: its title and a one-line lede over the card its parts share. */
-export function SettingsGroup({ id, title, lede, children }: { id: string; title: string; lede?: ReactNode; children: ReactNode }) {
+export function SettingsRefreshError({ error, reload }: { error: string; reload(): void }) {
 	return (
-		<section className="settings-group" id={id} aria-labelledby={`${id}-title`}>
-			<h2 className="settings-group-title" id={`${id}-title`}>
-				{title}
-			</h2>
-			{lede ? <p className="settings-group-lede">{lede}</p> : null}
-			<div className="settings-card">{children}</div>
+		<p className="callout callout-warn" role="status">
+			<WarnIcon />
+			<span>{error} <button className="link" onClick={reload}>Try again</button></span>
+		</p>
+	);
+}
+
+export function SettingsPending({ subject, error, reload }: { subject: string; error: string | null; reload(): void }) {
+	return (
+		<section className="usage-section">
+			{error ? (
+				<div className="state state-error" role="alert">
+					<WarnIcon size={22} />
+					<h3>{subject} could not be loaded</h3>
+					<p>{error}</p>
+					<button type="button" className="button button-outline" onClick={reload}>Try again</button>
+				</div>
+			) : (
+				<div className="usage-loading" aria-busy="true" aria-label={`Loading ${subject.toLowerCase()}`}>
+					<span className="skeleton skeleton-title" style={{ width: "34%" }} />
+					<span className="skeleton skeleton-meta" style={{ width: "100%" }} />
+					<span className="skeleton skeleton-meta" style={{ width: "58%" }} />
+				</div>
+			)}
 		</section>
 	);
 }
 
-/** The nav and the groups side by side. */
-export function SettingsLayout({ nav, children }: { nav: ReactNode; children: ReactNode }) {
+export function SettingsSection({ id, title, count, children }: { id: string; title: string; count?: number; children: ReactNode }) {
 	return (
-		<div className="settings-frame">
-			<div className="settings-layout">
-				{nav}
-				<div className="settings-groups">{children}</div>
-			</div>
-		</div>
+		<section className="usage-section repo-saved" aria-labelledby={id}>
+			<h3 className="usage-title" id={id}>{title}{count ? <span className="usage-count">{count}</span> : null}</h3>
+			{children}
+		</section>
 	);
 }
