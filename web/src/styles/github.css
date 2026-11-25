@@ -1,36 +1,3 @@
-/*
- * GitHub: the connection in the account menu, the repository field of the launch form, and a
- * session's pull request in its panel. Everything here is made of the parts the other sheets have
- * (fields, chips, the panel's rows); what is new is how a repository is written and how its list floats.
- */
-
-/* ---- a repository's name: the owner quiet, the name plain ----------------------------------------- */
-
-.gh-name {
-	min-width: 0;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-.gh-owner {
-	color: var(--ink-dim);
-}
-.gh-repo {
-	font-weight: 700;
-	color: var(--ink);
-}
-/* The lock of a private repository. A public one keeps the space, so names line up. */
-.gh-visibility {
-	display: inline-grid;
-	place-items: center;
-	flex: none;
-	width: 13px;
-	height: 13px;
-	color: var(--ink-faint);
-}
-
-/* ---- the account menu ----------------------------------------------------------------------------- */
-
 .menu-github {
 	margin-top: 14px;
 	padding-top: 12px;
@@ -75,8 +42,8 @@
 .gh-accounts .chip {
 	flex: none;
 }
-.gh-account-link,
-.gh-pop-link {
+.gh-account-link {
+	margin-left: auto;
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;
@@ -88,11 +55,7 @@
 	text-decoration-thickness: 1px;
 	text-underline-offset: 3px;
 }
-.gh-account-link {
-	margin-left: auto;
-}
-.gh-account-link:hover,
-.gh-pop-link:hover {
+.gh-account-link:hover {
 	color: var(--ink);
 	text-decoration-color: currentColor;
 }
@@ -113,167 +76,6 @@
 	margin-top: 10px;
 }
 
-/* ---- the launch form's repository field ----------------------------------------------------------- */
-
-.gh-pick {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) minmax(150px, 32%);
-	gap: 10px;
-}
-
-.gh-combo,
-.gh-branch {
-	position: relative;
-	min-width: 0;
-}
-.gh-search-icon,
-.gh-branch-icon {
-	position: absolute;
-	top: 0;
-	left: 11px;
-	display: grid;
-	place-items: center;
-	height: 38px;
-	color: var(--ink-faint);
-	pointer-events: none;
-}
-.gh-search {
-	padding-left: 33px;
-	font-family: var(--font-mono);
-	font-size: var(--size-mono);
-}
-.gh-branch-select {
-	padding-left: 32px;
-	text-overflow: ellipsis;
-}
-.gh-spinner {
-	width: 13px;
-	height: 13px;
-	border: 1.6px solid var(--line-strong);
-	border-top-color: var(--accent);
-	border-radius: 50%;
-	animation: spin 0.8s linear infinite;
-}
-
-/* The repository that was chosen, where the search field was and of its size. */
-.gh-chosen {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	min-width: 0;
-	min-height: 38px;
-	padding: 0 6px 0 11px;
-	border: 1px solid var(--line-strong);
-	border-radius: var(--radius-m);
-	background: var(--bg-sunk);
-	font-family: var(--font-mono);
-	font-size: var(--size-mono);
-}
-.gh-chosen .chip {
-	flex: none;
-}
-.gh-clear {
-	flex: none;
-	margin-left: auto;
-}
-
-/* The list floats over the form: opening it moves nothing. */
-.gh-pop {
-	position: absolute;
-	top: calc(100% + 6px);
-	left: 0;
-	right: 0;
-	z-index: 5;
-	border: 1px solid var(--line-strong);
-	border-radius: var(--radius-m);
-	background: var(--bg-raised);
-	/* Its border is its edge: a shadow without the ring --shadow draws. */
-	box-shadow: var(--shadow-box);
-	overflow: hidden;
-	animation: rise 120ms var(--ease);
-}
-.gh-options {
-	max-height: 246px;
-	padding: 4px;
-	overflow-y: auto;
-	overscroll-behavior: contain;
-	transition: opacity 120ms var(--ease);
-}
-/* A newer list is on its way: the old one stays readable, and is seen to be the old one. */
-.gh-options-stale {
-	opacity: 0.55;
-}
-.gh-option {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	min-height: 34px;
-	padding: 0 8px;
-	border-radius: var(--radius-s);
-	font-family: var(--font-mono);
-	font-size: var(--size-mono);
-	cursor: pointer;
-}
-.gh-option[aria-selected="true"] {
-	background: var(--bg-hover);
-	box-shadow: inset 2px 0 0 var(--accent);
-}
-.gh-option .chip {
-	flex: none;
-}
-.gh-pushed {
-	flex: none;
-	margin-left: auto;
-	padding-left: 8px;
-	font-size: var(--size-mono-small);
-	color: var(--ink-faint);
-}
-.gh-option .chip + .gh-pushed {
-	margin-left: 0;
-}
-.gh-option .chip {
-	margin-left: auto;
-}
-.gh-option-skeleton {
-	cursor: default;
-}
-.gh-option-skeleton .skeleton {
-	margin: 0;
-}
-.gh-pop-state {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: 6px 8px;
-	padding: 14px 10px;
-	font-size: var(--size-small);
-	color: var(--ink-dim);
-}
-.gh-pop-state > svg {
-	flex: none;
-}
-.gh-pop-foot {
-	display: grid;
-	grid-template-columns: minmax(0, 1fr) auto;
-	align-items: center;
-	gap: 8px;
-	min-height: 38px;
-	padding: 6px 6px 6px 12px;
-	border-top: 1px solid var(--line);
-	background: color-mix(in srgb, var(--bg-raised) 60%, var(--bg));
-	font-size: 0.75rem;
-	color: var(--ink-dim);
-}
-.gh-pop-foot-text {
-	line-height: 1.6;
-}
-.gh-pop-link {
-	margin-right: 8px;
-	font-family: var(--font-mono);
-	vertical-align: baseline;
-}
-
-/* One line under the field, whatever it says. */
 .gh-connect-line {
 	margin-top: 2px;
 }
@@ -440,15 +242,6 @@
 	min-height: 132px;
 	font-size: 0.875rem;
 	line-height: 1.5;
-}
-
-@media (max-width: 640px) {
-	.gh-pick {
-		grid-template-columns: minmax(0, 1fr);
-	}
-	.gh-options {
-		max-height: 210px;
-	}
 }
 
 /* A note under a field that warns keeps its tone: the field's own colour would win otherwise. */

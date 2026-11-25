@@ -57,7 +57,6 @@
 	display: none;
 }
 
-/* Which agent runs on the chosen machine: a segmented choice under the place, its notes under it. */
 .harness-pick {
 	display: grid;
 	justify-items: start;
@@ -127,7 +126,7 @@
 		background-color 140ms var(--ease),
 		color 140ms var(--ease);
 }
-.segment:hover:not(.segment-unavailable) {
+.segment:hover {
 	color: var(--ink);
 }
 .segment-chosen {
@@ -138,10 +137,6 @@
 .segment:has(.segment-radio:focus-visible) {
 	outline: 2px solid var(--accent);
 	outline-offset: 1px;
-}
-.segment-unavailable {
-	color: var(--ink-faint);
-	cursor: not-allowed;
 }
 .segment-radio {
 	position: absolute;
