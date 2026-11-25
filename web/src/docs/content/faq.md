@@ -1,6 +1,6 @@
 ## Do I need a ChatGPT account?
 
-Yes. You sign in with ChatGPT, and Windlass agents call the model through your ChatGPT account. The models you can choose are the ones your plan offers. Claude Code, OpenCode and Codex use the logins you give them on your machines.
+No. Sign in with GitHub or Google. You can connect a ChatGPT plan in Settings for Windlass models, supply a model provider key, or use a harness login on your paired machine.
 
 ## Can I use Claude Code?
 

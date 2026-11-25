@@ -11,7 +11,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createMockClient } from "../api/mock";
 import { NeedsYouCard, needLine } from "./NeedsYouCard";
 
-const auth = { token: "mock:chatgpt:u_needs:ada@example.com", profile: { uid: "u_needs", email: "ada@example.com", demo: false } };
+const auth = { token: "mock:user:u_needs:ada@example.com", profile: { uid: "u_needs", email: "ada@example.com", demo: false } };
 
 let items: ItemSummary[] = [];
 

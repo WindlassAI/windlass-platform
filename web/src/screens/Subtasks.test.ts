@@ -17,7 +17,7 @@ import { progressCount } from "./Factory";
 import { questionLine } from "./Items";
 import { doneWords, FactorySubtasks, partOf, showsSubtasks, SubtasksBlock, SubtaskStrip } from "./Subtasks";
 
-const auth = { token: "mock:chatgpt:u_subtasks:ada@example.com", profile: { uid: "u_subtasks", email: "ada@example.com", demo: false } };
+const auth = { token: "mock:user:u_subtasks:ada@example.com", profile: { uid: "u_subtasks", email: "ada@example.com", demo: false } };
 
 let feature: ItemView;
 let children: ItemSummary[];

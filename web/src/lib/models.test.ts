@@ -7,7 +7,7 @@ import { createMockClient, mockStandInModels } from "../api/mock";
 import { cleanModelName, credentialWords, effortsOf, modelIds, modelWords, modelsNote, modelsNoteShort, sourceOf } from "./models";
 import { sessionModelWords } from "./acp";
 
-const ada = { token: "mock:chatgpt:u_models:ada@example.com", profile: { uid: "u_models", email: "ada@example.com", demo: false } };
+const ada = { token: "mock:user:u_models:ada@example.com", profile: { uid: "u_models", email: "ada@example.com", demo: false } };
 const SOURCES = ["demo", "signed-out", "unavailable"] as const;
 
 async function refusal(call: Promise<unknown>): Promise<PlatformError> {
@@ -54,6 +54,12 @@ describe("the user's models", () => {
 	});
 });
 
+async function connectPlan(mock: ReturnType<typeof createMockClient>) {
+	const user = mock.user(ada);
+	const { url, redirectPrefix } = await user.startChatgpt();
+	await user.finishChatgpt(redirectPrefix + "?code=plan&state=" + new URL(url).searchParams.get("state"));
+}
+
 describe("the mock's models", () => {
 	it("has the server's stand-in, word for word", () => {
 		for (const source of SOURCES) expect(mockStandInModels(source)).toEqual(standInModels(source));
@@ -61,6 +67,7 @@ describe("the mock's models", () => {
 
 	it("gives a signed-in user their plan's list, the demo the stand-in, and says which", async () => {
 		const mock = createMockClient({ pace: 0 });
+		await connectPlan(mock);
 		const list = await mock.user(ada).models();
 		expect(list.source).toBe("account");
 		expect(typeof list.fetchedAt).toBe("number");
@@ -70,6 +77,7 @@ describe("the mock's models", () => {
 		expect(await mock.user(demo).models()).toEqual(mockStandInModels("demo"));
 		mock.dispose();
 		const failing = createMockClient({ pace: 0, models: "unavailable" });
+		await connectPlan(failing);
 		expect(await failing.user(ada).models()).toEqual(mockStandInModels("unavailable"));
 		failing.dispose();
 	});
@@ -77,6 +85,7 @@ describe("the mock's models", () => {
 	it("refuses a model that is not the user's and an effort the model does not take, in the server's words", async () => {
 		const mock = createMockClient({ pace: 0 });
 		const user = mock.user(ada);
+		await connectPlan(mock);
 		const list = await user.models();
 		const none = list.models.find((model) => model.efforts.length === 0)!;
 		const some = list.models.find((model) => model.efforts.length > 0 && !model.efforts.includes("max"))!;

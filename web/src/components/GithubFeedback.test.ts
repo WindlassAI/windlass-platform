@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createMockClient } from "../api/mock";
 import { GithubFeedback } from "./GithubFeedback";
 
-const auth = { token: "mock:chatgpt:u_feedback:ada@example.com", profile: { uid: "u_feedback", email: "ada@example.com", demo: false } };
+const auth = { token: "mock:user:u_feedback:ada@example.com", profile: { uid: "u_feedback", email: "ada@example.com", demo: false } };
 
 let views: ItemView[] = [];
 

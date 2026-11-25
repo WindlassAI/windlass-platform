@@ -434,7 +434,7 @@ platform is served at, `https://<name>.onrivet.dev` below:
 |---|---|
 | GitHub App name | any; its address `https://github.com/apps/<slug>` gives `WLP_GITHUB_APP_SLUG` |
 | Homepage URL | `https://<name>.onrivet.dev` |
-| Callback URL | `https://<name>.onrivet.dev/github/callback`, and no other |
+| Callback URL | `https://<name>.onrivet.dev/github/callback` first for repository connections, then `<web-origin>/signin` for platform login |
 | Expire user authorization tokens | selected |
 | Request user authorization (OAuth) during installation | selected. GitHub then sends the browser to the callback URL after an installation too, with a code |
 | Setup URL | none. GitHub takes none while the setting above is selected |
@@ -442,7 +442,8 @@ platform is served at, `https://<name>.onrivet.dev` below:
 | Webhook | "Active" selected where work items should hear from GitHub at once (issue intake, CI, pull request state): URL `https://<name>.onrivet.dev/github/webhook`, and a secret of at least 32 characters, which is `WLP_GITHUB_WEBHOOK_SECRET`. Without a webhook, items poll GitHub and nothing is taken in from issues |
 | Subscribe to events | Issues, Issue comment, Check run, Check suite, Status, Pull request, Pull request review, Pull request review comment (installation events come by themselves) |
 | Repository permissions | Contents: read and write. Pull requests: read and write. Issues: read and write. Checks: read and write. Commit statuses: read-only. Actions: read and write. Metadata: read-only (GitHub adds it). Nothing else |
-| Organization and account permissions | none |
+| Account permissions | Email addresses (read-only) for the verified primary email at login |
+| Organization permissions | none |
 | Where can this GitHub App be installed? | Choose "Only on this account" for a single-owner deployment. Choose "Any account" if other accounts need to install the App. |
 
 Deliveries are checked against the secret (`X-Hub-Signature-256`) and kept in an inbox actor keyed by their

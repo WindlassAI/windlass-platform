@@ -120,7 +120,9 @@
         "server/src/signin/**",
         "server/src/actors/agent-session/**",
         "server/src/actors/user/**",
-        "server/src/actors/{user,login,agent-session,turn-resume,session-inbox,account-email,provider-accounts,internal}.ts",
+        "server/src/actors/{user,login,agent-session,turn-resume,session-inbox,account-identities,provider-accounts,internal}.ts",
+        "server/src/platform-login.ts",
+        "scripts/platform-login-check.ts",
         "web/src/api/**",
         "scripts/check-listeners.ts",
         "scripts/check-secret.ts",
@@ -135,6 +137,7 @@
         "idempotency": "tsx ../scripts/idempotency-check.ts",
         "kept-sandbox": "tsx --test --test-force-exit ../scripts/kept-sandbox-check.ts",
         "signin": "tsx ../scripts/signin-check.ts",
+        "platform-login": "tsx --test ../scripts/platform-login-check.ts",
         "connection-e2e": "tsx ../scripts/connection-e2e.ts",
         "http-limits": "tsx ../scripts/http-limits-check.ts"
       }
@@ -353,7 +356,7 @@
         "server/src/usage.ts",
         "server/src/actors/agent-session/**",
         "server/src/actors/user/**",
-        "server/src/actors/{user,login,agent-session,turn-resume,session-inbox,account-email,provider-accounts,internal,github-repository,github-account,user-github}.ts",
+        "server/src/actors/{user,login,agent-session,turn-resume,session-inbox,account-identities,provider-accounts,internal,github-repository,github-account,user-github}.ts",
         "server/src/sandbox/**",
         "server/src/signin/**",
         "server/src/github/{app,connect,git,private-git.py,repos,state,ids}*",

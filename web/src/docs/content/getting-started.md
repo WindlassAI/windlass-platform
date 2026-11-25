@@ -1,28 +1,16 @@
 ## Get access
 
-If your platform is by invitation, ask whoever runs it to add the email address of your ChatGPT account. Without an invitation list, anyone with a ChatGPT account can sign in.
+Sign in with GitHub, or with Google where the deployment offers it. If the platform is by invitation, ask the operator to add your verified email or platform user ID. The invitation list is checked at sign-in and whenever you use the platform.
 
-If your account is not on the list, the sign-in ends with this message:
+## Sign in
 
-> This platform is by invitation for now, and this ChatGPT account is not on its list. Ask whoever runs it to add you.
+Choose **Continue with GitHub** or **Continue with Google**. Authorize Windlass at the provider and return to the same browser tab. Signing in with GitHub works before installing the App on any repository.
 
-The list is checked each time you use the platform, not only at sign-in. If you are taken off it, you are signed out.
+If you previously used ChatGPT to sign in, use a provider account with the email stored on your Windlass profile. The first verified match carries over your existing user ID, sessions and settings when exactly one legacy account has that address and it has no linked login identity. Windlass compares trimmed, lowercased addresses. GitHub must mark the address both primary and verified. Google must mark it verified and host it through Gmail or Google Workspace.
 
-## Sign in with ChatGPT
+An ambiguous, missing or unverified address starts a separate account, subject to the invitation list. After the first login, Windlass recognizes the provider and its stable user ID even when your email changes. Use that same provider account to return.
 
-Agents call the model through your ChatGPT account, so you sign in with it. The sign-in has two steps, and you have 10 minutes for them. A timer on the page shows the time left.
-
-1. Open the sign-in page, choose **Continue with ChatGPT**, then **Open the sign-in page**. OpenAI's page opens in a new tab. Approve the sign-in there.
-2. After you approve, the browser goes to a page at `http://127.0.0.1:1455/auth/callback` that fails to load. That is expected. Copy that page's full address from the address bar.
-3. Back on Windlass, paste it into **Address of the page that did not load**, then choose **Finish signing in**.
-
-If the time runs out, the page says "This attempt has run out of time." Choose **Start over** for a new attempt.
-
-> **Note** The address you paste must start with `http://127.0.0.1:1455/auth/callback`. If it does not, the page says so and **Finish signing in** stays off. An address that is still not the page the browser ended on is refused with "That is not the address the browser ended on."
-
-### Your ChatGPT connection
-
-Open the account menu, at the top right, to see the connection. It says **ChatGPT connected**, with your email. ChatGPT access tokens last about an hour. The platform renews them for you, so each turn of an agent gets a fresh one. You do not need to sign in again while you use the platform.
+You can connect a ChatGPT plan from [Settings → Model providers](/docs/settings#model-providers) to run agents with your plan.
 
 ### The demo
 
@@ -60,6 +48,7 @@ The platform uses the App’s installation for repository operations. The App as
 
 | Permission | Access | Why |
 | --- | --- | --- |
+| Email addresses (account) | Read-only | Check your primary verified address during platform sign-in. |
 | Contents | Read and write | Clone the repository, and push the agent's branch. |
 | Pull requests | Read and write | Open and update the pull request. |
 | Checks | Read and write | Read CI and publish the Factory verdict as `windlass/verified` on the pull request's head commit. |

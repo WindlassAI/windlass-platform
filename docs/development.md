@@ -45,7 +45,7 @@ Without Docker, `WLP_SANDBOX=fake scripts/dev.sh` runs in-memory sandboxes that 
 | Path | What it holds |
 |---|---|
 | `server/src/contract.ts` | The contract between the actors and the web app: types only |
-| `server/src/actors/` | The actors registered in `server/src/registry.ts`, including `login`, `accountEmail`, `user`, `agentSession`, `machine`, `machinePairing` with `pairingDirectory`, and `workItem`. `user-machines.ts` and `user-items.ts` hold what the `user` actor does for machines and for work items (the index, the turn queue, the API tokens), `session-inbox.ts` what a session does for its item |
+| `server/src/actors/` | The actors registered in `server/src/registry.ts`, including `login`, `accountIdentities`, `user`, `agentSession`, `machine`, `machinePairing` with `pairingDirectory`, and `workItem`. `user-machines.ts` and `user-items.ts` hold what the `user` actor does for machines and for work items (the index, the turn queue, the API tokens), `session-inbox.ts` what a session does for its item |
 | `server/src/index.ts`, `platform-info.ts`, `runner-routes.ts`, `api-routes.ts` | The server: one Rivet node, and its HTTP routes (`/platform/info`, `/platform/connection`, `/health`, GitHub and Linear callbacks and webhooks, the model relay, billing, runner and item routes) |
 | `server/src/web.ts` | The web app's built files, served on the same port where `WLP_WEB_DIR` names them |
 | `server/src/connection-tokens.ts` | The tokens browsers connect with: issued by the engine for the admin token, kept and handed out by each server |

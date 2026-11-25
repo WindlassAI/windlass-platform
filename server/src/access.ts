@@ -1,5 +1,5 @@
 /**
- * Who may use the platform. Without a list, anyone with a ChatGPT account may sign in. With one
+ * Who may use the platform. Without a list, anyone with a configured provider account may sign in. With one
  * (WLP_ALLOWED_EMAILS, WLP_ALLOWED_USERS) only the accounts on it may, and it is asked at the sign-in
  * and again at every call (auth.ts), so taking someone off the list locks them out at once, although
  * the token they hold is good for a month. The demo sign-in has no account to list: WLP_DEMO alone
@@ -11,7 +11,7 @@ import type { UserProfile } from "./contract.js";
 export interface AccessRules {
 	/** Whether demo users may use the platform. */
 	demo: boolean;
-	/** The accounts that may sign in with ChatGPT; null when anyone may. */
+	/** The accounts that may sign in; null when anyone may. */
 	allowed: { emails: ReadonlySet<string>; uids: ReadonlySet<string> } | null;
 }
 
@@ -44,5 +44,5 @@ export function mayUse(profile: Pick<UserProfile, "uid" | "email" | "demo">, rul
 	return email !== null && rules.allowed.emails.has(email);
 }
 
-/** What a ChatGPT account that is not on the list is told when it signs in. */
-export const NOT_INVITED = "This platform is by invitation for now, and this ChatGPT account is not on its list. Ask whoever runs it to add you.";
+/** What an account that is not on the list is told when it signs in. */
+export const NOT_INVITED = "This platform is by invitation for now, and this account is not on its list. Ask whoever runs it to add you.";

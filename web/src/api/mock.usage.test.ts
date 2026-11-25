@@ -38,7 +38,7 @@ describe("the mock's words about a user's limits", () => {
 });
 
 describe("the mock's usage", () => {
-	const auth = { token: "mock:chatgpt:u_usage:ada@example.com", profile: { uid: "u_usage", email: "ada@example.com", demo: false } };
+	const auth = { token: "mock:user:u_usage:ada@example.com", profile: { uid: "u_usage", email: "ada@example.com", demo: false } };
 
 	it("adds up: what the agents ran is the day's total, and the day is the last of the history", async () => {
 		const client = createMockClient({ pace: 0 });

@@ -152,17 +152,15 @@ export function useChatgpt(): { status: ChatgptStatus | null; error: string | nu
 	const [error, setError] = useState<string | null>(null);
 	useEffect(() => {
 		if (auth.profile.demo) return;
-		let current = true;
-		client
-			.user(auth)
-			.chatgpt()
-			.then(
-				(value) => current && setStatus(value),
-				(failure: unknown) => current && setError(explain(failure)),
+		let version = 0;
+		const stop = watchModelChanges(() => {
+			const mine = ++version;
+			client.user(auth).chatgpt().then(
+				value => { if (mine === version) { setStatus(value); setError(null); } },
+				failure => { if (mine === version) setError(explain(failure)); },
 			);
-		return () => {
-			current = false;
-		};
+		});
+		return () => { version++; stop(); };
 	}, [client, auth, explain]);
 	return { status, error };
 }

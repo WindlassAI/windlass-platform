@@ -34,6 +34,7 @@ import type {
 	ItemSummary,
 	ItemView,
 	LiveDelta,
+	LoginProvider,
 	LoginStart,
 	MachineClaim,
 	MachineSummary,
@@ -161,6 +162,9 @@ export interface SessionFeed {
 export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelProviders" | "saveModelProvider" | "checkModelProvider" | "removeModelProvider"> {
 	me(): Promise<UserProfile>;
 	chatgpt(): Promise<ChatgptStatus>;
+	startChatgpt(): Promise<LoginStart>;
+	finishChatgpt(callback: string): Promise<void>;
+	forgetChatgpt(): Promise<void>;
 	/** The models the user may choose and the efforts of each: their ChatGPT plan's, or the stand-in, and which it is. */
 	models(): Promise<ModelList>;
 	listSessions(): Promise<SessionSummary[]>;
@@ -352,7 +356,7 @@ export interface PlatformClient {
 	readonly endpoint: string | null;
 	info(): Promise<PlatformInfo>;
 	readonly login: {
-		start(): Promise<LoginStart>;
+		start(provider?: LoginProvider): Promise<LoginStart>;
 		finish(pastedUrl: string): Promise<AuthResult>;
 		demo(): Promise<AuthResult>;
 	};

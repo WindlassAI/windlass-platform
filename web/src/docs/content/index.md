@@ -11,7 +11,7 @@ Where the platform offers it, the **Factory** goes one step further. You file a 
 
 ## Where to begin
 
-1. [Getting started](/docs/getting-started): get access, sign in with ChatGPT and connect GitHub.
+1. [Getting started](/docs/getting-started): get access, sign in and connect a repository.
 2. [Start an agent](/docs/start-an-agent): write the prompt and choose where and how it runs.
 3. [Work with a session](/docs/sessions): follow the work, steer it and open a pull request.
 

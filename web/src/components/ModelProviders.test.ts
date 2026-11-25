@@ -14,7 +14,7 @@ HTMLDialogElement.prototype.close ??= function () { this.open = false; };
 
 it("adds, checks, replaces and removes a provider key", async () => {
 	const client = createMockClient({ pace: 0 });
-	const auth = { token: "mock:chatgpt:u_keys:ada@example.com", profile: { uid: "u_keys", email: "ada@example.com", demo: false } };
+	const auth = { token: "mock:user:u_keys:ada@example.com", profile: { uid: "u_keys", email: "ada@example.com", demo: false } };
 	saveAuth("mock", auth);
 	const host = document.body.appendChild(document.createElement("div"));
 	const root = createRoot(host);

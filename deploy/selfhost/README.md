@@ -50,6 +50,9 @@ The gateway URL clients dial (`WLP_PUBLIC_ENDPOINT`) and the engine's canonical 
 
 The live preset selects the production image, disables demo login and runs real Windlass sign-in commands locally. Choose paired-machine sessions for workloads on a separate machine. The preset's hosted provider is fake. Configure a supported real provider separately if hosted sessions are required. Additional application settings, including the user allowlist, go in the mode-600 server env file the stack env file selects. Configure and pair a runner for the intended stack independently. A runner paired to another deployment has its own identity and session data.
 
+For platform login with the existing GitHub App, keep its repository connection callback first and add `<web-origin>/signin` as a second callback URL. Enable the App's **Email addresses** read-only account permission. For Google, register a **Web application** OAuth client with the exact authorized redirect URI `<web-origin>/signin`. Set `WLP_GOOGLE_CLIENT_ID` and `WLP_GOOGLE_CLIENT_SECRET` in the protected server env file and recreate the server. Google login is disabled and its button is hidden unless both are set. Register each web origin where people sign in.
+
+
 ### The model relay's hostname
 
 E2B sandboxes reach Windlass's model relay at a hostname of its own, so that their allow list opens only the relay and not the web app (see [the model relay](../../docs/model-relay.md#where-the-relay-runs)). Choose a name, for example `windlass-relay.example.com`, and set it in the server env file:
@@ -75,7 +78,7 @@ An agent container escape or a compromised runner with the Docker socket can exp
 
 Before opening an invitation-only deployment to traffic, verify that the effective live configuration
 has demo sign-in disabled and at least one entry in `WLP_ALLOWED_USERS` or `WLP_ALLOWED_EMAILS`.
-Empty lists admit any authenticated ChatGPT account. Confirm that staging and production use
+Empty lists admit any authenticated GitHub or Google account. Confirm that staging and production use
 independent credentials and that the gateway exposes only the intended routes listed above.
 Record pass/fail results without printing the configuration values.
 

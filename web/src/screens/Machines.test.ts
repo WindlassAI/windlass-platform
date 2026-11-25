@@ -19,7 +19,7 @@ HTMLDialogElement.prototype.showModal ??= function () { this.open = true; };
 HTMLDialogElement.prototype.close ??= function () { this.open = false; };
 window.matchMedia ??= ((query: string) => ({ matches: false, media: query, onchange: null, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent: () => false })) as typeof window.matchMedia;
 
-const ada: AuthResult = { token: "mock:chatgpt:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
+const ada: AuthResult = { token: "mock:user:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
 
 let host: HTMLElement;
 let root: Root;

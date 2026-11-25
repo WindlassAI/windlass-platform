@@ -29,7 +29,7 @@ const DESKTOP = { width: 1280, height: 800 };
 const PHONE = { width: 390, height: 844, mobile: true };
 
 /** The mock's ChatGPT user (web/src/api/mock.ts): seeded agents, work items and a GitHub connection. */
-const MOCK_AUTH = { token: "mock:chatgpt:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
+const MOCK_AUTH = { token: "mock:user:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
 
 // Helpers that run in the page. `text(s)`: the page shows s. `button(name)`: a button by its label.
 const PAGE_HELPERS = `

@@ -21,7 +21,7 @@ vi.setConfig({ testTimeout: 30_000 });
 // jsdom has no media queries: the theme reads one, and a wide screen matches none of the app's.
 window.matchMedia ??= ((query: string) => ({ matches: false, media: query, onchange: null, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {}, dispatchEvent: () => false })) as typeof window.matchMedia;
 
-const ada: AuthResult = { token: "mock:chatgpt:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
+const ada: AuthResult = { token: "mock:user:u_ada:ada@example.com", profile: { uid: "u_ada", email: "ada@example.com", demo: false } };
 
 let host: HTMLElement;
 let root: Root | null;

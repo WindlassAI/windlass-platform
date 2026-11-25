@@ -13,7 +13,8 @@ import type { ChatgptAccount } from "../../sandbox/api.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../../signin/directory.js";
 import { SignInHolder, type StoredSignIn } from "../../signin/holder.js";
 import { getSignIns } from "../../signin/index.js";
-import { ownerOfAccount } from "../account-email.js";
+import { config } from "../../config.js";
+import { getLayer } from "../../layer.js";
 import type { UserVars } from "./state.js";
 
 interface SignInCtx {
@@ -39,7 +40,6 @@ function signIn(c: SignInCtx): Promise<SignInHolder> {
 					commands,
 					sealer,
 					revoke: hooks.revoke,
-					ownerOf: (account) => ownerOfAccount(c, account),
 					store: {
 						load: async (): Promise<StoredSignIn | null> => {
 							const [row] = await db().execute<SignInRow>("SELECT sealed, generation, short_noted FROM signin WHERE id = 1");
@@ -111,6 +111,38 @@ async function forgetSignIn(c: SignInActionCtx, uid: string) {
 }
 
 export const signinActions = {
+	startChatgpt: async (c: SignInActionCtx) => {
+		const { uid, demo } = requireUser(c);
+		if (demo) throw new UserError("The demo uses a scripted model.", { code: "demo" });
+		const generation = c.vars.tokenGen;
+		try {
+			const { url, redirectPrefix, attempt } = await (await getLayer()).logins.start(uid);
+			const expiresAt = Date.now() + config.loginTtlMs;
+			await c.db.execute("INSERT OR REPLACE INTO model_attempt VALUES (1, ?, ?, ?)", attempt, expiresAt, generation);
+			return { url, redirectPrefix, expiresAt };
+		} catch (error) {
+			throw clientError(c.log, error, "Could not start the ChatGPT connection.");
+		}
+	},
+	finishChatgpt: async (c: SignInActionCtx, callback: string): Promise<void> => {
+		const { uid, demo } = requireUser(c);
+		if (demo || typeof callback !== "string" || callback.length > 8192) throw new UserError("Invalid model connection.", { code: "bad_input" });
+		const [row] = await c.db.execute<{ sealed: string }>("SELECT sealed FROM model_attempt WHERE id=1 AND expires > ? AND generation = ?", Date.now(), c.vars.tokenGen);
+		if (!row) throw new UserError("Start the ChatGPT connection again.", { code: "attempt_expired" });
+		try {
+			const { logins } = await getLayer();
+			const finished = await logins.finish(uid, row.sealed, callback);
+			requireUser(c);
+			// Windlass accepts a code once. Keep the finished result until the model holder acknowledges it.
+			const claimed = await c.db.execute("UPDATE model_attempt SET sealed=? WHERE id=1 AND sealed=? AND expires > ? RETURNING id", finished.attempt, row.sealed, Date.now());
+			if (!claimed.length) throw new UserError("Start the ChatGPT connection again.", { code: "attempt_expired" });
+			await logins.adopt(uid, finished.attempt, uid);
+			await c.db.execute("DELETE FROM model_attempt WHERE sealed=?", finished.attempt);
+		} catch (error) {
+			throw clientError(c.log, error, "Could not finish the ChatGPT connection.");
+		}
+	},
+
 	chatgpt: async (c: SignInActionCtx): Promise<ChatgptStatus> => {
 		const profile = requireUser(c);
 		try {
@@ -125,6 +157,7 @@ export const signinActions = {
 		const profile = requireUser(c);
 		if (profile.demo) { await logoutMachines(c); return; }
 		try {
+			await c.db.execute("DELETE FROM model_attempt");
 			await forgetSignIn(c, profile.uid);
 		} catch (error) {
 			throw clientError(c.log, error, "The ChatGPT sign-in could not be forgotten. Try again.");

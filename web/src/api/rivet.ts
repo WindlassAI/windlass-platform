@@ -220,13 +220,8 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		}
 	}
 
-	// One sign-in attempt at a time; `start`, `finish` and `demo` must reach the same actor.
-	let attemptId: string | null = null;
-	const login = async () => {
-		const client = await connect();
-		attemptId ??= crypto.randomUUID();
-		return client.getOrCreate<Untyped>(ACTOR.login, [attemptId]);
-	};
+	// The browser keeps the actor key and state across the trip to the provider.
+	const login = async (id: string) => (await connect()).getOrCreate<Untyped>(ACTOR.login, [id]);
 
 	// ASSUMPTION 2: `params` on the handle is what `onBeforeConnect` receives, for `.connect()` and for stateless actions alike.
 	const userHandle = (auth: AuthResult) => lazy(async () => (await connect()).getOrCreate<Untyped>(ACTOR.user, [auth.profile.uid], { params: { token: auth.token } }));
@@ -371,6 +366,9 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			me: () => act("me"),
 			signOutEverywhere: (...args) => act("signOutEverywhere", ...args),
 			chatgpt: () => act("chatgpt"),
+			startChatgpt: () => act("startChatgpt"),
+			finishChatgpt: callback => act("finishChatgpt", callback),
+			forgetChatgpt: () => act("forgetChatgpt"),
 			models: () => act("models"),
 			listSessions: () => act("listSessions"),
 			createSession: (input) => act("createSession", input),
@@ -582,17 +580,20 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 		},
 		info: () => getPlatform<PlatformInfo>(api, PLATFORM_INFO_PATH),
 		login: {
-			start: () => call<LoginActions, "start">(login(), "start"),
-			finish: async (pastedUrl) => {
-				const result = await call<LoginActions, "finish">(login(), "finish", pastedUrl);
-				attemptId = null;
+			async start(provider = "github") {
+				const id = crypto.randomUUID();
+				const started = await call<LoginActions, "start">(login(id), "start", provider, location.origin);
+				sessionStorage.setItem("wlp.login", JSON.stringify({ id, state: new URL(started.url).searchParams.get("state") }));
+				return started;
+			},
+			async finish(callback) {
+				const saved = JSON.parse(sessionStorage.getItem("wlp.login") ?? "null");
+				if (!saved?.state || new URL(callback).searchParams.get("state") !== saved.state) throw new PlatformError("user", "Start the sign-in in this tab.");
+				const result = await call<LoginActions, "finish">(login(saved.id), "finish", callback);
+				sessionStorage.removeItem("wlp.login");
 				return result;
 			},
-			demo: async () => {
-				const result = await call<LoginActions, "demo">(login(), "demo");
-				attemptId = null;
-				return result;
-			},
+			demo: () => call<LoginActions, "demo">(login(crypto.randomUUID()), "demo"),
 		},
 		user: userApi,
 		session: sessionApi,

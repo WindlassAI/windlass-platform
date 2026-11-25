@@ -156,17 +156,21 @@ class Server {
 
 type Client = ReturnType<typeof createClient<Registry>>;
 
-async function fixtureLogin(client: Client, code: string) {
+async function fixtureLogin(client: Client, standin: GithubStandin, code: string) {
 	const login = client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]);
-	const { redirectPrefix } = await login.start();
-	return login.finish(`${redirectPrefix}?${new URLSearchParams({ code })}`);
+	const { url } = await login.start("github", ORIGIN);
+	const auth = await login.finish(standin.authorize("ada", url));
+	const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
+	const plan = await user.startChatgpt();
+	await user.finishChatgpt(plan.redirectPrefix + "?" + new URLSearchParams({ code }));
+	return auth;
 }
 
 /** One server with a GitHub stand-in, a user connected to it as "ada", and a repository. */
 async function world(server: Server, standin: GithubStandin, env: Record<string, string> = {}, loginCode?: string) {
 	await server.start({ ...standin.env(), ...env });
 	const client: Client = createClient<Registry>({ endpoint: ENDPOINT, headers: { Origin: ORIGIN } });
-	const auth: AuthResult = loginCode ? await fixtureLogin(client, loginCode) : await client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]).demo();
+	const auth: AuthResult = loginCode ? await fixtureLogin(client, standin, loginCode) : await client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]).demo();
 	const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 	const { url } = await user.githubConnect({ origin: ORIGIN });
 	const back = await fetch(standin.authorize("ada", url), { redirect: "manual" });
@@ -429,7 +433,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 	const usageServer = new Server();
 	try {
 		await check("orchestrator usage: Windlass two-hour reset reaches the item and gates later work", async () => {
-			const { user, client, auth } = await world(usageServer, standin, { WLP_ALLOWED_EMAILS: "routing@example.com" }, "routing");
+			const { user, client, auth } = await world(usageServer, standin, { WLP_ALLOWED_EMAILS: "ada@example.invalid" }, "routing");
 			const startedAt = Date.now();
 			const item = await user.createItem({ repository: { id: harbor.id }, title: "Run the checks", body: "Run (usage-limit)", start: true });
 			const view = await untilItem(user, item.id, "the provider outcome", v => !!v.question || v.wait?.reason === "provider");
@@ -439,7 +443,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const next = await user.createItem({ repository: { id: harbor.id }, title: "Continue checks", body: "Verify the build", start: true });
 			const queued = await untilItem(user, next.id, "the account cooldown", v => v.wait?.reason === "provider");
 			assert(queued.spent.turns === 0 && queued.wait?.retryAt === view.wait.retryAt, stateOf(queued));
-			const renewed = await fixtureLogin(client, "routing");
+			const renewed = await fixtureLogin(client, standin, "routing");
 			assert(renewed.profile.uid === auth.profile.uid, "the second login must replace the same account");
 			await untilItem(user, item.id, "the refused turn to retry on the new login", v => v.spent.turns >= 2, 15_000);
 			return view.wait.sentence;

@@ -15,7 +15,7 @@ browser ── HTTP ───────▶ any server (:6440)  GET /platform/i
 browser ── WebSocket ──▶ Rivet endpoint (:6420)
                            │
                            ├─ login             [attemptId]          one sign-in attempt
-                           ├─ accountEmail      [email hash]         the platform uid for one verified email
+                           ├─ accountIdentities [platform]           login identities and legacy profile emails
                            ├─ user              [uid]                profile, the index of sessions, the ChatGPT
                            │                                         sign-in (encrypted) and its access tokens,
                            │                                         the models of the ChatGPT plan,
@@ -322,22 +322,14 @@ token and its expiry, the refresh token, the ID token) and `host-id`. The platfo
 tokens itself. It stores the files and lends them to Windlass for one command at a time
 (`server/src/signin/`).
 
-Windlass returns the verified email from OpenAI’s ID token. Each OAuth app can receive a different
-`sub` for the same person. The first sign-in for an email records its platform uid in an `accountEmail`
-actor keyed by SHA-256 of the trimmed, lowercased email. Its uid comes from `WLP_ACCOUNT_EMAILS` if
-seeded, otherwise from the first app’s `sub`. Later sign-ins reuse that uid, including after the user
-forgets their ChatGPT sign-in. A sign-in without an email uses the uid derived from its own `sub`.
+Platform login uses GitHub’s numeric user ID or Google’s OpenID Connect subject. The identity directory indexes existing user profiles once. It atomically assigns each identity its own UID or the UID of the single matching, unclaimed legacy profile. The [carry-over rule](../web/src/docs/content/getting-started.md#sign-in) describes which verified addresses qualify.
 
-**Where it is.** In the user's `user` actor, one row, encrypted. A sign-in attempt between `start` and
-`finish` (Windlass's `auth-pending.json`: the PKCE verifier, state and nonce) is in its `login` actor the same
-way, so the two steps can be served by different servers. Actor storage is the Rivet engine's, which with
-Rivet Cloud is a third party's:
+The signed-in user can authorize a ChatGPT plan from Settings. The user actor owns the pending model connection and adopts the finished credentials under its own UID.
 
 | What | Where | Sealed for | Until |
 |---|---|---|---|
 | the user's sign-in (`auth.json`, `host-id`) | `user` actor, table `signin`, column `sealed` | that uid | it is replaced or forgotten |
-| a pending attempt (`auth-pending.json`, `host-id`) | `login` actor, table `attempt`, column `sealed` | that attempt id | `finish`, or the attempt expires (10 minutes) |
-| a finished attempt | the same place | that attempt id | the user's actor has taken it, moments later |
+| a pending model connection (`auth-pending.json`, `host-id`) | `user` actor, table `model_attempt` | that uid | usable for ten minutes, replaced on restart or removed on success or disconnect |
 | an access token on its way to the server that runs the turn | not stored: an actor's answer, through the engine | that uid and that request | it is read |
 
 Each is AES-256-GCM (`server/src/signin/seal.ts`) under a key derived with HKDF-SHA256 from `WLP_SIGNIN_KEY`,
@@ -350,7 +342,7 @@ the sign-in changed, whether a line about short tokens was already logged, and w
 Someone with a copy of the actor storage and without the key learns which users have a sign-in, how long each
 blob is, and when it last changed (so, roughly, when its user was active). They learn no token, no refresh
 token and no PKCE secret, and, from these rows, no account. (The email is in the same actor's `profile` table,
-which is not encrypted. Someone who knows an email can also hash it to find its directory entry.) Someone
+which is not encrypted. The identity directory also indexes legacy profile emails.) Someone
 who can also write to the storage can put back an older blob of the same user (a sign-in that was forgotten, or one from before a refresh, which the sign-in
 service then refuses); they cannot make one user's blob work for another. Forgetting a sign-in empties the
 row; what the engine keeps of earlier versions of a row is the engine's, and is ciphertext.

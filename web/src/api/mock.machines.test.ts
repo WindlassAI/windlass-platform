@@ -15,7 +15,7 @@ import { AppProvider } from "../state/app";
 import type { UserFeed, UserApi } from "./client";
 import { createMockClient, MOCK_MACHINE_STATES, type MockClient, type MockMachineSession } from "./mock";
 
-const auth = { token: "mock:chatgpt:u_machines:ada@example.com", profile: { uid: "u_machines", email: "ada@example.com", demo: false } };
+const auth = { token: "mock:user:u_machines:ada@example.com", profile: { uid: "u_machines", email: "ada@example.com", demo: false } };
 const make = (machine?: (typeof MOCK_MACHINE_STATES)[number]) => createMockClient({ pace: 0, machine });
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 

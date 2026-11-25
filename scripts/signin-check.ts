@@ -24,7 +24,7 @@ import { type SignInCommands, type TokenAnswer, WindlassSignIns } from "../serve
 import { ActorSignInDirectory, errorOf, problemOf, tokenSubject } from "../server/src/signin/directory.js";
 import { memorySignIns } from "../server/src/signin/facade.js";
 import { SIGN_IN_UNREADABLE, SignInHolder, type StoredSignIn } from "../server/src/signin/holder.js";
-import { type SignInMaterial, accountOf, cleanMaterial, uidOfAccount } from "../server/src/signin/material.js";
+import { type SignInMaterial, accountOf, cleanMaterial } from "../server/src/signin/material.js";
 import { LocalLoginRunner, TMP_PREFIX } from "../server/src/signin/runner.js";
 import { SealError, createSealer, serverSealer } from "../server/src/signin/seal.js";
 
@@ -652,11 +652,8 @@ async function main(): Promise<void> {
 			expect("a sign-in sealed for another user is refused, and nothing is saved", forOther instanceof Error && !(forOther instanceof SandboxUserError) && /was refused/.test(forOther.message) && rows.row === null, forOther instanceof Error ? forOther.message : "");
 			const pending = await caught(holder.adopt(seal({ files: { "auth-pending.json": "{}", "host-id": "urn:uuid:0" } })));
 			expect("a sign-in that is not finished is refused, as the user's to finish", pending instanceof SandboxUserError && /not finished/.test(pending.message) && rows.row === null);
-			const strict = make(rows, commands, { ownerOf: (account) => uidOfAccount(account.sub) });
-			const notMine = await caught(strict.adopt(seal(fakeMaterial("fake-sub-f", Date.now() + 3_600_000, 1))));
-			expect("where users are named after their OpenAI account, a sign-in of another account is refused even when it is sealed for this user", notMine instanceof Error && /another account's/.test(notMine.message) && rows.row === null);
-			const mine = uidOfAccount("fake-sub-f");
-			const own = new SignInHolder({ uid: mine, store: rows.store, commands, sealer, log, ownerOf: (account) => uidOfAccount(account.sub) });
+			const mine = "u_owner";
+			const own = new SignInHolder({ uid: mine, store: rows.store, commands, sealer, log });
 			await own.adopt(sealer.seal("user", mine, JSON.stringify(fakeMaterial("fake-sub-f", Date.now() + 3_600_000, 1))));
 			expect("and the account's own user takes it", (await own.status())?.sub === "fake-sub-f");
 			// The same row read by another user's holder: what one user's storage holds is of no use in another's.
@@ -753,7 +750,7 @@ async function main(): Promise<void> {
 			};
 			let codes = 0;
 			/** A whole sign-in of `sub`: started on server A, finished and adopted on server B. */
-			const signIn = async (sub: string) => {
+			const signIn = async (uid: string, sub: string) => {
 				const attemptId = `chk${run}${(codes += 1)}`;
 				const started = await serverA.logins.start(attemptId);
 				const url = new URL(started.url);
@@ -761,7 +758,6 @@ async function main(): Promise<void> {
 				standin.expect(code, { nonce: url.searchParams.get("nonce") ?? "", sub, email: `${sub}@example.invalid`, clientId: "FAKE-client-id-for-signin-check" });
 				const callback = `${started.redirectPrefix}?code=${code}&state=${url.searchParams.get("state")}&client_id=FAKE-client-id-for-signin-check`;
 				const finished = await serverB.logins.finish(attemptId, started.attempt, callback);
-				const uid = uidOfAccount(finished.account.sub);
 				await serverB.logins.adopt(attemptId, finished.attempt, uid);
 				return { attemptId, started, finished, callback, uid };
 			};
@@ -811,7 +807,7 @@ async function main(): Promise<void> {
 			);
 
 			// ---- adopted: the user's sign-in
-			const uid = uidOfAccount("fake-sub-ann");
+			const uid = "u_ann";
 			await serverB.logins.adopt(attemptId, finished.attempt, uid);
 			const account = await serverA.logins.status(uid);
 			const row = rows.get(uid)!;
@@ -866,7 +862,7 @@ async function main(): Promise<void> {
 				dead instanceof Error ? dead.message : "it returned a token",
 			);
 			expect("status() still names the account: the sign-in is there, and no longer accepted", (await serverB.logins.status(uid))?.sub === "fake-sub-ann");
-			const renewed = await signIn("fake-sub-ann");
+			const renewed = await signIn(uid, "fake-sub-ann");
 			const afterRenewal = await serverB.tokens.current(uid);
 			expect("signing in again replaces it, and tokens come again", renewed.uid === uid && /^FAKE-ACCESS-TOKEN-S\d+-/.test(afterRenewal.accessToken) && standin.isGood(stored(uid).refreshToken));
 
@@ -885,7 +881,7 @@ async function main(): Promise<void> {
 			expect("neither changed the stored sign-in", standin.isGood(stored(uid).refreshToken));
 
 			// ---- another user: never the first one's token
-			const ben = await signIn("fake-sub-ben");
+			const ben = await signIn("u_ben", "fake-sub-ben");
 			const [annsToken, bensToken] = await Promise.all([serverB.tokens.current(uid), serverB.tokens.current(ben.uid)]);
 			expect("two users' requests do not wait for each other and never get each other's token", ben.uid !== uid && annsToken.accessToken !== bensToken.accessToken && bensToken.accessToken === stored(ben.uid).accessToken && annsToken.accessToken === stored(uid).accessToken);
 
@@ -895,7 +891,7 @@ async function main(): Promise<void> {
 			const waiting = serverB.tokens.current(uid);
 			const inFlight = await until(() => standin.refreshing === 1, 10_000);
 			const start = Date.now();
-			await signIn("fake-sub-ann");
+			await signIn(uid, "fake-sub-ann");
 			const got = await waiting;
 			const took = Date.now() - start;
 			standin.delayMs = 0;
@@ -1038,21 +1034,21 @@ async function main(): Promise<void> {
 			// This process is the second server: it has the same secret and no actors of its own.
 			const second = new ActorSignInDirectory(serverSealer());
 
-			// ---- a sign-in through the `login` actor; the service issues a token that lasts ten minutes
+			// Attach the real model connection to an existing platform user.
 			standin.expiresIn = 600;
-			const attemptId = `chk${run}actors`;
-			const login = client.login.getOrCreate([attemptId]);
-			const started = await login.start();
+			const uid = "u_existing";
+			const { issueUserToken } = await import("../server/src/tokens.js");
+			const auth = { token: issueUserToken({ uid, email: "platform@example.invalid", demo: false }, 0) };
+			const user = client.user.getOrCreate([uid], { params: { token: auth.token } });
+			const started = await user.startChatgpt();
 			const url = new URL(started.url);
 			standin.expect("FAKE-code-actors", { nonce: url.searchParams.get("nonce") ?? "", sub: "fake-sub-actors", email: "actors@example.invalid", clientId: "FAKE-client-id-for-signin-check" });
-			const auth = await login.finish(`${started.redirectPrefix}?code=FAKE-code-actors&state=${url.searchParams.get("state")}&client_id=FAKE-client-id-for-signin-check`);
+			await user.finishChatgpt(`${started.redirectPrefix}?code=FAKE-code-actors&state=${url.searchParams.get("state")}&client_id=FAKE-client-id-for-signin-check`);
 			standin.expiresIn = 3600;
-			const uid = auth.profile.uid;
-			const user = client.user.getOrCreate([uid], { params: { token: auth.token } });
 			const status = await user.chatgpt();
 			expect(
-				"a sign-in through the `login` actor, with the real Windlass on the server: the user is the account's, and the user's actor reports the sign-in",
-				uid === uidOfAccount("fake-sub-actors") && auth.profile.email === "actors@example.invalid" && status.connected && status.email === "actors@example.invalid" && standin.requests.join(",") === "authorization_code,jwks",
+				"connecting a ChatGPT plan preserves the platform profile and reports the plan email",
+				(await user.me()).email === "platform@example.invalid" && status.connected && status.email === "actors@example.invalid" && standin.requests.join(",") === "authorization_code,jwks",
 				`uid ${uid}; requests to the stand-in: ${standin.requests.join(", ")}`,
 			);
 			expect("the second server reads the same from the user's actor", (await second.status(uid))?.sub === "fake-sub-actors" && (await second.status(`u_nobody${run}`)) === null);

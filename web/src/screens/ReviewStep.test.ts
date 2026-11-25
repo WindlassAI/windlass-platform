@@ -25,7 +25,7 @@ import { Session, useSessionMachine } from "./Session";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 Element.prototype.scrollTo ??= () => {};
 
-const auth = { token: "mock:chatgpt:u_step:ada@example.com", profile: { uid: "u_step", email: "ada@example.com", demo: false } };
+const auth = { token: "mock:user:u_step:ada@example.com", profile: { uid: "u_step", email: "ada@example.com", demo: false } };
 
 let views: ItemView[] = [];
 const viewNamed = (title: string): ItemView => {

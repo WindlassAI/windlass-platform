@@ -1,25 +1,13 @@
-/**
- * `login`, key [attemptId]: one sign-in attempt. Takes no credentials; it is what hands them out.
- *
- * The actor lives for one attempt: it destroys itself shortly after it has issued a token, or when the
- * attempt expires, and an unfinished attempt is gone with it.
- *
- * Between `start` and `finish` the attempt is what Windlass saved of the pending sign-in (the PKCE
- * verifier, state and nonce in `auth-pending.json`, and `host-id`). It is kept in this actor's storage,
- * sealed for this attempt with a key the storage does not hold (signin/seal.ts), and nowhere else: the
- * two steps may be served by different servers, and all that connects them is that blob. A finished
- * sign-in stays here only until the user's actor has taken it, sealed for that user.
- */
-
-import { randomBytes } from "node:crypto";
+/** One short-lived OAuth or demo login attempt. */
+import { createHash, randomBytes } from "node:crypto";
 import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { assertOrigin, clientError, serviceParams } from "../auth.js";
 import { config } from "../config.js";
-import type { AuthResult, LoginStart, UserProfile } from "../contract.js";
-import { NOT_INVITED, mayUse, normalizeEmail } from "../access.js";
+import type { AuthResult, LoginProvider, LoginStart, UserProfile } from "../contract.js";
+import { NOT_INVITED, mayUse } from "../access.js";
 import { getLayer } from "../layer.js";
-import { claimAccountUid } from "./account-email.js";
+import { beginOAuth, finishOAuth, type Identity, type OAuthAttempt } from "../platform-login.js";
 import { SealError, serverSealer } from "../signin/seal.js";
 import { issueUserToken } from "../tokens.js";
 
@@ -31,10 +19,10 @@ const CLEANUP_DELAY_MS = 3_000;
 const ATTEMPT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 
 interface Attempt {
-	/** `new`: nothing started. `started`: waiting for the pasted address. `done`: a token was issued. */
+	/** `new`: nothing started. `started`: waiting for the OAuth callback. `done`: a token was issued. */
 	state: "new" | "started" | "done";
 	expiresAt: number;
-	/** The attempt's sign-in material, sealed for this attempt: pending after `start`, finished until the user's actor has it. Null otherwise. */
+	/** The sealed OAuth verifier or the verified identity awaiting token issuance. */
 	sealed: string | null;
 	/**
 	 * The `expire` schedule that ends the attempt. A new one is set and stored before the one it
@@ -129,19 +117,17 @@ export const login = actor({
 	},
 
 	actions: {
-		start: (c): Promise<LoginStart> =>
+		start: (c, provider: LoginProvider, origin: string): Promise<LoginStart> =>
 			exclusive(c.vars, async () => {
 				const attemptId = c.key[0];
-				if (!ATTEMPT_ID.test(attemptId ?? "")) {
+				if (c.key.length !== 1 || !ATTEMPT_ID.test(attemptId ?? "")) {
 					throw new UserError("The sign-in attempt's id must be 8 to 64 letters, digits, dashes or underscores.", { code: "bad_attempt_id" });
 				}
 				const attempt = c.vars.attempt;
 				if (attempt.state === "done") throw new UserError("This sign-in is already finished.", { code: "attempt_done" });
 				try {
-					const { logins } = await getLayer();
-					// Calling it again restarts the attempt: what was pending is replaced.
-					const { url, redirectPrefix, attempt: sealed } = await logins.start(attemptId);
-
+					const { pending, url } = beginOAuth(provider, origin);
+					const sealed = serverSealer().seal("attempt", attemptId, JSON.stringify({ pending }));
 					const replaced = attempt.scheduleId;
 					const scheduleId = await c.schedule.after(ATTEMPT_TTL_MS + 1_000, "expire");
 					attempt.sealed = sealed;
@@ -150,18 +136,18 @@ export const login = actor({
 					attempt.scheduleId = scheduleId;
 					await save(c);
 					if (replaced) await c.schedule.cancel(replaced).catch(() => false);
-					return { url, redirectPrefix, expiresAt: attempt.expiresAt };
+					return { url, redirectPrefix: pending.redirect, expiresAt: attempt.expiresAt };
 				} catch (error) {
 					throw clientError(c.log, error, "The sign-in could not be started. Try again.");
 				}
 			}),
 
-		finish: (c, pastedUrl: string): Promise<AuthResult> =>
+		finish: (c, callback: string): Promise<AuthResult> =>
 			exclusive(c.vars, async () => {
-				if (typeof pastedUrl !== "string" || pastedUrl.trim() === "") {
-					throw new UserError("Paste the address of the page the sign-in ended on.", { code: "bad_input" });
+				if (typeof callback !== "string" || callback.trim() === "") {
+					throw new UserError("Missing sign-in callback.", { code: "bad_input" });
 				}
-				if (pastedUrl.length > 8_192) throw new UserError("That address is too long to be the one the sign-in ended on.", { code: "bad_input" });
+				if (callback.length > 8_192) throw new UserError("That address is too long to be the one the sign-in ended on.", { code: "bad_input" });
 				const attemptId = c.key[0];
 				const attempt = c.vars.attempt;
 				if (attempt.state === "done") throw new UserError("This sign-in is already finished.", { code: "attempt_done" });
@@ -169,23 +155,26 @@ export const login = actor({
 				if (Date.now() > attempt.expiresAt) throw new UserError("This sign-in attempt has expired. Start again.", { code: "attempt_expired" });
 
 				try {
-					const { logins } = await getLayer();
-					const finished = await logins.finish(attemptId, attempt.sealed, pastedUrl.trim());
-					const account = finished.account;
-					if (typeof account?.sub !== "string" || account.sub === "") throw new Error("the sign-in returned no account identifier");
-					// OpenAI takes the code only once. Save the result before calling either directory or user,
-					// so a retry after an interrupted handover uses the same verified material.
-					attempt.sealed = finished.attempt;
-					await save(c);
-					const uid = await claimAccountUid(c, account);
-					const profile: UserProfile = { uid, email: normalizeEmail(account.email), demo: false };
-					if (!mayUse(profile, config.access)) {
+					const sealer = serverSealer();
+					const saved = JSON.parse(sealer.open("attempt", attemptId, attempt.sealed)) as { pending?: OAuthAttempt; identity?: Identity; digest?: string };
+					const digest = createHash("sha256").update(callback).digest("hex");
+					let identity: Identity;
+					if (saved.pending) {
+						identity = await finishOAuth(saved.pending, callback);
+						// Preserve a successful code exchange across a failed handover, only for this callback.
+						attempt.sealed = sealer.seal("attempt", attemptId, JSON.stringify({ identity, digest }));
+						await save(c);
+					} else if (saved.identity && saved.digest === digest) {
+						identity = saved.identity;
+					} else throw new UserError("Start the sign-in again.", { code: "invalid_callback" });
+					const uid: string | null = await c.client().accountIdentities.getOrCreate(["platform"], { params: serviceParams() }).internalResolve(identity);
+					if (!uid || !mayUse({ uid, email: identity.email, demo: false }, config.access)) {
 						attempt.sealed = null;
 						throw new UserError(NOT_INVITED, { code: "not_invited" });
 					}
+					const profile: UserProfile = { uid, email: identity.email, demo: false };
 					const generation: number = await c.client().user.getOrCreate([uid], { params: serviceParams() }).internalTokenGeneration();
-					await logins.adopt(attemptId, finished.attempt, uid);
-					// The user's actor has it: nothing of the sign-in stays here.
+					await (await getLayer()).logins.ensureUserVolume(uid);
 					attempt.sealed = null;
 
 					const token = issueUserToken(profile, generation);
@@ -197,7 +186,7 @@ export const login = actor({
 					return { token, profile };
 				} catch (error) {
 					await save(c).catch(() => undefined);
-					throw clientError(c.log, error, "The sign-in could not be finished. Try the same address again.");
+					throw clientError(c.log, error, "The sign-in could not be finished. Please try again.");
 				}
 			}),
 

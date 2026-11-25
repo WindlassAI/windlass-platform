@@ -82,7 +82,6 @@ interface UserSignInActions {
 interface ActorClient {
 	user: {
 		get(key: string[], options: { params: unknown }): unknown;
-		getOrCreate(key: string[], options: { params: unknown }): unknown;
 	};
 }
 
@@ -105,9 +104,7 @@ export class ActorSignInDirectory implements SignInDirectory {
 	}
 
 	async adopt(uid: string, sealed: string): Promise<void> {
-		// A first sign-in is what brings the user's actor into being.
-		const user = this.actors().user.getOrCreate([uid], { params: serviceParams() }) as UserSignInActions;
-		const answer = await user.internalAdoptSignIn(sealed);
+		const answer = await this.existing(uid).internalAdoptSignIn(sealed);
 		if (!answer.ok) throw errorOf(answer.problem);
 	}
 

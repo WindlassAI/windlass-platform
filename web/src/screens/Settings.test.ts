@@ -60,7 +60,7 @@ it.each([true, false])("keeps the session on cancel and signs out with revoke AP
 
 it("says where the last agent started, with its agent and mode, and forgets it", async () => {
 	const client = createMockClient({ pace: 0 });
-	const auth = { token: "mock:chatgpt:u_last:ada@example.com", profile: { uid: "u_last", email: "ada@example.com", demo: false } };
+	const auth = { token: "mock:user:u_last:ada@example.com", profile: { uid: "u_last", email: "ada@example.com", demo: false } };
 	await client.user(auth).createSession({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", profile: "docker-hardened", mode: "plan" });
 	saveAuth("mock", auth);
 	const host = document.body.appendChild(document.createElement("div"));
@@ -90,7 +90,7 @@ it("says where the last agent started, with its agent and mode, and forgets it",
 
 it("saves a machine agent and profile and hides machine choices for Hosted", async () => {
 	const client = createMockClient({ pace: 0 });
-	const auth = { token: "mock:chatgpt:u_places:ada@example.com", profile: { uid: "u_places", email: "ada@example.com", demo: false } };
+	const auth = { token: "mock:user:u_places:ada@example.com", profile: { uid: "u_places", email: "ada@example.com", demo: false } };
 	saveAuth("mock", auth);
 	const host = document.body.appendChild(document.createElement("div"));
 	const root = createRoot(host);

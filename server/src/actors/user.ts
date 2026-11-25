@@ -1006,6 +1006,7 @@ export const user = actor({
 					updated_at INTEGER NOT NULL
 				)
 			`);
+			await db.execute("CREATE TABLE IF NOT EXISTS model_attempt (id INTEGER PRIMARY KEY CHECK(id=1), sealed TEXT NOT NULL, expires INTEGER NOT NULL, generation INTEGER NOT NULL)");
 			// Only installation metadata is stored here. Each GitHub request uses its own scoped token.
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS github (
@@ -1209,6 +1210,7 @@ export const user = actor({
 			const claimed = await c.db.execute("UPDATE token_generation SET disconnect_job = ? WHERE gen = ? AND gen > disconnected AND disconnect_job IS ? RETURNING gen", next, pending.gen, pending.disconnect_job);
 			if (claimed.length) await sweep(c, pending.gen, delay === undefined);
 		},
+		internalProfileEmail: c => { requireServiceFor(c, "call"); return c.vars.profile?.uid === c.key[0] && !c.vars.profile.demo ? c.vars.profile.email : null; },
 		internalTokenGeneration: (c): number => { requireServiceFor(c, "call"); return c.vars.tokenGen; },
 		signOutEverywhere: async (c, options?: { revokeApiTokens: boolean }): Promise<void> => {
 			requireUser(c);
@@ -1388,6 +1390,8 @@ export const user = actor({
 			await rememberProfile(c, profile);
 			return profile;
 		},
+		startChatgpt: signinActions.startChatgpt,
+		finishChatgpt: signinActions.finishChatgpt,
 		chatgpt: signinActions.chatgpt,
 		forgetChatgpt: signinActions.forgetChatgpt,
 		models: signinActions.models,
