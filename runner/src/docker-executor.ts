@@ -1067,7 +1067,9 @@ private signInRetries = 0;
 		this.boxes.delete(id);
 		if (claim) forget(this.claimFile(raw));
 		if (harness === "claude") await withLoginVolume(this, async () => {
-			if (await loginFileState(this) === "none") await dropDetachedLoginVolume(this);
+			// An unrelated or unreadable login volume must survive sandbox removal.
+			const state = await loginFileState(this).catch(() => "unknown");
+			if (state === "none") await dropDetachedLoginVolume(this);
 		});
 		this.publishReport?.();
 	}
