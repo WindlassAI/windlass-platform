@@ -16,7 +16,7 @@ A runner release contains six Linux image indexes in GHCR. Each index contains n
 Choose the published runner tag on the [release page](https://github.com/WindlassAI/windlass-platform/releases). Use cosign v3 and set `tag` to that exact tag. Both commands check the same GitHub Actions workflow identity and issuer.
 
 ```sh
-tag=runner-v0.3.9  # replace with the chosen release
+tag=runner-v0.3.10  # replace with the chosen release
 repo=WindlassAI/windlass-platform
 gh release download "$tag" --repo "$repo" -p release.json -p release.json.sigstore.json
 signer="https://github.com/$repo/.github/workflows/release-images.yml@refs/tags/$tag"
@@ -34,7 +34,7 @@ Compare the full reference printed above with the runner digest in the Machines 
 
 ## Cut a release
 
-1. Update the version in `runner/package.json` for the release and merge the reviewed change into `main`. The runner at this revision reports `0.3.9`.
+1. Update the version in `runner/package.json` for the release and merge the reviewed change into `main`. The runner at this revision reports `0.3.10`.
 2. Dispatch a dry build from reviewed `main` using the runner package's version. Use an unpublished version for a new release.
 
    ```sh
