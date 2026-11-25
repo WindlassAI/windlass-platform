@@ -1,13 +1,13 @@
 import { claudeLimit } from "../provider-usage.js";
 import type { AcpContent, AcpUpdate, TurnUsage } from "../contract.js";
-import { NO_REDACTION, SecretRedactor, RedactingStream, type Redactor } from "../repo-secrets.js";
+import { NO_REDACTION, RedactingStream, type Redactor } from "../repo-secrets.js";
 import { configChoices, modeSelection, object, objects, optionsOf, text, type Fields } from "./acp-options.js";
 import { AcpConnection, AcpError, LineSplitter, MethodNotFound } from "./acp.js";
 import { SandboxUserError, type RunTurnInput, type RunTurnResult, type SandboxHandle, type StartMark } from "./api.js";
 import type { Harness } from "./harness.js";
 import { type AcpProfile, hostedKeyMessage, itemHarnessProblem, machineLoginMessage } from "./harnesses.js";
 import { isTurnSandbox, type KeyTurnRelay, type SandboxProcess } from "./provider.js";
-import { hostedKeyEnv } from "./hosted-keys.js";
+import { hostedKeyEnv, redactKeyLease } from "./hosted-keys.js";
 import { openModelKeyRelay } from "./token-file.js";
 import { PLATFORM_MCP_SERVER, PlatformMcpServer, platformToolDeclarations, turnPlatformTools } from "../platform-tools.js";
 import { PlatformChecks } from "./platform-checks.js";
@@ -234,9 +234,7 @@ export class AcpHarness implements Harness {
 			input.signal?.throwIfAborted();
 			const env = this.machine ? { WLP_TURN_KEY_LEASES: lease.placeholder } : hostedKeyEnv(this.id, ref.key.provider, lease);
 			const secrets = input.secrets?.redactor ?? NO_REDACTION;
-			const relay = new SecretRedactor([{ name: "model-relay", value: lease.placeholder }]);
-			return await this.run(handle, input, env, { active: true, text: s => secrets.text(relay.text(s)),
-				deep: v => secrets.deep(relay.deep(v)), held: s => Math.max(secrets.held(s), relay.held(s)) });
+			return await this.run(handle, input, env, redactKeyLease(secrets, lease.placeholder));
 		} finally {
 			try { await lease?.close(); } finally { await release(); }
 		}

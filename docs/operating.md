@@ -271,8 +271,7 @@ server of the deployment:
 
 - `WLP_MODEL_RELAY_URL=https://<relay hostname>`, a DNS name of the relay's own, such as
   `https://windlass-relay.example.com`.
-- `WLP_E2B_WINDLASS_VERSION=0.6.0` (or the template's later version): an older Windlass would send the
-  placeholder to `api.openai.com`.
+- `WLP_E2B_WINDLASS_VERSION=0.7.1` (or the installed later version), after replacing every offered Windlass template.
 - `WLP_MODEL_RELAY` unset or `on`.
 
 Route the relay's hostname to the same server port as `WLP_PUBLIC_URL`, over HTTPS on 443, and keep the
@@ -293,7 +292,7 @@ not reached:
 
 ```sh
 cd server && E2B_API_KEY=e2b_... WLP_E2B_CHECK_NETWORK=1 WLP_MODEL_RELAY_URL=https://<relay hostname> \
-  WLP_E2B_WINDLASS_VERSION=0.6.0 WLP_PUBLIC_URL=https://<platform hostname> npx tsx ../scripts/e2b-check.ts
+  WLP_E2B_WINDLASS_VERSION=0.7.1 WLP_PUBLIC_URL=https://<platform hostname> npx tsx ../scripts/e2b-check.ts
 ```
 
 Before turning the relay on for E2B, and after any change to the route, make one real model request through

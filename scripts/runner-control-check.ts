@@ -621,14 +621,14 @@ try {
 			});
 		}
 	});
-	await checkControl("a connect says modelRelay only to a server that named model-relay, only for Windlass's own sandboxes, and only when the pinned image's Windlass is 0.6.0 or later", async () => {
+	await checkControl("a connect says modelRelay only to a server that named model-relay, only for Windlass's own sandboxes, and only when the pinned image's Windlass is 0.7.1 or later", async () => {
 		const { Executor } = await import("../runner/src/docker-executor.js");
-		for (const [named, windlass, said] of [[false, "0.6.0", false], [true, "0.6.0", true], [true, "0.5.0", false], [true, null, false]] as const) {
+		for (const [named, windlass, said] of [[false, "0.7.1", false], [true, "0.7.1", true], [true, "0.5.0", false], [true, null, false]] as const) {
 			const owner = new Executor({ uid: "u_owner", machineId: "m_0123456789abcdef" }, {});
 			owner.modelRelays = named;
 			// What `welcome` probes from the pinned sandbox image.
 			(owner as unknown as { sandboxWindlass: string | null }).sandboxWindlass = windlass;
-			assert.equal(owner.report().modelRelay, windlass === "0.6.0", `the report says modelRelay for Windlass ${windlass}`);
+			assert.equal(owner.report().modelRelay, windlass === "0.7.1", `the report says modelRelay for Windlass ${windlass}`);
 			owner.discover = async () => { (owner as unknown as { dockerHealth: { ok: boolean } }).dockerHealth = { ok: true }; };
 			Object.assign(owner, { disk: async () => 10_000_000_000 });
 			owner.network.prepare = async () => {};

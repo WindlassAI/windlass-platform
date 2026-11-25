@@ -3089,7 +3089,7 @@ export type TimelineItem =
 			repository?: boolean;
 	  }
 	/** A durable Windlass event, or one of the stored ephemeral ones (`notice`, `workspace.changes`, `cli.summary`). */
-	| { seq: number; at: number; turn: number; kind: "windlass"; event: WindlassEvent }
+	| { seq: number; at: number; turn: number; kind: "windlass"; event: WindlassEvent; modelKey?: ModelKeySpend }
 	| { seq: number; at: number; turn: number; kind: "acp"; update: AcpUpdate; messageKey?: string; truncated?: boolean }
 	/**
 	 * A run of the repository's setup command (`RepositorySetup`) in the session's new sandbox. Two items

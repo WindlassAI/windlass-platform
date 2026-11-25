@@ -371,7 +371,7 @@ is used only when both sides know it:
   The runner then sets `Executor.modelRelays`. Its report carries `modelRelay`, and each `connect` of a
   Windlass sandbox (never a harness one) answers `modelRelay: true`. A server that did not name the
   capability gets neither, because its checks refuse keys they do not know. Both say true only when the
-  pinned sandbox image's Windlass is 0.6.0 or later, which the runner reads once the image is there (at
+  pinned sandbox image's Windlass is 0.7.1 or later, which the runner reads once the image is there (at
   its first welcome). An older Windlass would send the placeholder to `api.openai.com`.
 - The server's `RunnerHandle` offers `TurnSandbox.modelRelay` only for a sandbox whose connect said so.
   The turn then sends `modelRelay` (a lease, with a forwarder in the sandbox's network namespace),

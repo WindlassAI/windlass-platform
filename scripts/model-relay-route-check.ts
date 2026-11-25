@@ -450,9 +450,9 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	expect("an E2B sandbox with an empty wlp_session fails the turn and is never handed the token", typeof handle.modelRelay === "function" && error instanceof TokenFileError && /names no session/.test(String(error)) && written.length === 0, String(error));
 }
 {
-	// Hosted Docker: the relay only with the image's Windlass 0.6.0 or later.
+	// Hosted Docker: the relay only with the image's Windlass 0.7.1 or later.
 	const relay = { relayName: "wlp-model-relay", sweep: async () => 0 } as unknown as DockerModelRelay;
-	for (const [version, on] of [["0.6.0", true], ["0.6.1+abc", true], ["0.5.0", false], [null, false]] as const) {
+	for (const [version, on] of [["0.7.1", true], ["0.7.1+abc", true], ["0.7.0", false], ["0.6.0", false], [null, false]] as const) {
 		const sandboxes = new DockerSandboxes({ machine: null, modelRelay: relay, modelRelayWindlass: async () => version, dataVolume: async () => "v", dropDataVolume: async () => {} } as never);
 		const ready = await sandboxes.modelRelayReady();
 		const line = await sandboxes.prepareModelRelay();
@@ -481,7 +481,7 @@ const code = async (res: Response) => ((await res.clone().json().catch(() => ({}
 	});
 	await new Promise<void>((r) => recorder.listen(0, "127.0.0.1", () => r()));
 	const base = `http://127.0.0.1:${(recorder.address() as { port: number }).port}`;
-	const windlass = { "content-type": "application/json", accept: "text/event-stream", "session-id": "s1", "user-agent": "Windlass/0.6.0", authorization: "Bearer x", "accept-encoding": "gzip, deflate, br" };
+	const windlass = { "content-type": "application/json", accept: "text/event-stream", "session-id": "s1", "user-agent": "Windlass/0.7.1", authorization: "Bearer x", "accept-encoding": "gzip, deflate, br" };
 	const plain = await upstreamFetch(`${base}/v1/responses`, { method: "POST", headers: windlass, body: new TextEncoder().encode('{"input":"hi"}') });
 	await plain.text();
 	const sent = got.at(-1)!;
@@ -577,7 +577,7 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 		assert.equal(req.headers["x-unknown"], undefined);
 		assert.equal(req.headers["x-goog-api-client"], undefined);
 		assert.equal(req.headers[proofHeader], undefined);
-		assert.equal(req.method, path.endsWith("/models") ? "GET" : "POST");
+		assert.equal(req.method, path.split("?")[0]!.endsWith("/models") ? "GET" : "POST");
 		seen.push(path);
 		res.setHeader("x-request-id", key);
 		if (mode === "redirect") return res.writeHead(307, {location: "/redirected"}).end();
@@ -593,7 +593,7 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 					return res.writeHead(400).end();
 			}
 		}
-		if (path.endsWith("/models") || path.endsWith(":generateContent")) {
+		if (req.method === "GET" || path.endsWith(":generateContent")) {
 			res.writeHead(200, {"content-type":"application/json"});
 			res.write('{"echo":"' + halves[0]);
 			setImmediate(() => res.end(halves[1] + '"}'));
@@ -680,7 +680,43 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 	assert.ok(!JSON.stringify(forward).includes(key));
 	const args = {id:"box", forward};
 	assert.ok(validArgs("modelRelay", args) && carriesSecret({kind:"op", id:"test", name:"modelRelay", args}));
+	// A Windlass lease uses the paired runner’s existing local forwarder and only this wire’s routes.
+	config.modelRelay.url = { origin, host: "relay.example.com" };
+	let windlassForward!: ForwardedKeyLease;
+	const windlassLease = await forwardKeyLease(uid, sessionId, { ...keyLease, harness: "windlass" }, machineId, async value => {
+		windlassForward = value;
+		return { placeholder: localPlaceholder, env: {}, close: async () => {} };
+	});
+	config.modelRelay.url = previousUrl;
 	const nonce = randomBytes(16).toString("hex");
+	try {
+		const local = windlassProvider({ machine: machineId, load: async () => ({ lease: localPlaceholder, forward: windlassForward, expiresAt: windlassForward.expiresAt }) });
+		const send = async (path: string, method: string) => {
+			const headers = { [auth]: credential(localPlaceholder), ...(provider === "anthropic" && method === "POST" && { "anthropic-beta": "interleaved-thinking-2025-05-14" }) };
+			const target = await local.target(path, headers, nonce);
+			assert.ok(target && !target.refused);
+			return modelRelayResponse(new Request(origin + target.path, { method, headers: target.headers }), d);
+		};
+		const catalog = paths[provider][0]!;
+		const generationPath = paths[provider][provider === "google" ? 2 : 1]!;
+		for (const [path, method] of [[catalog, "GET"], [generationPath, "POST"]] as const) {
+			const reply = await send(path, method);
+			assert.equal(reply.status, 200);
+			await reply.text();
+			assert.equal(seen.at(-1), path);
+		}
+		if (provider === "google" || provider === "anthropic") {
+			const page = catalog + (provider === "google" ? "?pageToken=page%3D" : "?after_id=claude-next");
+			assert.equal((await send(page, "GET")).status, 200);
+			assert.equal(seen.at(-1), page);
+		}
+		const forbidden = { openai: "/v1/chat/completions", anthropic: "/v1/messages/count_tokens", google: paths.google[1]!, openrouter: "/v1/responses" }[provider];
+		const before = sent;
+		assert.equal((await modelRelayResponse(new Request(origin + "/model-relay" + forbidden, { method: "POST", headers: {
+			[auth]: credential(windlassForward.placeholder), [proofHeader]: forwardProof(windlassForward.proofKey!, machineId, "POST", forbidden, Date.now()),
+		} }), d)).status, 403);
+		assert.equal(sent, before);
+	} finally { await windlassLease.close(); }
 	const relayFor = (machine: string, now = Date.now) => windlassProvider({ machine, now, load:async () => ({lease:localPlaceholder, forward, expiresAt:forward.expiresAt}) });
 	const machine = relayFor(machineId);
 	try {
@@ -789,18 +825,18 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 // ---- the E2B network ----------------------------------------------------------------------------
 
 {
-	const env = (extra: Record<string, string>) => ({ WLP_PUBLIC_URL: "https://wlp.example.com", WLP_MODEL_RELAY_URL: "https://relay.example.com", WLP_E2B_WINDLASS_VERSION: "0.6.0", WLP_E2B_NETWORK: "restricted", ...extra }) as NodeJS.ProcessEnv;
+	const env = (extra: Record<string, string>) => ({ WLP_PUBLIC_URL: "https://wlp.example.com", WLP_MODEL_RELAY_URL: "https://relay.example.com", WLP_E2B_WINDLASS_VERSION: "0.7.1", WLP_E2B_NETWORK: "restricted", ...extra }) as NodeJS.ProcessEnv;
 	const hosts = (extra: Record<string, string> = {}) => readE2bNetwork(env(extra)).hosts;
 	expect("E2B restricted allows the relay's own host, not the platform's public host, and not api.openai.com", hosts().includes("relay.example.com") && !hosts().includes("wlp.example.com") && !hosts().includes("api.openai.com"), hosts().join());
 	expect("E2B none allows the relay's host only, and no git host", hosts({ WLP_E2B_NETWORK: "none" }).join() === "relay.example.com", hosts({ WLP_E2B_NETWORK: "none" }).join());
 	expect("with WLP_MODEL_RELAY=off: api.openai.com, no relay host, and the turn's token goes into the sandbox", hosts({ WLP_MODEL_RELAY: "off" }).includes("api.openai.com") && !hosts({ WLP_MODEL_RELAY: "off" }).includes("relay.example.com") && e2bModelRelayOrigin(env({ WLP_MODEL_RELAY: "off" })) === null);
 	const unset = env({ WLP_MODEL_RELAY_URL: "" });
 	expect("without WLP_MODEL_RELAY_URL the relay is off, and the platform's whole public host is never allowed in its place", e2bModelRelayOrigin(unset) === null && !readE2bNetwork(unset).hosts.includes("wlp.example.com") && readE2bNetwork(unset).hosts.includes("api.openai.com"));
-	for (const version of ["0.5.0", "", "0.4.0"]) {
+	for (const version of ["0.7.0", "", "0.6.0"]) {
 		const old = env({ WLP_E2B_WINDLASS_VERSION: version });
 		expect(`with the template's Windlass ${version || "unknown"} the relay is off for E2B, and api.openai.com stays`, e2bModelRelayOrigin(old) === null && readE2bNetwork(old).hosts.includes("api.openai.com") && "off" in e2bModelRelay(old));
 	}
-	expect("with Windlass 0.6.0 and WLP_MODEL_RELAY_URL the relay's origin is its own host", e2bModelRelayOrigin(env({})) === "https://relay.example.com");
+	expect("with Windlass 0.7.1 and WLP_MODEL_RELAY_URL the relay's origin is its own host", e2bModelRelayOrigin(env({})) === "https://relay.example.com");
 }
 
 console.log(failed === 0 ? "\nall model relay checks passed" : `\n${failed} model relay check(s) failed`);

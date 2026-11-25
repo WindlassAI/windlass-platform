@@ -23,13 +23,27 @@ function wirePath(provider, path) {
 	return provider === 'openai' && /^\/v1\/models\?client_version=\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(path) ? wires.openai.models : path;
 }
 
+// Windlass follows provider-issued catalog cursors before opening its session.
+function catalogPage(provider, path) {
+	if (provider === 'anthropic') return /^\/v1\/models\?after_id=[A-Za-z0-9_.-]{1,200}$/.test(path);
+	if (provider === 'google') return /^\/v1beta\/models\?pageToken=(?:[A-Za-z0-9_.~-]|%2[BbFf]|%3[Dd]){1,2048}$/.test(path);
+	return false;
+}
+
 function wireMethod(provider, path) {
 	const wire = wires[provider];
-	if (wirePath(provider, path) === wire.models) return 'GET';
+	if (wirePath(provider, path) === wire.models || catalogPage(provider, path)) return 'GET';
 	if (wire.posts.includes(path) || wire.postPattern?.test(path)) return 'POST';
 }
 
 function harnessMethod(harness, provider, path) {
+	if (harness === 'windlass') {
+		if (path === wires[provider].models || catalogPage(provider, path)) return 'GET';
+		if (provider === 'google') return wires.google.postPattern.test(path) && path.endsWith(':streamGenerateContent?alt=sse') && 'POST';
+		const generation = { openai: '/v1/responses', anthropic: '/v1/messages', openrouter: '/api/v1/chat/completions' };
+		return path === generation[provider] && 'POST';
+	}
+	if (catalogPage(provider, path)) return;
 	if (harness === 'codex') return provider === 'openai' && wireMethod('chatgpt', wirePath(provider, path));
 	if (harness === 'claude') return provider === 'anthropic' && wireMethod(provider, path);
 	if (harness === 'opencode') return wireMethod(provider, path);

@@ -255,7 +255,7 @@
         "scripts/check-image.ts",
         "scripts/e2b-network-standin.mjs",
         "scripts/runner-proof-docker.ts",
-        "scripts/{sandbox,mcp,github,verified,sizing,model-relay-docker}-check.ts",
+        "scripts/{sandbox,mcp,github,verified,sizing,model-relay-docker,windlass-key-docker}-check.ts",
         "sandbox/relay/**",
         "runner/src/egress-proxy.mjs",
         "scripts/e2b-provider-test.ts",
@@ -264,13 +264,14 @@
       "shards": {
         "1": { "only": ["sandbox-1", "github-docker", "verified-docker"] },
         "2": { "only": ["sandbox-2", "e2b-provider-docker", "e2b-snapshot-docker", "sizing-docker"] },
-        "mcp": { "only": ["mcp", "model-relay-docker", "hosted-key-docker"] }
+        "mcp": { "only": ["mcp", "model-relay-docker", "hosted-key-docker", "windlass-key-docker"] }
       },
       "checks": {
         "sandbox-1": "WLP_CHECK_SECTIONS='image,screenshot images,profiles,provider,session data volumes,protocol client,seccomp,reviewer commands,profile docker-' tsx ../scripts/sandbox-check.ts",
         "sandbox-2": "WLP_CHECK_SECTIONS='failures,sign-in,token source,session token isolation,hand-off,valid-for,pnpm pins' tsx ../scripts/sandbox-check.ts",
         "mcp": "tsx ../scripts/mcp-check.ts",
         "model-relay-docker": "tsx ../scripts/model-relay-docker-check.ts",
+        "windlass-key-docker": "timeout -k 10s 590s tsx ../scripts/windlass-key-docker-check.ts",
         "hosted-key-docker": "tsx ../scripts/model-relay-docker-check.ts --hosted-keys",
         "github-docker": "tsx ../scripts/github-check.ts --docker",
         "verified-docker": "tsx ../scripts/verified-check.ts --docker",

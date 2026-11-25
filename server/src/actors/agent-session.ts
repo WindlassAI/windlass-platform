@@ -249,7 +249,7 @@ import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason, SANDBOX_ESCAPE_REFUSED } from "../sandbox/codex-modes.js";
-import { hostedKeyMessage, hostedProvider, selectedKey, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
+import { windlassProvider, hostedKeyMessage, hostedProvider, selectedKey, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
 import { stepLimitNote } from "../sandbox/platform-steps.js";
 import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import { privateSessionData } from "../sandbox/session-data.js";
@@ -934,7 +934,7 @@ async function insertItems(db: Pick<RawAccess, "execute">, batch: TimelineItem[]
 
 function turnReceipts(meta: SessionMeta | null, batch: TimelineItem[]) {
 	return batch.flatMap(item => {
-		const key = item.kind === "turn.ended" || item.kind === "platform" ? item.modelKey : undefined;
+		const key = item.kind === "turn.ended" || item.kind === "platform" || item.kind === "windlass" ? item.modelKey : undefined;
 		const tokens = key?.tokens ?? (meta && item.kind === "windlass" && usesPlatformModel(meta.harness) ? turnTokens(reportedModelUsage(item.event)) : 0);
 		return Number.isSafeInteger(tokens) && tokens > 0 ? [{ seq: item.seq, at: item.at, tokens, key }] : [];
 	});
@@ -1258,7 +1258,7 @@ export function acpRecorder(c: Ctx, turn: number) {
 	};
 }
 
-function onWindlassEvent(c: Ctx, meta: SessionMeta, turn: number, event: WindlassEvent): void {
+function onWindlassEvent(c: Ctx, meta: SessionMeta, turn: number, event: WindlassEvent, key?: import("../sandbox/provider.js").ModelKeyLease): void {
 	if (typeof event !== "object" || event === null || typeof event.type !== "string") return;
 	if (typeof event.sessionId === "string" && event.sessionId !== "" && meta.windlassSessionId !== event.sessionId) {
 		// Remembered at once: if this turn is lost, the next one can still continue Windlass's session.
@@ -1272,7 +1272,8 @@ function onWindlassEvent(c: Ctx, meta: SessionMeta, turn: number, event: Windlas
 		return;
 	}
 	settleDeltas(c.vars, event);
-	append(c, { turn, kind: "windlass", event });
+	const tokens = key && turnTokens(reportedModelUsage(event, true));
+	append(c, { turn, kind: "windlass", event, ...(key && tokens && { modelKey: { ...key, tokens } }) });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1788,8 +1789,16 @@ type OfferedHarness = NonNullable<NonNullable<MachineFacts["report"]>["harnesses
 
 export async function turnCredential(c: Ctx, meta: SessionMeta, offered: OfferedHarness | undefined, model: string, signal?: AbortSignal) {
 	const hosted = meta.place.kind === "hosted";
-	const harness = hosted ? meta.harness : offered?.id;
-	if (!harness || harness === "windlass" || (!hosted && !offered?.keyRelay)) return { model };
+	const harness = meta.harness ?? "windlass";
+	if (harness === "windlass") {
+		const provider = windlassProvider(model);
+		if (!provider) return { model };
+		const keys = await modelKeyActor(c, meta.uid).internalModelKeys();
+		const key = keys.find(k => k.provider === provider);
+		if (!key) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
+		return { model, key };
+	}
+	if (!hosted && !offered?.keyRelay) return { model };
 	const keys = await modelKeyActor(c, meta.uid).internalModelKeys();
 	const providers = keys.map(k => k.provider);
 	if (harness === "opencode" && model === "default") {
@@ -4248,6 +4257,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			void persist(c);
 		}
 		const common: RunTurnInput = {
+			...(key && { modelKey: { sessionId: meta.sessionId, key } }),
 			prompt: text, mode, planMode:active.planMode, windlassSessionId: resumed ?? undefined, model, effort: effort ?? undefined, signal,
 			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 			onControl: control => { if (open) active.control = control; },
@@ -4466,7 +4476,6 @@ fi`, { signal, timeoutMs: 5000 });
 			if (handling.kind === "labelled") unmarked(handling.note);
 			result = await harness.runTurn(sandbox, {
 				...common,
-				...(key && { modelKey: { sessionId: meta.sessionId, key } }),
 				prompt: notes.text + text,
 				...(fresh && { fresh: { ...fresh, prompt: notes.text + fresh.prompt } }),
 				...(item && { unattended: true }),
@@ -4592,7 +4601,7 @@ fi`, { signal, timeoutMs: 5000 });
 							void persist(c);
 						}
 						active.checks.note(event);
-						onWindlassEvent(c, meta, turn, event);
+						onWindlassEvent(c, meta, turn, event, key);
 					} catch (error) {
 						c.log.error({ msg: "could not record a Windlass event", error: describeError(error) });
 					}
@@ -4687,7 +4696,7 @@ fi`, { signal, timeoutMs: 5000 });
 	// stopped answering. The resumed segment compares with the same start (`TurnRun.memory`).
 	if (!pausing && used && !active.item?.outOfMemory) await noteTurnMemory(c, meta, active, used, memoryAtStart, turnBegan, turn);
 	const segmentUsage = usageOf(result?.summary?.usage) ?? result?.acp?.tokens ?? null;
-	const modelKey = account.provider && generation && segmentUsage ? { provider: account.provider, generation, tokens: turnTokens(segmentUsage) } : undefined;
+	const modelKey = capabilitiesOf(meta.harness).events === "acp" && account.provider && generation && segmentUsage ? { provider: account.provider, generation, tokens: turnTokens(segmentUsage) } : undefined;
 	if (pausing && active.pausing && run) {
 		try {
 			await pauseTurn(c, meta, active, active.pausing, segmentUsage, modelKey, result);
@@ -4705,7 +4714,7 @@ fi`, { signal, timeoutMs: 5000 });
 		// Windlass's summary event, or what an ACP agent answered its prompt with; with what the turn's earlier segments used.
 		const usage = addUsage(run?.usage ?? null, segmentUsage);
 		// Settle all reported requests before this turn's completion can admit more work.
-		if (usesPlatformModel(meta.harness)) {
+		if (usesPlatformModel(meta.harness, meta.model)) {
 			await serial(c, () => writeItems(c));
 			await sendOutbox(c, meta.uid);
 		}
@@ -4739,7 +4748,10 @@ fi`, { signal, timeoutMs: 5000 });
 			// Windlass's own sentence about it; the layer may hand it over without a capital.
 			const said = failure ? str(failure.message).trim().replace(/^[a-z]/, (letter) => letter.toUpperCase()) : "";
 			const reported = summary?.outcome as TurnOutcome | undefined;
-			if (failure?.reason === "auth_required") {
+			if (failure?.reason === "auth_required" && account.provider) {
+				outcome = "error";
+				message = `Check your ${account.provider} key in Settings. ${said}`.trim();
+			} else if (failure?.reason === "auth_required") {
 				// No sign-in, one that could not be refreshed, or an access token the provider rejected: the remedy is the same.
 				outcome = "error";
 				message = `ChatGPT did not accept the saved sign-in. ${SIGN_IN_REMEDY}`;
@@ -4786,7 +4798,7 @@ fi`, { signal, timeoutMs: 5000 });
 		if (refusal) {
 			// Windlass describes a handed-in token to its host. Use the sandbox layer's remedy for its owner.
 			if (!result?.acp && result?.failure?.reason === "auth_required" && message) {
-				if (refusal.message.includes("WINDLASS_ACCESS_TOKEN_FILE")) refusal.message = message;
+				if (account.provider || refusal.message.includes("WINDLASS_ACCESS_TOKEN_FILE")) refusal.message = message;
 				else if (!refusal.message.includes(SIGN_IN_REMEDY)) refusal.message += ` ${SIGN_IN_REMEDY}`;
 			}
 			const redactor = active.secrets?.redactor;
@@ -5438,7 +5450,7 @@ function machineAway(c: Ctx, meta: SessionMeta): boolean {
  * running slot and no title, and it is stored only once Windlass has admitted it.
  */
 async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, message: string, submission: Submission | null): Promise<PromptAnswer> {
-	if (usesPlatformModel(meta.harness)) {
+	if (usesPlatformModel(meta.harness, meta.model)) {
 		const wait = await userActor(c, meta.uid).internalDailyTokenWait();
 		if (wait) throw new UserError(wait, { code: "daily_token_cap" });
 	}
@@ -5525,6 +5537,11 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, messag
 		if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 		const caps = capabilitiesOf(meta.harness);
 		let model = meta.model;
+		const requested = input.model || model;
+		let credential: ActiveTurn["credential"];
+		if (caps.events === "windlass" && windlassProvider(requested)) credential = await turnCredential(c, meta, undefined, requested);
+		if (caps.events === "windlass" && meta.windlassSessionId && windlassProvider(requested) !== windlassProvider(meta.model))
+			throw new UserError("Start a new Windlass session to change providers.", { code: "bad_model" });
 		const switches = input.model !== undefined && input.model !== null && input.model !== "";
 		if (switches || effort !== null) {
 			// Held against the user's own models, and the effort against the ones the turn's model accepts. The demo's scripted model has the stand-in.
@@ -5549,7 +5566,6 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, messag
 		if (meta.repoUrl && facts?.report?.egress === "none") throw new UserError(OFFLINE_REPOSITORY, { code: "bad_input" });
 		// The operator can change WLP_E2B_NETWORK between a session's launch and its turn.
 		if (meta.repoUrl && meta.place.kind === "hosted" && (await layerOf(c, meta)).sandboxes.egress?.() === "none") throw new UserError(HOSTED_OFFLINE_REPOSITORY, { code: "bad_input" });
-		let credential: ActiveTurn["credential"];
 		if (caps.signIn.includes("machine") && facts) {
 			const offered = facts.report?.harnesses?.find(entry => entry.id === meta.harness);
 			if (!offered) throw new UserError(`This machine does not offer ${harnessName(meta.harness)}.`, { code: "bad_input" });
@@ -5562,7 +5578,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, messag
 			}
 		} else if (meta.place.kind === "hosted" && caps.events === "acp") {
 			credential = await turnCredential(c, meta, undefined, model);
-		} else if (!meta.demo && !meta.environmentBuild && Date.now() >= c.vars.signedInUntil) {
+		} else if (!credential?.key && !meta.demo && !meta.environmentBuild && Date.now() >= c.vars.signedInUntil) {
 			const { logins } = await layerOf(c, meta);
 			if (!(await logins.status(meta.uid))) {
 				throw new UserError("Sign in with ChatGPT first: this agent needs your account to run.", { code: "chatgpt_required" });
@@ -5575,12 +5591,12 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, messag
 			if (error instanceof TurnProblem) throw new UserError(error.message, { code: "secrets_unavailable" });
 			throw error;
 		});
-		if (usesPlatformModel(meta.harness)) {
+		if (usesPlatformModel(meta.harness, model)) {
 			await settleTokenReceipts(c, meta.uid).catch(() => {
 				throw new UserError("Your previous turn’s model usage could not be settled. Try again in a moment.", { code: "usage_unavailable" });
 			});
 		}
-		const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId);
+		const claim = await userActor(c, meta.uid).internalAcquireRun(meta.sessionId, model);
 		if (!claim.known || c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		if (!claim.ok) {
 			if (claim.dailyTokenWait) throw new UserError(claim.dailyTokenWait, { code: "daily_token_cap" });

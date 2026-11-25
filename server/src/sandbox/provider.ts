@@ -174,7 +174,7 @@ export interface TurnSandbox extends SandboxHandle {
 	resumeRelay?(relay: { lease: string; placeholder: string; env: Record<string, string> }): TurnModelRelay;
 }
 
-export type KeyReference = ModelKeyLease & { harness: import("./harnesses.js").AcpProfile["id"] };
+export type KeyReference = ModelKeyLease & { harness: import("../contract.js").HarnessId };
 
 export interface ModelKeyLease {
 	provider: ModelProvider;

@@ -117,7 +117,7 @@ export interface UserInternal {
 	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
 	internalRemoveBackupLater(sessionId: string): Promise<void>;
 	/** Counts the session as running if the user's hosted sessions at work are below their ceiling (`FactoryLimits.runningTurns`); one on a machine of theirs always is. */
-	internalAcquireRun(sessionId: string): Promise<{ dailyTokenWait?: string; ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }>;
+	internalAcquireRun(sessionId: string, model?: string): Promise<{ dailyTokenWait?: string; ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }>;
 	/** Gives back the running slot of the claim named `claim`, for a prompt the session refused after it was claimed; a newer claim, or one already settled, is left as it is. */
 	internalReleaseRun(input: { sessionId: string; claim: number; summary: SessionSummary }): Promise<{ released: boolean }>;
 	/** The user's GitHub connection as it is now; null when there is none. */

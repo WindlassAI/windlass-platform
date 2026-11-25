@@ -204,7 +204,7 @@ export async function forwardKeyLease(uid: string, sessionId: string, key: KeyRe
 	if (!config.modelRelay.on || !url || !sessionId) throw new Error("A saved provider key requires a platform model relay.");
 	const ttlMs = config.turnTimeoutMs + 60_000;
 	const expiresAt = Date.now() + ttlMs;
-	const platform = openRelayLease({ uid, sessionId, key, machine, origin: url.origin, ttlMs, signal });
+	const platform = openRelayLease({ uid, sessionId, key, machine, origin: url.origin, ttlMs, signal, requestLimit: machine ? undefined : config.modelRelay.turnRequests });
 	let local: KeyTurnRelay | undefined;
 	let closing: Promise<void> | undefined;
 	const close = () => {

@@ -26,6 +26,7 @@
  * the sign-in, and scripts/models-check.ts runs it against a database of its own.
  */
 
+import { windlassProvider } from "./sandbox/harnesses.js";
 import type { ModelChoice, ModelList } from "./contract.js";
 
 /** What Windlass listed for an account: its models, and the one a session starts on when none is named. */
@@ -230,6 +231,8 @@ export class ModelProblem extends Error {
 /** Why a model that was named cannot be used, in a sentence that says whose list it is not in; null when the list has it. */
 export function modelRefusal(list: ModelList, named: unknown): string | null {
 	if (typeof named === "string" && list.models.some((model) => model.id === named)) return null;
+	const provider = typeof named === "string" && windlassProvider(named);
+	if (provider && list.source !== "harness") return `That model is not in your checked ${provider} models. Add or check the ${provider} key in Settings.`;
 	const names = list.models.map((model) => model.id).join(", ");
 	return list.source === "account" ? `That model is not among the ones your ChatGPT plan offers. Choose one of: ${names}` : `That model is not offered. Choose one of: ${names}`;
 }

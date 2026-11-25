@@ -363,8 +363,7 @@ private signInRetries = 0;
 	readonly modelRelay: DockerModelRelay;
 	/**
 	 * The Windlass version of the pinned sandbox image, once looked at after the image is here (`welcome`).
-	 * The relay is offered only when it is 0.6.0 or later: an older Windlass ignores the relay's address and
-	 * would send the placeholder to api.openai.com.
+	 * Windlass 0.7.1 and later route all supported providers through the relay.
 	 */
 	private sandboxWindlass: string | null = null;
 	/** Whether what a runner that died left of the relay was removed in this process (once, at the first welcome). */
@@ -738,7 +737,7 @@ private signInRetries = 0;
 			if (!this.commandSandbox.ok) this.commandSandbox = { ok: false, reason: error instanceof RunnerError ? error.message : "The sandbox image could not be checked." };
 		}
 	}
-	/** Whether this machine's Windlass sandboxes can use its model relay: the pinned image's Windlass is 0.6.0 or later. */
+	/** Whether this machine's Windlass sandboxes can use its model relay: the pinned image's Windlass supports all relay wires. */
 	get modelRelayReady(): boolean {
 		return readsModelRelay(this.sandboxWindlass);
 	}

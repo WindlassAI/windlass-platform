@@ -75,7 +75,7 @@ export const WINDLASS_CAPABILITIES: HarnessCapabilities = Object.freeze({
 	platformTools: tools("publish", "report", "ask_person", "request_secret", "push", "fetch_base", "file_review", "file_plan_review"),
 	reportScreenshots: true, restrictedReview: true, userServers: "config-file", projectServerApproval: true,
 	checks: "required", envLists: true, sessionHome: true, usage: "tokens", models: "account",
-	signIn: ["chatgpt"] as const, backups: true, steps: "engine", untrustedMarker: "taint", planMode: false, demo: true,
+	signIn: ["chatgpt", "platform-key"] as const, backups: true, steps: "engine", untrustedMarker: "taint", planMode: false, demo: true,
 });
 
 /**
@@ -184,13 +184,23 @@ export function keyProviders(harness: HarnessId | undefined): readonly ModelProv
 	switch (harness) {
 		case "claude": return ["anthropic"];
 		case "codex": return ["openai"];
-		case "opencode": return MODEL_PROVIDERS;
+		case "windlass": case "opencode": return MODEL_PROVIDERS;
 		default: return [];
 	}
 }
 
 export function selectedKey(harness: HarnessId | undefined, model: string | undefined, keys: readonly ModelProvider[]) {
-	return keyProviders(harness).find(provider => keys.includes(provider) && (harness !== "opencode" || model?.startsWith(provider + "/")));
+	return keyProviders(harness).find(provider => keys.includes(provider) && ((harness !== "opencode" && harness !== "windlass") || model?.startsWith(provider + "/")));
+}
+
+/** A qualified picker id selects one Settings key. Unqualified Windlass ids use ChatGPT. */
+export function windlassProvider(model?: string) {
+	return typeof model === "string" ? selectedKey("windlass", model, MODEL_PROVIDERS) : undefined;
+}
+
+export function windlassModels(account: ModelList, keys: readonly CheckedProvider[]): ModelList {
+	const checked = hostedCatalog("windlass", keys)?.models.filter(m => m.id !== "default") ?? [];
+	return { ...account, models: [...account.models, ...checked] };
 }
 
 type KeyHarness = { id: AcpProfile["id"]; keyRelay?: true };
@@ -227,10 +237,10 @@ export function hostedProvider(id: AcpProfile["id"], model: string | undefined, 
 	return selectedKey(id, model, keys);
 }
 
-export function hostedKeyMessage(id: AcpProfile["id"], model?: string): string {
+export function hostedKeyMessage(id: HarnessId, model?: string): string {
 	const provider = selectedKey(id, model, MODEL_PROVIDERS);
 	const key = provider ? { openai: "an OpenAI", anthropic: "an Anthropic", google: "a Google", openrouter: "an OpenRouter" }[provider] : "an OpenAI, Anthropic, Google or OpenRouter";
-	return `Add ${key} key in Settings to run ${machineHarnesses[id].name} here.`;
+	return `Add ${key} key in Settings to run ${harnessName(id)} here.`;
 }
 
 export type CheckedProvider = Pick<ModelProviderStatus, "provider" | "checkedAt" | "models">;
@@ -257,7 +267,8 @@ export function hostedCatalog(harness: HarnessId, providers: readonly CheckedPro
 		} else if (harness === "codex") {
 			for (const model of codexModels(offered)) ids.add(model);
 		} else {
-			for (const model of offered) ids.add(provider + "/" + model);
+			const models = harness === "windlass" && provider === "openai" ? codexModels(offered) : offered;
+			for (const model of models) ids.add(provider + "/" + model);
 		}
 	}
 	if (checkedAt === null) return undefined;

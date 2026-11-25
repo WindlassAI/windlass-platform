@@ -14,7 +14,7 @@ Choose a default **Sandbox** and **Model**, or **No default**. They save as soon
 
 In **Settings → Model providers**, choose **Add key…** for OpenAI, Anthropic, Google (Gemini) or OpenRouter. You can save one key per provider. Windlass stores it encrypted, checks it with the provider and shows its last four characters and the number of models found. Use **Check**, **Replace…** or **Remove…** to manage it later.
 
-These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and uses a per-turn relay to keep the key outside the sandbox. Removing or replacing a key stops new requests through leases for the old key. On hosted sandboxes and paired machines, Claude Code uses your Anthropic key, Codex uses your OpenAI key, and OpenCode uses the key for the selected provider. A paired machine uses its local login if there is no matching Settings key. Usage counts against that key. Windlass continues to use your ChatGPT sign-in.
+These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and uses a per-turn relay to keep the key outside the sandbox. Removing or replacing a key stops new requests through leases for the old key. On hosted sandboxes and paired machines, Claude Code uses your Anthropic key, Codex uses your OpenAI key, and OpenCode uses the key for the selected provider. These three agents can use a paired machine’s local login when there is no matching key. Windlass uses your Settings key when you choose a provider-prefixed model. An unprefixed Windlass model uses your ChatGPT sign-in.
 
 ### MCP servers
 
@@ -188,7 +188,7 @@ The **Usage** page shows your effective limits, model tokens, hosted sandbox tim
 
 ### Daily model tokens
 
-Input and output count once for hosted agents and for Windlass on a paired machine, which uses the model sign-in supplied by the platform. On hosted sandboxes and paired machines, Claude Code, Codex and OpenCode use separate provider connections. Tokens reported for a Settings key count toward that key’s usage. The allowance resets at 00:00 UTC. If a cap is set and you reach it, running turns finish, new Factory turns wait and new interactive prompts show when you can try again.
+Windlass turns on ChatGPT count input and output once toward the daily model cap, including on paired machines. For Settings-key turns, Usage reports tokens under the selected provider. Hosted time counts for either kind of turn. The allowance resets at 00:00 UTC. If a cap is set and you reach it, running turns finish, new Factory turns wait and new interactive prompts show when you can try again.
 
 ### Sandbox time
 

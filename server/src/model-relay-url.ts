@@ -6,10 +6,10 @@
  * port 443, so it is an https address with a DNS name, no port and no path.
  */
 
-/** The first Windlass that reads WINDLASS_MODEL_BASE_URL: an older one would send the placeholder to api.openai.com. */
-export const MODEL_RELAY_WINDLASS = "0.6.0";
+/** The first Windlass that relays every provider, including its catalog and titles. */
+export const MODEL_RELAY_WINDLASS = "0.7.1";
 
-/** Whether a Windlass version (`0.6.0`, `0.6.1+build`, `v0.7.0`) is MODEL_RELAY_WINDLASS or later. Null or unreadable: no. */
+/** Whether a Windlass version (`0.7.1`, `0.7.1+build`, `v0.7.2`) is MODEL_RELAY_WINDLASS or later. Null or unreadable: no. */
 export function readsModelRelay(version: string | null | undefined): boolean {
 	const found = /^v?(\d+)\.(\d+)\.(\d+)/.exec((version ?? "").trim());
 	if (!found) return false;

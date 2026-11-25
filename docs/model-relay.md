@@ -1,6 +1,6 @@
 # Windlass's model relay
 
-Windlass 0.6.0 can send its model requests to a relay instead of to OpenAI. The host starts
+Windlass 0.7.1 routes ChatGPT and Settings-key models through the relay. For ChatGPT, the host starts
 `windlass acp` with `WINDLASS_MODEL_BASE_URL` and a `WINDLASS_ACCESS_TOKEN_FILE` that holds a
 placeholder, not a ChatGPT access token. A relay outside loopback also needs
 `WINDLASS_MODEL_ALLOWED_ORIGIN` set to its exact origin. Windlass sends the file's bearer on
@@ -17,7 +17,20 @@ Without the relay, a ChatGPT turn's real access token is written into the sandbo
 `docker-hardened` and `e2b-open` profiles let commands read it, and setup leftovers can read it on
 every profile.
 
-The relay uses the Windlass account’s ChatGPT sign-in. Keys in the account’s model-provider store are checked separately and do not supply the relay or an agent turn.
+## Settings keys in Windlass
+
+A qualified picker ID selects the owner’s saved key generation before a turn starts. The platform runs `windlass acp` with `WINDLASS_PROVIDER`, the provider selection that the CLI’s `--provider` passes to ACP. The ACP session receives the provider’s native model ID, including any OpenRouter vendor prefix. Windlass pins the provider when it creates the session.
+
+| Provider | Variable holding the turn placeholder | Relay base suffix | Paths appended for catalog and generation |
+| --- | --- | --- | --- |
+| OpenAI | `OPENAI_API_KEY` | `/v1` | `/models`, `/responses` |
+| Anthropic | `ANTHROPIC_API_KEY` | empty | `/v1/models`, `/v1/messages` |
+| Google | `GEMINI_API_KEY` | empty | `/v1beta/models`, `/v1beta/models/<model>:streamGenerateContent?alt=sse` |
+| OpenRouter | `OPENROUTER_API_KEY` | `/api/v1` | `/models`, `/chat/completions` |
+
+E2B adds the suffix to the relay origin and `/model-relay`. Docker and paired machines add it to the loopback forwarder origin. Catalog pagination and automatic titles use the same lease. The platform checks the machine pairing and proof for forwarded requests. Only the platform relay resolves the saved key. Removing or replacing the key invalidates its generation. Stopping the turn revokes its lease. Hosted leases share the configured per-turn request cap across server processes.
+
+Reported requests are receipted against the selected provider and key generation. The daily ChatGPT allowance applies to unprefixed models. A missing Settings key, an unavailable key relay or a sandbox running Windlass before 0.7.1 refuses a key-backed turn.
 
 ## Where the relay runs
 
@@ -217,12 +230,11 @@ message. The platform maps a `relay_lease_ended` there to `token_unavailable` ("
 
 | Where | When the relay is used | Otherwise |
 | --- | --- | --- |
-| Hosted Docker | `WLP_MODEL_RELAY` is not `off` (default on), and the sandbox image's Windlass, as `windlass.problem()` reads it, is 0.6.0 or later | today's token file, and the server says so at startup |
-| Machines | the server names `model-relay` in its welcome, and the runner says `modelRelay` in its report and its `connect` answer. A runner says it only when the pinned sandbox image's Windlass is 0.6.0 or later. Runners 0.3.0 and 0.3.1 never say it. | today's token file, as on those runners now |
-| Hosted E2B | `WLP_MODEL_RELAY` is not `off`, `WLP_MODEL_RELAY_URL` is set, and `WLP_E2B_WINDLASS_VERSION` is 0.6.0 or later | today's token file, and the server says which of these is missing at startup |
+| Hosted Docker | `WLP_MODEL_RELAY` is not `off` (default on), and the sandbox image's Windlass, as `windlass.problem()` reads it, is 0.7.1 or later | today's token file, and the server says so at startup |
+| Machines | the server names `model-relay` in its welcome, and the runner says `modelRelay` in its report and its `connect` answer. The updated runner requires Windlass 0.7.1 or later in the pinned sandbox image. Earlier relay-capable runners may advertise support for ChatGPT alone. | today's token file, as on those runners now |
+| Hosted E2B | `WLP_MODEL_RELAY` is not `off`, `WLP_MODEL_RELAY_URL` is set, and `WLP_E2B_WINDLASS_VERSION` is 0.7.1 or later | today's token file, and the server says which of these is missing at startup |
 
-An older Windlass ignores `WINDLASS_MODEL_BASE_URL` and would send the placeholder to `api.openai.com`, so
-each place decides from the Windlass its sandboxes run. While the relay is on for E2B, `api.openai.com`
+The token-file fallback above applies only to ChatGPT. Windlass 0.7.x sessions cannot be opened by 0.6.0. While the relay is on for E2B, `api.openai.com`
 is not in E2B's allow list: the sandbox has no token it would take.
 
 Each profile says per sandbox which applies. A profile with the relay has `modelRelay: true`, and its
@@ -240,7 +252,11 @@ deployment and the runner say, and the panel shows which one applies.
 
 Turns that are already running keep the mode they started with.
 
+To roll out 0.7.1, rebuild the Docker image with `sandbox/build.sh` and publish the sandbox and runner images through the image release workflow. The runner bundles its local relay. Build each deployed Windlass template with `sandbox/e2b/build.sh` and its matching `WLP_E2B_SIZE` and `WLP_SANDBOX_VARIANT`. Point the servers at the new templates and set `WLP_E2B_WINDLASS_VERSION=0.7.1`.
+
 ## Checks
+
+- `scripts/windlass-key-docker-check.ts` runs the released ACP binary against four fake providers on an isolated loopback network. It checks model listing, generation, key refusal and the live sandbox environment and files.
 
 - `scripts/windlass-relay-check.mjs` (in `pnpm test`): the relay program with a recording upstream.
   It covers bearer replacement, another session's placeholder on this connection, an ended lease, a token

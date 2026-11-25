@@ -106,7 +106,7 @@ try {
 	Object.assign(process.env, {
 		WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_SECRET: randomBytes(24).toString("hex"),
 		RIVETKIT_STORAGE_PATH: storage, RIVET_RUN_ENGINE_PORT: String(enginePort), WLP_HTTP_PORT: String(httpPort),
-		WLP_MODEL_RELAY: "on", WLP_MODEL_RELAY_URL: origin, WLP_E2B_WINDLASS_VERSION: process.env.WLP_E2B_WINDLASS_VERSION || "0.6.0",
+		WLP_MODEL_RELAY: "on", WLP_MODEL_RELAY_URL: origin, WLP_E2B_WINDLASS_VERSION: process.env.WLP_E2B_WINDLASS_VERSION || "0.7.1",
 		WLP_E2B_NETWORK: mode,
 	});
 	for (const name of ["RIVET_ENDPOINT", "RIVET_ADMIN_TOKEN", "WLP_PUBLIC_ENDPOINT", "WLP_E2B_NETWORK_ALLOW"]) delete process.env[name];

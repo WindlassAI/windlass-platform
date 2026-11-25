@@ -256,9 +256,9 @@
  *                              page says so
  *   WLP_MODEL_RELAY            "off": Windlass's turns are handed their access token in the sandbox, as
  *                              before the relay (docs/model-relay.md). Unset or "on": hosted Docker
- *                              (with Windlass 0.6.0 or later in its image) and runners that name
+ *                              (with Windlass 0.7.1 or later in its image) and runners that name
  *                              `modelRelay` send model requests through the relay, and E2B does too
- *                              with WLP_MODEL_RELAY_URL set and WLP_E2B_WINDLASS_VERSION 0.6.0 or later
+ *                              with WLP_MODEL_RELAY_URL set and WLP_E2B_WINDLASS_VERSION 0.7.1 or later
  *   WLP_MODEL_RELAY_URL        the hostname of its own that E2B sandboxes reach the relay route at:
  *                              https://<DNS name>, no port, no path, routed to this server like
  *                              WLP_PUBLIC_URL. On it the server answers the relay's two paths and

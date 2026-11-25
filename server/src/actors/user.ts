@@ -155,7 +155,7 @@ import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
-import { hostedCatalog, hostedHarness, hostedKeyMessage, hostedProvider, availableCatalog, harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
+import { windlassModels, hostedCatalog, hostedHarness, hostedKeyMessage, hostedProvider, availableCatalog, harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
 import { MODEL_PROVIDER_TABLES, modelProviderActions, providerStatuses } from "../model-providers.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
@@ -337,9 +337,9 @@ interface ModelsCtx extends SignInCtx {
  * than an hour. The actor stays awake while it does, as for any request for the token: a sign-in
  * that had to be refreshed for it is saved before the actor may sleep or move.
  */
-function modelsOf(c: ModelsCtx, demo: boolean): Promise<ModelList> {
-	if (demo) return Promise.resolve(standInModels("demo"));
-	return c.vars.models.current({
+async function modelsOf(c: ModelsCtx, demo: boolean): Promise<ModelList> {
+	if (demo) return standInModels("demo");
+	const account = await c.vars.models.current({
 		db: c.db,
 		generation: async () => {
 			const [row] = await c.db.execute<{ generation: number }>("SELECT generation FROM signin WHERE id = 1 AND sealed IS NOT NULL");
@@ -347,6 +347,7 @@ function modelsOf(c: ModelsCtx, demo: boolean): Promise<ModelList> {
 		},
 		list: () => c.keepAwake((async () => (await getSignIns()).commands.models(await (await signIn(c)).accessToken()))()),
 	});
+	return windlassModels(account, await providerStatuses(c.db));
 }
 
 /** A model a client named, held against the user's list, or the UserError that says what is wrong with it. */
@@ -3219,7 +3220,7 @@ export const user = actor({
 			queueChanged(c);
 		},
 
-		internalAcquireRun: async (c, sessionId: string): Promise<{ dailyTokenWait?: string; ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }> => {
+		internalAcquireRun: async (c, sessionId: string, model?: string): Promise<{ dailyTokenWait?: string; ok: boolean; running: number; known: boolean; until: number | null; claim: number | null }> => {
 			requireService(c);
 			const uid = c.key[0];
 			// An item session's turn holds a slot of the turn queue (user-items.ts), counted here instead of by its summary.
@@ -3251,7 +3252,7 @@ export const user = actor({
 			// The user's index can still be a turn behind. The session asking for the slot
 			// cannot start its next turn until we answer, so this is its actual starting count.
 			const own = asking && hostedLimitsApply(asking.place) ? await sessionActor(c, uid, sessionId).internalSummary() : null;
-			const tokenWait = asking && usesPlatformModel(asking.harness) ? accountTokenWait(c) : null;
+			const tokenWait = asking && usesPlatformModel(asking.harness, model ?? asking.model) ? accountTokenWait(c) : null;
 			// From here to the `set` nothing is awaited: the count and the claim are one step.
 			const entry = c.vars.sessions.get(sessionId);
 			if (!entry) return { ok: false, running: others().length, known: false, until: null, claim: null };
