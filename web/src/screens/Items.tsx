@@ -730,7 +730,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const accountModels = useModels();
 	const modelAgent = mode === "orchestrate" && platform.info?.items?.orchestrate ? "windlass" : agent;
 	const catalog = useCatalog(modelAgent === "windlass" ? null : chosenMachine, modelAgent === "windlass" ? "claude" : modelAgent);
-	const modelList = modelAgent === "windlass" ? accountModels.list : harnessOptions(chosenMachine, modelAgent, catalog.options).models;
+	const modelList = modelAgent === "windlass" ? accountModels.list : harnessOptions(chosenMachine, modelAgent, catalog.options, keys).models;
 	const [modelChoice, setModel] = useState("");
 	const [effortChoice, setEffort] = useState("");
 	const model = modelList?.models.some((one) => one.id === modelChoice) ? modelChoice : "";

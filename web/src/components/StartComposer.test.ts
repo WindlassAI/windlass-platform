@@ -333,10 +333,11 @@ describe("each picker of the start composer", () => {
 		expect(pop().textContent).toContain("Add an OpenAI key in Settings to run Codex here.");
 		expect(pop().querySelector('[data-value="codex:default"]')?.getAttribute("aria-disabled")).toBe("true");
 		expect(pop().querySelector('[data-value="opencode:default"]')).toBeTruthy();
-		pick("claude:default");
+		expect(pop().querySelector('[data-value="opencode:anthropic/claude-sonnet-4"]')).toBeTruthy();
+		pick("claude:sonnet");
 		write("Run the hosted task");
 		await enter();
-		expect(created[0]).toMatchObject({ harness: "claude", profile: "docker-hardened" });
+		expect(created[0]).toMatchObject({ harness: "claude", model: "sonnet", profile: "docker-hardened" });
 		expect(created[0]?.place).toBeUndefined();
 		expect(prompted).toHaveLength(1);
 	});

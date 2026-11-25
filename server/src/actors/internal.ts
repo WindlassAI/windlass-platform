@@ -99,7 +99,7 @@ export interface UserInternal {
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
 	internalDefaultBuilder(input: { id: string; job: import("./user-items.js").DefaultBuilder }): ReturnType<typeof import("./user-items.js").itemActions.internalDefaultBuilder>;
 	internalDiscardPlacement(itemId: string): Promise<void>;
-	internalHostedProviders(): Promise<import("../contract.js").ModelProvider[]>;
+	internalHostedProviders(): Promise<import("../sandbox/harnesses.js").CheckedProvider[]>;
 	internalHostedSizes(): Promise<HostedSize[]>;
 	internalDailyTokenWait(): Promise<string | null>;
 	internalRecordTurnTokens(input: { sessionId: string; receipt: import("../usage.js").TokenReceipt }): Promise<void>;

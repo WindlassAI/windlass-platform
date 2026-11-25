@@ -36,7 +36,7 @@ export interface AgentChoice {
  * The agents a subtask may run at a place: Windlass everywhere; on a machine also each agent subtasks
  * run (harnesses.ts `subtasks`: not Codex) that it reports, those not signed in listed with why. Null machine: this platform.
  */
-export function agentChoices(machine: MachineSummary | null, keys: readonly import("@contract").ModelProvider[] | null = [], keyProfile = false): AgentChoice[] {
+export function agentChoices(machine: MachineSummary | null, keys: readonly import("@contract").ModelProviderStatus[] | null = [], keyProfile = false): AgentChoice[] {
 	const choices: AgentChoice[] = [{ id: "windlass", name: HARNESS_NAMES.windlass, problem: null }];
 	if (!machine) for (const id of ["claude", "opencode"] as const) {
 		choices.push({ id, name: HARNESS_NAMES[id], problem: hostedAgentProblem(id, keys, keyProfile) });

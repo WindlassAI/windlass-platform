@@ -155,9 +155,9 @@ import { getLayer } from "../layer.js";
 import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
-import { hostedHarness, hostedKeyMessage, hostedProvider, availableCatalog, harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
+import { hostedCatalog, hostedHarness, hostedKeyMessage, hostedProvider, availableCatalog, harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, ModelProblem, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
-import { MODEL_PROVIDER_TABLES, modelProviderActions, savedProviders } from "../model-providers.js";
+import { MODEL_PROVIDER_TABLES, modelProviderActions, providerStatuses } from "../model-providers.js";
 import { ACCOUNT_SECRETS_TABLE, ACCOUNT_SECRET_PROJECT, SecretNotFound, TooManySecrets, accountSecretNames, deleteAccountSecret, listedAccountSecrets, saveAccountSecret } from "../account-secrets.js";
 import { publishAsksEveryTime, publishUnaskedProblem } from "../agent-publish.js";
 import { PERSONAL_SERVERS_TABLE, ServerProblem, addServer, changeServer, cleanServerDefinition, cleanServerName, cleanUnasked, deleteServer, listedServer, readServers } from "../personal-servers.js";
@@ -1249,7 +1249,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
 		const catalog = offered?.optionsDigest && place.kind === "machine" ? await machineCatalog(c, place.machineId, offered.id, offered.optionsDigest) : undefined;
 		if (offered?.optionsDigest && !catalog) throw new UserError("The machine’s model list changed. Choose the model again.", { code: "bad_input" });
-		const options = availableCatalog(catalog ?? undefined, offered);
+		const providers = place.kind === "hosted" && harness !== "windlass" ? await providerStatuses(c.db) : undefined;
+		const options = providers ? hostedCatalog(harness, providers) : availableCatalog(catalog ?? undefined, offered);
 		if (harness === "codex" && chosen.id === "docker-windlass-sandbox" && !offered?.modes?.includes("workspace-write"))
 			throw new UserError(offered?.modeReason ?? innerModesReason, {code:"bad_input"});
 		const modes = initialSessionModes(chosen.id, harness, !!item, harness === "codex" ? codexModes(chosen.id, machine ? offered?.modes ?? [] : undefined) : options?.modes);
@@ -1259,8 +1260,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		}
 		// A build runs no agent, so it asks for no model list (and needs no sign-in): the stand-in names one.
 		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : build ? standInModels("demo") : await modelsOf(c, profile.demo);
-		const model = modelInput(() => chosenModel(models, input.model), options ? "bad_input" : undefined);
-		if (place.kind === "hosted" && harness !== "windlass" && !hostedProvider(harness, model, await savedProviders(c.db)))
+		const model = modelInput(() => chosenModel(models, input.model), options && machine ? "bad_input" : undefined);
+		if (providers && harness !== "windlass" && !hostedProvider(harness, model, providers.map(p => p.provider)))
 			throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		// An item's effort runs every turn, unwatched: only one its agent reported is taken.
 		if (item?.effort !== undefined) modelInput(() => checkItemEffort(models, model, item.effort, harness !== "windlass"));
@@ -1835,7 +1836,7 @@ export const user = actor({
 			requireService(c);
 			return sizesOf(c, await getLayer()).map(size => size.id);
 		},
-		internalHostedProviders: (c) => { requireServiceFor(c, "call"); return savedProviders(c.db); },
+		internalHostedProviders: (c) => { requireServiceFor(c, "call"); return providerStatuses(c.db); },
 		internalDailyTokenWait: (c) => { requireServiceFor(c, "call"); return accountTokenWait(c); },
 		internalRecordTurnTokens: async (c, input: { sessionId: string; receipt: TokenReceipt }) => {
 			requireServiceFor(c, "call");

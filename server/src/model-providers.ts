@@ -141,10 +141,14 @@ export function savedModelKeys(db: DefaultsDb) {
 	return db.execute<{ provider: ModelProvider; generation: string }>("SELECT provider, generation FROM model_provider ORDER BY provider");
 }
 
+export async function providerStatuses(db: DefaultsDb): Promise<ModelProviderStatus[]> {
+	return (await db.execute<StatusRow>(`SELECT ${STATUS_COLUMNS} FROM model_provider ORDER BY provider`)).map(status);
+}
+
 export const modelProviderActions = {
 	async modelProviders(c: Context): Promise<ModelProviderStatus[]> {
 		requireUser(c);
-		return (await c.db.execute<StatusRow>(`SELECT ${STATUS_COLUMNS} FROM model_provider ORDER BY provider`)).map(status);
+		return providerStatuses(c.db);
 	},
 	async saveModelProvider(c: Context, input: { provider: ModelProvider; key: string }): Promise<ModelProviderCheck> {
 		const { uid } = requireUser(c);

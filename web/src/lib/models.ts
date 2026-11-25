@@ -5,6 +5,7 @@
  * the platform's stand-in where not; the server says which, and the words here only repeat it.
  */
 import type { HarnessId, MachineSummary, ModelChoice, ModelList, SessionMode } from "@contract";
+import { hostedCatalog, type CheckedProvider } from "../../../server/src/sandbox/harnesses.js";
 import { localTime } from "./format";
 
 /** The ids of the list's models, in its order; none while the list is not known. */
@@ -58,15 +59,13 @@ export interface ReportedOptions {
 }
 
 /**
- * The models and modes another harness offers on a machine before an agent of it runs there, as the
- * machine's runner reported them in its catalog. The server holds a launch's
- * model against that same report, so no other list is offered: a model an earlier agent listed may
- * not be one the server takes yet. Null where there is none: the harness starts on its own default.
+ * Launch options come from the runner on a machine and the owner's checked provider keys when hosted.
+ * Without a catalog the agent starts on its own default.
  */
-export function harnessOptions(machine: MachineSummary | null, harness: HarnessId, catalog?: ReportedOptions): { models: ModelList | null; modes: SessionMode[] | null } {
-	if (machine === null || harness === "windlass") return { models: null, modes: null };
-	const entry = machine.harnesses?.find(entry => entry.id === harness);
-	const reported = catalog ?? entry?.options;
+export function harnessOptions(machine: MachineSummary | null, harness: HarnessId, catalog?: ReportedOptions, providers?: readonly CheckedProvider[] | null): { models: ModelList | null; modes: SessionMode[] | null } {
+	if (harness === "windlass") return { models: null, modes: null };
+	const entry = machine?.harnesses?.find(entry => entry.id === harness);
+	const reported = machine ? catalog ?? entry?.options : hostedCatalog(harness, providers ?? []);
 	const modes = reported?.modes && reported.modes.length > 0 ? reported.modes : null;
 	const first = reported?.models?.[0];
 	if (!reported?.models || first === undefined) return { models: null, modes };

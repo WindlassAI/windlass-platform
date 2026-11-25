@@ -423,8 +423,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			? null
 			: `Your last agent was ${HARNESS_NAMES[started.harness]}, which ${chosenMachine ? `“${machineLabel(chosenMachine)}” does not offer now` : "is unavailable here"}, so this one is ${HARNESS_NAMES[harness]}.`;
 	const catalogs = { codex: useCatalog(chosenMachine, "codex"), claude: useCatalog(chosenMachine, "claude"), opencode: useCatalog(chosenMachine, "opencode") };
-	const selectedCatalog = harness === "windlass" ? null : catalogs[harness];
-	const options = harnessOptions(chosenMachine, harness, selectedCatalog?.options);
+	const optionsFor = (id: HarnessId) => harnessOptions(chosenMachine, id, id === "windlass" ? undefined : catalogs[id].options, keys);
+	const options = optionsFor(harness);
 	const lastOf = last.of[harness] ?? null;
 
 	// ---- the sandbox, the model and effort, the mode ------------------------------------------
@@ -468,7 +468,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const checkingKeys = !chosenMachine && wantedHarness !== "windlass" && keys === null;
 	const reading = checkingKeys || (item
 		? info === null || (items === null && repositoryId === undefined) || (sessions === null && repositoryId === undefined && newestItem === null) || repoReading || saved.reading || accountReading || (machinesReading && !!policy?.place && policy.place !== "hosted")
-		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || !!selectedCatalog?.reading || (machinesReading && wantedMachine !== null));
+		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || (harness !== "windlass" && catalogs[harness].reading) || (machinesReading && wantedMachine !== null));
 	const canCreate = !item && !reading && profile !== null && !repoInvalid && busy === null;
 	const task = prompt.trim();
 	const maxChars = item ? MAX_ITEM_BODY_CHARS : MAX_PROMPT_CHARS;
@@ -911,12 +911,13 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		},
 		...(!chosenMachine ? (["claude", "codex", "opencode"] as const).map(id => {
 			const name = HARNESS_NAMES[id], problem = hostedProblem(id);
-			return { id, label: name, note: "hosted", items: [{ id: id + ":default", label: name, icon: <AgentGlyph harness={name} />,
+			const rows = problem ? [] : modelRows(id, optionsFor(id).models);
+			return { id, label: name, note: "hosted", items: rows.length ? rows : [{ id: id + ":default", label: name, icon: <AgentGlyph harness={name} />,
 				description: problem ?? "Use your Settings key", disabled: !!problem, checked: harness === id, onSelect: () => setHarness(id) }] };
 		}) : []),
 		...(chosenMachine && offersOther
 			? harnessesHere(chosenMachine).map((offered) => {
-					const options = harnessOptions(chosenMachine, offered.id, catalogs[offered.id].options);
+					const options = optionsFor(offered.id);
 					const name = HARNESS_NAMES[offered.id];
 					const rows = modelRows(offered.id, options.models);
 					return {

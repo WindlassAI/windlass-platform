@@ -1124,12 +1124,13 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 	const hosted = choosePlacement(task({ harness: "claude" }), { preferred: { kind: "hosted" }, alternatives: [] }, { machines: [], hostedProfiles: ["docker-hardened"] });
 	assert.match(String(hosted.refused), /Add an Anthropic key in Settings to run Claude Code here/);
 	const keyed = choosePlacement(task({ harness: "claude" }), { preferred: { kind: "hosted" }, alternatives: [] },
-		{ machines: [], hostedProfiles: ["e2b-open"], keyProfiles: ["e2b-open"], hostedKeys: ["anthropic"] });
+		{ machines: [], hostedProfiles: ["e2b-open"], keyProfiles: ["e2b-open"], hostedKeys: [{ provider: "anthropic", checkedAt: null }] });
 	assert.equal(keyed.decision?.harness, "claude");
 	assert.equal(keyed.decision?.profile, "e2b-open");
 	const hostedRoute = { preferred: { kind: "hosted" as const }, alternatives: [] };
 	const inventory = { machines: plannerMachines([agentMac()]), hostedProfiles: ["e2b-open" as const],
-		keyProfiles: ["e2b-open" as const], hostedKeys: ["anthropic" as const], models };
+		keyProfiles: ["e2b-open" as const], hostedKeys: [{ provider: "anthropic" as const, checkedAt: 1, models: ["claude-haiku-5-5"] }], models };
+	assert.equal(choosePlacement(task({ harness: "claude", model: "haiku" }), hostedRoute, inventory).decision?.place.kind, "hosted");
 	const withModel = task({ harness: "claude", model: "sonnet" });
 	assert.match(String(choosePlacement(withModel, hostedRoute, inventory).refused), /model is not offered/);
 	const withScreenshots = { ...task({ harness: "claude" }), needs: { screenshots: true } };

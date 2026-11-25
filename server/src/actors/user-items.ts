@@ -29,7 +29,7 @@ import { accountFor, accountKey, loginGeneration, limitedAccounts, providerAccou
 import { choosePlacement, machineSlots, placeKey, type AgentModels, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, HarnessId, HostedSize, ItemFeed, ModelProvider, PlanSubtask } from "../contract.js";
-import { savedProviders } from "../model-providers.js";
+import { providerStatuses, savedProviders } from "../model-providers.js";
 import { harnessName, itemHarnessProblem, itemProfiles, knownHarness } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch, subtaskBranch } from "../github/feature.js";
@@ -998,7 +998,7 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 	// Where a fresh post-setup snapshot of the child's repository is: a bonus among the places the route allows.
 	const fresh = repositoryId === undefined ? [] : await snapshotPlaces(c.db, setupProjectKey(repositoryId) ?? "", c.vars.github?.connectedAt).catch(() => []);
 	const hostedSizes = hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(size => size.id);
-	const hostedKeys = await savedProviders(c.db);
+	const hostedKeys = await providerStatuses(c.db);
 	const inventory: PlacementInventory = { hostedKeys, keyProfiles: profiles.filter(p => p.available && p.platformKeys).map(p => p.id), dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(), ...(hostedSizes.length > 1 && { hostedSizes }),
 		featureModel, ...((task.agent?.model !== undefined || task.agent?.effort !== undefined) && { models: await agentModels() }), ...(fresh.length && { snapshotPlaces: fresh }) };
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
