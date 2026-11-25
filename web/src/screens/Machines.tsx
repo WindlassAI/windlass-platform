@@ -4,7 +4,7 @@ import { hasReason } from "../api/client";
 import { CopyButton } from "../components/Copy";
 import { Command } from "../components/Command";
 import { Dialog } from "../components/Dialog";
-import { ArrowLeftIcon, CheckIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, PencilIcon, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
+import { CheckIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, PencilIcon, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
 import { RowsSkeleton } from "../components/Skeleton";
 import { SandboxState } from "../components/Status";
 import { HARNESS_NAMES, loginCommand, signInWords, type ReportedHarness } from "../lib/acp";
@@ -21,23 +21,6 @@ import { AgentGlyph } from "../components/ui/Pill";
 import { readTwice } from "../lib/retry";
 
 export { clockTime };
-
-export function MachinesCrumb() {
-	return (
-		<nav className="crumb" aria-label="Where you are">
-			<a className="crumb-back" {...linkProps({ name: "home" })}>
-				<ArrowLeftIcon size={14} />
-				<span>Agents</span>
-			</a>
-			<span className="crumb-sep" aria-hidden="true">
-				/
-			</span>
-			<span className="crumb-title" aria-current="page">
-				Machines
-			</span>
-		</nav>
-	);
-}
 
 /** The command that starts the runner on a machine, as `MachinesInfo` describes it; null while no runner image is published. */
 function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode?: boolean; codex?: boolean; windlassSandbox?: boolean } = {}, setup?: { importKeys: boolean }): string | null {

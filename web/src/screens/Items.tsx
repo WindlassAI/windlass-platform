@@ -63,13 +63,14 @@ const listOf = (feed: ItemFeed): ItemSummary[] => [...feed.open, ...feed.ended];
  * items (`PlatformInfo.items`), and while its information loads.
  */
 export function useItems(enabled = true): ItemsState {
-	const { client, explain } = useApp();
-	const auth = useAuth();
+	// Read once for the whole app, so it is also called where no one is signed in: it asks nothing then.
+	const { client, explain, auth } = useApp();
 	const [state, setState] = useState<{ list: ItemSummary[] | null; feed: ItemFeed | null; error: string | null }>({ list: null, feed: null, error: null });
 	const asked = useRef(0);
 
 	const reload = useCallback(() => {
 		const mine = ++asked.current;
+		if (!auth) return;
 		setState((now) => ({ ...now, error: null }));
 		client
 			.user(auth)
@@ -81,7 +82,8 @@ export function useItems(enabled = true): ItemsState {
 	}, [client, auth, explain]);
 
 	useEffect(() => {
-		if (!enabled) return;
+		if (!auth) setState({ list: null, feed: null, error: null });
+		if (!enabled || !auth) return;
 		reload();
 		let connected = false;
 		const close = client.user(auth).watch({

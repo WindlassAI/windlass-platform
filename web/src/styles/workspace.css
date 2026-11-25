@@ -501,6 +501,17 @@
 	position: relative;
 	min-width: 0;
 }
+/* The Factory's rail has no search: its name stands at its top, the fold beside it. */
+.factory-rail-top {
+	justify-content: space-between;
+}
+.factory-rail-label {
+	margin: 0;
+	padding-left: 8px;
+}
+.ws-folded .factory {
+	padding-top: 56px;
+}
 .ws-unfold {
 	position: absolute;
 	top: 14px;

@@ -99,8 +99,15 @@ function write(text: string, into: HTMLTextAreaElement = field()): void {
 	});
 }
 
-/** Opens a filter's menu ("repo", "from") and chooses one of its choices, by its words. */
+/** Chooses a repository in the rail ("all": Everything), or opens the "from" filter's menu and chooses one of its choices, by its words. */
 async function filter(label: string, choice: string): Promise<void> {
+	if (label === "repo") {
+		const name = choice === "all" ? "Everything" : choice.slice(choice.indexOf("/") + 1);
+		const row = [...host.querySelectorAll<HTMLAnchorElement>('nav.ws-rail[aria-label="Repositories"] a.ws-rail-row')].find((candidate) => candidate.querySelector(".ws-rail-name")?.textContent === name) as HTMLAnchorElement;
+		await act(async () => row.click());
+		await settle(4);
+		return;
+	}
 	act(() => (host.querySelector(`.factory-filters [data-picker="${label === "repo" ? "repository" : label}"]`) as HTMLButtonElement).click());
 	const option = [...(pop()?.querySelectorAll('[role="menuitemradio"]') ?? [])].find((candidate) => candidate.querySelector(".ui-item-label")?.textContent === choice) as HTMLElement;
 	await act(async () => option.click());
@@ -517,5 +524,58 @@ describe("the Factory page's board", () => {
 		const feature = [...host.querySelectorAll(".board-card")].find((card) => card.querySelector(".board-part-asks"));
 		expect(feature?.closest(".board-tray")).not.toBeNull();
 		expect(feature?.querySelector(".board-card-action")?.textContent).toBe("Answer");
+	});
+
+	it("draws an empty column as a slim strip and gives the width to the columns with cards", async () => {
+		await show("/factory?repository=7101", { items: "many" });
+		await settle(2);
+		const slim = [...host.querySelectorAll(".board-column-slim")];
+		const full = [...host.querySelectorAll(".board-pipeline > .board-column:not(.board-column-slim)")];
+		expect(full.length).toBeGreaterThan(0);
+		for (const column of slim) {
+			expect(column.querySelector(".board-column-count")?.textContent).toBe("0");
+			expect(column.querySelector("ul")).toBeNull();
+		}
+		const tracks = (host.querySelector(".board-pipeline") as HTMLElement).style.gridTemplateColumns.split(/ (?![^(]*\))/);
+		expect(tracks.filter((track) => track === "44px").length).toBe(slim.length);
+	});
+});
+
+describe("the Factory's rail and the way back", () => {
+	it("lists each repository with what needs you and what is in progress", async () => {
+		await show("/factory");
+		const all = await listed();
+		const row = [...host.querySelectorAll('nav.ws-rail a.ws-rail-row')].find((link) => link.querySelector(".ws-rail-name")?.textContent === "harbor") as HTMLAnchorElement;
+		const needs = all.filter((item) => item.repository.id === 7101 && item.question !== null).length;
+		expect(row.getAttribute("href")).toBe("/factory?repository=7101");
+		expect(Number(row.querySelector(".ws-badge-needs")?.textContent ?? 0)).toBe(needs);
+		expect(host.querySelector('nav.ws-rail a.ws-rail-row[aria-current="page"] .ws-rail-name')?.textContent).toBe("Everything");
+		// The rail stands for the repository filter; "from" stays a chip.
+		expect(host.querySelector('.factory-filters [data-picker="repository"]')).toBeNull();
+		expect(host.querySelector('.factory-filters [data-picker="from"]')).not.toBeNull();
+	});
+
+	it("opens an item from a filtered Factory with the Factory lit and a way back to that filter, and Back brings the ended ones back", async () => {
+		await show("/factory?repository=7101");
+		const fold = [...host.querySelectorAll("button")].find((one) => /^Show \d+ ended/.test(one.textContent ?? "")) as HTMLButtonElement;
+		act(() => fold.click());
+		await settle(2);
+		expect(host.textContent).toContain("Hide the ended ones");
+		const link = host.querySelector<HTMLAnchorElement>(".factory-group .item-row a[href^='/items/']") as HTMLAnchorElement;
+		await act(async () => link.click());
+		await settle();
+		expect(location.pathname).toMatch(/^\/items\//);
+		expect(tab("Factory")?.getAttribute("aria-current")).toBe("page");
+		expect(tab("Factory")?.textContent).toMatch(/need you$/);
+		const back = host.querySelector(".nav-back") as HTMLAnchorElement;
+		expect(back.textContent).toBe("Factory · harbor");
+		expect(back.getAttribute("href")).toBe("/factory?repository=7101");
+		expect([...host.querySelectorAll(".trail .trail-link")].map((crumb) => crumb.textContent)).toEqual(["Factory", "harbor"]);
+		expect(host.querySelector(".trail a[href='/factory?repository=7101']")).not.toBeNull();
+		await act(async () => back.click());
+		await new Promise((resolve) => window.addEventListener("popstate", resolve, { once: true }));
+		await settle();
+		expect(location.search).toBe("?repository=7101");
+		expect(host.textContent).toContain("Hide the ended ones");
 	});
 });

@@ -26,6 +26,7 @@ import { StrictMode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { keepScroll } from "./lib/router";
 import type { PlatformClient } from "./api/client";
 import { AppProvider } from "./state/app";
 import { relayGithubReturn } from "./state/github";
@@ -137,6 +138,8 @@ if (!docs && relayGithubReturn()) {
 	});
 } else createPlatformClient().then(
 	(client) => {
+		// Back and Forward bring back each page's scroll (lib/router.ts).
+		keepScroll();
 		root.render(
 			<StrictMode>
 				<AppProvider client={client}>

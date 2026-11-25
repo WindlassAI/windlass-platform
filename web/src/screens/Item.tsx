@@ -11,7 +11,7 @@ import { Menu, type MenuItem } from "../components/ui/Menu";
 import { Dialog } from "../components/Dialog";
 import { InlineMarkdown, Output } from "../components/Blocks";
 import { LongText } from "../components/Fold";
-import { ArrowLeftIcon, CheckIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
+import { CheckIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { ReviewBlocks } from "../components/ReviewBlocks";
 import { useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
 import { ItemNetwork } from "../components/ItemNetwork";
@@ -145,34 +145,6 @@ export function useItem(id: string, enabled = true): ItemPage {
 	}, [client, auth, id, reload, enabled]);
 
 	return { ...state, reload, replace };
-}
-
-export function ItemCrumb({ view }: { view: ItemView | null }) {
-	const repository = view?.repository ?? null;
-	return (
-		<nav className="crumb" aria-label="Where you are">
-			<a className="crumb-back" {...linkProps(repository ? { name: "repository", id: repository.id } : { name: "home" })}>
-				<ArrowLeftIcon size={14} />
-				<span>{repository ? `${repository.owner}/${repository.name}` : "Agents"}</span>
-			</a>
-			<span className="crumb-sep" aria-hidden="true">
-				/
-			</span>
-			{view?.parent ? (
-				<>
-					<a className="crumb-repo crumb-feature" {...linkProps({ name: "item", id: view.parent.itemId })} title={view.parent.title}>
-						{view.parent.title}
-					</a>
-					<span className="crumb-sep" aria-hidden="true">
-						/
-					</span>
-				</>
-			) : null}
-			<span className="crumb-title" aria-current="page">
-				{view?.title ?? "Work item"}
-			</span>
-		</nav>
-	);
 }
 
 /** `onConflict`: the server refused an action because the item moved on (`item_conflict`); the page reads it again. */
