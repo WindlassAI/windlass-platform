@@ -1,110 +1,9 @@
+// agentSession owns one sandbox and its turns, keyed by [uid, sessionId].
+// The active turn holds credentials in memory. The timeline queue commits redacted items
+// and runner receipts in order so reconnects resume after the last durable sequence.
 import { spareProfile, spareRecipe, type SpareRecipe, type SpareSetup } from "../runner/spare-recipe.js";
 import { refHead } from "../github/feature.js";
-/**
- * `agentSession`, key [uid, sessionId]: one agent, its sandbox, its timeline and its turns.
- *
- * Stored in SQLite: one row with the session's settings and state (`meta`), and the timeline, one row
- * per item, numbered by a dense `seq`. In memory only: the turn in progress, the items not written
- * yet, and the streaming deltas a client that connects mid-turn still needs (`pending`).
- *
- * Actions interleave at every `await`, so the rules are:
- *   - `meta`, the `seq` counter and "is a turn running" live in memory and change in synchronous steps;
- *   - every write to SQLite goes through one queue (`serial`), so rows land in the order they were made
- *     and a snapshot reads a timeline no write is in the middle of.
- *
- * A turn in progress can be talked to. Windlass may ask a question (a tool call that needs approval):
- * the question lives on the turn's own record in memory and nowhere else, so it cannot outlast the
- * turn, a sleep or a restart; `answer()` settles it, as does the platform when nobody answers in time.
- * `prompt()` during a turn steers it, and `stopCall()` stops one running tool call.
- *
- * Windlass has a second question, which it does not put itself: whether to start an MCP server the
- * project's own configuration names (server-question.ts). The sandbox layer asks Windlass what waits
- * before the turn's prompt goes, and the question is put to the user in the same place and settled by
- * the same `answer()`. A tool call's question comes first: a server's steps aside for it and is put
- * again afterwards. What became of it is a line in the timeline; Windlass has no event for it.
- *
- * An approval is remembered for the user beyond the sandbox Windlass keeps it in (server-approvals.ts):
- * the user's `user` actor holds it, for the session's project and exactly that definition. Before a
- * server's question is put, the session asks there, and a remembered approval starts the server
- * without the question, with one line that says so. What Windlass says of the project's servers is
- * kept with the session (`meta.servers`), for the side panel, where an approval is seen, given and
- * taken back (`servers`, `approveServer`, `forgetServer`).
- *
- * A session on a repository of the user's GitHub connection runs that repository's setup command, when
- * the user saved one (setup-command.ts): once in each new sandbox, after the clone and before Windlass
- * is started there. The session reads the command from the user's `user` actor at that moment and
- * from nowhere else, runs it through the sandbox layer (sandbox/setup.ts), and keeps the run in the
- * timeline: an item when it starts, its output as deltas, an item when it has ended. A run that did
- * not succeed does not fail the turn; the agent is told of it once, before its next prompt.
- *
- * Such a session is also handed the secrets the user saved for the repository (repo-secrets.ts). A
- * turn reads them from the user's `user` actor when it starts, sealed, opens them here, and holds the
- * values on its own record in memory (`ActiveTurn.secrets`): they go when the turn does, and are
- * never part of `meta`, the timeline or a log. The setup command gets all of them, Windlass those
- * the session's sandbox lets it keep to their scope, and every value is taken out of what the turn
- * leaves behind: the sandbox layer does it for what Windlass and the setup command say, and `append`
- * does it once more for every item the turn adds to the timeline, whoever wrote it. The copy of the
- * workspace's diff is treated the same, since a setup command may have written a value to a file.
- *
- * A sandbox nobody uses is suspended, and after longer removed (config.idleSuspendMs, idleDestroyMs),
- * by the actor's own durable schedule (`c.schedule`): it holds while the actor sleeps and across a
- * restart, and wakes the actor when it is due. The check never touches a turn in progress or one being
- * accepted, and a prompt waits for a suspend or removal under way, then resumes or recreates the sandbox.
- *
- * The agent can ask the platform to publish the session's work (agent-publish.ts): a tool the sandbox
- * layer offers it for a turn of a session on a repository of the GitHub connection, as a tool the
- * platform runs itself (Windlass's host tools). A request is the engine's call of that tool. The
- * session checks what it holds, asks the user in the place of a tool call's question unless the
- * session lets the agent publish unasked (`meta.publishUnasked`: chosen at launch, changed in the
- * panel, turned on by "Allow for this session"), publishes exactly as `publish()` does, to the
- * session's branch and pull request and nowhere else, and resolves with what the agent is told. What
- * became of it is a line in the timeline. The agent can also push the session's branch whenever it
- * wants, unasked, and have the base fetched to rebase onto (`agentPush`, `agentFetchBase`), in a
- * person's session and in a work item's, where `report` takes the place of `publish`. A sandbox
- * whose Windlass takes no host tools is from before them, which no sandbox the platform makes is:
- * a turn there fails with a sentence (`oldSandbox`), and is not worked around.
- *
- * The time a hosted sandbox runs is counted against its user's daily allowance, and the sandbox
- * is one of those the user keeps (usage.ts). The user's `user` actor decides both, so the session
- * asks there: before its sandbox is created or started it takes a hold of sandbox time, and with it
- * a place when it has no sandbox; while the sandbox runs it trades each hold for the next when it is
- * over; when the sandbox stops, by the session's doing or its own, it reports what ran. The stretch
- * being counted is in `meta.meter`, so it outlasts a sleep and a restart. When the allowance is used
- * up, a turn that runs is stopped at the end of its hold, with a line that says so, and its sandbox
- * is suspended with its files as they are.
- *
- * A prompt can come with the key of its submission (submissions.ts; docs/architecture.md, "A message sent twice"):
- * the session takes a key once. The keys of its newest messages are in `meta.submissions`, each with
- * what its prompt was answered, kept in the synchronous step that takes the message, so a prompt with
- * one of them is answered from there before anything is awaited and adds nothing; a prompt that is
- * still being decided has its later attempts wait for it (`SessionVars.attempts`).
- *
- * Codes of the UserErrors the contract's actions throw, besides those of auth.ts:
- *   session_not_found   the session was deleted, or never properly created
- *   empty_prompt, prompt_too_long, bad_effort, bad_model   `prompt()`: its input
- *   chatgpt_required    `prompt()`: the user has no ChatGPT sign-in
- *   too_many_running    `prompt()`: as many of the user's hosted sessions are busy as they may have (never for one on a machine of theirs)
- *   allowance_used      `prompt()`, `changes()`, `diff()`, `publish()`: too little of the user's sandbox time is left today for a turn or a paused sandbox to start
- *   too_many_sandboxes  `prompt()`: the session needs a sandbox and its user keeps as many as they may
- *   usage_unavailable   the same four: the user's sandbox time could not be checked, so nothing was started
- *   steer_unavailable   `prompt()`: a turn is in progress and cannot take the message now
- *   turn_running        `prompt()` during a push, or `stopCall()` when the session’s machine is not answering
- *   bad_idempotency_key, idempotency_key_reused   `prompt()`: its key is no key, or came with another text before
- *   bad_answer, note_too_long   `answer()`: its input
- *   no_question         `answer()`: that question is not pending (any more)
- *   bad_choice          `answer()`: the question does not offer that choice
- *   bad_call            `stopCall()`: its input
- *   no_turn             `stopCall()`: no turn is running
- *   sandbox_error, internal_error   a failure of the sandbox layer, with or without a sentence for the user
- *   publish_blocked, github_gone, github_denied, publish_failed, bad_message   `publish()` (contract.ts)
- *   bad_input           `setPublishUnasked()`: its input (`publish_blocked` for a session without a connected repository)
- *   bad_server          `approveServer()`, `forgetServer()`: their input
- *   server_gone, server_changed   `approveServer()`: the session knows no such server, or it does not wait with that definition
- *   machine_unreachable `internalDestroy()` (the user's `deleteSession`): the machine's actor could not record the removal of the sandbox
- */
-
-import { canReuseSnapshot, canSaveSnapshot, DEFERRED_INPUTS, digest, snapshotGeneration, snapshotWriter, snapshotPrompt, type SnapshotRequest } from "../sandbox/snapshot-key.js";
-
+import { canReuseSnapshot, DEFERRED_INPUTS, digest, snapshotGeneration, snapshotWriter, type SnapshotRequest } from "../sandbox/snapshot-key.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError } from "rivetkit";
@@ -130,18 +29,14 @@ import {
 	pushRequest,
 	pushedForAgent,
 } from "../agent-publish.js";
-import { db, type RawAccess } from "rivetkit/db";
+import { db } from "rivetkit/db";
 import { assertOrigin, authenticate, clientError, describeError, isSandboxUserError, checkGeneration, disconnectRevoked, requireService, requireServiceFor } from "../auth.js";
 import { config, snapshotsFor } from "../config.js";
 import {
 	generatedSessionTitle,
 	isMachineIdName,
 	machineLabel,
-	type AcpUpdate,
-	type ModelList,
 	type LiveDelta,
-	type ItemReview,
-	type FeedbackEntry,
 	type ReviewRecord,
 	MAX_NOTE_CHARS,
 	MAX_PROMPT_CHARS,
@@ -156,19 +51,14 @@ import {
 	type HostAllowed,
 	type PullRequestInfo,
 	type RepositoryCheck,
-	type SandboxPlace,
-	type SandboxProfileId,
 	type SessionServers,
 	type SessionSnapshot,
 	type SetRequestedSecretInput,
-	type SessionStatus,
 	type SessionSummary,
-	type StartTimes,
 	SETUP_OUTPUT_CHARS,
 	type TimelineItem,
 	type TurnOutcome,
 	type TurnUsage,
-	type UsageNumbers,
 	type Verified,
 	type WindlassEvent,
 	type WorkspaceFile,
@@ -189,49 +79,32 @@ import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY, isHostName } from "../sandbox/e2b/network.js";
 import { type PublishEvidence, BaseMergeConflict, updateBranchFromBase, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, problemOf, resolveBoundRepository, type StoredConnection } from "../github/repos.js";
-import { layerFor } from "../layer.js";
 import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
-import type { OutOfMemory, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnAnswer, TurnCheckpoint, TurnControl, TurnPersonalServer, TurnPublishRequest, TurnQuestion, TurnServer, TurnServerQuestion } from "../sandbox/api.js";
-import { RUNNER_SOCKET, MachineUnreachable, RunnerLink, machineActor } from "../sandbox/runner-layer.js";
-import type { ConversationRecord } from "../runner/channel.js";
-import { OutgoingJournal, forgetConversation, migrateJournal, readCheckpoint, readConversation, saveCheckpoint, saveReceived } from "../runner/journal.js";
+import type { OutOfMemory, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnCheckpoint, TurnPublishRequest } from "../sandbox/api.js";
+import { MachineUnreachable, machineActor } from "../sandbox/runner-layer.js";
+import { forgetConversation, migrateJournal, readCheckpoint, readConversation } from "../runner/journal.js";
 import { runSetupCommand, stopCutOffSetup, stopLeftoverSetup } from "../sandbox/setup.js";
 import { ACCOUNT_SECRET_PROJECT, type OpenedAccountSecret, accountSecretsFor, accountSecretsNote, turnEnvironment } from "../account-secrets.js";
 import { unaskedNote } from "../personal-servers.js";
 import { type CommandSandbox, NO_REDACTION, type OpenedSecret, type Redactor, SecretRedactor, SecretProblem, MAX_SECRET_REQUESTS, secretRequestLimit, validRequestedSecretName, cleanSecretValue, sealSecret, commandSandbox, openSecret, setupEnvironment } from "../repo-secrets.js";
-import { type KnownServer, type ServerApproval, knownServers, projectOf, sameServers, serversView } from "../server-approvals.js";
-import {
-	SERVER_START,
-	type ServerQuestionContext,
-	forgettingWords,
-	serverApprovedNote,
-	serverExpiredNote,
-	serverForgottenNote,
-	serverNotNowNote,
-	serverPanelApprovedNote,
-	serverPanelWords,
-	serverQuestionWords,
-	serverRecalledNote,
-	serverUnansweredNote,
-	unsetRemedy,
-} from "../server-question.js";
-import { OutputTail, type UnfinishedSetup, lastLines, setupNote, setupProjectOf } from "../setup-command.js";
+import { projectOf } from "../server-approvals.js";
+import { SERVER_START, type ServerQuestionContext, serverApprovedNote, serverForgottenNote, serverPanelApprovedNote, serverRecalledNote, unsetRemedy } from "../server-question.js";
+import { OutputTail, lastLines, setupProjectOf } from "../setup-command.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { VerificationLog, groupReviewPaths } from "../verified.js";
 import { serverSealer } from "../signin/seal.js";
 import { agentTurn, turnTokens } from "../factory/budget.js";
-import { cutTurnUsage, cutTurnUsageNote, reportedModelUsage, usesPlatformModel, type HoldReport, type OpenStretch, type PendingAsk, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, foundStoppedAt, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
+import { cutTurnUsage, cutTurnUsageNote, reportedModelUsage, usesPlatformModel, UNCHECKED_IDLE_NOTE, UNCHECKED_TURN_NOTE, USAGE_UNAVAILABLE, allowanceRefusal, closingReports, freedNote, foundStoppedAt, holdDeadline, hostedLimitsApply, idleSuspendedNote, sandboxRefusal, stoppedBy, stretchSeconds, turnStoppedNote } from "../usage.js";
 import { judgeChecks } from "../environments.js";
 import { outputExcerpt } from "../factory/check-environment.js";
 import { runBaseTests, type BaseTestResult, type NamedTests } from "../factory/base-tests.js";
 import { PlatformChecks } from "../sandbox/platform-checks.js";
-import { itemActor, modelKeyActor, grantIsValid, type EnvironmentBuildOrigin, type EnvironmentBuildReport, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
-import type { AgentAsk, AgentReport } from "../agent-publish.js";
+import { itemActor, modelKeyActor, grantIsValid, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
 import { REPORT_TAKEN, askPerson, requestSecret, secretRequestNotice } from "../agent-publish.js";
 import { RULES } from "../factory/blueprint.js";
 import { DATA_DIR } from "../sandbox/provider.js";
-import { planReviewOf, type PlanReview } from "../factory/autonomy.js";
+import { planReviewOf } from "../factory/autonomy.js";
 import { reviewerTask } from "../factory/reviewer-task.js";
 import { accountKey, type AccountLocation } from "./provider-accounts.js";
 import { resetTime, type LimitEvent, type UsageObservation } from "../provider-usage.js";
@@ -241,40 +114,36 @@ import { batchText, feedbackWords, fits, oversizedFeedback } from "../factory/fe
 import { recentSubject } from "../factory/intake.js";
 import { untrustedTurn, unmarkedNote, untrustedWords } from "../factory/untrusted.js";
 import { earlierContext, fileReport, fileReview, NO_REPO_SHOTS, ReviewCommands } from "../factory/review.js";
-import type { Fact, ItemProviderRefusal, UntrustedRefusal } from "../factory/types.js";
+import type { Fact } from "../factory/types.js";
 import { DeploymentFull, ENVIRONMENT_SLOT_WAIT, PLATFORM_RESTART, observeSandbox } from "../sandbox/api.js";
 import { remoteLease, type RemoteLease } from "../sandbox/relay-leases.js";
 import { StartClock, keepStartTimes, startTimesLog } from "../start-times.js";
-import { ACP_ITEM_LIMIT, boundedAcpItem, jsonPrefix } from "./acp-item.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason, SANDBOX_ESCAPE_REFUSED } from "../sandbox/codex-modes.js";
-import { windlassProvider, hostedKeyMessage, hostedProvider, selectedKey, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage, sessionCapabilities } from "../sandbox/harnesses.js";
+import { windlassProvider, hostedKeyMessage, hostedProvider, selectedKey, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { stepLimitNote } from "../sandbox/platform-steps.js";
-import { type HarnessId, capabilitiesOf, harnessOf } from "../sandbox/harness.js";
+import { capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import { privateSessionData } from "../sandbox/session-data.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase, sessionRepository } from "../github/publish.js";
 import { CRASHES_ALLOWED, type PauseReason, type TurnRun, type TurnCredential, addUsage, crashCount, pausedLine, resumePrompt, restartShellResult, resumedLine, segmentLimit, sessionWholeTask } from "./turn-resume.js";
 import { ConversationLost } from "../runner/channel.js";
 import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, itemTurnText, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, settleTokenReceipts, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
+import { persist, note, append, serial, writeItems, insertItems, keepDelta, acpRecorder, onWindlassEvent, writeMeta } from "./agent-session/timeline.js";
+import { orNull, RECALL_WAIT_MS, str, takeQuestion, duration, abortTurn, askQuestion, askServer, serverKey, ago, rememberServer, knowServers, sealTurn, sessionServers, serverApprovals, serversChanged } from "./agent-session/questions.js";
+import type { Ctx, SessionMeta, HeldSecrets, ActiveTurn, WorkspaceCopy, PublishAnswer, Asked, PromptAnswer, FeedbackPrompt, SessionVars } from "./agent-session/state.js";
+import { runnerLink, layerOf, machineOf, durableTurns, isRunnerSocket } from "./agent-session/runner.js";
+import { publish, repositoryOf, summaryOf, report } from "./agent-session/summary.js";
+import { restoreBackup, platformNotes, saveBackup, removeBackup } from "./agent-session/workspace.js";
 
-// ---------------------------------------------------------------------------------------------
-// Limits
-// ---------------------------------------------------------------------------------------------
+export { acpRecorder } from "./agent-session/timeline.js";
 
 const CLONE_TIMEOUT_MS = 3 * 60 * 1000;
 /** How long one turn may run before the platform stops it. WLP_TURN_TIMEOUT_MS overrides it. */
 const TURN_TIMEOUT_MS = config.turnTimeoutMs;
 const GIT_TIMEOUT_MS = 30 * 1000;
 const MAX_DIFF_CHARS = 400_000;
-/** Timeline rows per INSERT statement. */
-const WRITE_BATCH = 100;
-/** Items wait at most this long before they are written, or until this many have gathered. */
-const FLUSH_DELAY_MS = 400;
-const FLUSH_AT = 200;
-/** The most streaming deltas kept for late joiners; the oldest go first. */
-const MAX_PENDING = 5_000;
 /** How long a positive ChatGPT sign-in check is trusted before a prompt asks again. */
 const SIGNED_IN_FRESH_MS = 5 * 60 * 1000;
 /** How long shutdown waits for a stopped turn to wind down. */
@@ -284,30 +153,7 @@ const REPORT_WAIT_MS = 5_000;
 /** A slow machine actor may delay profile availability, but the session timeline must still open. */
 const PROFILE_WAIT_MS = 2_000;
 
-/**
- * Going to sleep has to be over before the server exits. On SIGTERM RivetKit drains every actor at
- * once and exits after SHUTDOWN_GRACE_MS (registry.ts), whether or not they are done. `onSleep` waits
- * for these, one after the other:
- *
- *   | Step                                           | Wait            | ms     |
- *   |------------------------------------------------|-----------------|--------|
- *   | stop the turn, which closes it in the timeline | STOP_WAIT_MS    | 10 000 |
- *   | save the timeline and the session              | (SQLite)        | small  |
- *   | suspend the sandbox                            | SUSPEND_WAIT_MS |  4 000 |
- *   | set the idle check, report the summary and     | SETTLE_WAIT_MS  |  2 000 |
- *   | what the sandbox ran of its hold               |                 |        |
- *   | save again                                     | (SQLite)        | small  |
- *
- *   STOP_WAIT_MS + SUSPEND_WAIT_MS + SETTLE_WAIT_MS + SLEEP_MARGIN_MS <= SHUTDOWN_GRACE_MS
- *
- * The margin is for the two saves and RivetKit's own work after `onSleep`. The session's own
- * `sleepGracePeriod` is longer and does not bind on shutdown. A suspend that is not done in time is
- * left to the provider: E2B pauses the sandbox at its own timeout, and Docker finishes the stop it
- * was asked for. The idle check and the report that do not finish are not needed: the check set
- * before stays until a new one is stored, and the next report brings the user's list up to date.
- * What the sandbox ran is kept with the session when it cannot be reported in time, and reported when
- * the session is next awake (`sendUnsettled`).
- */
+// Reserve shutdown time for both SQLite saves after the bounded waits.
 export const SHUTDOWN_GRACE_MS = 20_000;
 const SUSPEND_WAIT_MS = 4_000;
 const SETTLE_WAIT_MS = 2_000;
@@ -315,328 +161,12 @@ const SLEEP_MARGIN_MS = 4_000;
 if (STOP_WAIT_MS + SUSPEND_WAIT_MS + SETTLE_WAIT_MS + SLEEP_MARGIN_MS > SHUTDOWN_GRACE_MS) {
 	throw new Error("The waits of going to sleep add up to more than the shutdown grace period.");
 }
-/** How long a turn waits for the `user` actor to say whether a server's approval is remembered, before it asks the user instead. */
-const RECALL_WAIT_MS = 10_000;
 
 /** How long a setup run's output gathers before it is sent on, and how much of it makes it go at once. */
 const SETUP_FLUSH_MS = 120;
 const SETUP_FLUSH_CHARS = 8_000;
-
-const DELTA_TYPES = new Set(["text.delta", "reasoning.delta", "tool.input.delta", "tool.progress"]);
 const SIGN_IN_REMEDY = "Sign in with ChatGPT again, then send the prompt once more.";
 const WINDLASS_OUTCOMES: readonly TurnOutcome[] = ["succeeded", "unresolved", "failed", "stopped", "interrupted"];
-
-// ---------------------------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------------------------
-
-type FeedbackPrompt = { text: string; entries: FeedbackEntry[] };
-
-interface SessionMeta {
-	githubFeedback?: { pending?: FeedbackPrompt; seen: { id: string; at: number }[] };
-	secretRequest?: SessionSnapshot["secretRequest"];
-	/** Plain sessions have no item run. Count requests and remember skipped names across their turns. */
-	secretAsks?: number;
-	secretRefusalRun?: string;
-	declinedSecrets?: string[];
-	/** The current conversation has seen outside text, including turns on harnesses without a taint marker. */
-	secretRequestBlocked?: boolean;
-	size?: number;
-	/** A session that only builds the repository's prepared environment (user-environments.ts): one turn, no agent. */
-	environmentBuild?: EnvironmentBuildOrigin;
-	/** The validated environment the current sandbox started from (SessionSummary.environment); null once it has another. */
-	environment?: SessionSummary["environment"] | null;
-	/** Hosted, where the layer offers sizes: what its sandboxes are made in. A sandbox keeps its size; another is a new sandbox. */
-	hostedSize?: HostedSize;
-	/** The sandbox whose running out of memory a turn's end noted: its restart at the next connect is not asked about again. */
-	memoryNoted?: string;
-	uid: string;
-	sessionId: string;
-	demo: boolean;
-	title: string;
-	/** Set by a person at creation or rename. Absent on older sessions. */
-	titleIsTyped?: boolean;
-	place: SandboxPlace;
-	profile: SandboxProfileId;
-	model: string;
-	mode: string;
-	availableModes: SessionSummary["availableModes"];
-	/** The last few turns' start times (start-times.ts), oldest first. Absent on sessions that have had no turn since. */
-	startTimes?: StartTimes[];
-	repoUrl: string | null;
-	createdAt: number;
-	updatedAt: number;
-	status: SessionStatus;
-	turns: number;
-	lastOutcome: TurnOutcome | null;
-	/** The sandbox this session was given, kept when it turns out to be gone so the next turn can say so. */
-	sandboxId: string | null;
-	sandbox: "none" | "running" | "paused";
-	/**
-	 * The sandbox whose Windlass data directory is a volume of its own, as its provider said when it was
-	 * made (`SandboxHandle.ownData`): that data goes with it. Another id, or none, is a sandbox whose data
-	 * is the user's shared volume.
-	 */
-	ownDataSandbox?: string | null;
-	/**
-	 * Why the session's sandbox hands the account's secrets to no MCP server, or to some only, as its
-	 * last turn found it (account-secrets.ts, `accountSecretsNote`); null where it hands them all over.
-	 * Said in the panel beside the user's own servers.
-	 */
-	accountSecrets?: string | null;
-	/** Whether `repoUrl` has been cloned into the current sandbox. */
-	cloned: boolean;
-	/** The agent this session runs. Absent means Windlass. */
-	harness?: HarnessId;
-	harnessModels?: ModelList | null;
-	/** The harness's own conversation id, kept across turns. */
-	windlassSessionId: string | null;
-	/** True for a conversation opened with the feature summary's tool list. */
-	summaryConversation?: true;
-	turnStartedAt: number | null;
-	/** When this session was created, last ran a turn, or last used its workspace. */
-	lastUsedAt: number;
-	/** The idle check the durable schedule holds: its id, and when it fires. */
-	idleCheck?: { id: string; at: number } | null;
-	/** The last turn ended on an approval nobody answered in a hosted sandbox: the sandbox pauses at once, not after the idle time. */
-	pauseNow?: true;
-	/** Set when the session was launched on a repository of the user's GitHub connection (`repoUrl` is its address). */
-	repo?: StoredRepository | null;
-	/** The branch the platform pushes the session's work to: named when it first pushes, and kept. */
-	publishBranch?: string;
-	/**
-	 * The commit the session's branch at GitHub is at, as far as the session knows: its last push, or
-	 * what a new sandbox's clone found there (someone else's commit, maybe). What "nothing new" is told by.
-	 */
-	pushedHead?: string | null;
-	/**
-	 * The commit the platform itself last pushed to that branch, by any of its pushes. The only commit a
-	 * push of the agent's, or of an item's step, may replace when the branch was rebased (github/git.ts
-	 * `pushScript`'s lease): never one someone else pushed. Absent for a session from before it was kept.
-	 */
-	platformPushed?: string | null;
-	/** Whether the workspace had commits GitHub lacks when it was last asked, and what that answer was for (`unpushedWork`). */
-	unpushed?: { key: string; value: boolean } | null;
-	/** The session's pull request, as GitHub last described it. */
-	pull?: PullRequestInfo | null;
-	/** What the session's work rests on since its last turn ended (verified.ts): what a pull request's description is given. */
-	verified?: Verified | null;
-	/**
-	 * Whether the agent may have the platform publish without the user being asked each time
-	 * (`SessionSummary.publishUnasked`). Absent or false: each request is put to the user.
-	 */
-	publishUnasked?: boolean;
-	/**
-	 * The copy of Windlass's session that is kept outside the sandbox, where sessions live in the sandbox
-	 * and a bucket is configured (sandbox/backup.ts): which Windlass session it is of, the archive's size
-	 * and hash, which a restore is checked against, and the turn it was saved after. Null or absent: none.
-	 */
-	backup?: { windlassSessionId: string; size: number; sha256: string; at: number; turn: number } | null;
-	/** The last turn that may have changed Windlass's session. The copy is behind while its `turn` is lower. */
-	memoryTurn?: number;
-	/** Set once the session's data was too large to copy and the timeline said so: nothing is packed again while the limit is no higher. */
-	backupStopped?: { size: number; limit: number } | null;
-	/** Windlass's memory was restored into a new sandbox, and it has not yet been told that the workspace is a fresh one. */
-	freshWorkspace?: boolean;
-	/** The timeline said once that text from someone else went to this session's agent as labelled text only (factory/untrusted.ts). */
-	untrustedUnmarkedNoted?: boolean;
-	/** Windlass said this session's conversation holds untrusted content (`taint.noticed`), and has not cleared it since. */
-	tainted?: boolean;
-	/**
-	 * The MCP servers the project's configuration names, as Windlass last described them to a turn of this
-	 * session (server-approvals.ts). Absent or empty: it named none, or no turn has asked yet.
-	 */
-	servers?: KnownServer[];
-	/** When `servers`, or what is remembered of their approvals through this session, last changed. */
-	serversChangedAt: number;
-	/**
-	 * Set when the repository was cloned into the current sandbox and its setup command has not been run
-	 * there: the clone's directory, relative to the workspace. Sessions cloned before there were setup
-	 * commands have none: a sandbox the agent has worked in is not set up after the fact.
-	 */
-	setupDue?: string | null;
-	/**
-	 * The hosts the network list of the session's repository allowed when a turn last read it, and any
-	 * allowed from here since (repository-network.ts): every connect to a hosted sandbox adds them to the
-	 * deployment's. Absent: none.
-	 */
-	networkHosts?: string[];
-	/** The blocked hosts the timeline named for the sandbox it has now: each is named once per sandbox (`noteBlockedHosts`). */
-	hostsNoted?: string[];
-	/** Lifetime totals and a monotone receipt for the item actor. */
-	blocked?: { revision: number; network: BlockedNetwork };
-	snapshotCommit?: string | null;
-	cloneDirectory?: string;
-	/** A cross-repo feature's planning turn put its other repositories' trees in the workspace (`planningInputs`). */
-	planningInputs?: true;
-	/** The setup run in progress, as its starting item has it. Still set when the actor wakes: the run was cut off with its server. */
-	setupRunning?: { id: string; command: string; limitMs: number } | null;
-	/** A setup run in the current sandbox that did not succeed, of which the agent has not been told yet. */
-	setupUnfinished?: UnfinishedSetup | null;
-	/**
-	 * Set when a sandbox made in place of a lost one was cloned for a session that had pushed: the clone
-	 * is on the base, where the setup command runs, and is to be put on the session's `branch` at the
-	 * commit GitHub had (`at`) only after it (`putWorkspaceOnWork`), in the clone's `directory`. Kept until
-	 * that is done, so a turn cut off in between does not run the setup on the branch next time.
-	 */
-	workDue?: { branch: string; at?: string; directory: string; setupBase?: string; setUp?: boolean } | null;
-	/** The workspace was put on the session's branch after a setup run on the base, and the agent has not been told that its branch's dependencies were not installed by it. */
-	setupOnBase?: { branch: string; base: string } | null;
-	/**
-	 * The stretch of the sandbox running that is being counted (usage.ts): the hold the session has of
-	 * its user's sandbox time, and since when it runs. Null or absent while the sandbox does not run.
-	 */
-	meter?: OpenStretch | null;
-	/** What the sandbox ran of holds that the user's actor has not been told yet: told again when the session is next awake. */
-	unsettled?: HoldReport[];
-	/**
-	 * The hold asked for last, stored before it was asked for, until its answer comes (usage.ts,
-	 * `PendingAsk`): an answer that was lost, before a sleep or not, does not leave a hold nobody settles.
-	 */
-	meterAsked?: PendingAsk | null;
-	/**
-	 * The messages that were taken with a key (submissions.ts), the newest MAX_REMEMBERED_SUBMISSIONS:
-	 * the key, the digest of the text it came with, and what the prompt was answered. A prompt that
-	 * comes with one of these keys is that message again: it is answered from here and adds nothing.
-	 * A key older than these is forgotten, and a prompt with it is a new message. Absent in a session
-	 * no message came to with a key.
-	 */
-	submissions?: Array<Submission & PromptAnswer>;
-	/** Set for a work item's session: its turns come from the item's deliveries (session-inbox.ts), and no person prompts it. Absent: a person's. */
-	origin?: SessionCreateInput["origin"];
-	review?: ItemReview;
-	reviewBase?: string;
-	/** The run that owns this checkout. Late cleanup for an earlier run cannot free it. */
-	reviewRun?: number;
-	/** For a session on one of the user's machines: the machine's name at launch. */
-	machineName: string | null;
-	/** What the item's agent last filed with `report`: the pull request's title and description. */
-	report?: (AgentReport & { run: number }) | null;
-	/**
-	 * With WLP_TURN_RESUME, the running turn's own record (turn-resume.ts): what pausing and resuming it
-	 * needs. Set when a turn is accepted, removed when it ends. `paused` in it, with status "paused": the
-	 * turn waits to resume.
-	 */
-	run?: TurnRun | null;
-}
-
-/** What `prompt()` answers: the turn the message is in, and whether it was steered into one that ran. */
-type PromptAnswer = { turn: number; steered: boolean };
-
-/** A question put to the user: the copy the clients see, and the ways to settle the layer's promise. */
-interface Asked {
-	pending: PendingQuestion;
-	/** Declines it for the platform when nobody answers. Unset while a server's question stands aside. */
-	timer: ReturnType<typeof setTimeout> | undefined;
-	/** Each settles the promise the layer waits on; only the first call of either does anything. */
-	answer(answer: TurnAnswer): void;
-	decline(note?: string): void;
-	/** A question about a project's server only: shows it, the first time and again after it stood aside, with a new time to answer in. */
-	put?(): void;
-	/** A question about a project's server only: the definition it is about. */
-	server?: { name: string; fingerprint: string };
-}
-
-/** How a question about a request of the agent's to publish ended. */
-type PublishAnswer =
-	| { kind: "allowed"; how: "once" | "session" }
-	/** `note` is what the user wrote for the agent. */
-	| { kind: "declined"; note?: string }
-	| { kind: "expired" }
-	/** The call or the turn ended before anyone answered. */
-	| { kind: "withdrawn" };
-
-interface ActiveTurn {
-	credential?: TurnCredential;
-	untrusted?: string[];
-	/** The turn is being stopped so that it pauses instead of ending (`pauseTurn`): its server is going away, or its machine went. */
-	pausing?: PauseReason;
-	/** A segment that resumes a paused turn (`resumePaused`): why it paused, for how long, and what the person sent meanwhile. */
-	resume?: { reason: PauseReason; pausedMs: number; held: string[] };
-	finishNetwork?: () => Promise<void>;
-	/** What the turn would need to be taken up again by a restarted server (`RunTurnInput.onCheckpoint`), read with each timeline write. */
-	checkpoint?: () => TurnCheckpoint | null;
-	/** A turn a restarted server takes up: its process goes on (`RunTurnInput.reattach`). */
-	reattach?: TurnCheckpoint;
-	planMode?: boolean;
-	openAcp?: () => NewItem | null;
-	/** A user choice queued for the next prompt takes precedence over this turn’s ACP updates. */
-	modeQueued?: boolean;
-	number: number;
-	effort: string | null;
-	controller: AbortController;
-	done: Promise<void>;
-	/** The layer's handle for steering the turn and stopping one call; null until Windlass has started it. */
-	control: TurnControl | null;
-	/** The question the turn waits on. It is held here and nowhere else: when the turn goes, so does it. */
-	question: Asked | null;
-	/** The questions of this turn whose promise the layer may still be waiting on. */
-	unsettled: Set<Asked>;
-	/**
-	 * Questions about the project's servers that are open and not shown: one that stepped aside for a
-	 * tool call's question, or one that came while another was shown. Put again, oldest first, when
-	 * `question` is free.
-	 */
-	aside: Asked[];
-	/**
-	 * The definitions (`<name>:<fingerprint>`) this turn had Windlass start from the user's remembered
-	 * approval, without putting the question, each with that approval: the line about it says so.
-	 */
-	recalled: Map<string, ServerApproval>;
-	/** True once the turn is being stopped: no question is put any more. */
-	stopping: boolean;
-	/** True once the turn is being closed: nothing of it can be steered, stopped or answered any more. */
-	closed: boolean;
-	/**
-	 * The secrets of the session's repository and of its user's account, with their values, and the
-	 * user's own MCP servers, for this turn. Held here and nowhere else: not in `meta`, not in SQLite.
-	 * Null until they were read.
-	 */
-	secrets: HeldSecrets | null;
-	/** What Windlass's events say of this turn's checks (verified.ts). */
-	checks: VerificationLog;
-	/** True once the platform published or pushed for the agent in this turn: what it pushed had not been through the turn's checks. */
-	published?: boolean;
-	/** The agent's requests to publish or push that are being handled: the turn does not close under a push. */
-	publishes: Set<Promise<string>>;
-	/** True once the turn was stopped because its user's sandbox time for the day is used up: its sandbox is suspended when it has closed. */
-	outOfTime?: boolean;
-	/**
-	 * Set for a turn taken from the inbox: its row, with the slot the user's turn queue gave it; what the
-	 * agent reported in it; and, when the sandbox layer refused to start a sandbox because the
-	 * deployment's are all in use, that cap: the delivery then waits again instead of ending.
-	 * `pushedAtStart` is the commit the platform had last pushed when the turn was taken: one the agent
-	 * pushed itself since counts as a change of this turn's, whatever the workspace says at its end.
-	 */
-	item?: { row: InboxRow & { slot: string }; report: AgentReport | null; /** The question the agent asked its person in this turn (`ask_person`): at most one. */ asked?: AgentAsk | null; full: number | null; machineAway?: MachineUnreachable["reason"]; withdrawn?: boolean; started: boolean; /** A cross-repo feature's planning turn: its other repositories' trees are in place (`planningInputs`). */ crossRepoPlan?: boolean; planReview?: PlanReview; said?: string; pushedAtStart: string | null; policyRefusal?: true; refused?: string | null; /** With `refused`: someone else's text on "Docker, hardened" (factory/untrusted.ts). */ untrustedRefusal?: UntrustedRefusal; providerRefusal?: ItemProviderRefusal; /** Codex asked to leave its sandbox, and the turn was stopped: the platform's note. */ escaped?: string; /** The turn's sandbox could not be prepared (`openSandbox` threw): what went wrong. */ sandboxFailed?: string; /** Its sandbox ran out of memory in or before this turn. */ outOfMemory?: OutOfMemory };
-}
-
-/**
- * What a turn holds of what its user saved: the repository's secrets with their values, the
- * account's secrets with theirs, the user's own MCP servers, and what takes every one of those
- * values out of text.
- */
-interface HeldSecrets {
-	requestedNames?: string[];
-	/** Read before the turn had a number (the prompt's own row is redacted with them): what could not be opened, for the turn to tell once. */
-	unopened: string[];
-	snapshotSetup?: SealedSecrets["snapshotSetup"];
-	environment?: SealedSecrets["environment"];
-	screenshots: boolean;
-	/** The repository's; none for a session that is not on a repository of the GitHub connection. */
-	opened: OpenedSecret[];
-	/** The account's, all of them: one whose name a secret of the repository has is not handed over (account-secrets.ts). */
-	account: OpenedAccountSecret[];
-	/** The user's own MCP servers, as Windlass's configuration takes them. */
-	servers: TurnPersonalServer[];
-	/** The checks the user saved for the session's repository (repository-checks.ts); none for a session that is not on one. */
-	checks: RepositoryCheck[];
-	/** The hosts its repository's network list allows (repository-network.ts); absent when the user's actor did not say. */
-	network?: string[];
-	/** When they were asked for: a host allowed from the session after this is not in them (`SessionVars.hostsAllowed`). */
-	networkAt?: number;
-	redactor: Redactor;
-}
 
 /** Agent-session sockets can outlive a browser login and can be served on a different host. */
 async function sessionCaller(c: { key: string[]; client(): unknown }, params: unknown) {
@@ -660,131 +190,6 @@ async function maySubscribe(c: Parameters<typeof requireSessionUser>[0]): Promis
 		return false;
 	}
 }
-
-interface SessionVars {
-	savingSecret?: boolean;
-	/** Null for an actor that `user` did not create: it rejects everything and removes itself. */
-	meta: SessionMeta | null;
-	/** A build session's result, once its setup and checks ran (`buildEnvironment`); reported when its turn has closed. */
-	environmentResult?: EnvironmentBuildReport;
-	nextSeq: number;
-	/** Timeline items not yet in SQLite, in `seq` order. */
-	unwritten: TimelineItem[];
-	flushTimer: ReturnType<typeof setTimeout> | null;
-	/** True while a write of the waiting items is queued and has not started. */
-	flushQueued: boolean;
-	/** The tail of the write queue. */
-	serial: Promise<unknown>;
-	pending: LiveDelta[];
-	turn: ActiveTurn | null;
-	/** True while `prompt` is deciding, so a second prompt cannot slip in between its awaits. */
-	accepting: boolean;
-	/** The prompts with a key that are being decided: another attempt of one of them ends as it does (submissions.ts). */
-	attempts: Attempts<PromptAnswer>;
-	/** Admission of the last ordinary ACP prompt, including follow-ups waiting for their own turns. */
-	nextPrompt?: Promise<PromptAnswer>;
-	destroying: boolean;
-	/** True once the actor is going to sleep or being destroyed. */
-	stopping: boolean;
-	reporting: Promise<void> | null;
-	reportAgain: boolean;
-	/** Still closing this inbox row after the agent itself went idle. */
-	closingItem?: string;
-	signedInUntil: number;
-	/** A suspend or removal of the idle sandbox under way; a prompt or a read of the workspace waits for it. */
-	idling: Promise<void> | null;
-	/**
-	 * How many operations have the session's sandbox now (`takeSandbox`): a prompt from its acceptance to
-	 * the end of its turn, a push, a read of the workspace, and the suspend, removal or free that `idling`
-	 * names. While any has it, nothing suspends or removes the sandbox (`busy`). This instance's only: an
-	 * operation goes with the instance, and so does its count.
-	 */
-	sandboxOps: number;
-	/** The one check of named tests on the item’s base running in this sandbox. */
-	baseTest?: string;
-	/** The copy of the workspace taken when the last turn ended; undefined until it is read from SQLite. */
-	workspace: WorkspaceCopy | null | undefined;
-	/** The tail of the queue that sets the idle check, so two of them cannot cross. */
-	arming: Promise<void>;
-	/** True while the platform commits and pushes the workspace: no turn starts under it, and no second push. */
-	publishing: boolean;
-	/** The key of the delivery `takeDelivered` is taking, while it does: the same delivery sent again meanwhile leaves its slot alone. */
-	delivering?: string | null;
-	/** When GitHub was last asked about the session's pull request. */
-	pullCheckedAt: number;
-	/** Whether the workspace has commits GitHub lacks, as last read from the sandbox, and what it was read for. */
-	unpushed: { key: string; value: boolean | null } | null;
-	/** Fires when the running sandbox's hold is over, or when an unused sandbox would have stopped by itself (`armMeter`). */
-	meterTimer: ReturnType<typeof setTimeout> | null;
-	/** The tail of the queue of calls to the user's meter: a hold is traded or settled by one of them at a time. */
-	metering: Promise<unknown>;
-	/**
-	 * `Sandboxes.idleStopMs` of this session's own layer, read when it takes a hold or wakes, for the
-	 * meter's timer. Lost with the instance and read again: nothing is settled from it before then.
-	 */
-	idleStopMs: number | null;
-	/**
-	 * Counts the creates, connects, suspends and destroys of the session's sandbox. A read of the
-	 * sandbox's state that was asked before the count moved describes a sandbox that is no more, and is
-	 * dropped. This instance's only: a read in flight goes with it.
-	 */
-	sandboxGen: number;
-	/**
-	 * The stretch the session's stored state had open as the actor woke (its `useOf`), with the
-	 * `sandboxGen` of then, until the sandbox's real state is known (`wakeMeter`). Its sandbox may have
-	 * stopped by itself while no server counted it: see `carriedOver`.
-	 */
-	carried: { use: string; gen: number } | null;
-	/**
-	 * For a session on one of its user's machines: the conversation with the machine's runner, over its
-	 * socket to this actor. This instance's alone, never stored: one that wakes starts a new one.
-	 */
-	runner: RunnerLink | null;
-	/**
-	 * With WLP_RUNNER_DURABLE_TURNS, the writer that stores the runner conversation's outgoing frames
-	 * (runner/journal.ts), and the conversation read back when the actor woke with a turn to take up.
-	 */
-	journal: OutgoingJournal | null;
-	restored: ConversationRecord | null;
-	/** When the wake that takes a machine turn up after a crash was last scheduled (`armTakeUp`). */
-	takeUpArmedAt: number;
-	/** A concurrent grant waits for the current resume attempt before deciding who owns its slot. */
-	resuming: Promise<void> | null;
-	/** Re-arms the wake that resumes the running turn after a crash (`heartbeat`); null between turns. */
-	heartbeat: ReturnType<typeof setInterval> | null;
-	/** The stop of a setup cut off with the server (`stopCutOffSetup`): a turn waits for it before it uses the sandbox. */
-	setupReap: Promise<void> | null;
-	/** The running turn's start clock (start-times.ts), which `openSandbox` tells when the sandbox and the workspace are ready. */
-	startClock: StartClock | null;
-	/**
-	 * The hosts allowed from this session (`allowHost`), with when: a turn whose list of hosts was read
-	 * before one of them keeps it all the same (`openSandbox`). This instance's only: a turn that starts
-	 * on another reads the list after the click.
-	 */
-	hostsAllowed: Map<string, number>;
-}
-
-/** What the helpers below need of an actor context; every hook's and action's `c` fits. */
-interface Ctx {
-	vars: SessionVars;
-	db: RawAccess;
-	key: string[];
-	log: { info(entry: unknown): void; warn(entry: unknown): void; error(entry: unknown): void };
-	broadcast(name: string, ...args: unknown[]): void;
-	// biome-ignore lint/suspicious/noExplicitAny: the registry's type would be circular here
-	client(): any;
-	keepAwake<T>(promise: Promise<T>): Promise<T>;
-	schedule: { at(timestamp: number, action: string, ...args: unknown[]): Promise<string>; cancel(id: string): Promise<boolean> };
-}
-
-type NewItem =
-	| Omit<NetworkBlockedItem, "seq" | "at">
-	| Omit<Extract<TimelineItem, { kind: "user" }>, "seq" | "at">
-	| Omit<Extract<TimelineItem, { kind: "platform" }>, "seq" | "at">
-	| Omit<Extract<TimelineItem, { kind: "acp" }>, "seq" | "at">
-	| Omit<Extract<TimelineItem, { kind: "windlass" }>, "seq" | "at">
-	| Omit<Extract<TimelineItem, { kind: "setup" }>, "seq" | "at">
-	| Omit<Extract<TimelineItem, { kind: "turn.ended" }>, "seq" | "at">;
 
 /** A failure of a turn whose message is fit to show as it is. */
 class TurnProblem extends Error {}
@@ -816,330 +221,14 @@ class PublishRefused extends UserError {
 	}
 }
 
-function layerOf(c: Ctx, meta: SessionMeta): Promise<SandboxLayer> {
-	return layerFor(meta.place, c.key[0]!, meta.place.kind === "machine" ? runnerLink(c, meta.place.machineId) : null);
-}
-
-/** The session's link to its machine's runner, made the first time the session needs the machine. */
-function runnerLink(c: Ctx, machineId: string): RunnerLink {
-	if (!c.vars.runner) {
-		const [uid, sessionId] = c.key as [string, string];
-		const client = c.client();
-		c.vars.runner = new RunnerLink(
-			{ uid, sessionId, machineId, machineName: c.vars.meta?.machineName },
-			machineActor(() => client, uid, machineId),
-			(reason) => {
-				console.log(`[wlp] runner.conversation_ended session=${sessionId} machine=${machineId}: ${reason}`);
-			},
-			// What the banner says of the machine, to an open page, each time it changes. Not while stopping:
-			// RivetKit refuses a broadcast then ("Actor stopping"), and the link's `close()` notes too.
-			(reach) => {
-				if (!c.vars.stopping) c.broadcast("machine", reach);
-			},
-			durableTurns(c) ? { from: c.vars.restored, onDirty: () => conversationDirty(c) } : undefined,
-		);
-		c.vars.restored = null;
-	}
-	return c.vars.runner;
-}
-
-/** WLP_RUNNER_DURABLE_TURNS: a machine session keeps its runner conversation and its turn's protocol state (runner/journal.ts). */
-function durableTurns(c: Ctx): boolean {
-	return config.machines?.durableTurns === true && c.vars.meta?.place.kind === "machine";
-}
-
-/** How often a turn that can be taken up after a crash re-arms the wake that would take it up. */
-const TAKE_UP_ARM_MS = 60_000;
-
-/** The runner conversation has something to store: frames to write ahead, or more received than committed. */
-function conversationDirty(c: Ctx): void {
-	const journal = c.vars.journal ??= new OutgoingJournal(c.db, () => c.vars.runner?.channel ?? null, () => {
-		// What was received is committed with the timeline it produced: a write comes soon, items or not.
-		const channel = c.vars.runner?.channel;
-		if (channel && channel.receivedCount > 0) scheduleWrite(c, true);
-	});
-	journal.dirty();
-}
-
-/**
- * While a machine turn can be taken up, a wake is kept scheduled a minute ahead: a server that crashed
- * runs no `onSleep`, and this brings the session back within the runner's grace on whichever server
- * is up. A wake with nothing to take up does nothing.
- */
-function armTakeUp(c: Ctx): void {
-	const now = Date.now();
-	if (c.vars.stopping || now - c.vars.takeUpArmedAt < TAKE_UP_ARM_MS / 2) return;
-	c.vars.takeUpArmedAt = now;
-	void c.schedule.at(now + TAKE_UP_ARM_MS, "internalTakeUp").catch((error: unknown) => c.log.warn({ msg: "could not schedule the wake that takes a machine turn up after a crash", error: describeError(error) }));
-}
-
-/** The runner's own socket to the session: it proves itself in its first frame, not with a user's token. */
-function isRunnerSocket(request: Request | undefined): boolean {
-	return request !== undefined && new URL(request.url).pathname === `/websocket/${RUNNER_SOCKET}`;
-}
-
-function summaryOf(meta: SessionMeta): SessionSummary {
-	return {
-		id: meta.sessionId,
-		...(meta.harness ? { harness: meta.harness } : {}),
-		capabilities: sessionCapabilities(meta.harness),
-		...(meta.harnessModels !== undefined ? { harnessModels: meta.harnessModels } : {}),
-		title: meta.title,
-		place: meta.place,
-		profile: meta.profile,
-		...(meta.hostedSize && { hostedSize: meta.hostedSize }),
-		model: meta.model,
-		mode: meta.mode,
-		availableModes: meta.availableModes,
-		repoUrl: meta.repoUrl,
-		...(meta.repo ? { repository: repositoryOf(meta.repo), pullRequest: meta.pull ?? null, publishUnasked: meta.publishUnasked === true } : {}),
-		createdAt: meta.createdAt,
-		updatedAt: meta.updatedAt,
-		status: meta.status,
-		...(meta.status === "paused" && meta.run?.paused ? { paused: { reason: meta.run.paused.reason, since: meta.run.paused.at, held: meta.run.held?.length ?? 0 } } : {}),
-		turns: meta.turns,
-		lastOutcome: meta.lastOutcome,
-		...(meta.startTimes?.length ? { startTimes: meta.startTimes } : {}),
-		sandbox: meta.sandbox,
-		...(meta.servers && meta.servers.length > 0 ? { servers: { count: meta.servers.length, changedAt: meta.serversChangedAt } } : {}),
-		...(meta.origin ? { item: { id: meta.origin.itemId, role: meta.origin.role ?? "builder", ...(meta.origin.planCritic && { planCritic: true }) } } : {}),
-		...(meta.environmentBuild ? { environmentBuild: true as const } : {}),
-		...(meta.environment ? { environment: meta.environment } : {}),
-	};
-}
-
 function liveMeta(c: Ctx): SessionMeta {
 	const meta = c.vars.meta;
 	if (!meta || c.vars.destroying) throw new UserError("That agent does not exist.", { code: "session_not_found" });
 	return meta;
 }
 
-// ---------------------------------------------------------------------------------------------
-// Writing
-// ---------------------------------------------------------------------------------------------
-
-/** Runs `job` after every job queued before it, whether those succeeded or not. */
-function serial<T>(c: Ctx, job: () => Promise<T>): Promise<T> {
-	const run = c.vars.serial.then(job, job);
-	c.vars.serial = run.catch(() => undefined);
-	return run;
-}
-
-async function insertItems(db: Pick<RawAccess, "execute">, batch: TimelineItem[]): Promise<void> {
-	await db.execute(
-		`INSERT OR REPLACE INTO timeline (seq, turn, kind, at, item) VALUES ${batch.map(() => "(?, ?, ?, ?, ?)").join(", ")}`,
-		...batch.flatMap(item => [item.seq, item.turn, item.kind, item.at, JSON.stringify(item)]),
-	);
-}
-
-function turnReceipts(meta: SessionMeta | null, batch: TimelineItem[]) {
-	return batch.flatMap(item => {
-		const key = item.kind === "turn.ended" || item.kind === "platform" || item.kind === "windlass" ? item.modelKey : undefined;
-		const tokens = key?.tokens ?? (meta && item.kind === "windlass" && usesPlatformModel(meta.harness) ? turnTokens(reportedModelUsage(item.event)) : 0);
-		return Number.isSafeInteger(tokens) && tokens > 0 ? [{ seq: item.seq, at: item.at, tokens, key }] : [];
-	});
-}
-
-/** Writes the waiting items, a batch per statement. Only ever called from inside the queue. */
-async function writeItems(c: Ctx): Promise<void> {
-	if (c.vars.runner?.durable) return writeDurably(c);
-	const waiting = c.vars.unwritten;
-	while (waiting.length > 0) {
-		const batch = waiting.slice(0, WRITE_BATCH);
-		const meta = c.vars.meta;
-		const receipts = turnReceipts(meta, batch);
-		const network = batch.some(item => item.kind === "network.blocked") ? meta?.blocked : undefined;
-		if (receipts.length || network) {
-			// These are the model requests summed by the turn summary. Keep their original UTC day
-			// and sequence number, including when a turn is interrupted or a delivery is retried.
-			await c.db.transaction(async tx => {
-				await insertItems(tx, batch);
-				for (const receipt of receipts) await queueMessage(tx, { to: "tokens", receipt });
-				if (network && meta) {
-					await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
-					if (meta.origin) await queueMessage(tx, { to: "network", itemId: meta.origin.itemId, ...network });
-				}
-			}, { name: "timeline.usage" });
-			if (!c.vars.stopping && (receipts.length || meta?.origin)) await flushOutbox(c, meta!.uid).catch(() => sendOutbox(c, meta!.uid));
-		} else await insertItems(c.db, batch);
-		// Items made meanwhile were added behind the batch.
-		waiting.splice(0, batch.length);
-	}
-}
-
-/**
- * `writeItems` for a machine session whose runner conversation is kept (runner/journal.ts): what was
- * received, the timeline it produced and the turn's checkpoint, read in one synchronous step and written
- * in one transaction, and only then acknowledged to the runner. A server that stops at any moment has
- * either all of it or none: the runner sends again whatever is past the stored count, so each of its
- * messages is taken once.
- */
-async function writeDurably(c: Ctx): Promise<void> {
-	const channel = c.vars.runner!.channel;
-	const waiting = c.vars.unwritten;
-	// From here to the transaction nothing is awaited: the count, the items and the checkpoint say the same moment.
-	const conversation = channel.conversationId;
-	const received = channel.receivedCount;
-	const turn = c.vars.turn;
-	const checkpoint = turn?.checkpoint?.() ?? null;
-	const items = waiting.slice();
-	const meta = c.vars.meta;
-	let flush = false;
-	let stored = false;
-	await c.db.transaction(async tx => {
-		for (let at = 0; at < items.length; at += WRITE_BATCH) {
-			const batch = items.slice(at, at + WRITE_BATCH);
-			const receipts = turnReceipts(meta, batch);
-			const network = batch.some(item => item.kind === "network.blocked") ? meta?.blocked : undefined;
-			await insertItems(tx, batch);
-			for (const receipt of receipts) await queueMessage(tx, { to: "tokens", receipt });
-			if (network && meta) {
-				await tx.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta));
-				if (meta.origin) await queueMessage(tx, { to: "network", itemId: meta.origin.itemId, ...network });
-			}
-			if (receipts.length || (network && meta?.origin)) flush = true;
-		}
-		// While a process waits to be taken up, the output kept for it is in no item yet: nothing of it counts as stored.
-		if (c.vars.runner?.holding) return;
-		stored = await saveReceived(tx, conversation, received);
-		// A checkpoint goes with the timeline of its moment; none (the turn is not one to take up) takes the old one out.
-		await saveCheckpoint(tx, turn?.number ?? 0, checkpoint);
-	}, { name: "timeline.durable" });
-	waiting.splice(0, items.length);
-	if (stored) channel.committed(conversation, received);
-	if (checkpoint) armTakeUp(c);
-	if (flush && !c.vars.stopping) await flushOutbox(c, meta!.uid).catch(() => sendOutbox(c, meta!.uid));
-}
-
-/** Brings SQLite up to date with memory: the waiting items and the meta row. Never throws. */
-function persist(c: Ctx): Promise<void> {
-	if (c.vars.flushTimer) {
-		clearTimeout(c.vars.flushTimer);
-		c.vars.flushTimer = null;
-	}
-	return serial(c, async () => {
-		await writeItems(c);
-		// Cancel can outlive the actor's shutdown grace. Save the current run at the next
-		// sequence number without closing it to live clients. Its next real item replaces
-		// this row; on wake MAX(seq) includes it as the final text before interruption.
-		const partial = c.vars.turn?.stopping && c.vars.turn.openAcp?.();
-		if (partial) await insertItems(c.db, [numberItem(c, partial)]);
-		if (c.vars.meta) await c.db.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(c.vars.meta));
-	}).catch((error) => {
-		// The items stay in `unwritten`, so the next write tries again and snapshots still show them.
-		c.log.error({ msg: "could not write the session to SQLite", error: describeError(error) });
-	});
-}
-
-function queueWrite(c: Ctx): void {
-	if (c.vars.flushQueued) return;
-	c.vars.flushQueued = true;
-	void serial(c, async () => {
-		c.vars.flushQueued = false;
-		await writeItems(c);
-	}).catch((error) => {
-		c.log.error({ msg: "could not write the timeline to SQLite", error: describeError(error) });
-	});
-}
-
-/** A turn can produce thousands of items: they are written in batches, shortly after they are made. `always`: a durable conversation's count is due, items or not. */
-function scheduleWrite(c: Ctx, always = false): void {
-	if (c.vars.flushQueued) return;
-	if (always && c.vars.unwritten.length === 0 && !c.vars.flushTimer) {
-		c.vars.flushTimer = setTimeout(() => {
-			c.vars.flushTimer = null;
-			queueWrite(c);
-		}, FLUSH_DELAY_MS);
-		return;
-	}
-	if (c.vars.unwritten.length >= FLUSH_AT) {
-		queueWrite(c);
-		return;
-	}
-	if (c.vars.flushTimer) return;
-	c.vars.flushTimer = setTimeout(() => {
-		c.vars.flushTimer = null;
-		queueWrite(c);
-	}, FLUSH_DELAY_MS);
-}
-
-function numberItem(c: Ctx, item: NewItem, at = Date.now()): TimelineItem {
-	// Network observations scrub their free text before aggregation. Keep protocol enum values intact.
-	const redactor = c.vars.turn?.secrets?.redactor;
-	const numbered = { ...(redactor && item.kind !== "network.blocked" ? redactor.deep(item) : item), seq: c.vars.nextSeq, at } as TimelineItem;
-	return numbered.kind === "acp" ? boundedAcpItem(numbered) : numbered;
-}
-
-/**
- * Adds an item to the timeline: numbers it, announces it, and queues it for SQLite. Synchronous. While
- * a turn holds its repository's secrets, their values are taken out of every text of the item first,
- * whatever wrote it: nothing a turn adds to the timeline carries one.
- */
-function append(c: Ctx, item: NewItem, at?: number): TimelineItem {
-	const full = numberItem(c, item, at);
-	c.vars.nextSeq += 1;
-	c.vars.unwritten.push(full);
-	c.broadcast("item", full);
-	scheduleWrite(c);
-	return full;
-}
-
-function note(
-	c: Ctx,
-	turn: number,
-	level: "info" | "warn" | "error",
-	text: string,
-	mark: { code: "question_expired" | "question_allowed"; call: { messageId: string; callId: string } } | { code: "turn_paused" | "turn_resumed"; modelKey?: ModelKeySpend } | null = null,
-): void {
-	append(c, { turn, kind: "platform", level, text, ...(mark ?? {}) });
-}
-
-// ---------------------------------------------------------------------------------------------
-// Announcing
-// ---------------------------------------------------------------------------------------------
-
-/** Sends summaries to the `user` actor until the newest one has been sent. */
-async function reportLoop(c: Ctx): Promise<void> {
-	// Yields first, so that `report` has stored this promise before the loop can possibly end.
-	await Promise.resolve();
-	try {
-		while (c.vars.reportAgain && c.vars.meta) {
-			c.vars.reportAgain = false;
-			try {
-				await userActor(c, c.vars.meta.uid).internalSessionChanged(summaryOf(c.vars.meta));
-			} catch (error) {
-				c.log.warn({ msg: "could not report the session's summary to its user", error: describeError(error) });
-			}
-		}
-	} finally {
-		// In the same step as the loop's last check: a `report` that comes later starts a new loop.
-		c.vars.reporting = null;
-	}
-}
-
-/** Sends the newest summary to the `user` actor; calls that arrive meanwhile collapse into one more. */
-function report(c: Ctx): Promise<void> {
-	c.vars.reportAgain = true;
-	if (c.vars.reporting) return c.vars.reporting;
-	const loop = reportLoop(c);
-	c.vars.reporting = loop;
-	// The report is short; holding the actor awake for it keeps the user's list from going stale.
-	// During shutdown nothing new can be held awake: `onSleep` waits for the report itself.
-	if (!c.vars.stopping) void c.keepAwake(loop);
-	return loop;
-}
-
-/** Tells connected clients and the `user` actor that the summary changed. */
-function publish(c: Ctx): void {
-	const meta = c.vars.meta;
-	if (!meta) return;
-	c.broadcast("summary", summaryOf(meta));
-	void report(c);
-}
-
 function noteSandbox(c: Ctx, meta: SessionMeta, state: SessionMeta["sandbox"], use: string | null = useOf(meta), pausedAt?: number): void {
-	// Found stopped without the session having stopped it: the stretch being counted ended with it. A turn settles when it closes.
-	// `use` is the meter's when the state was asked for: a hold taken while the answer came is not the one found stopped.
+	// Close only the metered use the state read observed. A new hold may have arrived meanwhile.
 	if (state !== "running" && meta.meter && !c.vars.turn && !c.vars.accepting) void closeMeter(c, meta, "found", use, pausedAt);
 	if (meta.sandbox === state) return;
 	meta.sandbox = state;
@@ -1147,154 +236,14 @@ function noteSandbox(c: Ctx, meta: SessionMeta, state: SessionMeta["sandbox"], u
 	void persist(c);
 }
 
-// ---------------------------------------------------------------------------------------------
-// The streaming state kept for clients that connect mid-turn
-// ---------------------------------------------------------------------------------------------
-
-function keepDelta(vars: SessionVars, delta: LiveDelta): void {
-	vars.pending.push(delta);
-	if (vars.pending.length > MAX_PENDING) vars.pending.splice(0, vars.pending.length - MAX_PENDING + 500);
-}
-
-/**
- * Drops the deltas a durable event makes redundant: the event carries what they were building up to.
- * `text.ended` replaces the message's text deltas, `reasoning.ended` its reasoning deltas, `tool.called`
- * a call's input deltas, `tool.settled` a call's progress, and the end of a step everything of its message.
- */
-function settleDeltas(vars: SessionVars, durable: WindlassEvent): void {
-	if (vars.pending.length === 0) return;
-	const data = durable.data ?? {};
-	const messageId = data.messageId;
-	const callId = data.callId;
-	let redundant: (event: WindlassEvent) => boolean;
-	switch (durable.type) {
-		case "text.ended":
-			redundant = (event) => event.type === "text.delta" && event.messageId === messageId;
-			break;
-		case "reasoning.ended":
-			redundant = (event) => event.type === "reasoning.delta" && event.messageId === messageId;
-			break;
-		case "tool.called":
-			redundant = (event) => event.type === "tool.input.delta" && event.messageId === messageId && event.callId === callId;
-			break;
-		case "tool.settled":
-			redundant = (event) => (event.type === "tool.progress" || event.type === "tool.input.delta") && event.messageId === messageId && event.callId === callId;
-			break;
-		case "step.ended":
-		case "step.failed":
-			redundant = (event) => event.messageId === messageId;
-			break;
-		case "execution.succeeded":
-		case "execution.failed":
-		case "execution.interrupted":
-			redundant = () => true;
-			break;
-		default:
-			return;
-	}
-	vars.pending = vars.pending.filter((delta) => !("event" in delta && redundant(delta.event)));
-}
-
-/** One durable item per contiguous run of text; a reconnect sees the same prefix as live clients. */
-export function acpRecorder(c: Ctx, turn: number) {
-	type TextKind = "agent_message_chunk" | "agent_thought_chunk";
-	let run: { kind: TextKind; key: string; text: string; remaining: number; truncated: boolean } | null = null;
-	let items = 0;
-	let warned = false;
-	function admit(): boolean {
-		if (items < MAX_PENDING) {
-			items++;
-			return true;
-		}
-		if (!warned) note(c, turn, "warn", `Further ACP updates were omitted after ${MAX_PENDING.toLocaleString("en-US")} timeline items in this turn.`);
-		warned = true;
-		return false;
-	}
-	function textUpdate(kind: TextKind, text: string): AcpUpdate {
-		return { sessionUpdate: kind, content: { type: "text", text } };
-	}
-	function current(): NewItem | null {
-		if (!run) return null;
-		return { turn, kind: "acp", messageKey: run.key, update: textUpdate(run.kind, run.text), ...(run.truncated && { truncated: true }) };
-	}
-	if (c.vars.turn) c.vars.turn.openAcp = current;
-	function flush() {
-		const item = current();
-		if (!run || !item) return;
-		const { key } = run;
-		run = null;
-		c.vars.pending = c.vars.pending.filter(delta => !("acp" in delta && delta.messageKey === key));
-		append(c, item);
-	}
-	return {
-		flush,
-		update(update: AcpUpdate) {
-			const kind = update.sessionUpdate;
-			if ((kind === "agent_message_chunk" || kind === "agent_thought_chunk") && update.content?.type === "text" && typeof update.content.text === "string") {
-				if (run?.kind !== kind) {
-					flush();
-					if (!admit()) return;
-					const key = `acp-${turn}-${c.vars.nextSeq}`;
-					// Other timeline events can advance seq before flush. Reserve both numbers and the marker now.
-					const envelope = { turn, kind: "acp", messageKey: key, update: textUpdate(kind, ""), seq: Number.MAX_SAFE_INTEGER, at: Number.MAX_SAFE_INTEGER, truncated: true };
-					run = { kind, key, text: "", remaining: ACP_ITEM_LIMIT - JSON.stringify(envelope).length, truncated: false };
-				}
-				if (run.truncated) return;
-				const piece = jsonPrefix(update.content.text, run.remaining);
-				run.truncated = piece.text.length < update.content.text.length;
-				if (!piece.text) return;
-				run.remaining -= piece.size;
-				run.text += piece.text;
-				c.broadcast("delta", { turn, acp: textUpdate(kind, piece.text), messageKey: run.key });
-				const pending = { turn, messageKey: run.key, acp: textUpdate(kind, run.text) };
-				const last = c.vars.pending.at(-1);
-				if (last && "acp" in last && last.messageKey === run.key) c.vars.pending[c.vars.pending.length - 1] = pending;
-				else keepDelta(c.vars, pending);
-				return;
-			}
-			flush();
-			if (admit()) append(c, { turn, kind: "acp", update });
-		},
-	};
-}
-
-function onWindlassEvent(c: Ctx, meta: SessionMeta, turn: number, event: WindlassEvent, key?: import("../sandbox/provider.js").ModelKeyLease): void {
-	if (typeof event !== "object" || event === null || typeof event.type !== "string") return;
-	if (typeof event.sessionId === "string" && event.sessionId !== "" && meta.windlassSessionId !== event.sessionId) {
-		// Remembered at once: if this turn is lost, the next one can still continue Windlass's session.
-		meta.windlassSessionId = event.sessionId;
-		// Another session of Windlass's: nothing is recorded in it yet.
-	}
-	if (DELTA_TYPES.has(event.type)) {
-		const delta: LiveDelta = { turn, event };
-		keepDelta(c.vars, delta);
-		c.broadcast("delta", delta);
-		return;
-	}
-	settleDeltas(c.vars, event);
-	const tokens = key && turnTokens(reportedModelUsage(event, true));
-	append(c, { turn, kind: "windlass", event, ...(key && tokens && { modelKey: { ...key, tokens } }) });
-}
-
-// ---------------------------------------------------------------------------------------------
-// The sandbox
-// ---------------------------------------------------------------------------------------------
-
 function shellQuote(text: string): string {
 	return `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
-/**
- * `git status`, without taking a lock an agent's own git command could trip over. Like every git of the
- * platform's in the workspace, after `WORKSPACE_GIT_START` (github/git.ts): it runs outside Windlass's
- * sandbox, so a repository whose configuration would make git start a program is not run in at all.
- */
+// Status must avoid the workspace index lock while the agent runs Git.
 export const STATUS_COMMAND = `${WORKSPACE_GIT_START}\ngit --no-optional-locks status --porcelain=v1 -z --untracked-files=all --ignore-submodules=all`;
 
-/**
- * `git diff` against the last commit with new files included. The equivalent of `git add -N .` is done
- * in the private repository, using its copy of the files and index.
- */
+// Include untracked files through a private temporary index.
 export const DIFF_COMMAND = [
 	WORKSPACE_GIT_START,
 	"git add -N . >/dev/null",
@@ -1420,12 +369,7 @@ function connectOptions(meta: SessionMeta): { network?: string[] } {
 /** How many blocked hosts the timeline names for one sandbox. */
 const MAX_HOSTS_NOTED = 40;
 
-/**
- * Names in the timeline each host a command in the session's hosted sandbox looked up and could not
- * reach (the sandbox's `blockedHosts`, from its lookup stub), once per sandbox, and files them as
- * requests on its repository's network list. Only where the deployment's hosted sandboxes are
- * `restricted`, where a list can help. Never throws: it only reports.
- */
+// Report each blocked host once per restricted sandbox.
 async function noteBlockedHosts(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer, observed: (hosts: string[]) => void): Promise<void> {
 	if (meta.place.kind !== "hosted" || !sandbox.blockedHosts || layer.sandboxes.egress?.() !== "restricted") return;
 	const allowed = new Set(meta.networkHosts ?? []);
@@ -1587,8 +531,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	let ready = false;
 	// A setup cut off with the server is being stopped: let it finish first, or it could stop this turn's processes.
 	await c.vars.setupReap;
-	// What the repository's network list allows now: this turn's connect sets the sandbox's network to it. A host
-	// allowed from the session after the list was read is kept: `allowHost` put it in `networkHosts` already.
+	// Preserve hosts allowed after this turn read the repository list.
 	if (secrets?.network !== undefined) {
 		const hosts = hostsForTurn(secrets.network, secrets.networkAt ?? 0, c.vars.hostsAllowed);
 		meta.networkHosts = meta.place.kind === "hosted" && hosts.length > 0 ? hosts : undefined;
@@ -1603,8 +546,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	}) : undefined;
 	if (handle) c.vars.startClock?.sandbox(Date.now() - connecting, false);
 	sandboxChanged(c);
-	// An actor stopped between a create and its first connect learns it here. Only a yes is taken: a
-	// runner downgraded since says nothing of a sandbox the newer one made with a volume of its own.
+	// Accept positive ownership evidence only. Older runners may omit it.
 	if (handle?.ownData) meta.ownDataSandbox = handle.id;
 	if (handle) {
 		if (meta.sandbox === "paused") note(c, turn, "info", "Resuming sandbox");
@@ -1631,8 +573,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		// The session holds its turn here, so it is making no other sandbox: one the provider has for it is one it never heard of.
 		await sweepSandboxes(c, meta, layer);
 		if (hostedLimitsApply(meta.place)) {
-			// The place is claimed where the sandbox is made: the hold's reserve asked for one only if the session
-			// had no sandbox then, and the one it had may have been found gone above.
+			// Claim the place at creation if the reservation did not already claim it.
 			const place = await userActor(c, meta.uid).internalClaimPlace(meta.sessionId, meta.hostedSize);
 			if (!place.ok) throw new TurnProblem("numbers" in place ? sandboxRefusal(place.numbers) : "The agent was deleted.");
 			if (applySandboxClamp(meta, place.clampedSize, text => note(c, turn, "info", text))) {
@@ -1642,8 +583,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 			}
 		}
 		note(c, turn, "info", "Creating sandbox");
-		// Held before the wait: a delete that finished meanwhile leaves no actor state to read (`c.vars` throws once it has
-		// stopped), and the sandbox would be left behind, paused and holding one of the person's places. So it goes first.
+		// Hold the layer before awaiting the create. Concurrent deletion can invalidate actor state.
 		const vars = c.vars;
 		plan = allowSnapshot ? await snapshotPlan(c, meta, secrets, layer) : null;
 		const fromSnapshot = plan ? { ...plan.key, writer: plan.writer } : undefined;
@@ -1681,8 +621,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 		// Recorded for this sandbox from what it has, not from what the provider would make now.
 		meta.ownDataSandbox = handle.ownData ? id : null;
 		if (meta.windlassSessionId && (await privateSessionData(meta, layer.sandboxes, id))) {
-			// Windlass's own session went with the old sandbox. Its copy is put into the new one before anything
-			// else happens there; without one, asking for the session would only fail the turn.
+			// Restore memory before starting the agent in its replacement sandbox.
 			if (!capabilitiesOf(meta.harness).backups || !(await restoreBackup(c, meta, turn, handle, layer))) {
 				meta.windlassSessionId = null;
 				meta.backup = null;
@@ -1758,32 +697,6 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	return handle;
 }
 
-// ---------------------------------------------------------------------------------------------
-// The copy of Windlass's session outside the sandbox
-// ---------------------------------------------------------------------------------------------
-
-function megabytes(bytes: number): string {
-	const mb = bytes / (1024 * 1024);
-	return `${mb >= 10 ? Math.round(mb) : Math.round(mb * 10) / 10} MB`;
-}
-
-/**
- * Puts the copy of Windlass's session into the sandbox that was just made in place of a lost one. True
- * when the agent can go on in that session: the timeline then says so, and how far the copy reaches
- * when it is behind. False when there is no copy of that session or it could not be restored: the
- * caller starts a new Windlass session. It takes no abort signal: a restore that is cut off would leave
- * a sandbox nobody restores again, and it is a matter of seconds. Never throws.
- */
-/**
- * Put before the user's prompt, for any agent, on the first turn it takes after its memory was
- * restored into a new sandbox. It remembers the files it made, and the new workspace has none of them:
- * unless it is told, it acts on what is no longer there. Only then: a sandbox that was paused has its
- * files, and a Windlass session that starts anew remembers none. The timeline keeps the prompt as the
- * user wrote it, and has its own line about the restore.
- */
-const FRESH_WORKSPACE =
-	"[A note from the platform, not from the user: the sandbox you were working in has been replaced by a new one. Your memory of this conversation was carried over, but the workspace was not: it is a fresh one. A repository that was cloned has been cloned again, with whatever of your work had been pushed to its branch; anything else you created or changed earlier is not in it. Look at what is there before you rely on earlier work.]\n\n";
-
 type MachineFacts = import("./machine.js").MachineFacts;
 type OfferedHarness = NonNullable<NonNullable<MachineFacts["report"]>["harnesses"]>[number];
 
@@ -1834,150 +747,7 @@ function itemSignInRefusal(meta: SessionMeta, facts: MachineFacts, offered: Offe
 	return itemSignInMessage(machine, facts.name, effective.signIn) ?? itemSignInChanged(machine, facts.name, meta.origin?.signIn, effective.method);
 }
 
-/**
- * The platform's notes before a turn's prompt, for any agent, in a person's session and an item's alike:
- * that the workspace was made from a prepared image, that it is a new one, that the setup command did
- * not succeed in it, or that the setup ran on the base. Each is told once, with the first prompt the
- * agent takes after it became true (`told`). A reviewer is told only of the prepared image: its brief
- * says what it needs of the workspace.
- */
-function platformNotes(meta: SessionMeta, reviewer: boolean): { text: string; told(): void } {
-	const prepared = meta.snapshotCommit ?? null;
-	const fresh = !reviewer && meta.freshWorkspace === true;
-	const unfinished = reviewer ? null : meta.setupUnfinished ?? null;
-	const onBase = reviewer ? null : meta.setupOnBase ?? null;
-	return {
-		text: (prepared ? snapshotPrompt(prepared) : "") + (fresh ? FRESH_WORKSPACE : "") + (unfinished ? setupNote(unfinished) : "") + (onBase ? setupOnBaseNote(onBase) : ""),
-		told() {
-			if (fresh) meta.freshWorkspace = false;
-			if (unfinished && meta.setupUnfinished === unfinished) meta.setupUnfinished = null;
-			if (prepared && meta.snapshotCommit === prepared) meta.snapshotCommit = null;
-			if (onBase && meta.setupOnBase === onBase) meta.setupOnBase = null;
-		},
-	};
-}
-
-async function restoreBackup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<boolean> {
-	const backups = layer.backups;
-	const saved = meta.backup;
-	const session = meta.windlassSessionId;
-	// Without a bucket nothing was ever copied, and nothing is said of it.
-	if (!backups || !session) return false;
-	if (!saved || saved.windlassSessionId !== session) {
-		console.log(`[wlp] backup.none session=${meta.sessionId} turn=${turn}: ${saved ? "the copy is of an earlier Windlass session" : "no copy of the session was saved"}`);
-		return false;
-	}
-	try {
-		const restored = await backups.restore(sandbox, { uid: meta.uid, sessionId: meta.sessionId }, saved, session);
-		if (restored.outcome !== "restored") {
-			console.warn(`[wlp] backup.restore_failed session=${meta.sessionId} turn=${turn}: ${restored.outcome === "missing" ? "the bucket has no copy of the session" : restored.reason}`);
-			return false;
-		}
-		console.log(`[wlp] backup.restored session=${meta.sessionId} turn=${turn} bytes=${saved.size} ms=${restored.ms} saved_after_turn=${saved.turn}`);
-	} catch (error) {
-		c.log.warn({ msg: "could not restore the copy of Windlass's session", session: meta.sessionId, error: describeError(error) });
-		return false;
-	}
-	// What came back was small enough to copy: it is copied again from this turn on.
-	meta.backupStopped = null;
-	meta.freshWorkspace = true;
-	// A turn whose copy could not be saved, or was too large to keep, is not in what came back.
-	const missed = (meta.memoryTurn ?? saved.turn) > saved.turn ? Math.max(1, turn - 1 - saved.turn) : 0;
-	if (missed === 0) note(c, turn, "info", "Restored the agent's memory of the conversation into the new sandbox.");
-	else note(c, turn, "warn", `Restored the agent's memory of the conversation into the new sandbox, without the last ${missed === 1 ? "turn: no copy of it" : `${missed} turns: no copy of them`} could be saved.`);
-	return true;
-}
-
-/**
- * Copies Windlass's session out of the sandbox when a turn has ended: the turn's process is gone, so
- * nothing has the files open. The session's record of the copy is what a later restore is checked
- * against. A save that fails is not tried again by itself: the next turn's save copies the whole
- * session again, and trying later would mean starting a sandbox that was suspended to cost nothing.
- * The user is told nothing then; it matters only if the sandbox is lost before a save works, and the
- * restore says so. A session too large to copy is said once. Never throws.
- */
-async function saveBackup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, layer: SandboxLayer): Promise<void> {
-	const backups = layer.backups;
-	const session = meta.windlassSessionId;
-	if (!backups || !(await privateSessionData(meta, layer.sandboxes, sandbox.id)) || !session) return;
-	// Until a copy is saved below, the one there is, if any, is behind this turn.
-	meta.memoryTurn = turn;
-	// A session that is going away needs no copy, and an actor that is stopping has no time for one.
-	if (c.vars.stopping || c.vars.destroying) return;
-	const stopped = meta.backupStopped;
-	// Windlass's log only grows: what was too large is not packed again to find that out.
-	if (stopped && backups.maxBytes <= stopped.limit) return;
-	try {
-		const saved = await backups.save(sandbox, { uid: meta.uid, sessionId: meta.sessionId });
-		if (saved.outcome === "saved") {
-			meta.backup = { windlassSessionId: session, ...saved.backup, turn };
-			meta.backupStopped = null;
-			console.log(`[wlp] backup.saved session=${meta.sessionId} turn=${turn} bytes=${saved.backup.size} ms=${saved.ms}`);
-		} else if (saved.outcome === "too_large") {
-			console.log(`[wlp] backup.too_large session=${meta.sessionId} turn=${turn} bytes=${saved.size} limit=${saved.limit}`);
-			const earlier = meta.backup?.windlassSessionId === session;
-			if (!stopped) {
-				note(
-					c,
-					turn,
-					"warn",
-					`The agent's memory of the conversation has grown to ${megabytes(saved.size)}, and the platform keeps a copy of at most ${megabytes(saved.limit)}, so it is no longer copied out of the sandbox. If this sandbox is lost, the agent ${earlier ? "will not remember the conversation from here on" : "starts without its memory of the conversation"}.`,
-				);
-			}
-			meta.backupStopped = { size: saved.size, limit: saved.limit };
-		} else if (saved.outcome === "failed") {
-			console.warn(`[wlp] backup.save_failed session=${meta.sessionId} turn=${turn}: ${saved.reason}`);
-		}
-	} catch (error) {
-		c.log.warn({ msg: "could not copy Windlass's session out of the sandbox", session: meta.sessionId, error: describeError(error) });
-	}
-}
-
-/** The sessions whose copy was removed already, or handed to the `user` actor, so that a delete asks the bucket once. */
-const backupRemoved = new WeakSet<SessionMeta>();
-
-/**
- * Removes the session's copy from the bucket, for a session that is deleted. Asked whether or not the
- * session recorded a copy: a save that was cut off may have left one. Tried three times; a copy that
- * is still there after that is handed to the user's `user` actor, which outlives this one and tries
- * again later. Only when that cannot be told is the object named in the log, for whoever looks after
- * the bucket. Never throws.
- */
-async function removeBackup(c: Ctx, meta: SessionMeta): Promise<void> {
-	if (backupRemoved.has(meta)) return;
-	try {
-		const layer = await layerOf(c, meta);
-		if (!layer.backups || (!meta.backup && !(await privateSessionData(meta, layer.sandboxes, meta.sandboxId)))) return;
-		for (let attempt = 1; ; attempt += 1) {
-			try {
-				await layer.backups.remove({ uid: meta.uid, sessionId: meta.sessionId });
-				backupRemoved.add(meta);
-				meta.backup = null;
-				console.log(`[wlp] backup.removed session=${meta.sessionId}`);
-				return;
-			} catch (error) {
-				if (attempt >= 3) {
-					console.warn(`[wlp] backup.remove_retry uid=${meta.uid} session=${meta.sessionId} try=${attempt}: ${describeError(error)}`);
-					break;
-				}
-				await new Promise((resolve) => setTimeout(resolve, 1_000));
-			}
-		}
-		await userActor(c, meta.uid).internalRemoveBackupLater(meta.sessionId);
-		backupRemoved.add(meta);
-	} catch (error) {
-		console.error(`[wlp] backup.remove_failed uid=${meta.uid} session=${meta.sessionId}: the copy of this deleted session's Windlass data may still be in the bucket (${describeError(error)})`);
-	}
-}
-
-/**
- * Takes the session's sandbox for an operation that uses it, in the synchronous step that decides to
- * start it; the release it returns gives it back (once, however often it is called). An operation that
- * changes the sandbox (suspend, removal, free) takes it only when nothing else has it, and sets `idling`,
- * which the others wait for once they have taken it. A turn, a push, a read of the workspace, and the
- * factory's delivery into a session, take this one guard: an idle check that falls due under any of them
- * leaves the sandbox as it is and looks again later.
- */
+// Acquire before awaiting. Idle cleanup cannot run while a reader, publisher or turn owns the sandbox.
 function takeSandbox(c: Ctx): () => void {
 	c.vars.sandboxOps += 1;
 	let held = true;
@@ -1993,22 +763,13 @@ function busy(c: Ctx): boolean {
 	return c.vars.sandboxOps > 0;
 }
 
-/**
- * Reading the workspace through the sandbox starts a paused one, so it counts as using it: the idle
- * times start again, and a check is set for the sandbox that now runs.
- */
+// Reading a paused workspace restarts its idle clock.
 function markUsed(c: Ctx, meta: SessionMeta): void {
 	if (c.vars.turn) return;
 	meta.lastUsedAt = Date.now();
 	delete meta.pauseNow;
 	armMeter(c, meta);
 	void c.keepAwake(armIdle(c, meta));
-}
-
-/** The changed files of the workspace and their diff, as they were when it was last read. */
-interface WorkspaceCopy {
-	files: WorkspaceFile[];
-	diff: string;
 }
 
 /** Null when git could not say. */
@@ -2021,11 +782,7 @@ async function readFiles(c: Ctx, sandbox: SandboxHandle): Promise<WorkspaceFile[
 	return parseStatus(status.stdout);
 }
 
-/**
- * Null when git could not say. A file may hold the value of one of the repository's secrets (a setup
- * command that wrote a registry's token into a configuration file): the diff is shown and stored
- * without it. The file itself has it, and so does a push of it.
- */
+// A setup command can write a secret to a file. Redact the diff before caching it.
 async function readDiff(c: Ctx, meta: SessionMeta, sandbox: SandboxHandle): Promise<string | null> {
 	const redactor = await sessionRedactor(c, meta);
 	const diff = await sandbox.run(DIFF_COMMAND, { timeoutMs: GIT_TIMEOUT_MS });
@@ -2069,12 +826,7 @@ async function dropWorkspace(c: Ctx): Promise<void> {
 	});
 }
 
-/**
- * What `changes` and `diff` answer from: null without a sandbox. Only a turn changes the workspace, so
- * between turns the copy taken when the last one ended is exact, and answering from it starts no paused
- * sandbox: looking at a session costs nothing. During a turn, and where there is no copy (a session from
- * before the copies, or a turn that ended without one), the sandbox itself is read.
- */
+// Reuse the saved workspace between turns. A live read may need to resume the sandbox.
 async function workspaceView(c: Ctx, meta: SessionMeta): Promise<WorkspaceCopy | { sandbox: SandboxHandle } | null> {
 	if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 	if (!meta.sandboxId) return null;
@@ -2098,12 +850,7 @@ async function workspaceView(c: Ctx, meta: SessionMeta): Promise<WorkspaceCopy |
 	return (await copyWorkspace(c, meta, sandbox)) ?? { sandbox };
 }
 
-/**
- * Destroys the sandboxes the provider has for this session other than `meta.sandboxId`: ones whose
- * create was cut off by a crash, or outlasted a shutdown, so the session never learnt their id (the
- * provider names the session on each). The session is their only owner. Hosted places only: there they
- * cost money, and the list is the provider's own; a machine's list is its last report. Never throws.
- */
+// Sweep only this session's orphaned sandboxes. A create may finish after its actor disappears.
 async function sweepSandboxes(c: Ctx, meta: SessionMeta, layer: SandboxLayer): Promise<void> {
 	if (!hostedLimitsApply(meta.place)) return;
 	try {
@@ -2170,23 +917,11 @@ async function refreshSandbox(c: Ctx, meta: SessionMeta, required = false): Prom
 	}
 }
 
-// ---------------------------------------------------------------------------------------------
-// A repository of the user's GitHub connection: its clone, and the pull request
-// ---------------------------------------------------------------------------------------------
-
 /** How long GitHub's word on the pull request's state is taken before it is asked again. */
 const PULL_FRESH_MS = 20_000;
 
 /** What clients see of the repository: all of it but the installation, which is the platform's own matter. */
-/**
- * What the session's user saved that a turn needs, read from their `user` actor and opened here, for
- * one turn or for one reading of the workspace: the secrets of the session's repository and its
- * checks (none for a session that is not on a repository of the GitHub connection), the secrets of
- * the account, and the user's own MCP servers. The caller's token names this user and this session, and the actor answers
- * with the secrets of the repository it knows the session to be on. Throws a TurnProblem when they
- * cannot be read: with values it does not know, the platform could hand nothing over and take
- * nothing out of what it shows, so nothing is started.
- */
+// Open sealed values only in this session and keep plaintext out of metadata and timeline items.
 async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Promise<HeldSecrets> {
 	const project = setupProjectOf(meta);
 	const networkAt = Date.now();
@@ -2251,10 +986,6 @@ async function sessionRedactor(c: Ctx, meta: SessionMeta): Promise<Redactor> {
 	return held.redactor;
 }
 
-function repositoryOf(repo: StoredRepository): NonNullable<SessionSummary["repository"]> {
-	return { provider: repo.provider, id: repo.id, owner: repo.owner, name: repo.name, branch: repo.branch, private: repo.private, url: repo.url };
-}
-
 /** The user's GitHub connection as their actor has it now: asked each time, so a connection that was removed stops working at once. */
 function githubConnection(c: Ctx, meta: SessionMeta): Promise<StoredConnection | null> {
 	return userActor(c, meta.uid).internalGithubConnection();
@@ -2266,11 +997,7 @@ async function childSetupSeed(c: Ctx, meta: SessionMeta): Promise<string | undef
 	return (await itemActor(c, meta.uid, meta.origin.itemId).internalSetupSeed("child")) ?? undefined;
 }
 
-/**
- * Clones the session's repository into the sandbox that was just made, with a token GitHub issued for
- * reading that one repository; it is given to the one `git clone` and revoked after it (github/git.ts).
- * False when the turn was stopped meanwhile. Throws a TurnProblem that says what is in the way.
- */
+// Scope the clone token to the resolved repository and revoke it after clone.
 async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal): Promise<boolean> {
 	const repo = meta.repo;
 	if (!repo) return true;
@@ -2309,14 +1036,7 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 	return true;
 }
 
-/**
- * Puts the new sandbox's clone on the session's branch, after the setup command ran on the base
- * (`meta.workDue`). Whatever was pushed to the branch since, by anyone, is in the workspace then: it is
- * what the next push starts from. The saved work records whether setup ran in this sandbox: then what the
- * branch changed in its dependencies was not installed by it, and the agent is told so with its next
- * prompt. Throws a TurnProblem when git could not do it: nothing is started, and the next turn tries
- * again, without running the setup a second time.
- */
+// Run setup on the base before switching to the session's published work.
 async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle): Promise<void> {
 	const due = meta.workDue;
 	const repo = meta.repo;
@@ -2341,10 +1061,6 @@ async function putWorkspaceOnWork(c: Ctx, meta: SessionMeta, turn: number, sandb
 	await persist(c);
 }
 
-/** What the agent is told, once, after its workspace was put on its branch past a setup run on the base. */
-const setupOnBaseNote = (where: { branch: string; base: string }) =>
-	`[A note from the platform, not from the user: in this new sandbox the repository's setup command ran on ${where.base}, before the workspace was put on your branch ${where.branch}; it never runs on what a session pushed. What your branch added or changed in its dependencies is not installed: install it with your own commands if you need it.]\n\n`;
-
 /** One piece of a setup run's output, to connected clients and to those that connect while it runs. */
 function setupOutput(c: Ctx, turn: number, id: string, text: string): void {
 	const delta: LiveDelta = { turn, event: { type: "setup.output", id, text: text.length > SETUP_OUTPUT_CHARS ? text.slice(-SETUP_OUTPUT_CHARS) : text } };
@@ -2359,17 +1075,7 @@ function setupOutput(c: Ctx, turn: number, id: string, text: string): void {
 	}
 }
 
-/**
- * Runs the setup command the user saved for the session's repository, in the sandbox that was just
- * cloned into. It is read from the user's `user` actor here, each time: that is the only place a
- * setup command comes from. Once its processes are gone, the turn goes on: a run that did not succeed
- * is in the timeline, and is told to the agent with its next prompt (`meta.setupUnfinished`). It is
- * marked as done for this sandbox before it starts, so a server that stops under it does not make
- * the next turn run it a second time. True when a command ran. A command that could not be read refuses
- * the turn (a TurnProblem), and stays due: going on would let the agent change the workspace, or the
- * workspace be put on the session's branch (`meta.workDue`), before the next turn runs the setup there,
- * with the network and the repository's secrets, on what the agent wrote.
- */
+// Run the saved setup on each new clone. Record failures for the next prompt without failing the turn.
 async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal, secrets: HeldSecrets | null, plan: SnapshotPlan | null, layer: SandboxLayer): Promise<void> {
 	const project = setupProjectOf(meta);
 	const directory = meta.setupDue;
@@ -2438,11 +1144,7 @@ async function runSetup(c: Ctx, meta: SessionMeta, turn: number, sandbox: Sandbo
 	if (meta.environmentBuild) c.vars.environmentResult = await buildEnvironment(c, meta, turn, sandbox, signal, secrets, plan, layer, { result, output, original: original ?? null, command });
 }
 
-/**
- * A build session's work after its setup ran (environments.ts): every saved check once, then the image, saved only
- * when setup and every check passed. A failed build saves nothing, so the snapshot store keeps the last ready image.
- * Never throws: what went wrong is the result.
- */
+// Setup and environment failures block promotion. A check that fails on the base code is recorded with the image.
 async function buildEnvironment(c: Ctx, meta: SessionMeta, turn: number, sandbox: SandboxHandle, signal: AbortSignal, secrets: HeldSecrets | null, plan: SnapshotPlan | null, layer: SandboxLayer,
 	setup: { result: Awaited<ReturnType<typeof runSetupCommand>>; output: string; original: string | null; command: string }): Promise<EnvironmentBuildResult> {
 	const commit = setup.original ?? meta.repo?.baseSha ?? "";
@@ -2502,10 +1204,6 @@ function brief(text: string, limit: number): string {
 	return `${cut.slice(0, cut.lastIndexOf(" ") > limit / 2 ? cut.lastIndexOf(" ") : limit).trim()}…`;
 }
 
-/**
- * A message to start from. The title is the session's for the first push and the latest prompt's
- * opening words after it; the body is the agent's last answer, kept short, or the changed files.
- */
 async function draftMessage(c: Ctx, meta: SessionMeta, files: WorkspaceFile[] | null): Promise<PublishMessage> {
 	const rows = await serial(c, async () => {
 		await writeItems(c).catch(() => undefined);
@@ -2541,19 +1239,13 @@ function publishBlocked(c: Ctx, meta: SessionMeta): string | null {
 	return null;
 }
 
-/**
- * Whether the workspace has something GitHub does not. The files that differ from the last commit are
- * known from the copy taken when the last turn ended. Commits of the agent's own are known to git
- * only, which is asked when the sandbox is running anyway and never by starting one; the answer is
- * kept until a turn or a push changes it.
- */
+// A clean worktree can still hold unpublished commits.
 async function unpushedWork(c: Ctx, meta: SessionMeta, repo: StoredRepository, files: WorkspaceFile[] | null): Promise<boolean | null> {
 	if (c.vars.turn || !meta.sandboxId) return null;
 	if (files && files.length > 0) return true;
 	const key = `${meta.turns}:${repo.baseSha ?? ""}:${meta.pushedHead ?? ""}:${meta.sandboxId}`;
 	if (c.vars.unpushed?.key === key) return c.vars.unpushed.value;
-	// Only a turn or a push changes the answer, and the key names both: what was found while the sandbox
-	// ran still holds while it is paused, so a paused sandbox is not started to be asked again.
+	// Cache the observation only for the turn and push head it describes.
 	if (meta.unpushed?.key === key) return meta.unpushed.value;
 	let value: boolean | null = null;
 	// Under the sandbox's guard from the read of its state to the end: an idle suspend in between would be undone by the connect, uncounted.
@@ -2606,19 +1298,9 @@ function publishedLine(repo: StoredRepository, pull: PullRequestInfo, opened: bo
 	return `Pushed ${what} to ${pull.branch}; pull request #${pull.number} is updated.`;
 }
 
-/**
- * What a pull request's description is to say was verified (verified.ts): what the session's work
- * rests on since its last turn ended, and the user's checks as they are saved now. `during` names
- * the turn that is running, for a push the agent asked for: its checks have not run.
- */
 async function evidenceOf(c: Ctx, meta: SessionMeta, during: number | null): Promise<PublishEvidence> {
 	const held = c.vars.turn?.secrets ?? (await readSecrets(c, meta, null));
 	return { verified: meta.verified ?? null, during, checks: held.checks, redact: (text) => held.redactor.text(text), machine: machineOf(meta) };
-}
-
-/** For a session on one of the user's machines, that machine as a question or a pull request names it: by the name kept at launch. */
-function machineOf(meta: SessionMeta): { name: string | null } | null {
-	return meta.place.kind === "machine" ? { name: meta.machineName } : null;
 }
 
 /** Test a copy of the pinned base in the builder's existing sandbox, under its ordinary usage hold. */
@@ -2651,11 +1333,7 @@ async function testSessionBase(c: Ctx, meta: SessionMeta, repo: StoredRepository
 /** After a push's line in the timeline: what the pull request's description now says was verified, in its few words. */
 const verifiedLine = (pull: PullRequestInfo) => ` Its description reports: ${pull.verified}.`;
 
-/**
- * Commits, pushes and opens the pull request, for `publish()` and a work item's step. The caller has
- * checked that nothing is in the way. `shownIsEnough` for the item's step: its agent may have pushed
- * everything itself (`agentPush`), and then an open pull request is only described again.
- */
+// The caller owns the publishing lock so a second push cannot race this one.
 async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false, branchOnly = false, blockedNetwork?: BlockedNetwork, updateFromBase?: { head: string; at: number }): Promise<PublishResult> {
 	const app = githubApp();
 	if (!app || !meta.sandboxId) throw new UserError(publishBlocked(c, meta) ?? "There is nothing to push yet.", { code: "publish_blocked" });
@@ -2739,338 +1417,6 @@ function cleanMessage(input: unknown): PublishMessage {
 	return { title, body };
 }
 
-// ---------------------------------------------------------------------------------------------
-// A turn's question
-// ---------------------------------------------------------------------------------------------
-
-function duration(ms: number): string {
-	const plural = (count: number, unit: string) => (count === 1 ? `1 ${unit}` : `${count} ${unit}s`);
-	if (ms >= 2 * 86_400_000 || (ms >= 86_400_000 && ms % 86_400_000 === 0)) return plural(Math.round(ms / 86_400_000), "day");
-	if (ms >= 2 * 3_600_000 || (ms >= 3_600_000 && ms % 3_600_000 === 0)) return plural(Math.round(ms / 3_600_000), "hour");
-	if (ms >= 60_000) {
-		const minutes = Math.round(ms / 60_000);
-		return minutes === 1 ? "1 minute" : `${minutes} minutes`;
-	}
-	const seconds = Math.max(1, Math.round(ms / 1000));
-	return seconds === 1 ? "1 second" : `${seconds} seconds`;
-}
-
-/** What the sandbox layer hands over is typed, but it is another module's word: nothing is assumed of it. */
-function str(value: unknown): string {
-	return typeof value === "string" ? value : value === undefined || value === null ? "" : String(value);
-}
-
-/**
- * Takes the turn's pending question away: clients are told, and a session that was waiting counts as
- * running again. Synchronous, so of two callers exactly one gets the question. The caller settles the
- * layer's promise and publishes the summary.
- */
-function takeQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn): Asked | null {
-	const asked = active.question;
-	if (!asked) return null;
-	active.question = null;
-	clearTimeout(asked.timer);
-	if (meta.status === "waiting") meta.status = "running";
-	c.broadcast("question", null);
-	// A server's question that stood aside is put again, unless the turn is on its way out.
-	if (!active.closed && !active.stopping) active.aside.shift()?.put?.();
-	return asked;
-}
-
-/**
- * The layer's `onQuestion`: makes the question visible, turns the session to `waiting`, and returns
- * the promise that `answer()`, the timeout, a stop or the turn's end settles.
- */
-function askQuestion(c: Ctx, meta: SessionMeta, active: ActiveTurn, question: TurnQuestion, withdrawn: AbortSignal): Promise<TurnAnswer> {
-	const choices = (Array.isArray(question?.choices) ? question.choices : []).map((choice) => ({
-		id: str(choice?.id),
-		label: str(choice?.label) || str(choice?.id),
-		approve: choice?.approve === true,
-		remembers: typeof choice?.remembers === "string" && choice.remembers !== "" ? choice.remembers : null,
-	}));
-	// "deny" is Windlass's own id for it; a rejection declines a question that has no such choice.
-	const refusal = choices.find((choice) => choice.id === "deny" && !choice.approve) ?? choices.find((choice) => !choice.approve);
-	const declined = (why?: string): Promise<TurnAnswer> =>
-		refusal ? Promise.resolve({ choice: refusal.id, note: why }) : Promise.reject(new Error(why ?? "the question was declined"));
-	const title = str(question?.title) || "Allow this tool call?";
-
-	if (active.closed || active.controller.signal.aborted || withdrawn.aborted) return declined();
-	if (active.question?.put) {
-		// A tool call's question comes first, as in Windlass's own interfaces: the call waits on it and the turn
-		// with it, while a server only stays stopped. The server's question steps aside and is put again after this one.
-		const aside = active.question;
-		clearTimeout(aside.timer);
-		aside.timer = undefined;
-		active.question = null;
-		active.aside.unshift(aside);
-		if (meta.status === "waiting") meta.status = "running";
-	} else if (active.question) {
-		// Windlass asks one question at a time, and the contract shows one. A second one is not left to hang.
-		note(c, active.number, "warn", `${meta.harness && meta.harness !== "windlass" ? machineHarnesses[meta.harness].name : "Windlass"} asked "${title}" while another question was waiting for an answer, so it was declined.`);
-		return declined("Another question was waiting for the user's answer, so the platform declined this call. Ask again if it is still needed.");
-	}
-
-	const now = Date.now();
-	const pending: PendingQuestion = {
-		id: `q_${randomBytes(8).toString("hex")}`,
-		turn: active.number,
-		messageId: str(question.messageId),
-		callId: str(question.callId),
-		title,
-		subject: str(question.subject),
-		details: Array.isArray(question.details) ? question.details.map(str) : [],
-		choices,
-		subagent: typeof question.subagent === "string" && question.subagent !== "" ? question.subagent : null,
-		askedAt: now,
-		expiresAt: now + questionWait(meta),
-	};
-	return new Promise<TurnAnswer>((resolve, reject) => {
-		const settled = (): void => {
-			withdrawn.removeEventListener("abort", onWithdrawn);
-			active.unsettled.delete(asked);
-		};
-		const wait = questionWait(meta);
-		const asked: Asked = {
-			pending,
-			timer: setTimeout(() => {
-				// Nobody answered: the turn must not wait for ever, and the model should know why it was refused.
-				if (active.question !== asked) return;
-				takeQuestion(c, meta, active);
-				// A hosted sandbox runs, and costs, while it waits: the turn ends, and the sandbox pauses at once (`pauseNow`).
-				const hosted = hostedLimitsApply(meta.place);
-				note(c, active.number, "warn", hosted
-					? `Nobody answered "${pending.title}" within ${duration(wait)}, so the turn was ended and its sandbox paused. Send a prompt to go on.`
-					: `Nobody answered "${pending.title}" within ${duration(wait)}, so it was declined.`, {
-					code: "question_expired",
-					call: { messageId: pending.messageId, callId: pending.callId },
-				});
-				if (hosted) meta.pauseNow = true;
-				publish(c);
-				void persist(c);
-				asked.decline(`Nobody answered within ${duration(wait)}, so the platform declined this call for the user.`);
-				if (hosted) abortTurn(c, meta, active);
-			}, wait),
-			answer: (answer) => {
-				settled();
-				resolve(answer);
-			},
-			decline: (why) => {
-				settled();
-				if (refusal) resolve({ choice: refusal.id, note: why });
-				else reject(new Error(why ?? "the question was withdrawn"));
-			},
-		};
-		// The harness withdrew this question or stopped the turn.
-		function onWithdrawn(): void {
-			if (active.question === asked) {
-				takeQuestion(c, meta, active);
-				publish(c);
-				void persist(c);
-			}
-			asked.decline();
-		}
-		withdrawn.addEventListener("abort", onWithdrawn, { once: true });
-		active.unsettled.add(asked);
-		active.question = asked;
-		if (meta.status === "running") meta.status = "waiting";
-		c.broadcast("question", pending);
-		publish(c);
-		void persist(c);
-	});
-}
-
-/**
- * The user's approvals of projects' servers, kept beyond the sandbox Windlass keeps its own in: they
- * are in the user's `user` actor (server-approvals.ts), which every session of the user reaches from
- * whichever server it runs on. `approved` is asked before the question is put, and an approval of
- * exactly that definition for this session's project starts the server without asking; `remember` is
- * told when the user approves and Windlass took it. Like Windlass's own record, it does not outlast a
- * change of the definition, and it runs out 30 days after the user approved.
- */
-const serverApprovals = {
-	/** The approvals remembered for this session's project that have not run out, the newest first. */
-	of(c: Ctx, meta: SessionMeta): Promise<ServerApproval[]> {
-		return userActor(c, meta.uid).internalServerApprovals(projectOf(meta).key);
-	},
-	async approved(c: Ctx, meta: SessionMeta, question: Pick<TurnServerQuestion, "name" | "fingerprint">): Promise<ServerApproval | null> {
-		if (question.name === "" || question.fingerprint === "") return null;
-		const approvals = await serverApprovals.of(c, meta);
-		return approvals.find((approval) => approval.name === question.name && approval.fingerprint === question.fingerprint) ?? null;
-	},
-	async remember(c: Ctx, meta: SessionMeta, question: Pick<TurnServerQuestion, "name" | "fingerprint">): Promise<void> {
-		const project = projectOf(meta);
-		await userActor(c, meta.uid).internalServerApprove({ project: project.key, label: project.label, name: question.name, fingerprint: question.fingerprint });
-	},
-	async forget(c: Ctx, meta: SessionMeta, name: string): Promise<number> {
-		return (await userActor(c, meta.uid).internalServerForget({ project: projectOf(meta).key, name })).forgotten;
-	},
-};
-
-const serverKey = (question: Pick<TurnServerQuestion, "name" | "fingerprint">) => `${question.name}:${question.fingerprint}`;
-
-/** `promise`'s value, or null when it fails or takes longer than `ms`. */
-function orNull<T>(promise: Promise<T>, ms: number): Promise<T | null> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	return Promise.race([promise.catch(() => null), new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), ms)))]).finally(() => clearTimeout(timer));
-}
-
-/** Says that what the session knows of its project's servers, or of their approvals, changed: clients ask `servers()` again. */
-function serversChanged(c: Ctx, meta: SessionMeta): void {
-	const now = Date.now();
-	meta.serversChangedAt = meta.serversChangedAt >= now ? meta.serversChangedAt + 1 : now;
-	publish(c);
-	void persist(c);
-}
-
-/** The layer's `onServers`: keeps what Windlass says of the project's servers, for the side panel. */
-function knowServers(c: Ctx, meta: SessionMeta, said: TurnServer[]): void {
-	const known = meta.servers ?? [];
-	const next = knownServers(known, Array.isArray(said) ? said : [], Date.now());
-	if (sameServers(known, next)) return;
-	meta.servers = next;
-	serversChanged(c, meta);
-}
-
-/** Keeps the user's yes for the session's project. A failure costs one more question in another session, and is logged. */
-function rememberServer(c: Ctx, meta: SessionMeta, question: Pick<TurnServerQuestion, "name" | "fingerprint">): Promise<void> {
-	const work = serverApprovals.remember(c, meta, question).then(
-		() => serversChanged(c, meta),
-		(error: unknown) => c.log.warn({ msg: "could not remember the approval of a project's MCP server", session: meta.sessionId, server: question.name, error: describeError(error) }),
-	);
-	return c.vars.stopping ? work : c.keepAwake(work);
-}
-
-/** When the user approved, in the words of a line: "3 days ago". */
-function ago(ms: number): string {
-	return ms < 60_000 ? "a moment ago" : `${duration(ms)} ago`;
-}
-
-/** The session's servers as the side panel shows them: what the session kept, and what the user's record says of each. */
-async function sessionServers(c: Ctx, meta: SessionMeta): Promise<SessionServers> {
-	const known = meta.servers ?? [];
-	const { sandboxes } = await layerOf(c, meta);
-	// A session whose project names no server asks nobody: the user's own have no approval.
-	const approvals = known.some((server) => server.origin !== "user") ? await serverApprovals.of(c, meta) : [];
-	const project = projectOf(meta);
-	const context: ServerQuestionContext = { profile: sandboxes.profile(meta.profile), demo: meta.demo, dataInSandbox: await privateSessionData(meta, sandboxes, meta.sandboxId), project, machine: machineOf(meta), hostedEgress: meta.place.kind === "hosted" ? sandboxes.egress?.() : undefined };
-	const view = serversView(project, known, approvals, forgettingWords(context), (server) => serverPanelWords(server, context));
-	// Why a server of the user's own that reads an account's secret does not start here, where that is so.
-	return known.some((server) => server.origin === "user") ? { ...view, accountSecrets: meta.accountSecrets ?? null } : view;
-}
-
-/**
- * The layer's `onServerQuestion`: puts the question about a server the project's configuration names,
- * and returns the promise that `answer()`, the timeout, a stop or the turn's end settles: true to
- * start it. One asked before the prompt went (`holdsTurn`) turns the session to `waiting`, as a tool
- * call's does; one asked while the turn runs leaves it running. While a tool call's question is shown,
- * this one waits behind it. Where the user's approval of exactly this definition is remembered for the
- * session's project, nothing is put: the answer is yes, and the turn's line says why.
- */
-async function askServer(c: Ctx, meta: SessionMeta, active: ActiveTurn, context: ServerQuestionContext, given: TurnServerQuestion, withdrawn: AbortSignal): Promise<boolean> {
-	const gone = () => active.closed || active.stopping || active.controller.signal.aborted || withdrawn.aborted;
-	const argv = Array.isArray(given?.argv) ? given.argv.map(str) : null;
-	const question: TurnServerQuestion = {
-		name: str(given?.name),
-		fingerprint: str(given?.fingerprint),
-		argv,
-		url: argv === null ? str(given?.url) : null,
-		file: typeof given?.file === "string" && given.file !== "" ? given.file : null,
-		unset: Array.isArray(given?.unset) ? given.unset.map(str) : [],
-		secrets: Array.isArray(given?.secrets) ? given.secrets.map(str) : [],
-		holdsTurn: given?.holdsTurn === true,
-	};
-	if (gone()) return false;
-	// The user's own record first. Should it not answer in time, the user is asked, which is never wrong.
-	const recalled = await orNull(serverApprovals.approved(c, meta, question), RECALL_WAIT_MS);
-	if (gone()) return false;
-	if (recalled) {
-		active.recalled.set(serverKey(question), recalled);
-		return true;
-	}
-
-	const words = serverQuestionWords(question, context);
-	const now = Date.now();
-	return new Promise<boolean>((resolve) => {
-		let done = false;
-		let shown = false;
-		const settle = (start: boolean): void => {
-			if (done) return;
-			done = true;
-			withdrawn.removeEventListener("abort", onWithdrawn);
-			active.unsettled.delete(asked);
-			const at = active.aside.indexOf(asked);
-			if (at >= 0) active.aside.splice(at, 1);
-			clearTimeout(asked.timer);
-			resolve(start);
-		};
-		const asked: Asked = {
-			pending: {
-				id: `q_${randomBytes(8).toString("hex")}`,
-				turn: active.number,
-				messageId: "",
-				callId: "",
-				title: words.title,
-				subject: words.subject,
-				details: words.details,
-				choices: words.choices,
-				subagent: null,
-				askedAt: now,
-				expiresAt: now + config.questionTimeoutMs,
-				server: { name: question.name, file: question.file, remote: argv === null, unset: question.unset, holdsTurn: question.holdsTurn },
-			},
-			timer: undefined,
-			server: { name: question.name, fingerprint: question.fingerprint },
-			answer: (answer) => {
-				if (done) return;
-				const start = answer.choice === SERVER_START;
-				// A yes gets its line, and is remembered, when Windlass has said what became of the server (`onServerApproved`).
-				if (!start) note(c, active.number, "info", serverNotNowNote(question));
-				settle(start);
-			},
-			decline: () => settle(false),
-			put: () => {
-				// Put again after it stood aside, it has the whole time to be answered in once more.
-				if (shown) asked.pending = { ...asked.pending, expiresAt: Date.now() + config.questionTimeoutMs };
-				shown = true;
-				asked.timer = setTimeout(() => {
-					// Nobody answered: "not now", and the turn goes on without the server.
-					if (active.question !== asked) return;
-					takeQuestion(c, meta, active);
-					note(c, active.number, "warn", serverExpiredNote(question, duration(config.questionTimeoutMs)));
-					publish(c);
-					void persist(c);
-					settle(false);
-				}, Math.max(0, asked.pending.expiresAt - Date.now()));
-				active.question = asked;
-				if (question.holdsTurn && meta.status === "running") meta.status = "waiting";
-				c.broadcast("question", asked.pending);
-				publish(c);
-				void persist(c);
-			},
-		};
-		// The layer withdrew the question: the turn was stopped, or ended under a question put while it ran.
-		function onWithdrawn(): void {
-			if (done) return;
-			if (!active.stopping && !active.controller.signal.aborted) note(c, active.number, "info", serverUnansweredNote(question));
-			if (active.question === asked) {
-				takeQuestion(c, meta, active);
-				publish(c);
-				void persist(c);
-			}
-			settle(false);
-		}
-		withdrawn.addEventListener("abort", onWithdrawn, { once: true });
-		active.unsettled.add(asked);
-		if (active.question) active.aside.push(asked);
-		else asked.put?.();
-	});
-}
-
-// ---------------------------------------------------------------------------------------------
-// The agent asks the platform to publish
-// ---------------------------------------------------------------------------------------------
-
-
 /** A push's line for a request of the agent's, which may also have given an open pull request another title and description. */
 function agentPublishedLine(repo: StoredRepository, published: Published): string {
 	const { pull } = published;
@@ -3079,12 +1425,7 @@ function agentPublishedLine(repo: StoredRepository, published: Published): strin
 	return published.retitled ? `${line.replace(/\.$/, "")}, with the title and description the agent wrote.` : line;
 }
 
-/**
- * Puts the question about a request of the agent's to publish, and resolves with how it ended. It
- * stands where a tool call's question stands and is settled by the same `answer()`; like a server's
- * question it waits behind a question that is showing and steps aside for a tool call's. Nobody
- * answering in time declines it, as with a tool call's question: the turn does not wait for ever.
- */
+// A publish question shares the tool-call question slot and ends with the request or turn.
 function askPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, request: TurnPublishRequest, words: ReturnType<typeof publishQuestionWords>, withdrawn: AbortSignal): Promise<PublishAnswer> {
 	const gone = () => active.closed || active.stopping || active.controller.signal.aborted || withdrawn.aborted;
 	if (gone()) return Promise.resolve({ kind: "withdrawn" });
@@ -3155,17 +1496,7 @@ function askPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, request: Turn
 	});
 }
 
-/**
- * The layer's `onPublish`: a request of the agent's that the platform publish the session's work.
- * Resolves with what the agent is told. What the request holds is the model's text: it is checked
- * and the repository's saved secrets are taken out before anyone is shown it or GitHub gets it
- * (agent-publish.ts). It goes to the session's branch and the session's pull request, by the same
- * `publishWork` a push from the panel uses, so what that refuses is refused here. Unless the
- * session lets the agent publish unasked, the user is asked first; and always where the profile
- * does not hold the agent's commands in Windlass's sandbox (`profileCommands`), or the request came
- * over MCP (`request.via`, from an endpoint in the container), since a request there may be a
- * command's. Never rejects.
- */
+// Only publish the session's repository and branch. Approval scope depends on the caller's isolation.
 async function agentPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, profileCommands: CommandSandbox, request: TurnPublishRequest, withdrawn: AbortSignal): Promise<string> {
 	const turn = active.number;
 	// A call over MCP may be any process's in the container: it is asked about as where commands are not sandboxed, whatever the profile.
@@ -3245,26 +1576,7 @@ async function agentPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandb
 	}
 }
 
-/**
- * The layer's `onPush`: the agent pushes the session's branch. Resolves with what the agent is told;
- * never rejects. It commits what is uncommitted with the agent's message and pushes, as a publish
- * does (`pushWork`, the same code), and opens or changes no pull request; an open one has its
- * section written again for the work as it is now, which says the turn's checks have not run yet
- * (`evidenceOf` with the turn), and once more from the turn's checks when the turn has ended
- * (`active.published`, `describeAfterTurn`).
- *
- * Never asked about, in any profile, attended or not, whatever "Let the agent publish without asking"
- * says. A call that a command made in the agent's name, where commands can (agent-publish.ts) and over
- * MCP, whose endpoint any process in the container may reach (platform-tools.ts), gains nothing by it: it pushes the workspace, which any command can already change, to the session's own
- * branch, which the platform names (the agent names no branch, so the default branch is out of reach),
- * under a lease that replaces only the platform's own last push and never a commit anyone else
- * pushed (git.ts `pushScript`).
- *
- * The call is this turn's: it is refused once the turn is closing. One at a time with a publish
- * (`c.vars.publishing`), decided and taken in one step, and under the sandbox's guard (`takeSandbox`).
- * Over MCP a turn may make at most `MCP_LIMITS.push` (platform-tools.ts), and each line in the
- * timeline says the call may not have been the agent's (`callLine`).
- */
+// An agent push can race turn closure. Track it until the commit, push and receipt finish.
 async function agentPush(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, request: TurnPublishRequest): Promise<string> {
 	const turn = active.number;
 	const said = (line: string) => callLine(request.via, line);
@@ -3327,12 +1639,7 @@ async function agentPush(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox:
 	}
 }
 
-/**
- * The layer's `onFetchBase`: the session's base branch, as it is at GitHub now, fetched into the
- * workspace as `origin/<base>` with a token that may only read (`fetchBase`, as for an item's turn
- * that merges it), for the agent to rebase onto and push again. Never asked about: it reads. Under
- * the sandbox's guard; refused once the turn is closing. Resolves with what the agent is told.
- */
+// Fetch the session's configured base using a repository-scoped read token.
 async function agentFetchBase(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, request: TurnPublishRequest): Promise<string> {
 	const said = (line: string) => callLine(request.via, line);
 	const repo = meta.repo;
@@ -3354,39 +1661,6 @@ async function agentFetchBase(c: Ctx, meta: SessionMeta, active: ActiveTurn, san
 	}
 }
 
-/** How long a turn's question waits for its answer: shorter in a hosted sandbox, which runs while it waits. */
-function questionWait(meta: SessionMeta): number {
-	return hostedLimitsApply(meta.place) ? config.hostedQuestionTimeoutMs : config.questionTimeoutMs;
-}
-
-/** Stops the turn. The question it may be waiting on goes first: nobody can answer a turn that is ending. */
-function abortTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): void {
-	active.stopping = true;
-	if (takeQuestion(c, meta, active)) {
-		publish(c);
-		void persist(c);
-	}
-	const shutdown = active.pausing === "restart" && meta.place.kind === "hosted" && (meta.harness ?? "windlass") === "windlass";
-	active.controller.abort(shutdown ? PLATFORM_RESTART : undefined);
-}
-
-/** Closes the turn to steering, stopping one call and answering, and leaves no question behind. Never throws. */
-function sealTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn): void {
-	active.closed = true;
-	active.control = null;
-	try {
-		takeQuestion(c, meta, active);
-		for (const asked of [...active.unsettled]) asked.decline();
-	} catch (error) {
-		active.question = null;
-		c.log.error({ msg: "could not withdraw the turn's question", error: describeError(error) });
-	}
-}
-
-// ---------------------------------------------------------------------------------------------
-// The sandbox's time and place (usage.ts)
-// ---------------------------------------------------------------------------------------------
-
 /** How long the user's meter may take to answer before a prompt gives up on it, and a running sandbox goes on without the answer. */
 const METER_WAIT_MS = 10_000;
 /** How long after a call to the meter that failed, or that found the session in the middle of something, the session looks again. */
@@ -3396,12 +1670,7 @@ const IDLE_STOP_MARGIN_MS = 3_000;
 /** How many reports of sandbox time a session keeps to send again. */
 const MAX_UNSETTLED = 20;
 
-/**
- * What a decision to stop counting names: the use of the sandbox the open hold was taken for
- * (`OpenStretch.use`). It is read in the synchronous step that decides, and the queued settlement goes
- * ahead only while the meter is still that use's: a hold a turn, a read or a push took after the
- * decision is theirs, whatever the decision found. Null when nothing is being counted.
- */
+// Identify the use by its reservation so a stale stop cannot settle its replacement.
 function useOf(meta: SessionMeta): string | null {
 	return meta.meter?.use ?? null;
 }
@@ -3419,21 +1688,13 @@ function inTime<T>(promise: Promise<T>, ms: number): Promise<T> {
 	return Promise.race([promise, new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`no answer within ${ms} ms`)), ms)))]).finally(() => clearTimeout(timer));
 }
 
-/**
- * Whether the open stretch is the one the session's stored state had as the actor woke, and nothing
- * has created, resumed, suspended or removed the sandbox since (`c.vars.carried`): what it ran after
- * the server that counted it went away is not known until the wake's read of the sandbox's state.
- */
+// A carried hold is valid only while its use and sandbox generation still match.
 function carriedOver(c: Ctx, meta: SessionMeta): boolean {
 	const carried = c.vars.carried;
 	return carried !== null && carried.use === useOf(meta) && carried.gen === c.vars.sandboxGen;
 }
 
-/**
- * Asks the user's meter for a hold, in trade for the one the session has when it has one, with what
- * the sandbox ran of that. On a yes the stretch goes on in the new hold from this moment. Null when
- * the meter did not answer. Only ever called from inside the meter's queue.
- */
+// Write the request ID before reserving time. Reuse it if the response is lost.
 async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean, observedUntil?: number): Promise<ReserveAnswer | null> {
 	// Reports the book has not had go first: one for a hold it still has open would be counted in full once another is taken.
 	if (meta.unsettled?.length) await sendUnsettled(c, meta);
@@ -3447,10 +1708,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean, observedUntil
 		meta.meterAsked = asked;
 		await persist(c);
 	}
-	// A fresh hold is for a use that starts now. A stretch carried over a wake that nobody has looked at
-	// since may have ended long before, when the provider stopped the unused sandbox by itself: it is
-	// traded at the latest moment the sandbox can have run, as a "found" close would count it, and not
-	// up to the wake. Decided in the step that sends it.
+	// A carried hold may have stopped at the provider before this actor woke.
 	const until = open && fresh && carriedOver(c, meta) ? stoppedBy(open, meta.lastUsedAt, c.vars.idleStopMs, now) : now;
 	let answer: ReserveAnswer;
 	try {
@@ -3480,13 +1738,7 @@ async function takeHold(c: Ctx, meta: SessionMeta, fresh: boolean, observedUntil
 	return answer;
 }
 
-/**
- * Before the session's sandbox is created or started, and before a turn starts in one that runs:
- * takes a hold of its user's sandbox time, and a place among the sandboxes the user keeps when the
- * session has none. Throws the UserError a client is shown when a limit refuses it, and when the
- * user's actor does not answer: nothing is started on a count nobody could check. A sandbox that runs
- * then goes on to the end of the hold it has.
- */
+// Acquire time and any new place before starting the sandbox.
 function holdSandbox(c: Ctx, meta: SessionMeta, fresh: boolean, observedUntil?: number): Promise<void> {
 	if (!hostedLimitsApply(meta.place)) return Promise.resolve();
 	return metered(c, async () => {
@@ -3501,11 +1753,7 @@ function holdSandbox(c: Ctx, meta: SessionMeta, fresh: boolean, observedUntil?: 
 	});
 }
 
-/**
- * Sets the timer for the moment the session next has to look at its sandbox's time: when its hold is
- * over, or, with no turn in it, when the provider would have stopped the sandbox by itself. Not before
- * `notBefore`. Nothing is set while the sandbox does not run, or once the actor is on its way out.
- */
+// Bound renewal by the provider's idle timeout as well as the user's hold.
 function armMeter(c: Ctx, meta: SessionMeta, notBefore = 0): void {
 	if (c.vars.meterTimer) clearTimeout(c.vars.meterTimer);
 	c.vars.meterTimer = null;
@@ -3531,13 +1779,7 @@ function armMeter(c: Ctx, meta: SessionMeta, notBefore = 0): void {
 	);
 }
 
-/**
- * The timer's visit. A sandbox with no turn in it that the provider has stopped by itself has its
- * stretch settled, up to the moment it can have run to. One whose hold is over trades it for the
- * next; when the meter does not answer, the sandbox goes on and the meter is asked again shortly
- * (the hold it has is counted in full by the meter itself if that never works); and when the day's
- * allowance gives no more, the sandbox stops (`outOfTime`).
- */
+// Recheck the observed use after reading the provider. Another operation may have replaced the hold.
 function meterTick(c: Ctx, meta: SessionMeta): Promise<void> {
 	return metered(c, async () => {
 		const open = meta.meter;
@@ -3576,12 +1818,7 @@ function meterTick(c: Ctx, meta: SessionMeta): Promise<void> {
 	});
 }
 
-/**
- * The sandbox may not run on: the day's allowance cannot cover it, or its time could not be checked
- * before its hold ran out. A turn that runs is stopped, with a line that says why (`turnText`), and its
- * sandbox is suspended once the turn has closed (`meterAfterTurn`); a sandbox with no turn in it is
- * suspended now (`idleText`). Either way its files stay as they are.
- */
+// Stop the active turn before its sandbox consumes unreserved time.
 function outOfTime(c: Ctx, meta: SessionMeta, turnText: string, idleText: string): void {
 	const active = c.vars.turn;
 	if (active) {
@@ -3595,11 +1832,7 @@ function outOfTime(c: Ctx, meta: SessionMeta, turnText: string, idleText: string
 	void c.keepAwake(suspendOutOfTime(c, meta, idleText));
 }
 
-/**
- * Suspends the sandbox because no sandbox time is left for it to run on, and settles its stretch.
- * `text` is the timeline's line; null when the turn that was stopped has said it. While a prompt is
- * being accepted, or something else has the sandbox, it is left for the timer's next visit. Never throws.
- */
+// Suspend first so settlement uses the actual pause time when the provider supplies one.
 async function suspendOutOfTime(c: Ctx, meta: SessionMeta, text: string | null): Promise<void> {
 	const id = meta.sandboxId;
 	if (!id || c.vars.stopping || c.vars.destroying) return;
@@ -3634,11 +1867,7 @@ async function suspendOutOfTime(c: Ctx, meta: SessionMeta, text: string | null):
 	await armIdle(c, meta);
 }
 
-/**
- * The stretch ended at `until`: what the sandbox ran of its hold is the session's to report. It is
- * kept with the session first and sent then, so a report that does not get through is sent again
- * when the session is next awake. Only ever called from inside the meter's queue.
- */
+// Keep the settlement until the user's meter acknowledges its idempotent receipt.
 async function settleStretch(c: Ctx, meta: SessionMeta, until: number, use: string | null, observedUntil?: number): Promise<void> {
 	const open = meta.meter;
 	if (!open || useOf(meta) !== use) return;
@@ -3666,13 +1895,7 @@ async function sendUnsettled(c: Ctx, meta: SessionMeta): Promise<void> {
 	}
 }
 
-/**
- * The session's sandbox does not run any more: settles the stretch that was being counted. "now" when
- * the session stopped it itself; "found" when the session finds it stopped, and it can have run until
- * the provider's own timeout at the latest, and no longer than the hold it had. `use` is what the
- * caller decided about (`useOf`), read when it decided: a turn that ended without a sandbox, or a state
- * read from before a wake, must not settle the hold of a prompt that came meanwhile. Never throws.
- */
+// A provider-observed stop can precede the actor's own clock.
 function closeMeter(c: Ctx, meta: SessionMeta, how: "now" | "found", use: string | null, pausedAt?: number): Promise<void> {
 	const at = Date.now();
 	if (use === null) return Promise.resolve();
@@ -3695,11 +1918,7 @@ async function releasePlace(c: Ctx, meta: SessionMeta): Promise<void> {
 	});
 }
 
-/**
- * A turn has closed: what follows for the sandbox's time and place. `use` is the meter's when the turn
- * ended, read before a new prompt could be taken: one that came in the turn's last steps has a hold
- * and a place of its own. Never throws.
- */
+// An idle sandbox that stays running still needs a hold.
 async function meterAfterTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, use: string | null): Promise<void> {
 	try {
 		if (!meta.sandboxId || meta.sandbox !== "running") {
@@ -3716,13 +1935,7 @@ async function meterAfterTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, use
 	}
 }
 
-/**
- * When the actor wakes: a stretch that was open when it went away, a sandbox that runs with nobody
- * counting it (one from before sandbox time was counted, or one that went on under a server that
- * stopped), and reports that never arrived. Called once the sandbox's real state is known. `use` is
- * the meter's as the actor woke, read before anything was awaited: the prompt that woke it may have
- * taken a hold since, which is that prompt's to settle. Never throws.
- */
+// Inspect the provider before charging time that elapsed while the actor slept.
 async function wakeMeter(c: Ctx, meta: SessionMeta, use: string | null): Promise<void> {
 	// The sandbox's state was read (`refreshSandbox`): from here the stretch is settled as found, or goes on.
 	c.vars.carried = null;
@@ -3743,14 +1956,7 @@ async function wakeMeter(c: Ctx, meta: SessionMeta, use: string | null): Promise
 	}
 }
 
-/**
- * As the actor wakes, before any call can ask for a hold: a hold asked for with nothing running, whose
- * answer never came because the server stopped under the request, is reported at 0 s, as `takeHold`
- * reports one whose answer did not come in time. Nothing was started on it. Asked again instead, it
- * would be the waking prompt's hold, counted from before the server went away, and with no prompt it
- * would wait until the book counted it in full. One asked for while the sandbox was stored as running
- * may have had the sandbox run in it, and is asked again as before.
- */
+// Reconcile a lost reservation response before a new turn can ask for another hold.
 function settleWokenAsk(c: Ctx, meta: SessionMeta): void {
 	const asked = meta.meterAsked;
 	if (!asked || meta.meter || (meta.sandboxId !== null && meta.sandbox === "running")) return;
@@ -3779,10 +1985,6 @@ async function leaveUsage(c: Ctx, meta: SessionMeta): Promise<void> {
 	await releasePlace(c, meta);
 }
 
-/**
- * Removes the session's sandbox with its files; the session stays, and its next prompt starts a new
- * one. For a sandbox nobody used for long, and for one its user frees to make room for another.
- */
 async function removeSandbox(c: Ctx, meta: SessionMeta, id: string, text: string): Promise<void> {
 	const { sandboxes } = await layerOf(c, meta);
 	await sandboxes.destroy(id);
@@ -3802,17 +2004,10 @@ async function removeSandbox(c: Ctx, meta: SessionMeta, id: string, text: string
 	await releasePlace(c, meta);
 }
 
-// ---------------------------------------------------------------------------------------------
-// An idle sandbox
-// ---------------------------------------------------------------------------------------------
-
 /** How long a check that failed, or found a prompt being accepted, waits before it looks again. */
 const IDLE_RETRY_MS = 60_000;
 
-/**
- * Whether a sandbox nobody used for long is removed. Not on one of the user's machines (design
- * decision 4): it costs the platform nothing there, and it is the user's to remove.
- */
+// Never remove a user's machine sandbox merely because this actor was idle.
 function removedWhenIdle(meta: SessionMeta): boolean {
 	return meta.place.kind === "hosted";
 }
@@ -3824,13 +2019,7 @@ function idleDue(meta: SessionMeta): number | null {
 	return removedWhenIdle(meta) ? meta.lastUsedAt + config.idleDestroyMs : null;
 }
 
-/**
- * Sets the durable schedule to look at the session when its sandbox is next due, not before `notBefore`.
- * A check already set for that moment is kept; one set for another is replaced. A later look
- * (`notBefore`, from a check that found the sandbox taken or failed) keeps a check set for sooner: what
- * had the sandbox set it since, as a read that resumed it does for its idle time from then, and the
- * queue may run that arming before this one. Queued, so two calls cannot both schedule; never rejects.
- */
+// Serialize schedule replacement so an older request cannot cancel a newer idle check.
 function armIdle(c: Ctx, meta: SessionMeta, notBefore = 0): Promise<void> {
 	const run = c.vars.arming.then(async () => {
 		if (c.vars.destroying || c.vars.meta !== meta) return;
@@ -3915,10 +2104,6 @@ const suspend = id !== null && !remove && meta.sandbox === "running" && (pauseNo
 	}
 	await armIdle(c, meta, retry);
 }
-
-// ---------------------------------------------------------------------------------------------
-// A turn
-// ---------------------------------------------------------------------------------------------
 
 function usageOf(value: unknown): TurnUsage | null {
 	if (typeof value !== "object" || value === null) return null;
@@ -4025,6 +2210,63 @@ export async function noteTurnMemory(c: Ctx, meta: SessionMeta, active: ActiveTu
 	}
 }
 
+function refuseItemPolicy(item: ActiveTurn["item"], reason: string): never {
+	if (item) {
+		item.refused = reason;
+		item.policyRefusal = true;
+	}
+	throw new TurnProblem(reason);
+}
+
+function secretRequestHandler(
+	c: Ctx, meta: SessionMeta, turn: number, item: ActiveTurn["item"],
+	redactor: Redactor, acp: boolean, isOpen: () => boolean,
+): NonNullable<RunTurnInput["onRequestSecret"]> {
+	return async (request, withdrawn) => {
+		const refuse = async (message: string) => {
+			const scope = item ? item.row.key.split(":").slice(0, 2).join(":") : "session";
+			if (meta.secretRefusalRun !== scope) {
+				meta.secretRefusalRun = scope;
+				note(c, turn, "warn", "A secret request was refused.");
+				await persist(c);
+			}
+			return message;
+		};
+		const validate = () => requestSecret(request.arguments, !!item?.asked || !!meta.secretRequest, !!meta.secretRequestBlocked || !!meta.tainted, redactor);
+		if (!isOpen() || withdrawn.aborted) return "The call ended. Nothing was recorded.";
+		const taken = validate();
+		const name = taken.request?.name ?? "";
+		let problem: string | null;
+		try {
+			if (item) {
+				problem = await itemActor(c, meta.uid, item.row.itemId).internalSecretRequestLimit(item.row.key, name);
+			} else {
+				const attempts = meta.secretAsks ?? 0;
+				problem = secretRequestLimit(name, attempts, meta.declinedSecrets ?? [], "session");
+				if (attempts < MAX_SECRET_REQUESTS) {
+					meta.secretAsks = attempts + 1;
+					await writeMeta(c, meta);
+				}
+			}
+			if (!problem && !taken.request) problem = taken.told;
+			if (!problem) problem = await secretsActor(c, meta.uid, meta.sessionId).internalRequestedSecretConflict(meta.sessionId, name);
+		} catch {
+			problem = "The platform could not check this secret request. Try again.";
+		}
+		if (!isOpen() || withdrawn.aborted) return "The call ended. Nothing was recorded.";
+		if (problem) return refuse(problem);
+		// Another tool call or a third-party event may have landed during the lookups.
+		const current = validate();
+		if (!current.request) return refuse(current.told);
+		const notice = secretRequestNotice(acp, !setupProjectOf(meta));
+		const secretRequest = { ...current.request, notice, id: String(turn) };
+		meta.secretRequest = secretRequest;
+		append(c, { turn, kind: "platform", level: "info", text: `A secret was requested for ${name}.\n${notice}`, secretRequest });
+		await persist(c);
+		return current.told;
+	};
+}
+
 async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: string, release: () => void, machine: ReturnType<typeof machineActor> | null): Promise<void> {
 	const startedAt = Date.now();
 	const turn = active.number;
@@ -4035,9 +2277,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	const checkout = active.item?.row.checkout;
 	const requested = checkout?.requested;
 	const critic = reviewer && active.item?.row.agent === "critic";
-	// Where the outside text of an item's turn came from, and the one rule for every agent of how it goes (factory/untrusted.ts):
-	// marked for Windlass where it can contain commands once told, labelled only otherwise, and on "Docker, hardened" someone
-	// else's stops the turn until the person chose to run it anyway (`unsandboxed`).
+	// Apply the same untrusted-source policy to an original prompt and its resume fallback.
 	let untrusted = active.item?.row.untrusted ?? active.untrusted ?? meta.run?.untrusted ?? [];
 	let outsideText = untrusted.length > 0 || !!active.item?.row.fresh?.untrusted.length;
 	let handling = untrustedTurn({ agent: meta.harness ?? "windlass", profile: meta.profile, untrusted, unsandboxed: active.item?.row.unsandboxed });
@@ -4062,8 +2302,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	/** The turn's own record (WLP_TURN_RESUME): its segments, its limit across pauses, and what pausing it needs. */
 	const run = meta.run?.turn === turn ? meta.run : null;
 	/** The runner conversation's losses when the agent started (`ServerChannel.losses`): more at its end, and the machine went away mid-turn. */
-	// A restored process belongs to a newly reconstructed channel. Its grace may expire
-	// while the turn is still acquiring its machine slot or opening the sandbox.
+	// Reattached runner channels can lose their grace period during slot acquisition.
 	let lossesAtStart: number | null = active.reattach ? 0 : null;
 	let agentStarted = false;
 	let thrown: unknown = null;
@@ -4167,23 +2406,17 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const offered = facts?.report?.harnesses?.find(h => h.id === meta.harness);
 		const { model, key } = active.credential ?? await turnCredential(c, meta, offered, meta.model, signal, run?.credential).catch(error => {
 			if (!(error instanceof UserError) || error.code !== "harness_signed_out") throw error;
-			if (active.item) { active.item.refused = error.message; active.item.policyRefusal = true; }
-			throw new TurnProblem(error.message);
+			return refuseItemPolicy(active.item, error.message);
 		});
 		if (run) {
 			run.credential = { model, key };
 			if (key && meta.place.kind === "hosted") run.remainingRequests ??= config.modelRelay.turnRequests;
-			await serial(c, () => c.db.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta)));
+			await writeMeta(c, meta);
 		}
 		const takeRequest = run?.remainingRequests !== undefined ? () => takeTurnRequest(c, meta, run, active) : undefined;
 		const signedOut = active.item && facts ? itemSignInRefusal(meta, facts, offered, key?.provider) : null;
-		if (signedOut) {
-			active.item!.refused = signedOut;
-			active.item!.policyRefusal = true;
-			throw new TurnProblem(signedOut);
-		}
-		// Someone else's text where no agent can contain what it talks the agent into ("Docker, hardened"): refused before anything
-		// starts, unless the person chose to run it anyway. The item asks, and can run this very turn ("Run it anyway").
+		if (signedOut) refuseItemPolicy(active.item, signedOut);
+		// Refuse unsafe outside text before acquiring secrets or opening the sandbox.
 		if (handling.kind === "stop") refuseUntrusted(active.item, handling, active.item?.row.text ?? text);
 		// Before anything is started: the setup command and Windlass are handed them, and what either says is shown without them.
 		active.secrets ??= await readSecrets(c, meta, turn);
@@ -4205,8 +2438,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		if (run?.memory?.sandboxId === sandbox.id) memoryAtStart = { oomKills: run.memory.oomKills, totalMiB: run.memory.totalMiB };
 		else if (run && memoryAtStart) run.memory = { sandboxId: sandbox.id, ...memoryAtStart };
 		if (sandbox.outOfMemory && active.item && meta.memoryNoted !== sandbox.id) {
-			// It had run out of memory before this turn, and was restarted: in the same size the same commands run it out again,
-			// so a work item asks its person first, where a larger size is offered. A person's own agent goes on: they read the note.
+			// After an OOM restart, offer a larger size when available. Otherwise continue at the current size.
 			active.item.outOfMemory = withLarger(sandbox.outOfMemory, await resizeOptions(c, meta, layer));
 			if (active.item.outOfMemory.larger) throw new TurnProblem(sandbox.notice ?? outOfMemoryWords(sandbox.outOfMemory));
 		}
@@ -4228,9 +2460,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}
 		if (meta.demo && !caps.demo) throw new TurnProblem("This agent's harness has no demo mode.");
 		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn);
-		// Windlass freezes model-visible tools at the first prompt. Resuming the planner does not
-		// add report to that baseline. Switch conversations at the summary boundary, retaining the workspace
-		// and the platform timeline. Each summary retry starts fresh. A paused segment resumes its conversation.
+		// Windlass freezes tools at the first prompt. Start summaries fresh, but resume a paused segment's conversation.
 		const summary = active.item?.row.agent === "summary";
 		if (summary !== !!meta.summaryConversation || (summary && !active.resume)) {
 			meta.windlassSessionId = null;
@@ -4238,9 +2468,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}
 		// Read after the sandbox is open: a sandbox made in place of a lost one has the session only when its copy was restored.
 		resumed = critic || requested ? null : meta.windlassSessionId;
-		// A turn that resumes after a pause: its agent goes on with a short "carry on" when it has its conversation of the turn,
-		// and is given the whole task when it has not (a new sandbox, a memory that was lost); also when the saved session turns
-		// out to be gone only once the agent is asked for it (`fresh`). The whole task's sources go by the same rule as any turn's.
+		// Reuse the task when its saved conversation did not survive replacement.
 		if (active.resume && run?.prompted) {
 			const whole = await wholeTask(c, meta, active, turn);
 			outsideText ||= whole.untrusted.length > 0;
@@ -4260,8 +2488,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				note(c, turn, "info", "The agent no longer has its earlier conversation of this turn, so it was given the whole task again.");
 			}
 		} else if (active.item) {
-			// A step that goes on, in an agent that has no conversation of it (a new sandbox, a memory that was lost): "continue
-			// from where you were" would mean nothing to it, so it is given the step's whole task instead.
+			// Without the previous conversation, continuing requires the whole task.
 			const chosen = itemTurnText(active.item.row, text, resumed);
 			if (chosen.fresh) {
 				// The whole task's sources are its own (a GitHub issue's text), and go by the same rule as any turn's.
@@ -4314,8 +2541,6 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			&& (await sandbox.run("test -x /usr/local/bin/wlp-shot", { signal, timeoutMs: 5000 })).exitCode === 0;
 		const unavailable = held.screenshots ? "Screenshots are unavailable in this sandbox. File without screenshots." : NO_REPO_SHOTS;
 		let filings = Promise.resolve("");
-		// A builder's platform tools (platform-tools.ts): the same handlers for every agent, which takes them by host tools (Windlass) or MCP (the others).
-		// A work item's agent files its report, which the platform puts on the pull request it pushes itself.
 		const onReport: RunTurnInput["onReport"] = item && !planning && !reviewer && platformTool("report") ? (request, withdrawn) => {
 			const file = async () => {
 				if (!open || withdrawn.aborted) return "The report call ended. File it again.";
@@ -4337,51 +2562,10 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			return tracked(filings);
 		} : undefined;
 		meta.secretRequestBlocked = outsideText || ((!!resumed || !!active.resume) && !!meta.secretRequestBlocked);
-		const onRequestSecret: RunTurnInput["onRequestSecret"] = !planner && !reviewer && (!item || typeof item.row.asksLeft === "number") && platformTool("request_secret") ? async (request, withdrawn) => {
-			const refuse = async (message: string) => {
-				const scope = item ? item.row.key.split(":").slice(0, 2).join(":") : "session";
-				if (meta.secretRefusalRun !== scope) {
-					meta.secretRefusalRun = scope;
-					note(c, turn, "warn", "A secret request was refused.");
-					await persist(c);
-				}
-				return message;
-			};
-			const validate = () => requestSecret(request.arguments, !!item?.asked || !!meta.secretRequest, !!meta.secretRequestBlocked || !!meta.tainted, held.redactor);
-			if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
-			const taken = validate();
-			const name = taken.request?.name ?? "";
-			let problem: string | null;
-			try {
-				if (item) {
-					problem = await itemActor(c, meta.uid, item.row.itemId).internalSecretRequestLimit(item.row.key, name);
-				} else {
-					const attempts = meta.secretAsks ?? 0;
-					problem = secretRequestLimit(name, attempts, meta.declinedSecrets ?? [], "session");
-					if (attempts < MAX_SECRET_REQUESTS) {
-						meta.secretAsks = attempts + 1;
-						await serial(c, () => c.db.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta)));
-					}
-				}
-				if (!problem && !taken.request) problem = taken.told;
-				if (!problem) problem = await secretsActor(c, meta.uid, meta.sessionId).internalRequestedSecretConflict(meta.sessionId, name);
-			} catch {
-				problem = "The platform could not check this secret request. Try again.";
-			}
-			if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
-			if (problem) return refuse(problem);
-			// Another tool call or a third-party event may have landed during the lookups.
-			const current = validate();
-			if (!current.request) return refuse(current.told);
-			const notice = secretRequestNotice(caps.events === "acp", !setupProjectOf(meta));
-			const secretRequest = { ...current.request, notice, id: String(turn) };
-			meta.secretRequest = secretRequest;
-			append(c, { turn, kind: "platform", level: "info", text: `A secret was requested for ${name}.\n${notice}`, secretRequest });
-			await persist(c);
-			return current.told;
-		} : undefined;
-		// A builder asks its person a question; the item asks it when the turn ends. Never the planner, the summary or the reviewer,
-		// and only on a delivery that says how many the run has left.
+		const onRequestSecret: RunTurnInput["onRequestSecret"] = !planner && !reviewer && (!item || typeof item.row.asksLeft === "number") && platformTool("request_secret")
+			? secretRequestHandler(c, meta, turn, item, held.redactor, caps.events === "acp", () => open)
+			: undefined;
+		// Only a builder with a remaining question allowance may ask its owner.
 		const onAsk: RunTurnInput["onAsk"] = item && !planner && !reviewer && typeof item.row.asksLeft === "number" && platformTool("ask_person") ? (request, withdrawn) => {
 			if (!open || withdrawn.aborted) return "The call ended. Nothing was recorded.";
 			const taken = askPerson(request.arguments, { already: !!item.asked || !!meta.secretRequest, left: item.row.asksLeft ?? 0 }, held.redactor);
@@ -4389,9 +2573,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			note(c, turn, taken.asked ? "info" : "warn", taken.said);
 			return taken.told;
 		} : undefined;
-		// Where there is a repository to publish to and an app to do it with, the agent may publish (a person's session), push
-		// its branch and have the base fetched to rebase onto (a person's session and an item's alike). The same handlers for
-		// every agent; over MCP each call may be any process's in the container (platform-tools.ts), which the handlers go by.
+		// Repository tools remain bound to this session. MCP calls can originate anywhere in the container.
 		const repoTools = !planner && !reviewer && !!meta.repo && githubApp() !== null;
 		const onPush: RunTurnInput["onPush"] = repoTools && platformTool("push") ? (request) => tracked(agentPush(c, meta, active, sandbox, request)) : undefined;
 		const onFetchBase: RunTurnInput["onFetchBase"] = repoTools && platformTool("fetch_base") ? (request) => agentFetchBase(c, meta, active, sandbox, request) : undefined;
@@ -4418,8 +2600,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				common.reviewDirectory = directory;
 			} else if (checkout) await app.withToken(resolved.installation.id, scope, token => checkoutReview(sandbox, app.cloneUrl(owner, name), token, directory, checkout.pr, checkout.head, signal), { revokeAfter: true });
 			if (caps.events === "windlass") {
-				// Windlass starts a project server with a remembered grant before it asks the platform.
-				// The private data directory starts empty; fail closed if setup populated its grants.
+				// Setup must not seed approvals in a reviewer's private data directory.
 				const grants = `${DATA_DIR}/approvals`;
 				const grantCheck = await sandbox.run(`set -eu
 test ! -L '${grants}'
@@ -4492,35 +2673,32 @@ fi`, { signal, timeoutMs: 5000 });
 			filings = filings.then(file, file).catch(() => "The platform could not finish filing this review. Try again.");
 			return tracked(filings);
 		} : undefined;
+		const launchInput = (): RunTurnInput => ({
+			...common,
+			prompt: notes.text + text,
+			...(fresh && { fresh: { ...fresh, prompt: notes.text + fresh.prompt } }),
+			checks: planner || reviewer ? [] : held.checks,
+			maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
+			onReview, onReport, onAsk, onRequestSecret, onPush, onFetchBase,
+		});
 		if (!signal.aborted && caps.events === "acp") {
 			// These agents take no marker: the text is labelled in the prompt, and the timeline says so once.
 			if (handling.kind === "labelled") unmarked(handling.note);
 			result = await harness.runTurn(sandbox, {
-				...common,
-				prompt: notes.text + text,
-				...(fresh && { fresh: { ...fresh, prompt: notes.text + fresh.prompt } }),
+				...launchInput(),
 				...(item && { unattended: true }),
-				onReview,
-				onReport,
-				onAsk,
-				onRequestSecret,
 				// Over MCP a publish is always put to the person, never "for this session": any process in the container may have asked.
 				onPublish: repoTools && !item && platformTool("publish") ? (request, withdrawn) => tracked(agentPublish(c, meta, active, sandbox, "none", request, withdrawn)) : undefined,
-				onPush,
-				onFetchBase,
 				secrets: { env: Object.fromEntries((reviewer ? [] : meta.repo ? held.opened : held.account)
 					.filter(s => s.scope === "agent" && held.requestedNames?.includes(s.name)).map(s => [s.name, s.value])),
 					withholdEnv: [], passEnv: [], redactor: held.redactor },
-				// The checks the user saved for the repository: the platform runs them when the agent ends its prompt (platform-checks.ts),
-				// and records them as Windlass's gate would be; and the step limit, which the platform counts (platform-steps.ts).
-				checks: planner || reviewer ? [] : held.checks,
+				// ACP checks are run by the platform after the agent's prompt ends.
 				forceChecks: item?.row.agent === "run_checks",
 				onChecks: (event, said) => {
 					if (event.type === "synthetic.appended" && event.data?.origin === "check_report") meta.secretRequestBlocked = true;
 					active.checks.note(event);
 					if (open && said) note(c, turn, said.level, said.text);
 				},
-				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
 				harnessModels: meta.harnessModels,
 				onAcpNote: text => {
 					if (open) note(c, turn, "warn", text);
@@ -4559,21 +2737,15 @@ fi`, { signal, timeoutMs: 5000 });
 			// Told of no source (above): the timeline says once that the text went labelled only.
 			if (handling.kind === "labelled") unmarked(handling.note);
 			result = await harness.runTurn(sandbox, {
-				...common,
+				...launchInput(),
 				// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.
 				secrets: { ...turnEnvironment(planner || reviewer ? [] : held.opened, planner || reviewer ? [] : held.account, profile), redactor: held.redactor },
-				// The user's own MCP servers, which Windlass starts without asking: they are the user's, saved for every session.
-				// In an item's turn nobody watches, a tainted session's calls of the user's servers are Windlass's to refuse: none is answered unasked.
+				// Disable unasked personal-server calls once outside text taints the session.
 				servers: planner || reviewer ? [] : (untrusted.length || meta.tainted) ? held.servers.map(server => ({ ...server, unasked: false })) : held.servers,
-				// The checks the user saved for the repository: Windlass runs them before it calls the turn done, as required checks.
-				checks: planner || reviewer ? [] : held.checks,
 				// Windlass's question about a tool of one whose tools run without asking: the layer answers it, and the timeline says for whom and why.
 				onUnasked: (call) => {
 					if (open) note(c, turn, "info", unaskedNote(str(call.server)), { code: "question_allowed", call: { messageId: str(call.messageId), callId: str(call.callId) } });
 				},
-				prompt: notes.text + text,
-				...(fresh && { fresh: { ...fresh, prompt: notes.text + fresh.prompt } }),
-				maxSteps: reviewer ? RULES.reviewMaxSteps : active.item?.row.maxSteps,
 				// A command's timeout is held to what is left of the turn (windlass-config.ts `TURN_TIME_HOOK`).
 				endsAt: turnEndsAt,
 				...(handling.kind === "marked" && ((sources) => ({ untrusted: sources, onUntrustedUnmarked: () => { if (open) unmarked(unmarkedNote(sources)); } }))(handling.sources)),
@@ -4587,14 +2759,10 @@ fi`, { signal, timeoutMs: 5000 });
 					item.planReview = review;
 					return "Plan review filed. End your turn.";
 				} : undefined,
-				onReview,
 				planner,
 				clearPlanner,
 				crossRepoPlan: planning && item?.crossRepoPlan === true,
 				onPlan: planning && item ? (request) => tracked(itemActor(c, meta.uid, item.row.itemId).internalFilePlan({ key: item.row.key, plan: held.redactor.deep(request.arguments) })) : undefined,
-				onReport,
-				onAsk,
-				onRequestSecret,
 				script: meta.demo ? layer.windlass.demoScript(text, turn) : undefined,
 				onEvent: (event) => {
 					if (!open) return;
@@ -4628,8 +2796,6 @@ fi`, { signal, timeoutMs: 5000 });
 					}
 				},
 				onPublish: repoTools && !active.item && platformTool("publish") ? (request, withdrawn) => tracked(agentPublish(c, meta, active, sandbox, commandSandbox(profile), request, withdrawn)) : undefined,
-				onPush,
-				onFetchBase,
 				// The project's own MCP servers, which Windlass leaves stopped until the user says otherwise; nobody can say so in an item's turn.
 				onServerQuestion: active.item
 					? async (question) => {
@@ -4643,16 +2809,14 @@ fi`, { signal, timeoutMs: 5000 });
 					const remedy = unsetRemedy(Array.isArray(question?.unset) ? question.unset.map(str) : [], servers);
 					const said = recalled ? serverRecalledNote(question, outcome, ago(Date.now() - recalled.approvedAt), remedy) : serverApprovedNote(question, outcome, remedy);
 					note(c, turn, said.level, said.text);
-					// The user's yes is kept once Windlass took it: a definition that had changed, or an approval that
-					// never reached Windlass, is not one. Using a remembered approval does not renew it.
+					// Save new approvals only after Windlass accepts them. Recalled approvals do not renew the grant.
 					if (!recalled && (outcome.state === "running" || outcome.state === "starting" || outcome.state === "failed")) void rememberServer(c, meta, named);
 				},
 				onServers: (said) => {
 					if (open) knowServers(c, meta, said);
 				},
 			});
-			// The native engine selects checks from the turn's diff even on a checks-only delivery.
-			// Run all saved commands on the final tree if its own gate did not record them here.
+			// On a checks-only delivery run every saved command the native diff-based gate omitted.
 			if (item?.row.agent === "run_checks" && result.summary?.outcome === "succeeded" && !result.failure && !signal.aborted) {
 				const evidence = active.checks.verified(turn, held.checks, result.checks, meta.verified ?? null);
 				const forced = new VerificationLog();
@@ -4681,8 +2845,7 @@ fi`, { signal, timeoutMs: 5000 });
 			// An error's text is the sandbox's or the provider's: the repository's saved values are taken out of it before it is logged or shown.
 			const clean = (text: string) => active.secrets?.redactor.text(text) ?? text;
 			problem = clean(error instanceof TurnProblem || isSandboxUserError(error) ? error.message : `The sandbox failed: ${describeError(error)}`);
-			// The sandbox could not be prepared (connect, resume, its network, a clone): the agent never ran. A deployment that
-			// is full or a machine away have their own handling above; a turn the session refused is no sandbox's fault.
+			// Only failures preparing the sandbox count here. Capacity, connectivity and policy refusals are classified separately.
 			if (active.item && opening && !active.item.refused && !(error instanceof TurnProblem) && !(error instanceof DeploymentFull) && !(error instanceof MachineUnreachable)) active.item.sandboxFailed = clean(isSandboxUserError(error) ? error.message : describeError(error));
 			if (error instanceof TurnProblem) c.log.warn({ msg: "turn failed", session: meta.sessionId, turn, error: clean(error.message) });
 			else c.log.error({ msg: "turn failed", session: meta.sessionId, turn, error: clean(error instanceof Error ? (error.stack ?? error.message) : String(error)) });
@@ -4705,16 +2868,14 @@ fi`, { signal, timeoutMs: 5000 });
 	sealTurn(c, meta, active);
 	// A push for the agent that was under way when the turn ended is finished first: the turn does not close under it.
 	if (active.publishes.size > 0) await Promise.allSettled([...active.publishes]);
-	// The machine went away under the turn (its conversation was lost, or it could not be had for a resume): the turn pauses
-	// until it is back instead of ending. Not when the turn was stopped meanwhile, by its person or its limit.
+	// Losing the runner pauses the turn unless another stop already won.
 	const lostLink = (lossesAtStart !== null && (c.vars.runner?.channel.losses ?? 0) > lossesAtStart)
 		|| ((agentStarted || active.resume !== undefined || active.item?.started === true) && (thrown instanceof ConversationLost || (thrown instanceof MachineUnreachable && thrown.reason === "offline")));
 	if (run && meta.place.kind === "machine" && !signal.aborted && lostLink) active.pausing ??= "machine";
 	// A turn that ended by itself just as the server went away has ended: only one that was cut short pauses.
 	const ownEnd = !!result && !result.aborted && (capabilitiesOf(meta.harness).events === "acp" ? !!result.acp?.stopReason && result.acp.stopReason !== "cancelled" : !!result.summary && result.summary.outcome !== "interrupted");
 	const pausing = !!active.pausing && !!run && meta.run === run && !c.vars.destroying && !active.item?.withdrawn && !active.outOfTime && (active.pausing === "machine" || !ownEnd);
-	// The sandbox's memory is read at the turn's end, not at a pause: a server going away, or a machine away, is no guest that
-	// stopped answering. The resumed segment compares with the same start (`TurnRun.memory`).
+	// A paused segment retains its original OOM counter for comparison on resume.
 	if (!pausing && used && !active.item?.outOfMemory) await noteTurnMemory(c, meta, active, used, memoryAtStart, turnBegan, turn);
 	const segmentUsage = usageOf(result?.summary?.usage) ?? result?.acp?.tokens ?? null;
 	const modelKey = capabilitiesOf(meta.harness).events === "acp" && account.provider && generation && segmentUsage ? { provider: account.provider, generation, tokens: turnTokens(segmentUsage) } : undefined;
@@ -4790,8 +2951,7 @@ fi`, { signal, timeoutMs: 5000 });
 				// Windlass's own outcome stands. If the turn failed, its events in the timeline say how.
 				outcome = reported;
 				if (typeof summary?.stepLimit === "number") stepLimit = summary.stepLimit;
-				// Unless the platform failed it: the turn's access token ran out and could not be replaced. Windlass's
-				// events say that in words meant for whoever hands the token in; the sandbox layer's sentence is for the user.
+				// A token-refresh failure belongs to the platform even when Windlass supplies a generic failure.
 				if (failure?.reason === "token_unavailable" && said) message = said;
 			} else if (failure) {
 				outcome = "error";
@@ -4834,9 +2994,7 @@ fi`, { signal, timeoutMs: 5000 });
 		}
 		if (result?.windlassSessionId && (result.acp || outcome !== "error")) meta.windlassSessionId = result.windlassSessionId;
 
-		// The turn may have changed the workspace: a new copy, taken before the turn is reported as ended so
-		// that whoever asks then gets it. Without one (the actor is stopping, or git failed) the old copy is
-		// wrong, and the next read goes to the sandbox.
+		// Snapshot before publishing completion. If the snapshot fails, invalidate the previous copy.
 		if (used) {
 			// Windlass's session is copied out of the sandbox meanwhile, when Windlass ran: both only read.
 			const saving = caps.backups && result && layer ? saveBackup(c, meta, turn, used, layer) : undefined;
@@ -4899,8 +3057,7 @@ fi`, { signal, timeoutMs: 5000 });
 		c.vars.turn = null;
 		publish(c);
 		if (outcome === "error") await refreshSandbox(c, meta);
-		// Asked now, while the sandbox still runs: the side panel then knows whether GitHub lacks anything
-		// without starting a sandbox that has been paused since.
+		// Probe unpublished commits before idle suspension.
 		const unpushed = !reviewer && meta.repo && used ? await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null) : null;
 		// The agent had the platform publish in this turn, before the turn's checks ran, and nothing changed since: the pull request's description is told what they came to.
 		if (active.published && unpushed === false && used) await describeAfterTurn(c, meta, used, turn);
@@ -4933,12 +3090,7 @@ fi`, { signal, timeoutMs: 5000 });
 	}
 }
 
-/**
- * Writes what a turn's checks came to into the description of the session's pull request, for a
- * turn in which the platform published for the agent: what went out then had not been checked,
- * and said so. Only where the workspace holds nothing GitHub lacks, so that what is said is said
- * of what the pull request shows. Never throws.
- */
+// Update the verified section after an agent push only while the current head still matches its receipt.
 async function describeAfterTurn(c: Ctx, meta: SessionMeta, sandbox: SandboxHandle, turn: number): Promise<void> {
 	const app = githubApp();
 	const { repo, pull } = meta;
@@ -4967,13 +3119,7 @@ async function within(promise: Promise<unknown> | null, ms: number): Promise<voi
 	clearTimeout(timer);
 }
 
-/**
- * On wake, a machine turn whose server stopped while it ran: with its conversation and checkpoint in
- * storage (runner/journal.ts), the runner may still have its process, within its grace. The process is
- * held before anything can ask for the runner's socket, and the turn runs again from `executeTurn`
- * with the checkpoint, which takes the process up instead of starting one. False when there is nothing
- * to take up; what was stored is then forgotten, and the turn is cut short as always.
- */
+// A surviving machine process must reattach to its persisted conversation and checkpoint.
 async function takeUpTurn(c: Ctx, meta: SessionMeta): Promise<boolean> {
 	if (meta.place.kind !== "machine") return false;
 	try {
@@ -5016,12 +3162,7 @@ function keepsTurn(c: Ctx): boolean {
 	return !!link?.durable && link.known?.report?.resumableConversation === true && !!c.vars.turn?.checkpoint?.();
 }
 
-/**
- * `onSleep` for a turn the runner keeps (`keepsTurn`): nothing is stopped. The timeline, the count of
- * what was received and the checkpoint are stored, the frames being written ahead with them, and the
- * socket is let go without ending the conversation; the runner keeps the process through its grace,
- * and a wake shortly after takes it up on whichever server is up. False when the turn is not one to keep.
- */
+// Persist the last acknowledged frame and checkpoint before detaching a runner kept through sleep.
 async function keepTurn(c: Ctx): Promise<boolean> {
 	if (!keepsTurn(c)) return false;
 	const link = c.vars.runner!;
@@ -5033,10 +3174,6 @@ async function keepTurn(c: Ctx): Promise<boolean> {
 	console.log(`[wlp] turn.kept session=${c.key[1]} turn=${c.vars.turn?.number}: the runner keeps the turn's process through the restart`);
 	return true;
 }
-
-// ---------------------------------------------------------------------------------------------
-// Pause and resume (WLP_TURN_RESUME, turn-resume.ts)
-// ---------------------------------------------------------------------------------------------
 
 /** How often a turn that waits for its machine looks whether it is back, besides the wake the machine itself sends. */
 const MACHINE_RECHECK_MS = 5 * 60_000;
@@ -5063,11 +3200,7 @@ function newRun(meta: SessionMeta, turn: number, effort: string | null, planMode
 	return { turn, effort, ...(planMode && { planMode: true }), activeMs: 0, segmentAt: now, fromSeq, usage: null, resumes: 0, crashes: 0 };
 }
 
-/**
- * While a turn runs, a wake is kept scheduled ahead of it (WLP_TURN_HEARTBEAT_MS): a server that crashed runs no
- * `onSleep`, and this brings the session back on whichever server is up, where `onWake` pauses the turn and resumes it.
- * A wake that finds the turn running does nothing.
- */
+// Refresh the wake while running. A process crash cannot schedule one from onSleep.
 function heartbeat(c: Ctx, on: boolean): void {
 	if (c.vars.heartbeat) clearInterval(c.vars.heartbeat);
 	c.vars.heartbeat = null;
@@ -5091,11 +3224,7 @@ function markPausing(c: Ctx, meta: SessionMeta): void {
 	active.pausing ??= "restart";
 }
 
-/**
- * The turn stops running but does not end: the same turn number, no `turn.ended`, nothing to the item (it sees a turn
- * that still runs). What it ran and used so far is kept with the turn's record, and a wake is scheduled: a server that is
- * up then resumes it. A machine's turn waits for the machine (`machinePaused`).
- */
+// A pause preserves the turn number and emits no terminal receipt.
 async function pauseTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, reason: PauseReason, usage: TurnUsage | null, modelKey: ModelKeySpend | undefined, result: RunTurnResult | null): Promise<void> {
 	const run = meta.run!;
 	const turn = active.number;
@@ -5120,12 +3249,7 @@ async function pauseTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, reason: 
 	if (reason === "restart") await c.schedule.at(now + config.turnResume.delayMs, "internalResumeTurn").catch((error: unknown) => c.log.warn({ msg: "could not schedule the wake that resumes the turn", error: describeError(error) }));
 }
 
-/**
- * A turn paused because its machine went away: an item's turn slot goes back to the queue (other items run meanwhile)
- * and the item is told it waits, with no failure and no question; the machine is told to wake the session when its
- * runner is back; and the session looks by itself now and then, in case that wake is lost. After
- * WLP_MACHINE_AWAY_ASK_MS the item asks its person once (`internalMachineAsk`).
- */
+// Return an item's slot while its machine is offline. Its resume requests a new grant.
 async function machinePaused(c: Ctx, meta: SessionMeta, run: TurnRun): Promise<void> {
 	const paused = run.paused;
 	if (!paused || meta.place.kind !== "machine") return;
@@ -5169,11 +3293,7 @@ async function originalPrompt(c: Ctx, turn: number): Promise<string> {
 	return item?.kind === "user" ? item.text : "";
 }
 
-/**
- * The whole task of a resumed turn whose agent no longer has its conversation of it: an item's comes with its delivery
- * (`itemTurnText`, or the step's own text when the delivery carries none); a person's session's is rebuilt from the
- * timeline (`sessionWholeTask`).
- */
+// A lost conversation needs the original task, including its untrusted sources.
 async function wholeTask(c: Ctx, meta: SessionMeta, active: ActiveTurn, turn: number): Promise<{ text: string; untrusted: string[]; unsandboxed?: boolean }> {
 	const item = active.item;
 	if (item) {
@@ -5190,11 +3310,7 @@ async function wholeTask(c: Ctx, meta: SessionMeta, active: ActiveTurn, turn: nu
 	return sessionWholeTask(timeline, turn, active.resume?.held ?? []);
 }
 
-/**
- * Runs a paused turn again, as a new segment of the same turn, once the place can be had: on wake, on its scheduled
- * wake, when its machine is back, or with the turn slot granted again (`granted`) to an item's turn that gave its slot
- * back. True when it was resumed (a granted slot is then its). Never throws.
- */
+// Resume the same turn only after admission succeeds again.
 async function resumePaused(c: Ctx, meta: SessionMeta, granted: string | null = null): Promise<boolean> {
 	const run = meta.run;
 	if (!run?.paused || meta.status !== "paused" || c.vars.turn || c.vars.accepting || c.vars.resuming || c.vars.stopping || c.vars.destroying || c.vars.publishing) return false;
@@ -5336,10 +3452,7 @@ async function resumePaused(c: Ctx, meta: SessionMeta, granted: string | null = 
 	}
 }
 
-/**
- * Ends a turn that is paused, with nothing running: its person stopped it, its item withdrew it, its machine was removed,
- * or it could not be resumed. The turn ends as any does: a `turn.ended`, and the item's fact.
- */
+// Closing a paused turn needs no sandbox process.
 async function endPausedTurn(c: Ctx, meta: SessionMeta, outcome: "stopped" | "interrupted", message: string | null): Promise<void> {
 	const run = meta.run;
 	const turn = run?.turn ?? meta.turns;
@@ -5365,12 +3478,7 @@ async function endPausedTurn(c: Ctx, meta: SessionMeta, outcome: "stopped" | "in
 	startNextFeedback(c, meta);
 }
 
-/**
- * On wake, a turn whose server crashed under it (no `onSleep` ran): it is paused as one that was stopped would have
- * been, from what the timeline kept of it. False instead when the loop guard trips: the server stopped more than
- * CRASHES_ALLOWED times in a row while resuming it, with nothing done in between; the caller then cuts it short, and
- * that counts as one of the item's cut-offs.
- */
+// Treat a crashed active turn as interrupted. Keep its recorded progress and cap repeated crash resumes.
 async function crashPause(c: Ctx, meta: SessionMeta): Promise<boolean> {
 	const run = meta.run!;
 	const turn = run.turn;
@@ -5429,11 +3537,7 @@ async function stopTurn(c: Ctx): Promise<void> {
 /** What a key belongs to in a session, in the words of a refusal (submissions.ts). */
 const KEYED = "message to this agent";
 
-/**
- * Keeps the key a message was taken with, and what its prompt is answered, in the same synchronous
- * step that took the message: from here a prompt with that key is this message again. Stored with the
- * session's next write, which the caller sees to.
- */
+// Remember acceptance synchronously with the prompt so concurrent retries observe the same result.
 function remember(meta: SessionMeta, submission: Submission | null, answer: PromptAnswer): PromptAnswer {
 	if (submission) meta.submissions = [...(meta.submissions ?? []), { ...submission, ...answer }].slice(-MAX_REMEMBERED_SUBMISSIONS);
 	return answer;
@@ -5456,20 +3560,12 @@ function queuePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, message: str
 	});
 }
 
-/**
- * Whether the session's machine is out of reach now: a session on a machine whose runner has no socket
- * to it. What the turn's layer sends then waits in the link's queue until the runner is back, so an
- * action that would wait on it (a steer, a stop of one call) is refused at once instead of at its
- * time limit, after which the message would still arrive, and arrive twice if it was sent again.
- */
+// An absent runner socket does not necessarily mean the machine is offline.
 function machineAway(c: Ctx, meta: SessionMeta): boolean {
 	return meta.place.kind === "machine" && c.vars.runner?.channel.connected !== true;
 }
 
-/**
- * `prompt()` while a turn is in progress: the message goes into that turn. It takes no new turn, no
- * running slot and no title, and it is stored only once Windlass has admitted it.
- */
+// Steering belongs to the running turn and does not acquire another slot.
 async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, message: string, submission: Submission | null): Promise<PromptAnswer> {
 	if (usesPlatformModel(meta.harness, meta.model)) {
 		const wait = await userActor(c, meta.uid).internalDailyTokenWait();
@@ -5512,12 +3608,7 @@ async function steerTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn | null, m
 	return answer;
 }
 
-/**
- * Takes a prompt whose text was checked: into the turn in progress, or as a new turn, which it starts.
- * It waits on the user's actor and on the sandbox layer before the message is taken, and other calls
- * run meanwhile; the message is taken, and its key kept (`remember`), in one synchronous step at the
- * end, or the prompt is refused and nothing of it is kept.
- */
+// Accept one prompt at a time across admission and sandbox waits.
 async function takePrompt(c: Ctx, meta: SessionMeta, input: PromptInput, text: string, submission: Submission | null): Promise<PromptAnswer> {
 	// A paused turn takes no new turn: the message is held, and given to the agent when the turn resumes.
 	if (meta.status === "paused" && meta.run?.paused && !c.vars.turn) return holdMessage(c, meta, input, text, submission);
@@ -5692,10 +3783,6 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, messag
 	}
 }
 
-// ---------------------------------------------------------------------------------------------
-// A work item's turns (session-inbox.ts)
-// ---------------------------------------------------------------------------------------------
-
 /** Asks the user's turn queue for a slot for a waiting delivery, and takes the turn when it is granted at once. Never throws. */
 async function askForSlot(c: Ctx, meta: SessionMeta, row: InboxRow, deploymentFull: number | null = null): Promise<void> {
 	try {
@@ -5713,14 +3800,7 @@ async function giveBack(c: Ctx, meta: SessionMeta, key: string, slot: string): P
 	await flushOutbox(c, meta.uid);
 }
 
-/**
- * Takes the turn of a delivery the queue gave a slot to, as `takePrompt` takes a person's prompt: the
- * grant is the running slot, so none is asked for. The receipt is one transaction: the inbox row says
- * which turn took it and with which slot, with the session's meta and the turn's first item. A grant
- * that finds nothing to take, or a session busy with something else, gives its slot back; a turn that
- * cannot have its sandbox time gives it back and asks again, and waits with the queue's sentence.
- * Never throws.
- */
+// Claim the delivery and its slot before opening a turn. A replay of the grant must reuse them.
 async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: string): Promise<void> {
 	// The queue can send a grant while a reconnect or the item's poll is requesting the same
 	// slot. Re-read ownership after that attempt before deciding to take it or give it back.
@@ -5818,13 +3898,7 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 	}
 }
 
-/**
- * A cross-repo feature's planning turn reads its other repositories' base trees, each fetched with a read
- * token of that repository alone, through the installation bound to it at filing, one after the other,
- * and left read-only with no git directory (`materializeInput`). One that cannot be had refuses the turn:
- * the planner never plans against the primary alone. Any other turn of an item's builder session starts
- * without them.
- */
+// Pin every input repository to the head resolved with its own scoped token.
 async function planningInputs(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, sandbox: SandboxHandle, turn: number): Promise<void> {
 	if (meta.origin?.role !== "builder" && !meta.origin?.planCritic) return;
 	const asked = item.row.agent === "planner" || item.row.agent === "critic" ? await itemActor(c, meta.uid, item.row.itemId).internalPlanningInputs(item.row.key) : null;
@@ -5890,12 +3964,7 @@ async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<Acti
 	await flushOutbox(c, meta.uid);
 }
 
-/**
- * The item's turn has ended: the item is told how, with what the gate needs (the turn's verification,
- * the observations on its changes, whether there is anything to push, the agent's report, the tokens it
- * used), and its slot is given back, both in one transaction with the meta. A turn whose sandbox could
- * not be had because the deployment's are all in use waits for a slot again instead.
- */
+// Persist the item's terminal fact before sending it, so a lost acknowledgement can be retried.
 async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, ended: { outcome: TurnOutcome; stepLimit?: number; verified: Verified | null; used: SandboxHandle | null; unpushed: boolean | null; usage: TurnUsage | null; checks: RepositoryCheck[]; acp?: RunTurnResult["acp"] }): Promise<void> {
 	const { row } = item;
 	if ((item.full !== null || item.machineAway) && !item.started) {
@@ -5975,10 +4044,6 @@ async function closeCutTurn(c: Ctx, meta: SessionMeta, row: InboxRow, usage: Tur
 	return finishItemTurn(c, meta, row, endedFactOf(row.key, Date.now(), "interrupted", meta.verified ?? null, [], true, null, usage));
 }
 
-// ---------------------------------------------------------------------------------------------
-// The actor
-// ---------------------------------------------------------------------------------------------
-
 export const agentSession = actor({
 	options: {
 		name: "Agent session",
@@ -6021,9 +4086,7 @@ export const agentSession = actor({
 		},
 	}),
 
-	// Only `user` may create a session: its input carries a grant signed for exactly this key. An actor
-	// made any other way (anyone can call getOrCreate) stays without a meta row and removes itself in
-	// `onWake`. Throwing here would make the engine retry the start in a loop.
+	// Only the user actor signs a create grant for this exact session key.
 	onCreate: async (c, input: SessionCreateInput | undefined) => {
 		try {
 			if (!input || !grantIsValid(input.grant, c.key, "agentSession")) return;
@@ -6129,10 +4192,7 @@ export const agentSession = actor({
 		c.abortSignal.addEventListener(
 			"abort",
 			() => {
-				// RivetKit may have let go of the actor's state by the time the signal fires, and reading
-				// `c.vars` then throws "Actor stopping". Thrown from a listener, that is an uncaught
-				// error, which ends the whole server and every other session on it. A turn still
-				// running then is stopped by `onSleep`.
+				// Capture the turn before the stop signal fires: RivetKit may already have released c.vars.
 				try {
 					// A turn the runner keeps through the restart is not stopped: `onSleep` lets go of it (`keepsTurn`).
 					// One that can be resumed pauses instead of ending (`markPausing`).
@@ -6331,11 +4391,7 @@ export const agentSession = actor({
 		if (!c.vars.meta) throw new UserError("That agent does not exist.", { code: "session_not_found" });
 	},
 
-	// The machine's runner, which this instance asked to attach. Its hello is checked by the channel,
-	// synchronously (machines/ticket.ts); a socket this instance did not ask for has no ticket it knows.
-	// A machine removed while only its control socket is down is not told to its sessions: its runner
-	// learns of it when it next connects (about a minute, with backoff) and then drops every session;
-	// until then it serves them. Accepted (`Prep/Fix batch 2 - brief.md`, item 5).
+	// Verify the runner hello synchronously before accepting any of its frames.
 	onWebSocket: (c, ws) => {
 		assertOrigin(c);
 		const link = c.vars.runner;
@@ -6360,12 +4416,10 @@ export const agentSession = actor({
 				const profile = sandboxes.profile(meta.profile);
 				return await serial(c, async () => {
 					await writeItems(c).catch((error) => c.log.error({ msg: "could not write the timeline", error: describeError(error) }));
-					// A stop checkpoint is provisional while this instance is alive. If its
-					// replacement failed to write, the in-memory item at that sequence wins.
+					// A stop checkpoint is provisional until a real item occupies its seq.
 					const end = c.vars.unwritten[0]?.seq ?? c.vars.nextSeq;
 					const rows = await c.db.execute<{ item: string }>("SELECT item FROM timeline WHERE seq < ? ORDER BY seq", end);
-					// No write can run between the read above and here, so what SQLite did not return is
-					// exactly what still waits in memory.
+					// Reading pending items under the same serial queue closes the gap after the SQLite snapshot.
 					const timeline = rows.map((row) => JSON.parse(row.item) as TimelineItem);
 					const last = timeline.length > 0 ? timeline[timeline.length - 1].seq : 0;
 					for (const item of c.vars.unwritten) if (item.seq > last) timeline.push(item);
@@ -6464,7 +4518,7 @@ export const agentSession = actor({
 				}
 				feedback.seen.push(...entries.map(({ id, at }) => ({ id, at })));
 			}
-			await serial(c, () => c.db.execute("UPDATE meta SET data = ? WHERE id = 1", JSON.stringify(meta)));
+			await writeMeta(c, meta);
 			startNextFeedback(c, meta);
 			return true;
 		},
@@ -6521,8 +4575,7 @@ export const agentSession = actor({
 			await persist(c);
 		},
 
-		// Synchronous from the check to the settling, so of two answers sent at once exactly one finds
-		// the question pending.
+		// Take and settle synchronously so concurrent answers cannot both succeed.
 		answer: async (c, input: { questionId: string; choice: string; note?: string }): Promise<void> => {
 			await requireSessionUser(c);
 			const meta = liveMeta(c);
@@ -6803,12 +4856,8 @@ export const agentSession = actor({
 			return { network: answer.network, applied };
 		},
 
-		// --- called by the actor's own schedule only ------------------------------------------------
 
-		/**
-		 * Scheduled while a turn runs (`heartbeat`), after a graceful pause, and while a turn waits for its machine: a paused
-		 * turn resumes if its place can be had. The wake itself pauses a turn a crash cut off (`crashPause`).
-		 */
+		// One scheduled wake covers heartbeat recovery and a paused turn waiting for its machine.
 		internalResumeTurn: async (c): Promise<void> => {
 			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
 			const meta = c.vars.meta;
@@ -6867,7 +4916,6 @@ export const agentSession = actor({
 			}
 		},
 
-		// --- the work item's inbox (session-inbox.ts) ------------------------------------------------
 
 		internalDeliver: async (c, input: unknown): Promise<void> => {
 			requireService(c);
@@ -6898,7 +4946,6 @@ export const agentSession = actor({
 			}
 		},
 
-		// --- Windlass's model relay route (model-relay-route.ts), from another server process -----------
 
 		/** Whether this actor's process holds a turn's relay lease, and its current token: not held, the turn has ended. */
 		internalModelRelay: (c, input: { nonce: string; request: string; consume?: boolean }): Promise<RemoteLease> => {
@@ -7017,7 +5064,6 @@ export const agentSession = actor({
 			if (meta) await sendOutbox(c, meta.uid);
 		},
 
-		// --- called by `user` only ---------------------------------------------------------------
 
 		internalSummary: (c): SessionSummary => {
 			requireService(c);
