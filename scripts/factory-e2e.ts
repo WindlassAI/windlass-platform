@@ -860,6 +860,34 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 	if (only.length === 1) { await standin.stop(); process.exit(failed ? 1 : 0); }
 }
 
+await check("reviewer: hosted egress on a two-part plan", async () => {
+	const server = new Server();
+	try {
+		const repo = standin.addRepository({ owner: "ada", name: "two-docs", installation, files: { ".github/workflows/ci.yml": "on: push\n" } });
+		const { user, client } = await world(server, standin, { WLP_FEATURE_TEST_GIT: join(server.storage, "git"), WLP_FEATURE_TEST_RESTRICTED_HOST: "1" });
+		await user.saveRepositoryDefaults({ repositoryId: repo.id, autoApprovePlans: true });
+		await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
+		for (const egress of ["restricted", "open"]) {
+			const item = await user.createItem({ mode: "orchestrate", repository: { id: repo.id }, model: "gpt-6-luna", title: "Two docs notes",
+				body: "Add notes B and C. (hosted-docs)" + (egress === "open" ? " (open-egress)" : ""), start: true });
+			const view = await untilItem(user, item.id, "the hosted plan decision", v => !!v.question || v.children?.length === 2);
+			assert(view.source === "web" && view.plan?.questions.length === 0 && view.plan.subtasks.length === 2 &&
+				view.plan.subtasks.every(task => task.place?.prefer === "hosted" && task.needs?.egress === egress), stateOf(view));
+			if (egress === "restricted") {
+				assert(view.plan.approvedBy === "critic" && !view.question, stateOf(view));
+			} else {
+				assert(view.question?.kind === "plan_approval" && view.plan.status === "proposed", stateOf(view));
+				const reason = view.question.criticReason;
+				assert(reason && /reviewer approved.*notes-b\.md.*restricted.*open/i.test(reason), stateOf(view));
+				assert(view.question.text.includes(reason) && view.events.some(event => event.said.includes(reason)), stateOf(view));
+			}
+		}
+		await client.dispose();
+		return "matching egress dispatched both parts; mismatched egress explained the owner handoff";
+	} finally { await server.stop(); server.remove(); }
+});
+if (only.length === 1 && only[0] === "reviewer: hosted egress") { await standin.stop(); process.exit(failed ? 1 : 0); }
+
 await check("reviewer: plan questions go to the critic only with recommendations", async () => {
 	const server = new Server();
 	try {

@@ -494,7 +494,7 @@ export type StepFact =
 			outOfMemory?: OutOfMemory;
 			spend: TurnSpend;
 	  }
-	| { kind: "review_ended"; planReview?: import("./autonomy.js").PlanReview; inventory?: PlacementInventory; by?: "critic"; at: number; key: string; outcome: TurnOutcome; stepLimit?: number; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; /** As `turn_ended`'s. */ sandboxFailed?: string; outOfMemory?: OutOfMemory; spend: TurnSpend }
+	| { kind: "review_ended"; approvalProblem?: string; planReview?: import("./autonomy.js").PlanReview; inventory?: PlacementInventory; by?: "critic"; at: number; key: string; outcome: TurnOutcome; stepLimit?: number; review: ItemReview | null; said: string | null; refused?: string | null; providerRefusal?: ItemProviderRefusal; /** As `turn_ended`'s. */ sandboxFailed?: string; outOfMemory?: OutOfMemory; spend: TurnSpend }
 	/** The session's sandbox was removed for "Start on a fresh sandbox" (`fresh_sandbox` effect): `plan` runs next, in a new one. */
 	| { kind: "sandbox_freed"; at: number; key: string; plan: TurnPlan }
 	| { kind: "sandbox_resize_refused"; at: number; key: string; plan: TurnPlan; size: HostedSize }

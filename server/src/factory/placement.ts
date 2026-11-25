@@ -196,8 +196,13 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 		if (modelProblem) return { refused: `hosted: ${modelProblem}.`, permanent: true };
 		if (!profiles.length || (needs.profile && !profiles.includes(needs.profile))) return { refused: "hosted has no available matching profile", permanent: true };
 		if (inventory.hostedEgress === "none") return { refused: "hosted sandboxes have no network for repositories", permanent: true };
-		if (needs.tags?.length || needs.egress)
-			return { refused: "hosted does not report the required machine capabilities", permanent: true };
+		if (needs.egress && needs.egress !== inventory.hostedEgress) {
+			const network = { open: "open internet access", restricted: "restricted network access" };
+			const available = inventory.hostedEgress ? `Hosted sandboxes here have ${network[inventory.hostedEgress]}.` : "The hosted network policy is unknown.";
+			return { refused: `${available} This part asked for ${network[needs.egress]}.`, permanent: true };
+		}
+		if (needs.tags?.length)
+			return { refused: `This part needs the machine tag “${needs.tags[0]}”. Hosted sandboxes do not provide machine tags.`, permanent: true };
 		// `cpus` and `memoryGiB` choose a hosted size: the least that has them. Absent: the item's own size (standard by default).
 		const sized = hostedSizeFor(needs);
 		if ((needs.cpus || needs.memoryGiB) && !sized) return { refused: `hosted sandboxes have at most ${HOSTED_SIZE_SPECS.large.cpus} vCPU and ${HOSTED_SIZE_SPECS.large.memoryMiB / 1024} GiB`, permanent: true };

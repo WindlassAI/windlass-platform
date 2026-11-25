@@ -91,6 +91,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 				{single ? view.question.text : <>{replan ? `${view.replanWhy ? view.replanWhy + ". " : ""}Review the revised plan` : "Review the plan"}: {tasks} subtasks{finished ? " to run" : ""}, {compact(totalTokens)} of {compact(plan.budget.tokens)} tokens.</>}
 			</p>
 
+			{!single && view.question.criticReason && !view.question.criticFindings && <p className="callout callout-warn">{view.question.criticReason}</p>}
 			{view.question.criticFindings && <div className="callout callout-warn"><div>Critic recommends revision<ul>{view.question.criticFindings.map((finding, i) => <li key={i}>{finding}</li>)}</ul></div></div>}
 			{plan.subtasks.length > 0 ? <PlanRoutes view={view} plan={plan} machines={review.machines} models={review.models} catalogs={review.catalogs} accountModels={review.accountModels} refusal={refused} /> : null}
 

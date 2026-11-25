@@ -12,7 +12,7 @@
  * key; a stale key changes nothing. No clock is read: every time is a fact's `at`.
  */
 import { defaultPlaceRetryAt } from "./default-place.js";
-import { criticPrompt, mergeCandidate, smallPlan } from "./autonomy.js";
+import { criticPrompt, mergeCandidate, smallPlanProblem } from "./autonomy.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
 import type { OutOfMemory } from "../sandbox/api.js";
@@ -2128,9 +2128,15 @@ function trustedPlanInputs(item: FactoryItem): boolean {
 
 function considerCritic(c: Change) {
 	const { item } = c, plan = item.featurePlan;
-	if (!trustedPlanInputs(item) || !plan || item.filedTurn !== c.key || !item.singleBudget || !smallPlan(plan, item.singleBudget, aliases(item)) ||
-		unattendedKeys(plan, completedKeys(item)).length || backstopTurns(item) >= RULES.turnBackstop ||
-		budgetStop({ ...item.budget, tokens: ownTokens(item) }, ownSpent(item, item.spent), item.place)) return askPlan(c);
+	if (!trustedPlanInputs(item)) return askPlan(c, "Automatic approval requires a plan based on trusted inputs.");
+	if (!plan || item.filedTurn !== c.key) return askPlan(c, "The planner did not file a plan for this turn.");
+	if (!item.singleBudget) return askPlan(c, "The item has no budget to check the plan against.");
+	const problem = smallPlanProblem(plan, item.singleBudget, aliases(item));
+	if (problem) return askPlan(c, problem);
+	if (unattendedKeys(plan, completedKeys(item)).length) return askPlan(c, "You need to confirm the subtasks whose agents work without asking.");
+	if (backstopTurns(item) >= RULES.turnBackstop) return askPlan(c, "The item reached its turn limit before the reviewer could start.");
+	const stop = budgetStop({ ...item.budget, tokens: ownTokens(item) }, ownSpent(item, item.spent), item.place);
+	if (stop) return askPlan(c, stop.sentence);
 	c.enter("plan_review");
 	item.filedTurn = c.key;
 	c.run.step.turn = "delivered";
@@ -2144,42 +2150,48 @@ function considerCritic(c: Change) {
 function finishCritic(c: Change, fact: Extract<Fact, { kind: "review_ended" }>) {
 	spendTurn(c, fact.spend, fact.providerRefusal);
 	const review = fact.planReview;
-	if (!trustedPlanInputs(c.item) || !review || fact.outcome !== "succeeded" || fact.refused || fact.providerRefusal || fact.sandboxFailed ||
-		fact.outOfMemory || fact.stepLimit !== undefined || fact.spend.tokens <= 0) return askPlan(c);
-	if (review.decision === "approve" && fact.by === "critic") {
-		const plan = c.item.featurePlan;
-		if (plan?.status !== "proposed" || c.item.filedTurn !== c.key) return askPlan(c);
-		const pending = plan.questions.filter(q => !q.answer);
-		if (pending.some(q => !q.recommended)) return askPlan(c);
-		for (const q of pending) {
-			q.answer = q.recommended;
-			q.answeredBy = "critic";
-		}
-		if (plan.singleSuggested) runSingle(c);
-		else if (!approveFeature(c, fact.inventory)) return askPlan(c);
-		c.say("Approved automatically: " + (review.findings.join(" ") || "The critic approved the plan as filed."));
-		return;
+	const needsOwner = (reason: string) => askPlan(c, review?.decision === "approve"
+		? "The reviewer approved, but the plan still needs your decision. " + reason : reason);
+	if (!trustedPlanInputs(c.item)) return needsOwner("Automatic approval requires a plan based on trusted inputs.");
+	if (fact.refused) return needsOwner(fact.refused);
+	if (fact.providerRefusal) return needsOwner(refusalMessage(fact.providerRefusal));
+	if (fact.sandboxFailed) return needsOwner("The reviewer’s sandbox failed. " + fact.sandboxFailed);
+	if (fact.outOfMemory) return needsOwner("The reviewer’s sandbox ran out of memory.");
+	if (fact.stepLimit !== undefined) return needsOwner(`The reviewer reached its limit of ${fact.stepLimit} steps.`);
+	if (fact.outcome !== "succeeded") return needsOwner(`The review turn ended with outcome “${fact.outcome}”.`);
+	if (!review) return needsOwner("The reviewer ended its turn without filing a decision.");
+	if (fact.spend.tokens <= 0) return needsOwner("The review turn reported no token spend.");
+	if (review.decision === "revise") return askPlan(c, "The reviewer recommends revision.", review.findings);
+	if (fact.approvalProblem) return needsOwner(fact.approvalProblem);
+	if (fact.by !== "critic") return needsOwner("The platform could not verify the approval.");
+	const plan = c.item.featurePlan;
+	if (plan?.status !== "proposed" || c.item.filedTurn !== c.key) return needsOwner("The reviewed proposal is no longer current.");
+	const pending = plan.questions.filter(q => !q.answer);
+	if (pending.some(q => !q.recommended)) return needsOwner("A plan question needs your answer because it has no recommendation.");
+	for (const q of pending) {
+		q.answer = q.recommended;
+		q.answeredBy = "critic";
 	}
-	askPlan(c);
-	if (review.decision === "revise" && c.item.question) {
-		const q = c.item.question;
-		q.criticFindings = review.findings;
-		q.recommended = "revise";
-		q.choices = [choice("revise"), ...q.choices.filter(x => x.id !== "revise")];
-		q.text += "\nCritic recommends revision: " + review.findings.join("\n");
-	}
+	if (plan.singleSuggested) runSingle(c);
+	else if (!approveFeature(c, fact.inventory)) return needsOwner("The reviewed plan is no longer eligible for approval.");
+	c.say("Approved automatically: " + (review.findings.join(" ") || "The critic approved the plan as filed."));
 }
 
-function askPlan(c: Change) {
+function askPlan(c: Change, criticReason?: string, criticFindings?: string[]) {
 	const p = c.item.featurePlan;
+	const askOwner = (kind: QuestionKind, prompt: string, choices: Question["choices"]) => {
+		const text = [criticReason, ...(criticFindings ?? []), prompt].filter(Boolean).join("\n");
+		if (criticFindings) choices = [choice("revise"), ...choices.filter(x => x.id !== "revise")];
+		ask(c, kind, text, choices, null, null, undefined, { ...(criticReason && { criticReason }), ...(criticFindings && { criticFindings }) });
+	};
 	const revise = [choice("revise")];
 	if (!p || c.item.filedTurn !== c.key)
-		return ask(c, "plan_approval", "The planner ended without filing a valid plan.", [...revise, choice("give_up")], null, null);
+		return askOwner("plan_approval", "The planner ended without filing a valid plan.", [...revise, choice("give_up")]);
 	if (p.singleSuggested && !c.item.replans)
-		return ask(c, "single_suggested", p.singleSuggested + (crossRepo(c.item) ? ` One implementer works on ${c.item.repos![0].alias} only: ${c.item.repos!.slice(1).map(r => r.alias).join(", ")} would be left out.` : ""),
-			[choice("run_single"), choice("orchestrate_anyway")], null, null);
+		return askOwner("single_suggested", p.singleSuggested + (crossRepo(c.item) ? ` One implementer works on ${c.item.repos![0].alias} only: ${c.item.repos!.slice(1).map(r => r.alias).join(", ")} would be left out.` : ""),
+			[choice("run_single"), choice("orchestrate_anyway")]);
 	const unanswered = p.questions.filter(q => !q.answer);
-	ask(c, c.item.replans ? "replan_approval" : "plan_approval", approvalText(p), [...(unanswered.length ? [] : [choice("approve")]), ...revise, choice("give_up")], null, null);
+	askOwner(c.item.replans ? "replan_approval" : "plan_approval", approvalText(p), [...(unanswered.length ? [] : [choice("approve")]), ...revise, choice("give_up")]);
 }
 
 function waitForPlacement(c: Change, job: FeatureJob, sentence: string, wait: { providerUntil?: number; dailyCap?: boolean; accountKey?: string }): boolean {
@@ -2648,7 +2660,7 @@ function askRemoved(c: Change): void {
 }
 
 type Recovery = { policy?: Policy; evidence?: string; target?: string };
-function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, details: Pick<Question, "asked" | "check" | "secret" | "largerSize" | "child"> & Recovery = {}): void {
+function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, details: Pick<Question, "asked" | "check" | "secret" | "largerSize" | "child" | "criticReason" | "criticFindings"> & Recovery = {}): void {
 	const { item } = c;
 	// The revision this change gives the item: no two questions of an item share it.
 	const { policy: explicit, evidence = kind === "integration" && item.integration?.url ? text.replace(item.integration.url, "").trim() : text, target, ...fields } = details;
