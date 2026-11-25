@@ -176,11 +176,11 @@ await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'
 async function settingsKeyTurns() {
 	const id = await owner.create('keys', profile, false, 'opencode');
 	const anth = 'anthropic/claude-opus-4-6';
-	await channelTurn(owner, 'keys', id, 'default', undefined, undefined, ['anthropic']);
+	await channelTurn(owner, 'keys', id, 'default', undefined, undefined, { providers: ['anthropic'] });
 	await storeProvider(owner, {provider:'anthropic', key:token+'-key'});
 	await storeProvider(owner, {provider:'openai', key:token+'-key'});
-	await channelTurn(owner, 'keys', id, anth, undefined, undefined, ['anthropic','google']);
-	await channelTurn(owner, 'keys', id, 'openai/gpt-5.4', undefined, undefined, ['anthropic','google']);
+	await channelTurn(owner, 'keys', id, anth, undefined, undefined, { providers: ['anthropic','google'], source: 'key' });
+	await channelTurn(owner, 'keys', id, 'openai/gpt-5.4', undefined, undefined, { providers: ['anthropic','openai'] });
 	await channelTurn(owner, 'keys', id, anth);
 	const log = await cmd(['logs',upstream]);
 	assert.ok(log.split('settings POST /model-relay/v1/messages').length >= 3);
