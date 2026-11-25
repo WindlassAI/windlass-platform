@@ -69,9 +69,10 @@
  * snapshot is handed out only when that record names the same deployment, user, repository and key.
  */
 
+import type { SnapshotLimits } from "../hosted-settings.js";
 import { DEFERRED_INPUTS, digest, HASH, SHA, type SnapshotRequest, type SnapshotSelection, type SnapshotSource } from "../snapshot-key.js";
 import type { E2bClient, E2bSnapshotInfo } from "./client.js";
-import { type E2bSettings, type E2bSnapshotLimits, templateFor } from "./config.js";
+import { type E2bSettings, templateFor } from "./config.js";
 import type { HostedSize } from "../../contract.js";
 
 /** The metadata keys a sandbox of a snapshot lookup carries (beside sandboxes.ts `META`). */
@@ -166,11 +167,11 @@ export type Selected =
 
 export class E2bSnapshots {
 	private readonly builds = new Map<string, { build: string | null; at: number }>();
-	readonly limits: E2bSnapshotLimits;
+	readonly limits: SnapshotLimits;
 
 	constructor(
 		private readonly client: E2bClient,
-		private readonly settings: E2bSettings & { snapshots: E2bSnapshotLimits },
+		private readonly settings: E2bSettings & { snapshots: SnapshotLimits },
 		private readonly log: (line: string) => void,
 		private readonly now: () => number,
 	) {
@@ -194,7 +195,7 @@ export class E2bSnapshots {
 	}
 
 	key(request: Pick<SnapshotRequest, "repo" | "generation" | "inputs">, uid: string, profile: string, screenshots: boolean, build: string, size: HostedSize = "small") {
-		const network = this.settings.network ?? { mode: "open", hosts: [] };
+		const network = this.settings.network;
 		return digest(["e2b", this.settings.deployment, uid, request.repo, request.generation, request.inputs, this.templateOf(screenshots, size), build, profile, screenshots, network.mode, [...network.hosts].sort()]);
 	}
 
@@ -299,7 +300,7 @@ export class E2bSnapshots {
 			if (!mayRemove) { kept.push(row); continue; }
 			const owner = row.user + row.repo;
 			const count = users.get(row.user) ?? 0;
-			if (!this.fresh(row)) await this.remove(row, "older than 14 days");
+			if (!this.fresh(row)) await this.remove(row, `older than ${this.limits.ttlMs / 86_400_000} days`);
 			else if (owners.has(owner)) await this.remove(row, "a newer snapshot of the same user and repository replaced it");
 			else if (count >= this.limits.maxPerUser) await this.remove(row, `the user has ${this.limits.maxPerUser} newer ones (WLP_E2B_SNAPSHOT_USER_MAX)`);
 			else { kept.push(row); owners.add(owner); users.set(row.user, count + 1); continue; }

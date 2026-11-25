@@ -32,9 +32,9 @@
  * scripts/network-check.ts runs them against a database of its own.
  */
 
-import { MAX_REPOSITORY_HOSTS, WIDE_HOSTS, type NetworkPreset, type NetworkProposal, type NetworkRequest } from "./contract.js";
+import { MAX_REPOSITORY_HOSTS, NETWORK_PRESETS, WIDE_HOSTS, type NetworkPreset, type NetworkProposal, type NetworkRequest } from "./contract.js";
 import type { DefaultsDb } from "./repository-defaults.js";
-import { MAX_HOSTS, PRESET_LIST, PRESETS, isHostName } from "./sandbox/e2b/network.js";
+import { MAX_HOSTS, PRESETS, isHostName } from "./sandbox/hosted-network.js";
 
 /** How many repositories one user may have a list for; the ones saved longest ago go first. */
 export const MAX_NETWORK_REPOSITORIES = 500;
@@ -49,7 +49,7 @@ export class NetworkProblem extends Error {}
 
 /** The presets as a client shows them. */
 export function networkPresets(): NetworkPreset[] {
-	return PRESET_LIST.map((preset) => ({ id: preset.id, name: preset.name, about: preset.about, hosts: [...preset.hosts] }));
+	return NETWORK_PRESETS.map((preset) => ({ id: preset.id, name: preset.name, about: preset.about, hosts: [...preset.hosts] }));
 }
 
 /** One entry as it is saved: a preset's id, or an exact DNS name, lower case, without a trailing dot. Null for anything else. */
@@ -76,20 +76,20 @@ export function expandEntries(entries: readonly string[]): string[] {
  * than what the deployment's own hosts leave of MAX_HOSTS. A host both name counts once, so this is a
  * floor: `fits` says it exactly for a list.
  */
-export function networkLimit(deploymentHosts: readonly string[]): number {
-	return Math.max(0, Math.min(MAX_REPOSITORY_HOSTS, MAX_HOSTS - deploymentHosts.length));
+export function networkLimit(deploymentHosts: readonly string[], maxHosts = MAX_HOSTS): number {
+	return Math.max(0, Math.min(MAX_REPOSITORY_HOSTS, maxHosts - deploymentHosts.length));
 }
 
 /** Whether a list's hosts fit beside the deployment's: at most MAX_REPOSITORY_HOSTS, and all of them together at most MAX_HOSTS. */
-export function fits(hosts: readonly string[], deploymentHosts: readonly string[]): boolean {
-	return hosts.length <= MAX_REPOSITORY_HOSTS && new Set([...deploymentHosts, ...hosts]).size <= MAX_HOSTS;
+export function fits(hosts: readonly string[], deploymentHosts: readonly string[], maxHosts = MAX_HOSTS): boolean {
+	return hosts.length <= MAX_REPOSITORY_HOSTS && new Set([...deploymentHosts, ...hosts]).size <= maxHosts;
 }
 
 /**
  * The list as it is saved, from what a client sent: each entry once, in the order given. Throws
  * NetworkProblem naming the entry at fault, or saying how many hosts the list comes to over the limit.
  */
-export function cleanEntries(raw: unknown, deploymentHosts: readonly string[] = []): string[] {
+export function cleanEntries(raw: unknown, deploymentHosts: readonly string[] = [], maxHosts = MAX_HOSTS): string[] {
 	if (!Array.isArray(raw)) throw new NetworkProblem("The network list must be a list.");
 	if (raw.length > MAX_ENTRIES) throw new NetworkProblem(`A network list can have ${MAX_ENTRIES} entries; this one has ${raw.length}.`);
 	const entries: string[] = [];
@@ -99,18 +99,18 @@ export function cleanEntries(raw: unknown, deploymentHosts: readonly string[] = 
 			const shown = typeof item === "string" ? `"${item.trim().slice(0, 80)}"` : "An entry";
 			throw new NetworkProblem(
 				typeof item === "string" && item.trim().startsWith("@")
-					? `${shown} is no preset. The presets are ${PRESET_LIST.map((preset) => preset.id).join(", ")}.`
+					? `${shown} is no preset. The presets are ${NETWORK_PRESETS.map((preset) => preset.id).join(", ")}.`
 					: `${shown} is not an exact host name. Give names such as registry.example.com: no addresses, ports, paths or wildcards.`,
 			);
 		}
 		if (!entries.includes(entry)) entries.push(entry);
 	}
 	const hosts = expandEntries(entries);
-	if (!fits(hosts, deploymentHosts)) {
+	if (!fits(hosts, deploymentHosts, maxHosts)) {
 		throw new NetworkProblem(
 			hosts.length > MAX_REPOSITORY_HOSTS
 				? `The list comes to ${hosts.length} hosts; a repository may allow at most ${MAX_REPOSITORY_HOSTS}.`
-				: `The list comes to ${hosts.length} hosts, and with the ${deploymentHosts.length} this deployment allows already that is more than the ${MAX_HOSTS} a sandbox may have. Remove some, or ask the deployment's operator to shorten WLP_E2B_NETWORK_ALLOW.`,
+				: `The list comes to ${hosts.length} hosts, and with the ${deploymentHosts.length} this deployment allows already that is more than the ${maxHosts} a sandbox may have. Remove some, or ask the deployment's operator to shorten WLP_E2B_NETWORK_ALLOW.`,
 		);
 	}
 	return entries;
@@ -245,7 +245,7 @@ export async function saveNetwork(db: DefaultsDb, project: string, label: string
  * still what was read, and reads again otherwise, so an entry another call added meanwhile stays.
  * Throws NetworkProblem when the list would not fit.
  */
-export async function addEntry(db: DefaultsDb, project: string, label: string, entry: string, deploymentHosts: readonly string[], now: number): Promise<SavedNetwork> {
+export async function addEntry(db: DefaultsDb, project: string, label: string, entry: string, deploymentHosts: readonly string[], now: number, maxHosts = MAX_HOSTS): Promise<SavedNetwork> {
 	const clean = cleanEntry(entry);
 	if (clean === null) throw new NetworkProblem(`"${entry.slice(0, 80)}" is not an exact host name.`);
 	for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -255,7 +255,7 @@ export async function addEntry(db: DefaultsDb, project: string, label: string, e
 			await settleRequests(db, project, expandEntries(entries));
 			return readNetwork(db, project);
 		}
-		const next = cleanEntries([...entries, clean], deploymentHosts);
+		const next = cleanEntries([...entries, clean], deploymentHosts, maxHosts);
 		const written = row
 			? await db.execute<{ project: string }>("UPDATE repository_network SET entries = ?, updated_at = MAX(updated_at + 1, ?), label = CASE WHEN ? = '' THEN label ELSE ? END WHERE project = ? AND entries = ? RETURNING project", JSON.stringify(next), now, label, label, project, row.entries)
 			: await db.execute<{ project: string }>("INSERT INTO repository_network (project, label, entries, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO NOTHING RETURNING project", project, label, JSON.stringify(next), now);

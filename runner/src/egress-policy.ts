@@ -1,7 +1,7 @@
 import { isIP } from "node:net";
 import { egressMode } from "../../server/src/runner/control.js";
 import type { EgressMode } from "../../server/src/contract.js";
-import { MODEL_HOSTS, PRESETS } from "../../server/src/sandbox/e2b/network.js";
+import { MODEL_HOSTS, PRESETS } from "../../server/src/sandbox/hosted-network.js";
 import { PUBLIC_SUFFIX_RULES } from "./public-suffixes.js";
 import { RunnerError } from "./state.js";
 

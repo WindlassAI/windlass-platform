@@ -126,7 +126,7 @@ ends.
   port", and nothing is handed to it.
 - **E2B.** The placeholder is signed by the server (`signatures.ts`, purpose `model-relay`). It names the
   user, the session and the turn's nonce. Its signature counts for the longest turn plus 15 minutes
-  (`WLP_TURN_TIMEOUT_MS` + 15 min, `E2bSandboxes.relayLeaseMs`), not for the token's hour. The file
+  (`WLP_TURN_TIMEOUT_MS` + 15 min, `E2bProvider.relayLeaseMs`), not for the token's hour. The file
   beside it states the token's expiry, which Windlass checks. The lease itself ends with the turn, well
   before the signature does. The route checks the signature and the expiry, then asks the turn's live
   lease for the token. This is a lookup in the server's process, or in the session's actor

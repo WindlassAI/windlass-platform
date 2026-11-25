@@ -72,7 +72,7 @@ async function main(): Promise<number> {
 	// A label no other sandbox has, and a prefix no other object has: everything this run makes, and nothing else, is found by them.
 	const deployment = `backup-check-${run}`;
 	const settings = { ...readE2bSettings(), deployment, maxRunning: 1, pause: true, windlassSandbox: false, openProfile: false };
-	console.log(`e2b-backup-check: template "${settings.template}", deployment label "${deployment}", time limit ${LIMIT_MS / 1000} s.`);
+	console.log(`e2b-backup-check: template "${settings.templates.small.template}", deployment label "${deployment}", time limit ${LIMIT_MS / 1000} s.`);
 	console.log(`e2b-backup-check: should this process be killed, its sandbox is paused by its own timeout within ${Math.round(settings.turnLeaseMs / 1000)} s; remove it with: npx tsx ../scripts/e2b-cleanup.ts --deployment ${deployment} --kill`);
 
 	const store = new S3ObjectStore(bucket);
@@ -198,8 +198,8 @@ async function main(): Promise<number> {
 			() => false,
 		);
 		expect("nothing of this run is left in the bucket", removed);
-		console.log(`\ne2b-backup-check: the sandboxes ran ${describeUsage(usage.ms / 1000, usage.cpuCount, usage.memoryMB)}. The check itself took ${Math.round((Date.now() - startedAt) / 1000)} s.`);
-		console.log("e2b-backup-check: that is an estimate from E2B's published prices and this script's own clock; the account's usage page has what was billed.");
+		console.log(`\ne2b-backup-check: the sandboxes ran ${describeUsage(usage.ms / 1000, usage.cpuCount, usage.memoryMB, settings.rateCard)}. The check itself took ${Math.round((Date.now() - startedAt) / 1000)} s.`);
+		console.log("e2b-backup-check: that is an estimate from the deployment's rate card and this script's own clock; the account's usage page has what was billed.");
 	}
 	console.log(`\n${passes} passed, ${failures} failed`);
 	return timedOut ? 3 : failures === 0 ? 0 : 1;

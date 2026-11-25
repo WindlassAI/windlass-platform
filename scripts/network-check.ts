@@ -46,7 +46,8 @@ import {
 	hostsForTurn,
 } from "../server/src/repository-network.js";
 import { GithubApp, type GithubAppSettings } from "../server/src/github/app.js";
-import { DNS_STUB, GUEST_DNS_SCRIPT, MAX_HOSTS, PRESETS, blockedLookups, guestDnsArgv, networkConfig, readE2bNetwork, withHosts } from "../server/src/sandbox/e2b/network.js";
+import { MAX_HOSTS, PRESETS } from "../server/src/sandbox/hosted-network.js";
+import { DNS_STUB, GUEST_DNS_SCRIPT, readE2bNetwork, withHosts, blockedLookups, guestDnsArgv, networkConfig } from "../server/src/sandbox/e2b/network.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {

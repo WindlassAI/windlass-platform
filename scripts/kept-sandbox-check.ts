@@ -19,7 +19,7 @@ test("a hosted Claude Code prompt can use the place freed during a provider swee
 		WLP_ANTHROPIC_BASE_URL: "https://models.invalid" });
 	const { getLayer } = await import("../server/src/layer.js");
 	const { FakeE2b, ScriptedMachine } = await import("../server/src/sandbox/e2b/fake.js");
-	const { E2bSandboxes } = await import("../server/src/sandbox/e2b/sandboxes.js");
+	const { e2bSandboxes } = await import("../server/src/sandbox/e2b/sandboxes.js");
 	const { readE2bSettings } = await import("../server/src/sandbox/e2b/config.js");
 	class ClaudeMachine extends ScriptedMachine {
 		override async start(command: string, options: E2bCommandOptions) {
@@ -32,7 +32,7 @@ test("a hosted Claude Code prompt can use the place freed during a provider swee
 		}
 	}
 	const fake = new FakeE2b({ machine: () => new ClaudeMachine() });
-	const sandboxes = new E2bSandboxes(fake, { ...readE2bSettings({}), openProfile: true, modelRelayOrigin: "https://relay.invalid" });
+	const sandboxes = e2bSandboxes(fake, { ...readE2bSettings({}), openProfile: true, modelRelayOrigin: "https://relay.invalid" });
 	(await getLayer()).sandboxes = sandboxes;
 	const originalFetch = globalThis.fetch;
 	t.mock.method(globalThis, "fetch", (input: RequestInfo | URL, init?: RequestInit) =>
@@ -116,14 +116,14 @@ async function buildProvider(t: TestContext, now = Date.now) {
 	process.env.WLP_SANDBOX = "fake";
 	process.env.WLP_SECRET ||= randomBytes(32).toString("hex");
 	const { FakeE2b } = await import("../server/src/sandbox/e2b/fake.js");
-	const { E2bSandboxes, META } = await import("../server/src/sandbox/e2b/sandboxes.js");
+	const { e2bSandboxes, META } = await import("../server/src/sandbox/e2b/sandboxes.js");
 	const { readE2bSettings } = await import("../server/src/sandbox/e2b/config.js");
 	const { getLayer } = await import("../server/src/layer.js");
 	const settings = readE2bSettings({});
 	const fake = new FakeE2b({ now });
 	const layer = await getLayer();
 	const original = layer.sandboxes;
-	layer.sandboxes = new E2bSandboxes(fake, settings, { now });
+	layer.sandboxes = e2bSandboxes(fake, settings, { now });
 	t.after(() => { layer.sandboxes = original; });
 	return { fake, settings, META };
 }
@@ -141,6 +141,7 @@ test("a sweep frees expired snapshot builders and counts only retained sessions"
 	now -= BUILD_LOST_MS;
 	const plant = (session: string, candidate: string) => fake.plant({
 		[META.deployment]: settings.deployment, [META.uid]: uid, [META.session]: session, [META.profile]: "e2b", [META.size]: "standard",
+		...(candidate && { [META.environmentBuild]: "true" }),
 		[SNAP_META.attempt]: "a".repeat(32), [SNAP_META.build]: "standard-build", [SNAP_META.variant]: "base", [SNAP_META.candidate]: candidate,
 	}, "paused");
 	const ids = ["s_personal", "s_item", "s_reader"];

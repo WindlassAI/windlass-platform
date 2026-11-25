@@ -1,5 +1,5 @@
 /**
- * The sandbox layer, put together: `createSandboxLayer` for a server on Docker, `createE2bLayer` for
+ * The sandbox layer, put together: `createSandboxLayer` for a server on Docker, `createHostedLayer` for
  * one on E2B (server/src/layer.ts chooses by WLP_SANDBOX).
  *
  * Docker mounts the user's data volume in session containers. The user's actor holds the ChatGPT sign-in.
@@ -96,16 +96,8 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 	};
 }
 
-/**
- * The layer of a server on E2B (WLP_SANDBOX=e2b): sessions' sandboxes are E2B microVMs (e2b/), which
- * every server machine of a deployment reaches. The sign-ins are the users' actors', as on Docker, and
- * E2B adds nothing to a user: Windlass's data directory is on each sandbox's own disk, so there is no
- * `ensureUserData`. That disk goes with the sandbox, so where a bucket is configured a copy of
- * Windlass's session data is kept there (backup.ts); the Docker layer has none: its data directory is
- * a volume that outlives every sandbox. The E2B provider and E2B's SDK are loaded here and not before,
- * so a server on Docker needs neither. Throws, with what to set, when E2B_API_KEY is missing.
- */
-export async function createE2bLayer(): Promise<SandboxLayer> {
+export async function createHostedLayer(settings: NonNullable<typeof config.hosted>): Promise<SandboxLayer> {
+	// Load the vendor SDK only on servers configured for E2B.
 	const { createE2bSandboxLayer } = await import("./e2b/index.js");
 	const { backupsFromConfig } = await import("./backup.js");
 	const signIns = actorSignIns();
@@ -113,7 +105,7 @@ export async function createE2bLayer(): Promise<SandboxLayer> {
 		logins: signIns.logins,
 		tokens: signIns.tokens,
 		backups: await backupsFromConfig(),
-	});
+	}, { settings });
 }
 
 export { SandboxUserError } from "./api.js";

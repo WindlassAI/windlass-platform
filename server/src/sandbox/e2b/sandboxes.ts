@@ -5,8 +5,9 @@ import { readsModelRelay, SETTINGS_KEY_WINDLASS } from "../../model-relay-url.js
 import { INIT_WORKSPACE } from "../../github/git-flags.js";
 import { hostedProfiles, machineHarnesses } from "../harnesses.js";
 import type { SandboxProfile, SandboxProfileId } from "../../contract.js";
-import { type ConnectOptions, type CreateSandboxInput, DeploymentFull, type ExecOptions, type ExecResult, type ListedSandbox, type OutOfMemory, type SandboxHandle, type SandboxPrice, type SandboxObservation, SandboxUserError, type Sandboxes } from "../api.js";
-import { profilesFor } from "../profiles.js";
+import { type ConnectOptions, type CreateSandboxInput, DeploymentFull, type ExecOptions, type ExecResult, type ListedSandbox, type OutOfMemory, type SandboxPrice, type SandboxObservation, SandboxUserError } from "../api.js";
+import { HostedSandboxes, type HostedSandboxProvider } from "../hosted.js";
+import { findProfile, profilesFor } from "../profiles.js";
 import {
 	BWRAP_PROBE,
 	DATA_DIR,
@@ -36,25 +37,21 @@ import { openRelayLease } from "../relay-leases.js";
 import { E2bBusyError, type E2bClient, type E2bCommand, type E2bConnection, E2bLimitError, type E2bSandboxInfo, E2bSnapshotModeError } from "./client.js";
 import { ADOPT_SCRIPT, AUDIT_SCRIPT, E2bSnapshots, RECORD_PATH, RECORD_SCRIPT, SNAP_META, type SnapshotRecord } from "./snapshots.js";
 import { DEFERRED_INPUTS, HASH, SHA, type SnapshotSource } from "../snapshot-key.js";
-import { DEFAULT_SNAPSHOT_LIMITS, type E2bSettings, offeredSize, offeredSizes, planRefusal, refusesSize, templateFor } from "./config.js";
+import { type E2bSettings, planRefusal, refusesSize, templateFor } from "./config.js";
+import { DEFAULT_SNAPSHOT_LIMITS, offeredSize } from "../hosted-settings.js";
 import { describeUsage, estimatedCostUsd, pricePerSecond } from "./pricing.js";
-import { DNS_LOG, DNS_LOG_BYTES, type E2bNetwork, blockedLookups, guestDnsArgv, guestNetworkStep, networkConfig, withHosts } from "./network.js";
-import { type EgressMode, HOSTED_SIZE_SPECS, type HostedSize, type HostedSizeOption, isHostedSize, outOfMemoryWords } from "../../contract.js";
+import { type E2bNetwork, withHosts, DNS_LOG, DNS_LOG_BYTES, blockedLookups, guestDnsArgv, guestNetworkStep, networkConfig } from "./network.js";
+import { HOSTED_SIZE_SPECS, type HostedSize, type HostedSizeOption, isHostedSize, outOfMemoryWords } from "../../contract.js";
 
 /** The metadata keys of a sandbox of the platform. */
 export const META = { deployment: "wlp_deployment", uid: "wlp_uid", session: "wlp_session", profile: "wlp_profile", network: "wlp_network", size: "wlp_size", environmentBuild: "wlp_environment_build" } as const;
 
-/** The size a sandbox was made in, from its metadata: none recorded is small, as before sizes. */
 export function sandboxSize(metadata: Record<string, string>): HostedSize {
 	const named = metadata[META.size];
-	return isHostedSize(named) ? named : "small";
-}
-
-const OPEN: E2bNetwork = { mode: "open", hosts: [] };
-/** The network mode a sandbox was made with, from its metadata: none recorded is `open`, as before network modes. */
-export function sandboxNetwork(metadata: Record<string, string>): EgressMode {
-	const named = metadata[META.network];
-	return named === "restricted" || named === "none" ? named : "open";
+	// Sandboxes made before sizes were recorded (some still paused on the live deployment) are small.
+	if (named === undefined) return "small";
+	if (!isHostedSize(named)) throw new Error("Invalid E2B sandbox size metadata");
+	return named;
 }
 
 /** E2B's sandbox ids are short strings of letters and digits; anything else was never one. */
@@ -70,7 +67,7 @@ export function capReached(limit: number): string {
 	return `This deployment runs at most ${limit} ${limit === 1 ? "sandbox" : "sandboxes"} at the same time, and ${limit === 1 ? "it is" : "all of them are"} in use. Try again in a few minutes; an agent's sandbox is freed shortly after its turn has ended.`;
 }
 /** E2B itself refused: the account's own limit, whatever this deployment's is. */
-export const ACCOUNT_LIMIT = "E2B refused to start another sandbox: its account is at the limit of its plan (on Hobby, 10 sandboxes running at once for every deployment on the account together, or one started per second). Try again in a few minutes.";
+export const ACCOUNT_LIMIT = "E2B refused to start another sandbox because of an account limit or start-rate limit. Try again in a few minutes.";
 export const E2B_BUSY = "E2B could not start a sandbox just now. Try again in a minute.";
 
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -84,7 +81,7 @@ const PROBE_MS = 10_000;
 /** How long the sandbox's name files may take (`guestNetwork`): its lock waits 25 s at most. */
 const GUEST_NETWORK_MS = 30_000;
 
-/** What the turn's timeline says when a sandbox that did not answer was started again from its disk (`E2bSandboxes.restart`). */
+/** What the turn's timeline says when a sandbox that did not answer was started again from its disk (`E2bProvider.restart`). */
 export const RESTARTED_NOTICE = "The sandbox had stopped answering commands, most likely because something in it used all of its memory. It was restarted from its disk: the files in the workspace are kept, the programs that were running in it are not.";
 const RESTARTED_TAIL = "It was restarted from its disk: the files in the workspace are kept, the programs that were running in it are not.";
 
@@ -123,7 +120,7 @@ interface Known {
 	keepalive: ReturnType<typeof setInterval> | undefined;
 }
 
-export interface E2bSandboxesOptions {
+export interface E2bProviderOptions {
 	/** Where the lines `[wlp] e2b.…` go. Default the console. */
 	log?: (line: string) => void;
 	now?: () => number;
@@ -141,25 +138,25 @@ export interface E2bSandboxesOptions {
 /** The profiles a sandbox on E2B can be made with. */
 const E2B_PROFILES: readonly SandboxProfileId[] = ["e2b", "e2b-open"];
 
-/** The profile a sandbox was made with, from its metadata. */
-export function sandboxProfile(metadata: Record<string, string>): SandboxProfileId {
-	const named = metadata[META.profile];
-	return E2B_PROFILES.find((id) => id === named) ?? "e2b";
+function sandboxProfile(metadata: Record<string, string>) {
+	const named = E2B_PROFILES.find(id => id === metadata[META.profile]);
+	if (!named) throw new Error("Invalid E2B sandbox profile metadata");
+	return named;
 }
 
 export class E2bSandboxHandle implements TurnSandbox {
 	readonly cwd = WORKSPACE;
 
 	constructor(
-		private readonly owner: E2bSandboxes,
-		/** Replaced when the sandbox was paused and resumed under the handle (`E2bSandboxes.holdFor`). */
+		private readonly owner: E2bProvider,
+		/** Replaced when the sandbox was paused and resumed under the handle (`E2bProvider.holdFor`). */
 		public connection: E2bConnection,
 		readonly id: string,
 		readonly uid: string,
 		readonly profile: SandboxProfileId,
 		readonly approval: "auto" | "full",
-		/** What the sandbox may reach as it was connected (`E2bSandboxes.networkFor`): its lookups of these are no blocked hosts. */
-		private readonly network: E2bNetwork = { mode: "open", hosts: [] },
+		/** What the sandbox may reach as it was connected (`E2bProvider.networkFor`): its lookups of these are no blocked hosts. */
+		private readonly network: Pick<E2bNetwork, "mode" | "hosts"> = { mode: "open", hosts: [] },
 		/** The session the sandbox was made for (its `wlp_session`): a relay lease names it, so any server process finds the turn. */
 		session?: string,
 	) {
@@ -186,7 +183,7 @@ export class E2bSandboxHandle implements TurnSandbox {
 	readonly windlassKeyProblem?: string;
 	readonly modelKeyRelay?: TurnSandbox["modelKeyRelay"];
 
-	/** Made from a post-setup snapshot (snapshots.ts): what it was saved from. Set by `E2bSandboxes` before the handle is handed out. */
+	/** Made from a post-setup snapshot (snapshots.ts): what it was saved from. Set by `E2bProvider` before the handle is handed out. */
 	snapshot?: SnapshotSource;
 	/** `SandboxHandle.notice`: set when this connect started the sandbox again from its disk. */
 	notice?: string;
@@ -466,9 +463,13 @@ export class E2bSandboxHandle implements TurnSandbox {
 	}
 }
 
-export class E2bSandboxes implements Sandboxes {
-	/** Windlass's data directory is on the sandbox's own disk. */
-	readonly sessionsLiveInSandbox = true;
+export function e2bSandboxes(client: E2bClient, settings: E2bSettings, options?: E2bProviderOptions) {
+	return new HostedSandboxes(new E2bProvider(client, settings, options));
+}
+
+export class E2bProvider implements HostedSandboxProvider {
+	readonly supportsAllowList = true;
+	readonly openProfileId = "e2b-open";
 	/** A sandbox nobody uses is paused by E2B when its idle timeout runs out ("The dead-man switch"). */
 	readonly idleStopMs: number;
 	private readonly known = new Map<string, Known>();
@@ -485,17 +486,14 @@ export class E2bSandboxes implements Sandboxes {
 	private readonly snapshotRecords: E2bSnapshots;
 	/** What each sandbox this process made from a snapshot was saved from, so a connect needs no read of its record. */
 	private readonly sources = new Map<string, SnapshotSource>();
-	readonly hasSnapshot?: (uid: string, repo: string) => Promise<boolean>;
-	readonly saveSnapshot?: (id: string, source: SnapshotSource) => Promise<boolean>;
-	readonly dropSnapshots?: (uid: string, repo?: string) => Promise<void>;
-	readonly sweepSnapshots?: (retained: (uid: string) => Promise<ReadonlySet<string> | null>) => Promise<void>;
+	readonly artifacts?: HostedSandboxProvider["artifacts"];
 	/** E2B refused a filesystem-only snapshot once: said once, and no other save is tried by this process. */
 	private snapshotsRefused = false;
 
 	constructor(
 		private readonly client: E2bClient,
 		private readonly settings: E2bSettings,
-		private readonly options: E2bSandboxesOptions = {},
+		private readonly options: E2bProviderOptions = {},
 	) {
 		this.log = options.log ?? ((line) => console.log(line));
 		this.now = options.now ?? Date.now;
@@ -507,11 +505,12 @@ export class E2bSandboxes implements Sandboxes {
 		this.snapshotRecords = this.snapshotStore ?? new E2bSnapshots(client, { ...settings, snapshots: DEFAULT_SNAPSHOT_LIMITS }, this.log, this.now);
 		if (this.snapshotStore !== null) {
 			const store = this.snapshotStore;
-			this.hasSnapshot = (uid, repo) => store.has(uid, repo);
-			this.saveSnapshot = (id, source) => this.saveSetupSnapshot(store, id, source);
-			this.dropSnapshots = (uid, repo) => store.drop(uid, repo);
-			// The names hold no user id to ask about: expiry and the caps are the sweep (snapshots.ts, "The index is the names").
-			this.sweepSnapshots = async () => { await store.prune(); };
+			this.artifacts = {
+				hasSnapshot: (uid, repo) => store.has(uid, repo),
+				saveSnapshot: (id, source) => this.saveSetupSnapshot(store, id, source),
+				dropSnapshots: (uid, repo) => store.drop(uid, repo),
+				sweepSnapshots: async () => { await store.prune(); },
+			};
 		}
 		this.log(settings.modelRelayOrigin
 			? `[wlp] e2b.model_relay: Windlass's model requests go through ${settings.modelRelayOrigin}/model-relay/v1, and sandboxes may reach that host instead of api.openai.com; they never hold the access token`
@@ -524,7 +523,7 @@ export class E2bSandboxes implements Sandboxes {
 
 	/** Where Windlass's model requests go (E2bSettings.modelRelayOrigin), or null. */
 	get modelRelayOrigin(): string | null {
-		return this.settings.modelRelayOrigin ?? null;
+		return this.settings.modelRelayOrigin;
 	}
 
 	get turnLimitMs(): number { return this.settings.turnLimitMs; }
@@ -536,14 +535,14 @@ export class E2bSandboxes implements Sandboxes {
 
 	/** By E2B's published prices for the smallest size (pricing.ts): an estimate. Each size's is in `sizes`. */
 	price(): SandboxPrice {
-		return pricePerSecond(HOSTED_SIZE_SPECS.small.cpus, HOSTED_SIZE_SPECS.small.memoryMiB);
+		return pricePerSecond(HOSTED_SIZE_SPECS.small.cpus, HOSTED_SIZE_SPECS.small.memoryMiB, this.settings.rateCard);
 	}
 
 	/** The sizes whose templates the deployment has (WLP_E2B_SIZES), with what an hour of each is estimated to cost. */
 	sizes(): HostedSizeOption[] {
-		return offeredSizes(this.settings).map((id) => {
+		return this.settings.sizes.map((id) => {
 			const spec = HOSTED_SIZE_SPECS[id];
-			return { id, cpus: spec.cpus, memoryMiB: spec.memoryMiB, usdPerHour: estimatedCostUsd(3600, spec.cpus, spec.memoryMiB) };
+			return { id, cpus: spec.cpus, memoryMiB: spec.memoryMiB, usdPerHour: estimatedCostUsd(3600, spec.cpus, spec.memoryMiB, this.settings.rateCard) };
 		});
 	}
 
@@ -566,7 +565,7 @@ export class E2bSandboxes implements Sandboxes {
 	}
 
 	/** The user's sandboxes of this deployment, by E2B's own list: running and paused. */
-	async list(uid: string): Promise<ListedSandbox[]> {
+	async inventory(uid: string): Promise<ListedSandbox[]> {
 		if (!NAME.test(uid)) return [];
 		const found = await this.client.list({ metadata: { [META.deployment]: this.settings.deployment, [META.uid]: uid } });
 		// The filter is E2B's; a sandbox is only taken for this user's when its own metadata says so too.
@@ -583,11 +582,7 @@ export class E2bSandboxes implements Sandboxes {
 
 	/** WLP_E2B_NETWORK: what every sandbox of the deployment may reach (network.ts). */
 	get network(): E2bNetwork {
-		return this.settings.network ?? OPEN;
-	}
-
-	allowedHosts(): readonly string[] {
-		return this.network.hosts;
+		return this.settings.network;
 	}
 
 	/**
@@ -600,7 +595,7 @@ export class E2bSandboxes implements Sandboxes {
 		return network;
 	}
 
-	async setNetwork(id: string, hosts: readonly string[]): Promise<boolean> {
+	async applyEgress(id: string, hosts: readonly string[]): Promise<boolean> {
 		if (this.network.mode !== "restricted") return this.network.mode === "open";
 		return this.serial(id, async () => {
 			// Only under a turn's hold: E2B's connect resumes a paused sandbox and pushes a running one's
@@ -639,10 +634,6 @@ export class E2bSandboxes implements Sandboxes {
 			if (this.networkChanges.get(id) === tail) this.networkChanges.delete(id);
 		});
 		return run;
-	}
-
-	egress(): EgressMode {
-		return this.network.mode;
 	}
 
 	/**
@@ -706,7 +697,7 @@ export class E2bSandboxes implements Sandboxes {
 	private async restart(info: E2bSandboxInfo, silent: string, memory: OutOfMemory | null = null): Promise<E2bConnection> {
 		const id = info.sandboxId;
 		// Said in every error below: what the person can do about it is a larger size.
-		const why = memory === null ? silent : `${silent}; ${outOfMemoryWords(memory, offeredSizes(this.settings))}`;
+		const why = memory === null ? silent : `${silent}; ${outOfMemoryWords(memory, this.settings.sizes)}`;
 		// Without pauses (WLP_E2B_PAUSE=0) there is no start from the disk: only a new sandbox, which the person chooses.
 		if (!this.settings.pause) throw new Error(`the sandbox does not answer (${why}); with WLP_E2B_PAUSE=0 it cannot be started again from its disk`);
 		this.log(`[wlp] e2b.sandbox.unresponsive id=${id} session=${info.metadata[META.session] ?? ""} size=${sandboxSize(info.metadata)}${memory === null ? "" : ` memory=${memory.usedMiB}/${memory.totalMiB}MiB`}: ${silent}; it is paused and started again from its disk`);
@@ -735,17 +726,12 @@ export class E2bSandboxes implements Sandboxes {
 		return fresh;
 	}
 
-	profile(id: SandboxProfileId): SandboxProfile {
-		const profile = this.profiles().find((item) => item.id === id);
-		if (profile === undefined) throw new Error(`unknown sandbox profile: ${String(id)}`);
-		return profile;
-	}
-
-	async create(input: CreateSandboxInput): Promise<string> {
+	async provision(input: CreateSandboxInput): Promise<string> {
 		if (input.harness && (!hostedProfiles.includes(input.profile) || input.screenshots || !this.modelRelayOrigin))
 			throw new SandboxUserError(`${machineHarnesses[input.harness].name} needs the microVM-only profile and a configured model relay.`);
 		if (typeof input.uid !== "string" || !NAME.test(input.uid)) throw new Error('invalid user id: it must be 1 to 64 letters, digits, "_" or "-", starting with a letter or digit');
-		const profile = this.profile(input.profile);
+		const profile = this.profiles().find(profile => profile.id === input.profile);
+		if (!profile) throw new Error(`unknown sandbox profile: ${String(input.profile)}`);
 		if (!profile.available || !E2B_PROFILES.includes(profile.id)) throw new SandboxUserError(`The sandbox "${profile.name}" is not available: ${profile.unavailableReason ?? "not supported here"}`);
 		const network = this.networkFor(`session=${input.sessionId}`, input.network);
 		const config = networkConfig(network);
@@ -777,7 +763,7 @@ export class E2bSandboxes implements Sandboxes {
 			// The snapshot went (another server's eviction) or E2B could not boot it: the ordinary way, as on Docker.
 			if (selected?.hit) {
 				this.log(`[wlp] e2b.snapshot.miss name=${selected.name} session=${input.sessionId}: a sandbox could not be made from it (${messageOf(error).slice(0, 200)}), so setup runs`);
-				return this.create({ ...input, fromSnapshot: undefined });
+				return this.provision({ ...input, fromSnapshot: undefined });
 			}
 			// A size the account's plan does not allow: said with the plan's limits, to the person and in the log.
 			if (refusesSize(messageOf(error))) {
@@ -795,10 +781,10 @@ export class E2bSandboxes implements Sandboxes {
 			await this.client.kill(id).catch((error: unknown) => this.log(`[wlp] e2b.sandbox.kill_failed id=${id}: ${messageOf(error)}; its own timeout stops it within ${Math.round(this.settings.idleTimeoutMs / 1000)} s`));
 		};
 		// Another server may have looked at the list at the same moment and made one too: then this one is one too many.
-		const running = await this.running().catch(() => null);
-		if (running !== null && running.length > this.settings.maxRunning) {
+		const running = await this.runningCount().catch(() => null);
+		if (running !== null && running > this.settings.maxRunning) {
 			await discard();
-			this.log(`[wlp] e2b.cap_reached deployment=${this.settings.deployment}: ${running.length} sandboxes ran at once where ${this.settings.maxRunning} may; the newest (id=${id}) was removed again`);
+			this.log(`[wlp] e2b.cap_reached deployment=${this.settings.deployment}: ${running} sandboxes ran at once where ${this.settings.maxRunning} may; the newest (id=${id}) was removed again`);
 			throw new DeploymentFull(this.settings.maxRunning, capReached(this.settings.maxRunning));
 		}
 		const handle = new E2bSandboxHandle(this, connection, id, input.uid, profile.id, profile.approval, network, input.sessionId);
@@ -811,7 +797,7 @@ export class E2bSandboxes implements Sandboxes {
 			if (!this.snapshotStore!.recordFits(record, selected.name, input.uid, input.fromSnapshot, selected.key)) {
 				await discard();
 				this.log(`[wlp] e2b.snapshot.refused name=${selected.name} id=${id}: the sandbox made from it does not hold its record for this user and repository; it was removed, and setup runs`);
-				return this.create({ ...input, fromSnapshot: undefined });
+				return this.provision({ ...input, fromSnapshot: undefined });
 			}
 			const source = this.snapshotStore!.sourceOf(record, input.fromSnapshot.attempt);
 			handle.snapshot = source;
@@ -840,13 +826,15 @@ export class E2bSandboxes implements Sandboxes {
 		const spec = HOSTED_SIZE_SPECS[size];
 		this.known.set(id, { uid: input.uid, session: input.sessionId, cpuCount: info?.cpuCount || spec.cpus, memoryMB: info?.memoryMB || spec.memoryMiB, runningSince: began, deadline: began + this.settings.idleTimeoutMs, holds: 0, keepalive: undefined });
 		if (info !== undefined && info.memoryMB > 0 && Math.abs(info.memoryMB - spec.memoryMiB) > spec.memoryMiB / 4) this.log(`[wlp] e2b.size_mismatch id=${id} size=${size} template=${template}: E2B says ${info.cpuCount} vCPU and ${info.memoryMB} MiB, the size is ${spec.cpus} vCPU and ${spec.memoryMiB} MiB; rebuild the template with WLP_E2B_SIZE=${size}`);
-		this.log(`[wlp] e2b.sandbox.created id=${id} uid=${input.uid} session=${input.sessionId} size=${size} template=${selected?.hit ? `snapshot ${selected.name}` : template}${running === null ? "" : `: ${running.length} of at most ${this.settings.maxRunning} running`}`);
+		this.log(`[wlp] e2b.sandbox.created id=${id} uid=${input.uid} session=${input.sessionId} size=${size} template=${selected?.hit ? `snapshot ${selected.name}` : template}${running === null ? "" : `: ${running} of at most ${this.settings.maxRunning} running`}`);
 		return id;
 	}
 
-	async connect(id: string, options: ConnectOptions = {}): Promise<SandboxHandle | undefined> {
+	async acquire(id: string, options: ConnectOptions = {}): Promise<TurnSandbox | undefined> {
 		const info = await this.ours(id);
 		if (info === undefined) return undefined;
+		const made = sandboxProfile(info.metadata);
+		const size = sandboxSize(info.metadata);
 		const paused = info.state === "paused";
 		// Starting a paused sandbox adds one to those that run, as creating one does.
 		if (paused) await this.assertRoom();
@@ -866,29 +854,27 @@ export class E2bSandboxes implements Sandboxes {
 		let memory: OutOfMemory | null = null;
 		if (silent !== null) {
 			// E2B's samples are read from outside the guest: they say whether its memory was used up when it stopped answering.
-			memory = await this.memoryPeak(id, 0, sandboxSize(info.metadata));
+			memory = await this.memoryPeak(id, 0, size);
 			// A paused one has run only since this connect.
 			connection = await this.restart(paused ? { ...info, startedAt: connectedAt } : info, silent, memory);
 			restarted = true;
 		}
 		const now = this.now();
 		const known = this.remember(info);
-		// The profile the sandbox was made with, as E2B keeps it: whichever server connects runs Windlass the same way.
-		const made = sandboxProfile(info.metadata);
 		const network = this.networkFor(`id=${id}`, options.network);
-		const handle = new E2bSandboxHandle(this, connection, id, known.uid, made, this.profile(made).approval, network, info.metadata[META.session]);
-		handle.size = sandboxSize(info.metadata);
-		if (restarted) handle.notice = memory === null ? RESTARTED_NOTICE : `${outOfMemoryWords(memory, offeredSizes(this.settings))} ${RESTARTED_TAIL}`;
+		const handle = new E2bSandboxHandle(this, connection, id, known.uid, made, findProfile(made).approval, network, info.metadata[META.session]);
+		handle.size = size;
+		if (restarted) handle.notice = memory === null ? RESTARTED_NOTICE : `${outOfMemoryWords(memory, this.settings.sizes)} ${RESTARTED_TAIL}`;
 		if (memory !== null) handle.outOfMemory = memory;
 		const from = info.metadata[SNAP_META.from];
 		if (from) handle.snapshot = await this.sourceFor(handle, info, from);
 		const build = info.metadata[SNAP_META.build];
 		if (typeof build === "string" && /^[A-Za-z0-9_.:-]{1,128}$/.test(build)) handle.image = build;
 		if (paused || restarted) {
-			const running = await this.running().catch(() => null);
-			if (running !== null && running.length > this.settings.maxRunning) {
+			const running = await this.runningCount().catch(() => null);
+			if (running !== null && running > this.settings.maxRunning) {
 				await this.client.pause(id).catch(() => undefined);
-				this.log(`[wlp] e2b.cap_reached deployment=${this.settings.deployment}: ${running.length} sandboxes ran at once where ${this.settings.maxRunning} may; id=${id} was paused again`);
+				this.log(`[wlp] e2b.cap_reached deployment=${this.settings.deployment}: ${running} sandboxes ran at once where ${this.settings.maxRunning} may; id=${id} was paused again`);
 				throw new DeploymentFull(this.settings.maxRunning, capReached(this.settings.maxRunning));
 			}
 			known.runningSince = now;
@@ -903,7 +889,7 @@ export class E2bSandboxes implements Sandboxes {
 		// The deployment's mode, whatever the sandbox was made with: E2B's configuration replaced as a whole and the
 		// names written again (a resume may have rewritten them). Metadata cannot be changed after create, so a
 		// sandbox once out of `open` is set at every connect. Open to open changes nothing, as before network modes.
-		if (sandboxNetwork(info.metadata) !== "open" || network.mode !== "open") {
+		if (info.metadata[META.network] || network.mode !== "open") {
 			try {
 				await this.serial(id, async () => {
 					await this.client.updateNetwork(id, networkConfig(network));
@@ -916,11 +902,7 @@ export class E2bSandboxes implements Sandboxes {
 		return handle;
 	}
 
-	async state(id: string): Promise<"none" | "running" | "paused"> {
-		return (await this.observe(id)).state;
-	}
-
-	async observe(id: string): Promise<SandboxObservation> {
+	async inspect(id: string): Promise<SandboxObservation> {
 		const info = await this.ours(id);
 		if (!info) return { state: "none" };
 		// For a paused VM getInfo returns the last pause time. For a running VM endAt is a future deadline.
@@ -948,7 +930,7 @@ export class E2bSandboxes implements Sandboxes {
 		if (connection !== undefined) {
 			const path = tokenFilePath(id, DATA_DIR);
 			const made = sandboxProfile(info.metadata);
-			await new E2bSandboxHandle(this, connection, id, info.metadata[META.uid] ?? "", made, this.profile(made).approval).removeFiles([path, `${path}.tmp`]);
+			await new E2bSandboxHandle(this, connection, id, info.metadata[META.uid] ?? "", made, findProfile(made).approval).removeFiles([path, `${path}.tmp`]);
 		}
 		for (let attempt = 1; ; attempt += 1) {
 			try {
@@ -980,7 +962,7 @@ export class E2bSandboxes implements Sandboxes {
 	 */
 	async holdFor(handle: E2bSandboxHandle, options: { refresh?: boolean } = {}): Promise<() => Promise<void>> {
 		const id = handle.id;
-		const known = this.known.get(id) ?? this.remember({ sandboxId: id, templateId: "", state: "running", metadata: { [META.uid]: handle.uid }, startedAt: this.now(), endAt: this.now(), cpuCount: 0, memoryMB: 0 });
+		const known = this.known.get(id) ?? this.remember({ sandboxId: id, templateId: "", state: "running", metadata: { [META.uid]: handle.uid, [META.size]: handle.size }, startedAt: this.now(), endAt: this.now(), cpuCount: 0, memoryMB: 0 });
 		known.holds += 1;
 		if (known.holds === 1) {
 			try {
@@ -1046,7 +1028,7 @@ export class E2bSandboxes implements Sandboxes {
 				if (connection === undefined) return;
 				const path = tokenFilePath(info.sandboxId, DATA_DIR);
 				const made = sandboxProfile(info.metadata);
-				await new E2bSandboxHandle(this, connection, info.sandboxId, uid, made, this.profile(made).approval).removeFiles([path, `${path}.tmp`]);
+				await new E2bSandboxHandle(this, connection, info.sandboxId, uid, made, findProfile(made).approval).removeFiles([path, `${path}.tmp`]);
 			}),
 		);
 	}
@@ -1093,7 +1075,7 @@ export class E2bSandboxes implements Sandboxes {
 			if (m[SNAP_META.candidate] !== key && m[SNAP_META.candidate] !== store.coldKey(source, uid, profile)) return refused("its setup is not the one it was made for");
 			const connection = await this.client.connect(id, this.settings.idleTimeoutMs);
 			if (connection === undefined) return false;
-			const handle = new E2bSandboxHandle(this, connection, id, uid, profile, this.profile(profile).approval);
+			const handle = new E2bSandboxHandle(this, connection, id, uid, profile, findProfile(profile).approval);
 			// E2B writes the image while the sandbox is paused for a moment; its own short timeout must not run out meanwhile.
 			const release = await this.holdFor(handle, { refresh: false });
 			try {
@@ -1129,14 +1111,15 @@ export class E2bSandboxes implements Sandboxes {
 	}
 
 	/** The deployment's sandboxes that run now, by E2B's own list. */
-	running(): Promise<E2bSandboxInfo[]> {
-		return this.client.list({ metadata: { [META.deployment]: this.settings.deployment }, state: ["running"] });
+	private async runningCount(): Promise<number> {
+		const rows = await this.client.list({ metadata: { [META.deployment]: this.settings.deployment }, state: ["running"] });
+		return rows.length;
 	}
 
 	private async assertRoom(): Promise<void> {
-		const running = await this.running();
-		if (running.length < this.settings.maxRunning) return;
-		this.log(`[wlp] e2b.cap_reached deployment=${this.settings.deployment}: ${running.length} of at most ${this.settings.maxRunning} sandboxes are running; none was started`);
+		const running = await this.runningCount();
+		if (running < this.settings.maxRunning) return;
+		this.log(`[wlp] e2b.cap_reached deployment=${this.settings.deployment}: ${running} of at most ${this.settings.maxRunning} sandboxes are running; none was started`);
 		throw new DeploymentFull(this.settings.maxRunning, capReached(this.settings.maxRunning));
 	}
 
@@ -1179,7 +1162,7 @@ export class E2bSandboxes implements Sandboxes {
 	private ended(info: E2bSandboxInfo, how: "paused" | "killed", note = ""): void {
 		const known = this.remember(info);
 		const since = info.state === "running" ? (known.runningSince ?? info.startedAt) : null;
-		const ran = since === null ? "it was paused already, so nothing ran" : `it ran ${describeUsage((this.now() - since) / 1000, known.cpuCount, known.memoryMB)}`;
+		const ran = since === null ? "it was paused already, so nothing ran" : `it ran ${describeUsage((this.now() - since) / 1000, known.cpuCount, known.memoryMB, this.settings.rateCard)}`;
 		known.runningSince = null;
 		this.log(`[wlp] e2b.sandbox.${how} id=${info.sandboxId} uid=${known.uid} session=${known.session}: ${ran}${note === "" ? "" : `; ${note}`}`);
 	}
@@ -1190,7 +1173,7 @@ export class E2bSandboxes implements Sandboxes {
 		const until = Math.min(this.now(), known.deadline);
 		// A sandbox that is gone may have been killed from outside (the E2B console, a cleanup), not only by its timeout.
 		const how = what === "is gone" ? "is gone: removed outside this server, or by its own timeout" : `${what} by its own timeout`;
-		this.log(`[wlp] e2b.sandbox.${what === "is gone" ? "gone" : "timed_out"} id=${id} uid=${known.uid} session=${known.session}: it ${how}; it ran at most ${describeUsage(Math.max(0, until - known.runningSince) / 1000, known.cpuCount, known.memoryMB)}`);
+		this.log(`[wlp] e2b.sandbox.${what === "is gone" ? "gone" : "timed_out"} id=${id} uid=${known.uid} session=${known.session}: it ${how}; it ran at most ${describeUsage(Math.max(0, until - known.runningSince) / 1000, known.cpuCount, known.memoryMB, this.settings.rateCard)}`);
 		known.runningSince = null;
 	}
 

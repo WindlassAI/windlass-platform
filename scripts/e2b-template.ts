@@ -13,20 +13,12 @@ import { machineHarness } from "../server/src/sandbox/harnesses.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { HOSTED_SIZES, HOSTED_SIZE_SPECS, isHostedSize } from "../server/src/contract.js";
-import { HOBBY_MAX_CPUS, HOBBY_MAX_MEMORY_MB, planRefusal, readE2bSettings, refusesSize, templateFor, templateVariables } from "../server/src/sandbox/e2b/config.js";
+import { buildShape, planRefusal, readE2bSettings, refusesSize, templateFor, templateVariables } from "../server/src/sandbox/e2b/config.js";
 import { buildSandboxTemplate, describeTemplate } from "../server/src/sandbox/e2b/template.js";
 
 const args = process.argv.slice(2);
 const print = args.includes("--print");
 const context = args.find((arg) => !arg.startsWith("--"));
-
-function number(name: string, fallback: number, least: number, most: number): number {
-	const raw = (process.env[name] ?? "").trim();
-	if (raw === "") return fallback;
-	const value = Number(raw);
-	if (!Number.isInteger(value) || value < least || value > most) throw new Error(`${name} must be a whole number from ${least} to ${most}; got "${raw}"`);
-	return value;
-}
 
 async function main(): Promise<number> {
 	const variant = process.env.WLP_SANDBOX_VARIANT ?? "base";
@@ -44,10 +36,7 @@ async function main(): Promise<number> {
 	if (!isHostedSize(size)) throw new Error(`WLP_E2B_SIZE must be one of ${HOSTED_SIZES.join(", ")}; got "${size}"`);
 	const settings = readE2bSettings();
 	const name = templateFor(settings, size, shots, harness?.id);
-	// What the Hobby plan allows a sandbox: up to 8 vCPUs and 8 GiB. The size's figures are what the server prices it at, so
-	// WLP_E2B_CPU and WLP_E2B_MEMORY_MB, which override them, are for a test build under another name only.
-	const cpuCount = number("WLP_E2B_CPU", HOSTED_SIZE_SPECS[size].cpus, 1, HOBBY_MAX_CPUS);
-	const memoryMB = number("WLP_E2B_MEMORY_MB", HOSTED_SIZE_SPECS[size].memoryMiB, 512, HOBBY_MAX_MEMORY_MB);
+	const { cpuCount, memoryMB } = buildShape(process.env, size);
 	if (cpuCount !== HOSTED_SIZE_SPECS[size].cpus || memoryMB !== HOSTED_SIZE_SPECS[size].memoryMiB) console.log(`# Note: ${size} is ${HOSTED_SIZE_SPECS[size].cpus} vCPU and ${HOSTED_SIZE_SPECS[size].memoryMiB} MiB, which the server prices it at; this build differs.`);
 	console.log(`# The ${size} template "${name}": ${cpuCount} vCPU, ${memoryMB} MiB. E2B is asked to build this:`);
 	console.log(describeTemplate(context ?? ".", shots, harness ? image : undefined));

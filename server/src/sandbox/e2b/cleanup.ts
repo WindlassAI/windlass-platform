@@ -6,7 +6,7 @@
  */
 
 import type { E2bClient, E2bSandboxInfo } from "./client.js";
-import { describeUsage } from "./pricing.js";
+import { describeUsage, type RateCard } from "./pricing.js";
 import { HOSTED_SIZE_SPECS } from "../../contract.js";
 import { META, sandboxSize } from "./sandboxes.js";
 
@@ -28,7 +28,7 @@ export async function deploymentSandboxes(client: E2bClient, deployment: string)
 }
 
 /** Lists the deployment's sandboxes and, with `kill`, removes them. Without it nothing is changed: a dry run. */
-export async function cleanupDeployment(client: E2bClient, deployment: string, options: { kill: boolean; now?: () => number }): Promise<CleanupReport> {
+export async function cleanupDeployment(client: E2bClient, deployment: string, options: { kill: boolean; rateCard?: RateCard; now?: () => number }): Promise<CleanupReport> {
 	const now = (options.now ?? Date.now)();
 	const found = await deploymentSandboxes(client, deployment);
 	const report: CleanupReport = { found, killed: [], failed: [], lines: [] };
@@ -37,7 +37,7 @@ export async function cleanupDeployment(client: E2bClient, deployment: string, o
 		const who = `uid=${info.metadata[META.uid] ?? "?"} session=${info.metadata[META.session] ?? "?"} size=${size}`;
 		// For a running one: since it started, which is the most it can have run in this stretch. At E2B's own figures for it, else its size's.
 		const spec = HOSTED_SIZE_SPECS[size];
-		const usage = info.state === "running" ? `running, at most ${describeUsage(Math.max(0, now - info.startedAt) / 1000, info.cpuCount || spec.cpus, info.memoryMB || spec.memoryMiB)} so far` : "paused, costs nothing while it is";
+		const usage = info.state === "running" ? `running, at most ${describeUsage(Math.max(0, now - info.startedAt) / 1000, info.cpuCount || spec.cpus, info.memoryMB || spec.memoryMiB, options.rateCard)} so far` : "paused, costs nothing while it is";
 		let outcome = options.kill ? "killed" : "would be killed";
 		if (options.kill) {
 			try {

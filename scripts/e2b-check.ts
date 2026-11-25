@@ -51,7 +51,7 @@ import { readE2bSettings } from "../server/src/sandbox/e2b/config.js";
 import { e2bModelRelay, readE2bNetwork } from "../server/src/sandbox/e2b/network.js";
 import { cloneWithToken } from "../server/src/github/git.js";
 import { describeUsage } from "../server/src/sandbox/e2b/pricing.js";
-import { type E2bSandboxHandle, E2bSandboxes, META } from "../server/src/sandbox/e2b/sandboxes.js";
+import { type E2bSandboxHandle, e2bSandboxes, META } from "../server/src/sandbox/e2b/sandboxes.js";
 import { BWRAP_PROBE } from "../server/src/sandbox/provider.js";
 import { DATA_DIR, randomId } from "../server/src/sandbox/provider.js";
 
@@ -104,7 +104,7 @@ async function main(): Promise<number> {
 	// A label no other sandbox has: everything this run makes, and nothing else, is found by it.
 	const deployment = `check-${randomId(4)}`;
 	const settings = { ...readE2bSettings(), deployment, maxRunning: 1, pause: true, windlassSandbox: false, openProfile: false };
-	console.log(`e2b-check: template "${settings.template}", deployment label "${deployment}", time limit ${Math.round(limitMs / 1000)} s.`);
+	console.log(`e2b-check: template "${settings.templates.small.template}", deployment label "${deployment}", time limit ${Math.round(limitMs / 1000)} s.`);
 	console.log(`e2b-check: should this process be killed, its sandbox is paused by its own timeout within ${Math.round(settings.turnLeaseMs / 1000)} s; remove it with: npx tsx ../scripts/e2b-cleanup.ts --deployment ${deployment} --kill`);
 
 	// E2B's SDK is loaded here and not before: without a key nothing of it is needed.
@@ -313,7 +313,7 @@ async function main(): Promise<number> {
 		const publicHost = (() => { try { return new URL(process.env.WLP_PUBLIC_URL ?? "").hostname; } catch { return null; } })();
 		for (const mode of ["restricted", "none"] as const) {
 			await step(`network: ${mode}`, async () => {
-				const boxes = new E2bSandboxes(client, { ...settings, network: readE2bNetwork({ WLP_E2B_NETWORK: mode, ...relayEnv, ...(mode === "restricted" ? { WLP_E2B_NETWORK_ALLOW: "@npm" } : {}) }) }, { log: (line) => console.log(`      ${line}`) });
+				const boxes = e2bSandboxes(client, { ...settings, network: readE2bNetwork({ WLP_E2B_NETWORK: mode, ...relayEnv, ...(mode === "restricted" ? { WLP_E2B_NETWORK_ALLOW: "@npm" } : {}) }) }, { log: (line) => console.log(`      ${line}`) });
 				const id = await boxes.create({ uid: "check", sessionId: `network-${mode}`, profile: "e2b" });
 				runs();
 				try {
@@ -400,8 +400,8 @@ async function main(): Promise<number> {
 		} catch (error) {
 			fail("nothing of this run is left at E2B", `the cleanup itself failed (${messageOf(error)}). Run: npx tsx ../scripts/e2b-cleanup.ts --deployment ${deployment} --kill`);
 		}
-		console.log(`\ne2b-check: the sandbox ran ${describeUsage(usage.ms / 1000, usage.cpuCount, usage.memoryMB)}. The check itself took ${Math.round((Date.now() - startedAt) / 1000)} s.`);
-		console.log("e2b-check: that is an estimate from E2B's published prices and this script's own clock; the account's usage page has what was billed.");
+		console.log(`\ne2b-check: the sandbox ran ${describeUsage(usage.ms / 1000, usage.cpuCount, usage.memoryMB, settings.rateCard)}. The check itself took ${Math.round((Date.now() - startedAt) / 1000)} s.`);
+		console.log("e2b-check: that is an estimate from the deployment's rate card and this script's own clock; the account's usage page has what was billed.");
 	}
 	console.log(`\n${passes} passed, ${failures} failed`);
 	return timedOut ? 3 : failures === 0 ? 0 : 1;

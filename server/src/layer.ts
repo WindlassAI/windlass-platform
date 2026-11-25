@@ -19,10 +19,10 @@ async function load(): Promise<SandboxLayer> {
 	}
 	// Not a literal, so this file type-checks and loads without the real layers being present.
 	const specifier = "./sandbox/index.js";
-	const module = (await import(specifier)) as { createSandboxLayer?: () => SandboxLayer; createE2bLayer?: () => Promise<SandboxLayer> };
-	if (config.sandbox === "e2b") {
-		if (typeof module.createE2bLayer !== "function") throw new Error("server/src/sandbox/index.ts does not export createE2bLayer()");
-		return module.createE2bLayer();
+	const module = (await import(specifier)) as { createSandboxLayer?: () => SandboxLayer; createHostedLayer?: (settings: NonNullable<typeof config.hosted>) => Promise<SandboxLayer> };
+	if (config.hosted) {
+		if (typeof module.createHostedLayer !== "function") throw new Error("server/src/sandbox/index.ts does not export createHostedLayer()");
+		return module.createHostedLayer(config.hosted);
 	}
 	if (typeof module.createSandboxLayer !== "function") {
 		throw new Error("server/src/sandbox/index.ts does not export createSandboxLayer()");
