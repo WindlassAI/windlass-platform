@@ -12,6 +12,7 @@ export interface Identity {
 	issuer: string;
 	sub: string;
 	email: string | null;
+	display?: string | null;
 	emailPermissionMissing?: boolean;
 }
 
@@ -86,7 +87,7 @@ export async function finishOAuth(pending: OAuthAttempt, address: string, readEm
 					console.warn("[wlp] login.github email_status=403");
 				}
 			}
-			return { provider: "github", issuer: pending.issuer, sub: String(viewer.id), email, emailPermissionMissing };
+			return { provider: "github", issuer: pending.issuer, sub: String(viewer.id), display: viewer.login, email, emailPermissionMissing };
 		} catch (error) {
 			console.warn(`[wlp] login.github status=${error instanceof GithubError ? error.status : 0}`);
 			if (error instanceof GithubError && error.oauthCode === "redirect_uri_mismatch") throw callbackMismatch(pending.redirect);
@@ -113,11 +114,12 @@ export async function finishOAuth(pending: OAuthAttempt, address: string, readEm
 		});
 		if (payload.nonce !== pending.nonce || typeof payload.sub !== "string" || !payload.sub ||
 			((Array.isArray(payload.aud) && payload.aud.length > 1 || payload.azp !== undefined) && payload.azp !== google.clientId)) throw invalid();
-		const verified = payload.email_verified === true ? normalizeEmail(payload.email) : null;
+		const display = normalizeEmail(payload.email);
+		const verified = payload.email_verified === true ? display : null;
 		// For third-party mailboxes Google may still attest to an earlier owner's verification.
 		const hosted = typeof payload.hd === "string" && payload.hd.length > 0;
 		const email = hosted || verified?.endsWith("@gmail.com") ? verified : null;
-		return { provider: "google", issuer: pending.issuer, sub: payload.sub, email };
+		return { provider: "google", issuer: pending.issuer, sub: payload.sub, display, email };
 	} catch (error) {
 		if (error instanceof UserError) throw error;
 		console.warn("[wlp] login.google code=invalid_response");

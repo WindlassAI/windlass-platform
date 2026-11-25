@@ -162,9 +162,16 @@ export interface AuthResult {
 
 export type LoginProvider = "github" | "google";
 
+export interface LinkedLogin {
+	provider: LoginProvider;
+	/** Provider login or email for display. Older links may have no label until the next sign-in. */
+	display: string | null;
+}
+
 export interface LoginStart {
 	url: string;
 	redirectPrefix: string;
+	/** When this attempt stops being accepted, ms since the epoch. */
 	expiresAt: number;
 }
 
@@ -1953,7 +1960,7 @@ export interface ApiToken {
 export interface UserActions {
 	signOutEverywhere(options?: { revokeApiTokens: boolean }): Promise<void>;
 	me(): Promise<UserProfile>;
-	linkedLogins(): Promise<LoginProvider[]>;
+	linkedLogins(): Promise<LinkedLogin[]>;
 	unlinkLogin(provider: LoginProvider): Promise<void>;
 	chatgpt(): Promise<ChatgptStatus>;
 	startChatgpt(): Promise<LoginStart>;

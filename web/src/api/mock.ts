@@ -3326,12 +3326,15 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const world = () => worldOf(auth);
 		return {
 			async linkedLogins() {
-				return (["github", "google"] as const).filter(p => recall("wlp.mock.identity." + p) === world().profile.uid);
+				return (["github", "google"] as const)
+					.filter(provider => recall("wlp.mock.identity." + provider) === world().profile.uid)
+					.map(provider => ({ provider, display: provider === "github" ? "ada" : "ada@example.com" }));
 			},
 			async unlinkLogin(provider) {
 				const methods = await this.linkedLogins();
+				if (!methods.some(method => method.provider === provider)) return;
 				if (methods.length < 2) throw new PlatformError("user", "Link another login method first.");
-				if (methods.includes(provider)) keep("wlp.mock.identity." + provider, "");
+				keep("wlp.mock.identity." + provider, "");
 			},
 			...machineCalls(auth),
 			...items.calls(auth),

@@ -6,7 +6,7 @@ Sign in with GitHub, or with Google where the deployment offers it. If the platf
 
 Choose **Continue with GitHub** or **Continue with Google**. Authorize Windlass at the provider and return to the same browser tab. Signing in with GitHub works before installing the App on any repository.
 
-To keep an existing account, open **Settings → Account** while signed in and choose **Link GitHub** or **Link Google**. Keep the tab open through the provider redirect. You can unlink a provider once another login method is linked.
+To keep an existing account, open **Settings → Account** while signed in and choose **Link** beside GitHub or Google. Keep the tab open through the provider redirect. You can unlink a provider once another login method is linked.
 
 Your provider identity selects your account. An unlinked identity creates a new account if admitted, including when its verified email matches another user. If you have lost your existing session, ask the operator to link your provider identity to your original UID before signing in.
 

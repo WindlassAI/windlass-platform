@@ -124,6 +124,7 @@
         "server/src/{platform-login,login-route,link-identity}.ts",
         "scripts/platform-login-check.ts",
         "web/src/api/**",
+        "web/src/components/{ChatgptPlan,LoginMethods}.tsx",
         "scripts/check-listeners.ts",
         "scripts/check-secret.ts",
         "scripts/{idempotency,kept-sandbox,signin,http-limits}-check.ts",

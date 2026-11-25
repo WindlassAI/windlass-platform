@@ -34,6 +34,7 @@ import type {
 	ItemSummary,
 	ItemView,
 	LiveDelta,
+	LinkedLogin,
 	LoginProvider,
 	LoginStart,
 	MachineClaim,
@@ -161,7 +162,7 @@ export interface SessionFeed {
 
 export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelProviders" | "saveModelProvider" | "checkModelProvider" | "removeModelProvider"> {
 	me(): Promise<UserProfile>;
-	linkedLogins(): Promise<LoginProvider[]>;
+	linkedLogins(): Promise<LinkedLogin[]>;
 	unlinkLogin(provider: LoginProvider): Promise<void>;
 	chatgpt(): Promise<ChatgptStatus>;
 	startChatgpt(): Promise<LoginStart>;

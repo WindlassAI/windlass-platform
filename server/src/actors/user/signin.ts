@@ -6,7 +6,7 @@ import { type ItemsCtx, notifyProviderWaits, queueChanged } from "../user-items.
 import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { clientError, requireService, requireServiceFor, requireUser, serviceParams } from "../../auth.js";
-import type { ChatgptStatus, LoginProvider, ModelList, UserProfile } from "../../contract.js";
+import type { ChatgptStatus, LinkedLogin, LoginProvider, ModelList, UserProfile } from "../../contract.js";
 import { windlassModels } from "../../sandbox/harnesses.js";
 import { ModelProblem, standInModels } from "../../account-models.js";
 import { providerStatuses } from "../../model-providers.js";
@@ -130,7 +130,7 @@ async function forgetSignIn(c: SignInActionCtx, uid: string) {
 }
 
 export const signinActions = {
-	linkedLogins: (c: SignInActionCtx): Promise<LoginProvider[]> => {
+	linkedLogins: (c: SignInActionCtx): Promise<LinkedLogin[]> => {
 		const { uid } = requireUser(c);
 		return c.client().accountIdentities.getOrCreate(["platform"], { params: serviceParams() }).internalLinked(uid);
 	},

@@ -53,14 +53,17 @@ test("Google code exchange, ID token verification and explicit identity ownershi
 	const identity = await finishOAuth(pending, callback);
 	const uid = await resolveIdentity(db, identity);
 	assert.ok(uid);
+	assert.equal(identity.display, claims.email);
 	assert.notEqual(await resolveIdentity(db, { ...identity, sub: "different" }), uid);
 	overrides = { email: "changed@gmail.com" };
 	assert.equal(await resolveIdentity(db, await finishOAuth(pending, callback)), uid);
+	assert.equal(sqlite.prepare("SELECT display FROM login_identity WHERE uid=?").get(uid)?.display, "changed@gmail.com");
 
 	for (const patch of [{ email_verified: false }, { email_verified: "true" }, { hd: undefined }]) {
 		overrides = { sub: "another-" + JSON.stringify(patch), ...patch };
 		const separate = await finishOAuth(pending, callback);
 		assert.equal(separate.email, null);
+		assert.equal(separate.display, claims.email);
 		assert.notEqual(await resolveIdentity(db, separate), uid);
 	}
 	for (const patch of [{ iss: "wrong" }, { aud: "wrong" }, { azp: "wrong" }, { exp: now - 1 }, { nonce: "another attempt" }, { sub: "" }]) {

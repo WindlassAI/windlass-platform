@@ -587,6 +587,8 @@ async function identityChecks(client: Client, server: Server, github: GithubStan
 
 	await check("an existing session explicitly links GitHub and an unlinked identity gets a fresh uid", async () => {
 		assert((await signIn("my-sub", owner)).profile.uid === profile.uid, "link changed owner");
+		const [linked] = await userOf(owner).linkedLogins();
+		assert(linked?.provider === "github" && linked.display === "my-sub", "link lost the GitHub login");
 		assert((await signIn("my-sub")).profile.uid === profile.uid, "linked login lost owner");
 		const fresh = await signIn("their-sub");
 		assert(fresh.profile.uid !== profile.uid && fresh.profile.email === null, "email selected an account");
@@ -743,7 +745,8 @@ async function identityChecks(client: Client, server: Server, github: GithubStan
 			assert(auth.profile.uid === profile.uid, "server recovery did not restore the owner");
 			await recover(profile.uid, "google", "operator-verified-sub");
 			await userOf(auth).unlinkLogin("github");
-			assert((await userOf(auth).linkedLogins()).join() === "google", "unlink removed the wrong method");
+			const remaining = await userOf(auth).linkedLogins();
+			assert(remaining.length === 1 && remaining[0].provider === "google" && remaining[0].display === null, "unlink removed the wrong method");
 			await refused(() => userOf(auth).unlinkLogin("google"), "last_login");
 			return "same numeric ID isolated, signed-out owner recovered, another method required for unlink";
 		} finally { await replacement.stop(); }
