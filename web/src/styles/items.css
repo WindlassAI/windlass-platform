@@ -278,14 +278,51 @@
 
 /* ---- the page ------------------------------------------------------------------------------- */
 
+.item-header {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: start;
+	gap: 8px 20px;
+}
 .item-title {
 	overflow-wrap: anywhere;
 }
 .item-actions {
 	display: flex;
+	align-items: center;
 	flex-wrap: wrap;
-	justify-content: flex-end;
-	gap: 8px;
+	gap: 4px;
+}
+.item-more {
+	width: var(--h-sm);
+	height: var(--h-sm);
+	font-size: var(--text-20);
+}
+.item-meta {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 2px 0;
+	grid-column: 1 / -1;
+	font-size: var(--text-13);
+	line-height: 1.5;
+	color: var(--ink-dim);
+	overflow-wrap: anywhere;
+}
+.item-meta > :not(:last-child)::after {
+	content: "·";
+	margin: 0 6px;
+	color: var(--ink-faint);
+}
+.item-meta a {
+	color: inherit;
+	text-decoration: none;
+}
+.item-meta a:hover {
+	text-decoration: underline;
+}
+.item-header > .subtask-strip {
+	grid-column: 1 / -1;
 }
 .item > .callout {
 	margin-top: 16px;
@@ -1029,17 +1066,6 @@
 	background: var(--warn);
 }
 
-/* Where it came from: one quiet line under the facts, the issue's number the one thing in ink. */
-.item-origin {
-	margin-top: 6px;
-}
-.item-origin .item-link {
-	color: var(--ink);
-}
-.item-origin .item-link:hover {
-	color: var(--accent-strong);
-}
-
 /* A draft in someone else's words: whose they are, the text as the agent gets it, then Start. */
 .item-read {
 	display: grid;
@@ -1153,19 +1179,8 @@
 }
 
 @media (max-width: 760px) {
-	.item-actions {
-		justify-content: stretch;
-	}
-	.item-actions .button {
-		flex: 1;
-	}
-	/* A quiet action stays its own size at the start, not a wide bar of empty surface. */
-	.item-actions .button-quiet {
-		flex: none;
-		width: auto;
-	}
-	.item-actions > .button-quiet:first-child {
-		margin-left: -10px;
+	.item-header {
+		grid-template-columns: minmax(0, 1fr);
 	}
 	.item-facts > div,
 	.item-cost > div,

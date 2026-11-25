@@ -256,7 +256,7 @@ describe("rendered on the item's page", () => {
 			const report = host.querySelector('section[aria-labelledby="item-report"]');
 			if (report) expect((panel?.compareDocumentPosition(report) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING, title).toBeTruthy();
 			// The header links the reviewer's session beside the builder's, where the item has one.
-			expect([...host.querySelectorAll(".repo-facts a")].map((link) => link.textContent).includes("Open the reviewer"), title).toBe(view.reviewerSessionId !== null);
+			expect([...host.querySelectorAll(".item-actions a")].map((link) => link.textContent).includes("Reviewer"), title).toBe(view.reviewerSessionId !== null);
 		}
 	});
 });
