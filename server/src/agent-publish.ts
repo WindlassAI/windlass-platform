@@ -40,12 +40,8 @@ import { anyOf, machineHarnesses } from "./sandbox/harnesses.js";
 import { MAX_PUBLISH_BODY_CHARS, MAX_PUBLISH_TITLE_CHARS, REVIEW_LIMITS, type SecretRequest, type ItemAttachment, type PublishMessage, type PullRequestInfo, type QuestionChoice, type QuestionPublish } from "./contract.js";
 import { unavailableSecretName, validRequestedSecretName, type CommandSandbox, type Redactor } from "./repo-secrets.js";
 
-/**
- * A name no MCP server of a user's may have (personal-servers.ts), and that the platform takes out of
- * Windlass's configuration in a sandbox (windlass-config.ts): a server called so would look to the
- * model, and to whoever reads its calls, like the platform's own.
- */
-export const PUBLISH_SERVER = "windlass_platform";
+export { PUBLISH_SERVER } from "./personal-server-definition.js";
+
 /** The machine agents a Plan-first subtask may run (harnesses.ts, `subtasks`), as the planner is told of them. */
 const SUBTASK_AGENTS = Object.values(machineHarnesses).filter(h => h.subtasks);
 
