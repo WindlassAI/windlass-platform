@@ -26,7 +26,7 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 			const note = readFileSync(path, "utf8");
 			const answer = input.prompt.includes('"answer":"drop"');
 			const verdict = note.includes("password=") ? "secret" : note.includes("release") ? (answer ? "stale" : "question") : "team";
-			return { noteId: id, verdict, reason: "Checked the repository readme." };
+			return { noteId: id, verdict, question: verdict === "question" ? "Which check should run before a release?" : undefined, reason: "Checked the repository readme." };
 		});
 		const ref = { file: "README.md", line: 1 };
 		const noteId = notes.find(n => n.verdict === "team")!.noteId;
@@ -35,7 +35,7 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 			files: [{ kind: "guide", path: "AGENTS.md", content: "# Working here\n## Terms\nSee `README.md`.\nRun `missing.sh`.\nRun `echo hello`.\npassword=fixture-only\n",
 				lines: [{ line: 3, noteId, evidence: ref }, { line: 4, evidence: ref }, { line: 6, evidence: ref }] },
 				{ kind: "area", path: "src/AGENTS.md", content: "# Source files\nSee [the readme](../README.md).\n", lines: [{ line: 2, evidence: ref }] }],
-			notes, questions: notes.filter(n => n.verdict === "question").map(n => ({ noteId: n.noteId, ask: "Which check should run before a release?" })),
+			notes,
 		} };
 		const invoke = host.get("file_repo_setup")!;
 		const answer = await invoke(call, input.signal!);

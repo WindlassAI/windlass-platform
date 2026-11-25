@@ -862,9 +862,9 @@ a.agent-group-name:hover .agent-group-owner {
 	.readiness-group li > .link { grid-column: 2; justify-self: start; }
 }
 
+.setup-note-fields, .setup-result { display: grid; gap: 8px; }
+.setup-note-fields { margin-top: 8px; }
 .setup-notes, .setup-result {
-	display: grid;
-	gap: 8px;
 	margin-block: 14px;
 	padding: 12px;
 	border: 1px solid var(--line);

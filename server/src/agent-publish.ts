@@ -245,8 +245,8 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 	});
 	if (offer.setup) {
 		const rows = { type: "array", items: { type: "object" } };
-		return [tool("file_repo_setup", "File score [{id,pass,reason}], files [{kind: guide or area,path,content,lines:[{line,noteId?,evidence:{file,line?} or {command,exit,said}}]}], notes [{noteId,verdict,reason}], questions [{noteId?,claim,ask}]. Line numbers start at one.", {
-			type: "object", required: ["score", "files", "notes", "questions"], properties: { score: rows, files: rows, notes: rows, questions: rows },
+		return [tool("file_repo_setup", "File score [{id,pass,reason}], files [{kind: guide or area,path,content,lines:[{line,noteId?,evidence:{file,line?} or {command,exit,said}}]}], notes [{noteId,verdict,reason,question?}]. For a question verdict, include the question for that note. Line numbers start at one.", {
+			type: "object", required: ["score", "files", "notes"], properties: { score: rows, files: rows, notes: rows },
 		})];
 	}
 	if (offer.planReview) return [tool("file_plan_review", "File the independent decision and concise findings on the proposed plan.", {

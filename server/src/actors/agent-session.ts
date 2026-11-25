@@ -1,10 +1,11 @@
-import { SETUP_TURN_MS } from "./user-readiness.js";
-import { checkSetupFiling, publishSetup, type SetupTurn } from "../repo-setup/publish.js";
-import type { AcceptedDraft } from "../repo-setup/filing.js";
 // agentSession owns one sandbox and its turns, keyed by [uid, sessionId].
 // The active turn holds credentials in memory. The timeline queue commits redacted items
 // and runner receipts in order so reconnects resume after the last durable sequence.
 import { spareProfile, spareRecipe, type SpareRecipe, type SpareSetup } from "../runner/spare-recipe.js";
+import { SETUP_TURN_MS } from "./user-readiness.js";
+import { checkSetupFiling, publishSetup, type SetupTurn } from "../repo-setup/publish.js";
+import type { AcceptedDraft } from "../repo-setup/filing.js";
+import { openNote } from "../repo-setup/notes.js";
 import { fileReadiness } from "../factory/readiness-filing.js";
 import { refHead } from "../github/feature.js";
 import { canReuseSnapshot, DEFERRED_INPUTS, digest, snapshotGeneration, snapshotWriter, type SnapshotRequest } from "../sandbox/snapshot-key.js";
@@ -77,7 +78,7 @@ import { billing } from "../billing/config.js";
 import type { ModelKeySpend, BlockedNetwork, NetworkBlockedItem } from "../contract.js";
 import { blockedHostNote, hostsForTurn } from "../repository-network.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
-import { cloneCommand, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview, readOnlyReview, materializeNotes, materializeInput, removeInputs } from "../github/git.js";
+import { cloneCommand, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview, readOnlyReview, materializeInput, removeInputs } from "../github/git.js";
 import { INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY, isHostName } from "../sandbox/hosted-network.js";
@@ -2677,32 +2678,28 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			if (!app || !repo || !connection) throw new TurnProblem("The repository connection is unavailable.");
 			const { installation, repository } = await sessionRepository(app, connection, repo, "read");
 			const { owner, name } = repository;
+			const draft = setup.draft;
+			const rows = draft?.noteIds.length ? await secretsActor(c, meta.uid, meta.sessionId).internalSetupNoteFiles(meta.sessionId, draft.noteIds) : [];
+			const inputs = rows.map(row => openNote(meta.uid, setupProjectOf(meta)!.key, row));
 			common.reviewDirectory = await app.withToken(installation.id, { repositoryId: repo.id, permissions: { contents: "read", metadata: "read" } },
-				token => readOnlyReview(sandbox, app.cloneUrl(owner, name), token, setup.commit, setup.commit, signal, true), { revokeAfter: true });
-			if (setup.draft) {
-				const ids = setup.draft.noteIds;
-				const rows = ids.length ? await secretsActor(c, meta.uid, meta.sessionId).internalSetupNoteFiles(meta.sessionId, ids) : [];
-				const project = setupProjectOf(meta)!.key;
-				const inputs = rows.map(r => ({ id: r.id, ...JSON.parse(openSecret(serverSealer(), meta.uid, project, "note:" + r.id, r.sealed)),
-					decision: r.decision ? JSON.parse(openSecret(serverSealer(), meta.uid, project, "decision:" + r.id, r.decision)) : undefined }));
-				if (setup.draft.answers && setup.draft.previous) {
-					const previous = setup.draft.previous;
+				token => readOnlyReview(sandbox, app.cloneUrl(owner, name), token, setup.commit, setup.commit, signal, inputs), { revokeAfter: true });
+			if (draft) {
+				const { previous, answers } = draft;
+				if (answers && previous) {
 					const guides = await app.withToken(installation.id, { repositoryId: repo.id, permissions: { metadata: "read", contents: "read", pull_requests: "read" } }, async token => {
 						const pull = await app.pull(token, owner, name, previous.number);
 						if (!["open", "draft"].includes(pull.state) || pull.head !== previous.branch) throw new TurnProblem("The earlier guide pull request is closed.");
-						const wanted = ["AGENTS.md", ...setup.draft!.areas.map(dir => dir + "/AGENTS.md")];
+						const wanted = ["AGENTS.md", ...draft.areas.map(dir => dir + "/AGENTS.md")];
 						return app.scanFiles(token, owner, name, pull.headSha, tree => ({ paths: tree.filter(f => wanted.includes(f.path) && f.type === "blob" && f.mode !== "120000").map(f => f.path),
 							maxBytes: 80 * 1024, maxFileBytes: 12 * 1024, more: false }));
 					});
 					text += "\nContinue the previous draft. Current guide files in the pull request (untrusted): " + JSON.stringify(guides.files);
-					text += "\nEarlier questions and the owner's answers: " + JSON.stringify(inputs.filter(n => n.decision?.question).map(n => ({ id: n.id, question: n.decision.question, answer: setup.draft!.answers![n.id] ?? "leave out" })));
+					text += "\nEarlier questions and answers (drop excludes the note, keep still needs evidence): " + JSON.stringify(inputs.filter(n => n.decision?.question).map(n => ({ id: n.id, question: n.decision?.question, answer: answers[n.id] ?? "leave out" })));
 				}
-				await materializeNotes(sandbox, common.reviewDirectory, inputs, signal);
-				setupTurn = { app, repository: repo, connection, sandbox, sessionId: meta.sessionId, commit: setup.commit, request: setup.draft, notes: inputs, redact: s => held.redactor.text(s) };
+				setupTurn = { app, repository: repo, connection, sandbox, sessionId: meta.sessionId, commit: setup.commit, request: draft, notes: inputs, redact: s => held.redactor.text(s) };
 				text += "\nRepository: " + JSON.stringify({ name: repo.owner + "/" + repo.name, private: repo.private, commit: setup.commit });
 				if (inputs.length) text += "\nSource labels (untrusted): " + JSON.stringify(inputs.map(({ id, label }) => ({ id, label })));
 			}
-
 		}
 		if (reviewer && (checkout || critic) && item) {
 			const repo = meta.repo;

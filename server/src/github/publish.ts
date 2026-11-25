@@ -271,7 +271,7 @@ export class PullProblem extends GithubProblem {
 	}
 }
 
-function infoOf(pull: Pull, pushedAt: number, verified: string): PullRequestInfo {
+export function infoOf(pull: Pull, pushedAt: number, verified: string): PullRequestInfo {
 	return { number: pull.number, url: pull.url, state: pull.state, title: pull.title, branch: pull.head, base: pull.base, pushedAt, verified };
 }
 

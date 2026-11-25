@@ -1,9 +1,8 @@
 // One actor per uid owns the account, session index and turn admission.
 // Keep launch and submission claims synchronous. Service-only actions check their caller before reading account data.
 
-import { addNotes, closeSetupPull, NOTE_LIFETIME, NOTES_TABLE, PUBLICATION_TABLE, savePublication, setupKnowledge } from "../repo-setup/notes.js";
+import { addNotes, closeSetupPull, NOTE_LIFETIME, NOTES_TABLE, PUBLICATION_TABLE, readNotes, savePublication, setupKnowledge } from "../repo-setup/notes.js";
 import type { DraftRequest, NoteInput, NoteDecision, SetupPublication } from "../repo-setup/types.js";
-import { draftPrompt } from "../repo-setup/prompt.js";
 import { resolveDefaultPlace, savedPlace, changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
 import type { AccountDefaultsPatch, CredentialSource, ItemPlaceDefaults, RepositoryDefaultsPatch } from "../contract.js";
 import { digest, snapshotGeneration } from "../sandbox/snapshot-key.js";
@@ -103,7 +102,7 @@ import { readinessPrompt } from "../factory/readiness-filing.js";
 import { scanRepoSetup } from "../github/setup-checks.js";
 import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { BuildStartRefused, buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, wakeEnvironments, type EnvironmentHost } from "./user-environments.js";
-import type { EnvironmentBuildOrigin, EnvironmentBuildReport } from "./internal.js";
+import type { EnvironmentBuildOrigin, EnvironmentBuildReport, SessionCreateInput } from "./internal.js";
 import { AccountCheckout, billingTables, readBilling } from "../billing/account.js";
 import { billing } from "../billing/config.js";
 import { hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
@@ -569,7 +568,7 @@ async function sessionHostedSize(c: CreateCtx, asked: unknown, project: string |
 	return [...offered].reverse().find((size) => HOSTED_SIZES.indexOf(size) <= HOSTED_SIZES.indexOf(wanted)) ?? offered[0];
 }
 
-async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4], { build, readiness }: { build?: EnvironmentBuildOrigin; readiness?: { session: string; commit: string; draft?: DraftRequest } } = {}): Promise<SessionSummary> {
+async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4], { build, readiness }: { build?: EnvironmentBuildOrigin; readiness?: SessionCreateInput["readiness"] } = {}): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
 	if (input.size !== undefined && ![1, 2, 4].includes(input.size))
 		throw new UserError("Choose a sandbox size of 1, 2 or 4 slots.", { code: "bad_input" });
@@ -678,7 +677,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		const now = Date.now();
 		const itemRole = item && { role: item.role, subtaskScreenshots: item.subtaskScreenshots, ...(item.planCritic && { planCritic: true as const }) };
 		summary = {
-			id: readiness?.session ?? item?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
+			id: readiness?.attempt ?? item?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
 			title: givenTitle ?? DEFAULT_TITLE,
 			place,
 			harness,
@@ -704,7 +703,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, ...itemRole, ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && offered?.platformKeys?.length && { filedWithKey: true as const }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(!item && size > 1 && { size }),
 			...(build && { environmentBuild: build }),
-			...(readiness && { readiness: { attempt: readiness.session, commit: readiness.commit, draft: readiness.draft } }),
+			...(readiness && { readiness }),
 			...(hostedSize && { hostedSize }),
 			title: summary.title,
 			titleIsTyped: !item && givenTitle !== null,
@@ -804,7 +803,6 @@ async function removeSession(c: CreateCtx, uid: string, id: string): Promise<voi
 	await forgetSession(c, id);
 }
 
-/** Keep an idle setup session only while its owner has a question to answer. Its sandbox is released. */
 async function retireDrafters(c: CreateCtx, uid: string, project: string) {
 	const [active] = await c.db.execute("SELECT 1 FROM readiness WHERE project=? AND judgment IS NULL AND error IS NULL AND at>? LIMIT 1", project, Date.now() - SETUP_LEASE_MS);
 	if (active) return;
@@ -836,18 +834,19 @@ async function assessRepository(c: CreateCtx, profile: UserProfile, id: GithubId
 			const { notes, publication } = await setupKnowledge(c.db, profile.uid, project);
 			if (!Array.isArray(selected) || selected.length > 200 || selected.some(id => !notes.some(n => n.id === id)) || new Set(selected).size !== selected.length) throw new UserError("A selected note is unavailable.", { code: "bad_input" });
 			if (answers && Object.entries(answers).some(([id, answer]) => !selected.includes(id) || !notes.find(n => n.id === id)?.decision?.question || !["keep", "drop"].includes(answer))) throw new UserError("Choose an answer for a current question.", { code: "bad_input" });
-			draft = { areas: scan.areas, later: scan.later, noteIds: selected, previous: publication?.pull ?? null, ...(answers && { answers }) };
+			draft = { areas: scan.areas, later: scan.later, noteIds: selected, previous: publication?.pull ?? null, answers };
 		}
 		await c.db.execute("UPDATE readiness SET inputs=? WHERE session=?", inputs.key, session);
-		const prompt = draft ? draftPrompt(inputs.evidence, draft) : readinessPrompt(inputs.evidence);
-		if (draft?.answers && Object.keys(draft.answers).length) {
-			const [pending] = await c.db.execute<{ drafter: string | null }>("SELECT drafter FROM setup_notes WHERE project=? AND id=?", project, Object.keys(draft.answers)[0]);
-			if (pending?.drafter && c.vars.sessions.has(pending.drafter)) {
-				await sessionActor(c, profile.uid, pending.drafter).internalAssessRepository(prompt, { attempt: session, commit: scan.commit, draft });
-				return;
-			}
+		const prompt = readinessPrompt(inputs.evidence, draft);
+		const readiness = { attempt: session, commit: scan.commit, draft };
+		const firstAnswer = answers && Object.keys(answers)[0];
+		if (firstAnswer) {
+			const [pending] = await c.db.execute<{ drafter: string | null }>("SELECT drafter FROM setup_notes WHERE project=? AND id=?", project, firstAnswer);
+			if (!pending?.drafter || !c.vars.sessions.has(pending.drafter)) throw new UserError("The setup session has ended. Run setup again.", { code: "bad_input" });
+			await sessionActor(c, profile.uid, pending.drafter).internalAssessRepository(prompt, readiness);
+			return;
 		}
-		await makeSession(c, profile, { title: "Repo setup", repository: { id }, place: destination.place, profile: profileId }, null, undefined, { readiness: { session, commit: scan.commit, draft } });
+		await makeSession(c, profile, { title: "Repo setup", repository: { id }, place: destination.place, profile: profileId }, null, undefined, { readiness });
 		await sessionActor(c, profile.uid, session).internalAssessRepository(prompt);
 	} catch (error) {
 		await finishAssessment(c.db, session, error instanceof UserError ? error.message : "The setup check could not start.");
@@ -2073,8 +2072,7 @@ export const user = actor({
 			requireServiceFor(c, secretsCaller(c.key[0], session));
 			const s = c.vars.sessions.get(session);
 			if (!s?.readiness || !s.repository) throw new UserError("Setup session unavailable.", { code: "forbidden" });
-			const rows = await c.db.execute<{ id: string; sealed: string; decision: string | null }>("SELECT id,sealed,decision FROM setup_notes WHERE project=? AND expires>?", setupKeyOf(s.repository.id), Date.now());
-			const selected = rows.filter(r => ids.includes(r.id));
+			const selected = (await readNotes(c.db, setupKeyOf(s.repository.id))).filter(r => ids.includes(r.id));
 			if (selected.length !== ids.length) throw new UserError("A selected note was deleted or expired.", { code: "bad_input" });
 			return selected;
 		},
@@ -2084,10 +2082,7 @@ export const user = actor({
 			if (!s?.readiness || !s.repository) throw new UserError("Setup session unavailable.", { code: "forbidden" });
 			const id = s.repository.id;
 			if (decisions.length) await c.cron.set({ name: "setup-note-cleanup-" + id, expression: `${Number(BigInt(id) % 60n)} * * * *`, action: "internalCheckSetupPulls", args: [id], maxHistory: 0 });
-			await c.db.transaction(async tx => {
-				await tx.execute("UPDATE setup_notes SET drafter=NULL,decision=NULL WHERE project=? AND pr=?", setupKeyOf(id), publication.pull.number);
-				await savePublication(tx, c.key[0], setupKeyOf(id), publication, decisions, session);
-			});
+			await c.db.transaction(tx => savePublication(tx, c.key[0], setupKeyOf(id), publication, decisions, session));
 		},
 		// Reconcile missed close deliveries and installations without webhooks.
 		internalCheckSetupPulls: async (c, id: GithubId) => {

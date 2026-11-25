@@ -39,15 +39,25 @@ export async function addNotes(db: Db, uid: string, project: string, input: Note
 	if (!added.length) throw invalid("Delete some saved notes before adding more.");
 }
 
+export type SealedNote = { id: string; sealed: string; decision: string | null };
+
+export function readNotes(db: Db, project: string) {
+	return db.execute<SealedNote>("SELECT id,sealed,decision FROM setup_notes WHERE project=? AND expires>? ORDER BY rowid", project, Date.now());
+}
+
+export function openNote(uid: string, project: string, row: SealedNote): SetupNote {
+	const open = (kind: string, sealed: string) => JSON.parse(openSecret(serverSealer(), uid, project, kind + ":" + row.id, sealed));
+	return { id: row.id, ...open("note", row.sealed), decision: row.decision ? open("decision", row.decision) : undefined };
+}
+
 export async function setupKnowledge(db: Db, uid: string, project: string): Promise<SetupKnowledge> {
-	const rows = await db.execute<{ id: string; sealed: string; decision: string | null }>("SELECT id,sealed,decision FROM setup_notes WHERE project=? AND expires>? ORDER BY rowid", project, Date.now());
-	const notes: SetupNote[] = rows.map(row => ({ id: row.id, ...JSON.parse(openSecret(serverSealer(), uid, project, "note:" + row.id, row.sealed)),
-		...(row.decision && { decision: JSON.parse(openSecret(serverSealer(), uid, project, "decision:" + row.id, row.decision)) }) }));
+	const notes = (await readNotes(db, project)).map(row => openNote(uid, project, row));
 	const [saved] = await db.execute<{ result: string }>("SELECT result FROM setup_publication WHERE project=?", project);
 	return { notes, publication: saved ? JSON.parse(saved.result) : null };
 }
 
 export async function savePublication(db: Db, uid: string, project: string, publication: SetupPublication, decisions: NoteDecision[], session: string) {
+	await db.execute("UPDATE setup_notes SET drafter=NULL,decision=NULL WHERE project=? AND pr=?", project, publication.pull.number);
 	await db.execute("INSERT OR REPLACE INTO setup_publication VALUES (?,?)", project, JSON.stringify(publication));
 	for (const d of decisions) await db.execute("UPDATE setup_notes SET pr=?,decision=?,drafter=? WHERE project=? AND id=?",
 		publication.pull.number, sealSecret(serverSealer(), uid, project, "decision:" + d.noteId, JSON.stringify(d)), d.question ? session : null, project, d.noteId);

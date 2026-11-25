@@ -1,6 +1,5 @@
-import type { PullRequestInfo } from "../contract.js";
 import type { GithubApp } from "../github/app.js";
-import { cloneRepository, publishWork, putOnWork, sessionRepository, type StoredRepository } from "../github/publish.js";
+import { cloneRepository, infoOf, publishWork, putOnWork, sessionRepository, type StoredRepository } from "../github/publish.js";
 import type { StoredConnection } from "../github/repos.js";
 import type { SandboxHandle } from "../sandbox/api.js";
 import { evidencePaths, privateLine, safeTarget, validateDraft, type AcceptedDraft } from "./filing.js";
@@ -68,11 +67,10 @@ export async function publishSetup(turn: SetupTurn, draft: AcceptedDraft, signal
 		if (wrote.exitCode !== 0) throw Error("A guide target is missing or is a symbolic link.");
 	}
 	const { body, privateBody } = setupBodies(draft, turn);
-	const pull: PullRequestInfo | null = available ? { number: available.number, state: available.state, url: available.url, title: available.title,
-		branch, base: available.base, pushedAt: request.previous?.pushedAt ?? Date.now(), verified: "" } : null;
+	const pull = available ? infoOf(available, request.previous?.pushedAt ?? Date.now(), "") : null;
 	signal.throwIfAborted();
 	const result = await publishWork({ app, connection, repository, sandbox, sessionId, branch, pull, pushed: cloned.workAt, retitle: true, shownIsEnough: true,
 		message: { title: "Add repository guides", commit: "docs: add repository guides", body }, privateBody,
 		evidence: { verified: null, checks: [], during: null, redact: turn.redact } });
-	return { pull: result.pull, questions: draft.questions, files: [...draft.files.keys()] };
+	return { pull: result.pull, files: [...draft.files.keys()] };
 }

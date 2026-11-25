@@ -1,10 +1,11 @@
-import { posix } from "node:path";
+import { record as row } from "../github/app.js";
+import { readinessJudgment } from "../factory/readiness-filing.js";
 import type { Judgment } from "../factory/readiness.js";
 import { pushTokenKinds, redact } from "../github/redact.js";
-import { checkGuides } from "./guide-check.js";
+import { checkGuide, guideTree } from "../../../scripts/agents-docs-check.js";
 import type { DraftRequest, NoteDecision, SetupNote, Verdict } from "./types.js";
 
-export interface DraftContext {
+interface DraftContext {
 	request: DraftRequest;
 	notes: SetupNote[];
 	paths: string[];
@@ -14,7 +15,7 @@ export interface DraftContext {
 	redact(text: string): string;
 }
 export interface AcceptedDraft {
-	score: Judgment; files: Map<string, string>; decisions: NoteDecision[]; questions: string[];
+	score: Judgment; files: Map<string, string>; decisions: NoteDecision[];
 }
 const verdicts: Verdict[] = ["team", "personal", "private", "secret", "stale", "question", "duplicate"];
 const opaqueCredential = /\b(?=[A-Za-z0-9_+/=-]{32,}\b)(?=[A-Za-z0-9_+/=-]*[A-Z])(?=[A-Za-z0-9_+/=-]*[a-z])(?=[A-Za-z0-9_+/=-]*\d)[A-Za-z0-9_+/=-]{32,}/;
@@ -32,8 +33,6 @@ export function privateLine(s: string, ctx: Pick<DraftContext, "host" | "owner" 
 	return false;
 }
 
-type Row = Record<string, unknown>;
-const row = (v: unknown): Row => v && typeof v === "object" && !Array.isArray(v) ? v as Row : {};
 function list(v: unknown, max: number) {
 	if (!Array.isArray(v) || v.length > max) throw Error("Check the number of entries in each list.");
 	return v.map(row);
@@ -43,7 +42,6 @@ function short(v: unknown) {
 	return v.trim();
 }
 
-// For commands, a citation must actually show the command or declare the named package script.
 function supportsCommands(line: string, source: string) {
 	const commands = [...line.matchAll(/`([^`]+)`/g)].map(m => m[1]);
 	if (/^\s*(?:npm|pnpm|yarn|node|npx|make|cargo|go|python3?|git|bash|sh)\s/.test(line)) commands.push(line.trim());
@@ -72,12 +70,7 @@ function evidence(value: unknown, ctx: DraftContext, claim = "") {
 export function validateDraft(args: unknown, ctx: DraftContext): AcceptedDraft {
 	const a = row(args);
 	const safe = (v: unknown) => { const s = short(v); return privateLine(s, ctx) ? "Details withheld." : s; };
-	const scoreRows = list(a.score, 3);
-	const findings = (["setup", "checks", "guide"] as const).map(id => {
-		const r = scoreRows.find(r => r.id === id);
-		if (typeof r?.pass !== "boolean") throw Error("File all three setup checks.");
-		return { id, pass: r.pass, reason: safe(r.reason) };
-	});
+	const score = readinessJudgment(a.score, safe);
 	const notes = list(a.notes, 200);
 	if (notes.length !== ctx.notes.length) throw Error("Classify every selected note once.");
 	const decisions = ctx.notes.map((n): NoteDecision => {
@@ -85,25 +78,17 @@ export function validateDraft(args: unknown, ctx: DraftContext): AcceptedDraft {
 		if (!r || !verdicts.includes(r.verdict as Verdict)) throw Error("Give each selected note a classification.");
 		const unanswered = ctx.request.answers && n.decision?.question && !ctx.request.answers[n.id];
 		const verdict = secret(n.text) || ctx.redact(n.text) !== n.text ? "secret" : privateLine(n.text, ctx) ? "private" : unanswered ? "question" : r.verdict as Verdict;
-		return { noteId: n.id, verdict, reason: verdict === "secret" || verdict === "private" ? "Sensitive details omitted." : safe(r.reason), uses: [] };
+		const question = verdict === "question" && (unanswered ? n.decision?.question : short(r.question));
+		return { noteId: n.id, verdict, question: question && !privateLine(question, ctx) ? question : undefined, reason: verdict === "secret" || verdict === "private" ? "Sensitive details omitted." : safe(r.reason), uses: [] };
 	});
 	const excludedLines = ctx.notes.flatMap((n, i) => ["team", "duplicate"].includes(decisions[i].verdict) ? [] :
 		n.text.split(/\r?\n/).map(s => s.trim()).filter(s => s.length >= 8));
-	const questions: string[] = [];
-	for (const q of list(a.questions, 8)) {
-		const ask = short(q.ask);
-		if (privateLine(ask, ctx)) continue;
-		if (!q.noteId) questions.push(ask);
-		else {
-			const d = decisions.find(d => d.noteId === q.noteId);
-			if (d?.verdict === "question") d.question = ask;
-		}
-	}
+	if (decisions.filter(d => d.question).length > 8) throw Error("Ask up to eight questions.");
 	const files = new Map<string, string>();
 	const allowed = new Set(["AGENTS.md", ...ctx.request.areas.map(d => d + "/AGENTS.md")]);
-	const rawFiles = list(a.files, 20);
+	const tree = guideTree([...ctx.paths, ...allowed], path => ctx.read.get(path));
 	let bytes = 0;
-	for (const f of rawFiles) {
+	for (const f of list(a.files, 20)) {
 		if (typeof f.path !== "string" || !allowed.delete(f.path) || typeof f.content !== "string" || f.kind !== (f.path === "AGENTS.md" ? "guide" : "area")) throw Error("File only the requested guides, one per folder.");
 		if (!safeTarget(f.path) || privateLine(f.path, ctx)) throw Error("An area name cannot be published safely.");
 		if (ctx.paths.includes(f.path) && !ctx.read.has(f.path)) throw Error("An existing guide could not be read safely.");
@@ -112,28 +97,23 @@ export function validateDraft(args: unknown, ctx: DraftContext): AcceptedDraft {
 		bytes += size;
 		if (size > 12 * 1024 || bytes > 80 * 1024 || f.content.trimEnd().split("\n").length > (f.path === "AGENTS.md" ? 150 : 40) || f.content.includes("\0")) throw Error("Shorten the guides to the requested limits.");
 		if (ctx.redact(f.content) !== f.content) throw Error("Remove saved secret values before filing.");
-		files.set(f.path, f.content);
-	}
-	if (allowed.size) throw Error("Include the root guide and every chosen area.");
-	const issues = checkGuides(files, ctx.paths, p => ctx.read.get(p));
-	for (const f of rawFiles) {
-		const path = String(f.path);
+		const path = f.path;
+		const proposed = f.content.split(/\r?\n/);
+		const issues = checkGuide(path, f.content, tree);
 		const original = ctx.read.get(path)?.split(/\r?\n/) ?? [];
 		const old = new Set(original);
-		const proposed = new Set(files.get(path)!.split(/\r?\n/));
 		const removed = list(f.removed ?? [], 150);
-		if (original.some((line, i) => line.trim() && !proposed.has(line) && !privateLine(line, ctx) && !removed.some(r => r.line === i + 1 && evidence(r.evidence, ctx))))
+		if (original.some((line, i) => line.trim() && !proposed.includes(line) && !privateLine(line, ctx) && !removed.some(r => r.line === i + 1 && evidence(r.evidence, ctx))))
 			throw Error("Keep existing guide text, or cite evidence for each removed line.");
 		const refs = list(f.lines, 450);
 		const kept: string[] = [];
-		for (const [i, line] of files.get(path)!.split(/\r?\n/).entries()) {
+		for (const [i, line] of proposed.entries()) {
 			const claims = refs.filter(r => r.line === i + 1);
 			const sources = claims.map(r => decisions.find(n => n.noteId === r.noteId));
-			if (privateLine(line, ctx) || issues.some(e => e.path === path && e.line === i + 1)) continue;
+			if (privateLine(line, ctx) || issues.some(e => e.line === i + 1)) continue;
 			if (claims.some((r, j) => r.noteId && (!sources[j] || !["team", "duplicate"].includes(sources[j]!.verdict) || ctx.request.answers?.[String(r.noteId)] === "drop"))) continue;
 			if (excludedLines.some(q => line.includes(q))) continue;
 			const proofs = claims.map(r => evidence(r.evidence, ctx, line));
-			// Require proof for all new prose and command lines. Keep headings, fences and table dividers.
 			const layout = /^\s*(?:$|`{3}\w*$|[| :\-]+$|#{1,6} [\w &-]{1,50}$)/.test(line);
 			if ((!layout && !old.has(line) && !claims.length) || proofs.some(p => !p)) continue;
 			kept.push(line);
@@ -148,10 +128,11 @@ export function validateDraft(args: unknown, ctx: DraftContext): AcceptedDraft {
 		}
 		files.set(path, kept.join("\n").trimEnd() + "\n");
 	}
+	if (allowed.size) throw Error("Include the root guide and every chosen area.");
 	for (const d of decisions) if (d.verdict === "team" && !d.uses.length) {
 		d.verdict = "stale"; d.reason = "No guide line passed the evidence checks.";
 	}
-	return { score: { findings }, files, questions, decisions };
+	return { score, files, decisions };
 }
 
 export function evidencePaths(args: unknown) {
@@ -164,5 +145,5 @@ export function evidencePaths(args: unknown) {
 }
 
 export function safeTarget(path: string) {
-	return !posix.isAbsolute(path) && path.split("/").every(p => /^[\w.-]+$/.test(p) && !["..", ".", ".git"].includes(p.toLowerCase()));
+	return path.split("/").every(p => /^[\w.-]+$/.test(p) && !["..", ".", ".git"].includes(p.toLowerCase()));
 }

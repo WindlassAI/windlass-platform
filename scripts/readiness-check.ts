@@ -114,7 +114,7 @@ test("only verified guide lines get citations, and filenames and reasons stay ou
 		paths: ["package.json"], read: new Map([["package.json", '{"scripts":{"lint":"eslint ."}}']]), redact: (s: string) => s.replaceAll("saved-value", "[redacted]") };
 	for (const line of ["/home/alice/tmp", "/Users/ada/work", "C:\\Users\\somebody", "a@test.invalid", "10.0.0.2", "(@personal)", "worker.office.example", "https://internal.example", "db.corp", "password=sample-value", "saved-value"])
 		assert.equal(privateLine(line, ctx), true);
-	const base = { score: answers().slice(0, 3), notes: [{ noteId: "team", verdict: "team", reason: "Found the saved script." }], questions: [] };
+	const base = { score: answers().slice(0, 3), notes: [{ noteId: "team", verdict: "team", reason: "Found the saved script." }] };
 	const file = { path: "AGENTS.md", kind: "guide", content: "# Guide\n## Terms\nUse `npm run lint`.\nUse `npm run nope`.\nUse `sh unsupported.sh`.\nMissing proof.\n",
 		lines: [3,4,5].map(line => ({ line, noteId: "team", evidence: { file: "package.json", line: 1 } })) };
 	const validate = (f = file) => validateDraft({ ...base, files: [f] }, ctx);

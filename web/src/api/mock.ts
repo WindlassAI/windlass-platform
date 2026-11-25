@@ -3564,7 +3564,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const k = repositoryViewOf(world(), repositoryId).knowledge;
 				const pull = k.publication?.pull ?? { number: 42, url: `https://github.com/${repo.owner}/${repo.name}/pull/42`, state: "open" as const,
 					title: "Add repository guides", branch: "windlass/repo-setup-" + new Date(now()).toISOString().slice(0,10).replaceAll("-", ""), base: "main", pushedAt: now(), verified: "" };
-				world().knowledge.set(repositoryId, { publication: { pull, files: ["AGENTS.md", "src/services/AGENTS.md"], questions: [] }, notes: k.notes.map(n =>
+				world().knowledge.set(repositoryId, { publication: { pull, files: ["AGENTS.md", "src/services/AGENTS.md"] }, notes: k.notes.map(n =>
 					!selected.includes(n.id) ? n : { ...n, decision: answers?.[n.id] ? { noteId: n.id, verdict: "stale", reason: "No matching build record.", uses: [] } :
 						{ noteId: n.id, verdict: "question", question: "Does this note still apply to the current build?", reason: "The saved build does not confirm this note.", uses: [] } }) });
 				world().readiness.set(repositoryId, { at: now(), finished: true, weekly: world().readiness.get(repositoryId)?.weekly ?? false });

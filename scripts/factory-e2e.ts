@@ -241,8 +241,8 @@ await check("repo-setup: draft guides with imported notes and delete them on clo
 		const { user } = await world(server, standin, { WLP_FEATURE_TEST_GIT: join(server.storage, "git"), WLP_GITHUB_WEBHOOK_SECRET: server.secret });
 		const saved = await user.addSetupNotes(repo.id, [{ label: "source-note.md", text: "See README.md." }, { label: "hidden.md", text: "password=fixture-only" }, { label: "release.md", text: "Check the release process." }]);
 		const ids = saved.knowledge.notes.map(n => n.id);
+		const question = saved.knowledge.notes.find(n => n.label === "release.md")!;
 		for (let repeat = 0; repeat < 2; repeat++) {
-			const question = saved.knowledge.notes.find(n => n.label === "release.md")!;
 			if (repeat) await user.runReadiness(repo.id, ids, { [question.id]: "drop" });
 			else await user.runReadiness(repo.id, ids);
 			const view = await waitFor("the setup filing", async () => {
@@ -250,7 +250,8 @@ await check("repo-setup: draft guides with imported notes and delete them on clo
 				return view.readiness.run === "finished" && view;
 			}, 35_000);
 			assert(!view.readiness.error, view.readiness.error ?? "");
-			assert(view.knowledge.notes.find(n => n.id === question.id)?.decision?.verdict === (repeat ? "stale" : "question"), "Question or answer missing");
+			const decision = view.knowledge.notes.find(n => n.id === question.id)?.decision;
+			assert(decision?.verdict === (repeat ? "stale" : "question") && decision.question === (repeat ? undefined : "Which check should run before a release?"), "Question or answer missing from release.md");
 			assert(view.knowledge.notes.some(n => n.decision?.uses[0]?.line === 3), "Missing verified line citation");
 			assert(view.knowledge.notes.some(n => n.decision?.verdict === "secret"), "Missing secret classification");
 		}

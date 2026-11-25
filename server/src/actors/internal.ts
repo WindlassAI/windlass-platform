@@ -220,7 +220,7 @@ export interface RequestedSecretSave {
 export interface UserSecretsInternal {
 	internalRequestedSecretConflict(sessionId: string, name: string): Promise<string | null>;
 	internalSaveRequestedSecret(sessionId: string, input: RequestedSecretSave): Promise<void>;
-	internalSetupNoteFiles(session: string, ids: string[]): Promise<{ id: string; sealed: string; decision: string | null }[]>;
+	internalSetupNoteFiles(session: string, ids: string[]): Promise<import("../repo-setup/notes.js").SealedNote[]>;
 	internalSessionSecrets(sessionId: string, snapshotSetup?: boolean): Promise<SealedSecrets>;
 }
 
