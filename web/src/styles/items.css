@@ -2267,6 +2267,12 @@ a.plan-task-title:hover {
 	font-weight: var(--weight-regular);
 	color: var(--ink-faint);
 }
+.plan-auto-approve {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	overflow-wrap: anywhere;
+}
 /* The plan's own questions: each a short bold question, its background folded, its options as radio rows. */
 .plan-asks {
 	display: grid;
