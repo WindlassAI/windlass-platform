@@ -1,24 +1,3 @@
-/**
- * Connecting Linear: the route Linear sends the owner's browser back to, `GET /linear/callback`, on any
- * server's own HTTP port. It is the OAuth app's callback URL (WLP_LINEAR_REDIRECT_URL).
- *
- *   1. The web app asks the user's actor to begin. The actor makes a signed state naming the user and
- *      the web app's origin, keeps a PKCE verifier, and answers with `LinearApp.authorizeUrl`.
- *   2. The owner authorizes the app at Linear as the app's own user (`actor=app`, `app:assignable`),
- *      and Linear sends the browser here with `code` and `state`.
- *   3. This route has the store check the state and take it out of the user's list (so it works once),
- *      exchanges the code, and asks Linear who the token is and which workspace it is in. The token must
- *      be the app user's (`LinearApp.identity`) and have the requested scopes.
- *   4. The browser returns to Settings with a sealed ticket. The signed-in user redeems it to record
- *      the connection. A failure returns `#linear-error=<code>`.
- *
- * The human who authorized is not established: the app's token cannot say who they are. The connection
- * is for the platform user the state names, and authorship of issues stays untrusted.
- *
- * What the route needs of the actors is `LinearConnectStore`; the server's own is made where the actors
- * are wired, and the checks use one in memory.
- */
-
 import { config } from "../config.js";
 import { serverSealer } from "../signin/seal.js";
 import { LINEAR_SCOPES, LinearApp, LinearError, type LinearIdentity, type LinearToken, linearApp, redactLinear } from "./app.js";

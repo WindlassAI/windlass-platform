@@ -1,36 +1,13 @@
-/**
- * The deployment's Linear OAuth app, as the server talks to Linear: the authorization address, the
- * exchange of an authorization code, issue intake, and work item updates.
- *
- * The app is authorized with `actor=app` and the `app:assignable` scope. Linear then creates an
- * application user in the workspace, which issues can be assigned to, and the access token acts as
- * that user. This is not the person who clicked "Authorize": the token cannot say who they are, and
- * `viewer` answers with the app user (`app: true`). A token that answers with a human was minted
- * without `actor=app` and is refused, so the app user's id can never be mistaken for a person's, and a
- * person's for the app's. Who may be trusted as the author of an issue is therefore not something this
- * module knows: `LinearIdentity.installer` is always null, and callers treat authorship as untrusted.
- *
- * What Linear's documentation says of each call, as read on 2026-11-24:
- *
- *   authorization    https://linear.app/developers/oauth-2-0-authentication
- *                    (`GET <linear>/oauth/authorize` with `client_id`, `redirect_uri`,
- *                    `response_type=code`, `scope`, `state`, `actor=app`, PKCE `code_challenge`)
- *   code exchange    same page: `POST <api>/oauth/token`, form-encoded, `grant_type=authorization_code`,
- *                    `code`, `redirect_uri`, `client_id`, `client_secret`, `code_verifier`; answers
- *                    `access_token`, `token_type`, `expires_in`, `scope`, and `refresh_token` for apps
- *                    whose tokens expire
- *   refresh          same: `grant_type=refresh_token`
- *   assignable app   https://linear.app/developers/oauth-actor-authorization (`actor=app`,
- *                    `app:assignable`)
- *   GraphQL          https://linear.app/developers/graphql (`POST <api>/graphql`, `Authorization:
- *                    Bearer <oauth token>`; errors arrive in an `errors` array)
- */
-
 import { createHash, randomBytes } from "node:crypto";
 import { linearClientSecret, linearConfig } from "../config.js";
 
 const USER_AGENT = "windlass-platform";
 const REQUEST_TIMEOUT_MS = 20_000;
+/**
+ * The Linear OAuth app. It is authorized with `actor=app`, so the token acts as Linear's application user, never as
+ * the person who authorized it: `viewer` answers with the app user, and a token that answers with a human is refused.
+ * So this module never knows who wrote an issue: callers treat authorship as untrusted.
+ */
 /** The most of an answer that is read. */
 const MAX_ANSWER_BYTES = 1024 * 1024;
 const MAX_PAGES = 10;
@@ -132,8 +109,8 @@ export type LinearWrite =
 	| { key: "attachment"; pr: string }
 	| { key: "complete" };
 
-const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
-const text = (value: unknown): string => (typeof value === "string" ? value : "");
+export const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
+export const text = (value: unknown): string => (typeof value === "string" ? value : "");
 
 /** Linear's token shapes: API keys, OAuth tokens, and webhook signing secrets. */
 const TOKEN_SHAPE = /\blin_(?:api|oauth|wh)_[A-Za-z0-9]{8,}/g;
@@ -317,7 +294,14 @@ export class LinearApp {
 			throw error;
 		}
 		const row = record(data.issue);
-		if (!isLinearId(row.id) || !isLinearId(record(row.team).id)) return null;
+		const teamId = record(row.team).id;
+		if (!isLinearId(row.id) || !isLinearId(teamId)) return null;
+		const nodes = record(row.labels).nodes;
+		const labels: LinearIssue["labels"] = [];
+		for (const entry of Array.isArray(nodes) ? nodes : []) {
+			const label = record(entry);
+			if (isLinearId(label.id)) labels.push({ id: label.id, name: text(label.name) });
+		}
 		const creator = record(row.creator), assignee = record(row.assignee);
 		return {
 			id: row.id,
@@ -325,10 +309,10 @@ export class LinearApp {
 			title: text(row.title),
 			description: text(row.description),
 			url: text(row.url),
-			teamId: text(record(row.team).id),
+			teamId,
 			creator: isLinearId(creator.id) ? { id: creator.id, name: text(creator.name).slice(0, 200) } : null,
 			assigneeId: isLinearId(assignee.id) ? assignee.id : null,
-			labels: (Array.isArray(record(row.labels).nodes) ? (record(row.labels).nodes as unknown[]) : []).map(record).filter((label) => isLinearId(label.id)).map((label) => ({ id: text(label.id), name: text(label.name) })),
+			labels,
 			stateType: text(record(row.state).type),
 			archived: text(row.archivedAt) !== "" || row.trashed === true,
 		};

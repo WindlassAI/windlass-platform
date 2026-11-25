@@ -1,27 +1,7 @@
-/**
- * Linear's webhook route, `POST /linear/webhook`, and the reading of a delivery.
- *
- * The body is read as raw bytes, at most 1 MiB, and nothing in it is looked at until its HMAC-SHA256 under the app's signing secret
- * equals `Linear-Signature`. Then the JSON is parsed and its signed `webhookTimestamp` must be within a minute of now. Only after both
- * are ids taken out, as UUIDs and nothing else. What an issue says (title, description, labels) is never taken from a delivery:
- * filing reads the issue from Linear.
- * https://linear.app/developers/webhooks ("Securing webhooks": `Linear-Signature`, `webhookTimestamp`, `Linear-Delivery`)
- *
- * What counts as a trigger. Linear sends the whole issue in `data` and, for an update, the previous value of every field that changed
- * in `updatedFrom`. A delivery qualifies only by a transition:
- *
- *   label        the issue is created with, or an update changed `labelIds` so that it has, a label named `windlass` or
- *                `windlass:quick` that it did not have
- *   assignment   the issue is created assigned, or an update changed `assigneeId`, to someone. Whether that is the app user is the
- *                owner's to say: this route does not know the workspace's connection.
- *
- * An edit that changes neither, a removed label, an unassignment and the `remove` action are not triggers.
- */
-
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { config, linearConfig, type LinearConfig } from "../config.js";
 import { AddressBudget, clientAddress, MINUTE_MS, rateLimited } from "../http-limits.js";
-import { isLinearId } from "./app.js";
+import { isLinearId, record, text } from "./app.js";
 
 export const LINEAR_WEBHOOK_PATH = "/linear/webhook";
 /** The most a delivery's body may be. Linear's are a few kilobytes. */
@@ -52,8 +32,6 @@ export interface LinearDelivery {
 /** What became of a delivery. `ignored` takes nothing in; `duplicate` is a redelivery of one that was taken in. */
 export type LinearDispatch = "taken" | "duplicate" | "ignored";
 
-const record = (value: unknown): Record<string, unknown> => (typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {});
-const text = (value: unknown): string => (typeof value === "string" ? value : "");
 const idOrNull = (value: unknown): string | null => (isLinearId(value) ? value.toLowerCase() : null);
 
 /** Constant-time check of `Linear-Signature` (hex HMAC-SHA256 of the raw bytes) against each secret. */
@@ -90,7 +68,7 @@ function labelsOf(data: Record<string, unknown>): Array<{ id: string; name: stri
 	return labels;
 }
 
-/** The ids a delivery names; null when it is not an issue event that names all of them. */
+/** Filing refetches the issue. Only lookup IDs and the transition come from the signed delivery. */
 export function readIds(payload: unknown): { workspaceId: string; teamId: string; issueId: string } | null {
 	const body = record(payload), data = record(body.data);
 	if (body.type !== "Issue") return null;
