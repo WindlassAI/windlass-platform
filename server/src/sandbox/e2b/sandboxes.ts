@@ -48,6 +48,8 @@ export const META = { deployment: "wlp_deployment", uid: "wlp_uid", session: "wl
 
 export function sandboxSize(metadata: Record<string, string>): HostedSize {
 	const named = metadata[META.size];
+	// Sandboxes made before sizes were recorded (some still paused on the live deployment) are small.
+	if (named === undefined) return "small";
 	if (!isHostedSize(named)) throw new Error("Invalid E2B sandbox size metadata");
 	return named;
 }
@@ -569,7 +571,7 @@ export class E2bProvider implements HostedSandboxProvider {
 		// The filter is E2B's; a sandbox is only taken for this user's when its own metadata says so too.
 		return found.filter((info) => info.metadata[META.deployment] === this.settings.deployment && info.metadata[META.uid] === uid).map((info) => ({
 			id: info.sandboxId, sessionId: info.metadata[META.session] ?? "", state: info.state,
-			...(info.metadata[META.environmentBuild] === "true" && { buildStartedAt: info.startedAt }),
+			...((info.metadata[META.environmentBuild] === "true" || info.metadata[SNAP_META.candidate]) && { buildStartedAt: info.startedAt }),
 		}));
 	}
 
