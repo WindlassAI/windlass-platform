@@ -4110,7 +4110,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				takeModelCheck(account);
 				const model = { openai: "gpt-4.1", anthropic: "claude-sonnet-4", google: "gemini-2.5-flash", openrouter: "openai/gpt-4.1" }[provider];
 				const at = now();
-				const status = { provider, last4: key.slice(-4), addedAt: at, checkedAt: at, ok: true, models: [model] };
+				const status = { provider, last4: key.slice(-4), addedAt: at, checkedAt: at, ok: true, models: [model], windlassModels: [model] };
 				account.providers.set(provider, status);
 				machinesChanged(auth);
 				return structuredClone(status);

@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { format } from "node:util";
 import { accountFor, PROVIDER_TABLE, providerAccounts, recordProviderUsage } from "../server/src/actors/provider-accounts.js";
 import { recordTurnTokens, TOKEN_USAGE_TABLE, tokensOn } from "../server/src/usage.js";
-import { availableCatalog, selectedKey, withSettingsKeys } from "../server/src/sandbox/harnesses.js";
+import { availableCatalog, hostedCatalog, selectedKey, withSettingsKeys } from "../server/src/sandbox/harnesses.js";
 import { modelKeyCaller } from "../server/src/actors/internal.js";
 import { MODEL_PROVIDERS, validModelKey, type ModelProvider } from "../server/src/contract.js";
 import { MODEL_PROVIDER_TABLES, openModelKeyTransit, modelProviderActions as actions } from "../server/src/model-providers.js";
@@ -77,7 +77,12 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 		if (mode === "hold") { gate.emit("started"); await once(gate, "release"); }
 		const ids = ["demo-model", String(key), String(key).slice(-12), ...Array.from({ length: 45 }, (_, i) => "m" + i)];
 		res.end(JSON.stringify(metadata ? { data: { label: key } } : provider === "google"
-			? { models: ids.map(id => ({ name: "models/" + id })) } : { data: ids.map(id => ({ id, description: key })) }));
+			? { models: [
+				{ name: "models/gemini-embedding", supportedGenerationMethods: ["embedContent"] },
+				{ name: "models/gemini-flash-image", supportedGenerationMethods: ["generateContent"] },
+				...ids.map(id => ({ name: "models/" + id, supportedGenerationMethods: ["generateContent"] })),
+				{ name: "models/gemini-flash", supportedGenerationMethods: ["generateContent"] },
+			] } : { data: ids.map(id => ({ id, description: key, supported_parameters: id === "demo-model" ? [] : ["tools"] })) }));
 	});
 	await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
 	t.after(() => { server.closeAllConnections(); server.close(); });
@@ -103,7 +108,14 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 		clean(saved);
 		assert.equal(saved.last4, keys[provider].slice(-4));
 		assert.ok(saved.ok && saved.checkedAt! >= saved.addedAt && saved.models?.length === 32);
-		assert.equal(saved.models[0], "demo-model");
+		assert.equal(saved.models[0], provider === "google" ? "gemini-embedding" : "demo-model");
+		if (provider === "google" || provider === "openrouter") {
+			const offered = hostedCatalog("windlass", [saved])!.models.map(m => m.id);
+			if (provider === "google") assert.deepEqual(offered, ["default", "google/gemini-flash"]);
+			else assert.ok(offered.includes("openrouter/m0"));
+			assert.ok(!offered.includes(provider + "/demo-model"));
+			assert.ok(hostedCatalog("opencode", [saved])!.models.some(m => m.id === provider + "/demo-model"));
+		}
 		const checked = await actions.checkModelProvider(c, provider);
 		clean(checked);
 		assert.ok(checked.ok);
@@ -210,7 +222,7 @@ test("a Settings change retries a waiting subtask even while its former account 
 	const { sql, context } = account("owner");
 	sql.exec(PROVIDER_TABLE);
 	const location = { harness: "opencode" as const, place: "desk", provider: "google" as const };
-	sql.exec("INSERT INTO model_provider VALUES ('google','sealed','old','1234',1,NULL,0,NULL)");
+	sql.exec("INSERT INTO model_provider(provider,sealed,generation,last4,added_at) VALUES ('google','sealed','old','1234',1)");
 	const key = "settings/google/old";
 	const until = Date.now() + 60_000;
 	sql.prepare("INSERT INTO provider_usage VALUES (?,?,?,?)").run("settings", "google", "old", JSON.stringify({backoff:0,lastRefusal:Date.now(),lastSuccess:-1, account:{ ...location, key, state:"limited", limitedUntil:until, windows:[] }}));

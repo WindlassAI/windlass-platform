@@ -11,6 +11,16 @@ import { createSessionStore, type SessionState } from "./sessionStore";
 /** Refresh the checked model catalogs when returning from Settings. */
 export const PROVIDERS_CHANGED = "wlp-model-providers-changed";
 
+function watchModelChanges(refresh: () => void) {
+	refresh();
+	window.addEventListener("focus", refresh);
+	window.addEventListener(PROVIDERS_CHANGED, refresh);
+	return () => {
+		window.removeEventListener("focus", refresh);
+		window.removeEventListener(PROVIDERS_CHANGED, refresh);
+	};
+}
+
 export function useHostedProviders(enabled = true) {
 	const { client } = useApp();
 	const auth = useAuth();
@@ -23,13 +33,10 @@ export function useHostedProviders(enabled = true) {
 			client.user(auth).modelProviders().then(rows => { if (mine === version) setProviders(rows); },
 				() => { if (mine === version) setProviders([]); });
 		};
-		refresh();
-		window.addEventListener("focus", refresh);
-		window.addEventListener(PROVIDERS_CHANGED, refresh);
+		const stop = watchModelChanges(refresh);
 		return () => {
 			version++;
-			window.removeEventListener("focus", refresh);
-			window.removeEventListener(PROVIDERS_CHANGED, refresh);
+			stop();
 		};
 	}, [client, auth, enabled]);
 	return providers;
@@ -117,17 +124,18 @@ export function useModels(): ModelsState {
 	const auth = useAuth();
 	const [state, setState] = useState<ModelsState>({ list: null, error: null, reading: true });
 	useEffect(() => {
-		let current = true;
+		let version = 0;
 		setState({ list: null, error: null, reading: true });
-		client
-			.user(auth)
-			.models()
-			.then(
-				(list) => current && setState({ list, error: null, reading: false }),
-				(failure: unknown) => current && setState({ list: null, error: explain(failure), reading: false }),
+		const stop = watchModelChanges(() => {
+			const mine = ++version;
+			client.user(auth).models().then(
+				list => mine === version && setState({ list, error: null, reading: false }),
+				(failure: unknown) => mine === version && setState({ list: null, error: explain(failure), reading: false }),
 			);
+		});
 		return () => {
-			current = false;
+			version++;
+			stop();
 		};
 	}, [client, auth, explain]);
 	return state;

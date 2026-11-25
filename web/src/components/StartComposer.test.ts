@@ -325,9 +325,11 @@ describe("each picker of the start composer", () => {
 		await save();
 		await act(async () => void window.dispatchEvent(new Event(PROVIDERS_CHANGED)));
 		expect(claudeDisabled()).toBe(false);
+		expect(pop().querySelector('[data-value="windlass:anthropic/claude-sonnet-4"]')).toBeTruthy();
 		await user.removeModelProvider("anthropic");
 		await act(async () => void window.dispatchEvent(new Event("focus")));
 		expect(claudeDisabled()).toBe(true);
+		expect(pop().querySelector('[data-value="windlass:anthropic/claude-sonnet-4"]')).toBeNull();
 		await save();
 		await act(async () => void window.dispatchEvent(new Event(PROVIDERS_CHANGED)));
 		expect(pop().textContent).toContain("Add an OpenAI key in Settings to run Codex here.");

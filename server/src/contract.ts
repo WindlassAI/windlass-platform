@@ -1318,6 +1318,7 @@ export interface ModelProviderStatus {
 	checkedAt: number | null;
 	ok: boolean;
 	models?: string[];
+	windlassModels?: string[];
 }
 
 /** A failed check leaves the key saved and returns a message safe to display. */

@@ -243,7 +243,7 @@ export function hostedKeyMessage(id: HarnessId, model?: string): string {
 	return `Add ${key} key in Settings to run ${harnessName(id)} here.`;
 }
 
-export type CheckedProvider = Pick<ModelProviderStatus, "provider" | "checkedAt" | "models">;
+export type CheckedProvider = Pick<ModelProviderStatus, "provider" | "checkedAt" | "models" | "windlassModels">;
 
 // Windlass's public OpenAI catalog hides non-chat models and snapshots whose alias is listed.
 function codexModels(ids: string[]) {
@@ -257,7 +257,7 @@ function codexModels(ids: string[]) {
 export function hostedCatalog(harness: HarnessId, providers: readonly CheckedProvider[]): HarnessOptions | undefined {
 	const ids = new Set(["default"]);
 	let checkedAt: number | null = null;
-	for (const { provider, models: offered, checkedAt: at } of providers) {
+	for (const { provider, models: offered, windlassModels, checkedAt: at } of providers) {
 		if (!keyProviders(harness).includes(provider) || !offered?.length || at === null) continue;
 		checkedAt = Math.max(checkedAt ?? at, at);
 		if (harness === "claude") {
@@ -267,7 +267,9 @@ export function hostedCatalog(harness: HarnessId, providers: readonly CheckedPro
 		} else if (harness === "codex") {
 			for (const model of codexModels(offered)) ids.add(model);
 		} else {
-			const models = harness === "windlass" && provider === "openai" ? codexModels(offered) : offered;
+			let models = offered;
+			if (harness === "windlass" && provider === "openai") models = codexModels(offered);
+			if (harness === "windlass" && (provider === "google" || provider === "openrouter")) models = windlassModels ?? [];
 			for (const model of models) ids.add(provider + "/" + model);
 		}
 	}

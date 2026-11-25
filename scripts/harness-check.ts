@@ -63,7 +63,7 @@ if (process.argv.includes("--turn-provider")) process.exit(0);
 		{ provider: "openai" as const, checkedAt: 10, models: openai },
 		{ provider: "anthropic" as const, checkedAt: 8, models: ["claude-3-5-haiku-20241022", "claude-haiku-5-5", "claude-fable-5-2", "claude-opus-5-5"] },
 		{ provider: "google" as const, checkedAt: 9 },
-		{ provider: "openrouter" as const, checkedAt: 7, models: ["vendor/model"] },
+		{ provider: "openrouter" as const, checkedAt: 7, models: ["vendor/model"], windlassModels: ["vendor/model"] },
 	];
 	const ids = (id: "claude" | "codex" | "opencode") => hostedCatalog(id, providers)?.models.map(m => m.id);
 	assert.deepEqual(ids("codex"), ["default", "gpt-5.6-luna", "o3", "o3-mini-2025-01-31"]);

@@ -1676,6 +1676,7 @@ export const user = actor({
 				["api_token", "window_count", "INTEGER NOT NULL DEFAULT 0"],
 				["sessions", "launch_claim", "INTEGER"],
 				["setup_command", "snapshot_connection", "INTEGER"],
+				["model_provider", "windlass_models", "TEXT"],
 			] as const) {
 				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
 				if (columns.some((found) => found.name === column)) continue;
