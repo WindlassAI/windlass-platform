@@ -415,6 +415,10 @@ class Turn {
 	private summary: WindlassEvent | null = null;
 	/** Nothing more is passed to `onEvent`: the summary was the last. */
 	private sealed = false;
+	// Windlass looks up a title model for up to 5s and makes at most two 15s attempts.
+	private titleDeadline = 0;
+	private resolveTitle: () => void = () => {};
+	private readonly titled = new Promise<void>(resolve => { this.resolveTitle = resolve; });
 
 	private failure: Failure | null = null;
 	private promptSent = false;
@@ -978,7 +982,7 @@ class Turn {
 			unattended: "deny",
 			sandboxHome: SANDBOX_HOME,
 			// Reviewer commands use the image's read-only ~/.config/pnpm, while the engine uses its private config.
-			withholdEnv: [...(input.secrets?.withholdEnv ?? []), ...(this.reviewerAgent ? ["XDG_CONFIG_HOME"] : [])],
+			withholdEnv: ["WINDLASS_PROVIDER", ...(input.secrets?.withholdEnv ?? []), ...(this.reviewerAgent ? ["XDG_CONFIG_HOME"] : [])],
 			passEnv: input.secrets?.passEnv ?? [],
 			requiredChecks: windlassChecks(input.checks ?? []),
 			...hostToolsMeta(this.hostTools, input.reportScreenshots, input.crossRepoPlan),
@@ -1102,6 +1106,9 @@ class Turn {
 		if (this.sessionSeen === null && typeof event.sessionId === "string") this.sessionSeen = event.sessionId;
 		this.tally.note(event);
 		const data = (event.data ?? {}) as Record<string, unknown>;
+		if (this.input.modelKey && event.type === "inbox.enqueued" && typeof data.titlePrompt === "string" && data.titlePrompt.trim())
+			this.titleDeadline = Date.now() + 35_000;
+		if (event.type === "session.renamed") this.resolveTitle();
 		if ((event.type === "inbox.delivered" || event.type === "inbox.cancelled") && typeof data.messageId === "string") {
 			this.delivered.add(data.messageId);
 			this.undelivered.delete(data.messageId);
@@ -1566,6 +1573,7 @@ class Turn {
 	/** The abort signal fired. */
 	private abort(): void {
 		// Once the turn's work is over there is nothing left to stop: it ended as it ended.
+		this.resolveTitle();
 		if (this.abortRequested || this.over) return;
 		this.abortRequested = true;
 		this.resolveAborted();
@@ -1604,11 +1612,11 @@ class Turn {
 		this.finish();
 		// An approval on its way to Windlass is reported before the turn is: its question was withdrawn above, so this is short.
 		await within(this.serverLine, SERVERS_TIMEOUT_MS);
-		const cutOff = this.tally.running !== null;
-		// A turn that was cut off is closed first: what the engine records of that still belongs before the summary.
-		if (cutOff) await this.closeSession();
+		const titleMs = this.titleDeadline - Date.now();
+		if (titleMs > 0 && !this.abortRequested && this.tally.running === null && !this.failure && this.process)
+			await within(Promise.race([this.titled, this.process.ended]), titleMs);
+		await this.closeSession();
 		this.seal();
-		if (!cutOff) await this.closeSession();
 		await this.stopProcess(false);
 	}
 
@@ -1644,7 +1652,7 @@ class Turn {
 	private async closeSession(): Promise<void> {
 		if (this.closingSession) return this.closingSession;
 		if (this.session === null || this.peer.closed || this.process === null || this.process.hasEnded) return;
-		const shutdown = this.input.signal?.reason === PLATFORM_RESTART;
+		const shutdown = this.input.signal?.reason === PLATFORM_RESTART || (!!this.input.modelKey && this.tally.running === null);
 		this.closingSession = this.peer.request<void>("session/close", {
 			sessionId: this.session,
 			...(shutdown && { _meta: { [NS]: { shutdown: true } } }),

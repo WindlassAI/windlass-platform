@@ -332,6 +332,9 @@ for (const check of keptChecks) check();
 // A turn cut off with its server: what its finished model requests reported is its usage, as the summary would have summed it.
 {
 	const ev = (type: string, usage: unknown) => ({ type, v: 1, seq: 0, time: 0, data: { messageId: "m", usage } }) as never;
+	const child = ev("step.ended", { inputTokens: 13, outputTokens: 2 });
+	const children = cutTurnUsage([{ type: "child.event", event: child }, ev("spawn.ended", { inputTokens: 13, outputTokens: 2 })]);
+	expect("a child request and its spawn summary count once", children?.inputTokens === 13 && children.outputTokens === 2);
 	const used = cutTurnUsage([
 		ev("step.started", null),
 		ev("step.ended", { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 50, reasoningTokens: 10 }),

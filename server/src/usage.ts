@@ -100,9 +100,9 @@ export function usesPlatformModel(harness: HarnessId = "windlass", model?: strin
 	return harness === "windlass" && !windlassProvider(model);
 }
 
-/** Windlass reports spending on these request events. The turn summary and the account ledger use the same figures. */
+/** Count each child from its durable spawn.ended total. Its streamed child.event copies cover the same requests. */
 export function reportedModelUsage(event: WindlassEvent, includeTitle = false): TurnUsage | null {
-	if (!(includeTitle && event.type === "session.title_usage") && !["step.ended", "step.failed", "step.refused", "compaction.ended"].includes(event.type)) return null;
+	if (!(includeTitle && event.type === "session.title_usage") && !["step.ended", "step.failed", "step.refused", "compaction.ended", "spawn.ended"].includes(event.type)) return null;
 	const raw = event.data?.usage;
 	if (typeof raw !== "object" || raw === null) return null;
 	const usage = raw as Partial<TurnUsage>;
