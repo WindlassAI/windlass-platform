@@ -1067,6 +1067,8 @@ export function machineLabel(machine: { name: string; os?: string; arch?: string
 
 /** Latest host sample for an already listed machine. */
 export interface MachineHostUpdate { machineId: string; host: NonNullable<MachineSummary["host"]> | null }
+/** Whose credential a machine agent uses for a provider both can serve: the machine's own sign-in, or the owner's Settings key. */
+export type CredentialSource = "machine" | "key";
 export interface MachineDetails { whenToUse: string; tags: string[]; orchestrator?: "yes" | "named" | "never" }
 export interface MachineSlotCapacity {
 	max: number;
@@ -1094,8 +1096,12 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	claudeRelay?: true;
 	/** Owner policy, independent of Docker health. Absent until the first report. */
 	allowedProfiles?: Extract<SandboxProfileId, `docker-${string}`>[];
-	/** `signInReason`: with `signIn` "unknown", why the runner could not check the sign-in (runner 0.3.4 and later). */
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; keyRelay?: true; machineProviders?: string[]; platformKeys?: ModelProvider[]; method?: "api-key" | "chatgpt" | "subscription"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; signInReason?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
+	/**
+	 * `signInReason`: with `signIn` "unknown", why the runner could not check the sign-in (runner 0.3.4 and later).
+	 * `machineSignIns`: the providers the machine's own sign-in serves. `platformKeys`: the Settings keys its turns
+	 * use, after `source`, the owner's choice (absent: the machine's sign-in first, keys for the rest).
+	 */
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; keyRelay?: true; machineProviders?: string[]; machineSignIns?: ModelProvider[]; source?: CredentialSource; platformKeys?: ModelProvider[]; method?: "api-key" | "chatgpt" | "subscription"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; signInReason?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
@@ -2135,6 +2141,7 @@ export interface UserActions {
 	/** Turns the sending of saved secrets to a machine's agents on or off, from each one's next turn. Throws as `removeMachine` does. */
 	setMachineDetails(input: { machineId: string } & MachineDetails): Promise<MachineSummary[]>;
 	setMachineSecrets(input: { machineId: string; send: boolean }): Promise<MachineSummary[]>;
+	setCredentialSource(input: { machineId: string; harness: Exclude<HarnessId, "windlass">; source: CredentialSource }): Promise<MachineSummary[]>;
 	/** Unpaged calls return every item, newest first. A short page is the last one. */
 	listItems(page?: ItemListPage): Promise<ItemSummary[]>;
 	/** What the live feed carries (`ItemFeed`): every open item, the newest filed ended ones, and the counts. The web app reads this, not the whole list. */

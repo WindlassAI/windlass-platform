@@ -330,6 +330,7 @@ export const modelKeyCaller = (uid: string) => `model-key/${uid}`;
 
 export function modelKeyActor(c: HasClient, uid: string): {
 	internalModelKeys(): Promise<import("../sandbox/provider.js").ModelKeyLease[]>;
+	internalCredentialSource(machineId: string, harness: string): Promise<import("../contract.js").CredentialSource | null>;
 	internalModelKeyGeneration(provider: ModelProvider): Promise<string | null>;
 	internalModelKey(provider: ModelProvider, nonce: string): Promise<string | null>;
 } {

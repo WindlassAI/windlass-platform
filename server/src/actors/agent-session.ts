@@ -121,7 +121,7 @@ import { StartClock, keepStartTimes, startTimesLog } from "../start-times.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason, SANDBOX_ESCAPE_REFUSED } from "../sandbox/codex-modes.js";
-import { windlassProvider, hostedKeyMessage, hostedProvider, selectedKey, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { windlassProvider, hostedKeyMessage, hostedProvider, selectedKey, usableKeys, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { stepLimitNote } from "../sandbox/platform-steps.js";
 import { capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import { privateSessionData } from "../sandbox/session-data.js";
@@ -717,8 +717,10 @@ export async function turnCredential(c: Ctx, meta: SessionMeta, offered: Offered
 		return { model, key: { provider, generation } };
 	}
 	if (!hosted && !offered?.keyRelay) return { model };
-	const keys = await modelKeyActor(c, meta.uid).internalModelKeys();
-	const providers = keys.map(k => k.provider);
+	const keyActor = modelKeyActor(c, meta.uid);
+	const [keys, source] = await Promise.all([keyActor.internalModelKeys(), meta.place.kind === "machine" ? keyActor.internalCredentialSource(meta.place.machineId, harness) : null]);
+	// On a machine its own sign-in serves its providers first, unless the owner chose keys (`usableKeys`).
+	const providers = hosted || !offered ? keys.map(k => k.provider) : usableKeys(offered, keys.map(k => k.provider), source ?? undefined);
 	if (harness === "opencode" && model === "default") {
 		if (meta.place.kind === "machine" && keys.length)
 			model = await runnerLink(c, meta.place.machineId).request("openCodeDefault", { providers }, { signal });

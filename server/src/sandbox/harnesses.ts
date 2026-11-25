@@ -1,4 +1,4 @@
-import { MODEL_PROVIDERS, type ModelProvider, type ModelProviderStatus } from "../contract.js";
+import { MODEL_PROVIDERS, isModelProvider, type CredentialSource, type ModelProvider, type ModelProviderStatus } from "../contract.js";
 import type { HarnessOptions, HarnessId, ModelList, PlatformToolName, SandboxProfileId, SessionCapabilities } from "../contract.js";
 
 /**
@@ -130,8 +130,6 @@ export interface AcpProfile {
 	subtasks: boolean;
 	/** What it can do (`HarnessCapabilities`), its own record. */
 	capabilities: HarnessCapabilities;
-	/** Whose sign-in it runs with, in a sentence's words: "your Claude subscription". */
-	signedInWith: string;
 	/**
 	 * A line of the agent's own error log (stderr) saying it gave up on the provider's usage or rate limit, where
 	 * the agent then answers nothing more: the turn is ended at once as a usage limit (acp-harness.ts).
@@ -149,7 +147,6 @@ export const CLAUDE: AcpProfile = {
 	itemModes: { "docker-hardened": "bypassPermissions" }, sandboxedOn: [], itemTokens: "sign-in", itemSignIns: ["subscription", "api-key"], items: true, subtasks: true,
 	// Its adapter takes the platform's MCP server itself (platform-tools.ts).
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
-	signedInWith: "your Anthropic Settings key or Claude subscription",
 };
 
 export const OPENCODE: AcpProfile = {
@@ -159,7 +156,6 @@ export const OPENCODE: AcpProfile = {
 	itemModes: { "docker-hardened": "build" }, sandboxedOn: [], itemTokens: "budget", items: true, subtasks: true,
 	// Its image's wlp-acp-mcp serves it the platform's MCP server.
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
-	signedInWith: "your Settings key or machine login for the selected provider",
 	// OpenCode 1.19.6 retries a 429 three times, logs this, and never answers the prompt (wlp-opencode-acp prints its errors).
 	limitGiveUp: /AI_RetryError: Failed after \d+ attempts\. Last error: The provider's usage or rate limit was reached\./,
 };
@@ -177,7 +173,6 @@ export const CODEX: AcpProfile = {
 	// image without it says so, and the turn runs without the tools (acp-harness.ts). Its collaboration plan mode is
 	// chosen per prompt.
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, planMode: true }),
-	signedInWith: "your OpenAI Settings key or machine login",
 };
 
 export function keyProviders(harness: HarnessId | undefined): readonly ModelProvider[] {
@@ -215,11 +210,34 @@ export function availableCatalog(options: HarnessOptions | undefined, entry?: { 
 	return { ...options, defaultModel: "default", models: [{ id: "default", name: "Agent default", efforts: [] }, ...models] };
 }
 
-/** Combine a runner report with the owner's current Settings connections. */
+type ReportedSignIn = { id: AcpProfile["id"]; signIn: "token" | "none" | "unknown"; machineProviders?: string[] };
+
+/** The providers a machine agent's own sign-in serves: Claude's subscription, Codex's login, OpenCode's provider logins. */
+export function machineSignIns(entry: ReportedSignIn): ModelProvider[] {
+	if (entry.signIn !== "token") return [];
+	if (entry.id !== "opencode") return [...keyProviders(entry.id)];
+	return (entry.machineProviders ?? []).map(p => p === "chatgpt" ? "openai" : p).filter(isModelProvider);
+}
+
+/** The Settings keys a machine agent may use: the machine's own sign-in comes first for its providers, unless the owner chose keys. */
+export function usableKeys(entry: ReportedSignIn, saved: readonly ModelProvider[], source?: CredentialSource): ModelProvider[] {
+	if (source === "key") return [...saved];
+	const own = machineSignIns(entry);
+	return saved.filter(provider => !own.includes(provider));
+}
+
+/** Combine a runner report with the owner's Settings keys its turns may use (`usableKeys`). */
 export function withSettingsKeys<T extends KeyHarness & { signIn: "token" | "none" | "unknown"; method?: SignInMethod }>(entry: T, saved: readonly ModelProvider[], model?: string) {
 	const keys = keyProviders(entry.id).filter(provider => entry.keyRelay && saved.includes(provider) && (entry.id !== "opencode" || !model || model === "default" || model.startsWith(provider + "/")));
 	if (keys.length) return { ...entry, signIn: "token" as const, method: "api-key" as const, platformKeys: keys };
 	return entry.id === "claude" && entry.signIn === "token" ? { ...entry, method: "subscription" as const } : entry;
+}
+
+/** A machine's agent as the Machines page lists it: its own sign-in, the owner's choice, and the keys that choice leaves. */
+export function listedHarness<T extends KeyHarness & ReportedSignIn & { method?: SignInMethod }>(entry: T, saved: readonly ModelProvider[], source?: CredentialSource):
+	T & { platformKeys?: ModelProvider[]; machineSignIns?: ModelProvider[]; source?: CredentialSource } {
+	const own = machineSignIns(entry);
+	return { ...withSettingsKeys(entry, usableKeys(entry, saved, source)), ...(own.length && { machineSignIns: own }), ...(source && { source }) };
 }
 
 export const machineHarnesses = { claude: CLAUDE, opencode: OPENCODE, codex: CODEX };
@@ -422,10 +440,4 @@ export function checksSentence(id: HarnessId, sandboxed = false): string {
 	const checks = capabilitiesOf(id).checks;
 	if (checks === "none" || (checks === "platform" && sandboxed)) return "It does not run your repository's checks: CI decides.";
 	return checks === "platform" ? "The platform runs your repository's saved checks when it ends a turn, and sends it back with what fails." : "";
-}
-
-/** Where an agent's session runs and on whose sign-in, in one sentence, for a machine agent being chosen. */
-export function machineAgentLine(profile: AcpProfile): string {
-	const where = profile.profiles.length === 1 && profile.profiles[0] === "docker-hardened" ? "the hardened container" : "its container";
-	return `${profile.name} runs in ${where} with ${profile.signedInWith}, in the mode chosen for it.`;
 }

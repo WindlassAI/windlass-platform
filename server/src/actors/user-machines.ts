@@ -5,7 +5,7 @@ import type { RawAccess } from "rivetkit/db";
 import { requireServiceFor, requireUser, serviceParams } from "../auth.js";
 import { config } from "../config.js";
 import { accountLimits, type UserLimits } from "../user-limits.js";
-import { machineLabel, type HarnessOptions, type MachineClaim, type MachineSummary, type SandboxPlace, type SessionSummary } from "../contract.js";
+import { machineLabel, type CredentialSource, type HarnessOptions, type MachineClaim, type MachineSummary, type SandboxPlace, type SessionSummary } from "../contract.js";
 import type { Registry } from "../registry.js";
 import { machineDetails } from "../machines/details.js";
 import { machineProfiles } from "../machines/profiles.js";
@@ -19,7 +19,7 @@ import type { MachineUpdate } from "./machine.js";
 import { asPairingError, pairingGone } from "./machine-pairing.js";
 
 import { savedModelKeys } from "../model-providers.js";
-import { keyProviders, withSettingsKeys } from "../sandbox/harnesses.js";
+import { keyProviders, listedHarness, machineHarness } from "../sandbox/harnesses.js";
 import { PROVIDER_TABLE, accountsAt, providerAccounts } from "./provider-accounts.js";
 
 interface Ctx {
@@ -81,6 +81,7 @@ export async function machineTables(db: RawAccess) {
 				(json_extract(h.value,'$.signIn')='token' AND COALESCE(json_extract(h.value,'$.loginGeneration'),'legacy')<>generation)));
 	END`);
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_details (id TEXT PRIMARY KEY, data TEXT NOT NULL)");
+	await db.execute("CREATE TABLE IF NOT EXISTS credential_sources (machine TEXT NOT NULL, harness TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY (machine, harness))");
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_claims (at INTEGER NOT NULL)");
 }
 
@@ -100,6 +101,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 	const rows = await c.db.execute<{ id: string; name: string; os: string; arch: string; facts: string; host: string | null; send: number; details: string | null }>("SELECT m.id, name, os, arch, facts, host, send, d.data AS details FROM machines m LEFT JOIN machine_details d ON m.id=d.id WHERE expires IS NULL ORDER BY m.rowid");
 	const accounts = await providerAccounts(c.db, Date.now());
 	const keys = (await savedModelKeys(c.db)).map(k => k.provider);
+	const sources = await credentialSources(c.db);
 	return rows.map(row => {
 		const { report, ...facts }: MachineUpdate = JSON.parse(row.facts);
 		const sessions = [...c.vars.sessions.values()].filter(s => s.place.kind === "machine" && s.place.machineId === row.id);
@@ -117,7 +119,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 			...(report && { egress: report.egress ?? "open", allowedProfiles: report.allowedProfiles ?? [...MACHINE_PROFILES] }),
 			...(report?.egressDomains && { egressDomains: report.egressDomains }),
 			...(report?.claudeRelay && { claudeRelay: true as const }),
-			...(report?.harnesses ? { harnesses: report.harnesses.map(h => withSettingsKeys(h, keys)) } : {}),
+			...(report?.harnesses ? { harnesses: report.harnesses.map(h => listedHarness(h, keys, sources.get(`${row.id}/${h.id}`))) } : {}),
 			...(report?.warmSpares && { readySandboxes: report.warmSpares.ready }),
 			...(report?.maxRunning !== undefined ? { maxRunning: report.maxRunning } : {}),
 			...(report?.maxSandboxes !== undefined ? { maxSandboxes: report.maxSandboxes } : {}),
@@ -130,6 +132,13 @@ export async function changed(c: Ctx) {
 	c.vars.machines = new Map(machines.map(m => [m.machineId, m]));
 	c.broadcast("machines", machines);
 	return machines;
+}
+
+/** The owner's credential choices by "machine/harness"; one machine's with `machine`. */
+export async function credentialSources(db: RawAccess, machine?: string): Promise<Map<string, CredentialSource>> {
+	const rows = await db.execute<{ machine: string; harness: string; source: CredentialSource }>(
+		`SELECT machine, harness, source FROM credential_sources${machine ? " WHERE machine = ?" : ""}`, ...(machine ? [machine] : []));
+	return new Map(rows.map(row => [`${row.machine}/${row.harness}`, row.source]));
 }
 
 export async function machineSecrets(db: RawAccess, id: string): Promise<boolean | null> {
@@ -155,7 +164,8 @@ export async function launchMachineProfiles(db: RawAccess, id: string) {
 	}
 	if (!report) throw new UserError(`"${name}" has not connected yet. Start its runner, and once the Machines page shows it online, start the agent again.`, { code: "machine_not_connected" });
 	const keys = (await savedModelKeys(db)).map(k => k.provider);
-	return { name, slots: report.slots, egress: report.egress, allowedProfiles: report.allowedProfiles, harnesses: report.harnesses?.map(h => withSettingsKeys(h, keys)), profiles: machineProfiles(name, report) };
+	const sources = await credentialSources(db, id);
+	return { name, slots: report.slots, egress: report.egress, allowedProfiles: report.allowedProfiles, harnesses: report.harnesses?.map(h => listedHarness(h, keys, sources.get(`${id}/${h.id}`))), profiles: machineProfiles(name, report) };
 }
 
 /**
@@ -251,6 +261,15 @@ export const machineActions = {
 		if (typeof input.machineId !== "string") throw missing();
 		const rows = await c.db.execute("UPDATE machines SET send = ? WHERE id = ? AND expires IS NULL RETURNING id", Number(input.send), input.machineId);
 		if (!rows.length) throw missing();
+		return changed(c);
+	},
+	async setCredentialSource(c: Ctx, input: { machineId: string; harness: string; source: CredentialSource }): Promise<MachineSummary[]> {
+		requireUser(c); enabled();
+		if (input?.source !== "machine" && input?.source !== "key") throw new UserError("Choose the machine's sign-in or your Settings key.", { code: "bad_input" });
+		const harness = machineHarness(input.harness);
+		if (!harness) throw new UserError("Unknown agent.", { code: "bad_input" });
+		if (typeof input.machineId !== "string" || await machineSecrets(c.db, input.machineId) === null) throw missing();
+		await c.db.execute("INSERT OR REPLACE INTO credential_sources (machine, harness, source) VALUES (?, ?, ?)", input.machineId, harness.id, input.source);
 		return changed(c);
 	},
 	async internalMachineCreated(c: Ctx, id: string): Promise<boolean> {

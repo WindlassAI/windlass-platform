@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { format } from "node:util";
 import { accountFor, PROVIDER_TABLE, providerAccounts, recordProviderUsage } from "../server/src/actors/provider-accounts.js";
 import { recordTurnTokens, TOKEN_USAGE_TABLE, tokensOn } from "../server/src/usage.js";
-import { availableCatalog, hostedCatalog, selectedKey, withSettingsKeys } from "../server/src/sandbox/harnesses.js";
+import { availableCatalog, hostedCatalog, listedHarness, selectedKey, withSettingsKeys } from "../server/src/sandbox/harnesses.js";
 import { modelKeyCaller } from "../server/src/actors/internal.js";
 import { MODEL_PROVIDERS, validModelKey, type ModelProvider } from "../server/src/contract.js";
 import { MODEL_PROVIDER_TABLES, openModelKeyTransit, modelProviderActions as actions } from "../server/src/model-providers.js";
@@ -257,4 +257,14 @@ test("machine readiness and the OpenCode model menu use the owner's available pr
 	assert.equal(withSettingsKeys({keyRelay: true, id: "claude", signIn: "token", method: undefined}, []).method, "subscription");
 	assert.equal(withSettingsKeys({keyRelay: true, id: "claude", signIn: "token", method: undefined}, ["anthropic"]).method, "api-key");
 	assert.equal(withSettingsKeys({id: "codex", signIn: "none"}, ["google"]).signIn, "none");
+	// The Machines page: the machine's sign-in first, the owner's key on request, a signed-out machine on its key.
+	const claude = { keyRelay: true as const, id: "claude" as const, signIn: "token" as const };
+	assert.deepEqual(listedHarness(claude, ["anthropic"]), { ...claude, method: "subscription", machineSignIns: ["anthropic"] });
+	assert.deepEqual(listedHarness(claude, ["anthropic"], "key"), { ...claude, method: "api-key", platformKeys: ["anthropic"], machineSignIns: ["anthropic"], source: "key" });
+	assert.deepEqual(listedHarness({ ...claude, signIn: "none" }, ["anthropic"]), { ...claude, method: "api-key", platformKeys: ["anthropic"] });
+	const opencode = { keyRelay: true as const, id: "opencode" as const, signIn: "token" as const, machineProviders: ["chatgpt", "free"] };
+	assert.deepEqual(listedHarness(opencode, ["openai", "google"]).platformKeys, ["google"]);
+	assert.deepEqual(listedHarness(opencode, ["openai", "google"]).machineSignIns, ["openai"]);
+	// An old runner relays no key, whatever the choice.
+	assert.equal(listedHarness({ ...claude, keyRelay: undefined }, ["anthropic"], "key").platformKeys, undefined);
 });
