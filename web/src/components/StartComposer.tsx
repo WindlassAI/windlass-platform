@@ -278,7 +278,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const itemMachineId = placeChoice !== undefined ? placeChoice : destination?.place.kind === "machine" ? destination.place.machineId : null;
 	const chosenMachine = startPlace ? startPlace.machine : mine.find(machine => machine.machineId === itemMachineId && why(machine) === null) ?? null;
 	const placeProblem = startPlace ? startPlace.notes.join(" ") || null : destination?.note ??
-		(itemMachineId && !chosenMachine && !machinesReading ? "The machine chosen can no longer be used, so this work item runs on this platform." : null);
+		(itemMachineId && !chosenMachine && !machinesReading ? "The machine chosen can no longer be used, so this work item runs hosted." : null);
 	const keys = useHostedProviders();
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
 	const hardened = placeProfiles.some((candidate) => candidate.id === HARNESS_PROFILE && candidate.available);

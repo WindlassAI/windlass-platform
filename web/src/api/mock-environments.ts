@@ -16,7 +16,7 @@ function build(at: number, over: Partial<EnvironmentBuild> = {}): EnvironmentBui
 
 function seed(repositoryId: GithubId, now: number): RepositoryEnvironments {
 	if (String(repositoryId) !== "7106") {
-		return { available: true, unavailableReason: null, schedule: 24, scheduleChosen: false, environments: [], places: [{ place: "hosted", placeName: "This platform" }] };
+		return { available: true, unavailableReason: null, schedule: 24, scheduleChosen: false, environments: [], places: [{ place: "hosted", placeName: "Hosted" }] };
 	}
 	const failed = build(now - 2 * HOUR, {
 		trigger: "push", commit: "8e1d0c3b2a4f5e6d7c8b9a0f1e2d3c4b5a6f7e8d",
@@ -29,7 +29,7 @@ function seed(repositoryId: GithubId, now: number): RepositoryEnvironments {
 		available: true, unavailableReason: null, schedule: 24, scheduleChosen: false,
 		environments: [
 			// Main is red: "lint" fails on its code, which does not keep the environment from being promoted.
-			{ place: "hosted", placeName: "This platform", state: "ready", ready: build(now - 9 * HOUR, { checks: [passed("test", 41_000), passed("types", 63_000), { name: "lint", status: "failed", exitCode: 1, durationMs: 8_000, environment: null }], codeFailures: ["lint"] }), attempt: null, note: null, nextAt: now + 14 * HOUR },
+			{ place: "hosted", placeName: "Hosted", state: "ready", ready: build(now - 9 * HOUR, { checks: [passed("test", 41_000), passed("types", 63_000), { name: "lint", status: "failed", exitCode: 1, durationMs: 8_000, environment: null }], codeFailures: ["lint"] }), attempt: null, note: null, nextAt: now + 14 * HOUR },
 			{ place: "m_nas", placeName: "‘nas’", state: "failed", ready: null, attempt: failed, note: null, nextAt: now + 14 * HOUR },
 		],
 		places: [{ place: "m_build", placeName: "‘build-box’" }],

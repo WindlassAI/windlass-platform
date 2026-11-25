@@ -77,7 +77,6 @@ export function Settings() {
 		<main className="home usage repo settings">
 			<header className="home-head">
 				<div className="repo-head">
-					<p className="eyebrow">account</p>
 					<h1 className="display display-small">Settings</h1>
 					<p className="home-account">Used by all your agents. Settings for a single repository are on its page.</p>
 				</div>
