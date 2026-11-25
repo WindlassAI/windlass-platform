@@ -293,7 +293,7 @@ describe("the repository's screenshots setting", () => {
 		await render();
 		const box = () => host.querySelector<HTMLInputElement>("input.check-input");
 		expect(host.querySelector("h2")?.textContent).toBe("Screenshots");
-		expect(host.textContent).toContain("Screenshots are off by default.");
+		expect(host.textContent).toContain("Builders and reviewers can attach screenshots of the app.");
 		expect(box()?.checked).toBe(false);
 		await act(async () => {
 			box()?.click();
@@ -322,9 +322,9 @@ describe("the repository's screenshots setting", () => {
 				root.render(createElement(AppProvider, { client, children: createElement(ScreenshotsSetting, { page: { id, replace: vi.fn() }, view }) }));
 			});
 			// Platform info arrives after the mock's latency.
-			for (let waited = 0; waited < 3000 && !host.textContent?.includes("whole deployment"); waited += 50) await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+			for (let waited = 0; waited < 3000 && !host.textContent?.includes("turned off for this deployment"); waited += 50) await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
 			const box = host.querySelector<HTMLInputElement>("input.check-input");
-			expect(host.textContent).toContain("Screenshots are turned off for this whole deployment");
+			expect(host.textContent).toContain("Screenshots are turned off for this deployment");
 			expect(box?.disabled).toBe(!on);
 		}
 	});

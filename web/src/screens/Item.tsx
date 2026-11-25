@@ -402,7 +402,7 @@ export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView
 					</dd>
 				</div>
 			) : null}
-			<div>
+			{(rounds.gate > 0 || rounds.ci > 0 || rounds.conflict > 0 || !!rounds.review) && <div>
 				<dt>Fixes</dt>
 				<dd>
 					<span className="item-rounds">
@@ -412,14 +412,14 @@ export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView
 						{(rounds.review ?? 0) > 0 ? <span>after the second review {rounds.review}</span> : null}
 					</span>
 				</dd>
-			</div>
+			</div>}
 		</dl>
 	);
 }
 
 const BUDGET_FIELDS: Array<{ key: keyof ItemBudget; label: string; unit: string; toInput(value: number): string; fromInput(text: string): number; spelled(value: number): string }> = [
-	{ key: "tokens", label: "Tokens", unit: "millions, cost-weighted", toInput: (value) => String(Number((value / 1e6).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 1e6), spelled: compact },
-	{ key: "hostedSeconds", label: "Hosted sandbox time", unit: "hours", toInput: (value) => String(Number((value / 3600).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 3600), spelled: sandboxTime },
+	{ key: "tokens", label: "Tokens", unit: "millions", toInput: (value) => String(Number((value / 1e6).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 1e6), spelled: compact },
+	{ key: "hostedSeconds", label: "Hosted time", unit: "hours", toInput: (value) => String(Number((value / 3600).toFixed(2))), fromInput: (text) => Math.round(Number(text) * 3600), spelled: sandboxTime },
 ];
 
 const budgetFields = (view: Pick<ItemView, "place">) => BUDGET_FIELDS.filter((field) => field.key !== "hostedSeconds" || view.place.kind === "hosted");
@@ -703,12 +703,11 @@ function Cost({ view, now }: { view: ItemView; now: number }) {
 					))}
 				</dl>
 			) : null}
-			<p className="usage-note">
-				Tokens count cost-weighted: an input token read from the prompt cache counts as a tenth. When the budget is used, the item asks you for more and keeps its work.{" "}
-				{hosted
-					? "Working time counts only while the item works: waiting for a turn, for CI or for you does not."
-					: "Working time counts only while the item works: waiting for a turn, for your machine, for CI or for you does not. On your machine it costs no hosted time."}
-			</p>
+			<details className="usage-note">
+				<summary>How this is counted</summary>
+				<p>{compact(view.spent.rawTokens ?? view.spent.tokens)} raw tokens reported. For the budget, cached input tokens count at a tenth.</p>
+				<p>Working time excludes waits for a turn, CI or your answer.{!hosted && " Waiting for your machine is also excluded. Your machine uses no hosted time."}</p>
+			</details>
 		</section>
 	);
 }

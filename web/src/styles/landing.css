@@ -1362,11 +1362,7 @@
 }
 .lp-sandbox-line > svg {
 	flex: none;
-	color: var(--ok);
-}
-.lp-sandbox-open > svg,
-.lp-fact-open {
-	color: var(--warn);
+	color: var(--ink-dim);
 }
 .lp-sandbox-line > span + span::before {
 	content: "·";

@@ -346,7 +346,7 @@ function RailFoot({ usage, working, ceiling, onMachines }: { usage: UsageNumbers
 	return (
 		<a className={`ws-rail-foot${state !== "plenty" ? " ws-rail-foot-warn" : ""}`} {...linkProps({ name: "usage" })} title="Usage: sandbox time and sandboxes">
 			<span className="ws-foot-time">
-				<span>{month ? (month.plan === "pro" ? `Hosted · resets ${monthReset(month)}` : "Hosted this month") : "Sandbox today"}</span>
+				<span>{month ? (month.plan === "pro" ? `Hosted · resets ${monthReset(month)}` : "Hosted this month") : "Hosted time today"}</span>
 				<span>
 					<strong>{usage === null ? "–" : month ? minutes(spent) : sandboxTime(spent)}</strong>
 					{allowance === null ? null : month ? ` of ${minutes(allowance)} min` : ` of ${sandboxTime(allowance)}`}
@@ -355,7 +355,7 @@ function RailFoot({ usage, working, ceiling, onMachines }: { usage: UsageNumbers
 				{!month && usage !== null && state !== "plenty" && usage.leftSeconds !== null ? <span className="ws-foot-left">{state === "used" ? `Used up until ${localTime(usage.resetsAt)}` : `${sandboxTime(usage.leftSeconds)} left`}</span> : null}
 			</span>
 			{share === null ? null : (
-				<span className="ws-foot-bar" role="meter" aria-label="Sandbox time used today" aria-valuemin={0} aria-valuemax={allowance ?? 0} aria-valuenow={Math.min(spent, allowance ?? spent)} aria-valuetext={`${sandboxTime(spent)} of ${sandboxTime(allowance ?? 0)}`}>
+				<span className="ws-foot-bar" role="meter" aria-label="Hosted time used today" aria-valuemin={0} aria-valuemax={allowance ?? 0} aria-valuenow={Math.min(spent, allowance ?? spent)} aria-valuetext={`${sandboxTime(spent)} of ${sandboxTime(allowance ?? 0)}`}>
 					<span className="ws-foot-bar-fill" style={{ width: `${Math.max(share, spent > 0 ? 0.04 : 0) * 100}%` }} />
 				</span>
 			)}
@@ -371,7 +371,7 @@ function RailFoot({ usage, working, ceiling, onMachines }: { usage: UsageNumbers
 					<span className={full ? "ws-foot-full" : undefined}>
 						<span>
 							<strong>{count(sandboxes.kept)}</strong>
-							{sandboxes.limit === null ? (sandboxes.kept === 1 ? " sandbox kept" : " sandboxes kept") : ` of ${count(sandboxes.limit)} kept`}
+							{sandboxes.limit === null ? (sandboxes.kept === 1 ? " sandbox kept" : " sandboxes kept") : ` of ${count(sandboxes.limit)} kept sandboxes`}
 						</span>
 						{sandboxes.limit !== null && sandboxes.limit <= 10 ? (
 							<span className="ws-foot-slots" aria-hidden="true">

@@ -213,7 +213,7 @@ function Server({
 	);
 }
 
-export function ServersSection({ sessionId, summary, question }: { sessionId: string; summary: SessionSummary; question: PendingQuestion | null }) {
+export function ServersSection({ sessionId, summary, question, onServers }: { sessionId: string; summary: SessionSummary; question: PendingQuestion | null; onServers?(state: SessionServers | null): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [state, setState] = useState<SessionServers | null>(null);
@@ -258,6 +258,9 @@ export function ServersSection({ sessionId, summary, question }: { sessionId: st
 		if (!present) return;
 		return load();
 	}, [load, present, changedAt]);
+
+	// Whoever stands above the list hears what it read: the panel names a server that could not start outside the fold.
+	useEffect(() => onServers?.(present ? state : null), [onServers, present, state]);
 
 	if (!present) return null;
 

@@ -342,7 +342,7 @@ export function itemModeOf(id: HarnessId | undefined, profile: SandboxProfileId)
 export function itemProfileProblem(id: HarnessId, profile: SandboxProfileId): string | null {
 	const machine = machineHarness(id);
 	if (!machine || itemModeOf(id, profile) !== undefined) return null;
-	const names: Record<string, string> = { "docker-hardened": "“Docker, hardened”", "docker-windlass-sandbox": "“Docker + Windlass sandbox”" };
+	const names: Record<string, string> = { "docker-hardened": "“Open”", "docker-windlass-sandbox": "“Strict”" };
 	return `A work item runs ${machine.name} only on ${anyOf(itemProfiles(id).map(p => names[p] ?? p)).replace(/ or /, " or on ")}.`;
 }
 

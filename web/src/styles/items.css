@@ -1063,7 +1063,7 @@
 	margin-top: 0;
 }
 .item-meter-reached {
-	background: var(--warn);
+	background: var(--ink-dim);
 }
 
 /* A draft in someone else's words: whose they are, the text as the agent gets it, then Start. */
@@ -1988,7 +1988,7 @@ a.plan-task-title:hover {
 	height: 6px;
 	flex: none;
 	border-radius: 50%;
-	background: var(--warn);
+	background: var(--ink-dim);
 	animation: plan-wait-pulse 1.8s var(--ease) infinite;
 }
 @keyframes plan-wait-pulse {
@@ -2032,7 +2032,7 @@ a.plan-task-title:hover {
 	width: 6px;
 	height: 6px;
 	border-radius: 50%;
-	background: var(--warn);
+	background: var(--ink-dim);
 }
 .plan-secrets-none {
 	color: var(--ink-faint);
@@ -2051,7 +2051,7 @@ a.plan-task-title:hover {
 
 /*
  * A subtask's agent: its name in the mono face of a place, its model and effort dim. An agent that
- * works without asking carries the same small warm dot as secrets that are sent: a fact to weigh
+ * works without asking carries the same small dot as secrets that are sent: a fact to weigh
  * before approving, in words, not a coloured card.
  */
 .plan-agent-name {
@@ -2075,7 +2075,7 @@ a.plan-task-title:hover {
 	width: 6px;
 	height: 6px;
 	border-radius: 50%;
-	background: var(--warn);
+	background: var(--ink-dim);
 }
 .plan-place-picks .plan-unattended {
 	align-self: center;
@@ -3315,4 +3315,12 @@ a.subtask-chip:hover {
 .checks-rows[hidden],
 .checks-finding-body[hidden] {
 	display: none;
+}
+
+/* Filing an item does not require checks. Approval is handled on its plan. */
+.factory .home-start .start-line-note.tone-warn {
+	color: var(--ink-faint);
+}
+.factory .home-start .tray-icon-dot-warn {
+	background: var(--ink-faint);
 }

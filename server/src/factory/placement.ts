@@ -1,7 +1,7 @@
 // Names are a proposal. Only the owner's inventory may turn them into durable destinations.
 import { MAX_PROVIDER_WAIT, WINDLASS_ACCOUNT, providerWait } from "../provider-usage.js";
 import { nextUtcDay, usesPlatformModel } from "../usage.js";
-import { HOSTED_SIZE_SPECS, hostedSizeFor, sandboxSlots } from "../contract.js";
+import { HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, hostedSizeFor, sandboxSlots } from "../contract.js";
 import type { ChildPlacement, EgressMode, HostedSize, FeaturePlanEdit, HarnessId, MachineSummary, ModelList, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
@@ -201,7 +201,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 		// `cpus` and `memoryGiB` choose a hosted size: the least that has them. Absent: the item's own size (standard by default).
 		const sized = hostedSizeFor(needs);
 		if ((needs.cpus || needs.memoryGiB) && !sized) return { refused: `hosted sandboxes have at most ${HOSTED_SIZE_SPECS.large.cpus} vCPU and ${HOSTED_SIZE_SPECS.large.memoryMiB / 1024} GiB`, permanent: true };
-		if (sized && !(inventory.hostedSizes ?? ["small"]).includes(sized)) return { refused: `hosted has no ${sized} sandbox (${HOSTED_SIZE_SPECS[sized].cpus} vCPU, ${HOSTED_SIZE_SPECS[sized].memoryMiB / 1024} GiB) on this deployment`, permanent: true };
+		if (sized && !(inventory.hostedSizes ?? ["small"]).includes(sized)) return { refused: `hosted has no ${HOSTED_SIZE_NAMES[sized]} sandbox (${HOSTED_SIZE_SPECS[sized].cpus} vCPU, ${HOSTED_SIZE_SPECS[sized].memoryMiB / 1024} GiB) on this deployment`, permanent: true };
 		if (limited) return waiting(limited, "hosted");
 		if (tokenWait) return { wait: tokenWait, dailyCap: true };
 		const profile = needs.profile ?? profiles.find(p => p === inventory.defaultProfile) ?? (harness === "windlass" ? undefined : profiles[0]);

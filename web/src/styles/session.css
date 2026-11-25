@@ -2402,7 +2402,7 @@ dd.kv-clip > svg {
 	font-size: var(--text-12);
 	font-weight: var(--weight-strong);
 	text-align: center;
-	color: var(--warn);
+	color: var(--accent-text);
 }
 .change-status-A,
 .change-status-new {
@@ -3450,4 +3450,214 @@ dd.kv-clip > svg {
 }
 .session-banner .banner-chip {
 	margin-top: -1px;
+}
+
+/* ---- the side panel, read at a glance ------------------------------------------------------- */
+
+/* A quieter part of a fact: the model beside the agent, the branch beside the repository. */
+.kv-quiet {
+	color: var(--ink-faint);
+}
+.kv dd.kv-agent > .kv-clip {
+	min-width: 0;
+}
+/* "Edit": a link at the title's right edge, in the panel's text weight. */
+.panel-title > .panel-title-link {
+	margin-left: auto;
+	font-size: var(--text-12);
+	font-weight: var(--weight-regular);
+}
+
+/* Where it runs: the place, its isolation as a chip, its size and price. */
+.panel-where {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px 8px;
+	margin-bottom: 10px;
+	min-width: 0;
+}
+.panel-where-place {
+	font-size: var(--text-14);
+	font-weight: var(--weight-strong);
+	letter-spacing: -0.01em;
+	color: var(--ink);
+	max-width: 100%;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.panel-where-profile {
+	padding: 1px 8px;
+	border-radius: var(--radius-pill);
+	background: var(--accent-wash);
+	box-shadow: inset 0 0 0 1px var(--accent-wash-strong);
+	font-size: var(--text-11);
+	font-weight: var(--weight-medium);
+	color: var(--accent-text);
+	line-height: 18px;
+	white-space: nowrap;
+}
+.panel-where-size {
+	font-family: var(--font-mono);
+	font-size: var(--text-12);
+	color: var(--ink-faint);
+}
+
+/* What the sandbox means, in three lines: a check for what is held back, a plain dot for what is open. */
+.outcomes {
+	display: grid;
+	gap: 6px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+	font-size: var(--text-13);
+	line-height: 1.4;
+	color: var(--ink);
+}
+.outcomes li {
+	display: grid;
+	grid-template-columns: 14px minmax(0, 1fr);
+	gap: 8px;
+	align-items: baseline;
+}
+.outcome-mark {
+	align-self: center;
+	color: var(--ok);
+}
+.outcome-dot {
+	justify-self: center;
+	width: 5px;
+	height: 5px;
+	border-radius: 50%;
+	background: var(--ink-faint);
+}
+.panel-more .facts {
+	margin-top: 0;
+}
+.panel-more .facts + .layers {
+	margin-top: 12px;
+}
+
+/* Usage: up to three figures in a row, the number over a word. */
+.figures {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 12px;
+}
+.figures:empty {
+	display: none;
+}
+.figure {
+	display: grid;
+	align-content: start;
+	gap: 4px;
+	min-width: 0;
+}
+.figure-value {
+	font-size: var(--text-20, 20px);
+	font-weight: var(--weight-medium);
+	letter-spacing: var(--tracking-tight);
+	line-height: 1.1;
+	color: var(--ink);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.figure-label {
+	font-size: var(--text-12);
+	color: var(--ink-faint);
+}
+.figure .stat-meter {
+	margin: 2px 0;
+}
+.cache-calls {
+	margin-top: 14px;
+}
+.cache-calls-title {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+	font-size: var(--text-12);
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+}
+.cache-calls-title > .legend {
+	margin-left: auto;
+}
+
+/* "ⓘ" beside a short label: the longer sentences on hover and focus. */
+.info-dot {
+	display: inline-flex;
+	vertical-align: -2px;
+	margin-left: 3px;
+	border-radius: 50%;
+	color: var(--ink-faint);
+	cursor: help;
+}
+.info-dot:hover,
+.info-dot:focus-visible {
+	color: var(--ink);
+}
+.info-dot:focus-visible {
+	outline: var(--focus-width) solid var(--accent);
+	outline-offset: 1px;
+}
+
+/* Repository setup: what needs the user now above the fold, the editing under it. */
+.repo-setup-problem,
+.repo-setup-ask {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 8px;
+	font-size: var(--text-13);
+	line-height: 1.45;
+}
+.repo-setup-problem {
+	padding: 8px 10px 8px 12px;
+	border-radius: var(--r-item);
+	border-left: 2px solid var(--warn);
+	background: var(--warn-wash);
+	color: var(--warn);
+}
+.repo-setup-problem code {
+	font-size: var(--text-12);
+	color: inherit;
+}
+.repo-setup-fix {
+	flex: none;
+	font-weight: var(--weight-medium);
+	color: inherit;
+}
+.repo-setup-ask {
+	color: var(--ink);
+}
+.repo-setup-ask > .link {
+	flex: none;
+}
+.repo-setup-problem + .repo-setup-fold,
+.repo-setup-ask + .repo-setup-fold {
+	margin-top: 4px;
+}
+.repo-setup > .panel-title + .repo-setup-fold {
+	margin-top: 0;
+}
+/* Under the fold the setup command, the secrets and the servers keep their own blocks, as subsections. */
+.repo-setup-body > .panel-section {
+	padding: 12px 0 0;
+	border-bottom: 0;
+}
+.repo-setup-body > .panel-section + .panel-section {
+	margin-top: 12px;
+	border-top: 1px solid var(--line);
+}
+.repo-setup-body .panel-title {
+	margin-bottom: 6px;
+	font-size: var(--text-12);
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
 }

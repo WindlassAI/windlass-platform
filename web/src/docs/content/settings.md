@@ -14,9 +14,9 @@ Each choice saves as soon as you make it. A field you leave unset shows what it 
 
 **Connect ChatGPT plan** opens a model connection for your signed-in Windlass account. Follow **Authorize your plan at OpenAI**, approve it, then copy the full loopback address from the page that fails to load. Paste it into Settings and choose **Finish connecting** within ten minutes. **Disconnect plan** removes this model connection. Your platform login and sessions stay with your GitHub or Google identity.
 
-In **Settings → Model providers**, choose **Add key…** for OpenAI, Anthropic, Google (Gemini) or OpenRouter. You can save one key per provider. Windlass stores it encrypted, checks it with the provider and shows its last four characters and the number of models found. Use **Check**, **Replace…** or **Remove…** to manage it later.
+In **Settings → Model keys**, choose **Add key…** for OpenAI, Anthropic, Google (Gemini) or OpenRouter. You can save one key per provider. Windlass stores it encrypted, checks it with the provider and shows its last four characters and the number of models found. Use **Check**, **Replace…** or **Remove…** to manage it later.
 
-These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and uses a per-turn relay to keep the key outside the sandbox. Removing or replacing a key stops new requests through leases for the old key. Hosted sandboxes always use these keys: Claude Code your Anthropic key, Codex your OpenAI key, and OpenCode the key for the selected provider. On a paired machine, an agent signed in there (a Claude subscription, a ChatGPT plan for Codex, an OpenCode provider login) uses that sign-in first, and a key only for providers the machine is not signed in to. To have it use your key instead, choose “Use your … key” under the agent on the Machines page. Windlass uses your Settings key for the models listed under that provider, and your ChatGPT sign-in for your plan's models.
+These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and uses a per-turn relay to keep the key outside the sandbox. Removing or replacing a key stops new requests through leases for the old key. Hosted sandboxes always use these keys: Claude Code your Anthropic key, Codex your OpenAI key, and OpenCode the key for the selected provider. On a paired machine, an agent signed in there (a Claude subscription, a ChatGPT plan for Codex, an OpenCode provider login) uses that sign-in first, and a key only for providers the machine is not signed in to. To have it use your key instead, choose “Use your … key” under the agent on the Machines page. Windlass uses your API key for the models listed under that provider, and your ChatGPT sign-in for your plan's models.
 
 ### MCP servers
 
@@ -36,11 +36,11 @@ Where the platform offers machines, this section links to **Your machines**. See
 
 ### Linear
 
-Where Linear is available, connect your workspace and map each team to a GitHub repository. **Disconnect…** removes its mappings and stops new filings. Existing items stay. See [From a Linear issue](/docs/factory#from-a-linear-issue).
+Where Linear is available, connect your workspace and map each team to a GitHub repository. **Disconnect…** removes its mappings and stops new filings. Existing items stay. Label an issue `windlass` or assign it to the Windlass app. Use `windlass-quick` or `windlass:quick` for Quick mode. See [From a Linear issue](/docs/factory#from-a-linear-issue).
 
 ### API tokens
 
-Where the platform offers work items, you can make up to 20 API tokens for scripts that file and read your work items. See [From the API](/docs/factory#from-the-api).
+Where the platform offers work items, you can make up to 20 API tokens for scripts that file and read your work items. To file an item, send `POST /api/items` with the header `Authorization: Bearer <token>`. See [From the API](/docs/factory#from-the-api).
 
 A token works until you revoke it. Choose **Revoke token** to stop it at once. Work items it filed stay.
 
@@ -112,6 +112,8 @@ Commands that verify the agent’s changes. Within a turn Windlass can send the 
 | Command | 2,000 characters |
 | Time per check | 1 to 3,600 seconds, 120 by default |
 | File patterns | 20, of up to 200 characters each |
+
+The repository can add checks in `.windlass/config.json`. File patterns are comma-separated globs, such as `src/**, test/**`. Pull requests show which checks ran and who set them.
 
 Agents on the repository have new checks from their next turn.
 
@@ -196,7 +198,7 @@ Windlass turns on ChatGPT count input and output once toward the daily model cap
 
 Sandbox time is the time your agents' sandboxes run: while an agent works, and for a short while after. A paused sandbox uses none. The default is 2 hours of sandbox time a day, for all your sandboxes together. The allowance is whole again at 00:00 UTC.
 
-**Sandbox time today** shows what is counted, what is held, what is left and when it resets. A running sandbox holds 5 minutes at a time ahead. A turn needs at least 30 seconds left to start.
+**Hosted time today** shows time used and time left. Open **Details** for time held and the reset time. A running sandbox holds 5 minutes at a time ahead. A turn needs at least 30 seconds left to start.
 
 When less than a fifth of the day's time is left, the session and the composer warn you. When it is used up, a turn cannot start, and a running turn is stopped at the end of the time it held. Its sandbox is paused with its files as they are, and the conversation is kept.
 
@@ -208,7 +210,7 @@ A hosted sandbox left behind by an agent that no longer exists takes no place, a
 
 ### Estimated cost
 
-Where the platform's sandboxes are billed by the second, as on E2B, the page shows an estimated cost: the counted seconds times the provider's published price for the sandbox size. Where there are hosted sizes, **Sandbox time today** lists each size with its price an hour, and **Today by agent** names each agent's size and prices its time at that size. The daily allowance counts seconds the same whatever the size: a larger sandbox costs more, and uses no more of the allowance. Earlier days in the history are priced at the small size. It is labelled as an estimate. The provider's bill can differ by a few seconds, and by more when a server stops under a running sandbox.
+Where the platform's sandboxes are billed by the second, as on E2B, the page shows an estimated cost: the counted seconds times the provider's published price for the sandbox size. Where there are hosted sizes, **Hosted time today** lists each size with its price an hour, and **Today by agent** names each agent's size and prices its time at that size. The daily allowance counts seconds the same whatever the size: a larger sandbox costs more, and uses no more of the allowance. Earlier days in the history are priced at the small size. It is labelled as an estimate. The provider's bill can differ by a few seconds, and by more when a server stops under a running sandbox.
 
 ### Other sections
 

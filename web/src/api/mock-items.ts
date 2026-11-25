@@ -395,7 +395,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			state: "waiting",
 			filed: 420,
 			pr: 12,
-			question: { kind: "budget", text: "This item has used 2.1M of its 2M tokens (cost-weighted, cached input at a tenth; 19.3M as reported). Going on keeps its session, sandbox and work as they are.", choices: budgetChoices("2M"), asked: 130 },
+			question: { kind: "budget", text: "Used its 2M-token budget. Give it more to continue.", choices: budgetChoices("2M"), asked: 130 },
 			run: { n: 1, started: 419, stopReason: null, rounds: { plan: 0, gate: 1, ci: 2, conflict: 0 }, step: { n: 9, kind: "ci", started: 130 } },
 			events: [
 				[419, "Started.", undefined, true],
@@ -407,7 +407,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				[220, "The checks passed.", [1, 6, "gate"]],
 				[219, `Pushed ${short(hex(23))} to pull request #12.`, [1, 7, "publish"]],
 				[180, "CI failed: docs.", [1, 8, "ci", 6]],
-				[130, "Asked: This item has used 2.1M of its 2M tokens (cost-weighted, cached input at a tenth; 19.3M as reported). Going on keeps its session, sandbox and work as they are.", [1, 9, "ci_fix"]],
+				[130, "Asked: Used its 2M-token budget. Give it more to continue.", [1, 9, "ci_fix"]],
 			],
 			spent: { tokens: 2_100_000, rawTokens: 19_300_000, turns: 3, activeSeconds: 3 * 3600 + 10 * 60, hostedSeconds: 1.5 * 3600 },
 		},
@@ -736,7 +736,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				state: "waiting",
 				filed: 260,
 				pr: 64,
-				question: { kind: "budget", text: "This item has used 1M of its 1M tokens (cost-weighted, cached input at a tenth; 9.2M as reported). Going on keeps its session, sandbox and work as they are.", choices: budgetChoices("1M"), asked: 20 },
+				question: { kind: "budget", text: "Used its 1M-token budget. Give it more to continue.", choices: budgetChoices("1M"), asked: 20 },
 				run: { n: 1, started: 259, stopReason: null, rounds: { plan: 0, gate: 2, ci: 2, conflict: 0 }, step: { n: 12, kind: "ci_fix", started: 21 } },
 				events: [
 					[259, "Started.", undefined, true],
@@ -744,7 +744,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 					[200, "The checks passed.", [1, 2, "gate"]],
 					[199, `Pushed ${short(head)} to pull request #64.`, [1, 3, "publish"]],
 					[150, "CI failed: docs.", [1, 4, "ci", 6]],
-					[21, "Asked: This item has used 1M of its 1M tokens (cost-weighted, cached input at a tenth; 9.2M as reported). Going on keeps its session, sandbox and work as they are.", [1, 12, "ci_fix"]],
+					[21, "Asked: Used its 1M-token budget. Give it more to continue.", [1, 12, "ci_fix"]],
 				],
 				spent: { tokens: 1_000_000, rawTokens: 9_200_000, turns: 10, activeSeconds: 3 * 3600 + 5 * 60 },
 			});

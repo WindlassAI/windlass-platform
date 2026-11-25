@@ -226,7 +226,7 @@ export function startingChoices(defaults: AccountDefaults | null, info: Pick<Pla
 	if (defaults.profile !== null && info !== null) {
 		const saved = info.profiles.find((profile) => profile.id === defaults.profile);
 		if (saved?.available) choices.profile = saved.id;
-		else choices.ignored.profile = saved ? `${the} sandbox, ${saved.name}, cannot be used on this deployment now, so it is ignored.` : `${the} sandbox, "${defaults.profile}", is not one this deployment has any more, so it is ignored.`;
+		else choices.ignored.profile = "Saved isolation is unavailable here. Using the next available default.";
 	}
 	if (defaults.model !== null && models !== null) {
 		if (models.models.some((model) => model.id === defaults.model)) choices.model = defaults.model;

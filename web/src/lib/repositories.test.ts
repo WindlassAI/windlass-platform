@@ -139,11 +139,11 @@ describe("what a new agent on a repository starts with", () => {
 	it("leaves out a default the deployment no longer has or cannot run, and says so", () => {
 		const gone = startingChoices({ profile: "firecracker", model: "gpt-5.5-terra", updatedAt: 1 }, info, models);
 		expect([gone.profile, gone.model]).toEqual([null, null]);
-		expect(gone.ignored.profile).toContain('"firecracker"');
+		expect(gone.ignored.profile).toContain("Saved isolation is unavailable");
 		expect(gone.ignored.model).toContain("gpt-5.5-terra");
 		const cannot = startingChoices({ profile: "e2b", model: null, updatedAt: 1 }, info, models);
 		expect(cannot.profile).toBeNull();
-		expect(cannot.ignored.profile).toContain("The e2b sandbox");
+		expect(cannot.ignored.profile).toBe(gone.ignored.profile);
 		// The form then starts where it would without a default.
 		expect(startingProfile(null, gone, info)).toBe("docker-windlass-sandbox");
 		expect(startingModel("", gone, models)).toBe("gpt-6.1-sol");
@@ -194,12 +194,12 @@ describe("what a new agent on a repository starts with", () => {
 	it("passes over a default that cannot be used, of the repository or of the account, and says whose it was", () => {
 		const account = startingChoices({ profile: "e2b", model: "gpt-5.5-terra", updatedAt: 1 }, info, models, "account");
 		expect([account.profile, account.model]).toEqual([null, null]);
-		expect(account.ignored.profile).toMatch(/^Your account's default sandbox, The e2b sandbox, cannot be used/);
+		expect(account.ignored.profile).toBe("Saved isolation is unavailable here. Using the next available default.");
 		expect(account.ignored.model).toBe("Your account's default model, gpt-5.5-terra, is not among the models your ChatGPT plan offers now, so it is ignored.");
 		// The repository's unusable default gives way to the account's usable one, and the other way round.
 		const usable = startingChoices({ profile: "docker-hardened", model: null, updatedAt: 1 }, info, models, "account");
 		const gone = startingChoices({ profile: "firecracker", model: "gpt-6-luna", updatedAt: 1 }, info, models);
-		expect(gone.ignored.profile).toMatch(/^The default sandbox/);
+		expect(gone.ignored.profile).toBe(account.ignored.profile);
 		expect(layerChoices(gone, usable)).toEqual({ profile: "docker-hardened", model: "gpt-6-luna", from: { profile: "account", model: "repository" } });
 		expect(layerChoices(gone, account)).toEqual({ profile: null, model: "gpt-6-luna", from: { profile: null, model: "repository" } });
 	});

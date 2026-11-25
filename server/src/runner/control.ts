@@ -468,4 +468,4 @@ const connection = object({
 /** For the runner: the 200 answer of RUNNER_CONNECTION_PATH. */
 export const parseConnection = (body: unknown): Of<typeof connection> | null => (connection(body) ? body : null);
 
-type Drift = [Assert<Same<Of<typeof optionsShape>, HarnessOptions>>, Assert<Same<Of<typeof probe>, MachineProbe>>, Assert<Same<Omit<Of<typeof connection>, "endpointChange">, PlatformConnection>>, Assert<Same<Of<typeof storeCaps>, StoreCaps>>];
+export type Drift = [Assert<Same<Of<typeof optionsShape>, HarnessOptions>>, Assert<Same<Of<typeof probe>, MachineProbe>>, Assert<Same<Omit<Of<typeof connection>, "endpointChange">, PlatformConnection>>, Assert<Same<Of<typeof storeCaps>, StoreCaps>>];

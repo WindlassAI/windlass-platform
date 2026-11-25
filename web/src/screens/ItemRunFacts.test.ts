@@ -24,6 +24,11 @@ function facts(of: NonNullable<ItemView["run"]>): string {
 }
 
 describe("the item page's run facts", () => {
+	it("hides Fixes until a fix has run", () => {
+		const fresh = run();
+		fresh.rounds.ci = 0;
+		expect(facts(fresh)).not.toContain("Fixes");
+	});
 	it("counts the second review's fixes once there were some", () => {
 		expect(facts(run(2))).toContain("after the second review 2");
 	});

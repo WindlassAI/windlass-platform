@@ -56,7 +56,7 @@ it.each(["/machines", "/settings"])("shows the Settings key upgrade on %s for ru
 	root = createRoot(host);
 	act(() => root.render(createElement(AppProvider, { client, children:createElement(App) })));
 	await settle();
-	expect(host.textContent).toContain("Update the runner to use Settings keys on this machine");
+	expect(host.textContent).toContain("Update the machine software to use your API keys here");
 });
 
 describe("adding a machine", () => {
@@ -131,7 +131,7 @@ it("chooses whose credential an agent uses where the machine's sign-in and a Set
 	await settle();
 	const [mac] = await client.user(ada).machines();
 	expect(mac!.harnesses?.find((h) => h.id === "claude")).toMatchObject({ source: "key", platformKeys: ["anthropic"], method: "api-key" });
-	expect(host.textContent).toContain("Each turn is billed to your Anthropic key by the token");
+	expect(choice.querySelector<HTMLInputElement>('label[data-source="key"] input')?.checked).toBe(true);
 	const codex = [...host.querySelectorAll<HTMLElement>(".machine-agent")].find(row => row.textContent?.includes("this Mac's ChatGPT plan"))!;
 	await act(async () => codex.querySelector<HTMLInputElement>('label[data-source="key"] input')!.click());
 	await settle();

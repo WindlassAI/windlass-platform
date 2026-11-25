@@ -119,7 +119,7 @@ export function LinearSettings() {
 				) : null}
 			</h2>
 			<p className="usage-lede">
-				File work items from Linear issues. In a mapped team, label an issue <code>windlass</code> or assign it to the Windlass app user to file it on the team's repository. Use <code>windlass-quick</code> or <code>windlass:quick</code> to file in Quick mode. Windlass posts the pull request and item outcome on the Linear issue.
+				File work items from Linear issues labelled <code>windlass</code>.
 			</p>
 			{connected && status?.state === "connected" ? <p className="callout" role="status">Linear is connected. Choose a repository for a team below.</p> : null}
 			{failed ? (
@@ -133,6 +133,10 @@ export function LinearSettings() {
 				</div>
 			) : status.state === "connected" ? (
 				<>
+					<details className="field-note">
+						<summary>Details</summary>
+						Label an issue <code>windlass</code> or assign it to Windlass. Use <code>windlass-quick</code> or <code>windlass:quick</code> for Quick mode.
+					</details>
 					<p className="field-note" data-testid="linear-workspace">
 						Connected to {status.connection.workspace.name} as {status.connection.user.name}. Review and start filed drafts in Windlass.
 					</p>

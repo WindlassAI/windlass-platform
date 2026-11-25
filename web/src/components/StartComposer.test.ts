@@ -169,11 +169,11 @@ describe("the start composer", () => {
 		expect(location.pathname).toMatch(/^\/agents\/[0-9a-f]+$/);
 	});
 
-	it("sends the hosted size chosen in the options, and the default for agents otherwise", async () => {
+	it("sends the hosted size chosen with Hosted, and the default for agents otherwise", async () => {
 		await show();
 		write("Run the typecheck");
-		open("options");
-		await act(async () => ([...pop().querySelectorAll('[role="menuitemradio"]')].find((row) => row.textContent?.startsWith("Large")) as HTMLElement).click());
+		open("where");
+		pickIn("platform", "large");
 		await enter();
 		expect(created[0]?.hostedSize).toBe("large");
 	});
@@ -210,12 +210,12 @@ describe("the start composer where it offers no switch", () => {
 });
 
 describe("the start composer's one-line tray", () => {
-	it("is +, the agent, where, options, the lock and Launch, in that order", async () => {
+	it("is +, the agent, where, options, the isolation and Launch, in that order", async () => {
 		await show();
 		const tray = host.querySelector(".start-tools") as HTMLElement;
-		expect([...tray.querySelectorAll("[data-picker]")].map((control) => (control as HTMLElement).dataset.picker)).toEqual(["setup", "agent", "effort", "where", "options", "lock"]);
+		expect([...tray.querySelectorAll("[data-picker]")].map((control) => (control as HTMLElement).dataset.picker)).toEqual(["setup", "agent", "effort", "where", "options", "isolation"]);
 		expect(tray.querySelector(".tray-end .start-launch")).not.toBeNull();
-		// No mode pill and no line of facts under the box: they are in the menus and the lock.
+		// No mode pill and no line of facts under the box: they are in the menus and the isolation's tooltip.
 		expect(host.querySelector('[data-picker="mode"], [data-picker="repo"]')).toBeNull();
 		expect(host.querySelector("p.start-sandbox")).toBeNull();
 	});
@@ -231,7 +231,7 @@ describe("the start composer's one-line tray", () => {
 		expect(where.querySelector(".repo-tile")).not.toBeNull();
 		open("where");
 		const labels = [...pop().querySelectorAll(".ui-menu-group-label b")].map((label) => label.textContent);
-		expect(labels).toEqual(["Hosted", "Your machines", "Repository"]);
+		expect(labels).toEqual(["Hosted", "My machines", "Repository"]);
 		const repoRow = pop().querySelector('[data-value="repo"]') as HTMLElement;
 		expect(repoRow.textContent).toContain("acme/harbor");
 		expect(repoRow.textContent).toContain("at main");
@@ -279,15 +279,25 @@ describe("the start composer's one-line tray", () => {
 		expect(label.textContent).toContain("Claude subscription · nas");
 	});
 
-	it("keeps the mode in the options, with the sandbox's sentence, which the lock's tooltip also says", async () => {
+	it("says the isolation at rest in one plain word, and puts isolation and size with Hosted", async () => {
 		await show();
-		const lock = pill("lock") as HTMLButtonElement;
-		const sentence = lock.getAttribute("aria-label") ?? "";
-		// Where the deployment offers hosted sizes, the sentence names the size and its price, and the options list them first.
-		expect(sentence).toMatch(/Runs hosted, Small \(1 vCPU, 1 GiB, about \$0\.067\/h\)\.$/);
+		const chip = pill("isolation") as HTMLButtonElement;
+		// acme/harbor's saved default is Open: said in plain ink, never amber, as nothing needs doing.
+		expect(chip.dataset.value).toBe("Open");
+		expect(chip.getAttribute("aria-label")).toMatch(/^Isolation: Open: Commands run freely and can reach the internet\. Runs hosted, Small \(1 CPU · 1 GB · \$0\.067\/h\)\.$/);
+		expect(host.querySelector(".start [class*=warn], .start svg.warn")).toBeNull();
 		open("options");
-		expect([...pop().querySelectorAll(".ui-menu-group-label b")].map((label) => label.textContent)).toEqual(["Hosted size", "Mode"]);
-		expect(pop().querySelector(".tray-safety")?.textContent).toBe(sentence);
+		expect([...pop().querySelectorAll(".ui-menu-group-label b")].map((label) => label.textContent)).toEqual(["Mode"]);
+		act(() => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+		open("where");
+		expect(pop().querySelector('[data-value="platform"]')?.textContent).toContain("Open · Small");
+		act(() => void pop().querySelector('[data-value="platform"]')?.dispatchEvent(new MouseEvent("pointermove", { bubbles: true })));
+		act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
+		const sub = document.querySelector(".ui-pop-sub") as HTMLElement;
+		expect([...sub.querySelectorAll(".ui-menu-group-label b")].map((label) => label.textContent)).toEqual(["Isolation", "Size"]);
+		expect([...sub.querySelectorAll(".ui-item-label")].map((label) => label.textContent)).toEqual(["Strict", "Open", "Small", "Medium", "Large"]);
+		expect(sub.querySelector("[class*=warn]")).toBeNull();
+		expect(sub.textContent).not.toMatch(/E2B|Docker|microVM|Daytona|agentOS|Firecracker/);
 	});
 });
 
@@ -497,13 +507,13 @@ describe("each picker of the start composer", () => {
 
 	it("sends the sandbox chosen, and offers its saved default back", async () => {
 		await show();
-		expect(value("sandbox")).toContain("Docker, hardened");
+		expect(value("sandbox")).toBe("Open");
 		open("sandbox");
 		pickIn("platform", "docker-windlass-sandbox");
-		expect(value("sandbox")).toContain("Docker + Windlass sandbox");
+		expect(value("sandbox")).toBe("Strict");
 		expect(pill("sandbox")?.classList.contains("ui-pill-changed")).toBe(true);
 		open("sandbox");
-		expect(pop().textContent).toContain("Back to the default (acme/harbor's: Docker, hardened)");
+		expect(pop().textContent).toContain("Back to the default (acme/harbor's: Open)");
 		write("Fix the flaky test");
 		await enter();
 		expect(created[0]).toMatchObject({ profile: "docker-windlass-sandbox", mode: "auto" });

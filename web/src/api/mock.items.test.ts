@@ -304,7 +304,7 @@ describe("the mock's work items", () => {
 		const waiting = onMachines.find((item) => item.wait?.reason === "machine") as ItemSummary;
 		expect(machineOf(waiting)).toMatchObject({ name: "workshop", status: "offline" });
 		expect(waiting.wait?.sentence).toBe('Waiting for your machine "workshop" to come back online.');
-		expect(onMachines.find((item) => item.question?.kind === "budget")?.question?.text).toBe("This item has used 1M of its 1M tokens (cost-weighted, cached input at a tenth; 9.2M as reported). Going on keeps its session, sandbox and work as they are.");
+		expect(onMachines.find((item) => item.question?.kind === "budget")?.question?.text).toBe("Used its 1M-token budget. Give it more to continue.");
 		const removed = onMachines.find((item) => item.question?.kind === "machine_removed") as ItemSummary;
 		expect(removed.place).toEqual({ kind: "machine", machineId: REMOVED_MACHINE_ID });
 		expect(machineOf(removed)).toBeUndefined();

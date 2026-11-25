@@ -257,7 +257,7 @@ test("a work item runs Codex in Workspace access on the Windlass sandbox profile
 	assert.equal(itemModeOf("codex", "docker-hardened"), "agent-full-access");
 	assert.deepEqual([itemModeOf("claude", "docker-windlass-sandbox"), itemModeOf("windlass", "docker-hardened")], [undefined, undefined]);
 	assert.equal(itemProfileProblem("codex", "docker-windlass-sandbox"), null);
-	assert.equal(itemProfileProblem("claude", "docker-windlass-sandbox"), "A work item runs Claude Code only on “Docker, hardened”.");
+	assert.equal(itemProfileProblem("claude", "docker-windlass-sandbox"), "A work item runs Claude Code only on “Open”.");
 	assert.equal(initialSessionModes("docker-windlass-sandbox", "codex", true).mode, "workspace-write");
 	assert.equal(initialSessionModes("docker-hardened", "codex", true).mode, "agent-full-access");
 	// Commands run unasked only in the container; in Codex's sandbox a request to leave it ends the step.

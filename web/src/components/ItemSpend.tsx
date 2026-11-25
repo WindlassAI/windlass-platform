@@ -1,5 +1,4 @@
 import type { ItemAgent, ItemBudget, ItemSpend as Spend } from "@contract";
-import { compact } from "../lib/format";
 import { agentTokens } from "../lib/item-agent";
 
 /** A budget figure as a row: its name, and how a figure of it is said. */
@@ -35,19 +34,15 @@ export function ItemSpend({ spent, budget, fields, agent }: Props) {
 				const reached = used >= cap;
 				return (
 					<div key={field.key}>
-						<dt>
-							{field.label}
-							{/* Tokens count cost-weighted: what the agent reported is under them. */}
-							{field.key === "tokens" ? <span className="tone-faint item-cost-raw">{compact(spent.rawTokens ?? spent.tokens)} as reported</span> : null}
-						</dt>
+						<dt>{field.label}</dt>
 						<dd className="usage-number">
-							{field.spelled(used)} <span className="tone-faint">of {field.spelled(cap)}</span>
+							{field.spelled(used)} <span className="tone-faint">of {field.spelled(cap)}{field.key === "tokens" && " budget"}</span>
 						</dd>
 						<dd className="item-cost-meter">
 							<span className="usage-meter" aria-hidden="true">
 								<span className={`usage-meter-used${reached ? " item-meter-reached" : ""}`} style={{ width: `${cap > 0 ? Math.min(100, (used / cap) * 100) : 0}%` }} />
 							</span>
-							{reached ? <span className="tone-warn">reached</span> : null}
+							{reached ? <span className="tone-dim">reached</span> : null}
 						</dd>
 					</div>
 				);

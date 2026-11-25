@@ -308,29 +308,29 @@ describe("a feature's plan on its page", () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Search the docs from the command line");
 		await show(`/items/${feature.id}`);
-		const docs = budgetField("docs", "tokens");
+		const docs = budgetField("docs", "Millions of tokens");
 		type(docs, "0.1");
 		expect(docs.getAttribute("aria-invalid")).toBe("true");
-		expect(host.querySelector(`#${CSS.escape(docs.id)}-range`)?.textContent).toBe("200k–2M");
+		expect(host.querySelector(`#${CSS.escape(docs.id)}-range`)?.textContent).toBe("200k–2M tokens");
 		expect(button("Save as version 3")?.disabled).toBe(true);
 		type(docs, "0.4");
 		expect(docs.getAttribute("aria-invalid")).toBeNull();
 		expect(button("Save as version 3")?.disabled).toBe(false);
 		// Over a single item's 2M tokens for one subtask.
-		const tokens = budgetField("index", "tokens");
+		const tokens = budgetField("index", "Millions of tokens");
 		type(tokens, "2.5");
 		expect(tokens.getAttribute("aria-invalid")).toBe("true");
 		// Each at a single item's: together they are what the feature may spend, never over it.
 		type(tokens, "2");
-		type(budgetField("command", "tokens"), "2");
-		type(budgetField("docs", "tokens"), "2");
+		type(budgetField("command", "Millions of tokens"), "2");
+		type(budgetField("docs", "Millions of tokens"), "2");
 		expect(tokens.getAttribute("aria-invalid")).toBeNull();
 		expect(host.querySelector(".plan-total-over")).toBeNull();
 		expect(host.querySelector(".plan-total-number")?.textContent).toBe("6M of 8M");
 		expect(button("Save as version 3")?.disabled).toBe(false);
 		// Discarding brings back the plan's own figures.
 		act(() => button("Discard changes")?.click());
-		expect(budgetField("index", "tokens").value).toBe("1");
+		expect(budgetField("index", "Millions of tokens").value).toBe("1");
 	});
 
 	it("shows the push CI blocker and single-item choice before approval", async () => {
@@ -399,9 +399,9 @@ describe("a feature's plan on its page", () => {
 		const plan = host.querySelector(".feature-plan")!;
 		expect(plan.textContent).toContain("Runs as one item after this plan");
 		expect(plan.querySelector(".plan-card")).toBeNull();
-		expect([...plan.querySelectorAll(".item-cost dt")].map(row => row.textContent)).toEqual(["Tokens26M as reported"]);
+		expect([...plan.querySelectorAll(".item-cost dt")].map(row => row.textContent)).toEqual(["Tokens"]);
 		const cap = stage === "suggested" ? 8.9 : 8;
-		expect([...plan.querySelectorAll(".item-cost .usage-number")].map(row => row.textContent)).toEqual([`2.9M of ${cap}M`]);
+		expect([...plan.querySelectorAll(".item-cost .usage-number")].map(row => row.textContent)).toEqual([`2.9M of ${cap}M budget`]);
 		expect(parseFloat(plan.querySelector<HTMLElement>(".usage-meter-used")!.style.width)).toBeCloseTo(100 * 2.9 / cap);
 	});
 
@@ -499,7 +499,7 @@ describe("placement in a feature's plan", () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Visual regression checks for the tide chart");
 		await show(`/items/${feature.id}`);
-		expect(host.querySelector(".plan-placement")?.textContent).toContain("A subtask with no place runs where the feature does: nas.");
+		expect(host.querySelector(".plan-placement")?.textContent).toContain("Default place: nas.");
 		expect(pill("Runs on: nas")).toBeTruthy();
 		expect(fact("fixtures", "needs")).toBe("4 CPUs6 GiB memory");
 		expect(why("capture")).toBe("The only machine that reports screenshots.");
@@ -543,7 +543,7 @@ describe("placement in a feature's plan", () => {
 		expect(after.plan?.status).toBe("approved");
 		expect(after.children?.[0]?.placement).toMatchObject({ name: "nas", units: 2, reason: "Big builds, and both its slots are free." });
 		openPlan();
-		expect(fact("fixtures", "runs on")).toBe("nas · 2 slots secrets sent");
+		expect(fact("fixtures", "runs on")).toBe("nas · 2 slots gets secrets");
 		expect(why("fixtures")).toBe("Big builds, and both its slots are free.");
 	});
 
@@ -556,8 +556,8 @@ describe("placement in a feature's plan", () => {
 		await act(async () => button("Save as version 2")?.click());
 		await settle();
 		expect((await api().item(feature.id)).plan?.overflow).toBe(false);
-		expect(host.querySelector(".plan-routes-overflow")?.textContent).toBe("overflow off");
-		expect(routePlaces(1)).toEqual(["studio secrets sent", "or nas not used: overflow off"]);
+		expect(host.querySelector(".plan-routes-overflow")?.textContent).toBe("Wait for the chosen place");
+		expect(routePlaces(1)).toEqual(["studio gets secrets", "or nas unused while waiting"]);
 	});
 
 	it("lists on the approval card where each subtask runs, its alternatives and whether secrets go there, its reasons left to the rows", async () => {
@@ -566,13 +566,13 @@ describe("placement in a feature's plan", () => {
 		expect(feature.placementReview).toEqual([{ name: "nas", sendSecrets: true }, { name: "studio", sendSecrets: true }, { name: "ci-box", sendSecrets: false }]);
 		await show(`/items/${feature.id}`);
 		const card = host.querySelector(".plan-question .plan-routes") as HTMLElement;
-		expect(card.querySelector(".plan-routes-overflow")?.textContent).toBe("overflow allowed");
+		expect(card.querySelector(".plan-routes-overflow")?.textContent).toBe("Use another free place");
 		expect([...card.querySelectorAll(".plan-route-title")].map((title) => title.textContent)).toEqual(["Record the chart fixtures", "Capture the chart in both themes", "Compare captures against the baseline"]);
 		// The reasons are each row's, under its Details: the card does not repeat them.
 		expect(card.querySelector(".plan-route-why")).toBeNull();
 		expect(why("compare")).toBe("Idle, with four slots free.");
-		expect(routePlaces(0)).toEqual(["nas secrets sent"]);
-		expect(routePlaces(1)).toEqual(["studio secrets sent", "or nas secrets sent"]);
+		expect(routePlaces(0)).toEqual(["nas gets secrets"]);
+		expect(routePlaces(1)).toEqual(["studio gets secrets", "or nas gets secrets"]);
 		expect(routePlaces(2)).toEqual(["ci-box no secrets"]);
 		expect(card.querySelectorAll(".plan-route")[2]?.querySelector(".plan-route-problem")?.textContent).toBe("Can't be placed: ‘ci-box’: owner placement policy is never.");
 	});
@@ -583,13 +583,13 @@ describe("placement in a feature's plan", () => {
 		const chart = await featureNamed("Visual regression checks for the tide chart");
 		await show(`/items/${chart.id}`);
 		expect(routePlaces(0)).toEqual(["nas no secrets"]);
-		expect(routePlaces(1)).toEqual(["studio secrets sent", "or nas no secrets"]);
+		expect(routePlaces(1)).toEqual(["studio gets secrets", "or nas no secrets"]);
 		act(() => root?.unmount());
 		root = null;
 		const search = await featureNamed("Search the docs from the command line");
 		await show(`/items/${search.id}`);
-		expect(routePlaces(0)).toEqual(["this platform the feature's secrets sent"]);
-		expect(routePlaces(0)[0]).toContain("the feature's");
+		expect(routePlaces(0)).toEqual(["Hosted gets secrets"]);
+		expect(host.querySelector(".plan-route .plan-secrets")?.getAttribute("title")).toContain("Send saved secrets");
 	});
 
 	it("says where each subtask ran and why, and which machine the next one waits for", async () => {
@@ -597,7 +597,7 @@ describe("placement in a feature's plan", () => {
 		const feature = await featureNamed("Nightly tide table as a PDF");
 		await show(`/items/${feature.id}`);
 		openPlan();
-		expect(fact("query", "ran on")).toBe("nas secrets were sent");
+		expect(fact("query", "ran on")).toBe("nas received secrets");
 		expect(why("query")).toBe("Same place as the feature");
 		expect(why("render")).toBe("Approved overflow from ‘studio’");
 		expect(fact("proof", "waits")).toBe("Waiting for 2 free slots on ‘studio’. 0 free now.");
@@ -795,7 +795,7 @@ describe("agents in a feature's plan", () => {
 		await show(`/items/${feature.id}`);
 		act(() => pill("Agent: Windlass", row("sender")).click());
 		// "nas" reports Claude Code only, signed in: Windlass and Claude Code are offered, nothing else.
-		expect([...document.querySelectorAll('[role="menuitemradio"]')].map((one) => one.textContent?.split(/In its|On the/)[0])).toEqual(["Windlass", "Claude Code"]);
+		expect([...document.querySelectorAll('[role="menuitemradio"]')].map((one) => one.querySelector(".ui-item-label")?.textContent)).toEqual(["Windlass", "Claude Code"]);
 		act(() => menuRow("Claude Code")!.click());
 		await settle(2);
 		expect(fact("sender", "agent")).toContain("works without asking");

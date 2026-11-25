@@ -54,8 +54,7 @@ export function LoginMethods() {
 
 	return (
 		<section className="usage-section" aria-labelledby="account-login">
-			<h2 className="usage-title" id="account-login">Account</h2>
-			<p className="usage-lede">Ways to sign in to this account. Link one before you sign out.</p>
+			<h2 className="usage-title" id="account-login">Sign-in</h2>
 			{linked && info ? (
 				<ul className="usage-kept" aria-label="Sign-in methods">
 					{providers.map(provider => {

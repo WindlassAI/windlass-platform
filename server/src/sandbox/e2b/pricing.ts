@@ -22,7 +22,7 @@ export function estimatedCostUsd(seconds: number, cpuCount: number, memoryMB: nu
 
 /** What a second of a sandbox of this size costs, with the size in words: for the usage page (`Sandboxes.price`). */
 export function pricePerSecond(cpuCount: number, memoryMB: number, rates: RateCard = DEFAULT_RATES): { usdPerSecond: number; basis: string } {
-	return { usdPerSecond: estimatedCostUsd(1, cpuCount, memoryMB, rates), basis: `${cpuCount} vCPU and ${memoryMB.toLocaleString("en-US")} MiB of memory at ${rates === DEFAULT_RATES ? "E2B's published prices" : "configured E2B prices"}` };
+	return { usdPerSecond: estimatedCostUsd(1, cpuCount, memoryMB, rates), basis: `${cpuCount} CPU and ${memoryMB.toLocaleString("en-US")} MiB of memory at ${rates === DEFAULT_RATES ? "published prices" : "configured prices"}` };
 }
 
 /** "$0.0031 (estimated)": small amounts keep four decimals, since a turn costs a fraction of a cent. */

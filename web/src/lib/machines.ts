@@ -12,12 +12,11 @@ interface Described {
 }
 
 export { isMachineIdName, machineLabel } from "@contract";
-import { type EgressMode, type MachineSummary, type SandboxProfileId, isMachineIdName } from "@contract";
+import { type EgressMode, type MachineSummary, type SandboxProfileId, isMachineIdName, isolationName } from "@contract";
 
-const PROFILE_NAMES: Partial<Record<SandboxProfileId, string>> = { "docker-windlass-sandbox": "Docker + Windlass sandbox", "docker-hardened": "Docker, hardened" };
-
+/** "Strict" or "Open": a profile by its id alone, where no profile object is at hand (a saved default). */
 export function machineProfileName(id: SandboxProfileId): string {
-	return PROFILE_NAMES[id] ?? id;
+	return isolationName(id);
 }
 
 /** The host name the runner reported, where the label does not show it whole: shown beside the label, for finding the container. */
@@ -68,5 +67,5 @@ export function workspaceNetwork(egress?: EgressMode, hosted = false, domains?: 
 
 export function hardenedItemNote(machine: MachineSummary): string {
 	if (machine.profiles.find(profile => profile.available)?.id !== "docker-hardened") return "";
-	return " This machine runs commands directly in the container, where they can read the session’s access token. " + workspaceNetwork(machine.egress, false, machine.egressDomains);
+	return " It runs in Open isolation: commands run freely. " + workspaceNetwork(machine.egress, false, machine.egressDomains);
 }

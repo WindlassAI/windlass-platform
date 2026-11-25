@@ -189,7 +189,7 @@ export function protocolRefusal(runnerProtocol: number, protocol = PROTOCOL_VERS
 }
 
 // The wire types are the provider's, without what cannot cross a socket (callbacks, an AbortSignal).
-type Drift = [
+export type Drift = [
 	Assert<Same<Args<"create">["harness"], CreateSandboxInput["harness"]>>,
 	Assert<Same<Args<"run">["options"], Omit<ExecOptions, "onStdout" | "onStderr" | "signal"> | undefined>>,
 	Assert<Same<Value<"run">, ExecResult>>,

@@ -4,8 +4,8 @@ Windlass is a coding agent. On this platform it runs in a sandbox you choose, on
 
 You can run an agent in two places:
 
-- **This platform.** The platform makes the sandbox and controls it. It counts against your daily sandbox time.
-- **One of your machines.** A small program, the runner, makes the sandbox on your computer with Docker. Its turns use none of your hosted sandbox time. On a machine you can also run Claude Code, OpenCode or Codex.
+- **Hosted.** Windlass runs the agent for you. Its workspace uses hosted time while running.
+- **My machines.** Pair a computer with Docker to run agents there. Runs on your machines use no hosted time.
 
 Where the platform offers it, the **Factory** goes one step further. You file a work item, and an agent takes it from the task to a pull request on its own: it works, runs your checks, waits for CI and hands the pull request to you. For a bigger feature, choose **Plan first**. The planner can split it into subtasks that come back as one pull request per repository. You merge by default.
 

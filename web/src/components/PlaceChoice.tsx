@@ -9,11 +9,11 @@ import { capabilitiesOf, checksSentence, itemModeOf, itemProfiles, machineHarnes
 export type PlacePurpose = "agent" | "item";
 
 // Offline machines can accept work; it waits for the runner to return.
-export function machineUnusable(machine: MachineSummary, minRunnerVersion: string, purpose: PlacePurpose): string | null {
+export function machineUnusable(machine: MachineSummary, _minRunnerVersion: string, purpose: PlacePurpose): string | null {
 	if (machine.warnings.some(w => w.kind === "signing-disabled")) return "This runner requires signed connections to be enabled on the platform.";
-	if (machine.warnings.some((warning) => warning.kind === "outdated")) return `Its runner is ${machine.runnerVersion}; the platform needs ${minRunnerVersion} or later. Update it on the machine.`;
-	if (machine.profiles.length === 0) return machine.status === "waiting" ? "Its runner has not connected since the machine was added." : "Its runner has not said yet which sandboxes it can make.";
-	if (purpose === "item" && !machine.profiles.some((profile) => profile.available)) return "None of the sandboxes its runner reported can be used now.";
+	if (machine.warnings.some((warning) => warning.kind === "outdated")) return "Its runner needs an update.";
+	if (machine.profiles.length === 0) return machine.status === "waiting" ? "Not connected yet." : "Still connecting.";
+	if (purpose === "item" && !machine.profiles.some((profile) => profile.available)) return "Can't run sandboxes right now.";
 	return null;
 }
 
@@ -25,13 +25,13 @@ function PlaceCard({ machine, why, name, checked, now, onChoose }: { machine: Ma
 			<input id={id} className="profile-radio" type="radio" name={name} value={machine?.machineId ?? "platform"} checked={checked} disabled={why !== null} onChange={() => onChoose(machine?.machineId ?? null)} aria-describedby={why === null ? undefined : reasonId} />
 			<span className="profile-head">
 				<span className="profile-pick" aria-hidden="true" />
-				<span className="profile-name">{machine ? machineLabel(machine) : "This platform"}</span>
+				<span className="profile-name">{machine ? machineLabel(machine) : "Hosted"}</span>
 				{machine ? <MachineState machine={machine} now={now} /> : null}
 			</span>
 			<span className="profile-summary">
 				{machine
-					? `Your ${machine.os} ${machine.arch} machine. It costs no hosted time.`
-					: "A sandbox the platform makes and controls. It counts against your daily sandbox time."}
+					? `Your ${machine.os} ${machine.arch} machine. Free.`
+					: "Uses your daily hosted time."}
 			</span>
 			{why === null ? null : (
 				<span className="profile-reason" id={reasonId}>
@@ -53,7 +53,7 @@ export function PlaceChoice({ machines, chosen, minRunnerVersion, now, purpose, 
 			<legend className="label">Where it runs</legend>
 			<div className="sandbox-chosen">
 				<span className="sandbox-chosen-text">
-					<span className="sandbox-chosen-name">{chosen ? chosen.name : "This platform"}</span>
+					<span className="sandbox-chosen-name">{chosen ? chosen.name : "Hosted"}</span>
 					<span className="sandbox-chosen-facts">
 						{chosen ? (
 							<>
@@ -61,12 +61,11 @@ export function PlaceChoice({ machines, chosen, minRunnerVersion, now, purpose, 
 								<span>
 									your {chosen.os} {chosen.arch} machine
 								</span>
-								{purpose === "agent" ? <span>costs no hosted time</span> : null}
+								{purpose === "agent" ? <span>free</span> : null}
 							</>
 						) : (
 							<>
-								<span>a sandbox the platform makes and controls</span>
-								<span>counts against your daily sandbox time</span>
+								<span>uses your daily hosted time</span>
 							</>
 						)}
 					</span>
@@ -77,7 +76,7 @@ export function PlaceChoice({ machines, chosen, minRunnerVersion, now, purpose, 
 			</div>
 			{children}
 			<div id={cards} className="sandbox-cards" hidden={!open}>
-				<p className="section-text">Where the {purpose === "agent" ? "agent's" : "item's"} sandbox is made: by this platform, or by the runner on one of your machines.</p>
+				<p className="section-text">Hosted, or on one of your machines.</p>
 				<PlaceCards machines={machines} chosen={chosen} minRunnerVersion={minRunnerVersion} now={now} purpose={purpose} onChoose={onChoose} />
 			</div>
 		</fieldset>
@@ -120,7 +119,7 @@ export const itemHarnesses = (machine: MachineSummary | null): ReportedHarness[]
 export function itemAgentLine(harness: Exclude<HarnessId, "windlass">, profile: SandboxProfileId): string {
 	const name = HARNESS_NAMES[harness];
 	const how = worksWithoutAsking(harness, profile)
-		? `${name} works in the hardened container, without asking, and runs Quick.`
+		? `${name} works in Open isolation, without asking, and runs Quick.`
 		: `${name} works in its own sandbox, without network, and runs Quick. A request to leave the sandbox ends the step.`;
 	const sentence = checksSentence(harness, machineHarness(harness)?.sandboxedOn.includes(profile));
 	return sentence ? `${how} ${sentence}` : how;

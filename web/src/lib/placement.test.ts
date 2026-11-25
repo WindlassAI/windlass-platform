@@ -43,7 +43,7 @@ describe("placement words", () => {
 	it("says where an item was placed, with its slots when more than one", () => {
 		expect(placedWords({ place: onNas, name: "nas", reason: "r", units: 1, sendSecrets: true })).toBe("nas");
 		expect(placedWords({ place: onNas, name: "nas", reason: "r", units: 2, sendSecrets: true })).toBe("nas · 2 slots");
-		expect(placedWords({ place: { kind: "hosted" }, name: "hosted", reason: "r", units: 1, sendSecrets: true })).toBe("this platform");
+		expect(placedWords({ place: { kind: "hosted" }, name: "hosted", reason: "r", units: 1, sendSecrets: true })).toBe("Hosted");
 	});
 });
 

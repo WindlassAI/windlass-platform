@@ -122,12 +122,16 @@ describe("what the mock serves", () => {
 		expect((await after(500, user.createSession({ profile, mode: "ask" }))).mode).toBe("ask");
 	});
 
-	it("lists seven sandbox profiles: two available, five not, each with its reason", async () => {
+	it.each([
+		["docker", "docker-windlass-sandbox", "docker-hardened"],
+		["e2b", "e2b", "e2b-open"],
+	] as const)("lists only the Strict and Open profiles offered on %s", async (sandbox, strict, open) => {
+		client.dispose();
+		client = createMockClient({ sandbox });
 		const info = await after(500, client.info());
 		expect(info.demoEnabled).toBe(true);
-		expect(info.profiles).toHaveLength(7);
-		expect(info.profiles.filter((profile) => profile.available).map((profile) => profile.id)).toEqual(["docker-windlass-sandbox", "docker-hardened"]);
-		for (const profile of info.profiles.filter((candidate) => !candidate.available)) expect(profile.unavailableReason?.length).toBeGreaterThan(40);
+		expect(info.profiles.map((profile) => [profile.id, profile.name])).toEqual([[strict, "Strict"], [open, "Open"]]);
+		expect(info.profiles.every((profile) => profile.available && profile.unavailableReason === undefined)).toBe(true);
 		// The models are each user's own: the deployment names none.
 		expect(info).not.toHaveProperty("models");
 		expect(info).not.toHaveProperty("efforts");
@@ -171,7 +175,7 @@ describe("what the mock serves", () => {
 	it("refuses a sandbox that is not available, and says why", async () => {
 		const attempt = client.user(auth).createSession({ profile: "e2b" });
 		const failure = after(500, attempt.catch((error: unknown) => error));
-		expect(await failure).toMatchObject({ code: "user", message: expect.stringContaining("E2B cannot be used yet") });
+		expect(await failure).toMatchObject({ code: "user", message: expect.stringContaining("isn't available here") });
 	});
 });
 
@@ -240,7 +244,7 @@ describe("a turn played from a recording", () => {
 
 		// The platform's own entries around Windlass's.
 		expect(record.items[0]).toMatchObject({ kind: "user", text: "The add test is failing. Find out why and fix it.", effort: "low", turn: 1 });
-		expect(record.items[1]).toMatchObject({ kind: "platform", text: "Creating sandbox: Docker + Windlass sandbox" });
+		expect(record.items[1]).toMatchObject({ kind: "platform", text: "Starting a hosted sandbox (Strict)" });
 		expect(record.items.at(-1)).toMatchObject({ kind: "turn.ended", outcome: "succeeded", steps: 5, exitCode: 0 });
 
 		// The session's summary went through its states.

@@ -4,7 +4,9 @@ import type { UsageNumbers, BillingPeriod, PlanInfo, BillingView, UsageView } fr
 export type { UsageNumbers, HostedMonth, PlanId, BillingPeriod, PlanInfo, BillingView, UsageSession, UsageDay, KeptSandbox, UsagePrice, UsageView } from "./contract/usage.js";
 import type { HostedSize, HostedSizeOption } from "./contract/hosted-sizes.js";
 export type { HostedSize, HostedSizeOption } from "./contract/hosted-sizes.js";
-export { HOSTED_SIZES, HOSTED_SIZE_SPECS, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, hostedSizeWords, hostedSizeFor, largerHostedSize, outOfMemoryWords } from "./contract/hosted-sizes.js";
+export type { Isolation } from "./contract/isolation.js";
+export { ISOLATION_LINES, ISOLATION_NAMES, PROFILE_ISOLATION, isolationName, openLine } from "./contract/isolation.js";
+export { HOSTED_SIZES, HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, hostedSizeWords, hostedSizeFor, largerHostedSize, outOfMemoryWords } from "./contract/hosted-sizes.js";
 
 // Sandboxes
 
@@ -25,11 +27,13 @@ export type EgressMode = "open" | "restricted" | "none";
 
 export interface SandboxProfile {
 	id: SandboxProfileId;
-	/** Short display name, e.g. "Docker + Windlass sandbox". */
+	/** The user's word for it: "Strict" or "Open" (contract/isolation.ts). Where it runs is said beside it, never in it. */
 	name: string;
-	/** One sentence: what this choice means. */
+	/** One outcome line, free of provider and technology names: "Commands sandboxed, no internet. For untrusted code." */
 	summary: string;
-	/** What isolates the agent, outermost layer first. Short phrases. */
+	/** How it is isolated, in full: shown only behind "How it's isolated", where provider and technology names belong. */
+	details?: string;
+	/** What isolates the agent, outermost layer first. Short phrases; technical, so only behind "How it's isolated". */
 	layers: string[];
 	/** The `--approval` mode Windlass runs with in this profile. */
 	approval: "auto" | "full";
@@ -2296,7 +2300,7 @@ export type TimelineItem =
 			/** A message sent while the turn was paused: held, and given to the agent when the turn resumes. */
 			held?: boolean;
 	  }
-	/** Something the platform did around a turn: "Creating sandbox", "Cloning repository". */
+	/** Something the platform did around a turn: "Starting a hosted sandbox (Strict)", "Cloning repository". */
 	| {
 			seq: number;
 			at: number;

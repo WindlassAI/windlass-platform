@@ -76,12 +76,12 @@ export const FAQ: Faq[] = [
 	{
 		question: "Where does the agent's code run?",
 		answer:
-			"In a sandbox you choose when you start it. Hosted sessions each get a Firecracker microVM of their own from E2B. Or pair a Mac, Linux or Windows (WSL) machine of yours that has Docker: a small runner on it connects out to the platform and runs each session in a container there, so nothing on your machine needs to be reachable from outside.",
+			"Choose Hosted or pair your own Mac, Linux or Windows (WSL) computer with Docker. Your computer connects to Windlass.",
 	},
 	{
 		question: "How are agents isolated?",
 		answer:
-			"Every session has its own sandbox. On your machine it is a hardened container: non-root, no capabilities, Docker's seccomp profile and resource limits. In the Windlass sandbox profile every command the agent runs is sandboxed again: no network, writes only in the workspace, credentials hidden, unless you allow more when it asks. Your sign-in itself never enters the sandbox; a turn is lent a short-lived token.",
+			"Each agent has its own workspace. In Strict, commands are locked down and have no internet access. In Open, commands can reach the internet and read credentials in the workspace.",
 	},
 	{
 		question: "What is the Factory?",

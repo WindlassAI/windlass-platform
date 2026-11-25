@@ -32,7 +32,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent
 import { errorMessage, hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { count } from "../lib/format";
-import { effortsOf, modelIds, modelsNote, modelsNoteShort } from "../lib/models";
+import { effortsOf, modelIds } from "../lib/models";
 import { modelDisplay, modelMenu as sharedModelMenu } from "./ModelPicker";
 import { effortGroup } from "./TrayControls";
 import { linkProps } from "../lib/router";
@@ -314,7 +314,6 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 	};
 
 	// The model, as every picker lists it: by provider, with whose credential it uses; the effort is its own picker beside it.
-	const standIn = models !== null && harness === null && models.source !== "account" && models.source !== "harness";
 	const modelMenu: MenuSpec = sharedModelMenu({
 		harness: harnessId,
 		list: models,
@@ -480,11 +479,6 @@ export function Composer({ status, online, models, model, modelProblem, onSend, 
 						</>
 					)}
 					{planPill}
-					{modelPicker && standIn && models ? (
-						<span className="mini-note" title={modelsNote(models)}>
-							{modelsNoteShort(models)}
-						</span>
-					) : null}
 					<span className="composer-tools-end">
 						<KeyHints id={ids.keys} className="composer-keys" hints={holding ? [["↵", "hold"]] : steering ? [["↵", "steer"]] : [["↵", "send"], ["⇧↵", "new line"]]} />
 						{!idle ? (

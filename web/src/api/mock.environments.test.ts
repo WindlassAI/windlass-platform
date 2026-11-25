@@ -26,7 +26,7 @@ describe("prepared environments in the mock", () => {
 	});
 
 	it("has none for a repository with secrets or without a setup command", () => {
-		const view = mockEnvironments(7101, 1_000_000_000_000, "A repository with saved secrets always starts cold, so it has no prepared environment.");
+		const view = mockEnvironments(7101, 1_000_000_000_000, "Not available for repositories with saved secrets.");
 		expect(view.available).toBe(false);
 		expect(view.environments).toEqual([]);
 	});

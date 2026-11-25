@@ -92,7 +92,7 @@ describe("filing a work item", () => {
 	it("runs on this platform unless a machine is chosen, and then says what that means and sends the machine", async () => {
 		await start("full");
 		expect(legend()).not.toBeNull();
-		expect(host.querySelector(".sandbox-chosen-name")?.textContent).toBe("This platform");
+		expect(host.querySelector(".sandbox-chosen-name")?.textContent).toBe("Hosted");
 		// The usable machines can be chosen, an offline one too.
 		expect(radio("m_nas")?.disabled).toBe(false);
 		expect(radio("m_workshop")?.disabled).toBe(false);
@@ -185,14 +185,14 @@ describe("filing a work item", () => {
 	it("lists a machine with an old runner, or no usable sandbox, without letting it be chosen", async () => {
 		await start("outdated");
 		expect(radio("m_nas")?.disabled).toBe(true);
-		expect(text()).toContain("Its runner is 0.1.0; the platform needs 0.2.0 or later. Update it on the machine.");
+		expect(text()).toContain("Its runner needs an update.");
 		act(() => root.unmount());
 		host.replaceChildren();
 		root = createRoot(host);
 		client.dispose();
 		await start("docker");
 		expect(radio("m_nas")?.disabled).toBe(true);
-		expect(text()).toContain("None of the sandboxes its runner reported can be used now.");
+		expect(text()).toContain("Can't run sandboxes right now.");
 	});
 
 	it("offers only the hosted place and shows which agents need a Settings key", async () => {

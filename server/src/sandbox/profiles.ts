@@ -4,8 +4,8 @@
  * access token or, where the sandbox has Windlass's model relay (`modelRelay`, docs/model-relay.md), a
  * placeholder for the turn, while the token stays outside. `commandsCanReadAccessToken` says whether a
  * command the agent runs can read that file: not where Windlass sandboxes commands (its sandbox replaces
- * /dev and hides the data directory), yes where commands run directly in the container. The summary is
- * written from both (`withModelRelay`). web/src/api/mock.ts repeats these texts for the web app's mock.
+ * /dev and hides the data directory), yes where commands run directly in the container. The details are
+ * written from both (`withModelRelay`); `name` and `summary` are the user's words (contract/isolation.ts). web/src/api/mock.ts repeats these texts for the web app's mock.
  *
  * `PROFILES` is the list of a server on local Docker; `profilesFor` gives the list of either kind of
  * server, `e2bProfile` says what the E2B profile promises and why, and `e2bOpenProfile` what the
@@ -16,6 +16,7 @@ import type { EgressMode, HarnessId, SandboxProfile, SandboxProfileId, SessionMo
 import { itemModeOf, machineHarness } from "./harnesses.js";
 import { hostedNetworkSentence, hostedNetworkText } from "./hosted-network.js";
 import { codexDefaultMode } from "./codex-modes.js";
+import { ISOLATION_LINES, ISOLATION_NAMES, openLine } from "../contract/isolation.js";
 
 export function cpuFlags(cpus: number) {
 	return ["--cpu-shares", "256", "--cpus", String(cpus)];
@@ -56,8 +57,9 @@ export const SESSION_VOLUME_PROFILES: readonly SandboxProfileId[] = ["docker-har
 export const PROFILES: SandboxProfile[] = [
 	{
 		id: "docker-windlass-sandbox",
-		name: "Docker + Windlass sandbox",
-		summary: "Windlass sandboxes each agent command inside this session's Docker container. Commands have no network and cannot read the session's access token. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
+		name: ISOLATION_NAMES.strict,
+		summary: ISOLATION_LINES.strict,
+		details: "Windlass sandboxes each agent command inside this session's Docker container. Commands have no network and cannot read the session's access token. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
 		layers: [
 			"Docker container (Docker’s seccomp profile with namespace and mount calls allowed, non-root, no capabilities, resource limits)",
 			"Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)",
@@ -69,8 +71,9 @@ export const PROFILES: SandboxProfile[] = [
 	},
 	{
 		id: "docker-hardened",
-		name: "Docker, hardened",
-		summary: "Commands run directly in a container under Docker's default seccomp and AppArmor profiles. They have network access and can read the session's access token and its replacements during the turn. The session has a data directory of its own, so they cannot read your other sessions' conversations. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
+		name: ISOLATION_NAMES.open,
+		summary: ISOLATION_LINES.open,
+		details: "Commands run directly in a container under Docker's default seccomp and AppArmor profiles. They have network access and can read the session's access token and its replacements during the turn. The session has a data directory of its own, so they cannot read your other sessions' conversations. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
 		layers: ["Docker container (default seccomp and AppArmor, non-root, no capabilities, resource limits, a data directory of the session's own)"],
 		approval: "full",
 		commandNetwork: true,
@@ -80,8 +83,9 @@ export const PROFILES: SandboxProfile[] = [
 	// As a server on Docker lists it: it cannot be chosen there, so its fields promise nothing. `e2bProfile` is what a server on E2B offers.
 	{
 		id: "e2b",
-		name: "E2B",
-		summary: "A Firecracker microVM hosted by E2B.",
+		name: ISOLATION_NAMES.strict,
+		summary: ISOLATION_LINES.strict,
+		details: "A Firecracker microVM hosted by E2B.",
 		layers: ["E2B microVM"],
 		approval: "auto",
 		commandNetwork: true,
@@ -92,8 +96,9 @@ export const PROFILES: SandboxProfile[] = [
 	e2bOpenProfile({ offered: false, reason: "This server runs its sandboxes on local Docker; a server on E2B offers it where its operator sets WLP_E2B_OPEN_PROFILE=1." }),
 	{
 		id: "daytona",
-		name: "Daytona",
-		summary: "A workspace hosted by Daytona.",
+		name: ISOLATION_NAMES.open,
+		summary: ISOLATION_LINES.open,
+		details: "A workspace hosted by Daytona.",
 		layers: ["Daytona workspace"],
 		approval: "auto",
 		commandNetwork: true,
@@ -103,8 +108,9 @@ export const PROFILES: SandboxProfile[] = [
 	},
 	{
 		id: "firecracker",
-		name: "Firecracker microVM",
-		summary: "A microVM per session on this host.",
+		name: ISOLATION_NAMES.strict,
+		summary: ISOLATION_LINES.strict,
+		details: "A microVM per session on this host.",
 		layers: ["Firecracker microVM (KVM)"],
 		approval: "auto",
 		commandNetwork: false,
@@ -114,8 +120,9 @@ export const PROFILES: SandboxProfile[] = [
 	},
 	{
 		id: "agentos",
-		name: "agentOS",
-		summary: "Rivet's agentOS, where the agent's tools run through a remote execution interface.",
+		name: ISOLATION_NAMES.strict,
+		summary: ISOLATION_LINES.strict,
+		details: "Rivet's agentOS, where the agent's tools run through a remote execution interface.",
 		layers: ["agentOS runtime"],
 		approval: "auto",
 		commandNetwork: false,
@@ -149,8 +156,9 @@ export function e2bProfile(options: { windlassSandbox: boolean; network?: Egress
 	if (options.windlassSandbox) {
 		return {
 			id: "e2b",
-			name: "E2B + Windlass sandbox",
-			summary:
+			name: ISOLATION_NAMES.strict,
+			summary: ISOLATION_LINES.strict,
+			details:
 				"Windlass sandboxes each agent command inside this session's E2B microVM. Commands have no network and cannot read the session's access token. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the microVM." + hostedNetworkSentence(network),
 			layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)"],
 			approval: "auto",
@@ -161,8 +169,9 @@ export function e2bProfile(options: { windlassSandbox: boolean; network?: Egress
 	}
 	return {
 		id: "e2b",
-		name: "E2B",
-		summary:
+		name: ISOLATION_NAMES.strict,
+		summary: "Commands sandboxed, or asked about first. For untrusted code.",
+		details:
 			"A microVM of its own, hosted by E2B. Windlass asks before running a command it cannot sandbox. If allowed, that command has network access and can read the session's access token and its replacements during the turn. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the microVM." + hostedNetworkSentence(network),
 		layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)"],
 		approval: "auto",
@@ -196,8 +205,9 @@ export function e2bOpenProfile(options: ({ offered: true } | { offered: false; r
 	const reach = network === "open" ? "They can reach any host on the network" : network === "restricted" ? "They can reach the model API, GitHub and the hosts this deployment allows, and no other host" : "They can reach the model API and no other host";
 	return {
 		id: "e2b-open",
-		name: "E2B, microVM only",
-		summary:
+		name: ISOLATION_NAMES.open,
+		summary: openLine(network),
+		details:
 			`Windlass initially runs agent commands directly in this session's E2B microVM without asking first. ${reach}, write outside the workspace and read the session's access token and its replacements during the turn. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace. Existing home files are then read-only, and new home files are kept apart for the session. Your ChatGPT sign-in is never in the microVM.`,
 		layers: ["E2B microVM (Firecracker, hosted by E2B; commands run in it directly, as a non-root user)"],
 		approval: "full",
@@ -224,8 +234,8 @@ export function relayPlaceholderSentences(reader: string, where: string): string
  * token file, which then holds the placeholder).
  */
 export function withModelRelay(profile: SandboxProfile, network: EgressMode = "open"): SandboxProfile {
-	const summary = relaySummary(profile, network);
-	return summary === null ? profile : { ...profile, layers: [...profile.layers], summary, modelRelay: true, accessTokenReadable: false };
+	const details = relaySummary(profile, network);
+	return details === null ? profile : { ...profile, layers: [...profile.layers], details, modelRelay: true, accessTokenReadable: false };
 }
 
 function relaySummary(profile: SandboxProfile, mode: EgressMode): string | null {
@@ -272,13 +282,21 @@ function profilesOf(provider: "docker" | "e2b", e2b: { windlassSandbox: boolean;
 	});
 }
 
+/**
+ * What a client is told this deployment offers: only what can be chosen here. A profile the deployment
+ * cannot run (another provider's, or one not built) is no choice of the user's, and its reason is for operators.
+ */
+export function offeredProfiles(profiles: readonly SandboxProfile[]): SandboxProfile[] {
+	return profiles.filter((profile) => profile.available);
+}
+
 /** Windlass can always ask. Its other mode is the approval policy this profile was built for. */
 export function windlassModes(approval: SandboxProfile["approval"]): SessionMode[] {
 	return [
 		{ id: "ask", name: "Ask", description: "Ask before writes, commands, network access and MCP calls." },
 		approval === "auto"
-			? { id: "auto", name: "Auto", description: "Use Windlass’s command sandbox and ask when needed." }
-			: { id: "full", name: "Full", description: "Allow commands to run directly in the sandbox machine." },
+			? { id: "auto", name: "Auto", description: "Runs safe commands, asks for the rest." }
+			: { id: "full", name: "Full", description: "Runs commands without asking." },
 	];
 }
 

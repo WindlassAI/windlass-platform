@@ -217,15 +217,15 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 									</span>
 								) : null}
 								{sessions === null ? (
-									<span>Up to {plural(limits.hostedRunning, "hosted sandbox", "hosted sandboxes")} at once</span>
+									<span>Up to {plural(limits.hostedRunning, "hosted slot", "hosted slots")} at once</span>
 								) : (
 									<span>
-										<span className="factory-turns-n">{hosted}</span> of {plural(limits.hostedRunning, "hosted sandbox", "hosted sandboxes")} at work
+										<span className="factory-turns-n">{hosted}</span> of {plural(limits.hostedRunning, "hosted slot", "hosted slots")} busy
 									</span>
 								)}
 							</span>
 							<span className="factory-turns-line">
-								Your machines run beside them
+								Machines unlimited
 								<span className="home-account-sep" aria-hidden="true">
 									·
 								</span>
@@ -276,7 +276,7 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 					{items.error ? (
 						<p className="callout callout-warn" role="status">
 							<WarnIcon />
-							<span>{items.error} What is shown may be behind.</span>
+							<span>{items.error} <button className="link" onClick={items.reload}>Try again</button></span>
 						</p>
 					) : null}
 					<div className="factory-filters" role="group" aria-label="Filters">

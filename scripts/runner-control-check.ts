@@ -98,8 +98,8 @@ expect("a machine whose report has no sessionVolumes (a 0.2.1 runner) describes 
 	const plain = { kind: "report", docker: { ok: true }, commandSandbox: { ok: true }, freeDiskBytes: 12, sandboxes: [] } as unknown as Report;
 	const hardened = (report: Report) => machineProfiles("box", report).find(profile => profile.id === "docker-hardened")!;
 	const old = hardened(plain), current = hardened({ ...plain, sessionVolumes: true });
-	return !old.summary.includes("data directory of its own") && !old.layers.join(" ").includes("of the session's own")
-		&& current.summary.includes("data directory of its own") && current.layers.join(" ").includes("a data directory of the session's own");
+	return old.details !== undefined && !old.details.includes("data directory of its own") && !old.layers.join(" ").includes("of the session's own")
+		&& current.details?.includes("data directory of its own") === true && current.layers.join(" ").includes("a data directory of the session's own");
 })());
 
 expect("a hello and a report pass", parseRunnerFrame(JSON.stringify(hello))?.kind === "hello"

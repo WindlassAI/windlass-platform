@@ -3,6 +3,9 @@
  * A deployment without billing has no such page.
  */
 import { ArrowLeftIcon, WarnIcon } from "../components/Icons";
+import { HOSTED_SIZES } from "@contract";
+import { SIZE_WEIGHT } from "../../../server/src/billing/meter";
+import { sizeName } from "../lib/sizes";
 import { PlanCompare, useBilling } from "../components/Plan";
 import { linkProps } from "../lib/router";
 
@@ -31,7 +34,7 @@ export function Plans() {
 				<div className="repo-head">
 					<p className="eyebrow">account · plans</p>
 					<h1 className="display display-small">Plans</h1>
-					<p className="home-account">Your own machines are never metered on any plan. A plan sets what runs on the platform's hosted sandboxes, counted in hosted minutes: one minute of a standard sandbox (2 vCPU, 4 GiB), with small counting half and large twice.</p>
+					<p className="home-account">Plans include hosted time. Runs on your machines are free.</p>
 				</div>
 			</header>
 			{view === null ? (
@@ -58,6 +61,13 @@ export function Plans() {
 			) : (
 				<section className="usage-section">
 					<PlanCompare view={view} />
+					<table className="usage-table">
+						<caption>Hosted time per minute of use</caption>
+						<thead><tr><th scope="col">Sandbox size</th><th scope="col">Minutes counted</th></tr></thead>
+						<tbody>{HOSTED_SIZES.map(size => (
+							<tr key={size}><th scope="row">{sizeName(size)}</th><td>{SIZE_WEIGHT[size]}</td></tr>
+						))}</tbody>
+					</table>
 					<p className="usage-note">Prices in US dollars, before any tax the payment page adds. You pay on the payment provider's own page; the platform never sees your card. Cancel at any time under Manage billing; Pro lasts to the end of the period you paid for, and nothing is deleted when an account moves to Free.</p>
 				</section>
 			)}

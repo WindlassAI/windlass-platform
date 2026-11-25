@@ -22,6 +22,7 @@ import { config, engineAdminToken, githubConfig } from "./config.js";
 import { ConnectionTokens } from "./connection-tokens.js";
 import { type GithubInfo, PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH, type PlatformConnection, type PlatformInfo } from "./contract.js";
 import { getLayer } from "./layer.js";
+import { offeredProfiles } from "./sandbox/profiles.js";
 import { billing } from "./billing/config.js";
 import { PLAN_LIST } from "./billing/plans.js";
 import { LEGACY_MIN_RUNNER_VERSION, MIN_RUNNER_VERSION } from "./runner/control.js";
@@ -76,7 +77,7 @@ export async function platformInfo(): Promise<PlatformInfo> {
 	const info: PlatformInfo = {
 		demoEnabled: config.demo,
 		windlassVersion,
-		profiles: layer.sandboxes.profiles(),
+		profiles: offeredProfiles(layer.sandboxes.profiles()),
 	};
 	// Left out where hosted sandboxes have no network mode, or it is `open`: the answer is then what it was before modes.
 	const hostedEgress = layer.sandboxes.egress?.();

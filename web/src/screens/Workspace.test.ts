@@ -75,7 +75,7 @@ describe("the rail", () => {
 		const tops = [...rail().querySelectorAll(".ws-rail-rows")][0] as HTMLElement;
 		expect([...tops.querySelectorAll(".ws-rail-name")].map((name) => name.textContent)).toEqual(["Everything", "No repository"]);
 		expect(current()).toBe("Everything");
-		expect(rail().querySelector(".ws-rail-foot")?.textContent).toMatch(/Sandbox today.* kept/);
+		expect(rail().querySelector(".ws-rail-foot")?.textContent).toMatch(/Hosted time today.* kept sandboxes/);
 		expect(rail().querySelector(".ws-rail-foot")?.getAttribute("href")).toBe("/usage?mock=1");
 	});
 

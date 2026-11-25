@@ -119,14 +119,12 @@ export function verdictWord(verdict: NonNullable<ItemSummary["verdict"]>): { wor
 	switch (verdict.result) {
 		case "pass":
 			if (verdict.flags.length > 0) return { word: "Needs a look", tone: "warn" };
-			if (verdict.ci === "not_run") return { word: "Your checks passed; CI did not start", tone: "warn" };
-			if (verdict.ci === "unread" || verdict.ci === "not_permitted") return { word: "Your checks passed; CI not read", tone: "warn" };
-			if (verdict.ci === "timed_out") return { word: "Your checks passed; CI unfinished", tone: "warn" };
+			if (CI_WORD[verdict.ci].word === "CI unknown") return { word: "Your checks passed · CI unknown", tone: "dim" };
 			return { word: "Ready for review", tone: "good" };
 		case "fail":
 			return { word: "Failing", tone: "bad" };
 		case "incomplete":
-			return { word: "Incomplete", tone: "warn" };
+			return { word: "Incomplete", tone: "dim" };
 		case "unverified":
 			return { word: "Not verified", tone: "dim" };
 	}
@@ -165,14 +163,14 @@ export function ItemStanding({ item, reviewer = true }: { item: Pick<ItemSummary
 /** CI on the pushed commit, in two or three words: what a row of the Factory page says beside its verdict. */
 export const CI_WORD: Record<NonNullable<ItemSummary["verdict"]>["ci"], { word: string; tone: "good" | "warn" | "bad" | "dim" }> = {
 	passed: { word: "CI passed", tone: "dim" },
-	failed: { word: "CI failed", tone: "bad" },
+	failed: { word: "CI failed", tone: "warn" },
 	none: { word: "no CI", tone: "dim" },
 	skipped: { word: "CI skipped", tone: "dim" },
-	cancelled: { word: "CI did not finish", tone: "warn" },
-	not_run: { word: "CI did not start", tone: "warn" },
-	timed_out: { word: "CI unfinished", tone: "warn" },
-	not_permitted: { word: "CI not readable", tone: "warn" },
-	unread: { word: "CI not read", tone: "warn" },
+	cancelled: { word: "CI unknown", tone: "dim" },
+	not_run: { word: "CI unknown", tone: "dim" },
+	timed_out: { word: "CI unknown", tone: "dim" },
+	not_permitted: { word: "CI unknown", tone: "dim" },
+	unread: { word: "CI unknown", tone: "dim" },
 };
 
 /** The second reviewer's recommendation, in a quiet word beside the verdict: the agent's, never the verdict's. While it runs, or waits to, a quiet working word. */

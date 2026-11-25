@@ -152,7 +152,7 @@ describe("pages rendered with the mock", () => {
 
 		const panel = host.querySelector("aside#details") as HTMLElement;
 		expect(panel.querySelector(".gh-item-note")?.textContent).toBe(REVIEWER_PUBLISHES_NOTHING);
-		expect(panel.textContent).not.toContain("Let the agent publish without asking");
+		expect(panel.textContent).not.toContain("Let the agent open and update it");
 		expect([...panel.querySelectorAll("button")].map((button) => button.textContent)).not.toEqual(expect.arrayContaining([expect.stringMatching(/pull request|Push|Commit/)]));
 
 		// Its first prompt is the platform's, with no text of its own: a plain line, never an empty message.
@@ -209,17 +209,17 @@ describe("what the agent's own push does on GitHub", () => {
 	const sandboxed = { id: "docker-windlass-sandbox", name: "Windlass sandbox", approval: "sandboxed", commandNetwork: false, commandsCanReadAccessToken: false } as unknown as SandboxProfile;
 	const open = { ...sandboxed, approval: "full" } as SandboxProfile;
 
-	it("is said in one sentence: it runs the repository's CI on the agent's changes, with the CI's secrets, without asking", () => {
-		expect(AGENT_PUSH_MEANS).toBe("The agent pushes this session's own branch whenever it wants, and a push runs the repository's CI workflows on the agent's changes, with the CI's secrets, without you being asked.");
+	it("is said in one sentence: it runs the repository's CI on the agent's changes, with the CI's secrets", () => {
+		expect(AGENT_PUSH_MEANS).toBe("It can push its own branch at any time, which runs your CI with its secrets.");
 		expect(PUBLISH_UNASKED_MEANS).not.toContain("branch");
 	});
 
-	it("stands under the setting in the panel, whichever way the setting can be", () => {
+	it("stands behind the setting's ⓘ in the panel, whichever way the setting can be", () => {
 		for (const profile of [sandboxed, open]) {
 			const html = renderToStaticMarkup(createElement(PublishUnaskedCheck, { checked: false, disabled: false, onChange: () => undefined, profile }));
 			const host = document.createElement("div");
 			host.innerHTML = html;
-			expect([...host.querySelectorAll(".check-means")].map((node) => node.textContent), profile.approval).toContain(AGENT_PUSH_MEANS);
+			expect(host.querySelector(".info-dot")?.getAttribute("aria-label"), profile.approval).toContain(AGENT_PUSH_MEANS);
 		}
 	});
 
@@ -228,7 +228,7 @@ describe("what the agent's own push does on GitHub", () => {
 		const host = document.createElement("div");
 		host.innerHTML = html;
 		expect(host.querySelector("input")).toBeNull();
-		expect(host.querySelector(".check-name")?.textContent).toBe("You are asked each time the agent wants to publish");
-		expect([...host.querySelectorAll(".check-means")].map((node) => node.textContent)).toEqual([publishAskedOverMcp("Codex"), AGENT_PUSH_MEANS]);
+		expect(host.querySelector(".check-name")?.textContent).toBe("You're asked each time it publishes ");
+		expect(host.querySelector(".info-dot")?.getAttribute("aria-label")).toBe(`${publishAskedOverMcp("Codex")} ${AGENT_PUSH_MEANS}`);
 	});
 });

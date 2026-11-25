@@ -54,14 +54,12 @@ export function ScreenshotsSetting({ page, view }: { page: Pick<RepositoryPage, 
 			<h2 className="usage-title" id="repo-screenshots">
 				Screenshots
 			</h2>
-			<p className="usage-lede">Let builders and reviewers attach pictures of the app to their reports. Screenshots are off by default.</p>
+			<p className="usage-lede">Builders and reviewers can attach screenshots of the app.</p>
 			<div className="usage-card repo-form">
 				<Check checked={on} disabled={busy || (deploymentOff && !on)} onChange={(on) => set(on)}>
 					<span className="check-name">Allow screenshots for work items</span>
 					<span className="check-means">
-						{deploymentOff
-							? "Screenshots are turned off for this whole deployment, so no work item takes them, whatever is chosen here."
-							: "For features, only subtasks marked in the plan get a browser."}
+						{deploymentOff ? "Screenshots are turned off for this deployment." : "For features, only subtasks marked in the plan get a browser."}
 					</span>
 				</Check>
 				{said ? (
@@ -93,11 +91,11 @@ function AutonomySettings({ page, view }: { page: RepositoryPage; view: Reposito
 		<div className="usage-card repo-form">
 			<Check checked={!!view.defaults.autoApprovePlans} disabled={busy} onChange={on => save("autoApprovePlans", on)}>
 				<span className="check-name">Auto-approve small plans</span>
-				<span className="check-means">Let an independent critic approve plans with up to three parts and no open questions.</span>
+				<span className="check-means">Up to three subtasks with no open questions.</span>
 			</Check>
 			<Check checked={!!view.defaults.autoMergeSingles} disabled={busy} onChange={on => save("autoMergeSingles", on)}>
 				<span className="check-name">Auto-merge single items</span>
-				<span className="check-means">Squash-merge a current single-item PR when its verdict, CI and second review all pass.</span>
+				<span className="check-means">Merge when checks, CI and review pass.</span>
 			</Check>
 			<Check checked={!!view.defaults.waitForCiOnEachPart} disabled={busy} onChange={on => save("waitForCiOnEachPart", on)}>
 				<span className="check-name">Wait for CI on each part</span>
@@ -250,7 +248,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 					{page.error ? (
 						<p className="callout callout-warn" role="status">
 							<WarnIcon />
-							<span>{page.error} What is shown may be behind.</span>
+							<span>{page.error} <button className="link" onClick={page.reload}>Try again</button></span>
 						</p>
 					) : null}
 
@@ -278,7 +276,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 							Setup command
 						</h2>
 						<div className="usage-card repo-form">
-							<SetupEditor key={generation} repositoryId={page.id} name={name} labelledBy={ids.setup} applies="A change applies to workspaces created after it: an agent that has one is not set up again." onSaved={page.reload} />
+							<SetupEditor compact key={generation} repositoryId={page.id} name={name} labelledBy={ids.setup} applies="Changes apply to new workspaces." onSaved={page.reload} />
 						</div>
 					</section>
 
@@ -296,7 +294,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						<h2 className="usage-title" id="repo-environment">
 							Environment
 						</h2>
-						<p className="usage-lede">A prepared sandbox for {name}, rebuilt on a schedule and after pushes, run through the setup command and every check above. Sessions and work items start from it only while it passes; otherwise they start cold.</p>
+						<p className="usage-lede">Windlass keeps a ready copy of this repository for faster starts.</p>
 						<EnvironmentSection key={generation} repositoryId={page.id} labelledBy="repo-environment" />
 					</section>
 
@@ -323,11 +321,6 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 								</h2>
 							)}
 						/>
-						{reachProfile && view.saved.secrets > 0 ? (
-							<p className="usage-note">
-								What each reaches is said for {reachProfile.name}, {choices.profile === reachProfile.id ? "the sandbox new agents here start in" : "the sandbox a new agent starts in when none is chosen"}. An agent's own panel says it for the sandbox that agent has.
-							</p>
-						) : null}
 					</section>
 
 					<section className="usage-section repo-saved" aria-labelledby="repo-servers">

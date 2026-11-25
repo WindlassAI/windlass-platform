@@ -1,37 +1,33 @@
 /**
- * The session's side panel, after the terminal interface's: the session's facts, where it runs,
- * token counts, one bar per model call showing how much of its input came from the cache, the files
- * the agent changed, for a session on a repository of the user's GitHub connection its pull request
- * and that repository's setup command, and, where the project names MCP servers, those and the user's
- * approvals of them.
+ * An agent's side panel, in six sections a user reads at a glance: the agent (its model, mode and
+ * repository; its id and start times under "More"), where it runs (the place, Strict or Open and the
+ * size, then three plain outcome lines, with the technical layers under "How it's isolated"), what it
+ * used (cost first where its agent says it, every count and the cache per call under "Token details"),
+ * the files it changed, the pull request, and the repository's setup (`RepositorySetupSection`).
  *
  * What it draws follows the session's capabilities (`SessionSummary.capabilities`), never the agent's name.
  * An agent that reports token counts per model call (`usage` "tokens", Windlass) gets the token counts and
  * the cache chart. One that reports how full its context is (`usage` "context", the ACP agents) gets that,
- * and what it has cost so far when it says, and the token counts its turns answered with once one did;
- * it has no per-call chart. Saved secrets are listed only for an agent they are handed to (`envLists`).
+ * and what it has cost so far when it says, and the token counts its turns answered with once one did.
  *
- * The session's facts include the mode its next prompt runs in, for every agent, a work item's too,
- * which keeps its profile's. For Claude Code the sandbox's facts say that mode in place of the
- * profile's approval, and that its commands can use the Claude login it runs with.
+ * Amber is kept for what needs the user now, with the way to fix it: an open sandbox is said in plain ink.
  */
-import type { EgressMode, PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
-import { Fragment, useCallback, useEffect, useState, type ReactNode } from "react";
+import type { EgressMode, HostedSizeOption, PendingQuestion, SandboxProfile, SessionSummary, TurnUsage, WorkspaceFile } from "@contract";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { acpHarnessName, contextWords, costWords, HARNESS_NAMES, sessionModelWords } from "../lib/acp";
 import { currentMode } from "../lib/modes";
 import { absoluteTime, compact, count, percent, plural, shortId } from "../lib/format";
 import { linkProps } from "../lib/router";
+import { perHour, sizeName } from "../lib/sizes";
 import { startHeadline, startLine, startRows } from "../lib/start-times";
 import { blockedRequests, cachedShare, lastTurn, sessionUsage, turnNetwork, turnUsage, type ModelCall, type SessionView } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
 import { DiffView } from "./DiffView";
-import { BranchIcon, ChevronIcon, RefreshIcon, WarnIcon } from "./Icons";
-import { Layers, ProfileFacts } from "./Layers";
+import { ChevronIcon, RefreshIcon, WarnIcon } from "./Icons";
+import { IsolationOutcomes, isolationOutcomes, Layers, ProfileFacts } from "./Layers";
 import { PullRequestSection } from "./PullRequest";
-import { ServersSection } from "./Servers";
-import { SecretsSection } from "./Secrets";
-import { SetupSection } from "./SetupCommand";
+import { RepositorySetupSection } from "./RepositorySetup";
 import { SandboxState, StatusBadge } from "./Status";
 import { AgentGlyph } from "./ui";
 
@@ -40,38 +36,33 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 	const [showOptions, setShowOptions] = useState(false);
 	const harness = acpHarnessName(summary);
 	const mode = currentMode(summary, profile);
+	const repository = summary.repository ?? null;
 	return (
 		<section className="panel-section" aria-labelledby="panel-session">
 			<h2 className="panel-title" id="panel-session">
-				Session
+				Agent
 				<span className="panel-title-aside">{summary.turns === 0 ? "no turns yet" : `turn ${summary.turns}`}</span>
+				<StatusBadge status={summary.status} />
 			</h2>
 			<dl className="kv">
 				<dt>agent</dt>
-				<dd>
+				<dd className="kv-agent">
 					<AgentGlyph harness={summary.harness ?? "windlass"} />
-					{harness ?? "Windlass"}
+					<span className="kv-clip">
+						{harness ?? "Windlass"}
+						<span className="kv-quiet"> · {sessionModelWords(summary)}</span>
+					</span>
 				</dd>
-				<dt>model</dt>
-				<dd>{sessionModelWords(summary)}</dd>
 				<dt>mode</dt>
 				<dd title={mode.description ?? undefined}>{mode.name}</dd>
-				<dt>state</dt>
-				<dd>
-					<StatusBadge status={summary.status} />
-				</dd>
-				{summary.repository ? (
+				{repository ? (
 					<>
 						<dt>repo</dt>
-						<dd className="kv-clip" title={`${summary.repository.owner}/${summary.repository.name}, from ${summary.repository.branch}`}>
-							<a className="kv-link" {...linkProps({ name: "repository", id: summary.repository.id })} title={`What is saved for ${summary.repository.owner}/${summary.repository.name}, and its other agents`}>
-								{summary.repository.owner}/{summary.repository.name}
+						<dd className="kv-clip" title={`${repository.owner}/${repository.name}, from ${repository.branch}`}>
+							<a className="kv-link" {...linkProps({ name: "repository", id: repository.id })}>
+								{repository.owner}/{repository.name}
 							</a>
-						</dd>
-						<dt>branch</dt>
-						<dd className="kv-clip kv-mono" title={summary.repository.branch}>
-							<BranchIcon size={12} className="tone-faint" />
-							{summary.repository.branch}
+							<span className="kv-quiet"> · {repository.branch}</span>
 						</dd>
 					</>
 				) : summary.repoUrl ? (
@@ -82,25 +73,55 @@ function Facts({ summary, profile, view }: { summary: SessionSummary; profile: S
 						</dd>
 					</>
 				) : null}
-				<dt>id</dt>
-				<dd className="kv-mono" title={id ?? undefined}>
-					{id ? <code className="plain-code">{shortId(id)}</code> : <span className="tone-faint">{summary.turns === 0 ? "none until the first turn" : "not reported"}</span>}
-				</dd>
-				<dt>created</dt>
-				<dd>{absoluteTime(summary.createdAt)}</dd>
 			</dl>
-			{harness && summary.harnessModels && (
-				<details className="panel-more" onToggle={event => setShowOptions(event.currentTarget.open)}>
-					<summary><ChevronIcon size={12} className="panel-more-chevron" />Available models and modes</summary>
-					{showOptions && <div className="panel-catalog">
-						<strong>Models</strong>
-						<ul aria-label="Available models">{summary.harnessModels.models.map(model =>
-							<li key={model.id}>{model.name || model.id}{model.efforts.length > 0 && <small> · {model.efforts.join(", ")}</small>}</li>)}</ul>
-						{summary.availableModes.length > 0 && <><strong>Modes</strong><ul aria-label="Available modes">{summary.availableModes.map(mode =>
-							<li key={mode.id} title={mode.description ?? undefined}>{mode.name}</li>)}</ul></>}
-					</div>}
-				</details>
-			)}
+			<details className="panel-more">
+				<summary>
+					<ChevronIcon size={12} className="panel-more-chevron" />
+					More
+				</summary>
+				<dl className="kv kv-wide">
+					<dt>created</dt>
+					<dd>{absoluteTime(summary.createdAt)}</dd>
+					<dt>id</dt>
+					<dd className="kv-mono" title={id ?? undefined}>
+						{id ? <code className="plain-code">{shortId(id)}</code> : <span className="tone-faint">{summary.turns === 0 ? "none until the first turn" : "not reported"}</span>}
+					</dd>
+				</dl>
+				<StartTimesFacts summary={summary} />
+				{harness && summary.harnessModels && (
+					<details className="panel-more" onToggle={(event) => setShowOptions(event.currentTarget.open)}>
+						<summary>
+							<ChevronIcon size={12} className="panel-more-chevron" />
+							Models and modes it offers
+						</summary>
+						{showOptions && (
+							<div className="panel-catalog">
+								<strong>Models</strong>
+								<ul aria-label="Available models">
+									{summary.harnessModels.models.map((model) => (
+										<li key={model.id}>
+											{model.name || model.id}
+											{model.efforts.length > 0 && <small> · {model.efforts.join(", ")}</small>}
+										</li>
+									))}
+								</ul>
+								{summary.availableModes.length > 0 && (
+									<>
+										<strong>Modes</strong>
+										<ul aria-label="Available modes">
+											{summary.availableModes.map((one) => (
+												<li key={one.id} title={one.description ?? undefined}>
+													{one.name}
+												</li>
+											))}
+										</ul>
+									</>
+								)}
+							</div>
+						)}
+					</details>
+				)}
+			</details>
 		</section>
 	);
 }
@@ -137,29 +158,46 @@ export function BlockedNetworkLine({ view }: { view: SessionView }) {
 	);
 }
 
-function Sandbox({ summary, profile, view }: { summary: SessionSummary; profile: SandboxProfile; view: SessionView }) {
+/** "Small · $0.07/h": a hosted sandbox's size and its price an hour, where the deployment offers sizes. */
+function sizeWords(summary: SessionSummary, offered: readonly HostedSizeOption[] | undefined): string | null {
+	if (summary.place.kind !== "hosted" || !offered?.length) return null;
+	// A session made without a size runs at the smallest (agent-session.ts reserves "small").
+	const size = summary.hostedSize ?? "small";
+	const price = perHour(offered.find((one) => one.id === size)?.usdPerHour);
+	return `${sizeName(size)}${price ? ` · ${price}` : ""}`;
+}
+
+function WhereItRuns({ summary, profile, view, machineName, egress }: { summary: SessionSummary; profile: SandboxProfile; view: SessionView; machineName: string | null; egress?: EgressMode }) {
+	const { platform } = useApp();
+	const claude = summary.harness && summary.harness !== "windlass" ? { hosted: summary.place.kind === "hosted", codex: summary.harness === "codex", opencode: summary.harness === "opencode", mode: currentMode(summary, profile) } : null;
+	const size = sizeWords(summary, platform.info?.hostedSizes);
+	const place = summary.place.kind === "hosted" ? "Hosted" : (machineName ?? "Your machine");
 	return (
 		<section className="panel-section" aria-labelledby="panel-sandbox">
 			<h2 className="panel-title" id="panel-sandbox">
-				Sandbox
+				Where it runs
 				<SandboxState state={summary.sandbox} />
 			</h2>
-			<p className="panel-lede">{profile.name}</p>
-			{summary.environment ? (
-				<p className="panel-env" title={absoluteTime(summary.environment.validatedAt)}>
-					Started from a validated environment: setup and {summary.environment.checks === 1 ? "the saved check" : `${summary.environment.checks} saved checks`} passed at <code>{summary.environment.commit.slice(0, 10)}</code>.
-				</p>
-			) : null}
-			<ProfileFacts profile={profile} claude={summary.harness && summary.harness !== "windlass" ? { hosted: summary.place.kind === "hosted", codex: summary.harness === "codex", opencode: summary.harness === "opencode", mode: currentMode(summary, profile) } : null} />
+			<p className="panel-where">
+				<span className="panel-where-place" title={place}>{place}</span>
+				<span className="panel-where-profile">{profile.name}</span>
+				{size ? <span className="panel-where-size">{size}</span> : null}
+			</p>
+			<IsolationOutcomes outcomes={isolationOutcomes(profile, claude, summary.place.kind === "machine" ? egress : undefined)} />
 			<BlockedNetworkLine view={view} />
 			<details className="panel-more">
 				<summary>
 					<ChevronIcon size={12} className="panel-more-chevron" />
-					How it is held
+					How it's isolated
 				</summary>
+				<ProfileFacts profile={profile} claude={claude} />
 				<Layers profile={profile} />
+				{summary.environment ? (
+					<p className="panel-env" title={absoluteTime(summary.environment.validatedAt)}>
+						Started from a prepared environment: setup and {summary.environment.checks === 1 ? "the saved check" : `${summary.environment.checks} saved checks`} passed at <code>{summary.environment.commit.slice(0, 10)}</code>.
+					</p>
+				) : null}
 			</details>
-			<StartTimesFacts summary={summary} />
 		</section>
 	);
 }
@@ -193,137 +231,133 @@ function StartTimesFacts({ summary }: { summary: SessionSummary }) {
 	);
 }
 
-/** A figure in a card: its name, the number, an optional meter, a line under it. */
-function Stat({ label, value, unit, share, meter, sub }: { label: string; value: string; unit?: string; share?: number | null; meter?: string; sub?: ReactNode }) {
-	return (
-		<div className="stat">
-			<p className="stat-label">{label}</p>
-			<p className="stat-value">
-				{value}
-				{unit ? <span className="stat-unit">{unit}</span> : null}
-			</p>
-			{share !== undefined && share !== null ? (
-				<div className="stat-meter" role="meter" aria-label={meter ?? label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(share * 100)}>
-					<span style={{ width: `${Math.min(100, share * 100)}%` }} />
-				</div>
-			) : null}
-			{sub ? <p className="stat-sub">{sub}</p> : null}
-		</div>
-	);
-}
-
 /** Whether any turn reported its tokens: a turn of an agent that counts per call, or one that answered its prompt with them. */
 const reportsTokens = (view: SessionView) => view.calls.length > 0 || view.turns.some((one) => one.end?.usage != null);
 
-/** The session's token counts. `perCall`: counted per model call, with how many calls (`usage` "tokens"); else per turn only. */
-function Tokens({ view, perCall }: { view: SessionView; perCall: boolean }) {
+/** Every token count, this agent's and its last turn's. `perCall`: counted per model call, with how many calls (`usage` "tokens"); else per turn only. */
+function TokenTable({ view, perCall }: { view: SessionView; perCall: boolean }) {
 	const session = sessionUsage(view);
 	const last = lastTurn(view);
 	const turn: TurnUsage | null = last ? turnUsage(last) : null;
 	const calls = view.calls.length;
 	const lastCalls = last ? view.calls.filter((call) => call.turn === last.turn).length : 0;
-	// A scripted model reports no usage at all: say so rather than show zeros.
-	const unreported = view.turns.some((one) => one.end !== null) && calls === 0 && view.turns.every((one) => one.end === null || one.end.usage === null);
+	const unreported = tokensUnreported(view);
 	const lastUnreported = last !== null && last.end !== null && last.end.usage === null && lastCalls === 0;
-	const turnsReported = view.turns.filter((one) => one.end?.usage != null).length;
 	const cell = (value: number | null) => (value === null ? "–" : count(value));
 	const total = (value: number) => (unreported ? "–" : count(value));
 	const turnCell = (value: number | null) => (lastUnreported ? "–" : cell(value));
 	return (
-		<section className="panel-section" aria-labelledby="panel-tokens">
-			<h2 className="panel-title" id="panel-tokens">
-				Tokens
-				<span className="panel-title-aside">{perCall ? plural(calls, "call") : `${plural(turnsReported, "turn")} reported`}</span>
+		<table className="tokens">
+			<thead>
+				<tr>
+					<td />
+					<th scope="col">this agent</th>
+					<th scope="col">last turn</th>
+				</tr>
+			</thead>
+			<tbody>
+				<tr>
+					<th scope="row">input</th>
+					<td>{total(session.inputTokens)}</td>
+					<td>{turnCell(turn?.inputTokens ?? null)}</td>
+				</tr>
+				<tr className="tokens-sub">
+					<th scope="row">cached</th>
+					<td>{total(session.cachedInputTokens)}</td>
+					<td>{turnCell(turn?.cachedInputTokens ?? null)}</td>
+				</tr>
+				<tr className="tokens-sub">
+					<th scope="row">cache share</th>
+					<td>{unreported ? "–" : percent(cachedShare(session))}</td>
+					<td>{turn && !lastUnreported ? percent(cachedShare(turn)) : "–"}</td>
+				</tr>
+				<tr>
+					<th scope="row">output</th>
+					<td>{total(session.outputTokens)}</td>
+					<td>{turnCell(turn?.outputTokens ?? null)}</td>
+				</tr>
+				<tr className="tokens-sub">
+					<th scope="row">reasoning</th>
+					<td>{total(session.reasoningTokens)}</td>
+					<td>{turnCell(turn?.reasoningTokens ?? null)}</td>
+				</tr>
+				{perCall ? (
+					<tr>
+						<th scope="row">calls</th>
+						<td>{calls}</td>
+						<td>{last ? lastCalls : "–"}</td>
+					</tr>
+				) : null}
+			</tbody>
+		</table>
+	);
+}
+
+/** A scripted model reports no usage at all: the panel says so rather than show zeros. */
+const tokensUnreported = (view: SessionView) => view.turns.some((one) => one.end !== null) && view.calls.length === 0 && view.turns.every((one) => one.end === null || one.end.usage === null);
+
+/**
+ * What the agent has used: its cost first where its agent says it, how full its context is, and its tokens in
+ * and out. Every count and the cache per model call are under "Token details".
+ */
+function Usage({ view, summary }: { view: SessionView; summary: SessionSummary }) {
+	const usage = summary.capabilities.usage;
+	const harness = HARNESS_NAMES[summary.harness ?? "windlass"];
+	const perCall = usage === "tokens";
+	const tokens = perCall || reportsTokens(view);
+	const unreported = tokensUnreported(view);
+	const session = sessionUsage(view);
+	const context = usage === "context" ? view.context : null;
+	const share = context ? Math.min(1, context.used / context.size) : 0;
+	return (
+		<section className="panel-section" aria-labelledby="panel-usage" data-usage={usage}>
+			<h2 className="panel-title" id="panel-usage">
+				Usage
+				<span className="panel-title-aside">this agent</span>
 			</h2>
-			<div className="stats">
-				<Stat label="Input" value={unreported ? "–" : compact(session.inputTokens)} share={unreported || session.inputTokens === 0 ? null : cachedShare(session)} meter="Input read from the prompt cache" sub={unreported ? "not reported" : `${percent(cachedShare(session))} cached`} />
-				<Stat label="Output" value={unreported ? "–" : compact(session.outputTokens)} sub={unreported ? "not reported" : `${compact(session.reasoningTokens)} reasoning`} />
+			{usage === "context" && !context ? (
+				<p className="panel-empty">{summary.turns === 0 ? `${harness} says what it used once a turn has run.` : `${harness} has not said what it used.`}</p>
+			) : null}
+			<div className="figures">
+				{context ? <Figure value={context.cost ? costWords(context.cost).replace(/ so far$/, "") : "–"} label="so far" /> : null}
+				{context ? (
+					<div className="figure">
+						<p className="figure-value">{contextWords(context).replace(/ used$/, "")}</p>
+						<div className="stat-meter" role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={context.size} aria-valuenow={Math.min(context.size, context.used)} aria-valuetext={contextWords(context)}>
+							{share > 0 ? <span style={{ width: `${share * 100}%` }} /> : null}
+						</div>
+						<p className="figure-label">context</p>
+					</div>
+				) : null}
+				{context?.fiveHourUsedPct != null ? <Figure value={`${Math.round(context.fiveHourUsedPct)}%`} label="5-hour window" /> : null}
+				{perCall || (tokens && !context) ? (
+					<>
+						<Figure value={unreported ? "–" : compact(session.inputTokens)} label="tokens in" />
+						<Figure value={unreported ? "–" : compact(session.outputTokens)} label="tokens out" />
+					</>
+				) : null}
 			</div>
-			<details className="panel-more">
-				<summary>
-					<ChevronIcon size={12} className="panel-more-chevron" />
-					Every count, this session and its last turn
-				</summary>
-			<table className="tokens">
-				<thead>
-					<tr>
-						<td />
-						<th scope="col">session</th>
-						<th scope="col">last turn</th>
-					</tr>
-				</thead>
-				<tbody>
-					<tr>
-						<th scope="row">input</th>
-						<td>{total(session.inputTokens)}</td>
-						<td>{turnCell(turn?.inputTokens ?? null)}</td>
-					</tr>
-					<tr className="tokens-sub">
-						<th scope="row">cached</th>
-						<td>{total(session.cachedInputTokens)}</td>
-						<td>{turnCell(turn?.cachedInputTokens ?? null)}</td>
-					</tr>
-					<tr className="tokens-sub">
-						<th scope="row">cache share</th>
-						<td>{unreported ? "–" : percent(cachedShare(session))}</td>
-						<td>{turn && !lastUnreported ? percent(cachedShare(turn)) : "–"}</td>
-					</tr>
-					<tr>
-						<th scope="row">output</th>
-						<td>{total(session.outputTokens)}</td>
-						<td>{turnCell(turn?.outputTokens ?? null)}</td>
-					</tr>
-					<tr className="tokens-sub">
-						<th scope="row">reasoning</th>
-						<td>{total(session.reasoningTokens)}</td>
-						<td>{turnCell(turn?.reasoningTokens ?? null)}</td>
-					</tr>
-					{perCall ? (
-						<tr>
-							<th scope="row">calls</th>
-							<td>{calls}</td>
-							<td>{last ? lastCalls : "–"}</td>
-						</tr>
-					) : null}
-				</tbody>
-			</table>
-			</details>
 			{unreported ? <p className="panel-empty panel-note">No token counts were reported.</p> : null}
+			{tokens && !unreported ? (
+				<details className="panel-more">
+					<summary>
+						<ChevronIcon size={12} className="panel-more-chevron" />
+						Token details
+					</summary>
+					<TokenTable view={view} perCall={perCall} />
+					{perCall ? <CacheBars calls={view.calls} anyTurns={view.turns.length > 0} /> : null}
+				</details>
+			) : null}
 		</section>
 	);
 }
 
-/** An ACP harness's usage: how full its context is, and its cost so far when it says. */
-function Context({ view, harness, turns }: { view: SessionView; harness: string; turns: number }) {
-	const context = view.context;
-	const share = context ? Math.min(1, context.used / context.size) : 0;
+function Figure({ value, label }: { value: string; label: string }) {
 	return (
-		<section className="panel-section" aria-labelledby="panel-context">
-			<h2 className="panel-title" id="panel-context">
-				Usage
-			</h2>
-			{context ? (
-				<div className="stats">
-					<div className="stat">
-						<p className="stat-label">Context</p>
-						<p className="stat-value">
-							{contextWords(context).replace(/ used$/, "")}
-							<span className="stat-unit"> used</span>
-						</p>
-						<div className="stat-meter" role="meter" aria-label="Context used" aria-valuemin={0} aria-valuemax={context.size} aria-valuenow={Math.min(context.size, context.used)} aria-valuetext={contextWords(context)}>
-							{share > 0 ? <span style={{ width: `${share * 100}%` }} /> : null}
-						</div>
-						<p className="stat-sub">
-							{compact(context.used)} of {compact(context.size)} tokens
-						</p>
-					</div>
-					{context.fiveHourUsedPct != null && <Stat label="5-hour window" value={`${Math.round(context.fiveHourUsedPct)}%`} sub="estimated usage" />}
-					<Stat label="Cost so far" value={context.cost ? costWords(context.cost).replace(/ so far$/, "") : "–"} sub={context.cost ? plural(turns, "turn") : "not reported"} />
-				</div>
-			) : (
-				<p className="panel-empty">{turns === 0 ? `${harness} says how full its context is once a turn has run.` : `${harness} has not said how full its context is.`}</p>
-			)}
-		</section>
+		<div className="figure">
+			<p className="figure-value">{value}</p>
+			<p className="figure-label">{label}</p>
+		</div>
 	);
 }
 
@@ -335,8 +369,8 @@ function CacheBars({ calls, anyTurns }: { calls: ModelCall[]; anyTurns: boolean 
 	const offset = calls.length - shown.length;
 	const scale = Math.max(1, ...shown.map((call) => call.inputTokens));
 	return (
-		<section className="panel-section" aria-labelledby="panel-cache">
-			<h2 className="panel-title" id="panel-cache">
+		<div className="cache-calls">
+			<p className="cache-calls-title">
 				Cache per call
 				<span className="legend" aria-hidden="true">
 					<span className="legend-key">
@@ -346,7 +380,7 @@ function CacheBars({ calls, anyTurns }: { calls: ModelCall[]; anyTurns: boolean 
 						<span className="swatch swatch-new" /> new
 					</span>
 				</span>
-			</h2>
+			</p>
 			{shown.length === 0 ? (
 				<p className="panel-empty">{anyTurns ? "No model call has reported its token counts." : "One bar per model call will appear here."}</p>
 			) : (
@@ -379,7 +413,7 @@ function CacheBars({ calls, anyTurns }: { calls: ModelCall[]; anyTurns: boolean 
 					</ol>
 				</>
 			)}
-		</section>
+		</div>
 	);
 }
 
@@ -444,8 +478,8 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 	return (
 		<section className="panel-section" aria-labelledby="panel-changes">
 			<h2 className="panel-title" id="panel-changes">
-				Files changed
-				{files && files.length > 0 ? <span className="panel-title-aside">{files.length}</span> : null}
+				Changes
+				{files && files.length > 0 ? <span className="panel-title-aside">{plural(files.length, "file")}</span> : null}
 				{hasSandbox ? (
 					<button type="button" className="icon-button icon-button-small" onClick={load} disabled={loading} aria-label="Reload the changed files" title="Reload">
 						<RefreshIcon size={13} className={loading ? "spin" : undefined} />
@@ -513,33 +547,20 @@ function Changes({ sessionId, summary, turnsEnded, reloads, onFiles }: { session
 	);
 }
 
-export function SidePanel({ sessionId, summary, profile, view, turnsEnded, question = null, egress, hosted, domains }: { egress?: EgressMode; hosted?: boolean; domains?: number; sessionId: string; summary: SessionSummary; profile: SandboxProfile; view: SessionView; turnsEnded: number; question?: PendingQuestion | null }) {
+export function SidePanel({ sessionId, summary, profile, view, turnsEnded, question = null, egress, hosted, domains, machineName = null }: { egress?: EgressMode; hosted?: boolean; domains?: number; machineName?: string | null; sessionId: string; summary: SessionSummary; profile: SandboxProfile; view: SessionView; turnsEnded: number; question?: PendingQuestion | null }) {
 	// How many files differ from the last commit, once the list was read; and a count that asks for it again.
 	const [files, setFiles] = useState<number | null>(null);
 	const [reloads, setReloads] = useState(0);
 	const published = useCallback(() => setReloads((value) => value + 1), []);
-	const { usage, envLists } = summary.capabilities;
+	const { usage } = summary.capabilities;
 	return (
-		<aside className="panel" id="details" aria-label="Session details">
+		<aside className="panel" id="details" aria-label="Agent details">
 			<Facts summary={summary} profile={profile} view={view} />
-			<Sandbox summary={summary} profile={profile} view={view} />
-			{usage === "tokens" ? (
-				<>
-					<Tokens view={view} perCall />
-					<CacheBars calls={view.calls} anyTurns={view.turns.length > 0} />
-				</>
-			) : usage === "context" ? (
-				<>
-					<Context view={view} harness={HARNESS_NAMES[summary.harness ?? "windlass"]} turns={summary.turns} />
-					{reportsTokens(view) ? <Tokens view={view} perCall={false} /> : null}
-				</>
-			) : null}
+			<WhereItRuns summary={summary} profile={profile} view={view} machineName={machineName} egress={egress} />
+			{usage === "tokens" || usage === "context" ? <Usage view={view} summary={summary} /> : null}
 			<Changes sessionId={sessionId} summary={summary} turnsEnded={turnsEnded} reloads={reloads} onFiles={setFiles} />
 			<PullRequestSection sessionId={sessionId} summary={summary} profile={profile} turnsEnded={turnsEnded} files={files} onPublished={published} />
-			<SetupSection egress={egress} hosted={hosted} domains={domains} summary={summary} />
-			{envLists ? <SecretsSection summary={summary} /> : null}
-			{/* Last: it is there only where the project names a server, and so its arrival moves no other section. */}
-			<ServersSection sessionId={sessionId} summary={summary} question={question} />
+			<RepositorySetupSection sessionId={sessionId} summary={summary} question={question} egress={egress} hosted={hosted} domains={domains} />
 		</aside>
 	);
 }
