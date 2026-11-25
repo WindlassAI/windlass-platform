@@ -299,7 +299,10 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 	const url = new URL(request.url);
 	const path = url.pathname.slice(RELAY_PREFIX.length) + url.search;
 	const method = anyMethod(path);
-	if (!url.pathname.startsWith(RELAY_PREFIX + "/") || !method || request.method !== method) return refusal(403, "This request is not allowed by the relay.");
+	if (!url.pathname.startsWith(RELAY_PREFIX + "/") || !method || request.method !== method) {
+		note(`refused ${request.method} ${url.pathname.slice(0, 80)}`);
+		return refusal(403, "This request is not allowed by the relay.");
+	}
 	const incoming = Object.fromEntries(request.headers);
 	const bearer = placeholderOf(incoming);
 	const placeholder = bearer === undefined ? null : readPlaceholder(bearer, deps.now());
@@ -365,7 +368,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 			token = await lookup();
 			if (token?.kind === "key") {
 				provider = token.provider;
-				if (harnessMethod(token.harness, provider, path) !== method) { release(); return refusal(403, "This request is not allowed by the relay."); }
+				if (harnessMethod(token.harness, provider, path) !== method) { note(`refused for ${token.harness ?? "windlass"}: ${method} ${url.pathname.slice(0, 80)}`); release(); return refusal(403, "This request is not allowed by the relay."); }
 				const nonce = randomBytes(16).toString("hex");
 				const sealed = await deps.key(placeholder.uid, provider, nonce);
 				const saved = sealed && openModelKeyTransit(placeholder.uid, provider, nonce, sealed);
