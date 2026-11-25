@@ -859,12 +859,13 @@ export function idleSuspendedNote(numbers: UsageNumbers): string {
 }
 
 /** The timeline's line when the user freed the session's sandbox on the usage page. `memory` is null for an agent that has no memory yet. */
-export function freedNote(memory: "kept" | "copied" | "lost" | null): string {
+export function freedNote(memory: "kept" | "copied" | "lost" | null, reason?: string): string {
 	const remembered =
 		memory === "lost"
 			? " The agent's own memory of the conversation went with it, so it starts the next turn without it."
 			: memory === null
 				? ""
 				: " The agent keeps its memory of the conversation, and is told that the workspace is a new one.";
-	return `You freed this agent's sandbox on the Usage page: the files in its workspace are gone. The conversation stays, and the next prompt starts a new sandbox.${remembered}`;
+	const action = reason ?? "You freed this agent's sandbox on the Usage page.";
+	return `${action} The files in its workspace are gone. The conversation stays, and the next prompt starts a new sandbox.${remembered}`;
 }

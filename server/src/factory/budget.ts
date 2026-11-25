@@ -230,7 +230,7 @@ export interface AdmissionInput {
 	attempt: number;
 }
 
-export type Admission = { ok: true } | { ok: false; wait: Wait };
+export type Admission = { ok: true } | { ok: false; wait: Wait; keptCap?: true };
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 const utcTime = (ms: number) => new Date(ms).toISOString().slice(11, 16);
@@ -245,7 +245,7 @@ export function admit(input: AdmissionInput): Admission {
 		return { ok: false, wait: providerWait(account.harness, place.kind === "hosted" ? "hosted" : place.name, account.limitedUntil, reset) };
 	}
 	const later = retryAt(at, input.attempt);
-	const wait = (reason: Wait["reason"], sentence: string, when = later): Admission => ({ ok: false, wait: { reason, sentence, retryAt: when } });
+	const wait = (reason: Wait["reason"], sentence: string, when = later, keptCap?: true): Admission => ({ ok: false, wait: { reason, sentence, retryAt: when }, ...(keptCap && { keptCap }) });
 
 	if (input.dailyTokenWait) return wait("capacity", input.dailyTokenWait, nextUtcDay(at));
 
@@ -254,7 +254,7 @@ export function admit(input: AdmissionInput): Admission {
 	}
 	if (place.kind === "machine") {
 		if (place.slots && place.slots.free < place.slots.units) return wait("machine", slotWait(place.name, place.slots.units, place.slots.free));
-		if (place.keptFull) return wait("machine", `Waiting for room on your machine "${place.name}". Its runner has reached its limit on kept sandboxes.`);
+		if (place.keptFull) return wait("machine", `Waiting for room on your machine "${place.name}". Its runner has reached its limit on kept sandboxes.`, later, true);
 		if (place.running >= place.max) return wait("machine", `Waiting for ‘${place.name}’: ${place.running} of ${place.max} sandboxes running there, its runner's limit.`);
 		return { ok: true };
 	}
@@ -266,7 +266,7 @@ export function admit(input: AdmissionInput): Admission {
 		return wait("capacity", `Your ${allowance} of hosted sandbox time for today are used; it starts again at 00:00 UTC (in ${until}). The allowance is this deployment's setting, which its owner can raise.`, usage.resetsAt);
 	}
 	if (place.needsSandbox && usage.sandboxes.limit !== null && usage.sandboxes.kept >= usage.sandboxes.limit) {
-		return wait("sandboxes", keptCapSentence(usage.sandboxes.limit, place.holders ?? []));
+		return wait("sandboxes", keptCapSentence(usage.sandboxes.limit, place.holders ?? []), later, true);
 	}
 	if (place.running >= limits.hostedRunning) {
 		return wait("capacity", `Waiting for one of your ${plural(limits.hostedRunning, "hosted sandbox", "hosted sandboxes")} that run at once: ${place.running} running now. Your machines don't count toward this.`);

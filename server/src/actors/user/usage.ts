@@ -1,6 +1,7 @@
 // Sessions reserve time and kept places in one actor. Update the in-memory book synchronously, then persist and broadcast the change.
 
 import { accountLimits } from "../../user-limits.js";
+import { makeSandboxRoom } from "./kept-sandboxes.js";
 import { type ItemsCtx, queueChanged } from "../user-items.js";
 import { USAGE_HISTORY_DAYS, isHostedSize, type HostedSize, type HostedSizeOption } from "../../contract.js";
 import { UserError } from "rivetkit";
@@ -450,7 +451,9 @@ export const usageActions = {
 		const size = isHostedSize(input.hostedSize) ? input.hostedSize : summary.hostedSize;
 		const clampedSize = input.keep === true ? clampedSandboxSize(c, size) : undefined;
 		const weight = size ? sessionWeight({ hostedSize: clampedSize ?? size }) : undefined;
-		const done = await changeUsage(c, (book) => book.reserve(now, { id, session, keep, weight, fresh: input.fresh === true, settle }));
+		const reserve = () => changeUsage(c, book => book.reserve(Date.now(), { id, session, keep, weight, fresh: input.fresh === true, settle }));
+		let done = await reserve();
+		if (!done.ok && done.reason === "sandboxes" && await makeSandboxRoom(c, summary) && c.vars.sessions.has(session)) done = await reserve();
 		const numbers = c.vars.usage.numbers(now);
 		const lose = reserveFault === null ? null : input.fresh === true ? "fresh" : renewal ? "renewal" : null;
 		if (reserveFault && lose && reserveFault[lose] > 0) {
@@ -470,6 +473,8 @@ export const usageActions = {
 		if (c.vars.sessions.get(session)?.environmentBuild)
 			return { ok: true, clampedSize: clampedSandboxSize(c, hostedSize), numbers: c.vars.usage.numbers(Date.now()) };
 		await reconcileKept(c, c.vars.usage.atCap(session));
+		const asking = c.vars.sessions.get(session);
+		if (asking && c.vars.usage.atCap(session)) await makeSandboxRoom(c, asking);
 		// From the check to the claim nothing is awaited: a session being deleted is given nothing new.
 		if (!c.vars.sessions.has(session)) return { ok: false, reason: "gone" };
 		const now = Date.now();

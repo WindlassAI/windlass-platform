@@ -64,10 +64,27 @@ async function testNode() {
 	const { agentSession } = await import("../server/src/actors/agent-session.js");
 	const session = agentSession.config.actions!;
 	const publish = session.internalPublish;
+	const refs = new Map<string, string>();
+	const { FakeHandle } = await import("../server/src/sandbox-fake.js");
+	const run = FakeHandle.prototype.run;
+	FakeHandle.prototype.run = async function(command, options) {
+		const result = await run.call(this, command, options);
+		for (const [branch, head] of refs) {
+			if (command.includes(`refs/remotes/origin/${branch}^{commit}`) && command.includes("wlp:haswork")) return { ...result, stdout: "wlp:haswork " + head };
+			if (command.includes(`refs/remotes/origin/${branch}'`) && command.includes("wlp:work ")) return { ...result, stdout: "wlp:work " + head };
+		}
+		return result;
+	};
 	// The fake sandbox pushes a branch without a git SHA. Give each published test PR a stable full head.
 	session.internalPublish = async (c, input) => {
 		const answer = await publish(c, input);
-		return answer.kind === "published" && answer.pr ? { ...answer, head: answer.pr.number.toString(16).padStart(40, "0") } : answer;
+		if (answer.kind !== "published" || !answer.pr) return answer;
+		const head = answer.pr.number.toString(16).padStart(40, "0");
+		if (c.vars.meta!.title === "Sandbox expiry") {
+			c.vars.meta!.pushedHead = head;
+			refs.set(c.vars.meta!.publishBranch!, head);
+		}
+		return { ...answer, head };
 	};
 	type ItemCtx = Parameters<NonNullable<typeof workItem.config.actions>["internalView"]>[0];
 	Object.assign(workItem.config.actions!, {
@@ -87,8 +104,13 @@ async function testNode() {
 			await c.db.execute("UPDATE item SET data=? WHERE id=1",JSON.stringify(stored));
 		},
 		// Move only this item's durable deadlines. CI and webhook acceptance keep their real clocks.
-		checkAdvance: async (c: ItemCtx, kind: "feedback" | "poll", ms: number) => {
+		checkAdvance: async (c: ItemCtx, kind: "feedback" | "poll" | "idle", ms: number) => {
 			requireServiceFor(c, "call");
+			if (kind === "idle") {
+				c.vars.stored!.meta.activityAt -= ms;
+				await c.db.execute("UPDATE item SET data=? WHERE id=1", JSON.stringify(c.vars.stored));
+				return;
+			}
 			if (kind === "feedback") {
 				await c.db.execute("UPDATE feedback SET received=received-?,ready=ready-? WHERE state='pending'", ms, ms);
 				await c.db.execute("UPDATE effects SET due_at=due_at-? WHERE id='feedback_ready:pending'", ms);
@@ -360,8 +382,8 @@ async function run() {
 		standin.addRepository({ owner: "g2-neighbour", name: "other", installation: neighbour });
 		const { user: neighbourUser } = await connectUser("g2-neighbour");
 		const directory = () => client.githubRepository.getOrCreate([String(projectG2.id)], service());
-		const push = async () => {
-			const item = await g2User.createItem({ repository: { id: projectG2.id }, mode: "single", title: "A webhook check", body: "Add a short program.", start: true });
+		const push = async (title = "A webhook check") => {
+			const item = await g2User.createItem({ repository: { id: projectG2.id }, mode: "single", title, body: "Add a short program.", start: true });
 			const handle = () => client.workItem.get([uid, item.id], service());
 			const poll = () => (handle() as unknown as { checkPoll(): Promise<{ id: string; due_at: number; effect: string } | null> }).checkPoll();
 			const published = await until("registered push", async () => {
@@ -822,9 +844,9 @@ async function run() {
 			return standin.requests.filter(r => paths.includes(r.path));
 		};
 		const bots = (issue: Issue) => issue.comments.filter(c => c.user.login.endsWith("[bot]"));
-		type FeedbackClock = {checkAdvance(kind: "feedback" | "poll", ms: number): Promise<void>; checkWindow(): Promise<number>};
-		const feedbackItem = async (ownerPush = false) => {
-			const item = await push();
+		type FeedbackClock = {checkAdvance(kind: "feedback" | "poll" | "idle", ms: number): Promise<void>; checkWindow(): Promise<number>};
+		const feedbackItem = async (ownerPush = false, title?: string) => {
+			const item = await push(title);
 			const clock = () => item.handle() as unknown as FeedbackClock;
 			const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === item.pr)!;
 			if (ownerPush) pull.headSha = standin.commit(projectG2, pull.head, { "README.md": "# Updated by owner\n" }, "Owner update", projectG2.defaultBranch);
@@ -1141,6 +1163,24 @@ async function run() {
 				assert.equal(view.run?.step.kind,"refine");
 				assert.equal(view.feedback.batches[0].entries[0].access,"owner");
 			} finally { await stop(item.id); }
+		});
+		await check("G4 sandbox expiry resumes PR feedback on the published branch", async () => {
+			const item = await feedbackItem(false, "Sandbox expiry");
+			const sessionId = (await item.view()).sessionId;
+			const session = client.agentSession.get([uid, sessionId], { params: { token: ownerToken } });
+			try {
+				await item.clock().checkAdvance("idle", 3 * DAY - 60_000);
+				await item.view();
+				assert.notEqual((await session.snapshot()).summary.sandbox, "none");
+				await item.clock().checkAdvance("idle", 60_001);
+				await item.view();
+				await until("three-day sandbox release", async () => (await session.snapshot()).summary.sandbox === "none");
+				const { review } = standin.submitReview(projectG2, item.pull, peer, "changes_requested", "Handle a missing file.");
+				await delivered("pull_request_review", reviewFields(item.pr, review));
+				await until("fresh PR branch checkout", async () => (await session.snapshot()).timeline.some(row =>
+					row.turn === 2 && row.kind === "platform" && row.text.includes(`Put the workspace on ${item.pull.head} at ${item.head.slice(0, 7)}`)), 45_000);
+			} finally { await stop(item.id); }
+			await until("cancelled item frees its builder", async () => (await session.snapshot()).summary.sandbox === "none");
 		});
 		await check("G4 reconcile a missed writer review and request that writer at handoff", async()=>{
 			const item=await feedbackItem();

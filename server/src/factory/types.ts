@@ -396,6 +396,7 @@ export type RequestedReview = Pick<FeatureRepository, "repositoryId" | "installa
 };
 
 export type Fact =
+	| { kind: "sandbox_reclaimed"; at: number; said: string }
 	| { kind: "request_review"; at: number; subject: string; request: RequestedReview }
 	| { kind: "default_place_ready"; reviewer: NonNullable<FactoryItem["reviewer"]>; reviewerSessionId: string | null; at: number; place: SandboxPlace; agent: NonNullable<FactoryItem["agent"]> }
 	| { kind: "default_place_wait"; at: number; sentence: string }
