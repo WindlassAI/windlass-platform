@@ -81,7 +81,7 @@ function AutonomySettings({ page, view }: { page: RepositoryPage; view: Reposito
 		<div className="repo-form">
 			<Check checked={!!view.defaults.autoApprovePlans} disabled={busy} onChange={on => save("autoApprovePlans", on)}>
 				<span className="check-name">Auto-approve small plans</span>
-				<span className="check-means">Up to three subtasks with no open questions.</span>
+				<span className="check-means">Up to three subtasks. A reviewer must accept the recommended answer to every open question.</span>
 			</Check>
 			<Check checked={!!view.defaults.autoMergeSingles} disabled={busy} onChange={on => save("autoMergeSingles", on)}>
 				<span className="check-name">Auto-merge single items</span>

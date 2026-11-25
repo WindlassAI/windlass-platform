@@ -292,7 +292,11 @@ export function validatePlan(value: unknown, single: Pick<ItemBudget, "tokens">,
 		const q = record(raw);
 		requirePlan(q.why == null || typeof q.why === "string", "A question's why must be text.");
 		const why = typeof q.why === "string" ? cut(q.why.trim(), PLAN_QUESTION_WHY_CHARS) : "";
-		return { id: keyOf(q.id), text: text(q.text), ...(q.options !== undefined && { options: lines(q.options, 1, 12) }), ...(why && { why }), ...(q.answer && { answer: text(q.answer) } || {}) };
+		const options = q.options === undefined ? undefined : lines(q.options, 1, 12);
+		const recommended = q.recommended === undefined ? undefined : text(q.recommended, 80);
+		requirePlan(!recommended || !options || options.includes(recommended), "A recommended answer must be one of the question's options.");
+		return { id: keyOf(q.id), text: text(q.text), ...(options && { options }), ...(why && { why }),
+			...(recommended && { recommended }), ...(q.answer && { answer: text(q.answer) } || {}) };
 	});
 	unique(questions.map(q => q.id));
 	requirePlan(Array.isArray(p.subtasks) && (singleSuggested && p.subtasks.length === 0 || p.subtasks.length >= 2 && p.subtasks.length <= 6), "Propose two to six subtasks or suggest one single item.");
