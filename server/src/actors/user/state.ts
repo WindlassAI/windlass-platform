@@ -18,6 +18,7 @@ export interface UserVars {
 	profile: UserProfile | null;
 	// A valid token or adopted sign-in proves the account has been reached.
 	reached: boolean;
+	refused?: boolean;
 	sessions: Map<string, SessionSummary>;
 	launchUntil: Map<string, number>;
 	// The persisted generation disambiguates overlapping and replayed launch releases.
