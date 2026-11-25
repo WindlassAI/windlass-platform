@@ -276,8 +276,7 @@ server of the deployment:
 
 Route the relay's hostname to the same server port as `WLP_PUBLIC_URL`, over HTTPS on 443, and keep the
 `Host` header. With the self-hosted Cloudflare Tunnel, that is one more ingress rule and one DNS route
-([deploy/selfhost/README.md](../deploy/selfhost/README.md#the-model-relays-hostname)). The server answers only
-the relay's two paths on that name. Without `WLP_MODEL_RELAY_URL` E2B turns get the token in the sandbox, as
+([deploy/selfhost/README.md](../deploy/selfhost/README.md#the-model-relays-hostname)). The server checks the method, path and lease under `/model-relay/` on that name. Without `WLP_MODEL_RELAY_URL` E2B turns get the token in the sandbox, as
 before, and the server logs `e2b.model_relay: off (WLP_MODEL_RELAY_URL is not set)` once at startup.
 
 The relay's limits are per server process: 8 requests in flight and 32 waiting per turn, 16 in flight and 300

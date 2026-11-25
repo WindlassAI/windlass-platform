@@ -56,14 +56,14 @@ E2B sandboxes reach Windlass's model relay at a hostname of its own, so that the
 
 ```sh
 WLP_MODEL_RELAY_URL=https://windlass-relay.example.com
-WLP_E2B_WINDLASS_VERSION=0.6.0
+WLP_E2B_WINDLASS_VERSION=0.7.1
 ```
 
-Add one ingress rule for it, before the final `http_status:404` rule, to the same loopback port as the application hostname (26440 on live, 16440 on staging). The path pattern lets only the relay's two routes through at the edge; the server refuses everything else on that name too:
+Add one ingress rule for it, before the final `http_status:404` rule, to the same loopback port as the application hostname (26440 on live, 16440 on staging). The server checks the method, path and turn lease for requests under the relay prefix:
 
 ```yaml
   - hostname: windlass-relay.example.com
-    path: '^/model-relay/v1/(models|responses)$'
+    path: '^/model-relay/'
     service: http://127.0.0.1:26440
 ```
 
