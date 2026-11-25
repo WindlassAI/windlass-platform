@@ -4,3 +4,6 @@
 795c1baa88880bad574f1adaabc4a91c9f05b0ec:scripts/codex-relay-check.mjs:generic-api-key:129
 # The E2B check sends a placeholder of no turn (wlpm1.none) to the model relay to see its refusal; no credential.
 e5055f2b96ffd84bf2bc9d317fb34c3c8ba4967a:scripts/e2b-check.ts:curl-auth-header:333
+# Public Anthropic beta names in the relay header fixture.
+f0ad1bc1fce5fa9d65c1db416c213081c2d3a22a:scripts/model-relay-route-check.ts:generic-api-key:656
+5da3907c9a6e4740729fc7a6cca4d533e9bce196:scripts/model-relay-route-check.ts:generic-api-key:580
