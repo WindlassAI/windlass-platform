@@ -135,13 +135,14 @@ export class DodoProvider implements BillingProvider {
 		return { id, url };
 	}
 
-	async checkoutExpired(session: string, now: number): Promise<boolean> {
+	async checkoutReplaceable(session: string, now: number): Promise<boolean> {
 		// Dodo has no checkout void endpoint. An in-flight or successful payment still needs its webhook.
 		const status = await this.call<{ id: string; created_at: string; payment_id: string | null; payment_status: string | null }>(
 			"GET", `/checkouts/${encodeURIComponent(session)}`);
+		if (status.id !== session) return false;
+		if (status.payment_status === "failed" || status.payment_status === "cancelled") return true;
 		const created = time(status.created_at);
-		const unpaid = (status.payment_id === null && status.payment_status === null) || status.payment_status === "failed" || status.payment_status === "cancelled";
-		return status.id === session && created !== null && now >= created + 24 * 60 * 60_000 && unpaid;
+		return status.payment_id === null && status.payment_status === null && created !== null && now >= created + 24 * 60 * 60_000;
 	}
 
 	async portalLink(input: { customerId: string; returnUrl: string }): Promise<{ url: string }> {
