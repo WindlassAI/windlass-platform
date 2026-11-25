@@ -73,7 +73,7 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	assert.deepEqual(calls, ["keys"]);
 	source = "key";
 	assert.deepEqual(await opencode("anthropic/claude-haiku-5-5", ["anthropic"]), {model:"anthropic/claude-haiku-5-5", key:{provider:"anthropic",generation:"a"}});
-	const { agentTurn } = await import("../server/src/factory/budget.js");
+	const { agentTurn, newAgent, noteAgentTurn, tokenWords } = await import("../server/src/factory/budget.js");
 	const item = (signIn: "api-key" | "subscription", filedWithKey = false) =>
 		turnCredential(ctx as never, {place:machine, uid:"owner", harness:"claude", origin:{signIn, filedWithKey}} as never,
 			{id:"claude", keyRelay:true, signIn:"token"} as never, "opus");
@@ -87,6 +87,14 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	assert.equal(fallback.key, undefined);
 	assert.equal(fallback.itemSignIn, "subscription");
 	assert.equal(agentTurn("claude", null, null, undefined, fallback.itemSignIn)?.counted, false);
+	for (const order of [[true, false], [false, true]]) {
+		const item = { agent: newAgent("claude", "opus") };
+		for (const counted of order) noteAgentTurn(item as never, { counted, reported: counted ? 8 : 12, cost: null, fiveHour: null });
+		assert.equal(item.agent.tokens, "counted");
+		assert.equal(item.agent.reportedTokens, 20);
+		assert.equal(item.agent.subscriptionTokens, 12);
+		assert.match(tokenWords({ tokens: 8, rawTokens: 8 }, { tokens: 100 }, item.agent), /12 subscription tokens/);
+	}
 	source = null;
 	calls.length = 0;
 	for (const place of [hosted, machine]) {

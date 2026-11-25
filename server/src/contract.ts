@@ -1554,12 +1554,14 @@ export interface ItemAgent {
 	model: string;
 	/** The effort its turns run at (`CreateItemInput.effort`); null or absent: the agent's default. */
 	effort?: string | null;
-	/** The machine must still report this sign-in method to run. The filing-time method determines accounting. */
+	/** The sign-in method at filing. Each turn records the method it uses. */
 	signIn?: "api-key" | "chatgpt" | "subscription";
 	/** Subscription tokens are shown but do not count toward the budget. Unreported tokens are unknown. */
 	tokens: "counted" | "subscription" | "not_reported";
 	/** Every token the agent reported over the item's turns, counted or not. */
 	reportedTokens: number;
+	/** Subscription tokens on an item that also has counted turns. */
+	subscriptionTokens?: number;
 	/** The cost the agent reported for its conversation so far (OpenCode's `usage_update.cost`); null where it reported none. */
 	cost: { amount: number; currency: string } | null;
 	/** Claude Code's 5-hour window, % used, at the start of the item's first turn and at the end of its latest. */
