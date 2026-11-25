@@ -23,7 +23,7 @@ export type CriterionId = typeof readinessCriteria[number]["id"];
 export interface Finding { id: CriterionId; pass: boolean | null; reason: string }
 export interface Judgment { findings: Finding[] }
 export interface ReadinessReport { at: number; level: ReadinessLevel; ci: CiHistory | null; passed: number; findings: Finding[] }
-export interface RepositoryReadiness { latest: ReadinessReport | null; run: "new" | "running" | "finished"; weekly: boolean; error: string | null; diagnosis?: import("../repo-setup/types.js").SetupDiagnosis }
+export interface RepositoryReadiness { ciReadFailed?: boolean; latest: ReadinessReport | null; run: "new" | "running" | "finished"; weekly: boolean; error: string | null; diagnosis?: import("../repo-setup/types.js").SetupDiagnosis }
 
 export function setupReport(findings: Finding[], at: number, ci: CiHistory | null): ReadinessReport {
 	const proven = (id: CriterionId) => findings.some(f => f.id === id && f.pass);

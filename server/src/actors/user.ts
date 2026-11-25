@@ -444,7 +444,6 @@ async function repositoryView(c: UserCtx & Pick<CreateCtx, "client"> & { cron: P
 		try { scan = await refreshSetupScan(c, repositoryId, project); }
 		catch { scanError = "Could not read the default branch. Open this page again to retry."; }
 	}
-	if (scan?.ciReadFailed && !scanError) scanError = "Could not refresh CI history from GitHub.";
 	const knowledge = await setupKnowledge(c.db, c.vars.profile!.uid, project);
 	const inputs = scan ? await setupInputs(c.db, project, scan, setup.command, checks) : null;
 	return {

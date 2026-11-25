@@ -59,7 +59,7 @@ export async function setupInputs(db: Db, project: string, scan: ReadinessScan &
 		{ id: "checks", pass: checks.length ? null : false, reason: checks.length ? "Checks saved. Finish setup to check their results and time." : "No checks are saved." },
 		...scan.findings,
 	];
-	return { key: digest([scan.commit, hashes, evidence]), findings, evidence, at: scan.at, ci: scan.ci };
+	return { key: digest([scan.commit, hashes, evidence]), findings, evidence, at: scan.at, ci: scan.ci, ciReadFailed: scan.ciReadFailed };
 }
 
 export async function repositoryReadiness(db: Db, project: string, inputs: Awaited<ReturnType<typeof setupInputs>> | null, weekly: boolean, scanError: string | null = null): Promise<RepositoryReadiness> {
@@ -85,7 +85,7 @@ export async function repositoryReadiness(db: Db, project: string, inputs: Await
 		});
 		latest = setupReport(findings, last?.at ?? inputs.at, inputs.ci);
 	}
-	return { latest, weekly, ...(attempt?.diagnosis && { diagnosis: JSON.parse(attempt.diagnosis) as SetupDiagnosis }), run: running ? "running" : attempt ? "finished" : "new", error: scanError ?? (pending && !running ? "The setup check was interrupted." : attempt?.error ?? null) };
+	return { latest, weekly, ciReadFailed: inputs?.ciReadFailed, ...(attempt?.diagnosis && { diagnosis: JSON.parse(attempt.diagnosis) as SetupDiagnosis }), run: running ? "running" : attempt ? "finished" : "new", error: scanError ?? (pending && !running ? "The setup check was interrupted." : attempt?.error ?? null) };
 }
 
 export async function claimAssessment(db: Db, project: string, session: string, now: number): Promise<boolean> {

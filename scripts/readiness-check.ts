@@ -146,7 +146,7 @@ test("weekly runs require opting in and share the manual claim", async () => {
 	const db = { execute: async (q: string, ...args: SQLInputValue[]) => sqlite.prepare(q).all(...args) } as Parameters<typeof claimAssessment>[0];
 	assert.equal(await claimAssessment(db, "repo", "scheduled", now), true);
 	assert.equal(await claimAssessment(db, "repo", "manual", now), false);
-	const inputs = { key: "base", ci: history, at: now, evidence: { hasSavedSetup: true, savedChecks: ["test"], buildCommit: null, ...buildProof(undefined, []) },
+	const inputs = { key: "base", ci: history, ciReadFailed: true, at: now, evidence: { hasSavedSetup: true, savedChecks: ["test"], buildCommit: null, ...buildProof(undefined, []) },
 		findings: answers("areas").map(f => ({ ...f, pass: ["setup", "checks", "guide"].includes(f.id) ? null : f.pass })) };
 	await db.execute("UPDATE readiness SET inputs='base'");
 	const view = () => repositoryReadiness(db, "repo", inputs, false);
@@ -160,7 +160,9 @@ test("weekly runs require opting in and share the manual claim", async () => {
 	assert.equal(await claimAssessment(db, "repo", "scheduled", now), false);
 	assert.equal(await claimAssessment(db, "repo", "manual", now + 1), true);
 	await finishAssessment(db, "manual", "Could not read repository.");
-	assert.equal((await view()).error, "Could not read repository.");
+	const failed = await view();
+	assert.equal(failed.error, "Could not read repository.");
+	assert.equal(failed.ciReadFailed, true);
 	sqlite.close();
 });
 

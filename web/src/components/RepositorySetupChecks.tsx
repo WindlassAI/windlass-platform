@@ -75,8 +75,8 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 				{ci.hasCi && ` · ${plural(ci.flaky.length, "flaky job")}`}
 				{!!ci.flaky.length && ": " + ci.flaky.map(job => `${job.name} (${job.count}×)`).join(", ")}
 				{` · ${plural(ci.reverts, "revert")}`}{ci.redMerges > 0 && ` · ${plural(ci.redMerges, "red commit")} after a merge`}
-			</> : "Waiting for a successful read"}</p>
-			{ci && <p className="usage-note">Last read {absoluteTime(ci.at)}</p>}
+			</> : "Could not read CI history from GitHub"}</p>
+			{ci && <p className="usage-note">{data.ciReadFailed && "Could not refresh CI history from GitHub. "}Last read {absoluteTime(ci.at)}</p>}
 			{ci?.flaky.map((job, i) => <div key={job.name}>{fileButton(i, "File as work item: make " + job.name + " reliable")}</div>)}
 		</div>}
 		<p className="usage-note">Draft contributor guides and skills from the repository and its latest build. A second reviewer checks the files before the pull request opens.</p>
