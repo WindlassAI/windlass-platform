@@ -20,8 +20,7 @@ import { useApp, useAuth } from "../state/app";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 import { useHostedProviders, allowanceState, useAccount, useAllowance, useModels, useNow } from "../state/hooks";
-import { ArrowUpIcon, CheckIcon, CloudIcon, LockIcon, MachineIcon, PlusIcon, RepoIcon, SlidersIcon, WarnIcon } from "./Icons";
-import { accessTokenFact, claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
+import { ArrowUpIcon, CheckIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SlidersIcon, WarnIcon } from "./Icons";
 import { modeMenu } from "./Modes";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { hostedAgentProblem, capabilitiesOf } from "../../../server/src/sandbox/harnesses.js";
@@ -36,57 +35,24 @@ import { Popover } from "./ui/Popover";
 import { AgentGlyph, AgentLogo } from "./ui/Pill";
 import { RepoTile } from "./RepoTile";
 import { modelGroups as sharedModelGroups } from "./ModelPicker";
-import { AgentPill, EffortButton, LockHint, OptionsButton, WherePill, effortGroup } from "./TrayControls";
+import { AgentPill, EffortButton, IsolationChip, OptionsButton, WherePill, effortGroup } from "./TrayControls";
 import { ProviderLogo } from "./AgentLogos";
 import { SplitButton } from "./ui/Button";
 import { Tooltip } from "./ui/Tooltip";
 import { useSurface } from "./ui/useMediaQuery";
-import { hardenedItemNote, machineLabel } from "../lib/machines";
+import { machineLabel } from "../lib/machines";
 
 import { ITEM_MODE_WORDS, orchestrateProblem } from "../lib/feature";
-
-function sandboxOpen(profile: SandboxProfile, claude: ClaudeFacts | null): boolean {
-	if (claude) return true;
-	return profile.approval === "full" || profile.commandNetwork || profile.commandsCanReadAccessToken;
-}
-
-interface Fact {
-	text: string;
-	long: string;
-	open: boolean;
-}
-
-export function sandboxFacts(profile: SandboxProfile, claude: ClaudeFacts | null = null): Fact[] {
-	return [
-		claude
-			? { text: `${claude.mode.name} mode`, long: `runs in ${claude.mode.name} mode`, open: OPEN_MODES.has(claude.mode.id) }
-			: profile.approval === "auto"
-				? { text: "commands sandboxed", long: "runs what the sandbox contains, refuses the rest", open: false }
-				: { text: "runs every call", long: "runs every call without asking", open: true },
-		claude && (claude.codex || claude.opencode || profile.claudeRelay) && !profile.commandNetwork && profile.available
-			? { text: claude.codex ? "Codex relay" : claude.opencode ? "OpenCode relay" : "Claude relay only", long: commandNetworkFact(profile, claude), open: false }
-			: { text: profile.commandNetwork ? "network on" : "no network", long: commandNetworkFact(profile, claude), open: profile.commandNetwork },
-		claude?.hosted ? { text: "Settings key via relay", long: "The sandbox can use a placeholder for this turn. Your provider key stays on the platform.", open: true } : claude?.codex ? {text:"credentials on machine", long:"Commands can use the Codex model relay. OpenAI credentials stay on the machine.",open:true} : claude?.opencode
-			? { text: "credentials on machine", long: "Commands can use the OpenCode model relay. Provider credentials stay on the machine.", open: true }
-			: claude
-			? { text: profile.claudeRelay ? "Claude login via relay" : "Claude login readable", long: `commands can use your Claude login. ${claudeLoginFact(profile)}`, open: true }
-			: profile.modelRelay
-				? { text: profile.commandsCanReadAccessToken ? "placeholder readable" : "placeholder hidden from commands", long: accessTokenFact(profile), open: profile.commandsCanReadAccessToken }
-			: profile.commandsCanReadAccessToken
-				? { text: "token readable", long: accessTokenFact(profile), open: true }
-				: { text: "token hidden from commands", long: accessTokenFact(profile), open: false },
-	];
-}
 
 function launchLimit(numbers: UsageNumbers | null, hostedNotice = false): { text: string; warn: boolean } | null {
 	if (numbers === null) return null;
 	const left = allowanceState(numbers, USAGE_LOW_SHARE);
 	const resets = localTime(numbers.resetsAt);
 	if (numbers.hosted && monthState(numbers) === "used") return hostedNotice ? null : { warn: true, text: `Hosted minutes are used up until ${monthReset(numbers.hosted)}. A hosted agent launched now is created, and waits; one on your own machine starts at once.` };
-	if (left === "used") return { warn: true, text: `Today's sandbox time is used up. An agent launched now is created, and cannot start working before ${resets}, when the allowance is whole again.` };
+	if (left === "used") return { warn: true, text: `Today's hosted time is used up. An agent launched now is created, and cannot start working before ${resets}, when the allowance is whole again.` };
 	const { kept, limit } = numbers.sandboxes;
 	if (limit !== null && kept >= limit) return { warn: true, text: `You keep ${limit} hosted sandboxes, the most an account may have. An agent launched here now is created, and cannot start working until you free one. One on your own machine is not counted.` };
-	if (left === "low" && numbers.leftSeconds !== null) return { warn: false, text: `${sandboxTime(numbers.leftSeconds)} of today's sandbox time is left. A turn that runs longer is stopped, with its files kept; the allowance is whole again at ${resets}.` };
+	if (left === "low" && numbers.leftSeconds !== null) return { warn: false, text: `${sandboxTime(numbers.leftSeconds)} of today's hosted time is left. A turn that runs longer is stopped, with its files kept; the allowance is whole again at ${resets}.` };
 	return null;
 }
 
@@ -358,7 +324,6 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		: options.modes;
 	const modes = launch && other && reportedModes?.length ? { modes: reportedModes, default: reportedModes.some((mode) => mode.id === launch.default) ? launch.default : (reportedModes[0] as SessionMode).id } : launch;
 	const mode = modes ? (modes.modes.find((candidate) => candidate.id === modeChoice) ?? (started.harness === harness ? modes.modes.find((candidate) => candidate.id === started.mode) : undefined) ?? modes.modes.find((candidate) => candidate.id === lastOf?.mode) ?? modes.modes.find((candidate) => candidate.id === modes.default) ?? null) : null;
-	const claude: ClaudeFacts | null = other ? { hosted: !chosenMachine, codex: harness === "codex", opencode: harness === "opencode", mode: mode ?? { id: "build", name: "Build", description: null } } : null;
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 
 	const defaultProfile = startPlace?.profile ?? defaults.profile;
@@ -655,20 +620,20 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		!other || (!machine && candidate.platformKeys) || candidate.id === HARNESS_PROFILE ||
 		(hasCodexSandbox(machine) && candidate.id === "docker-windlass-sandbox");
 	const hasAvailableProfile = placeProfiles.some((candidate) => candidate.available && supportsHarness(candidate, chosenMachine));
-	const sandboxWarn = (chosenProfile !== null && sandboxOpen(chosenProfile, claude)) || (!other && ignored.profile !== null) || defaultsErrors.length > 0 || !hasAvailableProfile;
+	// Amber only where something needs doing now: Open is the user's own choice, and a saved choice that is not offered falls back without a word.
+	const sandboxWarn = defaultsErrors.length > 0 || !hasAvailableProfile;
 	const profileRows = (machine: MachineSummary | null): MenuItem[] => {
 		const here = machine === null ? (chosenMachine === null) : chosenMachine?.machineId === machine.machineId;
 		const list = machine ? machine.profiles : (info?.profiles ?? []);
 		return list
 			.filter((candidate) => supportsHarness(candidate, machine))
 			.map((candidate) => {
-				const facts = sandboxFacts(candidate, here ? claude : null);
 				return {
 					id: candidate.id,
 					label: candidate.name,
-					description: candidate.available ? facts.map((fact) => fact.text).join(" · ") : (candidate.unavailableReason ?? "This deployment cannot run it."),
-					title: candidate.available ? facts.map((fact) => fact.long).join("; ") : (candidate.unavailableReason ?? undefined),
-					tone: candidate.available && facts.some((fact) => fact.open) ? ("warn" as const) : undefined,
+					// A machine's profile can be out of use for a reason its owner can fix (Docker stopped); the deployment's are never listed then.
+					description: candidate.available ? candidate.summary : (candidate.unavailableReason ?? "Can't be used right now."),
+					wrap: true,
 					disabled: !candidate.available,
 					checked: here && profile === candidate.id,
 					onSelect: () => {
@@ -678,21 +643,56 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				};
 			});
 	};
+	// The hosted sizes, also while a machine is chosen: picking one moves the agent to hosted.
+	const hostedSizes = (info?.hostedSizes ?? []).filter((size) => planSizes === null || planSizes.includes(size.id));
+	const hostedSizeShown = hostedSizes.length > 1 ? (hostedSize ?? startingSize(hostedSizes, savedSize, item)) : null;
+	const sizeGroup: MenuGroup | null = hostedSizeShown
+		? {
+				id: "size",
+				label: "Size",
+				items: hostedSizes.map((size) => ({
+					id: `size:${size.id}`,
+					value: size.id,
+					label: sizeName(size.id),
+					description: [sizeSpec(size.id), perHour(size.usdPerHour), size.id === savedSize && chosen ? `saved for ${chosen.repository.name}` : null].filter(Boolean).join(" · "),
+					checked: chosenMachine === null && hostedSizeShown === size.id,
+					disabled: busy !== null,
+					onSelect: () => {
+						setPlace(null);
+						setSizeChoice(size.id);
+					},
+				})),
+			}
+		: null;
+	const hostedChoice = chosenMachine === null && chosenProfile ? chosenProfile : (info?.profiles.find((candidate) => candidate.available && candidate.id === defaultProfile) ?? info?.profiles.find((candidate) => candidate.available));
+	const hostedWords = [hostedChoice?.name, hostedSizeShown ? sizeName(hostedSizeShown) : null].filter(Boolean).join(" · ") || "Uses your daily hosted time";
+	const isolationFooter = (
+		<a className="ui-menu-action start-isolation-link" {...linkProps({ name: "docs", slug: "security" })}>
+			How sandboxes are isolated →
+		</a>
+	);
 	const profileMenu = (machine: MachineSummary | null): MenuSpec | undefined =>
-		item ? undefined : { label: `Sandbox ${machine ? `on ${machineLabel(machine)}` : "hosted"}`, width: 300, groups: [{ id: "profiles", label: "Sandbox", note: machine ? machineLabel(machine) : "hosted", items: profileRows(machine) }] };
+		item
+			? undefined
+			: {
+					label: machine ? `Isolation on ${machineLabel(machine)}` : "Hosted: isolation and size",
+					width: 330,
+					hints: false,
+					groups: [{ id: "profiles", label: "Isolation", items: profileRows(machine) }, ...(machine === null && sizeGroup ? [sizeGroup] : [])],
+					footer: isolationFooter,
+				};
 	const machineState = (machine: MachineSummary) => (machine.status === "online" ? "online" : machine.status === "offline" ? `offline since ${clockTime(machine.since, now)}` : "waiting for its runner");
 	const whereNotes = [
 		placeProblem ? { text: placeProblem, warn: true } : null,
 		!hasAvailableProfile ? { text: chosenMachine ? `“${machineLabel(chosenMachine)}” has no sandbox that can be used right now.` : "This deployment has no sandbox that can be used right now.", warn: true } : null,
-		!other && ignored.profile ? { text: ignored.profile, warn: true } : null,
 		...defaultsErrors.map((line) => ({ text: line, warn: true })),
 		item && chosenMachine
 			? {
-					text: `It runs without asking on “${machineLabel(chosenMachine)}”, inside its container, and costs no hosted time. ${chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${machineLabel(chosenMachine)}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}${hardenedItemNote(chosenMachine)}`,
+					text: `Runs on “${machineLabel(chosenMachine)}” without asking. ${chosenMachine.status === "online" ? "If the machine is away, the item waits." : `It is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}`,
 					warn: false,
 				}
 			: null,
-		other && chosenMachine && !hasCodexSandbox(chosenMachine) ? { text: `${other} runs in the hardened container only.`, warn: false } : null,
+		other && chosenMachine && !hasCodexSandbox(chosenMachine) ? { text: `${other} runs in Open isolation only.`, warn: false } : null,
 	].filter((note) => note !== null);
 	const whereGroups: MenuGroup[] =
 		mine.length > 0
@@ -700,13 +700,13 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					{
 						id: "hosted",
 						label: "Hosted",
-						note: "counts against your daily sandbox time",
-						items: [{ id: "platform", label: "Hosted sandbox", icon: <CloudIcon size={15} />, description: chosenMachine === null && chosenProfile ? chosenProfile.name : "A sandbox the platform makes and controls", checked: chosenMachine === null, onSelect: () => setPlace(null), submenu: profileMenu(null) }],
+						note: "uses your daily hosted time",
+						items: [{ id: "platform", label: "Hosted", icon: <CloudIcon size={15} />, description: hostedWords, checked: chosenMachine === null, onSelect: () => setPlace(null), submenu: profileMenu(null) }],
 					},
 					{
 						id: "machines",
-						label: "Your machines",
-						note: "costs no hosted time",
+						label: "My machines",
+						note: "free",
 						items: mine.map((machine) => {
 							const unusable = why(machine);
 							const isChosen = chosenMachine?.machineId === machine.machineId;
@@ -714,7 +714,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								id: machine.machineId,
 								label: machineLabel(machine),
 								icon: <MachineIcon size={15} />,
-								description: unusable ?? `${machine.os} ${machine.arch} · ${machineState(machine)}${isChosen && chosenProfile ? ` · ${chosenProfile.name}` : ""}`,
+								description: unusable ?? `${machineState(machine)}${isChosen && chosenProfile ? ` · ${chosenProfile.name}` : ""}`,
 								title: unusable ?? undefined,
 								trailing: <span className={`ui-dot ui-dot-${machine.status === "online" ? "ok" : "off"}`} aria-hidden="true" />,
 								disabled: unusable !== null,
@@ -726,7 +726,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 						}),
 					},
 				]
-			: [{ id: "profiles", label: "Sandbox", note: "hosted", items: profileRows(null) }];
+			: [{ id: "profiles", label: "Isolation", note: "hosted", items: profileRows(null) }, ...(sizeGroup && !item ? [sizeGroup] : [])];
 	const repoRow: MenuItem = {
 		id: "repo",
 		value: "repo",
@@ -740,7 +740,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// A work item on no machine of the user's runs hosted: only the repository is chosen.
 	const whereChoices: MenuGroup[] = item && mine.length === 0 ? [] : whereGroups;
 	const whereSpec: MenuSpec = {
-		label: "Where it runs, and on what",
+		label: "Where it runs",
 		width: 320,
 		submenuWidth: 340,
 		hints: { right: "open" },
@@ -769,7 +769,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 
 	const machineEntry = chosenMachine?.harnesses?.find(entry => entry.id === harness) ?? null;
 	const machineName = chosenMachine ? machineLabel(chosenMachine) : null;
-	const machineProblem = chosenMachine && !hardened ? `Runs only in the hardened container, which “${machineName}” cannot make now.` : null;
+	const machineProblem = chosenMachine && !hardened ? `Runs only in Open isolation, which “${machineName}” can't run now.` : null;
 	const agentButtons: { id: HarnessId; reason?: string | null }[] = [{ id: "windlass" }];
 	if (chosenMachine) {
 		const here = harnessesHere(chosenMachine);
@@ -883,7 +883,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		groups: modelGroups,
 		footer: (
 			<>
-				{item && other ? <p className="ui-menu-note">{other} works on the item in the hardened container without asking, and runs Quick: Plan first is Windlass's.{capabilitiesOf(harness).checks === "platform" ? " The platform runs this repository's saved checks when it ends a turn." : capabilitiesOf(harness).checks === "none" ? " It does not run this repository's checks, so CI decides." : ""}</p> : null}
+				{item && other ? <p className="ui-menu-note">{other} works on the item in Open isolation without asking, and runs Quick: Plan first is Windlass's.{capabilitiesOf(harness).checks === "platform" ? " The platform runs this repository's saved checks when it ends a turn." : capabilitiesOf(harness).checks === "none" ? " It does not run this repository's checks, so CI decides." : ""}</p> : null}
 				{other && !chosenMachine ? <p className="ui-menu-note">Hosted agents always use your Settings keys.</p> : null}
 				{other && chosenMachine ? <p className="ui-menu-note">Choose whose sign-in it uses on the <a className="link" {...linkProps({ name: "machines" })}>Machines</a> page.{onPullRequest(harness)}</p> : null}
 				{!other && modelList && modelList.source !== "account" ? <p className="ui-menu-note">{modelsNote(modelList)}</p> : null}
@@ -998,10 +998,10 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const launchWord = busy === "creating" ? "Creating" : busy === "prompting" ? "Sending" : busy === "filing" ? "Filing" : item ? "File" : "Launch";
 	const launchLabel = item && orchestrateOffered && busy === null ? `${launchWord} · ${ITEM_MODE_WORDS[shownItemMode].name}` : launchWord;
 
-	const facts = !item && chosenProfile ? sandboxFacts(chosenProfile, claude) : [];
-	const where = chosenMachine ? `runs on ${machineLabel(chosenMachine)}` : hostedOption ? `runs hosted, ${sizeName(hostedOption.id)} (${sizeSpec(hostedOption.id)}${perHour(hostedOption.usdPerHour) ? `, about ${perHour(hostedOption.usdPerHour)}` : ""})` : "runs hosted";
-	const anyOpen = facts.some((fact) => fact.open);
-	const safety = facts.length > 0 ? sentence([...facts.map((fact) => fact.long), where]) : null;
+	// The isolation chip at rest: the word, in plain ink, and one outcome line with where it runs.
+	const where = chosenMachine ? `Runs on ${machineLabel(chosenMachine)}.` : hostedOption ? `Runs hosted, ${sizeName(hostedOption.id)} (${sizeSpec(hostedOption.id)}${perHour(hostedOption.usdPerHour) ? ` · ${perHour(hostedOption.usdPerHour)}` : ""}).` : "Runs hosted.";
+	const signIn = !other ? "" : chosenMachine ? ` Uses ${machineLabel(chosenMachine)}'s ${HARNESS_NAMES[harness]} sign-in.` : " Uses your API key.";
+	const isolation = !item && chosenProfile ? { name: chosenProfile.name, sentence: `${chosenProfile.name}: ${chosenProfile.summary} ${where}${signIn}` } : null;
 
 	const modeOpen = mode !== null && OPEN_MODES.has(mode.id);
 	const modeRows: MenuItem[] = modes && mode ? (modeMenu(modes.modes, mode.id, setMode, modeOpen).groups[0]?.items ?? []).map((row) => ({ ...row, wrap: true })) : [];
@@ -1024,7 +1024,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				},
 			]
 		: [{ id: "modes", label: "Mode", items: modeRows.length > 0 ? modeRows : [{ id: "mode:none", label: "No modes", description: "This agent has no modes to choose", disabled: true }] }];
-	const sizeGroups: MenuGroup[] = hostedSize
+	// An agent's size is chosen with Hosted (Where); a work item's, whose Where may list no hosted row, here.
+	const sizeGroups: MenuGroup[] = hostedSize && item
 		? [
 				{
 					id: "size",
@@ -1032,8 +1033,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					items: sizes.map((size) => ({
 						id: `size:${size.id}`,
 						value: size.id,
-						label: `${sizeName(size.id)} · ${sizeSpec(size.id)}`,
-						description: size.id === savedSize && chosen ? `Saved for ${chosen.repository.name}` : size.id === defaultSize ? (item ? "The default for work items" : "The default for agents") : undefined,
+						label: sizeName(size.id),
+						wrap: true,
+						description: [sizeSpec(size.id), size.id === savedSize && chosen ? `saved for ${chosen.repository.name}` : size.id === defaultSize ? "the default for work items" : null].filter(Boolean).join(" · "),
 						trailing: perHour(size.usdPerHour) ?? undefined,
 						checked: hostedSize === size.id,
 						disabled: busy !== null,
@@ -1047,13 +1049,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		width: 320,
 		hints: false,
 		groups: [...sizeGroups, ...optionsGroups],
-		footer:
-			safety || (item && chosenMachine) ? (
-				<p className={`ui-menu-note tray-safety${anyOpen ? " tone-warn" : ""}`}>
-					{anyOpen ? <WarnIcon size={13} /> : <LockIcon size={13} />}
-					<span>{safety ?? whereNotes.find((note) => !note.warn)?.text}</span>
-				</p>
-			) : undefined,
+		footer: item && chosenMachine ? <p className="ui-menu-note">{whereNotes.find((note) => !note.warn)?.text}</p> : undefined,
 	};
 	const optionsLabel = item ? "Filing options" : `Options${mode ? `: mode ${mode.name}` : ""}${hostedSize ? `, ${sizeName(hostedSize)} sandbox` : ""}`;
 
@@ -1182,19 +1178,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 						/>
 					</span>
 					<span className="start-tools-end tray-end">
-						<Menu spec={optionsSpec} open={open === "options"} onOpenChange={openOnly("options")} align="end" surface={phone ? undefined : "popover"} trigger={(props) => <OptionsButton trigger={props} label={optionsLabel} value={mode?.name} dot={modeOpen || orchestrateWarn !== null ? "warn" : null} />} />
-						{safety && !phone ? (
-							<LockHint sentence={safety} open={anyOpen}>
-								<span className="visually-hidden">
-									{facts.map((fact) => (
-										<span key={fact.text} className={fact.open ? "start-fact-open" : undefined}>
-											{fact.text} ({fact.long})
-										</span>
-									))}
-									<span>{where}</span>
-								</span>
-							</LockHint>
-						) : null}
+						<Menu spec={optionsSpec} open={open === "options"} onOpenChange={openOnly("options")} align="end" surface={phone ? undefined : "popover"} trigger={(props) => <OptionsButton trigger={props} label={optionsLabel} value={mode?.name} dot={orchestrateWarn !== null ? "warn" : null} />} />
+						{isolation && !phone ? <IsolationChip name={isolation.name} sentence={isolation.sentence} onOpen={() => setOpen("where")} /> : null}
 						<SplitButton type="submit" className="start-launch" icon={<ArrowUpIcon size={14} />} disabled={item ? !canFile : !canLaunch} menu={launchMenu} menuLabel={item ? "Filing options" : "Launch options"} aria-label={launchLabel} data-mode={item && orchestrateOffered ? shownItemMode : undefined}>
 							<span className="tray-hide-phone">{launchLabel}</span>
 						</SplitButton>
@@ -1243,12 +1228,3 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		</form>
 	);
 }
-
-function sentence(parts: readonly string[]): string {
-	return parts
-		.map((part) => part.trim().replace(/\.$/, ""))
-		.filter((part) => part !== "")
-		.map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}.`)
-		.join(" ");
-}
-

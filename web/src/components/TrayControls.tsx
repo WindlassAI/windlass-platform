@@ -1,6 +1,5 @@
-import type { ReactNode } from "react";
 import { effortChoices } from "../lib/models";
-import { ChevronDownIcon, CloudIcon, LockIcon, MachineIcon, SlidersIcon, WarnIcon } from "./Icons";
+import { ChevronDownIcon, CloudIcon, MachineIcon, ShieldIcon, SlidersIcon } from "./Icons";
 import { RepoTile } from "./RepoTile";
 import type { MenuGroup, TriggerProps } from "./ui/Menu";
 import { AgentGlyph } from "./ui/Pill";
@@ -123,12 +122,16 @@ export function OptionsButton({ trigger, label, dot, value }: { trigger: Trigger
 }
 
 /** The lock: what the sandbox lets its commands do, in a tooltip (and in words for assistive technology). The same sentence is in the options. */
-export function LockHint({ sentence, open, children }: { sentence: string; open: boolean; children?: ReactNode }) {
+/**
+ * The isolation at rest, in the user's word ("Strict" or "Open") and plain ink: Open is the user's own choice, not
+ * something that needs attention, so it is never amber. Its tooltip says what it means and where it runs; it opens Where.
+ */
+export function IsolationChip({ name, sentence, onOpen }: { name: string; sentence: string; onOpen(): void }) {
 	return (
 		<Tooltip content={sentence}>
-			<button type="button" className={`tray-icon tray-lock start-sandbox${open ? " tray-lock-open start-sandbox-open" : ""}`} aria-label={sentence} data-picker="lock">
-				{open ? <WarnIcon size={14} /> : <LockIcon size={14} />}
-				{children}
+			<button type="button" className="tray-isolation" aria-label={`Isolation: ${sentence}`} data-picker="isolation" data-value={name} onClick={onOpen}>
+				<ShieldIcon size={13} />
+				<span>{name}</span>
 			</button>
 		</Tooltip>
 	);

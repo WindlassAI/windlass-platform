@@ -1126,7 +1126,7 @@ async function main(server: Server | null): Promise<void> {
 		assert(user.kind === "user" && user.text === promptOne && user.effort === "low" && user.turn === 1, `first item is ${plain(user).slice(0, 200)}`);
 		assert(watch.items.at(-1)?.kind === "turn.ended", "the last item is not turn.ended");
 		assert(watch.items.filter((item) => item.kind === "turn.ended").length === 1, "more than one turn.ended");
-		assert(watch.items.some((item) => item.kind === "platform" && item.text === "Creating sandbox"), 'no "Creating sandbox" item');
+		assert(watch.items.some((item) => item.kind === "platform" && item.text.startsWith("Starting a hosted sandbox")), 'no "Starting a hosted sandbox" item');
 		const windlass = watch.items.filter((item) => item.kind === "windlass");
 		assert(windlass.length > 5, `only ${windlass.length} windlass items`);
 		assert(watch.deltas.length > 0, "no delta events");
@@ -1204,7 +1204,7 @@ async function main(server: Server | null): Promise<void> {
 		dense(watch.items);
 		const second = watch.items.filter((item) => item.turn === 2);
 		assert(second[0].kind === "user" && second.at(-1)?.kind === "turn.ended", "turn 2 does not run from its user item to its turn.ended");
-		assert(!second.some((item) => item.kind === "platform" && item.text === "Creating sandbox"), "turn 2 created a sandbox again");
+		assert(!second.some((item) => item.kind === "platform" && item.text.startsWith("Starting a hosted sandbox")), "turn 2 created a sandbox again");
 		const snapshot = await sessionHandle.snapshot();
 		assert(snapshot.windlassSessionId === afterOne?.windlassSessionId, `Windlass session changed from ${afterOne?.windlassSessionId} to ${snapshot.windlassSessionId}`);
 		assert(plain(snapshot.timeline) === plain(watch.items), "snapshot differs from the events");
@@ -1507,7 +1507,7 @@ async function main(server: Server | null): Promise<void> {
 				// The fake layer's sandboxes lived in the server that was killed.
 				const warning = watchThree.items.find((item) => item.kind === "platform" && item.level === "warn");
 				assert(warning?.kind === "platform" && warning.text.includes("no longer exists"), "no warning that the earlier sandbox is gone");
-				assert(watchThree.items.some((item) => item.kind === "platform" && item.text === "Creating sandbox"), "no new sandbox was created");
+				assert(watchThree.items.some((item) => item.kind === "platform" && item.text.startsWith("Starting a hosted sandbox")), "no new sandbox was created");
 			}
 			return `turn ${turn} ${ended.outcome}`;
 		});
@@ -3126,7 +3126,7 @@ async function idleChecks(server: Server, client: Client, uid: string, token: st
 			const ended = await watch.untilEnded(turn);
 			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
 			assert(watch.items.some((item) => item.kind === "platform" && item.turn === turn && item.text === "Resuming sandbox"), 'no "Resuming sandbox" item');
-			assert(!watch.items.some((item) => item.kind === "platform" && item.turn === turn && item.text === "Creating sandbox"), "a new sandbox was created");
+			assert(!watch.items.some((item) => item.kind === "platform" && item.turn === turn && item.text.startsWith("Starting a hosted sandbox")), "a new sandbox was created");
 			if (!FAKE) assert(containerState(sandboxOf() ?? "") === "running", "the container is not running after the turn");
 			return `turn ${turn} ${ended.outcome} in the same sandbox`;
 		});
@@ -3196,7 +3196,7 @@ async function idleChecks(server: Server, client: Client, uid: string, token: st
 			const ended = await watch.untilEnded(turn);
 			assert(ended.outcome === "succeeded", `outcome is ${ended.outcome}: ${ended.message ?? ""}`);
 			const fresh = watch.items.filter((item) => item.kind === "platform" && item.turn === turn);
-			assert(fresh.some((item) => item.kind === "platform" && item.text === "Creating sandbox"), 'no "Creating sandbox" item');
+			assert(fresh.some((item) => item.kind === "platform" && item.text.startsWith("Starting a hosted sandbox")), 'no "Starting a hosted sandbox" item');
 			assert(!fresh.some((item) => item.kind === "platform" && item.level === "warn"), "the new sandbox came with a warning");
 			return `after ${after} ms: "${line.text}"; ${snapshot.timeline.length} items readable; turn ${turn} in a new sandbox`;
 		});
@@ -3669,9 +3669,9 @@ async function backupChecks(server: Server, client: Client, uid: string, token: 
 			const next = await turn("Write a short program");
 			const texts = next.notes.map((item) => item.text);
 			assert(next.notes.some((item) => item.level === "warn" && item.text.includes("no longer exists")), `no warning that the sandbox is gone: ${plain(texts)}`);
-			assert(texts.includes("Creating sandbox"), "no new sandbox was created");
+			assert(texts.some((text) => text.startsWith("Starting a hosted sandbox")), "no new sandbox was created");
 			const restored = next.notes.find((item) => item.text === RESTORED);
-			assert(restored?.level === "info" && texts.indexOf(RESTORED) > texts.indexOf("Creating sandbox"), `no line that the memory was restored, after the sandbox was created: ${plain(texts)}`);
+			assert(restored?.level === "info" && texts.indexOf(RESTORED) > texts.findIndex((text) => text.startsWith("Starting a hosted sandbox")), `no line that the memory was restored, after the sandbox was created: ${plain(texts)}`);
 			assert(!texts.includes(WITHOUT), "the timeline also says the memory is gone");
 			assert(next.snapshot.windlassSessionId === windlassSession, `the Windlass session is ${next.snapshot.windlassSessionId}, was ${windlassSession}`);
 			const continued = seqs(next.snapshot.timeline, (number) => number === next.number);
@@ -4459,7 +4459,7 @@ async function serverApprovalChecks(server: Server, client: Client, demoSignIn: 
 			assert(asked === null, `the replaced sandbox asked: ${plain(asked).slice(0, 200)}`);
 			await finish(one, turn);
 			const texts = one.watch.items.flatMap((item) => (item.kind === "platform" && item.turn === turn ? [item.text] : []));
-			assert(texts.includes("Creating sandbox"), `no new sandbox was made: ${plain(texts)}`);
+			assert(texts.some((text) => text.startsWith("Starting a hosted sandbox")), `no new sandbox was made: ${plain(texts)}`);
 			assert(recalled(linesOf(one, turn)), `lines: ${plain(linesOf(one, turn))}`);
 			return `nothing said in the same sandbox; in the one that replaced it: "${linesOf(one, turn)[0]}"`;
 		});
@@ -4736,7 +4736,7 @@ async function snapshotTimings(server: Server, client: Client, github: GithubSta
 					await actor.prompt({ text: "Explore the workspace" });
 					await waitFor("the benchmark turn", async () => (await actor.snapshot()).timeline.some(t => t.kind === "turn.ended"), TURN_MS, 500);
 					const { timeline } = await actor.snapshot();
-					const start = timeline.find(t => t.kind === "platform" && t.text === "Creating sandbox");
+					const start = timeline.find(t => t.kind === "platform" && t.text.startsWith("Starting a hosted sandbox"));
 					const first = timeline.find(t => t.kind === "windlass");
 					const setup = timeline.find(t => t.kind === "setup" && t.state === "succeeded");
 					const last = timeline.at(-1);

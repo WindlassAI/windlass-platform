@@ -154,7 +154,7 @@ function PanelToggle() {
 	const hidden = usePanelHidden();
 	return (
 		<Tooltip content={hidden ? "Show the session's details" : "Hide the session's details"}>
-			<button type="button" className={`bar-icon panel-toggle${hidden ? "" : " bar-icon-on"}`} onClick={() => setPanelHidden(!hidden)} aria-pressed={!hidden} aria-label="Session details">
+			<button type="button" className={`bar-icon panel-toggle${hidden ? "" : " bar-icon-on"}`} onClick={() => setPanelHidden(!hidden)} aria-pressed={!hidden} aria-label="Agent details">
 				<PanelIcon />
 			</button>
 		</Tooltip>
@@ -539,10 +539,10 @@ export function Session({ sessionId, state, machine, item = null }: { sessionId:
 					/>
 				)}
 				<a className="to-details" href="#details">
-					Session details, tokens and changes
+					Agent details, usage and changes
 				</a>
 			</div>
-			<SidePanel egress={machine?.egress ?? (summary.place.kind === "hosted" ? platform.info?.hostedEgress : undefined)} hosted={summary.place.kind === "hosted"} domains={machine?.egressDomains} sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
+			<SidePanel egress={machine?.egress ?? (summary.place.kind === "hosted" ? platform.info?.hostedEgress : undefined)} hosted={summary.place.kind === "hosted"} domains={machine?.egressDomains} machineName={machine ? machineLabel(machine) : null} sessionId={sessionId} summary={summary} profile={profile} view={view} turnsEnded={state.turnsEnded} question={flow.question} />
 		</main>
 	);
 }

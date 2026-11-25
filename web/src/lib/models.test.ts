@@ -4,7 +4,7 @@ import type { ModelList } from "@contract";
 import { ModelProblem, checkEffort, chosenModel, standInModels } from "../../../server/src/account-models";
 import { PlatformError } from "../api/client";
 import { createMockClient, mockStandInModels } from "../api/mock";
-import { cleanModelName, credentialWords, effortsOf, modelIds, modelWords, modelsNote, modelsNoteShort, sourceOf } from "./models";
+import { cleanModelName, credentialWords, effortsOf, modelIds, modelWords, modelsNote, sourceOf } from "./models";
 import { sessionModelWords } from "./acp";
 
 const ada = { token: "mock:user:u_models:ada@example.com", profile: { uid: "u_models", email: "ada@example.com", demo: false } };
@@ -43,13 +43,9 @@ describe("the user's models", () => {
 
 	it("says in one line whose list it is, and of a stand-in why it stands in", () => {
 		expect(modelsNote(plan)).toMatch(/^The models of your ChatGPT plan, as read at \d\d:\d\d /);
-		expect(modelsNoteShort(plan)).toBe("your plan's models");
-		for (const source of SOURCES) {
-			expect(modelsNote(mockStandInModels(source))).toMatch(/^A stand-in list: /);
-			expect(modelsNoteShort(mockStandInModels(source))).toMatch(/^stand-in models: /);
-		}
-		expect(modelsNote(mockStandInModels("unavailable"))).toContain("could not be read just now");
-		expect(modelsNote(mockStandInModels("signed-out"))).toContain("signed in with ChatGPT");
+		expect(modelsNote(mockStandInModels("demo"))).toBe("The demo uses a scripted model for every choice.");
+		expect(modelsNote(mockStandInModels("unavailable"))).toContain("could not be loaded");
+		expect(modelsNote(mockStandInModels("signed-out"))).toBe("Connect ChatGPT to see your plan’s models.");
 		expect(modelsNote(mockStandInModels("demo"))).toContain("scripted model");
 	});
 });

@@ -2,7 +2,8 @@
  * A sandbox profile's layers, drawn the way they nest: the outermost layer is the outer box, each
  * next one sits inside it, and the agent's commands are at the centre.
  */
-import type { SandboxProfile, SessionMode } from "@contract";
+import type { EgressMode, SandboxProfile, SessionMode } from "@contract";
+import { CheckIcon } from "./Icons";
 
 /** "Docker container (non-root, no capabilities)" → name and detail. */
 function splitLayer(layer: string): { name: string; detail: string | null } {
@@ -84,6 +85,57 @@ export function claudeLoginFact(profile: SandboxProfile) {
 	return profile.claudeRelay ? "The machine’s relay holds the setup token." : "Runners without a credential relay also expose the setup token.";
 }
 
+/** One line of what a sandbox means for the user: `kept` when it is something held back from the agent's commands. */
+export interface Outcome {
+	text: string;
+	kept: boolean;
+}
+
+/**
+ * The three things a user asks of where an agent runs, as plain outcomes, from the profile's facts: whether
+ * its commands are sandboxed, whether they reach the internet, and whether they can use the sign-in. An open
+ * fact is said in plain words, not as a warning: it is the user's own choice. `egress` is a machine's
+ * network mode, which says whether commands reach the local network too. The technical detail is
+ * `ProfileFacts`, behind "How it's isolated".
+ */
+export function isolationOutcomes(profile: SandboxProfile, claude: ClaudeFacts | null, egress?: EgressMode): Outcome[] {
+	const commands: Outcome = claude
+		? { text: "Commands stay inside this agent's sandbox", kept: true }
+		: profile.approval === "auto"
+			? { text: "Commands run in a locked-down sandbox", kept: true }
+			: { text: "Commands run freely, without asking", kept: false };
+	const network: Outcome = profile.commandNetworkText
+		? { text: profile.commandNetwork ? "Commands reach only allowed hosts" : "Commands reach only the model", kept: true }
+		: profile.commandNetwork
+			? { text: egress === "open" ? "Commands can reach the internet and your network" : "Commands can reach the internet", kept: false }
+			: { text: "No internet from commands", kept: true };
+	const signIn: Outcome = claude
+		? claude.hosted
+			? { text: "Your API key stays on the platform", kept: true }
+			: claude.codex
+				? { text: "Your OpenAI sign-in stays on the machine", kept: true }
+				: claude.opencode
+					? { text: "Your provider sign-in stays on the machine", kept: true }
+					: { text: "Commands can use this machine's Claude login", kept: false }
+		: profile.commandsCanReadAccessToken
+			? { text: "Commands can use this turn's sign-in", kept: false }
+			: { text: "Your sign-in stays outside the sandbox", kept: true };
+	return [commands, network, signIn];
+}
+
+export function IsolationOutcomes({ outcomes }: { outcomes: Outcome[] }) {
+	return (
+		<ul className="outcomes" aria-label="What this means">
+			{outcomes.map((outcome) => (
+				<li key={outcome.text} className={outcome.kept ? "outcome-kept" : "outcome-open"}>
+					{outcome.kept ? <CheckIcon size={13} className="outcome-mark" /> : <span className="outcome-mark outcome-dot" aria-hidden="true" />}
+					{outcome.text}
+				</li>
+			))}
+		</ul>
+	);
+}
+
 /**
  * The three plain facts of a profile. The ChatGPT sign-in is in no sandbox; what a profile decides is
  * whether the agent's commands can read the short-lived access token a turn is handed. For Claude Code
@@ -108,16 +160,16 @@ export function ProfileFacts({ profile, claude = null }: { profile: SandboxProfi
 			</li>
 			<li>
 				<span className="fact-key">network</span>
-				<span className={`fact-value${profile.commandNetwork ? " fact-open" : ""}`}>{commandNetworkFact(profile, claude)}</span>
+				<span className="fact-value">{commandNetworkFact(profile, claude)}</span>
 			</li>
 			<li>
 				<span className="fact-key">sign-in</span>
 				{claude ? (
-					<span className="fact-value fact-open">{claude.hosted ? "Commands can use the turn’s relay placeholder. Your Settings key stays on the platform." : claude.codex ? "Commands can use the Codex model relay. OpenAI credentials stay on the machine." : claude.opencode ? "Commands can use the OpenCode model relay. Provider credentials stay on the machine." : <>commands in this container can use your Claude login. {claudeLoginFact(profile)}</>}</span>
+					<span className="fact-value">{claude.hosted ? "Commands can use the turn’s relay placeholder. Your Settings key stays on the platform." : claude.codex ? "Commands can use the Codex model relay. OpenAI credentials stay on the machine." : claude.opencode ? "Commands can use the OpenCode model relay. Provider credentials stay on the machine." : <>commands in this container can use your Claude login. {claudeLoginFact(profile)}</>}</span>
 				) : (
 					<span className="fact-value">
 						your ChatGPT sign-in is never in the sandbox
-						<span className={`fact-gloss${profile.commandsCanReadAccessToken ? " fact-open" : ""}`}>
+						<span className="fact-gloss">
 							{accessTokenFact(profile)}
 						</span>
 					</span>

@@ -28,10 +28,8 @@
 import { MAX_SERVER_NAME_CHARS, type AccountSettings, type PersonalServer } from "@contract";
 import { useId, useState } from "react";
 import { createPortal } from "react-dom";
-import { absoluteTime, day } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
-import { LongText } from "./Fold";
 import { WarnIcon } from "./Icons";
 import { Check } from "./ui/Check";
 
@@ -473,32 +471,18 @@ function ServerDialog({ settings, editing, onSaved, onClose }: { settings: Accou
 
 function Server({ server, onChange }: { server: PersonalServer; onChange(): void }) {
 	const unset = server.reads.filter((read) => !read.saved).map((read) => read.name);
-	const set = server.reads.filter((read) => read.saved).map((read) => read.name);
-	const list = (names: string[]) => (names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
 	return (
 		<li className="server">
 			<p className="server-head">
 				<span className="server-name">{server.name}</span>
-				<span className={`server-state${server.enabled ? "" : " server-state-off"}`}>{server.enabled ? (server.remote ? "reached at an address" : "started by a command") : "switched off in its definition"}</span>
+				<span className={`server-state${server.enabled ? "" : " server-state-off"}`}>{server.enabled ? (server.remote ? "URL" : "command") : "off"}</span>
 			</p>
-			<LongText lines={3} className="server-subject">
-				<span className="visually-hidden">{server.remote ? "reached at " : "started by "}</span>
-				{server.subject}
-			</LongText>
-			{server.unasked ? <p className="server-reason">Its tools run without asking: the platform allows each call for you.</p> : null}
-			{set.length > 0 ? <p className="server-reason">Reads {list(set)} from your account's secrets.</p> : null}
-			{unset.length > 0 ? (
-				<p className="server-reason tone-warn">
-					Reads {list(unset)}, which no secret of your account sets: it does not start until {unset.length === 1 ? "one does" : "they are set"}, unless a repository's secret of that name does.
-				</p>
-			) : null}
 			<p className="server-foot">
-				<span className="server-held">
-					changed{" "}
-					<time dateTime={new Date(server.updatedAt).toISOString()} title={absoluteTime(server.updatedAt)}>
-						{day(server.updatedAt)}
-					</time>
-				</span>
+				{server.enabled && unset.length > 0 && (
+					<span role="status"><span className="tone-warn">Needs {unset.join(", ")}</span>{" "}
+						<a className="link" href="#settings-secrets">Add secret</a>
+					</span>
+				)}
 				<button type="button" className="link server-forget" onClick={onChange} aria-label={`Change the MCP server ${server.name}`}>
 					Change…
 				</button>
@@ -516,14 +500,14 @@ export function PersonalServers({ settings, onChanged }: { settings: AccountSett
 		<section className="usage-section repo-saved" aria-labelledby="settings-servers">
 			<h2 className="usage-title" id="settings-servers">
 				MCP servers
-				{servers.length > 0 ? <span className="usage-count">{servers.length}</span> : null}
+				<span className="usage-count">{servers.length} of {settings.limits.servers}</span>
 				<button type="button" className="link secret-add" onClick={() => setOpen("add")} aria-label="Add an MCP server of your own">
 					Add…
 				</button>
 			</h2>
-			<p className="usage-lede">Servers of your own, which give every agent of yours their tools, whatever the repository. Windlass starts them without asking first.</p>
+			<p className="usage-lede">Tools for every agent. These servers start without asking.</p>
 			{servers.length === 0 ? (
-				<p className="usage-empty">No MCP server is saved for your account. A repository's own servers are named in the repository, and an agent asks before it starts one of those.</p>
+				<p className="usage-empty">No servers saved.</p>
 			) : (
 				<ul className="servers repo-approvals" aria-label="Your own MCP servers">
 					{servers.map((server) => (
@@ -531,10 +515,6 @@ export function PersonalServers({ settings, onChanged }: { settings: AccountSett
 					))}
 				</ul>
 			)}
-			<p className="usage-note">
-				A change holds from each agent's next turn, also in a sandbox that exists already; a turn that is running keeps the servers it started with. An agent's panel lists them once it has had a turn, with what Windlass says of each. An account can keep{" "}
-				{settings.limits.servers}.
-			</p>
 			{open !== null && (open === "add" || editing !== null) ? createPortal(<ServerDialog settings={settings} editing={editing} onSaved={onChanged} onClose={() => setOpen(null)} />, document.body) : null}
 		</section>
 	);

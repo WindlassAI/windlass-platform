@@ -256,7 +256,7 @@ describe("Linear in Settings", () => {
 	it("offers Connect, then shows unmapped teams, a saved mapping, and keeps it on reload", async () => {
 		const client = createMockClient({ pace: 0 });
 		const first = await open(client);
-		expect(section(first.host).textContent).toContain("posts the pull request and item outcome");
+		expect(section(first.host).textContent).not.toContain("windlass-quick");
 		expect(section(first.host).textContent).toContain("Connect Linear…");
 		// Begin leaves the account disconnected until Settings redeems the ticket.
 		const assign = vi.fn();
@@ -274,6 +274,7 @@ describe("Linear in Settings", () => {
 		const second = await open(createMockClient({ pace: 0 }), landing.hash);
 		expect(location.hash).toBe("");
 		expect(section(second.host).textContent).toContain("Linear is connected.");
+		expect(section(second.host).querySelector("details:not([open])")?.textContent).toContain("windlass-quick");
 		expect(section(second.host).querySelector("[data-testid='linear-workspace']")?.textContent).toContain("Connected to Acme as Ada Lovelace");
 		expect(section(second.host).querySelector("[data-testid='linear-team-ENG']")?.textContent).toContain("not mapped");
 		const [team, repository] = Array.from(section(second.host).querySelectorAll("select"));

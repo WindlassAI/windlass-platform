@@ -582,7 +582,9 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 				await holdSandbox(c, meta, false);
 			}
 		}
-		note(c, turn, "info", "Creating sandbox");
+		// In the user's words: where, and Strict or Open. The provider and its layers are in the panel's "How it's isolated".
+		const isolation = layer.sandboxes.profile(meta.profile).name;
+		note(c, turn, "info", meta.place.kind === "hosted" ? `Starting a hosted sandbox (${isolation})` : `Starting on ${meta.machineName ? `‘${meta.machineName}’` : "your machine"} (${isolation})`);
 		// Hold the layer before awaiting the create. Concurrent deletion can invalidate actor state.
 		const vars = c.vars;
 		plan = allowSnapshot ? await snapshotPlan(c, meta, secrets, layer) : null;

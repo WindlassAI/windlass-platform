@@ -40,7 +40,7 @@ it("adds, checks, replaces and removes a provider key", async () => {
 		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(ModelProviders) })));
 		await settle();
 		expect(host.querySelectorAll(".provider-row")).toHaveLength(4);
-		expect(state("openai")).toBe("not connected");
+		expect(state("openai")).toBe("no key");
 
 		await press(row("openai"), "Add key");
 		await enter("not-a-key");
@@ -67,7 +67,7 @@ it("adds, checks, replaces and removes a provider key", async () => {
 		expect(row("openai").textContent).toContain("…9876");
 		await press(row("openai"), "Remove");
 		await press(document.querySelector("dialog")!, "Remove key");
-		expect(state("openai")).toBe("not connected");
+		expect(state("openai")).toBe("no key");
 		expect(await client.user(auth).modelProviders()).toEqual([]);
 	} finally {
 		act(() => root.unmount());

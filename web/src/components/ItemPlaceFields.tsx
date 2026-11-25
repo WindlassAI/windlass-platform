@@ -11,8 +11,7 @@ import { EffortSelect, ModelSelect, agentDefaultLabel, modelDisplay } from "./Mo
 /** A saved work-item place in a few words: "nas · Claude Code · waits". */
 export function placeWords(policy: ItemPlaceDefaults, machines: readonly MachineSummary[] | null): string {
 	const { place, harness, placeFallback } = policy;
-	if (!place) return "Hosted sandbox";
-	if (place === "hosted") return "Hosted sandbox";
+	if (!place || place === "hosted") return "Hosted";
 	const where = place === "any-machine" ? "Any of my machines" : (machines?.find((m) => m.machineId === place.machine) ? machineLabel(machines.find((m) => m.machineId === place.machine)!) : "a removed machine");
 	return [where, HARNESS_NAMES[harness ?? "windlass"], placeFallback === "hosted" ? "else hosted" : "waits"].join(" · ");
 }

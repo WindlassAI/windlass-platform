@@ -183,13 +183,13 @@ export function DefaultsSection<T extends Saved>({
 								</select>
 							</div>}
 							{showHosted && <div className="field">
-								<label className="label" htmlFor={ids.profile}>Hosted sandbox</label>
+								<label className="label" htmlFor={ids.profile}>Hosted isolation</label>
 								<select id={ids.profile} className={`select${defaults.profile === null ? " is-inherited" : ""}`} value={defaults.profile ?? ""} onChange={e => void change("profile", { profile: (e.target.value as SandboxProfileId) || null })} disabled={saving !== null}>
 									<option value="">{elseProfile ? `${elseProfile.name} (${elseProfile.from})` : "Deployment default"}</option>
 									{info.profiles.filter(p => p.available).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
 									{defaults.profile && !savedProfile?.available && <option value={defaults.profile} disabled>{savedProfile?.name ?? defaults.profile} (unavailable)</option>}
 								</select>
-								{choices.ignored.profile && <p className="field-note tone-warn">{choices.ignored.profile}</p>}
+								{choices.ignored.profile && <p className="field-note">{choices.ignored.profile}</p>}
 							</div>}
 							<div className="field">
 								<label className="label" htmlFor={ids.model}>
@@ -220,7 +220,7 @@ export function DefaultsSection<T extends Saved>({
 							<ItemPlaceFields
 								defaults={defaults}
 								machines={machines.list ?? []}
-								inherited={whose === "repository" && account?.place ? `${placeWords(account, machines.list)} (account default)` : "Hosted sandbox (deployment default)"}
+								inherited={whose === "repository" && account?.place ? `${placeWords(account, machines.list)} (account default)` : "Hosted (deployment default)"}
 								disabled={saving !== null || (!!info.machines && machines.list === null && !machines.error)}
 								change={(patch) => void change("place", patch)}
 								size={sizes.length > 1 ? sizeField : null}

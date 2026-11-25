@@ -338,7 +338,7 @@ await section("what the usage meter reads", async () => {
 	expect("a user id that cannot be one lists nothing", (await w.sandboxes.list("../u1")).length === 0);
 	expect("an unused sandbox stops by itself after the idle timeout", w.sandboxes.idleStopMs === SETTINGS.idleTimeoutMs);
 	const price = w.sandboxes.price();
-	expect("a second is priced for the size E2B said the sandboxes have", Math.abs(price.usdPerSecond - 0.0000185) < 1e-9 && price.basis === "1 vCPU and 1,024 MiB of memory at E2B's published prices", JSON.stringify(price));
+	expect("a second is priced for the size E2B said the sandboxes have", Math.abs(price.usdPerSecond - 0.0000185) < 1e-9 && price.basis === "1 CPU and 1,024 MiB of memory", JSON.stringify(price));
 });
 
 await section("the dead-man switch", async () => {
@@ -694,7 +694,7 @@ await section("a sandbox that ran out of memory", async () => {
 	const handle = (await sandboxes.connect(id)) as E2bSandboxHandle;
 	expect(
 		"a sandbox that stopped answering with its memory used up says so, with the figures and the next size, and is restarted",
-		handle.notice?.startsWith("The sandbox ran out of memory (942 of 977 MiB). A larger size has more room: Standard · 2 vCPU, 4 GiB.") === true && plain(handle.outOfMemory) === plain({ usedMiB: 942, totalMiB: 977, size: "small" }) && lines.some((line) => line.includes("e2b.sandbox.unresponsive") && line.includes("memory=942/977MiB")),
+		handle.notice?.startsWith("The sandbox ran out of memory (942 of 977 MiB). A larger size has more room: Medium · 2 CPU · 4 GB.") === true && plain(handle.outOfMemory) === plain({ usedMiB: 942, totalMiB: 977, size: "small" }) && lines.some((line) => line.includes("e2b.sandbox.unresponsive") && line.includes("memory=942/977MiB")),
 		handle.notice ?? lines.join("\n"),
 	);
 	const events = await handle.memoryEvents();

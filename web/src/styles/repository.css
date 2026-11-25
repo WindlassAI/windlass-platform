@@ -867,3 +867,7 @@ a.agent-group-name:hover .agent-group-owner {
 		display: none;
 	}
 }
+
+.defaults .field-note.tone-warn {
+	color: var(--ink-dim);
+}

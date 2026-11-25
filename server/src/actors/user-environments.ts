@@ -75,7 +75,7 @@ export async function placeFacts(host: EnvironmentHost, project: string): Promis
 function unavailable(host: EnvironmentHost, saved: SavedInputs): string | null {
 	if (!host.snapshots.hosted && !host.snapshots.machines) return "This deployment keeps no prepared sandboxes.";
 	if (saved.command.trim() === "") return "Save a setup command first: an environment is what it prepares.";
-	if (saved.secrets > 0) return "A repository with saved secrets always starts cold, so it has no prepared environment.";
+	if (saved.secrets > 0) return "Not available for repositories with saved secrets.";
 	return null;
 }
 

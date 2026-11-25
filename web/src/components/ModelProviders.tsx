@@ -207,10 +207,10 @@ export function ModelProviders() {
 	return (
 		<section className="usage-section repo-saved" aria-labelledby="settings-providers">
 			<h2 className="usage-title" id="settings-providers">
-				Model providers
+				Model keys
 			</h2>
 			<p className="usage-lede">
-				Hosted agents always use these keys: Claude Code your Anthropic key, Codex your OpenAI key, OpenCode the key of its model's provider. On your machines an agent uses the machine's own sign-in first and a key for the rest, unless you choose the key on the Machines page. Windlass uses a key for the models listed under its provider, and your ChatGPT plan for the rest. A saved key stays on the platform.
+				Hosted agents use these keys. Keys stay on Windlass.{" "}<a className="link" href="/docs/settings#model-providers">How keys are used →</a>
 			</p>
 			{!auth.profile.demo && <ChatgptPlan />}
 			{list === null ? (
@@ -249,14 +249,9 @@ export function ModelProviders() {
 											{saved.checkedAt !== null ? <span title={absoluteTime(saved.checkedAt)}>checked {relativeTime(saved.checkedAt, now)}</span> : null}
 										</p>
 									) : null}
-									{saved ? null : (
-										<p className="agent-meta">
-											<GetKey provider={provider} />
-										</p>
-									)}
 									{failed ? <p className="field-note tone-bad" role="status">{failed}</p> : null}
 								</div>
-								<span className={`machine-used${saved ? (saved.ok ? " tone-good" : " tone-bad") : ""}`}>{saved ? (saved.ok ? "connected" : "check failed") : "not connected"}</span>
+								<span className={`machine-used${saved ? (saved.ok ? " tone-good" : " tone-bad") : ""}`}>{saved ? (saved.ok ? "connected" : "check failed") : "no key"}</span>
 								<div className="provider-actions">
 									{saved ? (
 										<>
@@ -294,7 +289,7 @@ export function ModelProviders() {
 					})}
 				</ul>
 			)}
-			{list !== null && state.error ? <p className="usage-note tone-warn">{state.error}</p> : null}
+			{list !== null && state.error ? <p className="usage-note" role="status">{state.error} <button type="button" className="link" onClick={reload}>Try again</button></p> : null}
 			{editing ? <KeyDialog provider={editing.provider} replacing={editing.replacing} onClose={() => setEditing(null)} onSaved={(status) => put(editing.provider, status)} /> : null}
 			{removing ? <RemoveDialog provider={removing} onClose={() => setRemoving(null)} onRemoved={() => put(removing, null)} /> : null}
 		</section>

@@ -122,7 +122,7 @@ export function SetupField({ setup, repository, disabled, egress, hosted, domain
  * does. `labelledBy` is the heading it stands under; `applies` says what a change means where it is
  * shown; `onSaved` hears of a save.
  */
-export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, egress, hosted, domains }: { egress?: EgressMode; hosted?: boolean; domains?: number; repositoryId: GithubId; name: string; labelledBy: string; applies: string; onSaved?(): void }) {
+export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, egress, hosted, domains, compact = false }: { compact?: boolean; egress?: EgressMode; hosted?: boolean; domains?: number; repositoryId: GithubId; name: string; labelledBy: string; applies: string; onSaved?(): void }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const ids = { input: useId(), note: useId() };
@@ -213,9 +213,16 @@ export function SetupEditor({ repositoryId, name, labelledBy, applies, onSaved, 
 							</span>
 						) : null}
 					</p>
-					<p className="panel-empty setup-note" id={ids.note}>
-						{howItRuns(`when a workspace is created for ${name}`, saved.limitMs, egress, hosted, domains)} {applies}
-					</p>
+					{compact ? (
+						<p className="panel-empty setup-note" id={ids.note}>
+							Runs once before the agent starts (max {spelledDuration(saved.limitMs)}).{" "}
+							<a className="link" href="/docs/settings#setup-command">Details</a>
+						</p>
+					) : (
+						<p className="panel-empty setup-note" id={ids.note}>
+							{howItRuns(`when a workspace is created for ${name}`, saved.limitMs, egress, hosted, domains)} {applies}
+						</p>
+					)}
 				</>
 			)}
 			{error ? (

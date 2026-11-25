@@ -13,12 +13,15 @@ import { listedHarness, windlassModels, windlassProvider, hostedCatalog, hostedK
 import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { mockEnvironments, mockRebuild, mockSchedule } from "./mock-environments";
-import { initialSessionModes } from "../../../server/src/sandbox/profiles.js";
+import { PROFILES, initialSessionModes, offeredProfiles, profilesFor } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
 import { publishAsksEveryTime } from "../../../server/src/agent-publish.js";
 import { NetworkProblem, cleanEntries, expandEntries, networkLimit, networkPresets } from "../../../server/src/repository-network.js";
 import {
 	HOSTED_SIZE_SPECS,
+	ISOLATION_LINES,
+	ISOLATION_NAMES,
+	openLine,
 	isHostedSize,
 	type HostedSize,
 	type HostedSizeOption,
@@ -280,8 +283,9 @@ function mockMachineProfiles(name: string, failed: { docker?: string; commandSan
 	return [
 		{
 			id: "docker-windlass-sandbox",
-			name: `Docker + Windlass sandbox on ${machine}`,
-			summary: `The agent runs in a container on ${machine}. As far as its runner reports, Windlass sandboxes each command, so commands have no network and cannot read the session's access token. ${trust}`,
+			name: ISOLATION_NAMES.strict,
+			summary: ISOLATION_LINES.strict,
+			details: `The agent runs in a container on ${machine}. As far as its runner reports, Windlass sandboxes each command, so commands have no network and cannot read the session's access token. ${trust}`,
 			layers: [...layers, "Windlass's bubblewrap sandbox around each command (as the runner reports)"],
 			approval: "auto",
 			commandNetwork: false,
@@ -291,8 +295,9 @@ function mockMachineProfiles(name: string, failed: { docker?: string; commandSan
 		},
 		{
 			id: "docker-hardened",
-			name: `Hardened Docker on ${machine}`,
-			summary: `Commands run directly in a container on ${machine} and can read the session's access token and its replacements during the turn. The session has a data directory of its own, so they cannot read your other sessions' conversations. ${workspaceNetwork(egress)} ${trust}`,
+			name: ISOLATION_NAMES.open,
+			summary: openLine(egress ?? "open"),
+			details: `Commands run directly in a container on ${machine} and can read the session's access token and its replacements during the turn. The session has a data directory of its own, so they cannot read your other sessions' conversations. ${workspaceNetwork(egress)} ${trust}`,
 			layers: [layers[0]!, layers[1]!.replace(/\)$/, ", a data directory of the session's own)")],
 			approval: "full",
 			commandNetwork: egress !== "none",
@@ -342,7 +347,7 @@ export const MOCK_MAX_KEPT = 20;
 const MOCK_HOLD_SECONDS = 5 * 60;
 const MOCK_START_SECONDS = 30;
 /** E2B's published price for the size the platform's template has. */
-const MOCK_PRICE = { usdPerSecond: 0.0000185, basis: "1 vCPU and 1,024 MiB of memory at E2B's published prices" };
+const MOCK_PRICE = { usdPerSecond: 0.0000185, basis: "1 CPU and 1,024 MiB of memory" };
 /** The hosted sizes, as an E2B deployment with all three templates built offers them (pricing.ts's rates). */
 const MOCK_SIZES: HostedSizeOption[] = (["small", "standard", "large"] as const).map((id) => {
 	const spec = HOSTED_SIZE_SPECS[id];
@@ -389,113 +394,11 @@ export const MOCK_QUESTION_TIMEOUT_MS = 3 * 60_000;
 // What the mock serves
 // ---------------------------------------------------------------------------------------------
 
-/** The profiles as server/src/sandbox/profiles.ts has them, word for word (mock.test.ts compares the two). */
-export const MOCK_PROFILES: SandboxProfile[] = [
-	{
-		id: "docker-windlass-sandbox",
-		name: "Docker + Windlass sandbox",
-		summary: "Windlass sandboxes each agent command inside this session's Docker container. Commands have no network and cannot read the session's access token. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
-		layers: ["Docker container (Docker’s seccomp profile with namespace and mount calls allowed, non-root, no capabilities, resource limits)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)"],
-		approval: "auto",
-		commandNetwork: false,
-		commandsCanReadAccessToken: false,
-		available: true,
-	},
-	{
-		id: "docker-hardened",
-		name: "Docker, hardened",
-		summary: "Commands run directly in a container under Docker's default seccomp and AppArmor profiles. They have network access and can read the session's access token and its replacements during the turn. The session has a data directory of its own, so they cannot read your other sessions' conversations. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the container.",
-		layers: ["Docker container (default seccomp and AppArmor, non-root, no capabilities, resource limits, a data directory of the session's own)"],
-		approval: "full",
-		commandNetwork: true,
-		commandsCanReadAccessToken: true,
-		available: true,
-	},
-	{
-		id: "e2b",
-		name: "E2B",
-		summary: "A Firecracker microVM hosted by E2B.",
-		layers: ["E2B microVM"],
-		approval: "auto",
-		commandNetwork: true,
-		commandsCanReadAccessToken: false,
-		available: false,
-		unavailableReason: "This server runs its sandboxes on local Docker. E2B is built: a server started with WLP_SANDBOX=e2b, an E2B API key and the E2B template (docs/operating.md, \"E2B\") offers it in place of the Docker profiles, and says there what it promises.",
-	},
-	{
-		id: "e2b-open",
-		name: "E2B, microVM only",
-		summary: "Windlass initially runs agent commands directly in this session's E2B microVM without asking first. They can reach any host on the network, write outside the workspace and read the session's access token and its replacements during the turn. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Once something from the web or an MCP server is in the conversation, Windlass sandboxes commands again and asks before one uses the network or writes outside the workspace. Existing home files are then read-only, and new home files are kept apart for the session. Your ChatGPT sign-in is never in the microVM.",
-		layers: ["E2B microVM (Firecracker, hosted by E2B; commands run in it directly, as a non-root user)"],
-		approval: "full",
-		commandNetwork: true,
-		commandsCanReadAccessToken: true,
-		available: false,
-		unavailableReason: "This server runs its sandboxes on local Docker; a server on E2B offers it where its operator sets WLP_E2B_OPEN_PROFILE=1.",
-	},
-	{
-		id: "daytona",
-		name: "Daytona",
-		summary: "A workspace hosted by Daytona.",
-		layers: ["Daytona workspace"],
-		approval: "auto",
-		commandNetwork: true,
-		commandsCanReadAccessToken: false,
-		available: false,
-		unavailableReason: "Not built here yet: it needs a Daytona provider in the sandbox layer, a Daytona image with Windlass in it and a Daytona account. Windlass no longer stands in the way: a session there would be handed a short-lived access token, as the Docker sessions are, and the sign-in would stay on the platform.",
-	},
-	{
-		id: "firecracker",
-		name: "Firecracker microVM",
-		summary: "A microVM per session on this host.",
-		layers: ["Firecracker microVM (KVM)"],
-		approval: "auto",
-		commandNetwork: false,
-		commandsCanReadAccessToken: false,
-		available: false,
-		unavailableReason: "Not built here: it needs a host with KVM, a guest image with Windlass in it and a guest agent to run commands in the VM, and this deployment has none of them. A session there would be handed a short-lived access token, as the Docker sessions are.",
-	},
-	{
-		id: "agentos",
-		name: "agentOS",
-		summary: "Rivet's agentOS, where the agent's tools run through a remote execution interface.",
-		layers: ["agentOS runtime"],
-		approval: "auto",
-		commandNetwork: false,
-		commandsCanReadAccessToken: false,
-		available: false,
-		unavailableReason: "agentOS cannot run the Windlass executable, and Windlass's tools would have to work through agentOS's remote execution interface, which they do not. Handing a session an access token changes nothing about that.",
-	},
-];
+/** The profiles as server/src/sandbox/profiles.ts has them: the server's own, so the words cannot drift. */
+export const MOCK_PROFILES: SandboxProfile[] = PROFILES.map((profile) => ({ ...profile, layers: [...profile.layers] }));
 
-/**
- * The profiles as a server on E2B lists them with WLP_E2B_WINDLASS_SANDBOX=1 and WLP_E2B_OPEN_PROFILE=1,
- * word for word (`?sandbox=e2b`; mock.test.ts compares them with `profilesFor`).
- */
-export const MOCK_E2B_PROFILES: SandboxProfile[] = MOCK_PROFILES.map((profile): SandboxProfile => {
-	if (profile.id === "e2b") {
-		return {
-			id: "e2b",
-			name: "E2B + Windlass sandbox",
-			summary:
-				"Windlass sandboxes each agent command inside this session's E2B microVM. Commands have no network and cannot read the session's access token. Setup finishes before the token arrives. Approved local MCP servers can read it and its replacements. Each token lasts about an hour from issue. Your ChatGPT sign-in is never in the microVM.",
-			layers: ["E2B microVM (Firecracker, hosted by E2B; commands run as a non-root user)", "Windlass's bubblewrap sandbox around each command (no network, writes only in the workspace and in a home of the session's own, credentials hidden)"],
-			approval: "auto",
-			commandNetwork: false,
-			commandsCanReadAccessToken: false,
-			available: true,
-		};
-	}
-	if (profile.id === "e2b-open") {
-		const { unavailableReason: _, ...rest } = profile;
-		return { ...rest, layers: [...profile.layers], available: true };
-	}
-	if (profile.id.startsWith("docker-")) {
-		const { unavailableReason: _, ...rest } = profile;
-		return { ...rest, layers: [...profile.layers], available: false, unavailableReason: "This deployment runs its sandboxes on E2B, so that every server machine can reach them; a local Docker container is out of reach of the other machines." };
-	}
-	return { ...profile, layers: [...profile.layers] };
-});
+/** The profiles as a server on E2B lists them with WLP_E2B_WINDLASS_SANDBOX=1 and WLP_E2B_OPEN_PROFILE=1 (`?sandbox=e2b`). */
+export const MOCK_E2B_PROFILES: SandboxProfile[] = profilesFor("e2b", { windlassSandbox: true, openProfile: true });
 
 // ---- GitHub ---------------------------------------------------------------------------------
 
@@ -1176,6 +1079,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	// ---- sessions -------------------------------------------------------------------------------
 
 	const profileOf = (session: MockSession): SandboxProfile => session.machine?.profile ?? profiles.find((profile) => profile.id === session.summary.profile) ?? (MOCK_PROFILES[0] as SandboxProfile);
+	/** The platform's note as a sandbox is made, as server/src/actors/agent-session.ts words it. */
+	const startNote = (session: MockSession): string => (session.summary.place.kind === "hosted" ? `Starting a hosted sandbox (${profileOf(session).name})` : `Starting on your machine (${profileOf(session).name})`);
 
 	const listOf = (world: World): SessionSummary[] => listedSessions([...world.sessions.values()].map((session) => session.summary)).sort((a, b) => b.createdAt - a.createdAt);
 
@@ -1524,7 +1429,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			return steps;
 		}
 		if (session.summary.sandbox === "none") {
-			steps.push({ wait: 350, run: () => store(session, { turn, kind: "platform", level: "info", text: `Creating sandbox: ${profileOf(session).name}` }) });
+			steps.push({ wait: 350, run: () => store(session, { turn, kind: "platform", level: "info", text: startNote(session) }) });
 			if (session.summary.repoUrl !== null) {
 				const repoUrl = session.summary.repoUrl;
 				const picked = session.summary.repository;
@@ -2162,7 +2067,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				},
 			},
 		];
-		if (session.summary.sandbox === "none") steps.push({ wait: 350, run: () => store(session, { turn, kind: "platform", level: "info", text: `Creating sandbox: ${profileOf(session).name}` }) });
+		if (session.summary.sandbox === "none") steps.push({ wait: 350, run: () => store(session, { turn, kind: "platform", level: "info", text: startNote(session) }) });
 		else if (session.summary.sandbox === "paused") steps.push({ wait: 350, run: () => store(session, { turn, kind: "platform", level: "info", text: "Resuming the paused sandbox" }) });
 		steps.push({
 			wait: 700,
@@ -2484,7 +2389,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			const pausedAt = start - 20_000;
 			const push = (at: number, item: DistributiveOmit<TimelineItem, "seq" | "at" | "turn">) => restarting.timeline.push({ ...item, seq: ++restarting.seq, at, turn } as TimelineItem);
 			push(start - 3 * MINUTE, { kind: "user", text: "Upgrade the test runner to its next major version and fix what breaks.", model: restarting.summary.model, effort: "medium" });
-			push(start - 3 * MINUTE + 3_000, { kind: "platform", level: "info", text: `Creating sandbox: ${profileOf(restarting).name}` });
+			push(start - 3 * MINUTE + 3_000, { kind: "platform", level: "info", text: startNote(restarting) });
 			push(pausedAt, { kind: "platform", level: "info", code: "turn_paused", text: "The server is restarting; this turn will resume by itself." });
 			push(start - 5_000, { kind: "user", text: "Keep the old config file as a backup.", model: restarting.summary.model, effort: "medium", steer: true, held: true });
 			restarting.summary = { ...restarting.summary, turns: turn, status: "paused", paused: { reason: "restart", since: pausedAt, held: 1 }, updatedAt: start - 5_000 };
@@ -2654,7 +2559,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** Why a repository can have no prepared environment, by the server's rules (user-environments.ts); null when it can. */
 	function environmentInputs(world: World, repositoryId: GithubId): string | null {
 		if (!world.setups.get(repositoryId)?.command) return "Save a setup command first: an environment is what it prepares.";
-		if ((world.secrets.get(repositoryId)?.size ?? 0) > 0) return "A repository with saved secrets always starts cold, so it has no prepared environment.";
+		if ((world.secrets.get(repositoryId)?.size ?? 0) > 0) return "Not available for repositories with saved secrets.";
 		return null;
 	}
 	function setupOf(world: World, repositoryId: GithubId): RepositorySetup {
@@ -3399,7 +3304,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if ((input.size ?? 1) > 1 && !machine?.slots) throw new PlatformError("user", "Choose a machine reporting slots for a large sandbox.", { reason: "bad_input" });
 				const profile = (machine ? machine.profiles : profiles).find((candidate) => candidate.id === input.profile);
 				if (!profile) throw new PlatformError("user", "There is no such sandbox.");
-				if (!profile.available) throw new PlatformError("user", `${profile.name} cannot be used yet. ${profile.unavailableReason ?? ""}`.trim());
+				if (!profile.available) throw new PlatformError("user", "That sandbox isn't available here: choose Strict or Open.");
 				const harness: HarnessId = input.harness ?? "windlass";
 				const options = !machine && harness !== "windlass" ? hostedCatalog(harness, [...world().account.providers.values()])
 					: machine?.harnesses?.find(entry => entry.id === harness)?.options;
@@ -4273,7 +4178,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		async info(): Promise<PlatformInfo> {
 			await latency(120);
 			const machines = machineState === "off" ? {} : { machines: { minRunnerVersion: MOCK_MIN_RUNNER_VERSION, runnerImage: machineState === "unpublished" ? null : MOCK_RUNNER_IMAGE, runnerHarnesses: ["claude", "opencode", "codex"] as Array<"claude" | "opencode" | "codex">, platformUrl: origin } };
-			return { demoEnabled: true, googleLogin: true, windlassVersion: "0.4.0", profiles, ...(options.sizes === "one" ? {} : { hostedSizes: MOCK_SIZES }), ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(billingState === "off" ? {} : { billing: { plans: MOCK_PLANS } }), ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true, screenshots: options.screenshots !== false } }) };
+			return { demoEnabled: true, googleLogin: true, windlassVersion: "0.4.0", profiles: offeredProfiles(profiles), ...(options.sizes === "one" ? {} : { hostedSizes: MOCK_SIZES }), ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(billingState === "off" ? {} : { billing: { plans: MOCK_PLANS } }), ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true, screenshots: options.screenshots !== false } }) };
 		},
 		login: {
 			async start(provider = "github", auth): Promise<LoginStart> {

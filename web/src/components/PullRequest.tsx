@@ -8,8 +8,8 @@
  * platform performs and nobody is asked about); the panel then says the branch is pushed, and opens a
  * pull request from it. The agent can also ask the platform to open or update the pull request (the
  * question about that is Question.tsx's). Whether that is asked about each time is the session's own
- * setting, which stands here under the button: one check box and one sentence, with one more that says what the agent's own push does
- * on GitHub (`AGENT_PUSH_MEANS`): it runs the repository's CI, with its secrets.
+ * setting, which stands here under the button: one check box in one line, with what it means and what the agent's own push does
+ * on GitHub (`AGENT_PUSH_MEANS`: it runs the repository's CI, with its secrets) behind an ⓘ.
  *
  * A work item's agent files a `report` and never asks to publish: the item's own step pushes and
  * opens or updates the pull request. The setting means nothing there, so its place has one line that
@@ -26,8 +26,9 @@ import { useNow } from "../state/hooks";
 import { createPortal } from "react-dom";
 import { setPanelHidden, setPublishFeedback, usePanelHidden, usePublishRequests } from "../state/sessionChrome";
 import { Dialog } from "./Dialog";
-import { BranchIcon, CrossIcon, ExternalIcon, LockIcon, MergedIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "./Icons";
+import { BranchIcon, CrossIcon, ExternalIcon, InfoIcon, MergedIcon, PullRequestIcon, RefreshIcon, WarnIcon } from "./Icons";
 import { Check } from "./ui/Check";
+import { Tooltip } from "./ui/Tooltip";
 
 /** What letting the agent publish without asking means, in one sentence, as the panel says it. */
 export const PUBLISH_UNASKED_MEANS = "The agent may have the platform open or update this session's pull request, with the agent's title and description, without you being asked each time.";
@@ -39,7 +40,7 @@ export const REVIEWER_PUBLISHES_NOTHING = "The second reviewer reads the commit 
  * What the agent's own push does on GitHub, which no setting holds back: said under the setting in
  * the panel, whichever way it is, and where the setting cannot be on.
  */
-export const AGENT_PUSH_MEANS = "The agent pushes this session's own branch whenever it wants, and a push runs the repository's CI workflows on the agent's changes, with the CI's secrets, without you being asked.";
+export const AGENT_PUSH_MEANS = "It can push its own branch at any time, which runs your CI with its secrets.";
 
 /**
  * Why the setting cannot be on in a sandbox of `profile`, or null where it can: only where Windlass
@@ -58,23 +59,37 @@ export function publishAlwaysAsked(profile: Pick<SandboxProfile, "approval" | "c
  */
 export const publishAskedOverMcp = (agent: string) => `${agent} reaches its publish tool from inside the sandbox, where any process could call it in the agent's name.`;
 
-/** The setting itself: on or off, with its sentence. Where it cannot be on, what holds instead stands in its place, with why. */
+/** "ⓘ": the longer sentences behind a short label, on hover and on focus. */
+function More({ children }: { children: string }) {
+	return (
+		<Tooltip content={children}>
+			<span className="info-dot" tabIndex={0} role="img" aria-label={children}>
+				<InfoIcon size={13} />
+			</span>
+		</Tooltip>
+	);
+}
+
+/**
+ * The setting itself: on or off, in one line, with what it means behind an ⓘ. Where it cannot be on, what
+ * holds instead stands in its place, with why behind the ⓘ.
+ */
 export function PublishUnaskedCheck({ checked, disabled, onChange, profile, agent = null }: { checked: boolean; disabled: boolean; onChange(checked: boolean): void; profile: SandboxProfile | null; agent?: string | null }) {
 	const asked = agent !== null ? publishAskedOverMcp(agent) : profile === null ? null : publishAlwaysAsked(profile);
 	if (asked !== null) {
 		return (
-			<p className="check-text">
-				<span className="check-name">You are asked each time the agent wants to publish</span>
-				<span className="check-means">{asked}</span>
-				<span className="check-means">{AGENT_PUSH_MEANS}</span>
+			<p className="check-text gh-asked">
+				<span className="check-name">
+					You're asked each time it publishes <More>{`${asked} ${AGENT_PUSH_MEANS}`}</More>
+				</span>
 			</p>
 		);
 	}
 	return (
 		<Check checked={checked} disabled={disabled} onChange={(on) => onChange(on)}>
-			<span className="check-name">Let the agent publish without asking</span>
-			<span className="check-means">{PUBLISH_UNASKED_MEANS}</span>
-			<span className="check-means">{AGENT_PUSH_MEANS}</span>
+			<span className="check-name">
+				Let the agent open and update it <More>{`${PUBLISH_UNASKED_MEANS} ${AGENT_PUSH_MEANS}`}</More>
+			</span>
 		</Check>
 	);
 }
@@ -362,18 +377,6 @@ export function PullRequestSection({ sessionId, summary, profile, turnsEnded, fi
 					<RefreshIcon size={13} className={loading ? "spin" : undefined} />
 				</button>
 			</h2>
-			<p className="gh-target">
-				<span className="gh-target-repo" title={`${repository.owner}/${repository.name}${repository.private ? " (private)" : ""}`}>
-					{repository.private ? <LockIcon size={12} /> : null}
-					<a href={repository.url} target="_blank" rel="noreferrer">
-						{repository.owner}/{repository.name}
-					</a>
-				</span>
-				<span className="gh-target-branch" title={`The branch the agent started from: ${repository.branch}`}>
-					<BranchIcon size={12} />
-					{repository.branch}
-				</span>
-			</p>
 			{pull ? (
 				<div className="gh-pull">
 					<a className="gh-pull-link" href={pull.url} target="_blank" rel="noreferrer" title={pull.title}>

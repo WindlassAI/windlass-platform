@@ -66,11 +66,11 @@ export function SignIn({ theme, onToggleTheme }: { theme: Theme; onToggleTheme()
 					<ul className="signin-points">
 						<li>
 							<span className="signin-point-key">sandbox</span>
-							You pick what isolates each agent, and see the layers before it starts.
+							Hosted or on your machine, locked down by default.
 						</li>
 						<li>
 							<span className="signin-point-key">trace</span>
-							Tool calls, checks, refusals and token counts, live.
+							Every step live, as it happens.
 						</li>
 						<li>
 							<span className="signin-point-key">changes</span>

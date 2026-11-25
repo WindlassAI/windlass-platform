@@ -191,7 +191,7 @@ export function shownReview(view: ItemView): { state: ReviewState | null; curren
 	// The review of the run shown is shown when it was filed; any other, earlier or not filed, is folded under it.
 	const current = last !== null && (run === null || last.run === run) && (state === null || state === "filed" || last.state === "none") ? last : null;
 	const before = reviews.filter((one) => one !== current && !one.requestedPull).reverse();
-	const line = current ? null : state === null ? null : stateLine(view, state, null);
+	const line = current || state === null ? null : view.parent && state === "off" ? "Reviewed with the whole feature." : stateLine(view, state, null);
 	return { state, current, before, line };
 }
 

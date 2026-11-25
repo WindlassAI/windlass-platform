@@ -136,11 +136,11 @@ export const hardenedRefusal = (agent: HarnessId, list: readonly string[]) => {
 	const name = harnessName(agent);
 	const marker = takesUntrustedMarker(agent);
 	const what = marker
-		? `On “Docker, hardened” ${name} cannot sandbox commands once it is told of such text, so the text would go to the agent labelled only, and its commands would run outside Windlass's sandbox, with the container's network and the session's access token.`
-		: `On “Docker, hardened” ${name} cannot be told which text is not yours, so the text would go to it labelled only, and its commands would run without asking, with the container's network and the session's access.`;
+		? `On “Open” ${name} cannot sandbox commands once it is told of such text, so the text would go to the agent labelled only, and its commands would run outside Windlass's sandbox, with the container's network and the session's access token.`
+		: `On “Open” ${name} cannot be told which text is not yours, so the text would go to it labelled only, and its commands would run without asking, with the container's network and the session's access.`;
 	// Codex runs its commands in its own sandbox there (`sandboxedOn`): it is filed again as itself. Any other agent is filed with Windlass.
 const own = machineHarness(agent)?.sandboxedOn.includes("docker-windlass-sandbox") ?? false;
-const elsewhere = marker || own ? `file the work again on “Docker + Windlass sandbox”${own ? `, where ${name} runs its commands in its own sandbox` : ""}` : `file the work again with Windlass on “Docker + Windlass sandbox”`;
+const elsewhere = marker || own ? `file the work again on “Strict”${own ? `, where ${name} runs its commands in its own sandbox` : ""}` : `file the work again with Windlass on “Strict”`;
 	return `This turn carries text from someone else (${sources(list).join("; ")}). ${what} Run it anyway, ${elsewhere}, or give up.`;
 };
 
@@ -152,7 +152,7 @@ export const runAnywayWords = (agent: HarnessId, list: readonly string[]) =>
 
 /** Once per session, on "Docker, hardened", where Windlass is told of no source (`untrustedTurn`). */
 export const hardenedUnmarkedNote = (list: readonly string[]) =>
-	`On “Docker, hardened” Windlass is not told that this text is not yours (${sources(list).join("; ")}), since it could not sandbox commands once told. The text went to the agent as labelled text only, and commands run as on any turn.`;
+	`On “Open” Windlass is not told that this text is not yours (${sources(list).join("; ")}), since it could not sandbox commands once told. The text went to the agent as labelled text only, and commands run as on any turn.`;
 
 /** Once per session, when the sandbox's Windlass does not take the marker (before 0.6.0). */
 export const unmarkedNote = (list: readonly string[]) =>

@@ -51,14 +51,13 @@ export function SettingsCrumb() {
 }
 
 export function Settings() {
-	const { client, platform, auth: signedIn } = useApp();
+	const { client, platform } = useApp();
 	const auth = useAuth();
 	const account = useAccount();
 	const models = useModels();
 	const { settings } = account;
 	const info = platform.info;
 	const machines = useMachines(!!info?.machines);
-	const who = signedIn?.profile.demo ? "the demo account" : (signedIn?.profile.email ?? signedIn?.profile.uid ?? "your account");
 	// What a secret reaches depends on the sandbox: the list is said for the one a new agent starts in when nothing else is chosen.
 	const choices = startingChoices(settings?.defaults ?? null, info, models.list, "account");
 	const reachProfile = info?.profiles.find((profile) => profile.id === choices.profile) ?? info?.profiles.find((profile) => profile.available) ?? info?.profiles[0] ?? null;
@@ -69,7 +68,7 @@ export function Settings() {
 				<div className="repo-head">
 					<p className="eyebrow">account</p>
 					<h1 className="display display-small">Settings</h1>
-					<p className="home-account">What {who} keeps for every agent, whatever the repository it works on. What is saved for one repository is on that repository's page.</p>
+					<p className="home-account">Used by all your agents. Settings for a single repository are on its page.</p>
 				</div>
 			</header>
 
@@ -100,7 +99,7 @@ export function Settings() {
 					{account.error ? (
 						<p className="callout callout-warn" role="status">
 							<WarnIcon />
-							<span>{account.error} What is shown may be behind.</span>
+							<span>{account.error} <button className="link" onClick={account.reload}>Try again</button></span>
 						</p>
 					) : null}
 
@@ -133,12 +132,6 @@ export function Settings() {
 								</h2>
 							)}
 						/>
-						{reachProfile ? (
-							<p className="usage-note">
-								For MCP servers, and for the agent's commands only where you choose so for a secret: never a repository's setup command. What each reaches is said for {reachProfile.name}, {choices.profile === reachProfile.id ? "your default sandbox" : "the sandbox a new agent starts in when none is chosen"}. An account can keep{" "}
-								{settings.limits.secrets}.
-							</p>
-						) : null}
 					</section>
 				</>
 			)}
@@ -154,12 +147,7 @@ export function Settings() {
 					<h2 className="usage-title" id="settings-machines">
 						Machines
 					</h2>
-					<p className="usage-lede">
-						Your own computers with Docker, where the agents you launch can run.{" "}
-						<a className="link" {...linkProps({ name: "machines" })}>
-							Your machines
-						</a>
-					</p>
+					<a className="link" {...linkProps({ name: "machines" })}>My machines →</a>
 				</section>
 			) : null}
 
@@ -189,8 +177,7 @@ function SessionSettings() {
 		}
 	}
 	return (
-		<section className="usage-section" aria-labelledby="settings-sessions">
-			<h2 className="usage-title" id="settings-sessions">Sign-in</h2>
+		<section className="usage-section" aria-label="Sign out">
 			<button type="button" className="button button-quiet button-small" onClick={() => { setError(null); setRevokeApiTokens(true); setConfirm(true); }}>
 				Sign out everywhere
 			</button>

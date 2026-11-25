@@ -17,12 +17,12 @@ import { WarnIcon } from "./Icons";
 import { Check } from "./ui/Check";
 
 /** What the deployment's hosted sandboxes do with the list, in a sentence. */
-function appliesHere(network: RepositoryNetwork, name: string): string {
+function appliesHere(network: RepositoryNetwork): string {
 	const hosted = network.hosted;
-	if (hosted === null) return `This deployment's hosted sandboxes are not on E2B, so the list applies nowhere here.`;
-	if (hosted.mode === "open") return `This deployment's hosted sandboxes reach any host today, so the list changes nothing until its operator limits them (WLP_E2B_NETWORK=restricted).`;
-	if (hosted.mode === "none") return `This deployment gives hosted sandboxes no network but the model API, so the list does not apply here.`;
-	return `Hosted agents on ${name} reach the model API, GitHub, the hosts this deployment allows, and what is allowed here. A change applies from each agent's next turn.`;
+	if (!hosted) return "Host lists are unavailable here.";
+	if (hosted.mode === "open") return "Hosted agents can reach any host. This list applies when access is restricted.";
+	if (hosted.mode === "none") return "Hosted agents can only reach the model API.";
+	return "What hosted agents can reach.";
 }
 
 /** What allowing any of these hosts reaches besides what was asked for, said where the click is: none for most. */
@@ -41,10 +41,9 @@ export function ProposalItem({ proposal, preset, busy, onAllow }: { proposal: Ne
 	return (
 		<li className="server">
 			<p className="server-head">
-				<span className="server-name">{proposal.entry}</span>
+				<span className="server-name" title={preset?.about}>{proposal.entry}</span>
 				{proposal.entry.startsWith("@") ? <span className="server-state">{proposal.hosts.join(", ")}</span> : null}
 			</p>
-			{preset ? <p className="server-subject">{preset.about}.</p> : null}
 			<WideHostNote hosts={proposal.hosts} />
 			<p className="server-subject">{proposal.sources.join(" · ")}</p>
 			<p className="server-foot">
@@ -168,7 +167,7 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 
 	return (
 		<>
-			<p className="usage-lede">{appliesHere(network, name)}</p>
+			<p className="usage-lede">{appliesHere(network)}</p>
 			<div className="usage-card repo-form repo-network-form">
 				<fieldset className="repo-network-presets" aria-labelledby={labelledBy}>
 					<legend className="label">Presets</legend>
@@ -177,13 +176,12 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 						const everywhere = preset.hosts.every((presetHost) => always.has(presetHost));
 						return (
 							<Check key={preset.id} checked={on || everywhere} disabled={busy !== null || everywhere} onChange={(on) => toggle(preset.id, on)}>
-								<span className="check-name">
+								<span className="check-name" title={preset.about}>
 									{preset.name} <code className="repo-network-id">{preset.id}</code>
 								</span>
 								<span className="check-means">
 									{everywhere ? "Allowed for every sandbox of this deployment." : (
 										<>
-											{preset.about}:{" "}
 											{preset.hosts.map((presetHost, index) => (
 												<span key={presetHost}>
 													{index > 0 ? ", " : null}
@@ -237,7 +235,7 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 						</button>
 					</div>
 					<p className="field-note" id={ids.hostNote}>
-						Exact names only, no wildcards: E2B matches the name a connection asks for. {network.hosts.length} of {network.limit} hosts used.
+						Exact host names only, no wildcards. {network.hosts.length} of {network.limit}.
 					</p>
 				</div>
 				{said ? (
@@ -279,7 +277,7 @@ export function NetworkSection({ repositoryId, name, labelledBy, onSaved }: { re
 
 			<h3 className="repo-network-subtitle">Found in the repository</h3>
 			<p className="usage-note">
-				Reads the manifests, lockfiles, install scripts and CI files of the default branch, and the setup command, and lists the hosts they name that its sandboxes cannot reach yet. Nothing is allowed until you allow it: a file in a repository can name any host.
+				Find hosts this repository needs. Nothing is allowed until you allow it.
 			</p>
 			<p className="repo-forget">
 				<button type="button" className="button button-outline button-small" onClick={() => void look()} disabled={scanning}>

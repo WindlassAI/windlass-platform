@@ -1279,7 +1279,7 @@ const AGENT_ASKS = "The agent stopped to ask you a question before it goes on.";
 
 export function sandboxEscapeQuestion(item: Pick<FactoryItem, "agent">, note: string): string {
 	const name = harnessName(item.agent?.harness ?? "windlass");
-	return `${name} asked to leave its sandbox, which “Docker + Windlass sandbox” never allows, so the step was stopped. ${note} File the work again on “Docker, hardened”, where ${name}'s commands run in the container without asking, or give up.`;
+	return `${name} asked to leave its sandbox, which “Strict” never allows, so the step was stopped. ${note} File the work again on “Open”, where ${name}'s commands run in the container without asking, or give up.`;
 }
 
 const answeredText = (note: string) => `The person answered your question:\n\n${note}\n\nGo on with the task.`;
@@ -2605,7 +2605,7 @@ function askBudget(c: Change, cause: keyof ItemBudget, sentence: string, resume:
 	const { item } = c;
 	const n = extraOf(item, cause);
 	const label = `Give it ${spellExtra(cause, n)}`;
-	const text = sentence + (item.parent ? ` More for it adds to the feature's budget.` : "") + " Going on keeps its session, sandbox and work as they are.";
+	const text = sentence + " Give it more to continue." + (item.parent ? " This also increases the feature's budget." : "");
 	ask(c, "budget", text, [{ id: "raise", label }, ...handOverAny(item), choice("give_up")], cause, resume);
 }
 

@@ -716,7 +716,7 @@ class RunnerSandboxes implements Sandboxes {
 	async create(input: CreateSandboxInput): Promise<string> {
 		const { link } = this;
 		if (input.uid !== link.who.uid || input.sessionId !== link.who.sessionId) throw new Error("A machine's sandbox is made only for the session whose socket asks for it.");
-		if (input.profile !== "docker-windlass-sandbox" && input.profile !== "docker-hardened") throw new SandboxUserError(`${findProfile(input.profile).name} does not run on a machine of yours.`);
+		if (input.profile !== "docker-windlass-sandbox" && input.profile !== "docker-hardened") throw new SandboxUserError("That sandbox does not run on a machine of yours: choose Strict or Open.");
 		// A `create` lost with its conversation may have made the sandbox: the runner answers the repeat with that one.
 		// Request the screenshots image only when this runner offers it.
 		const agent = input.harness ? machineHarness(input.harness) : null;

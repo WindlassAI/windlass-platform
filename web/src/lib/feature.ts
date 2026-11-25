@@ -13,7 +13,7 @@ export const ITEM_MODE_WORDS = {
 
 /** Why an orchestrated plan could not be approved on this repository, as far as the page can tell before filing: null when nothing is known against it. */
 export function orchestrateProblem(checks: number | null): string | null {
-	return checks === 0 ? "No checks are saved for this repository. Save checks before approving subtasks, or run the plan with one implementer." : null;
+	return checks === 0 ? "No checks saved." : null;
 }
 
 /** The least a subtask may be given: a tenth of a single item's tokens, and at least 1,000. */

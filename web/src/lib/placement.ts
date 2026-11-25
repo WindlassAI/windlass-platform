@@ -31,7 +31,7 @@ export function orchestratorNote(machine: Pick<MachineSummary, "orchestrator">):
 export const HOSTED = "hosted";
 
 /** A place's name as the page shows it. */
-export const placeWord = (name: string) => (name === HOSTED ? "this platform" : name);
+export const placeWord = (name: string) => (name === HOSTED ? "Hosted" : name);
 
 /** The name of the feature's own place, which a subtask without one inherits. */
 export function parentPlaceName(place: SandboxPlace, machines: MachineSummary[] | null): string {
