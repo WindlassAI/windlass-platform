@@ -9,7 +9,7 @@
  *   WLP_GOOGLE_CLIENT_ID, WLP_GOOGLE_CLIENT_SECRET
  *                              enable Google platform login when both are configured
  *   WLP_ALLOW_DOCKER_HOSTED=1 explicitly allow the Docker sandbox layer with a remote engine
- *   WLP_SANDBOX=docker|e2b|fake
+ *   WLP_SANDBOX=docker|e2b|daytona|fake
  *                              the sandbox layer (default docker). docker: containers on this machine, for
  *                              one server. e2b: E2B microVMs, which every server of a deployment reaches
  *                              (the variables below). fake keeps everything in memory
@@ -276,6 +276,7 @@
  */
 
 import { type ModelRelayUrl, parseModelRelayUrl } from "./model-relay-url.js";
+import { type DaytonaSettings, readDaytonaSettings } from "./sandbox/daytona/config.js";
 import { type E2bSettings, readE2bSettings } from "./sandbox/e2b/config.js";
 import { SNAPSHOT_MIN_SETUP_MS } from "./sandbox/snapshot-key.js";
 import { storeSettings, type StoreCaps, type StoreLimits } from "./sandbox/store-limits.js";
@@ -298,7 +299,7 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..
 export const DATA_DIR = join(REPO_ROOT, ".data");
 export const FIXTURES_DIR = join(REPO_ROOT, "fixtures", "windlass-events");
 
-export type SandboxMode = "docker" | "e2b" | "fake";
+export type SandboxMode = "docker" | "e2b" | "daytona" | "fake";
 
 export interface EngineConfig {
 	/**
@@ -368,7 +369,7 @@ export interface Config {
 	/** A Docker setup must finish successfully and reach this duration to be saved. */
 	snapshots: boolean;
 	/** Selected remote provider settings, without credentials. */
-	hosted: E2bSettings | null;
+	hosted: E2bSettings | DaytonaSettings | null;
 	snapshotMinSetupMs: number;
 	/**
 	 * The snapshot and Git mirror stores' limits on the platform's own Docker (WLP_SNAPSHOT_MACHINE_MAX_GB,
@@ -392,8 +393,8 @@ export interface Config {
 
 function readSandboxMode(): SandboxMode {
 	const raw = (process.env.WLP_SANDBOX ?? "docker").trim().toLowerCase();
-	if (raw === "docker" || raw === "e2b" || raw === "fake") return raw;
-	throw new Error(`WLP_SANDBOX must be "docker", "e2b" or "fake"; got "${raw}"`);
+	if (raw === "docker" || raw === "e2b" || raw === "daytona" || raw === "fake") return raw;
+	throw new Error(`WLP_SANDBOX must be "docker", "e2b", "daytona" or "fake"; got "${raw}"`);
 }
 
 /** Read the way RivetKit reads them (its utils/env-vars.ts and registry config, 3.1.1). */
@@ -899,7 +900,7 @@ hostedQuestionTimeoutMs: Math.min(readQuestionTimeout(), readDuration("WLP_HOSTE
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
 	modelRelay: readModelRelay(),
 	snapshots: process.env.WLP_SNAPSHOTS === "on",
-	hosted: sandbox === "e2b" ? readE2bSettings() : null,
+	hosted: sandbox === "e2b" ? readE2bSettings() : sandbox === "daytona" ? readDaytonaSettings() : null,
 	snapshotMinSetupMs: readDuration("WLP_SNAPSHOT_MIN_SETUP_MS", SNAPSHOT_MIN_SETUP_MS, SNAPSHOT_MIN_SETUP_MS),
 	storeLimits: readStoreLimits(),
 	setupTimeoutMs: readDuration("WLP_SETUP_TIMEOUT_MS", 10 * 60 * 1000, 1_000),

@@ -1,6 +1,6 @@
-import { readHostedSettings, wholeNumber } from "../hosted-settings.js";
-import { readRateCard } from "./pricing.js";
-import { HOSTED_SIZE_SPECS, type HostedSize } from "../../contract.js";
+import { hostedName, readHostedRates, readHostedSettings, wholeNumber } from "../hosted-settings.js";
+import { DEFAULT_RATES } from "./pricing.js";
+import { HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, type HostedSize } from "../../contract.js";
 import { e2bModelRelay, readE2bNetwork } from "./network.js";
 
 export const DEFAULT_TEMPLATE = "windlass-platform-sandbox";
@@ -29,7 +29,7 @@ export function buildShape(env: NodeJS.ProcessEnv, size: HostedSize) {
 /** What a user and the log read when E2B refused a size for the account's plan. */
 export function planRefusal(size: HostedSize, said: string): string {
 	const spec = HOSTED_SIZE_SPECS[size];
-	return `E2B refused a ${size} sandbox (${spec.cpus} vCPU, ${spec.memoryMiB / 1024} GiB) for the account's plan. E2B said: ${said}`;
+	return `E2B refused a ${HOSTED_SIZE_NAMES[size]} sandbox (${spec.cpus} vCPU, ${spec.memoryMiB / 1024} GiB) for the account's plan. E2B said: ${said}`;
 }
 
 /** Whether E2B's words refuse a size for the plan, rather than the account's count of running sandboxes. */
@@ -49,9 +49,11 @@ export function readE2bSettings(env: NodeJS.ProcessEnv = process.env) {
 	}
 	const relay = e2bModelRelay(env);
 	return {
-		...readHostedSettings(env),
+		provider: "e2b" as const, ...readHostedSettings(env),
+		turnLeaseMs: wholeNumber(env, hostedName(env, "TURN_LEASE_MS"), 180_000, 60_000, 30 * 60_000),
+		maxRuntimeMs: wholeNumber(env, hostedName(env, "MAX_CONTINUOUS_MS", "MAX_RUNTIME_MS"), 3_600_000, 10 * 60_000),
 		templates: { small: templates("small"), standard: templates("standard"), large: templates("large") },
-		rateCard: readRateCard(env.WLP_HOSTED_RATE_CARD_FILE),
+		rateCard: readHostedRates(env, "e2b", "microvm", DEFAULT_RATES),
 		network: readE2bNetwork(env, relay),
 		modelRelayOrigin: "origin" in relay ? relay.origin : null,
 		modelRelayOff: "off" in relay ? relay.off : undefined,

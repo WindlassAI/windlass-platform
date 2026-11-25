@@ -1,19 +1,9 @@
-import { readFileSync } from "node:fs";
-
 export interface RateCard {
 	usdPerVcpuSecond: number;
 	usdPerGiBSecond: number;
 }
 
 export const DEFAULT_RATES: RateCard = { usdPerVcpuSecond: 0.000014, usdPerGiBSecond: 0.0000045 };
-
-export function readRateCard(file: string | undefined): RateCard {
-	if (!file?.trim()) return DEFAULT_RATES;
-	const rates = JSON.parse(readFileSync(file.trim(), "utf8")).e2b?.microvm;
-	if (!rates || ![rates.usdPerVcpuSecond, rates.usdPerGiBSecond].every(rate => Number.isFinite(rate) && rate >= 0))
-		throw new Error("WLP_HOSTED_RATE_CARD_FILE needs finite, nonnegative usdPerVcpuSecond and usdPerGiBSecond under e2b.microvm");
-	return { usdPerVcpuSecond: rates.usdPerVcpuSecond, usdPerGiBSecond: rates.usdPerGiBSecond };
-}
 
 /** The estimated cost in US dollars of a sandbox of this size running for `seconds`. */
 export function estimatedCostUsd(seconds: number, cpuCount: number, memoryMB: number, rates: RateCard = DEFAULT_RATES): number {

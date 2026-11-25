@@ -19,7 +19,7 @@ If an account already has a paid subscription, manage its recurring charge separ
 | Hosted minutes a month | 120 | 1,800 |
 | Hosted at once (`hostedRunning`) | 1 | 5 |
 | Kept hosted sandboxes (`maxKept`) | 2 | 10 |
-| Sizes | small, standard | small, standard, large |
+| Sizes | Small, Medium | Small, Medium, Large |
 | Features over two repositories | no | yes |
 | Items filed from GitHub and Linear together per UTC day | 20 | 100 |
 | Past the included minutes | hard stop | Monthly Pro bills $0.006 a minute up to the spend cap (default and maximum $20 per period). Yearly Pro stops at 1,800 minutes a month. |
@@ -38,9 +38,9 @@ back to Free deletes nothing: kept sandboxes, machines and items stay, and only 
 
 ## Hosted minutes
 
-- **The unit.** One hosted minute is one minute of a standard sandbox (2 vCPU, 4 GiB). Small counts 0.5 and large counts 2.
+- **The unit.** One hosted minute is one minute of a Medium sandbox (2 vCPU, 4 GiB). Small counts 0.5 and large counts 2.
 - **What is counted.** The minutes are counted from the same ledger as sandbox time (`server/src/usage.ts`). Each entry uses the sandbox weight stored when its hold opened (`server/src/billing/meter.ts`, `sessionSize`).
-- **The size** is the session's `hostedSize`. A session from before sizes has none and counts as small, the size it ran at. On Free, large is not offered: a launch that asks for it is refused, and a saved default of large steps down to standard. After Pro ends, a kept large sandbox can resume. Its replacement runs at standard and the session records the change on its timeline.
+- **The size** is the session's `hostedSize`. A session from before sizes has none and counts as small, the size it ran at. On Free, large is not offered: a launch that asks for it is refused, and a saved default of large steps down to Medium. After Pro ends, a kept large sandbox can resume. Its replacement runs at Medium and the session records the change on its timeline.
 - **Resets.** Free resets at midnight UTC on the first of the calendar month. Monthly Pro starts at Dodo’s previous billing date and resets at its next billing date, including the time of day. Yearly Pro resets on each monthly anniversary within its paid term, on the last day in shorter months. The next month uses the original anniversary day again.
 - **Holds** count in the period when they open, including late settlements and corrections. The ledger entries stay as written. A separate index retains the opening instant. An entry without an opening instant counts at the start of its UTC day, and a missing weight counts as one.
 - **Machines are not metered.** Runs on users' own machines never enter the ledger.

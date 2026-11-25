@@ -101,6 +101,10 @@ export async function openModelKeyRelay(sandbox: TurnSandbox, sessionId: string,
 	return sandbox.modelKeyRelay(sessionId, key, signal, takeRequest);
 }
 
+export function tokenFilePaths(path: string): string[] {
+	return [path, `${path}.tmp`];
+}
+
 export class TokenFile {
 	readonly path: string;
 	private readonly leadMs: number;
@@ -132,7 +136,7 @@ export class TokenFile {
 		private readonly tokens: AccessTokens,
 		options: TokenFileOptions = {},
 	) {
-		this.path = tokenFilePath(sandbox.id, sandbox.profile.startsWith("e2b") ? DATA_DIR : DOCKER_TOKEN_DIR);
+		this.path = tokenFilePath(sandbox.id, (sandbox.profile === "daytona" || sandbox.profile.startsWith("e2b")) ? DATA_DIR : DOCKER_TOKEN_DIR);
 		this.leadMs = options.leadMs ?? TOKEN_REPLACE_LEAD_MS;
 		this.retryMs = options.retryMs ?? TOKEN_REPLACE_RETRY_MS;
 		this.log = options.log ?? ((line) => (line.includes("token.replace_failed") ? console.warn(line) : console.log(line)));
@@ -140,7 +144,7 @@ export class TokenFile {
 
 	/** What the turn leaves in the sandbox and removes when it ends: the file, and the one a write that was cut off may have left beside it. */
 	get files(): string[] {
-		return [this.path, `${this.path}.tmp`];
+		return tokenFilePaths(this.path);
 	}
 
 	/**
@@ -233,6 +237,7 @@ export class TokenFile {
 		const relay = this.relay;
 		if (relay !== null) this.handed.add(relay.placeholder);
 		// With a relay: the token goes there first, then the file gets the placeholder with the token's expiry.
+		if (relay === null && this.sandbox.profile === "daytona") throw new TokenFileError("Daytona requires a turn relay");
 		const writing = relay === null
 			? this.sandbox.writeSecretFile(this.path, tokenFileContent(token))
 			: relay.hand(token).then(() => this.sandbox.writeSecretFile(this.path, tokenFileContent({ accessToken: relay.placeholder, expiresAt: token.expiresAt })));

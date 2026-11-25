@@ -18,7 +18,7 @@ import { changed as machinesChanged, machineCatalog, itemMachines, launchPlace, 
 import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, plannerHostedCapacity, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { EnvironmentPlace, EnvironmentSchedule, RepositoryEnvironments, SandboxProfileId } from "../contract.js";
 import { ENVIRONMENT_SCHEDULES } from "../contract.js";
-import { HOSTED_SIZES, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, type HostedSize } from "../contract.js";
+import { HOSTED_SIZE_NAMES, HOSTED_SIZES, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, type HostedSize } from "../contract.js";
 import type { GithubId, CreateItemInput, ItemListPage, ItemSummary } from "../contract.js";
 import { randomBytes } from "node:crypto";
 import { actor, event, UserError, type ActorCron } from "rivetkit";
@@ -556,10 +556,10 @@ const KEYED = "agent";
 
 async function sessionHostedSize(c: CreateCtx, asked: unknown, project: string | null, item: Parameters<MakeSession>[4] | undefined): Promise<HostedSize | undefined> {
 	const layer = await getLayer();
-	if (asked !== undefined && asked !== null && !isHostedSize(asked)) throw new UserError(`Choose a hosted size: ${HOSTED_SIZES.join(", ")}.`, { code: "bad_input" });
+	if (asked !== undefined && asked !== null && !isHostedSize(asked)) throw new UserError(`Choose a hosted size: ${HOSTED_SIZES.map(size => HOSTED_SIZE_NAMES[size]).join(", ")}.`, { code: "bad_input" });
 	// Where the deployment has billing, the plan's sizes only (billing/plans.ts): Free has no large.
 	const plan = accountLimits(c.vars.items.limits).plan;
-	if (plan && isHostedSize(asked) && !planAllowsSize(plan, asked)) throw new UserError(`${asked.charAt(0).toUpperCase()}${asked.slice(1)} sandboxes are on Pro. Choose a smaller size, or upgrade in Settings.`, { code: "bad_input" });
+	if (plan && isHostedSize(asked) && !planAllowsSize(plan, asked)) throw new UserError(`${HOSTED_SIZE_NAMES[asked]} sandboxes are on Pro. Choose a smaller size, or upgrade in Settings.`, { code: "bad_input" });
 	const listed = layer.sandboxes.sizes?.() ?? [];
 	const offered = hostedSizesForPlan(listed, plan).map(size => size.id);
 	if (listed.length > 0 && offered.length === 0) throw new UserError("No hosted sandbox size is available on your plan.", { code: "bad_input" });

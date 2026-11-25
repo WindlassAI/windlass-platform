@@ -54,6 +54,9 @@ export const COMMON_RUN_FLAGS = commonRunFlags(1);
  */
 export const SESSION_VOLUME_PROFILES: readonly SandboxProfileId[] = ["docker-hardened"];
 
+/** The relay's caps per turn as a summary says them: sandbox/relay/server.cjs `limits` and relay-leases.ts `ROUTE_LIMITS`. */
+const RELAY_CAPS = "8 at once, 32 waiting";
+
 export const PROFILES: SandboxProfile[] = [
 	{
 		id: "docker-windlass-sandbox",
@@ -98,13 +101,13 @@ export const PROFILES: SandboxProfile[] = [
 		id: "daytona",
 		name: ISOLATION_NAMES.open,
 		summary: ISOLATION_LINES.open,
-		details: "A workspace hosted by Daytona.",
-		layers: ["Daytona workspace"],
-		approval: "auto",
+		details: "Commands run directly in a private Daytona Linux VM with network access. " + relayPlaceholderSentences("Commands", "VM"),
+		layers: ["Private Daytona Linux VM, commands run as a non-root user"],
+		approval: "full",
 		commandNetwork: true,
-		commandsCanReadAccessToken: false,
+		commandsCanReadAccessToken: true,
 		available: false,
-		unavailableReason: "Not built here yet: it needs a Daytona provider in the sandbox layer, a Daytona image with Windlass in it and a Daytona account. Windlass no longer stands in the way: a session there would be handed a short-lived access token, as the Docker sessions are, and the sign-in would stay on the platform.",
+		unavailableReason: "This deployment does not use Daytona.",
 	},
 	{
 		id: "firecracker",
@@ -219,9 +222,6 @@ export function e2bOpenProfile(options: ({ offered: true } | { offered: false; r
 
 /** What a server on E2B says of `e2b-open` when WLP_E2B_OPEN_PROFILE is not set. */
 export const OPEN_PROFILE_NOT_OFFERED = "This deployment does not offer it: its operator has not set WLP_E2B_OPEN_PROFILE=1.";
-
-/** The relay's caps per turn as a summary says them: sandbox/relay/server.cjs `limits` and relay-leases.ts `ROUTE_LIMITS`. */
-const RELAY_CAPS = "8 at once, 32 waiting";
 
 /** What a placeholder lets whoever reads it do, where the token is kept outside `where`. */
 export function relayPlaceholderSentences(reader: string, where: string): string {

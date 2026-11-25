@@ -1,6 +1,6 @@
 /** E2B owns the session disk and enforces its idle lease. Only manage sandboxes tagged for this deployment; hold the lease while a turn or long command runs. */
 
-import { runCommand } from "../command.js";
+import { runCommand, within } from "../command.js";
 import { readsModelRelay, SETTINGS_KEY_WINDLASS } from "../../model-relay-url.js";
 import { INIT_WORKSPACE } from "../../github/git-flags.js";
 import { hostedProfiles, machineHarnesses } from "../harnesses.js";
@@ -31,17 +31,17 @@ import {
 	randomId,
 	shellQuote,
 } from "../provider.js";
-import { tokenFilePath } from "../token-file.js";
+import { tokenFilePath, tokenFilePaths } from "../token-file.js";
 import { config } from "../../config.js";
 import { openRelayLease } from "../relay-leases.js";
-import { E2bBusyError, type E2bClient, type E2bCommand, type E2bConnection, E2bLimitError, type E2bSandboxInfo, E2bSnapshotModeError } from "./client.js";
+import { E2bBusyError, type E2bClient, type E2bCommand, type E2bCommandOptions, type E2bConnection, E2bLimitError, type E2bSandboxInfo, E2bSnapshotModeError } from "./client.js";
 import { ADOPT_SCRIPT, AUDIT_SCRIPT, E2bSnapshots, RECORD_PATH, RECORD_SCRIPT, SNAP_META, type SnapshotRecord } from "./snapshots.js";
 import { DEFERRED_INPUTS, HASH, SHA, type SnapshotSource } from "../snapshot-key.js";
 import { type E2bSettings, planRefusal, refusesSize, templateFor } from "./config.js";
 import { DEFAULT_SNAPSHOT_LIMITS, offeredSize } from "../hosted-settings.js";
 import { describeUsage, estimatedCostUsd, pricePerSecond } from "./pricing.js";
 import { type E2bNetwork, withHosts, DNS_LOG, DNS_LOG_BYTES, blockedLookups, guestDnsArgv, guestNetworkStep, networkConfig } from "./network.js";
-import { HOSTED_SIZE_SPECS, type HostedSize, type HostedSizeOption, isHostedSize, outOfMemoryWords } from "../../contract.js";
+import { HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, type HostedSize, type HostedSizeOption, isHostedSize, outOfMemoryWords } from "../../contract.js";
 
 /** The metadata keys of a sandbox of the platform. */
 export const META = { deployment: "wlp_deployment", uid: "wlp_uid", session: "wlp_session", profile: "wlp_profile", network: "wlp_network", size: "wlp_size", environmentBuild: "wlp_environment_build" } as const;
@@ -66,6 +66,7 @@ const PAUSE_RETRY_MS = 5_000;
 export function capReached(limit: number): string {
 	return `This deployment runs at most ${limit} ${limit === 1 ? "sandbox" : "sandboxes"} at the same time, and ${limit === 1 ? "it is" : "all of them are"} in use. Try again in a few minutes; an agent's sandbox is freed shortly after its turn has ended.`;
 }
+
 /** E2B itself refused: the account's own limit, whatever this deployment's is. */
 export const ACCOUNT_LIMIT = "E2B refused to start another sandbox because of an account limit or start-rate limit. Try again in a few minutes.";
 export const E2B_BUSY = "E2B could not start a sandbox just now. Try again in a minute.";
@@ -97,13 +98,6 @@ const METRICS_LAST = 20;
 const GUEST_MEMORY_SCRIPT = `awk '/^oom_kill /{k=$2} END{print "oom_kill", k+0}' /proc/vmstat; awk '/^MemTotal:/{print "total_kib", $2}' /proc/meminfo`;
 
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
-
-interface PlainResult {
-	code: number | null;
-	stdout: string;
-	stderr: string;
-	timedOut: boolean;
-}
 
 /** What this server knows of a sandbox it has used: for the turn's hold and for the line about what it cost. Nothing another server needs. */
 interface Known {
@@ -144,55 +138,219 @@ function sandboxProfile(metadata: Record<string, string>) {
 	return named;
 }
 
-export class E2bSandboxHandle implements TurnSandbox {
+export type GuestCommand = Omit<E2bCommand, "pid">;
+
+/** A Windlass guest over a provider command stream. E2B and Daytona supply their own transport and idle hold. */
+export abstract class HostedGuest implements TurnSandbox {
 	readonly cwd = WORKSPACE;
+	size: HostedSize = "small";
+	image?: string;
+	abstract holdForTurn(): Promise<() => Promise<void>>;
 
 	constructor(
-		private readonly owner: E2bProvider,
-		/** Replaced when the sandbox was paused and resumed under the handle (`E2bProvider.holdFor`). */
-		public connection: E2bConnection,
 		readonly id: string,
 		readonly uid: string,
 		readonly profile: SandboxProfileId,
 		readonly approval: "auto" | "full",
-		/** What the sandbox may reach as it was connected (`E2bProvider.networkFor`): its lookups of these are no blocked hosts. */
-		private readonly network: Pick<E2bNetwork, "mode" | "hosts"> = { mode: "open", hosts: [] },
-		/** The session the sandbox was made for (its `wlp_session`): a relay lease names it, so any server process finds the turn. */
+		relaySettings: Pick<E2bSettings, "windlassVersion" | "modelRelayOrigin" | "turnLimitMs">,
 		session?: string,
 	) {
 		markTurnSandbox(this);
-		const relay = owner.modelRelayOrigin;
-		// A sandbox that names no session cannot have a lease any server process finds: its turns fail, and
-		// never get the token in the sandbox in its place.
+		const relay = relaySettings.modelRelayOrigin;
 		if (relay !== null) {
-			if (!owner.windlassSettingsKeys) this.windlassKeyProblem = `Hosted Windlass needs ${SETTINGS_KEY_WINDLASS} to use Settings keys.`;
+			if (!readsModelRelay(relaySettings.windlassVersion, SETTINGS_KEY_WINDLASS)) this.windlassKeyProblem = `Hosted Windlass needs ${SETTINGS_KEY_WINDLASS} to use Settings keys.`;
 			const leaseInput = () => {
 				if (!session) throw new Error("this sandbox names no session (its wlp_session is empty), so its turns cannot use the model relay");
-				return { uid, sessionId: session, origin: relay, ttlMs: owner.relayLeaseMs };
+				return { uid, sessionId: session, origin: relay, ttlMs: relaySettings.turnLimitMs + 15 * 60_000 };
 			};
 			this.modelRelay = async () => openRelayLease(leaseInput());
 			this.modelKeyRelay = async (sessionId, key, signal, takeRequest) => {
 				if (sessionId !== session) throw new Error("This model relay belongs to another session.");
-				return openRelayLease({ ...leaseInput(), key, signal, ttlMs: owner.turnLimitMs, requestLimit: config.modelRelay.turnRequests, takeRequest });
+				return openRelayLease({ ...leaseInput(), key, signal, ttlMs: relaySettings.turnLimitMs, requestLimit: config.modelRelay.turnRequests, takeRequest });
 			};
 		}
 	}
 
-	/** `TurnSandbox.modelRelay`, where the deployment's sandboxes reach the relay route. */
 	readonly modelRelay?: () => Promise<TurnModelRelay>;
 	readonly windlassKeyProblem?: string;
 	readonly modelKeyRelay?: TurnSandbox["modelKeyRelay"];
+
+	run(command: string, options: ExecOptions = {}): Promise<ExecResult> {
+		return this.exec(["bash", "-c", command], options);
+	}
+
+	start(argv: string[], options: StartOptions = {}): SandboxProcess {
+		const tag = `r${randomId(6)}`;
+		assertEnvNames(options.env);
+		assertEnvNames(options.secretEnv);
+		const envs = options.gitUser ? GIT_USER_ENV : options.secretEnv === undefined ? options.env : { ...options.secretEnv, ...options.env };
+		const command = (options.gitUser ? gitProcess(tag, argv) : ["wlp-run", "exec", tag, ...argv]).map(shellQuote).join(" ");
+		const emit = (handler: ((chunk: string) => void) | undefined, text: string) => {
+			if (text === "" || handler === undefined) return;
+			try {
+				handler(text);
+			} catch { /* A consumer cannot interrupt the output stream. */ }
+		};
+		let hasEnded = false;
+		let stdinOpen = true;
+		const started = this.startCommand(command, { gitUser: options.gitUser, cwd: options.gitUser ? "/" : options.cwd ?? this.cwd, envs, stdin: true, onStdout: (text) => emit(options.onStdout, text), onStderr: (text) => emit(options.onStderr, text) });
+		let queue = started;
+		const enqueue = (write: (cmd: GuestCommand) => Promise<void>) => {
+			queue = queue.then(async cmd => { await write(cmd); return cmd; });
+			void queue.catch(() => { stdinOpen = false; });
+		};
+		let detach: (end: ProcessEnd) => void = () => {};
+		const detached = new Promise<ProcessEnd>((resolve) => (detach = resolve));
+		const natural = started.then(
+			(command) =>
+				command.wait().then(
+					(result): ProcessEnd => {
+						const signal = /^signal: (.+)$/.exec(result.error?.trim() ?? "")?.[1] ?? null;
+						return { code: signal === null ? result.exitCode : null, signal, error: null };
+					},
+					(error: unknown): ProcessEnd => ({ code: null, signal: null, error: new SandboxConnectionLost(`the connection to the command in the sandbox broke: ${messageOf(error)}`) }),
+				),
+			(error: unknown): ProcessEnd => ({ code: null, signal: null, error: new Error(`could not start the command in the sandbox: ${messageOf(error)}`) }),
+		);
+		const ended = Promise.race([natural, detached]).then((end) => {
+			hasEnded = true;
+			stdinOpen = false;
+			return end;
+		});
+		return {
+			tag,
+			write: (text) => {
+				if (!stdinOpen) return false;
+				enqueue(cmd => cmd.sendStdin(text));
+				return true;
+			},
+			closeStdin: () => {
+				if (!stdinOpen) return;
+				stdinOpen = false;
+				enqueue(cmd => cmd.closeStdin());
+			},
+			ended,
+			get hasEnded() {
+				return hasEnded;
+			},
+			signal: async (sig, who) => {
+				await this.plain(options.gitUser ? signalGitProcess(tag, sig) : ["wlp-run", "signal", tag, sig, who], { gitUser: options.gitUser, timeoutMs: 10_000 }).catch(() => undefined);
+			},
+			killClient: () => {
+				void started.then((command) => command.disconnect()).catch(() => undefined);
+				detach({ code: null, signal: "SIGKILL", error: null });
+			},
+		};
+	}
+
+	exec(argv: string[], options: ExecOptions = {}): Promise<InternalExecResult> {
+		return runCommand(this, argv, options, "stopped listening to the command", () => this.holdLongCommand());
+	}
+
+	protected abstract holdLongCommand(): () => Promise<void>;
+
+	protected async plain(argv: string[], options: { gitUser?: true; root?: true; stdin?: string; env?: Record<string, string>; timeoutMs: number }) {
+		let stdout = "";
+		let stderr = "";
+		const command = await this.startCommand(argv.map(shellQuote).join(" "), {
+			gitUser: options.gitUser, root: options.root, cwd: options.gitUser || options.root ? "/" : this.cwd,
+			envs: options.gitUser ? GIT_USER_ENV : options.env,
+			stdin: options.stdin !== undefined,
+			onStdout: (text) => (stdout += text),
+			onStderr: (text) => (stderr += text),
+		});
+		const done = command.wait();
+		done.catch(() => undefined);
+		if (options.stdin !== undefined) {
+			if (options.stdin !== "") await command.sendStdin(options.stdin);
+			await command.closeStdin();
+		}
+		if (!await within(done, options.timeoutMs)) {
+			await command.kill().catch(() => undefined);
+			return { code: null, stdout, stderr, timedOut: true };
+		}
+		const result = await done;
+		return { code: /^signal: /.test(result.error?.trim() ?? "") ? null : result.exitCode, stdout, stderr, timedOut: false };
+	}
+
+	async ask(argv: string[], options: { env?: Record<string, string>; timeoutMs?: number } = {}): Promise<Answer | null> {
+		const result = await this.plain(argv, { env: options.env, timeoutMs: options.timeoutMs ?? 60_000 }).catch(() => null);
+		return result === null ? null : { code: result.code, stdout: result.stdout, stderr: result.stderr };
+	}
+
+	async stopLeftovers(program: string): Promise<number> {
+		const found = await this.plain(["wlp-run", "tags-of", program], { timeoutMs: 10_000 });
+		const tags = found.stdout.split("\n").filter((tag) => RUN_TAG.test(tag));
+		await Promise.all(
+			tags.map(async (tag) => {
+				await this.plain(["wlp-run", "signal", tag, "INT", "leader"], { timeoutMs: 10_000 });
+				await this.sweep(tag, { waitMs: 3000 });
+			}),
+		);
+		return tags.length;
+	}
+
+	async sweep(tag: string, options: { waitMs?: number; files?: string[] } = {}): Promise<number> {
+		if (!RUN_TAG.test(tag)) throw new Error("invalid run tag");
+		const list = async () => {
+			const result = await this.plain(["wlp-run", "list", tag], { timeoutMs: 10_000 }).catch(() => null);
+			if (result === null || result.code !== 0) return 0; // the sandbox is gone or paused: nothing runs
+			return result.stdout.split("\n").filter((line) => line.trim() !== "").length;
+		};
+		const files = options.files ?? [];
+		const waitMs = options.waitMs ?? 0;
+		if (waitMs > 0 || files.length === 0) {
+			const deadline = Date.now() + waitMs;
+			let count = await list();
+			while (count > 0 && Date.now() < deadline) {
+				await realSleep(150);
+				count = await list();
+			}
+			if (count === 0 && files.length === 0) return 0;
+		}
+		const result = await this.plain(["sh", "-c", SWEEP_SCRIPT, "sh", tag, ...files], { timeoutMs: 15_000 }).catch(() => null);
+		const left = result === null || result.code !== 0 ? 0 : Number(result.stdout.trim());
+		return Number.isFinite(left) ? left : 0;
+	}
+
+	protected abstract startCommand(command: string, options: E2bCommandOptions): Promise<GuestCommand>;
+	abstract readTextFile(path: string): Promise<string>;
+	abstract writeTextFile(path: string, content: string): Promise<void>;
+
+	private readonly writes = new Map<string, Promise<void>>();
+
+	async writeSecretFile(path: string, content: string): Promise<void> {
+		const previous = this.writes.get(path) ?? Promise.resolve();
+		const write = previous.catch(() => {}).then(async () => {
+			const result = await this.plain(["sh", "-c", SECRET_FILE_SCRIPT, "sh", path], { stdin: content, timeoutMs: 30_000 });
+			if (result.code !== 0) throw new Error(result.timedOut ? "timed out" : result.stderr.trim() || `exit ${result.code}`);
+		});
+		this.writes.set(path, write);
+		try { await write; }
+		catch (error) { throw new Error(`cannot write ${path}: ${messageOf(error)}`); }
+		finally { if (this.writes.get(path) === write) this.writes.delete(path); }
+	}
+
+	async removeFiles(paths: string[]): Promise<void> {
+		if (paths.length === 0) return;
+		await this.plain(["rm", "-f", "--", ...paths], { timeoutMs: 10_000 }).catch(() => undefined);
+	}
+}
+
+export class E2bSandboxHandle extends HostedGuest {
+	constructor(
+		private readonly owner: E2bProvider, public connection: E2bConnection, id: string, uid: string,
+		profile: SandboxProfileId, approval: "auto" | "full",
+		private readonly network: Pick<E2bNetwork, "mode" | "hosts"> = { mode: "open", hosts: [] },
+		session?: string,
+	) { super(id, uid, profile, approval, owner.settings, session); }
 
 	/** Made from a post-setup snapshot (snapshots.ts): what it was saved from. Set by `E2bProvider` before the handle is handed out. */
 	snapshot?: SnapshotSource;
 	/** `SandboxHandle.notice`: set when this connect started the sandbox again from its disk. */
 	notice?: string;
-	/** The template build it was made from, as its metadata names it (`SandboxHandle.image`); absent where none was recorded. */
-	image?: string;
 	/** `SandboxHandle.outOfMemory`: with `notice`, when it had run out of memory. */
 	outOfMemory?: OutOfMemory;
-	/** The size it was made in (its `wlp_size`). */
-	size: HostedSize = "small";
 
 	/**
 	 * The guest's own count of processes its kernel killed for want of memory, and its memory in MiB: a turn
@@ -239,97 +397,7 @@ export class E2bSandboxHandle implements TurnSandbox {
 		return [...this.dnsNames].filter(host => !seen.has(host)).slice(0, 50);
 	}
 
-	run(command: string, options: ExecOptions = {}): Promise<ExecResult> {
-		return this.exec(["bash", "-c", command], options);
-	}
-
-	/** Starts argv (no shell of ours: each argument is quoted for E2B's) under wlp-run and leaves its standard input open. */
-	start(argv: string[], options: StartOptions = {}): SandboxProcess {
-		const tag = `r${randomId(6)}`;
-		assertEnvNames(options.env);
-		assertEnvNames(options.secretEnv);
-		// Both kinds go in the request that starts the command (`envs`), never in the command's text.
-		const envs = options.gitUser ? GIT_USER_ENV : options.secretEnv === undefined ? options.env : { ...options.secretEnv, ...options.env };
-		const command = (options.gitUser ? gitProcess(tag, argv) : ["wlp-run", "exec", tag, ...argv]).map(shellQuote).join(" ");
-		const emit = (handler: ((chunk: string) => void) | undefined, text: string) => {
-			if (text === "" || handler === undefined) return;
-			try {
-				handler(text);
-			} catch {
-				// A listener's failure must not stop the program's output from being read.
-			}
-		};
-		let running: E2bCommand | null = null;
-		let hasEnded = false;
-		let stdinOpen = true;
-		/** A write failed: nothing more is sent, also not what was queued behind it. */
-		let broken = false;
-		const started = this.connection.start(command, { gitUser: options.gitUser, cwd: options.gitUser ? "/" : options.cwd ?? this.cwd, envs, stdin: true, onStdout: (text) => emit(options.onStdout, text), onStderr: (text) => emit(options.onStderr, text) });
-		// Each `sendStdin` is a request of its own, so they go one after the other: what is written arrives in the order it was written.
-		let queue: Promise<void> = started.then(
-			(command) => {
-				running = command;
-			},
-			() => {
-				broken = true;
-			},
-		);
-		let detach: (end: ProcessEnd) => void = () => {};
-		const detached = new Promise<ProcessEnd>((resolve) => (detach = resolve));
-		const natural = started.then(
-			(command) =>
-				command.wait().then(
-					(result): ProcessEnd => {
-						// What E2B says of a command a signal ended ("signal: killed"): then there is no exit code of the program's.
-						const signal = /^signal: (.+)$/.exec(result.error?.trim() ?? "")?.[1] ?? null;
-						return { code: signal === null ? result.exitCode : null, signal, error: null };
-					},
-					(error: unknown): ProcessEnd => ({ code: null, signal: null, error: new SandboxConnectionLost(`the connection to the command in the sandbox broke: ${messageOf(error)}`) }),
-				),
-			(error: unknown): ProcessEnd => ({ code: null, signal: null, error: new Error(`could not start the command in the sandbox: ${messageOf(error)}`) }),
-		);
-		const ended = Promise.race([natural, detached]).then((end) => {
-			hasEnded = true;
-			stdinOpen = false;
-			return end;
-		});
-		return {
-			tag,
-			write: (text) => {
-				if (!stdinOpen) return false;
-				queue = queue
-					.then(() => (broken || running === null ? undefined : running.sendStdin(text)))
-					.catch(() => {
-						broken = true;
-						stdinOpen = false;
-					});
-				return true;
-			},
-			closeStdin: () => {
-				if (!stdinOpen) return;
-				stdinOpen = false;
-				queue = queue.then(() => (broken || running === null ? undefined : running.closeStdin())).catch(() => undefined);
-			},
-			ended,
-			get hasEnded() {
-				return hasEnded;
-			},
-			signal: async (sig, who) => {
-				await this.plain(options.gitUser ? signalGitProcess(tag, sig) : ["wlp-run", "signal", tag, sig, who], { gitUser: options.gitUser, timeoutMs: 10_000 }).catch(() => undefined);
-			},
-			killClient: () => {
-				// As a killed `docker exec`: this side stops listening, and the program is left to `signal` and `sweep`.
-				void started.then((command) => command.disconnect()).catch(() => undefined);
-				detach({ code: null, signal: "SIGKILL", error: null });
-			},
-		};
-	}
-
-	exec(argv: string[], options: ExecOptions = {}): Promise<InternalExecResult> {
-		return runCommand(this, argv, options, "stopped listening to the command", () => this.holdLongCommand());
-	}
-
-	private holdLongCommand(): () => Promise<void> {
+	protected holdLongCommand(): () => Promise<void> {
 		// Short commands finish before the first hold and cost no extra E2B request.
 		let holding: Promise<() => Promise<void>> | null = null;
 		const timer = setTimeout(() => {
@@ -341,79 +409,8 @@ export class E2bSandboxHandle implements TurnSandbox {
 		};
 	}
 
-	/**
-	 * Runs argv to its end, not under wlp-run: what a plain `docker exec` is on Docker. `stdin` is written
-	 * and closed. Rejects when the command could not be started or the connection to it broke.
-	 */
-	private async plain(argv: string[], options: { gitUser?: true; root?: true; stdin?: string; env?: Record<string, string>; timeoutMs: number }): Promise<PlainResult> {
-		let stdout = "";
-		let stderr = "";
-		const command = await this.connection.start(argv.map(shellQuote).join(" "), {
-			gitUser: options.gitUser, root: options.root, cwd: options.gitUser || options.root ? "/" : this.cwd,
-			envs: options.gitUser ? GIT_USER_ENV : options.env,
-			stdin: options.stdin !== undefined,
-			onStdout: (text) => (stdout += text),
-			onStderr: (text) => (stderr += text),
-		});
-		const done = command.wait();
-		// Observed here whatever happens below, so that a command given up on leaves no unhandled rejection behind.
-		done.catch(() => undefined);
-		if (options.stdin !== undefined) {
-			if (options.stdin !== "") await command.sendStdin(options.stdin);
-			await command.closeStdin();
-		}
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), options.timeoutMs)));
-		try {
-			const result = await Promise.race([done, timeout]);
-			if (result === "timeout") {
-				await command.kill().catch(() => undefined);
-				return { code: null, stdout, stderr, timedOut: true };
-			}
-			return { code: /^signal: /.test(result.error?.trim() ?? "") ? null : result.exitCode, stdout, stderr, timedOut: false };
-		} finally {
-			clearTimeout(timer);
-		}
-	}
-
-	async ask(argv: string[], options: { env?: Record<string, string>; timeoutMs?: number } = {}): Promise<Answer | null> {
-		const result = await this.plain(argv, { env: options.env, timeoutMs: options.timeoutMs ?? 60_000 }).catch(() => null);
-		return result === null ? null : { code: result.code, stdout: result.stdout, stderr: result.stderr };
-	}
-
-	async stopLeftovers(program: string): Promise<number> {
-		const found = await this.plain(["wlp-run", "tags-of", program], { timeoutMs: 10_000 });
-		const tags = found.stdout.split("\n").filter((tag) => RUN_TAG.test(tag));
-		await Promise.all(
-			tags.map(async (tag) => {
-				await this.plain(["wlp-run", "signal", tag, "INT", "leader"], { timeoutMs: 10_000 });
-				await this.sweep(tag, { waitMs: 3000 });
-			}),
-		);
-		return tags.length;
-	}
-
-	async sweep(tag: string, options: { waitMs?: number; files?: string[] } = {}): Promise<number> {
-		if (!RUN_TAG.test(tag)) throw new Error("invalid run tag");
-		const list = async () => {
-			const result = await this.plain(["wlp-run", "list", tag], { timeoutMs: 10_000 }).catch(() => null);
-			if (result === null || result.code !== 0) return 0; // the sandbox is gone or paused: nothing runs
-			return result.stdout.split("\n").filter((line) => line.trim() !== "").length;
-		};
-		const files = options.files ?? [];
-		const waitMs = options.waitMs ?? 0;
-		if (waitMs > 0 || files.length === 0) {
-			const deadline = Date.now() + waitMs;
-			let count = await list();
-			while (count > 0 && Date.now() < deadline) {
-				await realSleep(150);
-				count = await list();
-			}
-			if (count === 0 && files.length === 0) return 0;
-		}
-		const result = await this.plain(["sh", "-c", SWEEP_SCRIPT, "sh", tag, ...files], { timeoutMs: 15_000 }).catch(() => null);
-		const left = result === null || result.code !== 0 ? 0 : Number(result.stdout.trim());
-		return Number.isFinite(left) ? left : 0;
+	protected startCommand(command: string, options: E2bCommandOptions) {
+		return this.connection.start(command, options);
 	}
 
 	/** A path as E2B's file API needs it: that API resolves a relative one against the user's home, not the workspace. */
@@ -435,27 +432,6 @@ export class E2bSandboxHandle implements TurnSandbox {
 		} catch (error) {
 			throw new Error(`cannot write ${path}: ${messageOf(error)}`);
 		}
-	}
-
-	/**
-	 * The same script as on Docker, the content on the command's standard input: it travels to the sandbox
-	 * inside E2B's API request (TLS) and is on no command line. E2B's file API is not used for it: it
-	 * promises neither the mode nor that the file appears whole.
-	 */
-	async writeSecretFile(path: string, content: string): Promise<void> {
-		let result: PlainResult;
-		try {
-			result = await this.plain(["sh", "-c", SECRET_FILE_SCRIPT, "sh", path], { stdin: content, timeoutMs: 30_000 });
-		} catch (error) {
-			// What E2B says about a failure names the command, never its input.
-			throw new Error(`cannot write ${path}: ${messageOf(error)}`);
-		}
-		if (result.code !== 0) throw new Error(`cannot write ${path}: ${result.timedOut ? "timed out" : result.stderr.trim() || `exit ${result.code}`}`);
-	}
-
-	async removeFiles(paths: string[]): Promise<void> {
-		if (paths.length === 0) return;
-		await this.plain(["rm", "-f", "--", ...paths], { timeoutMs: 10_000 }).catch(() => undefined);
 	}
 
 	holdForTurn(): Promise<() => Promise<void>> {
@@ -492,7 +468,7 @@ export class E2bProvider implements HostedSandboxProvider {
 
 	constructor(
 		private readonly client: E2bClient,
-		private readonly settings: E2bSettings,
+		readonly settings: E2bSettings,
 		private readonly options: E2bProviderOptions = {},
 	) {
 		this.log = options.log ?? ((line) => console.log(line));
@@ -515,22 +491,6 @@ export class E2bProvider implements HostedSandboxProvider {
 		this.log(settings.modelRelayOrigin
 			? `[wlp] e2b.model_relay: Windlass's model requests go through ${settings.modelRelayOrigin}/model-relay/v1, and sandboxes may reach that host instead of api.openai.com; they never hold the access token`
 			: `[wlp] e2b.model_relay: off (${settings.modelRelayOff ?? "not configured"}): each turn's access token is written into its sandbox`);
-	}
-
-	get windlassSettingsKeys(): boolean {
-		return readsModelRelay(this.settings.windlassVersion, SETTINGS_KEY_WINDLASS);
-	}
-
-	/** Where Windlass's model requests go (E2bSettings.modelRelayOrigin), or null. */
-	get modelRelayOrigin(): string | null {
-		return this.settings.modelRelayOrigin;
-	}
-
-	get turnLimitMs(): number { return this.settings.turnLimitMs; }
-
-	/** Windlass's access-token lease allows time for refresh. */
-	get relayLeaseMs(): number {
-		return this.settings.turnLimitMs + 15 * 60_000;
 	}
 
 	/** By E2B's published prices for the smallest size (pricing.ts): an estimate. Each size's is in `sizes`. */
@@ -576,8 +536,8 @@ export class E2bProvider implements HostedSandboxProvider {
 	}
 
 	profiles(): SandboxProfile[] {
-		return profilesFor("e2b", { ...this.settings, network: this.network.mode }, this.modelRelayOrigin !== null).map(p =>
-			this.modelRelayOrigin && p.id === "e2b-open" ? { ...p, platformKeys: true } : p);
+		return profilesFor("e2b", { ...this.settings, network: this.network.mode }, this.settings.modelRelayOrigin !== null).map(p =>
+			this.settings.modelRelayOrigin && p.id === "e2b-open" ? { ...p, platformKeys: true } : p);
 	}
 
 	/** WLP_E2B_NETWORK: what every sandbox of the deployment may reach (network.ts). */
@@ -727,7 +687,7 @@ export class E2bProvider implements HostedSandboxProvider {
 	}
 
 	async provision(input: CreateSandboxInput): Promise<string> {
-		if (input.harness && (!hostedProfiles.includes(input.profile) || input.screenshots || !this.modelRelayOrigin))
+		if (input.harness && (!hostedProfiles.includes(input.profile) || input.screenshots || !this.settings.modelRelayOrigin))
 			throw new SandboxUserError(`${machineHarnesses[input.harness].name} needs the microVM-only profile and a configured model relay.`);
 		if (typeof input.uid !== "string" || !NAME.test(input.uid)) throw new Error('invalid user id: it must be 1 to 64 letters, digits, "_" or "-", starting with a letter or digit');
 		const profile = this.profiles().find(profile => profile.id === input.profile);
@@ -772,7 +732,7 @@ export class E2bProvider implements HostedSandboxProvider {
 			}
 			// A size the deployment lists without its template built at E2B: said with what to do, not as E2B's words alone.
 			if (input.harness && /not.?found|template/i.test(messageOf(error))) throw new Error(`Missing template "${template}". Run sandbox/e2b/build.sh with WLP_E2B_HARNESS=${input.harness}, WLP_E2B_SIZE=${size} and WLP_E2B_HARNESS_IMAGE set to the published harness image.`);
-			if (size !== "small" && /not.?found|template/i.test(messageOf(error))) throw new Error(`could not create a ${size} sandbox from the template "${template}" (${messageOf(error)}): build it (sandbox/e2b/build.sh with WLP_E2B_SIZE=${size}), or leave ${size} out of WLP_E2B_SIZES`);
+			if (size !== "small" && /not.?found|template/i.test(messageOf(error))) throw new Error(`could not create a ${HOSTED_SIZE_NAMES[size]} sandbox from the template "${template}" (${messageOf(error)}): build it (sandbox/e2b/build.sh with WLP_E2B_SIZE=${size}), or leave ${size} out of WLP_E2B_SIZES`);
 			throw new Error(`could not create the sandbox: ${messageOf(error)}`);
 		}
 		const id = connection.sandboxId;
@@ -930,7 +890,7 @@ export class E2bProvider implements HostedSandboxProvider {
 		if (connection !== undefined) {
 			const path = tokenFilePath(id, DATA_DIR);
 			const made = sandboxProfile(info.metadata);
-			await new E2bSandboxHandle(this, connection, id, info.metadata[META.uid] ?? "", made, findProfile(made).approval).removeFiles([path, `${path}.tmp`]);
+			await new E2bSandboxHandle(this, connection, id, info.metadata[META.uid] ?? "", made, findProfile(made).approval).removeFiles(tokenFilePaths(path));
 		}
 		for (let attempt = 1; ; attempt += 1) {
 			try {
@@ -1028,7 +988,7 @@ export class E2bProvider implements HostedSandboxProvider {
 				if (connection === undefined) return;
 				const path = tokenFilePath(info.sandboxId, DATA_DIR);
 				const made = sandboxProfile(info.metadata);
-				await new E2bSandboxHandle(this, connection, info.sandboxId, uid, made, findProfile(made).approval).removeFiles([path, `${path}.tmp`]);
+				await new E2bSandboxHandle(this, connection, info.sandboxId, uid, made, findProfile(made).approval).removeFiles(tokenFilePaths(path));
 			}),
 		);
 	}
@@ -1196,7 +1156,7 @@ export class E2bProvider implements HostedSandboxProvider {
 	private async tidy(handle: E2bSandboxHandle): Promise<void> {
 		const path = tokenFilePath(handle.id, DATA_DIR);
 		const stopped = await handle.stopLeftovers("windlass").catch(() => 0);
-		await handle.removeFiles([path, `${path}.tmp`]);
+		await handle.removeFiles(tokenFilePaths(path));
 		if (stopped > 0) this.log(`[wlp] e2b.sandbox.tidied id=${handle.id}: stopped ${stopped} Windlass run(s) that a turn cut off before the pause had left in it`);
 	}
 }

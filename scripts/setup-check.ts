@@ -100,12 +100,12 @@ function stub(profile: string, exitCode: number | "throws" = 0) {
 	markTurnSandbox(handle);
 	return { handle: handle as unknown as SandboxHandle, sweeps };
 }
-const profiles = [...PROFILES.filter(p => p.available).map(p => p.id), "e2b", "e2b-open"].filter((id, i, all) => all.indexOf(id) === i);
+const profiles = [...PROFILES.filter(p => p.available).map(p => p.id), "e2b", "e2b-open", "daytona"].filter((id, i, all) => all.indexOf(id) === i);
 for (const profile of profiles) {
 	for (const exitCode of [0, 1, "throws"] as const) {
 		const { handle, sweeps } = stub(profile, exitCode);
 		const result = await runSetupCommand(handle, { command: "npm ci", cwd: "/workspace", timeoutMs: 1000 });
-		const kind = profile.startsWith("e2b") ? "e2b" : "docker";
+		const kind = profile.startsWith("docker-") ? "docker" : "hosted";
 		expect(`on ${profile}, a setup that ${exitCode === 0 ? "ends normally" : exitCode === 1 ? "fails" : "cannot be run to its end"} has the sandbox swept (${kind}) before it returns`,
 			isDeepStrictEqual(sweeps, [kind]) && result.cleanupPending === undefined, `${JSON.stringify(sweeps)} ${JSON.stringify(result)}`);
 	}

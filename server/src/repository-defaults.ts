@@ -21,7 +21,7 @@
  */
 
 import { modelRefusal } from "./account-models.js";
-import { type ItemPlaceDefaults, type MachineSummary, type StartPlace, type HostedSize, MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryAutonomy, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, isHostedSize } from "./contract.js";
+import { type ItemPlaceDefaults, type MachineSummary, type StartPlace, type HostedSize, MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryAutonomy, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, HOSTED_SIZE_NAMES, isHostedSize } from "./contract.js";
 import { startPlaceProblem } from "./start-place.js";
 
 const AUTONOMY_FIELDS = ["autoApprovePlans", "autoMergeSingles", "waitForCiOnEachPart"] as const;
@@ -98,7 +98,7 @@ export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[],
 	}
 	if (input.hostedSize !== undefined) {
 		// `sizes`: what the deployment offers now. A size saved earlier that it no longer offers is read as the largest below it.
-		if (input.hostedSize !== null && (!isHostedSize(input.hostedSize) || !sizes.includes(input.hostedSize))) throw new DefaultsProblem("bad_input", sizes.length > 1 ? `Choose one of the hosted sizes: ${sizes.join(", ")}.` : "This deployment has one hosted size.");
+		if (input.hostedSize !== null && (!isHostedSize(input.hostedSize) || !sizes.includes(input.hostedSize))) throw new DefaultsProblem("bad_input", sizes.length > 1 ? `Choose one of the hosted sizes: ${sizes.map(size => HOSTED_SIZE_NAMES[size]).join(", ")}.` : "This deployment has one hosted size.");
 		change.hostedSize = input.hostedSize;
 	}
 	return change;

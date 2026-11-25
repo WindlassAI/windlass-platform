@@ -1,9 +1,4 @@
-/**
- * The hosted sandbox layer, chosen by WLP_SANDBOX: `fake` (in memory), `docker` (containers on this
- * machine) or `e2b` (E2B microVMs, for a deployment of several servers). The real layers are imported
- * only when they are asked for, so the server starts in fake mode whatever state server/src/sandbox/
- * is in, and a server on Docker never loads E2B's SDK.
- */
+/** Load the selected sandbox layer and its vendor SDK on first use. */
 
 import { config } from "./config.js";
 import type { SandboxPlace } from "./contract.js";

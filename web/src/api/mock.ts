@@ -2759,7 +2759,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	const hostedSizes = new Map<GithubId, HostedSize>();
 	function saveDefaults(world: World, machines: MachineSummary[], repositoryId: GithubId, { screenshots, hostedSize, autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, ...change }: RepositoryDefaultsPatch): RepositoryDefaults {
 		if (screenshots !== undefined && typeof screenshots !== "boolean") throw new PlatformError("user", "Screenshots must be true or false.", { reason: "bad_input" });
-		if (hostedSize !== undefined && hostedSize !== null && !isHostedSize(hostedSize)) throw new PlatformError("user", "Choose one of the hosted sizes: small, standard, large.", { reason: "bad_input" });
+		if (hostedSize !== undefined && hostedSize !== null && !isHostedSize(hostedSize)) throw new PlatformError("user", "Choose one of the hosted sizes: Small, Medium, Large.", { reason: "bad_input" });
 		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change, modelsFor(world.profile), machines);
 		if (hostedSize === null) hostedSizes.delete(repositoryId);
 		else if (hostedSize !== undefined) hostedSizes.set(repositoryId, hostedSize);
@@ -3362,7 +3362,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, harness, modes, model: input.model || models.defaultModel, repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
 				if (harness !== "windlass" && options) session.summary = { ...session.summary, harnessModels: models };
 				if (!machine) {
-					if (input.hostedSize !== undefined && !isHostedSize(input.hostedSize)) throw new PlatformError("user", "Choose a hosted size: small, standard, large.", { reason: "bad_input" });
+					if (input.hostedSize !== undefined && !isHostedSize(input.hostedSize)) throw new PlatformError("user", "Choose a hosted size: Small, Medium, Large.", { reason: "bad_input" });
 					const saved = repository ? hostedSizes.get(repository.id) : undefined;
 					session.summary = { ...session.summary, hostedSize: input.hostedSize ?? saved ?? (itemStarts.has(asked) ? "standard" : "small") };
 				}

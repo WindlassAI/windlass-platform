@@ -12,6 +12,7 @@
     "e2e:docker": "WLP_SANDBOX=docker tsx ../scripts/e2e.ts"
   },
   "dependencies": {
+    "@daytona/sdk": "0.232.0",
     "e2b": "2.63.0",
     "jose": "6.2.18",
     "minimatch": "11.0.8",

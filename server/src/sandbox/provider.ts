@@ -179,7 +179,7 @@ export const SWEEP_SCRIPT = 'tag=$1; shift; if [ -n "$(wlp-run list "$tag")" ]; 
 const SWEEP_PROCESSES = `import os, signal, sys, time
 from pathlib import Path
 
-guest = sys.argv[1] == "e2b"
+guest = sys.argv[1] == "hosted"
 uid = os.getuid()
 if uid != 1000:
     sys.exit("expected the sandbox agent")
@@ -238,7 +238,7 @@ if len(sys.argv) == 3:
 
 /** Fail closed if the provider cannot confirm that the session is clear for a new handoff. */
 export async function sweepSessionProcesses(sandbox: TurnSandbox, tokenPath?: string): Promise<void> {
-	const kind = sandbox.profile.startsWith("e2b") ? "e2b" : "docker";
+	const kind = sandbox.profile === "daytona" || sandbox.profile.startsWith("e2b") ? "hosted" : "docker";
 	const scan = () => sandbox.ask(["/usr/bin/python3", "-I", "-S", "-c", SWEEP_PROCESSES, kind, ...(tokenPath ? [tokenPath] : [])], { timeoutMs: 15_000 });
 	let result = await scan();
 	if (kind === "docker" && result?.code === 75) {

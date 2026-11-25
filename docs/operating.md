@@ -1,7 +1,7 @@
 # Operating
 
 How to run Windlass Platform beyond a laptop: several servers on one engine, the public HTTP rate limits,
-E2B sandboxes, the GitHub App, and the bucket that keeps a copy of each agent's memory. Every variable is
+hosted sandboxes, the GitHub App, and the bucket that keeps a copy of each agent's memory. Every variable is
 listed in [configuration.md](configuration.md). Users' own machines are in [machines.md](machines.md).
 
 For a single Linux host, use the Docker Compose kit in [`deploy/selfhost/`](../deploy/selfhost/README.md): it
@@ -201,13 +201,13 @@ each hosted size is a template of its own, built from the same Dockerfile with `
 
 | Size | Template (shots variant adds `-shots`) | Size | Build |
 |---|---|---|---|
-| small | `windlass-platform-sandbox` | 1 vCPU, 1 GiB | `sandbox/e2b/build.sh` |
-| standard | `windlass-platform-sandbox-standard` | 2 vCPU, 4 GiB | `WLP_E2B_SIZE=standard sandbox/e2b/build.sh` |
-| large | `windlass-platform-sandbox-large` | 4 vCPU, 8 GiB | `WLP_E2B_SIZE=large sandbox/e2b/build.sh` |
+| Small | `windlass-platform-sandbox` | 1 vCPU, 1 GiB | `sandbox/e2b/build.sh` |
+| Medium | `windlass-platform-sandbox-standard` | 2 vCPU, 4 GiB | `WLP_E2B_SIZE=standard sandbox/e2b/build.sh` |
+| Large | `windlass-platform-sandbox-large` | 4 vCPU, 8 GiB | `WLP_E2B_SIZE=large sandbox/e2b/build.sh` |
 
 Build each with `WLP_SANDBOX_VARIANT=shots` too where screenshots are on. The server offers a size only once
 `WLP_E2B_SIZES` lists it (default `small`): set `WLP_E2B_SIZES=small,standard,large` after building them. A
-size asked for that is not listed gets the largest listed below it. Work items default to standard, a person's
+size asked for that is not listed gets the largest listed below it. Work items default to Medium, a person's
 agents to the repository's saved size, else small. `WLP_E2B_TEMPLATE_STANDARD`, `WLP_E2B_TEMPLATE_LARGE` and
 `WLP_E2B_SHOTS_TEMPLATE_STANDARD`, `_LARGE` override the names. Post-setup snapshots are per template, so per
 size.
@@ -452,6 +452,19 @@ steps against a stand-in of E2B's filter, with a repository's host and one allow
 that the lookup stub names a blocked host; `scripts/network-check.ts` holds the list's rules, its storage, the
 reading of a repository's files and the stub; `WLP_E2B_CHECK_NETWORK=1 scripts/e2b-check.ts` proves the modes at
 E2B (two short sandboxes, no turn).
+
+## Daytona
+
+Set `WLP_SANDBOX=daytona`, a unique `WLP_HOSTED_DEPLOYMENT`, and a server-side `DAYTONA_API_KEY` with `write:sandboxes` and `delete:sandboxes`. The adapter uses Daytona v0. `DAYTONA_API_URL` defaults to `https://app.daytona.io/api`. Set `DAYTONA_TARGET` to the region ID with Linux VM capacity and the prepared boot image, or use the organization's default. Configure the dedicated HTTPS `WLP_MODEL_RELAY_URL` and the server-side sign-in binary as for E2B. Set `WLP_HOSTED_WINDLASS_VERSION` to the version in the image (0.6.0+ for ChatGPT, 0.7.1+ for Windlass Settings keys). The guest receives a signed placeholder for the turn. [API keys](https://www.daytona.io/docs/en/api-keys/) · [Regions](https://www.daytona.io/docs/en/regions/)
+
+1. On amd64, run `sandbox/build.sh` to build the Windlass base image. Wrap it with `docker build --platform linux/amd64 --build-arg WINDLASS_IMAGE=windlass-platform-sandbox:latest -t "$DAYTONA_IMAGE" sandbox/daytona` and push that tag to a registry Daytona can pull. The wrapper installs the process helper. It runs each command as `agent` or the isolated Git transport user after the launcher drops privileges.
+2. With an image-builder credential (`write:snapshots`), create a snapshot using `POST /snapshots` under the v0 API URL. Supply `name`, `imageName` (the published OCI digest reference), `sandboxClass: "linux-vm"`, `regionId`, and numeric `cpu`, `memory`, `disk`. Wait for **active** in the selected region. For a private registry, configure its pull credentials in Daytona. [Linux VM snapshots](https://www.daytona.io/docs/en/linux-sandboxes/)
+3. Use `windlass-platform-sandbox` for Small (1 vCPU / 1 GiB RAM / 3 GiB disk). For Medium and Large append `-standard` (2/4/8) or `-large` (4/8/10). `WLP_DAYTONA_SNAPSHOT` overrides the base name. Enable built sizes via `WLP_HOSTED_SIZES`. For screenshots or a hosted CLI, wrap its corresponding Windlass image and append `-shots`, `-claude`, `-codex`, or `-opencode` to the size's snapshot name.
+
+Tier 1 offers only the Open profile, subject to the organization's egress policy. Keep `WLP_HOSTED_NETWORK=open` and `WLP_HOSTED_SNAPSHOTS=off`. Daytona VM cold capture requires stopping the source. Windlass prepared environments are unavailable. `WLP_HOSTED_IDLE_ACTION=pause` stops the VM and retains its disk. Reconnect starts the same VM with fresh processes. The provider rounds the idle timeout up to whole minutes and refreshes activity during turns. `destroy` discards the workspace. Regional lifespan limits still apply. [Network limits](https://www.daytona.io/docs/en/network-limits/) · [VM lifecycle](https://www.daytona.io/docs/en/linux-sandboxes/)
+
+The running estimate includes CPU, RAM and disk before free storage allowances. Stopped VMs can still incur storage charges. Override `usdPerVcpuSecond`, `usdPerGiBSecond` and `usdPerDiskGiBSecond` under `daytona.linux-vm` in `WLP_HOSTED_RATE_CARD_FILE`. [Daytona pricing](https://www.daytona.io/pricing)
+
 
 ## Recover a platform login
 

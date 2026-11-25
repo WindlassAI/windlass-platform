@@ -649,7 +649,7 @@ await section("sizes", async () => {
 	const planLines: string[] = [];
 	const onPlan = e2bSandboxes(refusing, { ...SETTINGS, maxRunning: 5, sizes: ["small", "standard", "large"] }, { log: (line) => planLines.push(line), now: () => clock.now, sleep: async () => {} });
 	const refusal = await userError(() => onPlan.create({ uid: "u1", sessionId: "s9", profile: "e2b", hostedSize: "large" }));
-	expect("a size the plan refuses names the size and E2B's words, and is logged", refusal?.startsWith("E2B refused a large sandbox (4 vCPU, 8 GiB) for the account's plan. E2B said:") === true && refusal.includes("exceeds the maximum") && planLines.some((line) => line.includes("e2b.size_refused size=large")), refusal ?? "");
+	expect("a size the plan refuses names the size and E2B's words, and is logged", refusal?.startsWith("E2B refused a Large sandbox (4 vCPU, 8 GiB) for the account's plan. E2B said:") === true && refusal.includes("exceeds the maximum") && planLines.some((line) => line.includes("e2b.size_refused size=large")), refusal ?? "");
 	expect("a template that is not there, or the account's count of sandboxes, is no size refusal", !refusesSize("404: template 'windlass-platform-sandbox-large' not found") && !refusesSize("429: rate limit exceeded"));
 
 	// A snapshot is of one template's sandbox: its key differs by size, so one size's never starts another's.

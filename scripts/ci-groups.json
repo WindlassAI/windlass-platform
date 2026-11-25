@@ -19,6 +19,8 @@
     "rules": {
       "timeout": 15,
       "paths": [
+        "scripts/daytona-provider-test.ts",
+        "sandbox/daytona/**",
         "scripts/check-bucket.ts",
         "scripts/check-sections.ts",
         "server/src/*.ts",
@@ -91,6 +93,7 @@
         "verified": "tsx ../scripts/verified-check.ts",
         "web-files": "tsx ../scripts/web-files-check.ts",
         "github": "tsx ../scripts/github-check.ts",
+        "daytona-provider": "tsx ../scripts/daytona-provider-test.ts",
         "e2b-provider": "tsx ../scripts/e2b-provider-test.ts",
         "e2b-snapshot": "tsx ../scripts/e2b-snapshot-check.ts",
         "shot": "tsx ../scripts/shot-check.ts",

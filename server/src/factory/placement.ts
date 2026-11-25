@@ -162,7 +162,7 @@ function capabilityFit(machine: Machine, task: PlanSubtask, inventory: Placement
 	if (machine.egress === "none" || (needs.egress && needs.egress !== machine.egress)) return "the egress policy does not support this repository task";
 	const agent = agentFit(machine, task, inventory);
 	if (agent) return agent;
-	if (needs.profile === "e2b-open") return "the microVM profile runs only on hosted sandboxes";
+	if (needs.profile === "e2b-open" || needs.profile === "daytona") return "this profile runs only on hosted sandboxes";
 	if (needs.profile && machine.allowedProfiles && !machine.allowedProfiles.includes(needs.profile)) return `the owner does not allow the ${needs.profile} profile`;
 	return null;
 }
