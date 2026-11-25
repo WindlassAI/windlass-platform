@@ -2,6 +2,7 @@
 // The active turn holds credentials in memory. The timeline queue commits redacted items
 // and runner receipts in order so reconnects resume after the last durable sequence.
 import { spareProfile, spareRecipe, type SpareRecipe, type SpareSetup } from "../runner/spare-recipe.js";
+import { fileReadiness } from "../factory/readiness-filing.js";
 import { refHead } from "../github/feature.js";
 import { canReuseSnapshot, DEFERRED_INPUTS, digest, snapshotGeneration, snapshotWriter, type SnapshotRequest } from "../sandbox/snapshot-key.js";
 import { setTimeout as delay } from "node:timers/promises";
@@ -176,9 +177,10 @@ async function sessionCaller(c: { key: string[]; client(): unknown }, params: un
 }
 
 /** The caller, who must be the session's user; answers with their id. */
-async function requireSessionUser(c: { key: string[]; client(): unknown; conn?: { params: unknown } | null }): Promise<string> {
+async function requireSessionUser(c: { key: string[]; vars: SessionVars; client(): unknown; conn?: { params: unknown } | null }): Promise<string> {
 	const caller = await sessionCaller(c, c.conn?.params);
 	if (caller.kind !== "user") throw new UserError("This action is for users.", { code: "forbidden" });
+	if (c.vars.meta?.readiness) throw new UserError("Open Repo setup on the repository overview.", { code: "forbidden" });
 	return caller.profile.uid;
 }
 
@@ -600,7 +602,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 				if (ready > 0) recipe = candidate;
 				return candidate;
 			} }),
-			mirrorRepo: meta.repo ? String(meta.repo.id) : undefined, ...connectOptions(meta) });
+			mirrorRepo: !meta.readiness && meta.repo ? String(meta.repo.id) : undefined, ...connectOptions(meta) });
 		console.log(`[wlp] sandbox.created id=${id} session=${meta.sessionId}`);
 		if (vars.destroying) {
 			await layer.sandboxes.destroy(id);
@@ -677,7 +679,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 	if (active) active.finishNetwork = await observeNetwork(c, meta, turn, handle, layer);
 
 	// A requested review opens its own read-only tree, without running repository setup.
-	if (active?.item?.row.checkout?.requested) return handle;
+	if (meta.readiness || active?.item?.row.checkout?.requested) return handle;
 
 	// A repository of the user's GitHub connection is cloned with a token of the platform's own (below).
 	if (meta.repo && !meta.cloned && !signal.aborted && !(await cloneConnected(c, meta, turn, handle, signal))) return handle;
@@ -977,7 +979,7 @@ async function readSecrets(c: Ctx, meta: SessionMeta, turn: number | null): Prom
 		unopened.push(`${shut.length === 1 ? `Your account's secret ${shut[0]}` : `Your account's secrets ${shut.join(", ")}`} could not be opened by this server, so ${shut.length === 1 ? "it is" : "they are"} not handed over. Save ${shut.length === 1 ? "it" : "them"} again in your settings.`);
 	}
 	if (turn !== null) for (const text of unopened) note(c, turn, "warn", text);
-	if (meta.origin?.role === "reviewer" && (closed.length || shut.length || sealed.project !== project?.key)) throw new TurnProblem("The platform could not read all saved secrets to redact this review.");
+	if ((meta.readiness || meta.origin?.role === "reviewer") && (closed.length || shut.length || sealed.project !== project?.key)) throw new TurnProblem("The platform could not read all saved secrets to redact this review.");
 	if (capabilitiesOf(meta.harness).events === "acp" && (closed.length || shut.length)) throw new TurnProblem("The platform could not read all saved values to redact the harness session.");
 	// Every value is taken out of what is shown, also one of the account's that a secret of the repository stands in for.
 	return {
@@ -2205,12 +2207,18 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 			c.log.warn({ msg: "could not release machine turn slot", error: describeError(error) }));
 		startNextFeedback(c, meta);
 		// A build reports once its turn has closed: the user's actor deletes the session on it.
+		if (meta.readiness) reportAssessment(c, meta);
 		if (meta.environmentBuild) {
 			const result = c.vars.environmentResult ?? { interrupted: true };
 			void c.keepAwake(userActor(c, meta.uid).internalEnvironmentResult(meta.sessionId, result).catch(error =>
 				c.log.warn({ msg: "could not report the environment build", error: describeError(error) })));
 		}
 	}
+}
+
+function reportAssessment(c: Ctx, meta: SessionMeta) {
+	void c.keepAwake(userActor(c, meta.uid).internalReadinessResult(meta.sessionId, meta.readiness?.result ?? null).catch(error =>
+		c.log.warn({ msg: "could not save the readiness assessment", error: describeError(error) })));
 }
 
 /** The turn's start clock: at the first output (or the turn's end) it keeps the record on the session, shows it, and logs it. */
@@ -2475,7 +2483,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		active.secrets ??= await readSecrets(c, meta, turn);
 		for (const text of active.secrets.unopened.splice(0)) note(c, turn, "warn", text);
 		opening = true;
-		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets, !requested);
+		const sandbox = await openSandbox(c, meta, turn, signal, layer, active.secrets, !requested && !meta.readiness);
 		opening = false;
 		clock.opened();
 		// A build's turn ends here: it starts no agent (`buildEnvironment` ran in the setup).
@@ -2511,6 +2519,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			if (active.item) active.item.refused = reason;
 			throw new TurnProblem(reason);
 		}
+		if (meta.readiness && (!caps.restrictedReview || !platformTool("report"))) throw new TurnProblem("The read-only setup tools are unavailable.");
 		if (meta.demo && !caps.demo) throw new TurnProblem("This agent's harness has no demo mode.");
 		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn);
 		// Windlass freezes tools at the first prompt. Start summaries fresh, but resume a paused segment's conversation.
@@ -2560,7 +2569,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const common: RunTurnInput = {
 			...(key && { modelKey: { sessionId: meta.sessionId, key, takeRequest } }),
 			prompt: text, mode, planMode:active.planMode, windlassSessionId: resumed ?? undefined, model, effort: effort ?? undefined, signal,
-			onQuestion: active.item ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
+			onQuestion: active.item || meta.readiness ? undefined : (question, withdrawn) => askQuestion(c, meta, active, question, withdrawn),
 			onControl: control => { if (open) active.control = control; },
 			// A machine turn whose conversation is kept: what it would need to be taken up after a restart, read with each timeline write.
 			...(c.vars.runner?.durable && {
@@ -2584,7 +2593,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		const item = active.item;
 		const held = active.secrets;
 		const planning = item?.row.agent === "planner";
-		const planner = critic || planning || item?.row.agent === "summary";
+		const planner = !!meta.readiness || critic || planning || item?.row.agent === "summary";
 		// Told once, to whichever agent takes the next prompt: what setup left, and whether the workspace is a new one.
 		const notes = platformNotes(meta, reviewer);
 		const store = item ? attachmentStore() : null;
@@ -2594,7 +2603,13 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			&& (await sandbox.run("test -x /usr/local/bin/wlp-shot", { signal, timeoutMs: 5000 })).exitCode === 0;
 		const unavailable = held.screenshots ? "Screenshots are unavailable in this sandbox. File without screenshots." : NO_REPO_SHOTS;
 		let filings = Promise.resolve("");
-		const onReport: RunTurnInput["onReport"] = item && !planning && !reviewer && platformTool("report") ? (request, withdrawn) => {
+		const setup = meta.readiness;
+		const onReport: RunTurnInput["onReport"] = setup ? async (request, withdrawn) => {
+			if (!open || withdrawn.aborted || setup.result) return "These setup checks have already been filed.";
+			const answer = fileReadiness(request.arguments, held.redactor, report => { setup.result = report; });
+			if (setup.result) await persist(c);
+			return answer;
+		} : item && !planning && !reviewer && platformTool("report") ? (request, withdrawn) => {
 			const file = async () => {
 				if (!open || withdrawn.aborted) return "The report call ended. File it again.";
 				if (!browser && Array.isArray(request.arguments?.screenshots) && request.arguments.screenshots.length) return unavailable;
@@ -2638,6 +2653,14 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		let uiChanged = false;
 		let filingFiles: (() => { read(path: string, sha: string): Promise<string>; close(): Promise<void> }) | null = null;
 		let storedBrief: string | null = null;
+		if (setup) {
+			const app = githubApp(), repo = meta.repo, connection = await githubConnection(c, meta);
+			if (!app || !repo || !connection) throw new TurnProblem("The repository connection is unavailable.");
+			const { installation, repository } = await sessionRepository(app, connection, repo, "read");
+			const { owner, name } = repository;
+			common.reviewDirectory = await app.withToken(installation.id, { repositoryId: repo.id, permissions: { contents: "read", metadata: "read" } },
+				token => readOnlyReview(sandbox, app.cloneUrl(owner, name), token, setup.commit, setup.commit, signal, true), { revokeAfter: true });
+		}
 		if (reviewer && (checkout || critic) && item) {
 			const repo = meta.repo;
 			const app = githubApp();
@@ -2813,6 +2836,7 @@ fi`, { signal, timeoutMs: 5000 });
 					return "Plan review filed. End your turn.";
 				} : undefined,
 				planner,
+				repoSetup: !!meta.readiness,
 				clearPlanner,
 				crossRepoPlan: planning && item?.crossRepoPlan === true,
 				onPlan: planning && item ? (request) => tracked(itemActor(c, meta.uid, item.row.itemId).internalFilePlan({ key: item.row.key, plan: held.redactor.deep(request.arguments) })) : undefined,
@@ -2850,7 +2874,7 @@ fi`, { signal, timeoutMs: 5000 });
 				},
 				onPublish: repoTools && !active.item && platformTool("publish") ? (request, withdrawn) => tracked(agentPublish(c, meta, active, sandbox, commandSandbox(profile), request, withdrawn)) : undefined,
 				// The project's own MCP servers, which Windlass leaves stopped until the user says otherwise; nobody can say so in an item's turn.
-				onServerQuestion: active.item
+				onServerQuestion: meta.readiness ? async () => false : active.item
 					? async (question) => {
 							note(c, turn, "info", `The project's MCP server “${str(question?.name)}” was not started: a work item's turn has nobody to approve it.`);
 							return false;
@@ -3058,7 +3082,7 @@ fi`, { signal, timeoutMs: 5000 });
 		if (result?.windlassSessionId && (result.acp || outcome !== "error")) meta.windlassSessionId = result.windlassSessionId;
 
 		// Snapshot before publishing completion. If the snapshot fails, invalidate the previous copy.
-		if (used) {
+		if (used && !meta.readiness) {
 			// Windlass's session is copied out of the sandbox meanwhile, when Windlass ran: both only read.
 			const saving = caps.backups && result && layer ? saveBackup(c, meta, turn, used, layer) : undefined;
 			const copied = reviewer || c.vars.stopping || c.vars.destroying ? null : await copyWorkspace(c, meta, used);
@@ -3121,7 +3145,7 @@ fi`, { signal, timeoutMs: 5000 });
 		publish(c);
 		if (outcome === "error") await refreshSandbox(c, meta);
 		// Probe unpublished commits before idle suspension.
-		const unpushed = !reviewer && meta.repo && used ? await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null) : null;
+		const unpushed = !reviewer && !meta.readiness && meta.repo && used ? await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null) : null;
 		// The agent had the platform publish in this turn, before the turn's checks ran, and nothing changed since: the pull request's description is told what they came to.
 		if (active.published && unpushed === false && used) await describeAfterTurn(c, meta, used, turn);
 		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, itemSignIn, stepLimit, verified, used, unpushed, usage, checks: active.secrets?.checks ?? [], acp: result?.acp });
@@ -3255,7 +3279,7 @@ const MAX_HELD = 20;
 
 /** Whether this session's turns pause and resume instead of being cut short. */
 function resumesTurns(meta: SessionMeta): boolean {
-	return config.turnResume.enabled && !meta.environmentBuild;
+	return config.turnResume.enabled && !meta.environmentBuild && !meta.readiness;
 }
 
 function newRun(meta: SessionMeta, turn: number, effort: string | null, planMode: boolean, now: number, fromSeq: number): TurnRun | null {
@@ -4185,6 +4209,7 @@ export const agentSession = actor({
 				windlassSessionId: null,
 				turnStartedAt: null,
 				...(input.origin?.kind === "item" && typeof input.origin.itemId === "string" ? { origin: input.origin, ...(input.origin.childBranch && { publishBranch: input.origin.childBranch.name }) } : {}),
+				...(input.readiness && { readiness: input.readiness }),
 				...(!input.origin && typeof input.environmentBuild?.project === "string" && typeof input.environmentBuild.place === "string"
 					? { environmentBuild: { project: input.environmentBuild.project, place: input.environmentBuild.place, screenshots: input.environmentBuild.screenshots === true } } : {}),
 			};
@@ -4345,6 +4370,7 @@ export const agentSession = actor({
 			publish(c);
 		}
 		meta.setupRunning = null;
+		if (meta.readiness && meta.turns && meta.status === "idle") reportAssessment(c, meta);
 		// What the item or the turn queue was not told yet before the server stopped is sent now.
 		void c.keepAwake(sendOutbox(c, meta.uid));
 		// A grant lost with a server leaves a delivery waiting with nothing to move it: each waiting one is asked for again (the queue answers a key it granted with the same slot).
@@ -5138,6 +5164,12 @@ export const agentSession = actor({
 			return summaryOf(liveMeta(c));
 		},
 
+		internalAssessRepository: async (c, text: string): Promise<void> => {
+			requireServiceFor(c, "call");
+			const meta = liveMeta(c);
+			if (!meta.readiness) throw new UserError("This session cannot run setup checks.", { code: "bad_input" });
+			if (!meta.turns && !c.vars.turn && !c.vars.accepting) await startPrompt(c, meta, { text }, text, null);
+		},
 		internalBuildEnvironment: async (c): Promise<void> => {
 			requireService(c);
 			const meta = liveMeta(c);

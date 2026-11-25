@@ -102,7 +102,7 @@ class Conversation {
 				return o.serial(async () => {
 					this.requireActive();
 					const creating = Date.now();
-					const made = await o.create(this.session, profile, screenshots, harness, op.args.size, prepared, op.args.mirrorRepo, this.channel.authenticated ? op.args.spare : undefined, op.args.environmentBuild);
+					const made = await o.create(this.session, profile, screenshots, harness, op.args.size, prepared, op.args.mirrorRepo, this.channel.authenticated ? op.args.spare : undefined, op.args.environmentBuild, op.args.privateData);
 					const box = o.boxes.get(made);
 					// Only a sandbox this create made: `existing` hands back one an earlier create made.
 					if (box && box.usedAt >= creating) box.startTimes = { ...(box.claim && { spare: true as const }), image: imaged - began, ...(pulled && { pulled: true as const }), create: Date.now() - creating };

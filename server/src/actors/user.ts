@@ -1,9 +1,9 @@
 // One actor per uid owns the account, session index and turn admission.
 // Keep launch and submission claims synchronous. Service-only actions check their caller before reading account data.
 
-import { changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
+import { resolveDefaultPlace, savedPlace, changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
 import type { AccountDefaultsPatch, CredentialSource, ItemPlaceDefaults, RepositoryDefaultsPatch } from "../contract.js";
-import { snapshotGeneration } from "../sandbox/snapshot-key.js";
+import { digest, snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
 import type { AgentModels } from "../factory/placement.js";
 import { mayUse } from "../access.js";
@@ -19,7 +19,7 @@ import { ENVIRONMENT_SCHEDULES } from "../contract.js";
 import { HOSTED_SIZES, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, type HostedSize } from "../contract.js";
 import type { GithubId, CreateItemInput, ItemListPage, ItemSummary } from "../contract.js";
 import { randomBytes } from "node:crypto";
-import { actor, event, UserError } from "rivetkit";
+import { actor, event, UserError, type ActorCron } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { serviceParams } from "../auth.js";
 import { assertOrigin, disconnectRevoked, userActorCaller, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
@@ -94,6 +94,10 @@ import { serverSealer } from "../signin/seal.js";
 import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, hostedLimitsApply } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/hosted-network.js";
+import { cachedScan, claimAssessment, finishAssessment, repositoryReadiness, READINESS_TABLE, READINESS_TICK, scheduleName, scheduleSetup, setupInputs } from "./user-readiness.js";
+import type { Judgment } from "../factory/readiness.js";
+import { readinessPrompt } from "../factory/readiness-filing.js";
+import { scanRepoSetup } from "../github/setup-checks.js";
 import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { BuildStartRefused, buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, wakeEnvironments, type EnvironmentHost } from "./user-environments.js";
 import type { EnvironmentBuildOrigin, EnvironmentBuildReport } from "./internal.js";
@@ -399,9 +403,20 @@ async function labelFor(c: UserCtx, repositoryId: GithubId, project: string): Pr
 	}
 }
 
-async function repositoryView(c: UserCtx, repositoryId: GithubId, project: string): Promise<RepositoryView> {
+async function refreshSetupScan(c: UserCtx, id: GithubId, project: string) {
+	const at = Date.now();
+	const app = requireGithub();
+	const { installation } = await resolveRepository(app, requireConnection(c), id, "read");
+	const scan = await app.withToken(installation.id, { repositoryId: id, permissions: { contents: "read", metadata: "read" } },
+		async token => scanRepoSetup(app, token, await app.repositoryById(token, id)), { revokeAfter: true });
+	await c.db.execute(`INSERT INTO setup_scan VALUES (?,?,?) ON CONFLICT(project) DO UPDATE SET at=excluded.at,scan=excluded.scan WHERE excluded.at>=setup_scan.at`,
+		project, at, JSON.stringify(scan));
+	return { ...scan, at };
+}
+
+async function repositoryView(c: UserCtx & { cron: Pick<ActorCron, "get"> }, repositoryId: GithubId, project: string): Promise<RepositoryView> {
 	const defaults = await readDefaults(c.db, project);
-	const [setup] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM setup_command WHERE project = ?", project);
+	const setup = await readSetup(c.db, project);
 	const [secrets] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ?", project);
 	const { checks } = await readChecks(c.db, project);
 	const network = await readNetwork(c.db, project);
@@ -413,14 +428,22 @@ async function repositoryView(c: UserCtx, repositoryId: GithubId, project: strin
 		if (listed) listed.definitions += 1;
 		else approvals.set(approval.name, { name: approval.name, approvedAt: approval.approvedAt, expiresAt: approval.expiresAt, definitions: 1 });
 	}
+	let scan = await cachedScan(c.db, project);
+	let scanError = null;
+	if (c.vars.github && (!scan || Date.now() - scan.at > 24 * 60 * 60_000)) {
+		try { scan = await refreshSetupScan(c, repositoryId, project); }
+		catch { scanError = "Could not read the default branch. Open this page again to retry."; }
+	}
+	const inputs = scan ? await setupInputs(c.db, project, scan, setup.command, checks) : null;
 	return {
 		id: repositoryId,
 		name: name === "" ? null : name,
+		readiness: await repositoryReadiness(c.db, project, inputs, !!await c.cron.get(scheduleName(repositoryId)), scanError),
 		defaults,
 		approvals: [...approvals.values()],
 		// For all the repository's sessions, of either Docker profile: a hardened one's Windlass data may be its own.
 		forgetting: forgettingWords({ dataInSandbox: sandboxes.sessionsLiveInSandbox, hardenedOwnData: (await sandboxes.privateSessionData?.("docker-hardened")) === true }),
-		saved: { setup: (setup?.n ?? 0) > 0, secrets: secrets?.n ?? 0, checks: checks.length, network: network.entries.length },
+		saved: { setup: !!setup.command, secrets: secrets?.n ?? 0, checks: checks.length, network: network.entries.length },
 	};
 }
 
@@ -542,7 +565,7 @@ async function sessionHostedSize(c: CreateCtx, asked: unknown, project: string |
 	return [...offered].reverse().find((size) => HOSTED_SIZES.indexOf(size) <= HOSTED_SIZES.indexOf(wanted)) ?? offered[0];
 }
 
-async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4], build?: EnvironmentBuildOrigin): Promise<SessionSummary> {
+async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4], { build, readiness }: { build?: EnvironmentBuildOrigin; readiness?: { session: string; commit: string } } = {}): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
 	if (input.size !== undefined && ![1, 2, 4].includes(input.size))
 		throw new UserError("Choose a sandbox size of 1, 2 or 4 slots.", { code: "bad_input" });
@@ -650,7 +673,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		const now = Date.now();
 		const itemRole = item && { role: item.role, subtaskScreenshots: item.subtaskScreenshots, ...(item.planCritic && { planCritic: true as const }) };
 		summary = {
-			id: item?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
+			id: readiness?.session ?? item?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
 			title: givenTitle ?? DEFAULT_TITLE,
 			place,
 			harness,
@@ -670,11 +693,13 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			sandbox: "none",
 			...(item ? { item: { id: item.itemId, ...itemRole, ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(build && { environmentBuild: true as const }),
+			...(readiness && { readiness: true as const }),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
 			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, ...itemRole, ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && offered?.platformKeys?.length && { filedWithKey: true as const }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(!item && size > 1 && { size }),
 			...(build && { environmentBuild: build }),
+			...(readiness && { readiness: { commit: readiness.commit } }),
 			...(hostedSize && { hostedSize }),
 			title: summary.title,
 			titleIsTyped: !item && givenTitle !== null,
@@ -707,7 +732,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	await storeSession(c, summary, submission);
 	broadcastSessions(c);
 	// What the next agent starts on. An agent the user started, not a work item's: one that cannot be remembered is still made.
-	if (!item && !build) {
+	if (!item && !build && !readiness) {
 		await recordLastStart(c.db, { place: summary.place, harness: summary.harness ?? "windlass", mode: summary.mode, startedAt: summary.createdAt }).catch((error: unknown) => {
 			c.log.error({ msg: "the last start could not be remembered", error: String(error) });
 		});
@@ -774,13 +799,39 @@ async function removeSession(c: CreateCtx, uid: string, id: string): Promise<voi
 	await forgetSession(c, id);
 }
 
+async function assessRepository(c: CreateCtx, profile: UserProfile, id: GithubId, session = "s_" + randomBytes(8).toString("hex")) {
+	const project = setupKeyOf(id);
+	if (!await claimAssessment(c.db, project, session, Date.now())) return;
+	try {
+		const scan = await refreshSetupScan(c, id, project);
+		if (!scan.commit) throw new UserError("Add a first commit before finishing setup.", { code: "bad_input" });
+		const inputs = await setupInputs(c.db, project, scan, (await readSetup(c.db, project)).command, (await readChecks(c.db, project)).checks);
+		const repoDefaults = await readDefaults(c.db, project), account = await readAccountDefaults(c.db);
+		const destination = resolveDefaultPlace(savedPlace(repoDefaults, account) ?? {}, itemMachines(c.vars.machines), "orchestrate");
+		if (destination.wait) throw new UserError(destination.wait, { code: "place_unavailable" });
+		let profileId = destination.profile;
+		if (destination.place.kind === "hosted") {
+			const profiles = (await getLayer()).sandboxes.profiles().filter(p => p.available);
+			profileId = profiles.find(p => p.id === (repoDefaults.profile ?? account.profile))?.id ?? profiles[0]?.id;
+		}
+		if (!profileId) throw new UserError("The usual place for this repository is unavailable.", { code: "bad_profile" });
+		await c.db.execute("UPDATE readiness SET inputs=? WHERE session=?", inputs.key, session);
+		await makeSession(c, profile, { title: "Repo setup", repository: { id }, place: destination.place, profile: profileId }, null, undefined, { readiness: { session, commit: scan.commit } });
+		await sessionActor(c, profile.uid, session).internalAssessRepository(readinessPrompt(inputs.evidence));
+	} catch (error) {
+		await finishAssessment(c.db, session, error instanceof UserError ? error.message : "The setup check could not start.");
+		await removeSession(c, profile.uid, session);
+		throw error;
+	}
+}
+
 function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 	const uid = c.vars.profile?.uid ?? "";
 	return {
 		db: c.db,
 		uid,
 		now: () => Date.now(),
-		sessions: () => [...c.vars.sessions.values()],
+		sessions: () => [...c.vars.sessions.values()].filter(s => !s.readiness),
 		machines: () => listMachines(c),
 		saved: async (project) => {
 			const setup = await setupRow(c.db, project);
@@ -807,7 +858,7 @@ function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 			let summary: SessionSummary;
 			try {
 				summary = await makeSession(c, profile, { title: `Environment of ${row?.label ?? "the repository"}`, place, profile: request.profile as SandboxProfileId, ...(request.hostedSize && { hostedSize: request.hostedSize }), repository: { id: githubId(request.repositoryId) ?? request.repositoryId } }, null, undefined,
-					{ project: request.project, place: request.place, screenshots: request.screenshots });
+					{ build: { project: request.project, place: request.place, screenshots: request.screenshots } });
 			} catch (error) {
 				throw new Error(error instanceof UserError ? error.message : "The build's sandbox could not be made.");
 			}
@@ -1093,6 +1144,9 @@ export const user = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS snapshot_place (project TEXT NOT NULL, place TEXT NOT NULL, saved_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, connected_at INTEGER NOT NULL, PRIMARY KEY (project, place))");
 			// The last launch claim's generation (`UserVars.launchClaim`): kept on its own, so that it only ever grows.
 			await db.execute(ENVIRONMENT_TABLE);
+			await db.execute("CREATE TABLE IF NOT EXISTS setup_scan (project TEXT PRIMARY KEY, at INTEGER NOT NULL, scan TEXT NOT NULL)");
+			await db.execute(READINESS_TABLE);
+			await db.execute("CREATE INDEX IF NOT EXISTS readiness_project ON readiness(project,at DESC)");
 			await db.execute(ENVIRONMENT_SCHEDULE_TABLE);
 			await db.execute("CREATE TABLE IF NOT EXISTS launch_counter (id INTEGER PRIMARY KEY CHECK (id = 1), last INTEGER NOT NULL)");
 			await db.execute(`
@@ -1919,7 +1973,7 @@ export const user = actor({
 			const send = session.place.kind === "hosted" || await machineSecrets(c.db, session.place.machineId) === true;
 			const requestedNames = send && session.harness && session.harness !== "windlass"
 				? (await c.db.execute<{ name: string }>("SELECT name FROM session_secret_grant WHERE session_id = ?", id)).map(row => row.name) : undefined;
-			const redactOnly = !send && (session.item?.role === "reviewer" || (!!session.harness && session.harness !== "windlass"));
+			const redactOnly = session.readiness || !send && (session.item?.role === "reviewer" || (!!session.harness && session.harness !== "windlass"));
 			const kept = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM account_secret ORDER BY name") : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], ACCOUNT_SECRET_PROJECT, kept);
 			const account = {
@@ -1932,14 +1986,14 @@ export const user = actor({
 			// repository of the feature, and is given the hosts of each one's list (`unionHosts`).
 			const feature = session.item && !session.item.planCritic ? c.vars.items.items.get(session.item.id) : undefined;
 			const others = (feature?.repositories ?? []).filter(r => String(r.repositoryId) !== String(session.repository?.id));
-			const lists = session.place.kind === "hosted" ? [await readNetwork(c.db, project), ...await Promise.all(others.map(r => readNetwork(c.db, setupProjectKey(r.repositoryId)!)))] : [];
+			const lists = !session.readiness && session.place.kind === "hosted" ? [await readNetwork(c.db, project), ...await Promise.all(others.map(r => readNetwork(c.db, setupProjectKey(r.repositoryId)!)))] : [];
 			// The others fill only the room the deployment's own hosts leave: the primary's list comes first.
 			const network = lists.length > 1 ? unionHosts(lists.map(list => list.hosts), networkLimit(await deploymentHostsForLimit(), config.hosted?.network.maxHosts)) : lists[0]?.hosts ?? [];
 			const rows = send || redactOnly ? await c.db.execute<{ name: string; scope: string; sealed: string }>("SELECT name, scope, sealed FROM repo_secret WHERE project = ? ORDER BY name", project) : [];
 			await refreshSecretRows(c.db, serverSealer(), c.key[0], project, rows);
 			const { checks } = await readChecks(c.db, project);
 			const connectedAt = c.vars.github?.connectedAt;
-			const setup = includeSnapshotSetup && snapshotsFor(session.place) && connectedAt !== undefined && !rows.length ? await setupRow(c.db, project) : undefined;
+			const setup = includeSnapshotSetup && !session.readiness && snapshotsFor(session.place) && connectedAt !== undefined && !rows.length ? await setupRow(c.db, project) : undefined;
 			const snapshotSetup = setup && connectedAt !== undefined ? { command: setup.command, updatedAt: setup.updated_at,
 				connectedAt, previouslySaved: setup.snapshot_connection === connectedAt } : undefined;
 			const screenshots = (await readDefaults(c.db, project)).screenshots && config.factory.screenshots;
@@ -1948,6 +2002,38 @@ export const user = actor({
 			return { project, requestedNames, network, ...(snapshotSetup?.command && { snapshotSetup }), ...(environment && { environment }), ...(redactOnly && { redactOnly }), screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
+		[READINESS_TICK]: async (c, id: GithubId): Promise<void> => {
+			const fire = c.scheduledFire;
+			if (fire?.name !== scheduleName(id)) throw new UserError("This action is internal.", { code: "forbidden" });
+			if (!c.vars.profile || !await c.cron.get(fire.name)) return;
+			const session = "s_" + digest(["readiness", id, fire.scheduledAt]).slice(0, 16);
+			await assessRepository(c, c.vars.profile, id, session);
+		},
+		setSetupWeekly: async (c, id: GithubId, enabled: boolean): Promise<void> => {
+			requireUser(c);
+			setupKeyOf(id);
+			if (typeof enabled !== "boolean") throw new UserError("Choose whether to run weekly.", { code: "bad_input" });
+			if (enabled) await resolveRepository(requireGithub(), requireConnection(c), id, "read");
+			await scheduleSetup(c.cron, id, enabled);
+		},
+		runReadiness: async (c, id: GithubId): Promise<RepositoryView> => {
+			const profile = requireUser(c);
+			await assessRepository(c, profile, id);
+			return repositoryView(c, id, setupKeyOf(id));
+		},
+		internalReadinessResult: async (c, session: string, report: Judgment | null): Promise<void> => {
+			requireServiceFor(c, "call");
+			if (!c.vars.sessions.get(session)?.readiness) return;
+			await finishAssessment(c.db, session, report ?? "The turn ended before filing its setup checks.");
+			await removeSession(c, c.key[0], session);
+		},
+		internalReadinessLevel: async (c, id: GithubId) => {
+			requireServiceFor(c, "call");
+			const project = setupKeyOf(id), scan = await cachedScan(c.db, project);
+			if (!scan) return null;
+			const inputs = await setupInputs(c.db, project, scan, (await readSetup(c.db, project)).command, (await readChecks(c.db, project)).checks);
+			return (await repositoryReadiness(c.db, project, inputs, false)).latest?.level ?? null;
+		},
 		repository: async (c, repositoryId: GithubId): Promise<RepositoryView> => {
 			requireUser(c);
 			const project = setupKeyOf(repositoryId);
@@ -2027,6 +2113,9 @@ export const user = actor({
 				await c.db.execute("DELETE FROM repository_defaults WHERE project = ?", project);
 				await c.db.execute("DELETE FROM repository_network WHERE project = ?", project);
 				await c.db.execute("DELETE FROM network_request WHERE project = ?", project);
+				await scheduleSetup(c.cron, repositoryId, false);
+				await c.db.execute("DELETE FROM setup_scan WHERE project=?", project);
+				await c.db.execute("DELETE FROM readiness WHERE project=?", project);
 				await changeEnvironments(c, host => forgetEnvironments(host, project));
 				const done = await changeApprovals(c, (book) => book.forgetProject(project));
 				await dropHostedSnapshots(profile.uid, String(repositoryId));

@@ -438,7 +438,7 @@ export function reviewCheckoutScript(directory: string, head: string): string {
 
 /** A PR comment requests a source inspection. The transport user owns both the checkout and its
  * parent under sticky /tmp, so even an unattended agent with a shell cannot edit the reviewed tree. */
-export async function readOnlyReview(sandbox: SandboxHandle, url: string, token: string, head: string, base: string, signal: AbortSignal): Promise<string> {
+export async function readOnlyReview(sandbox: SandboxHandle, url: string, token: string, head: string, base: string, signal: AbortSignal, sourceOnly = false): Promise<string> {
 	if (![head, base].every(sha => /^[0-9a-f]{40}$/.test(sha))) throw new Error("Invalid review target.");
 	const id = randomBytes(16).toString("hex");
 	const script = [
@@ -447,11 +447,13 @@ export async function readOnlyReview(sandbox: SandboxHandle, url: string, token:
 		`wlp_git -C repo fetch --quiet --no-tags -- ${shellQuote(url)} ${base} ${head}`,
 		"WLP_T=",
 		`plain_git -C repo checkout -q --detach ${head}`,
-		'chmod -R a+rX repo', 'chmod 711 "$private"',
+		// Project hooks and agent definitions must stay inert during setup checks.
+		...(sourceOnly ? ["rm -rf -- repo/.git", "find repo -type l -delete"] : []),
+		'chmod -R a+rX repo', sourceOnly ? 'chmod 755 "$private"' : 'chmod 711 "$private"',
 	].join("\n");
 	const result = await run(sandbox, script, { gitUser: true, stdin: token + "\n", secrets: [token], timeoutMs: CLONE_TIMEOUT_MS, signal });
 	if (!result.ok) throw new GithubProblem("github_gone", "Could not open the requested pull request at its pinned commit.");
-	return transportDirectory(id) + "/repo";
+	return sourceOnly ? transportDirectory(id) : transportDirectory(id) + "/repo";
 }
 
 export async function checkoutReview(sandbox: SandboxHandle, url: string, token: string, directory: string, pr: number, head: string, signal?: AbortSignal) {

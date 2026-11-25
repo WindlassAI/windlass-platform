@@ -335,6 +335,7 @@ export interface SessionSummary {
 	item?: { id: string; role?: "builder" | "reviewer"; subtaskScreenshots?: boolean; planCritic?: true; reviewer?: { id: string; status: SessionStatus }; signIn?: "api-key" | "chatgpt" | "subscription" };
 	/** Set for a session that only builds a prepared environment (environments.ts): it is not listed, and is deleted when done. */
 	environmentBuild?: true;
+	readiness?: true;
 	/** Set when the session's sandbox started from a validated environment: the commit setup and the checks ran at, and when they passed. */
 	environment?: { commit: string; validatedAt: number; checks: number };
 }
@@ -342,7 +343,7 @@ export interface SessionSummary {
 /** The user index keeps one builder per item. Its reviewer is reachable from the item and counts toward its usage. */
 export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
 	const reviewers = new Map(sessions.flatMap(s => s.item?.role === "reviewer" && !s.item.planCritic ? [[s.item.id, { id: s.id, status: s.status }] as const] : []));
-	return sessions.filter(s => s.item?.role !== "reviewer" && !s.environmentBuild).map(session => {
+	return sessions.filter(s => s.item?.role !== "reviewer" && !s.environmentBuild && !s.readiness).map(session => {
 		const reviewer = session.item && reviewers.get(session.item.id);
 		return session.item && reviewer ? { ...session, item: { ...session.item, reviewer } } : session;
 	});
@@ -896,8 +897,8 @@ export interface RepositoryApproval {
 	definitions: number;
 }
 
-/** Locally saved repository settings contain no secret values and require no GitHub lookup. */
 export interface RepositoryView {
+	readiness: import("./factory/readiness.js").RepositoryReadiness;
 	/** GitHub's id for the repository. */
 	id: GithubId;
 	/** Last known owner/name. Query githubRepository for the current name. */
@@ -2069,6 +2070,8 @@ export interface UserActions {
 	deleteRepositorySecret(input: { repositoryId: GithubId; profile: SandboxProfileId; name: string }): Promise<RepositorySecrets>;
 	/** Local settings survive loss of GitHub access. */
 	repository(repositoryId: GithubId): Promise<RepositoryView>;
+	setSetupWeekly(repositoryId: GithubId, enabled: boolean): Promise<void>;
+	runReadiness(repositoryId: GithubId): Promise<RepositoryView>;
 	/**
 	 * The repository as GitHub has it now, when the user's connection covers it and the connected user
 	 * may read it: what a new session can be launched on. Throws a UserError that says what is in the

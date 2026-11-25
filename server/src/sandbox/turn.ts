@@ -413,6 +413,14 @@ class Turn {
 					await this.end();
 				}
 			} else if (release !== null && (await this.prepare(scriptPath, agentFile)) && !this.abortRequested) {
+				if (input.repoSetup && configHome) {
+					// Relative paths keep reads inside the symlink-free checkout, including on an open machine.
+					const filter = '.tool.arguments | type == "object" and ((.path // ".") | type == "string" and (startswith("/") or startswith("~") | not) and (split("/") | all(. != "..")))';
+					await sandbox.writeTextFile(configHome + "/windlass/config.json", JSON.stringify({ hooks: { beforeTool: [{
+						name: "setup-files", tools: ["read", "ls"], sandbox: false, onError: "refuse",
+						command: `/usr/bin/jq -e '${filter}' >/dev/null || { echo "Read a relative path inside the repository."; exit 2; }`,
+					}] } }));
+				}
 				const ref = input.modelKey;
 				let keyEnv: Record<string, string> = {};
 				if (ref) {
@@ -548,7 +556,7 @@ class Turn {
 			scriptPath === null ? undefined : this.sandbox.writeTextFile(scriptPath, JSON.stringify(this.input.script)),
 			agentFile === null ? undefined : this.sandbox.writeTextFile(agentFile, [
 				"---", `name: ${this.reviewerAgent}`, this.input.planner ? "description: Read the repository and plan the feature." : "description: Reviews this pull request independently.",
-				this.input.planner ? "disallowed-tools: write, edit, shell, subagent" : this.input.reviewDirectory ? "disallowed-tools: write, edit, subagent" : "disallowed-tools: subagent", "---", this.input.planner ? "Read the repository and file the requested artifact." : "Review the change yourself.", "",
+				this.input.repoSetup ? "tools: ls, read, report" : this.input.planner ? "disallowed-tools: write, edit, shell, subagent" : this.input.reviewDirectory ? "disallowed-tools: write, edit, subagent" : "disallowed-tools: subagent", "---", this.input.planner ? "Read the repository and file the requested artifact." : "Review the change yourself.", "",
 			].join("\n")),
 			// The user's access token, in its file before the engine looks for it. An abort does not wait for it.
 			this.tokenFile === null ? undefined : this.unlessAborted(this.tokenFile.start()),

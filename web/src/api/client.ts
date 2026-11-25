@@ -213,8 +213,9 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelP
 	/** Saves a secret: with `value` a new one or a new value, without it only the scope. Throws with reason `bad_secret`, `too_many_secrets` or `secret_not_found`. */
 	saveRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, secret: { name: string; value?: string; scope: SecretScope }): Promise<RepositorySecrets>;
 	deleteRepositorySecret(repositoryId: GithubId, profile: SandboxProfileId, name: string): Promise<RepositorySecrets>;
-	/** What is kept for a repository beside its setup command and its secrets: the defaults for new agents and the remembered approvals of its MCP servers. Asks GitHub nothing. */
 	repository(repositoryId: GithubId): Promise<RepositoryView>;
+	setSetupWeekly(repositoryId: GithubId, enabled: boolean): Promise<void>;
+	runReadiness(repositoryId: GithubId): Promise<RepositoryView>;
 	/**
 	 * The repository as GitHub has it now: what a new agent can be launched on. Throws with reason `github_off`,
 	 * `github_not_connected`, `github_gone` or `github_denied` when it cannot be used for new agents, and

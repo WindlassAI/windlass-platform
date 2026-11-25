@@ -398,6 +398,7 @@ export interface RunTurnInput {
 	/** With `onPlan`: a cross-repo feature's planning turn, whose `file_plan` takes the plan's repositories too. */
 	crossRepoPlan?: boolean;
 	planner?: boolean;
+	repoSetup?: boolean;
 	/** Resume an item's conversation as a builder after it ran with the planner agent. */
 	clearPlanner?: boolean;
 	onReport?: (request: TurnPublishRequest, signal: AbortSignal) => string | Promise<string>;

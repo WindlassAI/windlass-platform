@@ -4,6 +4,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { LinearWrite } from "../linear/app.js";
+import { plannerReadiness } from "../factory/readiness.js";
 import { newAgent } from "../factory/budget.js";
 import { networkBody, unionNetwork } from "../blocked-network.js";
 import type { NetworkReceipt } from "./internal.js";
@@ -1827,6 +1828,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const selected = preferred?.place;
 				const defaultPlace = selected && typeof selected === "object" ? { kind: "machine" as const, machineId: selected.machine }
 					: selected === "hosted" ? { kind: "hosted" as const } : parent;
+				text += plannerReadiness(await userActor(c, meta.uid).internalReadinessLevel(meta.repository.id));
 				text += "\n" + plannerCapacityText(defaultPlace, inventory.machines, inventory.hostedCapacity);
 				if (preferred?.place) {
 					const chosen = preferred.place;

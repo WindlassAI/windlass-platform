@@ -11,6 +11,14 @@ A work item runs in one of two ways:
 - **Plan first** is the default. A read-only planner files a feature plan. You approve the scope on the item page, then one implementer follows it or the approved subtasks run. See [Orchestrate a feature](#orchestrate-a-feature).
 - **Quick** skips the plan and sends the request directly to one implementer. Choose it for an individual item, including a bug filed from the web.
 
+## Repo setup
+
+Open a connected repository to see its eight setup checks. The platform reads the default branch and looks for guide files, folder guides, templates, long source files, pull request checks and protection for secrets. It also checks whether a setup command and checks are saved. This first score uses no agent time.
+
+Choose **Finish setup** for one read-only agent turn in the repository’s usual place. It checks the guide’s instructions and uses the latest matching environment build to verify that setup worked and all saved checks passed in five minutes total. It does not run the commands. **Run setup checks weekly** starts off. Turn it on to repeat the file scan and agent turn each week.
+
+Each level needs at least 80% of its checks and every earlier level. The levels are Functional, Documented and Standardized. Below Documented, the planner asks for smaller, independently checkable parts. Use **File as work item** beside a failed check to create a draft with its reason.
+
 ## File a work item
 
 ### From the Factory page
