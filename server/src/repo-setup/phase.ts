@@ -4,6 +4,7 @@ import { privateLine } from "./filing.js";
 import type { SetupDiagnosis, SetupNote } from "./types.js";
 
 export class SetupPhase {
+	leftOut: string[] = [];
 	private phase: SetupDiagnosis["phase"] = "draft";
 	private offered = false;
 	private readonly calls = new Map<string, string | null>();
@@ -36,6 +37,7 @@ export class SetupPhase {
 
 	diagnosis(): SetupDiagnosis {
 		return { phase: this.phase, model: this.clean(this.model), toolOffered: this.offered, attempts: this.calls.size,
+			...(this.leftOut.length > 0 && { leftOut: this.leftOut }),
 			rejections: [...this.calls.values()].filter((s): s is string => s !== null),
 			lastMessage: this.lastMessage, outcome: this.outcome, stopReason: this.stopReason };
 	}

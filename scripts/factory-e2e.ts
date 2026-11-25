@@ -250,6 +250,17 @@ await check("repo-setup: draft guides with imported notes and delete them on clo
 				return view.readiness.run === "finished" && view;
 			}, 35_000);
 			assert(!view.readiness.error, view.readiness.error ?? "");
+			const leftOut = view.readiness.diagnosis?.leftOut ?? [];
+			const unreviewed = ".agents/skills/unreviewed/SKILL.md";
+			const pull = standin.pulls.find(p => p.repository === repo.id)!;
+			if (repeat) {
+				assert(!leftOut.length && !pull.body.includes("Left out"), "The matching revision retained earlier omissions.");
+				assert(view.knowledge.publication?.files.length === 3, "The matching revision lost reviewed files.");
+			} else {
+				assert(leftOut.length === 1 && leftOut[0].startsWith(unreviewed + ":"), "Missing owner omission note.");
+				assert(pull.body.includes("Left out\n\n- " + leftOut[0]) && !/source-note|hidden.md|fixture-only/.test(pull.body), "Incorrect public omission note.");
+				assert(standin.fileOn(repo, pull.head, unreviewed) === null, "The unreviewed skill was published.");
+			}
 			const decision = view.knowledge.notes.find(n => n.id === question.id)?.decision;
 			assert(decision?.verdict === (repeat ? "stale" : "question") && decision.question === (repeat ? undefined : "Which check should run before a release?"), "Question or answer missing from release.md");
 			assert(view.knowledge.notes.some(n => n.decision?.uses[0]?.line === 3), "Missing verified line citation");

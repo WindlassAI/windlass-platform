@@ -11,7 +11,7 @@ export interface SetupTurn {
 	sessionId: string; commit: string; request: DraftRequest; directory: string; notes: SetupNote[]; redact(text: string): string;
 }
 
-export async function checkSetupFiling(turn: SetupTurn, args: unknown, signal: AbortSignal) {
+export async function checkSetupFiling(turn: SetupTurn, args: unknown, signal: AbortSignal, revision: boolean) {
 	const { app, repository, connection, commit } = turn;
 	const { installation } = await sessionRepository(app, connection, repository, "read");
 	const wanted = evidencePaths(args);
@@ -28,7 +28,7 @@ export async function checkSetupFiling(turn: SetupTurn, args: unknown, signal: A
 			return { paths: read.slice(0, 160), maxFileBytes: 128 * 1024, maxBytes: 4 * 1024 * 1024, more: false };
 		}), { revokeAfter: true });
 	if (scan.commit !== commit) throw Error("The repository changed. Run setup again.");
-	const draft = validateDraft(args, { ...turn, paths, read: new Map(scan.files.map(f => [f.path, f.text])), owner: repository.owner, host: new URL(repository.url).hostname });
+	const draft = validateDraft(args, { ...turn, revision, paths, read: new Map(scan.files.map(f => [f.path, f.text])), owner: repository.owner, host: new URL(repository.url).hostname });
 	for (const path of draft.skills.keys()) {
 		const command = smokeCommand(draft.files.get(path)!);
 		if (!command) continue;
@@ -50,7 +50,10 @@ export function setupBodies(draft: AcceptedDraft, turn: Pick<SetupTurn, "request
 	const text = ["Adds contributor guides for the repository.", turn.request.later ? `${turn.request.areas.length} folders drafted. ${turn.request.later} more can be covered later.` : "",
 		draft.decisions.length ? `${count(lines.size, "line")} from ${count(used.length, "imported note")}. ${count(draft.decisions.length - used.length, "note")} unused${counts.size ? " (" + [...counts].map(([v,n]) => n + " " + v).join(", ") + ")" : ""}. Details are on the Repo setup page.` : ""].filter(Boolean).join("\n\n");
 	const skillChecks = [...draft.skills].map(([path, status]) => `- \`${path}\` — ${status}`).join("\n");
-	const body = skillChecks ? text + "\n\nSkill checks\n\n" + skillChecks : text;
+	const sections = [text];
+	if (skillChecks) sections.push("Skill checks\n\n" + skillChecks);
+	if (draft.leftOut?.length) sections.push("Left out\n\n" + draft.leftOut.map(note => "- " + note).join("\n"));
+	const body = sections.join("\n\n");
 	const clean = (s: string) => privateLine(s, { ...turn, host: new URL(turn.repository.url).hostname, owner: turn.repository.owner, read: new Map() })
 		? "Details withheld" : s.replace(/[|<>&@\[\]`*_!\\]/g, " ");
 	const rows = draft.decisions.flatMap(d => {

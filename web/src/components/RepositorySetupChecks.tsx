@@ -80,6 +80,10 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 				setAnswers({});
 			})}>Apply answers</button>}
 		</div>}
+		{!!data.diagnosis?.leftOut?.length && <div className="setup-result">
+			<strong>Left out</strong>
+			<ul>{data.diagnosis.leftOut.map(note => <li key={note}>{note}</li>)}</ul>
+		</div>}
 		{publication && score}
 		<details className="setup-notes" open={!notes.length}>
 			<summary><strong>Notes from your agents{notes.length > 0 && ` (${notes.length})`}</strong></summary>
