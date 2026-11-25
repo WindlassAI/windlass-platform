@@ -22,12 +22,14 @@ import { type GithubId, type ItemState, type ItemSummary } from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { StartComposer } from "../components/StartComposer";
 import { ChevronIcon, FileIcon, Mark, RepoIcon, WarnIcon } from "../components/Icons";
-import { Menu, Pill, type MenuSpec } from "../components/ui";
+import { Menu, Pill, useMediaQuery, type MenuSpec } from "../components/ui";
 import { plural } from "../lib/format";
 import { feedCounts, feedRepositories, repositoryName, workingCounts } from "../lib/repositories";
 import { ITEM_SOURCES, linkProps, navigate, type ItemSource } from "../lib/router";
 import { useApp } from "../state/app";
 import { useFactoryLimits, useNow, useSessions } from "../state/hooks";
+import { initialView, PHONE_QUERY, storeView, type FactoryView } from "../lib/board";
+import { FactoryBoard } from "./FactoryBoard";
 import { asking, EndedFoot, endedWords, ItemRow, questionLine, useEndedPages, type ItemsState } from "./Items";
 
 /** How an item was filed, in the filter's words. */
@@ -151,6 +153,13 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	const limits = useFactoryLimits().value;
 	const reviewer = platform.info?.items?.reviewer !== false;
 	const [showEnded, setShowEnded] = useState(false);
+	const [chosenView, setChosenView] = useState<FactoryView>(initialView);
+	const phone = useMediaQuery(PHONE_QUERY);
+	const view: FactoryView = phone ? "list" : chosenView;
+	const chooseView = (next: FactoryView) => {
+		setChosenView(next);
+		storeView(next);
+	};
 	const ended = useId();
 	const ids = { needs: useId(), ready: useId(), progress: useId(), drafts: useId(), ended: useId() };
 
@@ -303,6 +312,15 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 								Clear
 							</button>
 						) : null}
+						{phone ? null : (
+							<div className="factory-view" role="group" aria-label="Show as">
+								{(["list", "board"] as const).map((option) => (
+									<button key={option} type="button" aria-pressed={view === option} onClick={() => chooseView(option)}>
+										{option === "list" ? "List" : "Board"}
+									</button>
+								))}
+							</div>
+						)}
 					</div>
 					{shown && shown.length === 0 && filtered ? (
 						<p className="usage-empty factory-none">
@@ -312,26 +330,32 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 							</button>
 						</p>
 					) : null}
-					<Group id={ids.needs} name="Needs you" items={groups.needs} now={now} reviewer={reviewer} tone="needs" />
-					<Group id={ids.ready} name="Ready for you" items={groups.ready} now={now} reviewer={reviewer} />
-					<Group id={ids.progress} name="In progress" items={groups.progress} now={now} reviewer={reviewer} subtasks={items.feed?.children} count={progressCount(groups.progress, items.feed?.children)} />
-					<Group id={ids.drafts} name="Drafts" items={groups.drafts} now={now} reviewer={reviewer} />
-					{endedCount > 0 ? (
+					{view === "board" && shown ? (
+						<FactoryBoard key={`${filters.repository ?? ""}/${filters.from ?? ""}`} list={shown} children={items.feed?.children} filters={filters} endedCount={endedCount} now={now} reviewer={reviewer} />
+					) : (
 						<>
-							<p className="agents-fold items-fold factory-fold">
-								<button type="button" className="link machine-toggle" aria-expanded={showEnded} aria-controls={ended} onClick={() => setShowEnded((value) => !value)}>
-									<ChevronIcon size={11} className="machine-chevron" />
-									{showEnded ? "Hide the ended ones" : `Show ${plural(endedCount, "ended item")}`}
-								</button>
-								{showEnded ? null : <span>{endedWords(counted)}</span>}
-							</p>
-							<div id={ended} hidden={!showEnded}>
-								<Group id={ids.ended} name="Ended" items={endedPages.items} count={endedPages.items.length < endedCount ? `${endedPages.items.length} of ${plural(endedCount, "work item")}` : undefined} now={now} reviewer={reviewer} filed>
-									<EndedFoot pages={endedPages} />
-								</Group>
-							</div>
+						<Group id={ids.needs} name="Needs you" items={groups.needs} now={now} reviewer={reviewer} tone="needs" />
+						<Group id={ids.ready} name="Ready for you" items={groups.ready} now={now} reviewer={reviewer} />
+						<Group id={ids.progress} name="In progress" items={groups.progress} now={now} reviewer={reviewer} subtasks={items.feed?.children} count={progressCount(groups.progress, items.feed?.children)} />
+						<Group id={ids.drafts} name="Drafts" items={groups.drafts} now={now} reviewer={reviewer} />
+						{endedCount > 0 ? (
+							<>
+								<p className="agents-fold items-fold factory-fold">
+									<button type="button" className="link machine-toggle" aria-expanded={showEnded} aria-controls={ended} onClick={() => setShowEnded((value) => !value)}>
+										<ChevronIcon size={11} className="machine-chevron" />
+										{showEnded ? "Hide the ended ones" : `Show ${plural(endedCount, "ended item")}`}
+									</button>
+									{showEnded ? null : <span>{endedWords(counted)}</span>}
+								</p>
+								<div id={ended} hidden={!showEnded}>
+									<Group id={ids.ended} name="Ended" items={endedPages.items} count={endedPages.items.length < endedCount ? `${endedPages.items.length} of ${plural(endedCount, "work item")}` : undefined} now={now} reviewer={reviewer} filed>
+										<EndedFoot pages={endedPages} />
+									</Group>
+								</div>
+							</>
+						) : null}
 						</>
-					) : null}
+					)}
 				</>
 			)}
 		</main>

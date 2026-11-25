@@ -15,6 +15,7 @@ import "./styles/billing.css";
 import "./styles/repository.css";
 import "./styles/machines.css";
 import "./styles/items.css";
+import "./styles/board.css";
 import "./styles/workspace.css";
 import "./styles/feed.css";
 import "./styles/landing.css";

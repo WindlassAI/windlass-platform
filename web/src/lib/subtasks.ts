@@ -102,6 +102,10 @@ export function doingNow(entry: PlannedSubtask, numbers: ReadonlyMap<string, num
 		const waiting = task.dependsOn.filter((key) => !done.has(key));
 		return waiting.length > 0 ? { word: "waits", fact: afterWords({ ...task, dependsOn: waiting }, numbers) } : { word: "not started", fact: null };
 	}
+	return itemDoing(child, now, task);
+}
+
+export function itemDoing(child: ItemSummary, now: number, task?: PlanSubtask): Doing {
 	if (child.question) return { word: "asks you", fact: relativeTime(child.question.askedAt, now) };
 	switch (child.state) {
 		case "done":
@@ -127,7 +131,7 @@ export function doingNow(entry: PlannedSubtask, numbers: ReadonlyMap<string, num
 	switch (step.kind) {
 		case "implement":
 		case "refine":
-			if (rounds.gate > 0) return { word: "fixing", fact: `your checks failed, fix ${rounds.gate}`, code: firstCommand(task) };
+			if (rounds.gate > 0) return { word: "fixing", fact: `your checks failed, fix ${rounds.gate}`, code: task && firstCommand(task) };
 			return { word: "implementing", fact: turns };
 		case "run_checks":
 			return { word: "checking", fact: "running local checks" };

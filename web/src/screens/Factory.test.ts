@@ -473,3 +473,57 @@ describe("a deployment without the second review", () => {
 		expect(host.querySelectorAll(".item-row-review").length).toBeGreaterThan(0);
 	});
 });
+
+describe("the Factory page's board", () => {
+	afterEach(() => localStorage.removeItem("wlp.factory.view"));
+
+	it("caps the tray at two rows and columns at eight, keeping totals when expanded", async () => {
+		await show("/factory", { items: "many" });
+		const style = document.createElement("style");
+		style.textContent = ".board-tray .board-cards { grid-template-columns: 320px 320px 320px; }";
+		host.append(style);
+		act(() => button("Board").click());
+		for (const [selector, limit] of [[".board-tray", 6], [".board-column-ready", 8], [".board-column-ended", 8]] as const) {
+			const lane = host.querySelector(selector)!;
+			const total = Number(lane.querySelector(".board-column-count")?.textContent);
+			const count = () => lane.querySelectorAll(":scope > ul > li").length;
+			const toggle = lane.querySelector("button")!;
+			expect(count()).toBe(limit);
+			expect(toggle.textContent).toBe(selector === ".board-tray" ? `Show all ${total}` : `Show ${total - limit} more`);
+			act(() => toggle.click());
+			await settle();
+			expect(count()).toBe(total);
+			expect(Number(lane.querySelector(".board-column-count")?.textContent)).toBe(total);
+			expect(toggle.textContent).toBe("Show fewer");
+			act(() => toggle.click());
+			expect(count()).toBe(limit);
+		}
+	});
+
+	it("switches List | Board, remembers the choice, and shows a feature as one card with its parts", async () => {
+		await show("/factory", { items: "features" });
+		expect(button("List").getAttribute("aria-pressed")).toBe("true");
+		expect(host.querySelector(".factory-board")).toBeNull();
+		act(() => button("Board").click());
+		await settle(2);
+		expect(button("Board").getAttribute("aria-pressed")).toBe("true");
+		expect(localStorage.getItem("wlp.factory.view")).toBe("board");
+		expect(host.querySelector(".factory-group")).toBeNull();
+		act(() => host.querySelector<HTMLButtonElement>(".board-tray .board-toggle")!.click());
+		const titles = [...host.querySelectorAll(".board-card-title")].map((title) => title.firstChild?.textContent ?? "");
+		const top = (await listed()).filter((item) => !item.parent);
+		expect(titles.slice().sort()).toEqual(top.map((item) => item.title).sort());
+		const feature = [...host.querySelectorAll(".board-card")].find((card) => card.querySelector(".board-part-asks"));
+		expect(feature?.closest(".board-tray")).not.toBeNull();
+		expect(feature?.querySelector(".board-card-action")?.textContent).toBe("Answer");
+		act(() => root?.unmount());
+		root = null;
+		client.dispose();
+		await show("/factory", { items: "features" });
+		expect(host.querySelector(".factory-board")).not.toBeNull();
+		act(() => button("List").click());
+		await settle(2);
+		expect(localStorage.getItem("wlp.factory.view")).toBe("list");
+		expect(host.querySelector(".factory-board")).toBeNull();
+	});
+});
