@@ -1,27 +1,14 @@
-/**
- * "Where it runs": this platform, or one of the user's machines. One line names the choice and its
- * plain facts; a card for each place opens from that line, as the sandboxes' do. The form that files a
- * work item (screens/Items.tsx) uses it, with what the choice means for what it makes (`purpose`), and
- * its own note under the line (`children`). The start composer of an agent (components/StartComposer.tsx)
- * holds the same cards (`PlaceCards`) in its place picker.
- *
- * A machine whose runner never reported, or is too old for the platform, is listed and cannot be
- * chosen. An offline machine can: an agent made there waits for it, and so does an item. An item also
- * needs a sandbox its runner reported as usable, since the server gives it the machine's first one.
- */
 import type { HarnessId, MachineSummary, SandboxProfileId } from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { HARNESS_NAMES, type ReportedHarness } from "../lib/acp";
 import { linkProps } from "../lib/router";
 import { MachineState } from "../screens/Machines";
-import { HarnessStatus } from "./HarnessStatus";
 import { machineLabel } from "../lib/machines";
-import { capabilitiesOf, checksSentence, itemModeOf, itemProfiles, machineAgentLine, machineHarness, worksWithoutAsking } from "../../../server/src/sandbox/harnesses.js";
-import { AgentGlyph } from "./ui/Pill";
+import { capabilitiesOf, checksSentence, itemModeOf, itemProfiles, machineHarness, worksWithoutAsking } from "../../../server/src/sandbox/harnesses.js";
 
 export type PlacePurpose = "agent" | "item";
 
-/** Why a machine cannot be chosen; null when it can. An offline machine can: what is made there waits for it. */
+// Offline machines can accept work; it waits for the runner to return.
 export function machineUnusable(machine: MachineSummary, minRunnerVersion: string, purpose: PlacePurpose): string | null {
 	if (machine.warnings.some(w => w.kind === "signing-disabled")) return "This runner requires signed connections to be enabled on the platform.";
 	if (machine.warnings.some((warning) => warning.kind === "outdated")) return `Its runner is ${machine.runnerVersion}; the platform needs ${minRunnerVersion} or later. Update it on the machine.`;
@@ -30,7 +17,6 @@ export function machineUnusable(machine: MachineSummary, minRunnerVersion: strin
 	return null;
 }
 
-/** One place it can run: this platform (`machine` null) or one of the user's machines, as a card like a sandbox's. */
 function PlaceCard({ machine, why, name, checked, now, onChoose }: { machine: MachineSummary | null; why: string | null; name: string; checked: boolean; now: number; onChoose(machineId: string | null): void }) {
 	const id = useId();
 	const reasonId = `${id}-reason`;
@@ -59,10 +45,6 @@ function PlaceCard({ machine, why, name, checked, now, onChoose }: { machine: Ma
 	);
 }
 
-/**
- * The choice, for a user who has machines (`machines` not empty). `chosen`: the machine chosen, when it
- * can be; null is this platform. `children` stand under the line, for what the choice means here.
- */
 export function PlaceChoice({ machines, chosen, minRunnerVersion, now, purpose, onChoose, children }: { machines: MachineSummary[]; chosen: MachineSummary | null; minRunnerVersion: string; now: number; purpose: PlacePurpose; onChoose(machineId: string | null): void; children?: ReactNode }) {
 	const [open, setOpen] = useState(false);
 	const cards = useId();
@@ -102,7 +84,6 @@ export function PlaceChoice({ machines, chosen, minRunnerVersion, now, purpose, 
 	);
 }
 
-/** A card for each place: this platform and the machines that can be chosen, then those that cannot, each with why. The start composer's place picker holds them too. */
 export function PlaceCards({ machines, chosen, minRunnerVersion, now, purpose, onChoose }: { machines: MachineSummary[]; chosen: MachineSummary | null; minRunnerVersion: string; now: number; purpose: PlacePurpose; onChoose(machineId: string | null): void }) {
 	const group = useId();
 	const why = (machine: MachineSummary) => machineUnusable(machine, minRunnerVersion, purpose);
@@ -130,18 +111,12 @@ export function PlaceCards({ machines, chosen, minRunnerVersion, now, purpose, o
 	);
 }
 
-/** The sandbox profile another harness runs in (server/src/actors/user.ts, `makeSession`). */
 export const HARNESS_PROFILE = "docker-hardened";
 
-/** The harnesses a machine offers besides Windlass, as its runner last reported them. */
 export const offeredHarnesses = (machine: MachineSummary | null): ReportedHarness[] => machine?.harnesses ?? [];
-/**
- * The harnesses a work item can run on this machine: those work items may run (server/src/sandbox/harnesses.ts,
- * `items`) that it reports signed in. An item is not watched, so one that needs a sign-in is not offered.
- */
+// Unattended items require a machine agent that is already signed in.
 export const itemHarnesses = (machine: MachineSummary | null): ReportedHarness[] => offeredHarnesses(machine).filter((harness) => machineHarness(harness.id)?.items === true && harness.signIn === "token");
 
-/** What a machine agent's work item does in this profile, in one line (harnesses.ts, `worksWithoutAsking`). */
 export function itemAgentLine(harness: Exclude<HarnessId, "windlass">, profile: SandboxProfileId): string {
 	const name = HARNESS_NAMES[harness];
 	const how = worksWithoutAsking(harness, profile)
@@ -151,64 +126,15 @@ export function itemAgentLine(harness: Exclude<HarnessId, "windlass">, profile: 
 	return sentence ? `${how} ${sentence}` : how;
 }
 
-/**
- * What happens to the repository's checks with an agent of a person's session, and where CI's result is, after
- * its line (`HarnessCapabilities.checks`): " The platform runs …, and CI's result is on the pull request."
- */
 export function onPullRequest(harness: HarnessId): string {
 	const checks = capabilitiesOf(harness).checks;
 	if (checks === "platform") return " The platform runs this repository's saved checks when it ends a turn, and CI's result is on the pull request.";
 	return checks === "none" ? " It does not run this repository's checks; CI's result is on the pull request." : "";
 }
 
-/**
- * The profiles a work item of this harness can run in on this machine, its default first (harnesses.ts,
- * `itemModes`): available there, and for Codex's Windlass sandbox profile only once its probe passed.
- */
 export function itemProfilesHere(machine: MachineSummary | null, harness: HarnessId): SandboxProfileId[] {
 	const reported = offeredHarnesses(machine).find((offered) => offered.id === harness);
-	// Where the agent's commands run in its own sandbox (`sandboxedOn`), only once the machine reported the item's mode there, which its probe decides.
+	// A machine must report the probed item mode before we offer the harness's own sandbox.
 	return itemProfiles(harness).filter((id) => machine?.profiles.some((profile) => profile.id === id && profile.available)
 		&& (!machineHarness(harness)?.sandboxedOn.includes(id) || reported?.modes?.includes(itemModeOf(harness, id) ?? "") === true));
-}
-
-/**
- * "Agent: Windlass · Claude Code", for an agent on a machine that offers another harness: a segmented
- * choice of the two, the harness's sign-in on the machine where it is not known to be signed in, and,
- * once it is chosen, the one line that says what it does differently. Its mode is chosen beside it
- * (components/Modes.tsx, `ModePicker`). `hardened`: whether the machine
- * can make the container it runs in; without one it cannot be chosen.
- */
-export function HarnessChoice({ machine, chosen, hardened, disabled = false, onChoose }: { machine: MachineSummary; chosen: HarnessId; hardened: boolean; disabled?: boolean; onChoose(harness: HarnessId): void }) {
-	const label = useId();
-	const group = useId();
-	const offered = offeredHarnesses(machine);
-	const options: Array<{ id: HarnessId; usable: boolean }> = [{ id: "windlass", usable: true }, ...offered.map((harness) => ({ id: harness.id, usable: hardened }))];
-	return (
-		<div className="harness-pick">
-			<span className="label" id={label}>
-				Agent
-			</span>
-			<div className="segmented" role="radiogroup" aria-labelledby={label}>
-				{options.map((option) => (
-					<label key={option.id} className={`segment${chosen === option.id ? " segment-chosen" : ""}${option.usable ? "" : " segment-unavailable"}`}>
-						<input className="segment-radio" type="radio" name={group} value={option.id} checked={chosen === option.id} disabled={disabled || !option.usable} onChange={() => onChoose(option.id)} />
-						<AgentGlyph harness={option.id} size={11} inline />
-						{HARNESS_NAMES[option.id]}
-					</label>
-				))}
-			</div>
-			{offered.map((harness) => (
-				<HarnessState key={harness.id} harness={harness} machine={machine} hardened={hardened} />
-			))}
-			{machineHarness(chosen) ? <p className="field-note">{machineAgentLine(machineHarness(chosen)!)}{onPullRequest(chosen)}</p> : null}
-		</div>
-	);
-}
-
-/** What stands in the way of a harness on the machine, if anything: its container, or its sign-in. */
-function HarnessState({ harness, machine, hardened }: { harness: ReportedHarness; machine: MachineSummary; hardened: boolean }) {
-	const name = HARNESS_NAMES[harness.id];
-	if (!hardened) return <p className="field-note tone-warn">{name} runs only in the hardened container, which “{machineLabel(machine)}” cannot make now.</p>;
-	return <HarnessStatus harness={harness} />;
 }

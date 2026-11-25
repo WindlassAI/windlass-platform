@@ -141,7 +141,7 @@ export function saveRailFolded(folded: boolean, storage: Pick<Storage, "setItem"
 	}
 }
 
-function safeStorage(): Storage | null {
+export function safeStorage(): Storage | null {
 	try {
 		return typeof localStorage === "undefined" ? null : localStorage;
 	} catch {
