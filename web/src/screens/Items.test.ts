@@ -184,15 +184,19 @@ describe("filing a work item", () => {
 		expect(text()).toContain("None of the sandboxes its runner reported can be used now.");
 	});
 
-	it("offers no choice where the deployment has no machines, or the user none", async () => {
+	it("offers only the hosted place and shows which agents need a Settings key", async () => {
 		await start("off");
-		expect(legend()).toBeNull();
+		expect(radio("platform")?.checked).toBe(true);
+		expect(radio("m_nas")).toBeNull();
+		expect(radio("claude")?.disabled).toBe(true);
 		expect(text()).toContain("It runs on a hosted sandbox.");
 		act(() => root.unmount());
 		host.replaceChildren();
 		root = createRoot(host);
 		client.dispose();
 		await start("none");
-		expect(legend()).toBeNull();
+		expect(radio("platform")?.checked).toBe(true);
+		expect(radio("m_nas")).toBeNull();
+		expect(radio("claude")?.disabled).toBe(true);
 	});
 });
