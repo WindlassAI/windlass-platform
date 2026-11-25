@@ -389,7 +389,7 @@ export function mockSandboxRefusal(numbers: UsageNumbers): string {
 
 /** server/src/usage.ts, `freedNote`, for a deployment that keeps a copy of the agent's memory. */
 export const MOCK_FREED_NOTE =
-	"You freed this agent's sandbox on the Usage page: the files in its workspace are gone. The conversation stays, and the next prompt starts a new sandbox. The agent keeps its memory of the conversation, and is told that the workspace is a new one.";
+	"You freed this agent's sandbox on the Usage page. The files in its workspace are gone. The conversation stays, and the next prompt starts a new sandbox. The agent keeps its memory of the conversation, and is told that the workspace is a new one.";
 
 /** The mock's question timeout: long enough to answer, short enough to watch the platform decline. */
 export const MOCK_QUESTION_TIMEOUT_MS = 3 * 60_000;
