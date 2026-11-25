@@ -440,7 +440,8 @@ async function repositoryView(c: UserCtx & Pick<CreateCtx, "client"> & { cron: P
 	}
 	let scan = await cachedScan(c.db, project);
 	let scanError = null;
-	if (c.vars.github && (!scan || Date.now() - scan.at > 24 * 60 * 60_000)) {
+	// A scan saved before CI history was read has no `ci` field: read it again now.
+	if (c.vars.github && (!scan || !("ci" in scan) || Date.now() - scan.at > 24 * 60 * 60_000)) {
 		try { scan = await refreshSetupScan(c, repositoryId, project); }
 		catch { scanError = "Could not read the default branch. Open this page again to retry."; }
 	}
