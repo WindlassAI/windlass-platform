@@ -359,7 +359,7 @@ test("the input is not changed, the same input gives the same bytes, and the fir
 	const text = reviewerTask(first);
 	const hash = createHash("sha256").update(text).digest("hex");
 	// Changing the reviewer's words is a reviewed change: print the text, read it, then record its hash here.
-	const SNAPSHOT = { round1: "d2e89102c05aea0b2db88cad42da0db31dda6054b4170422c8ca38ca42764bb9", round2: "b0bfe560f3c166bb72955463b085c53caa90166309fad98f9afacc0afd097365" };
+	const SNAPSHOT = { round1: "3cb3f2d6e9e0b5d78cb0349c791cab3b2b5923bc469c2cbf843604afea2f2276", round2: "5d7eb8922d8ab182db56562473c6eb4fb03f5001f37d604d1e21acbd27e8a542" };
 	if (hash !== SNAPSHOT.round1) { console.error(text); console.error(`round 1 sha256 ${hash}`); }
 	assert.equal(hash, SNAPSHOT.round1);
 	const hash2 = createHash("sha256").update(one).digest("hex");

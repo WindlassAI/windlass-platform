@@ -586,10 +586,11 @@ require("node:module").syncBuiltinESMExports();`);
 			for (const provider of [hostedDocker, hostedE2b, createFakeSandboxLayer({ signIns: "memory" }).sandboxes]) {
 				for (const harness of ["claude", "opencode", "codex"] as const) {
 					const name = harness === "codex" ? "Codex" : harness === "claude" ? "Claude Code" : "OpenCode";
-					await assert.rejects(provider.create({ ...create, harness, uid, sessionId, profile: provider === hostedE2b ? "e2b" : create.profile }), new RegExp(name + " runs only on a machine"));
+					await assert.rejects(provider.create({ ...create, harness, uid, sessionId, profile: provider === hostedE2b ? "e2b" : create.profile }), provider === hostedDocker ? /configured platform model relay/
+						: provider === hostedE2b ? /microVM-only profile and a configured model relay/ : new RegExp("fake sandbox does not run " + name));
 				}
 			}
-			ok("Hosted Docker, E2B and the hosted test layer refuse a machine login harness.");
+			ok("Hosted Docker and E2B require a configured relay; the fake sandbox refuses third-party agents.");
 			const baseOnly = join(tmp, "windlass-only.cjs");
 			await exec(process.execPath, ["runner/bundle.mjs", image, baseOnly], { cwd: root });
 			await assert.rejects(exec(process.execPath, [baseOnly, "--harness", "claude"], { env: env(state) }),
@@ -627,7 +628,9 @@ require("node:module").syncBuiltinESMExports();`);
 			await docker(["volume", "create", volume], { check: true });
 			try {
 				assert.equal((await owner(["login", "claude"], token + "\n")).code, 1);
-				await assert.rejects(ch.request("create", create), /owned by this machine/);
+				const unsigned = await ch.request("create", create);
+				assert.equal((await ch.request("connect", { id: unsigned }))?.harness, "claude");
+				await ch.request("destroy", { id: unsigned });
 				assert.ok((await owner(["status"])).output.includes("unknown"));
 			} finally { await docker(["volume", "rm", volume], { check: true }); }
 			for (const invalid of ["wrong", token + "\nsecond", token + "x".repeat(512)]) {
@@ -643,7 +646,7 @@ require("node:module").syncBuiltinESMExports();`);
 			// Each login gets a generation of its own, which the platform reads to tell one login from the next.
 			const loginGeneration = report()?.loginGeneration;
 			assert.match(loginGeneration ?? "", /^[0-9a-f]{32}$/);
-			assert.deepEqual(report(), { options, optionsDigest: optionsDigest(options), optionsCheckedAt: options.checkedAt, id: "claude", adapter: "claude-agent-acp 0.109.0", image: claudePin, signIn: "token", loginGeneration });
+			assert.deepEqual(report(), { options, optionsDigest: optionsDigest(options), optionsCheckedAt: options.checkedAt, id: "claude", adapter: "claude-agent-acp 0.109.0", image: claudePin, signIn: "token", keyRelay: true, loginGeneration });
 			clean(JSON.stringify(srv.state.report));
 			const labels = JSON.parse((await docker(["volume", "inspect", "-f", "{{json .Labels}}", volume], { check: true })).stdout);
 			assert.equal(labels[MACHINE_LABEL], machineId); assert.equal(labels["dev.windlass-platform.uid"], uid);
@@ -737,7 +740,8 @@ require("node:module").syncBuiltinESMExports();`);
 			assert.equal(box.Config.Image, claudePin); assert.equal(box.Config.Labels["dev.windlass-platform.harness"], "claude");
 			assert.equal(box.HostConfig.LogConfig.Type, "none");
 			assert.deepEqual(box.Mounts, []);
-			assert.ok(box.Config.Env.includes("ANTHROPIC_BASE_URL=http://127.0.0.1:17892"));
+			assert.match(box.Config.Labels["dev.windlass-platform.relay-session"], /^[0-9a-f]{32}$/);
+			assert.ok(!box.Config.Env.some((entry: string) => /^(ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)=/.test(entry)));
 			assert.equal((await ch.request("run", { id, command: "test ! -e " + path })).exitCode, 0);
 			assert.equal((await ch.request("connect", { id }))?.harness, "claude");
 			await assert.rejects(ch.request("create", { profile: "docker-hardened" }), /different harness/);
@@ -747,7 +751,7 @@ require("node:module").syncBuiltinESMExports();`);
 			assert.ok(!(await inspect(containerName(ordinary.slice(-12)))).Mounts.some((m: { Name?: string }) => m.Name?.startsWith("wlp-harness-")));
 			assert.equal((await windlass.request("run", { id: ordinary, command: "test ! -e " + path })).exitCode, 0);
 			await assert.rejects(windlass.request("readTextFile", { id, path }), /another session/);
-			ok("The hardened Claude session has only the relay placeholder and no login mount.");
+			ok("The idle Claude session has a relay nonce and no credential or login mount.");
 
 			// Exercise prefix and body boundaries on both file descriptors. No credential in the command.
 			const scrubFile = "/tmp/claude-scrub-fixture";

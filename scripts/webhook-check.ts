@@ -837,12 +837,12 @@ async function run() {
 			pull.comments.push({ id, body, user: { ...author, type: "User" }, created_at: new Date().toISOString() });
 			return delivered("issue_comment", commentFields(pull.number, id, author));
 		};
-		const reviewerSettings = hooks as unknown as { checkReviewer(enabled: boolean): Promise<void> };
+		const reviewerSettings = () => client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkReviewer(enabled: boolean): Promise<void> };
 		await check("G4 requested PR review binds the selected machine agent", async () => {
 			const machines = client.user.get([uid], service()) as unknown as { checkPlaceMachine(id: string, state: string): Promise<void> };
 			const place = { kind: "machine" as const, machineId: "m_0000000000000042" };
 			await machines.checkPlaceMachine(place.machineId, "online");
-			await reviewerSettings.checkReviewer(true);
+			await reviewerSettings().checkReviewer(true);
 			try {
 				const item = await g2User.createItem({ repository: { id: projectG2.id }, mode: "single", title: "Machine review", body: "Review a change.", start: false,
 					place, harness: "claude", profile: "docker-hardened" });
@@ -854,12 +854,12 @@ async function run() {
 				assert.equal(reviewer.profile, "docker-hardened");
 				assert.equal(reviewer.model, view.agent?.model);
 			} finally {
-				await reviewerSettings.checkReviewer(process.env.WLP_FACTORY_REVIEWER === "on");
+				await reviewerSettings().checkReviewer(process.env.WLP_FACTORY_REVIEWER === "on");
 				await machines.checkPlaceMachine(place.machineId, "removed");
 			}
 		});
 		for (const feature of [false, true]) await check("G4 requested PR review " + (feature ? "on a feature by a writer" : "on an item by its owner"), async () => {
-			await reviewerSettings.checkReviewer(true);
+			await reviewerSettings().checkReviewer(true);
 			try {
 				const item = await feedbackItem(true);
 				try {
@@ -892,7 +892,7 @@ async function run() {
 					assert.deepEqual(after.reviews.filter(r => r.requestedPull).map(r => [r.head, r.recommendation]), [[head, "changes_requested"]]);
 					assert.equal(standin.reviews.filter(r => r.pr === item.pr && r.review.body.startsWith("<!-- windlass-review:")).length, 1);
 				} finally { await stop(item.id); }
-			} finally { await reviewerSettings.checkReviewer(process.env.WLP_FACTORY_REVIEWER === "on"); }
+			} finally { await reviewerSettings().checkReviewer(process.env.WLP_FACTORY_REVIEWER === "on"); }
 		});
 		await check("Session PR feedback merges deliveries into one bounded turn and tolerates a failed acknowledgement", async () => {
 			const created = await g2User.createSession({ profile: "docker-windlass-sandbox", repository: { id: projectG2.id } });

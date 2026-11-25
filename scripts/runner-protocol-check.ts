@@ -575,11 +575,13 @@ async function durableRestart(): Promise<void> {
 	// Written while the link is about to break: stored, never delivered.
 	s1.write(proc.id, "steer");
 	void outcome(s1.request("writeSecretFile", { ...box, path: "/dev/shm/access-token-box.json", content: "SECRET-TOKEN-VALUE" }));
+	void outcome(s1.request("modelRelay", { ...box, forward: { provider: "openai", host: "relay.fixture.test", placeholder: "wlpm1.pending", expiresAt: 1 } }));
 	void outcome(s1.request("modelRelayToken", { ...box, lease: "a".repeat(32), accessToken: "RELAY-TOKEN-VALUE-0123", expiresAt: 1 }));
 	store.save(s1);
 	const stored = JSON.stringify(store.read());
-	expect("durable: no frame that carries a token is stored", !stored.includes("SECRET-TOKEN-VALUE") && !stored.includes("RELAY-TOKEN-VALUE"));
-	a.cut();
+	expect("durable: no frame that carries a token is stored", !stored.includes("SECRET-TOKEN-VALUE") && !stored.includes("RELAY-TOKEN-VALUE") && !stored.includes("wlpm1.pending"));
+	const lost = a.cut().toRunner.map(frame => JSON.parse(frame).body);
+	const pendingIds = lost.filter(body => body?.kind === "op").map(body => body.id);
 	// The server is gone; the runner keeps its process, which goes on printing.
 	s1.abandon();
 	r.output(start.id, 1, "three");
@@ -593,7 +595,10 @@ async function durableRestart(): Promise<void> {
 	expect("durable: the restarted server resumes the same conversation; the runner resets nothing", log.resets.length === 0 && resets.length === 0 && s2.connected);
 	expect("durable: output received but not committed, and output made during the gap, arrive once", out2.join() === "two,three", out2.join());
 	expect("durable: frames the runner had not received are sent again, once", log.input.join() === "steer");
-	expect("durable: a token's frame goes again as a cancel the runner ignores", !log.ops.includes("writeSecretFile") && !log.ops.includes("modelRelayToken") && log.cancels.length === 0, log.ops.join());
+	expect("durable: the pending secret operations replay as cancels for their original ids",
+		new Set(pendingIds).size === 3 && log.cancels.join() === pendingIds.join());
+	expect("durable: replay opens no lease, writes no token and cancels no received operation",
+		log.ops.join() === "start" && !log.held.some(op => log.cancels.includes(op.id)));
 	r.end(start.id, done);
 	b.flush();
 	expect("durable: the process taken up ends as it ends", (await taken!.ended).code === 0);

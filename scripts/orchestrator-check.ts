@@ -897,6 +897,7 @@ interface ChildOptions {
 	models?: import("../server/src/factory/placement.js").AgentModels;
 }
 async function childCreation(t: import("node:test").TestContext, overflow = false, options: ChildOptions = {}) {
+	const { MODEL_PROVIDER_TABLES } = await import("../server/src/model-providers.js");
 	const { itemActions, ITEM_TABLES } = await import("../server/src/actors/user-items.js");
 	const { serviceParams } = await import("../server/src/auth.js");
 	const { DatabaseSync } = await import("node:sqlite");
@@ -913,7 +914,7 @@ async function childCreation(t: import("node:test").TestContext, overflow = fals
 	const job = options.subtask ? { ...first, task: feature.featurePlan!.subtasks.find(s => s.key === options.subtask)!, placement: undefined } : first;
 	const raw = new DatabaseSync(":memory:");
 	t.after(() => raw.close());
-	for (const sql of ITEM_TABLES) raw.exec(sql);
+	for (const sql of [...ITEM_TABLES, ...MODEL_PROVIDER_TABLES]) raw.exec(sql);
 	const owner = "u_fixture", sessionId = "s_feature", repository = { id: 42, branch: "main" };
 	const request = { job: { ...job, dispatchKey: currentKey(selected)! }, sessionId, feature: { ...feature, title: "Feature", repository, source: "web" }, featureBody: feature.task.body, context: "{}", previous: { place: { kind: "machine", machineId: macId }, head, report: "Prior subtask report" } };
 	const machines = new Map([[macId, mac], ...(overflow ? [[linuxId, linux] as const] : [])]);
@@ -1492,11 +1493,11 @@ function crossIntegrating() {
 	return item;
 }
 
-test("a one-repository planning turn's file_plan schema and plan checks are exactly as before cross-repo features", async () => {
+test("a one-repository planning turn's file_plan offers only single-repository fields and ignores cross-repo plan values", async () => {
 	const { readFileSync } = await import("node:fs");
 	const { platformTools } = await import("../server/src/agent-publish.js");
 	const { validatePlan } = await plans();
-	// Written by main's own platformTools and validatePlan before cross-repo features (fixtures/one-repo-plan/main.json).
+	// Keep the single-repository declaration and validated plan independent of cross-repo features.
 	const before = JSON.parse(readFileSync(new URL("../fixtures/one-repo-plan/main.json", import.meta.url), "utf8"));
 	assert.deepEqual(platformTools({ plan: true, publish: false, report: false, push: false }, 600_000), before.declaration);
 	const cross = platformTools({ plan: true, publish: false, report: false, push: false, crossRepo: true }, 600_000)[0];

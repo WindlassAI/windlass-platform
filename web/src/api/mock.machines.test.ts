@@ -386,8 +386,8 @@ describe("the start composer's agent picker", () => {
 	it("offers no other agent on a machine that reports none, nor on this platform", async () => {
 		await open();
 		expect(agents()).toEqual(["Windlass"]);
-		// Claude Code is said to be on nas, as a row that cannot be chosen from here.
-		expect(pop()?.querySelector('[data-value="claude:elsewhere"]')?.getAttribute("aria-disabled")).toBe("true");
+		// Hosted Claude Code needs a Settings key.
+		expect(pop()?.querySelector('[data-value="claude:default"]')?.getAttribute("aria-disabled")).toBe("true");
 		chip("agent", true);
 		// The choice is on nas, and it goes with the machine.
 		place("m_nas");
@@ -408,7 +408,7 @@ describe("the start composer's agent picker", () => {
 		agents();
 		agent("claude");
 		agents();
-		expect(text()).toContain("Claude Code runs in the hardened container with your Claude subscription, in the mode chosen for it. The platform runs this repository's saved checks when it ends a turn, and CI's result is on the pull request.");
+		expect(text()).toContain("Claude Code runs in the hardened container with your Anthropic Settings key or Claude subscription, in the mode chosen for it. The platform runs this repository's saved checks when it ends a turn, and CI's result is on the pull request.");
 		expect(value("on")).toContain("nas");
 		expect(value("sandbox")).toContain('Hardened Docker on your machine "nas"');
 		// nas's runner reported Claude Code's models: its default is named as the adapter names it, and chosen.
