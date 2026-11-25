@@ -1,4 +1,4 @@
-import { MAX_MACHINES, type MachineClaim, type MachineSandbox, type MachineSummary, type MachineWarning, type MachinesInfo } from "@contract";
+import { MAX_MACHINES, type CredentialSource, type MachineClaim, type MachineSandbox, type MachineSummary, type MachineWarning, type MachinesInfo, type ModelProvider } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { hasReason } from "../api/client";
 import { CopyButton } from "../components/Copy";
@@ -11,7 +11,8 @@ import { HARNESS_NAMES, loginCommand, signInWords, type ReportedHarness } from "
 import { absoluteTime, clockTime, plural, relativeTime, spelledDuration } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { useNow } from "../state/hooks";
+import { useHostedProviders, useNow } from "../state/hooks";
+import { anyOf, keyProviders } from "../../../server/src/sandbox/harnesses.js";
 import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, tagsOf } from "../lib/machines";
 import { ORCHESTRATOR_CHOICES, orchestratorNote, orchestratorOf, type Orchestrator } from "../lib/placement";
 import { Check } from "../components/ui/Check";
@@ -343,14 +344,19 @@ export function settingsKeyUpgrade(machine: MachineSummary) {
 
 /**
  * A machine's agents as a status list: each one signed in or not, as its runner last said, with the
- * command that signs it in on the machine. Signing in is done in the machine's terminal only.
+ * command that signs it in on the machine. Signing in is done in the machine's terminal only. Where
+ * the machine's sign-in and one of the owner's Settings keys could both serve an agent, its credential
+ * choice follows it (`CredentialChoice`).
  */
-function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
+function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChanged(list: MachineSummary[]): void }) {
+	const harnesses = machine.harnesses ?? [];
+	const saved = useHostedProviders(harnesses.some((harness) => harness.machineSignIns?.length));
 	if (harnesses.length === 0) return null;
 	return (
 		<ul className="machine-agents" aria-label="Agents on this machine">
 			{harnesses.map((harness) => {
 				const command = loginCommand(harness);
+				const both = harness.keyRelay ? (harness.machineSignIns ?? []).filter((provider) => keyProviders(harness.id).includes(provider) && saved?.some((key) => key.provider === provider)) : [];
 				return (
 					<li key={harness.id} className={`machine-agent machine-agent-${harness.signIn}`}>
 						<span className="machine-agent-name">
@@ -377,10 +383,71 @@ function MachineAgents({ harnesses }: { harnesses: ReportedHarness[] }) {
 								<CopyButton text={command} label={`Copy the command that signs ${HARNESS_NAMES[harness.id]} in`} />
 							</span>
 						)}
+						{both.length > 0 ? <CredentialChoice machine={machine} harness={harness} providers={both} onChanged={onChanged} /> : null}
 					</li>
 				);
 			})}
 		</ul>
+	);
+}
+
+const KEY_NAMES: Record<ModelProvider, string> = { openai: "OpenAI", anthropic: "Anthropic", google: "Gemini", openrouter: "OpenRouter" };
+
+/**
+ * Whose credential an agent uses where the machine's own sign-in and a Settings key could both serve
+ * it: the machine's by default, the key then used only for what the machine is not signed in to.
+ * Saved as soon as it is chosen; the line under it says who pays.
+ */
+function CredentialChoice({ machine, harness, providers, onChanged }: { machine: MachineSummary; harness: ReportedHarness; providers: ModelProvider[]; onChanged(list: MachineSummary[]): void }) {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [busy, setBusy] = useState<CredentialSource | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const ids = { label: useId(), means: useId() };
+	const saved: CredentialSource = harness.source ?? "machine";
+	const shown = busy ?? saved;
+	const here = machine.os.toLowerCase().startsWith("mac") || machine.os === "Darwin" ? "this Mac" : `“${machineLabel(machine)}”`;
+	const keys = anyOf(providers.map((provider) => KEY_NAMES[provider]));
+	const plan = harness.id === "claude" ? "Claude subscription" : harness.method === "chatgpt" || harness.machineProviders?.includes("chatgpt") ? "ChatGPT plan" : `${keys} login${providers.length > 1 ? "s" : ""}`;
+	const choices: Array<{ id: CredentialSource; label: string; means: string }> = [
+		{ id: "machine", label: `Use ${here}'s ${plan}`, means: `Your ${plan} on ${here} pays for its turns. Your ${keys} key is used only if ${here} is signed out.` },
+		{ id: "key", label: `Use your ${keys} key${providers.length > 1 ? "s" : ""}`, means: `Each turn is billed to your ${keys} key by the token, even while ${here} is signed in.` },
+	];
+	const set = (source: CredentialSource) => {
+		if (source === saved || busy) return;
+		setBusy(source);
+		setError(null);
+		client
+			.user(auth)
+			.setCredentialSource({ machineId: machine.machineId, harness: harness.id, source })
+			.then(
+				(list) => {
+					onChanged(list);
+					setBusy(null);
+				},
+				(failure: unknown) => {
+					setError(explain(failure));
+					setBusy(null);
+				},
+			);
+	};
+	return (
+		<div className="machine-credential">
+			<span className="visually-hidden" id={ids.label}>
+				Whose credential {HARNESS_NAMES[harness.id]} uses on {machineLabel(machine)}
+			</span>
+			<div className="segmented machine-credential-choice" role="radiogroup" aria-labelledby={ids.label} aria-describedby={ids.means}>
+				{choices.map((choice) => (
+					<label key={choice.id} className={`segment${shown === choice.id ? " segment-chosen" : ""}`} data-source={choice.id}>
+						<input className="segment-radio" type="radio" name={ids.label} value={choice.id} checked={shown === choice.id} disabled={busy !== null} onChange={() => set(choice.id)} />
+						{choice.label}
+					</label>
+				))}
+			</div>
+			<p className={`field-note${error ? " tone-bad" : ""}`} id={ids.means} role={error ? "alert" : undefined}>
+				{error ?? choices.find((choice) => choice.id === shown)!.means}
+			</p>
+		</div>
 	);
 }
 
@@ -532,7 +599,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 					</span>
 				</p>
 				<MachineUse machine={machine} onChanged={onChanged} />
-				<MachineAgents harnesses={machine.harnesses ?? []} />
+				<MachineAgents machine={machine} onChanged={onChanged} />
 				{upgrade && <p className="field-note">{upgrade}</p>}
 				{machine.providerAccounts?.filter(a => a.state === "limited" && (a.limitedUntil ?? 0) > now).map(a =>
 					<p className="field-note" key={a.key}>{a.provider ? `${a.provider} Settings key` : HARNESS_NAMES[a.harness]}: limited until {new Date(a.limitedUntil!).toISOString().slice(11, 16)} UTC</p>)}

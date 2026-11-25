@@ -7,6 +7,9 @@
  * the agent's name beside each one says what it is.
  */
 
+import { useId } from "react";
+import type { ModelProvider } from "@contract";
+
 export interface LogoProps {
 	size?: number;
 	className?: string;
@@ -103,4 +106,48 @@ export function OpenRouterLogo({ size = 16, className }: LogoProps) {
 			/>
 		</svg>
 	);
+}
+
+/*
+ * Google Gemini's spark: the four-pointed star of Gemini's app icon, filled with the blue-to-coral
+ * gradient of Google's "gemini_sparkle" file. Google publishes it to name Gemini, not to be redrawn or
+ * recoloured, so it keeps its own colours in both themes. It names the Gemini API (a Google AI Studio
+ * key), never our own product.
+ */
+export function GeminiLogo({ size = 16, className }: LogoProps) {
+	// useId's characters are not all valid in a url(#…) reference.
+	const id = `gemini-${useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
+	return (
+		<svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false" className={className}>
+			<defs>
+				<linearGradient id={id} x1="3" y1="21" x2="21" y2="3" gradientUnits="userSpaceOnUse">
+					<stop offset="0" stopColor="#1BA1E3" />
+					<stop offset="0.3" stopColor="#5489D6" />
+					<stop offset="0.55" stopColor="#9B72CB" />
+					<stop offset="0.82" stopColor="#D96570" />
+					<stop offset="1" stopColor="#F49C46" />
+				</linearGradient>
+			</defs>
+			<path
+				d="M12 0C12 6.6 17.4 12 24 12C17.4 12 12 17.4 12 24C12 17.4 6.6 12 0 12C6.6 12 12 6.6 12 0Z"
+				fill={`url(#${id})`}
+			/>
+		</svg>
+	);
+}
+
+/** A model provider's mark by its id. "chatgpt" is OpenAI's, for a ChatGPT plan; OpenCode's free models take OpenCode's. */
+export function ProviderLogo({ provider, size = 16 }: { provider: ModelProvider | "chatgpt" | "opencode"; size?: number }) {
+	switch (provider) {
+		case "anthropic":
+			return <AnthropicLogo size={size} />;
+		case "google":
+			return <GeminiLogo size={size} />;
+		case "openrouter":
+			return <OpenRouterLogo size={size} />;
+		case "opencode":
+			return <OpenCodeLogo size={size} />;
+		default:
+			return <OpenAILogo size={size} />;
+	}
 }

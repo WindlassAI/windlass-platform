@@ -76,6 +76,8 @@ async function createPlatformClient(): Promise<PlatformClient> {
 			account: params.get("account") === "empty" ? "empty" : "seeded",
 			models: params.get("models") === "unavailable" ? "unavailable" : "account",
 			machine: MOCK_MACHINE_STATES.find((state) => state === machine),
+			// `?keys=1` a checked Settings key for each model provider.
+			keys: params.get("keys") === "1",
 			machineSession: MOCK_MACHINE_SESSIONS.find((state) => state === machineSession),
 			items: MOCK_ITEMS_STATES.find((state) => state === items),
 			long: params.get("long") === "1",

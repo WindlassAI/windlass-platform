@@ -107,10 +107,10 @@ async function enter(): Promise<void> {
 
 /**
  * The control of a picker, by the name the chip it replaced had: where it runs, its sandbox and the
- * repository are one pill ("on", "sandbox", "repo"), the effort is shown on the agent's pill and chosen
- * in its menu, and the mode is in the options. Its value is what the control shows.
+ * repository are one pill ("on", "sandbox", "repo"), the effort is its own button beside the agent, and
+ * the mode is in the options. Its value is what the control shows.
  */
-const PICKERS: Record<string, string> = { repo: "where", on: "where", sandbox: "where", agent: "agent", effort: "agent", mode: "options", criteria: "criteria", setup: "setup" };
+const PICKERS: Record<string, string> = { repo: "where", on: "where", sandbox: "where", agent: "agent", effort: "effort", mode: "options", criteria: "criteria", setup: "setup" };
 const pill = (label: string) => host.querySelector(`[data-picker="${PICKERS[label] ?? label}"]`) as HTMLButtonElement | null;
 const value = (label: string) => (label === "sandbox" ? pill(label)?.dataset.sandbox : label === "repo" ? pill(label)?.dataset.repo : label === "effort" ? pill(label)?.dataset.effort : pill(label)?.dataset.value) ?? null;
 /** Opens the control's picker. */
@@ -131,13 +131,14 @@ function pickIn(row: string, value: string): void {
 	act(() => void document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true })));
 	act(() => (document.querySelector(`.ui-pop-sub [data-value="${value}"]`) as HTMLElement).click());
 }
-/** Chooses a model in the agent's menu, then an effort in the same menu, under the models. */
+/** Chooses a model in the agent's menu, then an effort in the effort button's menu. */
 function pickModelEffort(model: string, effort: string): void {
 	pick(model);
-	open("agent");
-	expect(pop().querySelector(`[data-value="${effort}"]`)?.closest('[role="group"]')?.textContent ?? pop().textContent).toContain("Effort");
+	open("effort");
 	pick(effort);
 }
+/** Switches the open agent menu to another agent with its logo button; the menu stays open on that agent's models. */
+const switchAgent = (name: string) => act(() => (pop().querySelector(`[aria-label="Switch agent"] [aria-label="${name}"]`) as HTMLButtonElement).click());
 /** Chooses a mode in the options, by its name. */
 function mode(name: string): void {
 	open("options");
@@ -212,10 +213,10 @@ describe("the start composer's one-line tray", () => {
 	it("is +, the agent, where, options, the lock and Launch, in that order", async () => {
 		await show();
 		const tray = host.querySelector(".start-tools") as HTMLElement;
-		expect([...tray.querySelectorAll("[data-picker]")].map((control) => (control as HTMLElement).dataset.picker)).toEqual(["setup", "agent", "where", "options", "lock"]);
+		expect([...tray.querySelectorAll("[data-picker]")].map((control) => (control as HTMLElement).dataset.picker)).toEqual(["setup", "agent", "effort", "where", "options", "lock"]);
 		expect(tray.querySelector(".tray-end .start-launch")).not.toBeNull();
-		// No mode pill, no effort pill and no line of facts under the box: they are in the menus and the lock.
-		expect(host.querySelector('[data-picker="mode"], [data-picker="effort"], [data-picker="repo"]')).toBeNull();
+		// No mode pill and no line of facts under the box: they are in the menus and the lock.
+		expect(host.querySelector('[data-picker="mode"], [data-picker="repo"]')).toBeNull();
 		expect(host.querySelector("p.start-sandbox")).toBeNull();
 	});
 
@@ -241,17 +242,41 @@ describe("the start composer's one-line tray", () => {
 		expect(document.querySelectorAll(".ui-pop")).toHaveLength(1);
 	});
 
-	it("chooses the effort in the agent's menu, under the models, and shows it as bars on the agent", async () => {
+	it("chooses the effort with its own button beside the agent, and lists models only in the agent's menu", async () => {
 		await show();
 		open("agent");
-		const groups = [...pop().querySelectorAll(".ui-menu-group")];
-		expect(groups.at(-1)?.querySelector(".ui-menu-group-label b")?.textContent).toBe("Effort");
+		expect([...pop().querySelectorAll(".ui-menu-group-label b")].map((label) => label.textContent)).not.toContain("Effort");
 		pick("windlass:gpt-6.1-sol");
-		open("agent");
+		open("effort");
 		pick("high");
 		expect(value("effort")).toBe("high");
-		expect(pill("agent")?.querySelectorAll(".effort-bars .effort-bar-on").length).toBeGreaterThan(0);
-		expect(pill("agent")?.getAttribute("aria-label")).toContain("effort high");
+		expect(pill("effort")?.querySelectorAll(".effort-bars .effort-bar-on").length).toBeGreaterThan(0);
+		expect(pill("effort")?.getAttribute("aria-label")).toBe("Effort: high");
+	});
+
+	it("hides the effort button for a model that takes none", async () => {
+		await show();
+		open("on");
+		pick("m_nas");
+		await settle();
+		open("agent");
+		switchAgent("Claude Code");
+		pick("claude:haiku");
+		expect(pill("effort")).toBeNull();
+	});
+
+	it("groups the models by provider, with clean names and the credential each uses", async () => {
+		await show();
+		open("on");
+		pick("m_nas");
+		await settle();
+		open("agent");
+		expect(pop().querySelector('[data-value="windlass:gpt-6.1-sol"] .ui-item-label')?.textContent).toBe("GPT-6.1 Sol");
+		expect(pop().textContent).not.toContain("provider-prefixed");
+		switchAgent("Claude Code");
+		const label = pop().querySelector(".ui-menu-group-label") as HTMLElement;
+		expect(label.querySelector("b")?.textContent).toBe("Anthropic");
+		expect(label.textContent).toContain("Claude subscription · nas");
 	});
 
 	it("keeps the mode in the options, with the sandbox's sentence, which the lock's tooltip also says", async () => {
@@ -318,7 +343,7 @@ describe("each picker of the start composer", () => {
 	it("offers hosted agents with a compatible Settings key and explains missing keys", async () => {
 		await show();
 		open("agent");
-		const claudeDisabled = () => pop().querySelector('[data-value="claude:default"]')?.getAttribute("aria-disabled") === "true";
+		const claudeDisabled = () => pop().querySelector('[aria-label="Switch agent"] [aria-label="Claude Code"]')?.getAttribute("aria-disabled") === "true";
 		expect(claudeDisabled()).toBe(true);
 		const user = client.user(ada);
 		const save = () => user.saveModelProvider({ provider: "anthropic", key: "sk-ant-api03-" + "x".repeat(32) });
@@ -332,10 +357,13 @@ describe("each picker of the start composer", () => {
 		expect(pop().querySelector('[data-value="windlass:anthropic/claude-sonnet-4"]')).toBeNull();
 		await save();
 		await act(async () => void window.dispatchEvent(new Event(PROVIDERS_CHANGED)));
-		expect(pop().textContent).toContain("Add an OpenAI key in Settings to run Codex here.");
-		expect(pop().querySelector('[data-value="codex:default"]')?.getAttribute("aria-disabled")).toBe("true");
+		const codex = pop().querySelector('[aria-label="Switch agent"] [aria-label="Codex"]') as HTMLElement;
+		expect(codex.getAttribute("aria-disabled")).toBe("true");
+		switchAgent("OpenCode");
 		expect(pop().querySelector('[data-value="opencode:default"]')).toBeTruthy();
 		expect(pop().querySelector('[data-value="opencode:anthropic/claude-sonnet-4"]')).toBeTruthy();
+		expect(pop().textContent).toContain("Hosted agents always use your Settings keys.");
+		switchAgent("Claude Code");
 		pick("claude:sonnet");
 		write("Run the hosted task");
 		await enter();
@@ -350,12 +378,10 @@ describe("each picker of the start composer", () => {
 		pick("m_nas");
 		await settle();
 		open("agent");
+		switchAgent("Claude Code");
 		pick("claude:default");
 		// nas's runner reported Claude Code's models: the adapter's default, by the name it gives it.
 		expect(value("agent")).toBe("Claude Code · Default (recommended)");
-		open("agent");
-		expect(pop().textContent).toContain("The models “nas”'s runner reported for Claude Code.");
-		open("agent");
 		expect(value("mode")).toBe("Auto");
 		write("Add the test command to the README");
 		await enter();
@@ -374,13 +400,15 @@ describe("each picker of the start composer", () => {
 		expect(row.querySelector('[aria-pressed="true"]')?.getAttribute("aria-label")).toBe("Windlass");
 		act(() => (row.querySelector('[aria-label="Claude Code"]') as HTMLButtonElement).click());
 		expect(value("agent")?.startsWith("Claude Code · ")).toBe(true);
+		// The menu stays open on the agent's models.
+		expect(pop().querySelector('[data-value^="claude:"]')).not.toBeNull();
 	});
 
 	it("sends the model chosen with the agent, and the effort with its first prompt", async () => {
 		await show();
 		open("agent");
 		pickModelEffort("windlass:gpt-6.1-sol", "low");
-		expect(value("agent")).toBe("Windlass · gpt-6.1-sol");
+		expect(value("agent")).toBe("Windlass · GPT-6.1 Sol");
 		expect(value("effort")).toBe("low");
 		// The agent's menu lists models only: the efforts are the effort picker's.
 		open("agent");
@@ -408,13 +436,14 @@ describe("each picker of the start composer", () => {
 		open("on");
 		pick("m_nas");
 		open("agent");
+		switchAgent("Claude Code");
 		pick("claude:opus");
 		open("agent");
-		// By the names the adapter gave them, its id where it gave none.
+		// By the names the adapter gave them, its id in words where it gave none.
 		expect(modelRows()).toEqual([
 			["Opus default", true],
 			["Sonnet", false],
-			["haiku", false],
+			["Haiku", false],
 		]);
 		pickModelEffort("claude:sonnet", "high");
 		expect(value("agent")).toBe("Claude Code · Sonnet");
@@ -434,6 +463,7 @@ describe("each picker of the start composer", () => {
 		open("on");
 		pick("m_nas");
 		open("agent");
+		switchAgent("Claude Code");
 		pick("claude:opus");
 		expect(value("agent")).toBe("Claude Code · Opus (default)");
 		open("agent");

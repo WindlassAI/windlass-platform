@@ -116,3 +116,20 @@ describe("adding a machine", () => {
 		root = createRoot(host);
 	});
 });
+
+it("chooses whose credential an agent uses where the machine's sign-in and a Settings key both could", async () => {
+	history.replaceState(null, "", "/machines");
+	client = createMockClient({ pace: 0, machine: "sources", keys: true });
+	saveAuth("mock", ada);
+	root = createRoot(host);
+	act(() => root.render(createElement(AppProvider, { client, children: createElement(App) })));
+	await settle();
+	const choice = host.querySelector('[role="radiogroup"][aria-labelledby]:has(label[data-source="key"])') as HTMLElement;
+	expect(choice.textContent).toContain("Use this Mac's Claude subscription");
+	expect(choice.querySelector<HTMLInputElement>('label[data-source="machine"] input')?.checked).toBe(true);
+	await act(async () => choice.querySelector<HTMLInputElement>('label[data-source="key"] input')!.click());
+	await settle();
+	const [mac] = await client.user(ada).machines();
+	expect(mac!.harnesses?.find((h) => h.id === "claude")).toMatchObject({ source: "key", platformKeys: ["anthropic"], method: "api-key" });
+	expect(host.textContent).toContain("Each turn is billed to your Anthropic key by the token");
+});

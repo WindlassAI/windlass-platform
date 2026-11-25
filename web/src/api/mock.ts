@@ -4,6 +4,7 @@
  * timers for replay, pending questions and cancellation.
  */
 import { modelRefusal } from "../../../server/src/account-models.js";
+import { listedHarness } from "../../../server/src/sandbox/harnesses.js";
 import { changedPlace, changesPlace, placeProblem, savedPlace } from "../../../server/src/factory/default-place";
 import type { ItemPlaceDefaults } from "@contract";
 import { shiftMonths } from "../../../server/src/billing/meter.js";
@@ -47,6 +48,7 @@ import {
 	type LastStart,
 	MODEL_CHECKS_PER_MINUTE,
 	isModelProvider,
+	MODEL_PROVIDERS,
 	validModelKey,
 	type ModelProvider,
 	type ModelProviderStatus,
@@ -159,6 +161,8 @@ export interface MockOptions {
 	models?: "account" | "unavailable";
 	/** How the user's machines stand when the page loads (`MockMachineState`). Default "online". */
 	machine?: MockMachineState;
+	/** True starts the user with a checked Settings key for each model provider (`?keys=1`). */
+	keys?: boolean;
 	/** How the agent on the user's machine finds that machine when its page opens (`MockMachineSession`). Default "answering". */
 	machineSession?: MockMachineSession;
 	/** How the user's work items and API tokens stand when the page loads (mock-items.ts, `MockItemsState`). Default "all". */
@@ -204,10 +208,11 @@ export const MOCK_PLANS: PlanInfo[] = [
  * machines as an account may have), "unpublished" (no runner image is published yet, and no machine),
  * "stale" (the list is read once, then reading it again fails), "failed" (it cannot be read at all),
  * "loading" (it is never answered), "off" (the deployment offers no machines), and "unnamed" (beside "nas",
- * a machine whose runner runs in a container and reported the container's id for its host name). In the add dialog any
+ * a machine whose runner runs in a container and reported the container's id for its host name), and "sources" (a Mac
+ * whose Claude Code, Codex and OpenCode are signed in there, beside "nas"; with `?keys=1` each could also use a Settings key). In the add dialog any
  * well-formed code is found, except ZZZZ-ZZZZ.
  */
-export const MOCK_MACHINE_STATES = ["none", "online", "fresh", "claude-signed-out", "claude-unchecked", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed", "placement"] as const;
+export const MOCK_MACHINE_STATES = ["none", "online", "sources", "fresh", "claude-signed-out", "claude-unchecked", "offline", "pairing", "outdated", "docker", "clock", "key", "full", "unpublished", "stale", "failed", "loading", "off", "unnamed", "placement"] as const;
 export type MockMachineState = (typeof MOCK_MACHINE_STATES)[number];
 
 /**
@@ -240,6 +245,19 @@ const MOCK_CLAUDE_MODELS: ModelList = {
 const MOCK_OPENCODE_MODELS: ModelList = {
 	source: "harness", defaultModel: "openai/gpt-5.4", fetchedAt: null,
 	models: [{ id: "openai/gpt-5.4", name: "OpenAI/GPT-5.4", efforts: ["low", "medium", "high", "xhigh", "default"] }, { id: "openai/gpt-5.4-mini", name: "OpenAI/GPT-5.4 mini", efforts: ["low", "medium", "high", "default"] }],
+};
+/** OpenCode on a machine signed in to Anthropic there, offering every provider's models (`?machine=sources`). */
+const MOCK_OPENCODE_SOURCES: ModelList = {
+	source: "harness", defaultModel: "anthropic/claude-sonnet-5-5", fetchedAt: null,
+	models: [
+		{ id: "anthropic/claude-sonnet-5-5", name: "Anthropic/Claude Sonnet 5.5", efforts: ["low", "medium", "high"] },
+		{ id: "anthropic/claude-haiku-5-5", name: "Anthropic/Claude Haiku 5.5", efforts: [] },
+		{ id: "openai/gpt-6.1-sol", name: "OpenAI/GPT-6.1 Sol", efforts: ["low", "medium", "high", "xhigh"] },
+		{ id: "google/gemini-3-pro", name: "Google/Gemini 3 Pro", efforts: ["low", "high"] },
+		{ id: "google/gemini-3-flash", name: "Google/Gemini 3 Flash", efforts: [] },
+		{ id: "openrouter/qwen/qwen3-coder", name: "OpenRouter/Qwen3 Coder", efforts: [] },
+		{ id: "opencode/grok-code", name: "OpenCode Zen/Grok Code Fast", efforts: [] },
+	],
 };
 const MOCK_CODEX_MODELS: ModelList = { source:"harness", defaultModel:"gpt-6.2-sol", models:[{id:"gpt-6.2-sol",name:"6.2 Sol",efforts:["low","high"]}], fetchedAt:null };
 const MOCK_OPENCODE_MODES = [
@@ -1008,6 +1026,20 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	const generation = (uid: string) => recall("wlp.mock.tokenGen." + uid) ?? revoked.get(uid) ?? "";
 	const tokenFor = (profile: UserProfile) => `mock:${profile.demo ? "demo" : "chatgpt"}:${profile.uid}:${profile.email ?? ""}${generation(profile.uid) ? ":" + generation(profile.uid) : ""}`;
 
+	/** A checked key for each provider, with the models its check read (`?keys=1`). */
+	function seedKeys(world: World): void {
+		const at = realNow() - 40 * MINUTE;
+		const models: Record<ModelProvider, string[]> = {
+			openai: ["gpt-6.1-sol", "gpt-6-luna"],
+			anthropic: ["claude-fable-5-2", "claude-opus-5-5", "claude-haiku-5-5"],
+			google: ["gemini-3-pro", "gemini-3-flash"],
+			openrouter: ["qwen/qwen3-coder", "deepseek/deepseek-v4"],
+		};
+		for (const provider of MODEL_PROVIDERS) {
+			world.account.providers.set(provider, { provider, last4: "k3y" + provider.length, addedAt: at, checkedAt: at, ok: true, models: models[provider], windlassModels: models[provider] });
+		}
+	}
+
 	function worldOf(auth: AuthResult): World {
 		const [scheme, kind, uid, email, gen = ""] = auth.token.split(":");
 		if (scheme !== "mock" || !uid || gen !== generation(uid) || uid !== auth.profile.uid || (kind !== "demo" && kind !== "chatgpt")) {
@@ -1020,6 +1052,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "chatgpt"))) world.github = connectionFor(world.profile);
 			worlds.set(uid, world);
+			if (options.keys && kind === "chatgpt") seedKeys(world);
 			seed(world);
 			// The items, each with its agent session, are there with the agents (`seedItemSession`).
 			items.prepare(auth);
@@ -2977,7 +3010,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** The list as the server answers it: each sandbox named by its agent's title now, none for an agent that was deleted. */
 	function machinesView(auth: AuthResult): MachineSummary[] {
 		const world = worldOf(auth);
-		return machinesOf(auth).list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map(({ options, ...entry }) => withSettingsKeys(options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry, [...world.account.providers.keys()])), warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
+		return machinesOf(auth).list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map(({ options, ...entry }) => listedHarness(options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry, [...world.account.providers.keys()], entry.source)), warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
 	}
 
 	function machinesChanged(auth: AuthResult): void {
@@ -3106,6 +3139,15 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				return [nas({
 					...((machineSession === "offline" || machineSession === "paused") && { status: "offline", since: at - 12 * MINUTE }),
 				})];
+			case "sources": {
+				const options = (list: ModelList) => ({ models: list.models, defaultModel: list.defaultModel, modes: [], checkedAt: at });
+				const mac = [
+					{ ...MOCK_CLAUDE, options: { ...options(MOCK_CLAUDE_MODELS), modes: [...CLAUDE_LAUNCH_MODES] } },
+					{ ...MOCK_CLAUDE, id: "codex" as const, adapter: "codex-acp 2.9.0", method: "chatgpt" as const, modes: ["agent-full-access"], options: { ...options(MOCK_CODEX_MODELS), modes: codexModes("docker-hardened") } },
+					{ ...MOCK_CLAUDE, id: "opencode" as const, adapter: "OpenCode 1.19.6", machineProviders: ["anthropic", "free"], options: { ...options(MOCK_OPENCODE_SOURCES), modes: MOCK_OPENCODE_MODES } },
+				];
+				return [nas({ machineId: "m_mac", name: "mac-mini", os: "macOS", arch: "arm64", agents: 0, sandboxes: [], harnesses: mac }), nas({})];
+			}
 			case "fresh":
 				return [nas({ machineId: "m_workshop", name: "workshop", egress: "restricted", agents: 0, sandboxes: [], harnesses: externalHarnesses })];
 			case "claude-signed-out":
@@ -3186,7 +3228,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	}
 
 	/** The calls of the Machines page. A machine paired here waits for its runner, which connects a few seconds later. */
-	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "machineCatalog" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineDetails" | "setMachineSecrets"> {
+	function machineCalls(auth: AuthResult): Pick<UserApi, "machines" | "machineCatalog" | "claimMachine" | "confirmMachine" | "removeMachine" | "setMachineDetails" | "setMachineSecrets" | "setCredentialSource"> {
 		return {
 			async machineCatalog({ machineId, id, digest }) {
 				const entry = machineOf(auth, machineId).harnesses?.find(h => h.id === id);
@@ -3254,6 +3296,15 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				machinesOn();
 				await latency(240);
 				machineOf(auth, machineId).sendSecrets = send;
+				machinesChanged(auth);
+				return machinesView(auth);
+			},
+			async setCredentialSource({ machineId, harness, source }) {
+				machinesOn();
+				await latency(240);
+				const entry = machineOf(auth, machineId).harnesses?.find((one) => one.id === harness);
+				if (!entry) throw new PlatformError("user", "Unknown agent.", { reason: "bad_input" });
+				entry.source = source;
 				machinesChanged(auth);
 				return machinesView(auth);
 			},

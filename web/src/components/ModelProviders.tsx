@@ -9,14 +9,13 @@ import { absoluteTime, day, relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { PROVIDERS_CHANGED, useNow } from "../state/hooks";
 import { Dialog } from "./Dialog";
-import { AnthropicLogo, OpenAILogo, OpenRouterLogo } from "./AgentLogos";
+import { AnthropicLogo, GeminiLogo, OpenAILogo, OpenRouterLogo } from "./AgentLogos";
 import { ExternalIcon, WarnIcon } from "./Icons";
 
-// Google has no mark here: its guidance for naming a Google API in another product is plain text.
 const PROVIDERS: Record<ModelProvider, { name: string; placeholder: string; keysUrl: string; logo?: ReactNode }> = {
 	openai: { name: "OpenAI", placeholder: "sk-proj-…", keysUrl: "https://platform.openai.com/api-keys", logo: <OpenAILogo /> },
 	anthropic: { name: "Anthropic", placeholder: "sk-ant-api03-…", keysUrl: "https://console.anthropic.com/settings/keys", logo: <AnthropicLogo /> },
-	google: { name: "Google", placeholder: "AIza…", keysUrl: "https://aistudio.google.com/apikey" },
+	google: { name: "Google Gemini", placeholder: "AIza…", keysUrl: "https://aistudio.google.com/apikey", logo: <GeminiLogo /> },
 	openrouter: { name: "OpenRouter", placeholder: "sk-or-v1-…", keysUrl: "https://openrouter.ai/settings/keys", logo: <OpenRouterLogo /> },
 };
 
@@ -210,7 +209,7 @@ export function ModelProviders() {
 				Model providers
 			</h2>
 			<p className="usage-lede">
-				On hosted sandboxes and paired machines, Claude Code uses your Anthropic key, Codex uses your OpenAI key, and OpenCode uses the key for its selected provider. A paired machine can also use its own login. Windlass uses the Settings key for a provider-prefixed model and ChatGPT for an unprefixed model. A saved key stays on the platform.
+				Hosted agents always use these keys: Claude Code your Anthropic key, Codex your OpenAI key, OpenCode the key of its model's provider. On your machines an agent uses the machine's own sign-in first and a key for the rest, unless you choose the key on the Machines page. Windlass uses a key for the models listed under its provider, and your ChatGPT plan for the rest. A saved key stays on the platform.
 			</p>
 			{list === null ? (
 				state.error ? (

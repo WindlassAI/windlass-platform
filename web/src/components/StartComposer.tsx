@@ -7,7 +7,7 @@ import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
 import { HARNESS_NAMES, signInWords } from "../lib/acp";
 import { count, localTime, sandboxTime } from "../lib/format";
-import { effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault } from "../lib/models";
+import { MODEL_SOURCES, SOURCE_NAMES, cleanModelName, credentialWords, effortsOf, harnessOptions, modelLabel, modelName, modelsNote, saysDefault, sourceOf, type ModelSource } from "../lib/models";
 import { safeStorage } from "../lib/workspace";
 import { OPEN_MODES, launchModes } from "../lib/modes";
 import { itemOf, lastUsed, layerChoices, repositoryName, startedOn, startingChoices, startingModel, startingProfile } from "../lib/repositories";
@@ -23,7 +23,7 @@ import { ArrowUpIcon, CheckIcon, CloudIcon, LockIcon, MachineIcon, PlusIcon, Rep
 import { accessTokenFact, claudeLoginFact, commandNetworkFact, type ClaudeFacts } from "./Layers";
 import { modeMenu } from "./Modes";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
-import { hostedAgentProblem, capabilitiesOf, machineAgentLine, machineHarness } from "../../../server/src/sandbox/harnesses.js";
+import { hostedAgentProblem, capabilitiesOf } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_PROFILE, itemHarnesses, itemProfilesHere, machineUnusable, offeredHarnesses, onPullRequest } from "./PlaceChoice";
 import { repositoryMenu, useBranches, useRepositorySearch, type PickedRepository } from "./RepositoryMenu";
 import { SecretsField } from "./Secrets";
@@ -34,7 +34,8 @@ import { Menu, MenuList, PickerPanel, type MenuGroup, type MenuItem, type MenuSp
 import { Popover } from "./ui/Popover";
 import { AgentGlyph, AgentLogo } from "./ui/Pill";
 import { RepoTile } from "./RepoTile";
-import { AgentPill, LockHint, OptionsButton, WherePill, effortGroup } from "./TrayControls";
+import { AgentPill, EffortButton, LockHint, OptionsButton, WherePill, effortGroup } from "./TrayControls";
+import { ProviderLogo } from "./AgentLogos";
 import { SplitButton } from "./ui/Button";
 import { Tooltip } from "./ui/Tooltip";
 import { useSurface } from "./ui/useMediaQuery";
@@ -133,7 +134,7 @@ export function useCatalog(machine: MachineSummary | null, id: "claude" | "openc
 	return { options, reading: !!digest && !match, error: match?.error, retry: () => { setResult(undefined); setRetry(n => n + 1); } };
 }
 
-type Picker = "repo" | "where" | "agent" | "options" | "plus";
+type Picker = "repo" | "where" | "agent" | "effort" | "options" | "plus";
 
 const ITEM_MODE_KEY = "wlp.factory.item-mode";
 
@@ -209,6 +210,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const [modeChoice, setMode] = useState<string | null>(draft?.mode ?? null);
 	const [sizeChoice, setSizeChoice] = useState<HostedSize | null>(null);
 	const [open, setOpen] = useState<Picker | null>(null);
+	const [providerTab, setProviderTab] = useState<ModelSource | null>(null);
 	const [busy, setBusy] = useState<"creating" | "prompting" | "filing" | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const area = useRef<HTMLTextAreaElement>(null);
@@ -771,13 +773,15 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		const isOther = harnessId !== "windlass";
 		return list.models.map(({ id, name: reportedName }) => {
 			const isDefault = id === list.defaultModel;
-			const name = isOther && reportedName ? reportedName : id;
+			const name = cleanModelName(id, isOther ? reportedName : null);
 			const here = harness === harnessId;
 			const checked = here && (isOther && model === "" ? isDefault : model === id);
+			const source = sourceOf(harnessId, id);
 			return {
 				id: `${harnessId}:${id}`,
 				label: name,
-				icon: <AgentGlyph harness={HARNESS_NAMES[harnessId]} accent={harnessId === "windlass" && isDefault} />,
+				textValue: `${name} ${id}`,
+				icon: source ? <ProviderGlyph source={source} /> : <AgentGlyph harness={HARNESS_NAMES[harnessId]} />,
 				trailing: isDefault && !saysDefault(name) ? <span className="ui-tag">default</span> : undefined,
 				checked,
 				onSelect: () => {
@@ -829,7 +833,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			if (hosts.length === 0) return [];
 			const name = HARNESS_NAMES[id];
 			return [{
-				id: id + ":elsewhere",
+				id,
 				label: name,
 				note: "on your machines",
 				items: [{
@@ -842,73 +846,123 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			}];
 		}),
 	];
-	const agentsHere = agentGroups.filter((group) => !group.id.endsWith(":elsewhere") && group.items.some((row) => !row.disabled));
-	const agentSwitch =
-		agentsHere.length > 1 ? (
+	// The menu lists the chosen agent's models only, under a header per provider with the credential it uses there.
+	const chosenGroup = agentGroups.find((group) => group.id === harness) ?? agentGroups[0]!;
+	const machineEntry = chosenMachine?.harnesses?.find((entry) => entry.id === harness) ?? null;
+	const machineName = chosenMachine ? machineLabel(chosenMachine) : null;
+	const bySource = new Map<ModelSource | null, MenuItem[]>();
+	for (const row of chosenGroup.items) {
+		const id = row.id.slice(row.id.indexOf(":") + 1);
+		const source = row.id.startsWith(`${harness}:`) && offers(id) ? sourceOf(harness, id) : null;
+		bySource.set(source, [...(bySource.get(source) ?? []), row]);
+	}
+	const sources = MODEL_SOURCES.filter((source) => bySource.has(source));
+	// One tab per provider: a ChatGPT plan's models and an OpenAI key's are both OpenAI's.
+	const tabOf = (source: ModelSource): ModelSource => (source === "chatgpt" ? "openai" : source);
+	const tabs = [...new Set(sources.map(tabOf))];
+	const shownTab = providerTab !== null && tabs.includes(providerTab) ? providerTab : null;
+	const modelGroups: MenuGroup[] = [
+		...(bySource.has(null) && shownTab === null ? [{ id: "agent-default", items: bySource.get(null)! }] : []),
+		...sources.filter((source) => shownTab === null || tabOf(source) === shownTab).map((source) => ({
+			id: `provider:${source}`,
+			label: SOURCE_NAMES[source],
+			note: credentialWords(harness, source, machineEntry, machineName) || undefined,
+			items: bySource.get(source)!,
+		})),
+	];
+	const agentButtons = agentGroups.map((group) => {
+		const id = group.id as HarnessId;
+		const blocked = group.items.every((row) => row.disabled);
+		return { id, blocked, why: blocked ? (group.items[0]?.description as string | undefined) : undefined };
+	});
+	const chooseAgent = (id: HarnessId) => {
+		if (id === harness) return;
+		setHarness(id);
+		setModel("");
+		setProviderTab(null);
+	};
+	const agentSwitch = (
+		<div className="picker-agents">
 			<div className="agent-switch" role="group" aria-label="Switch agent">
-				{agentsHere.map((group) => {
-					const id = group.id as HarnessId;
+				{agentButtons.map(({ id, blocked, why: reason }) => {
 					const chosen = harness === id;
 					return (
-						<Tooltip key={id} content={HARNESS_NAMES[id]}>
+						<Tooltip key={id} content={reason ? `${HARNESS_NAMES[id]}: ${reason}` : HARNESS_NAMES[id]}>
 							<button
 								type="button"
 								className={`agent-switch-button${chosen ? " agent-switch-chosen" : ""}`}
 								aria-pressed={chosen}
 								aria-label={HARNESS_NAMES[id]}
-								onClick={() => {
-									if (!chosen) {
-										setHarness(id);
-										setModel("");
-									}
-									setOpen(null);
-								}}
+								aria-disabled={blocked || undefined}
+								onPointerDown={(event) => event.preventDefault()}
+								onClick={() => !blocked && chooseAgent(id)}
 							>
-								<AgentLogo id={id} size={18} />
+								<AgentLogo id={id} size={17} />
 							</button>
 						</Tooltip>
 					);
 				})}
 			</div>
+			<span className="picker-agent-name">
+				{HARNESS_NAMES[harness]}
+				<span className="picker-agent-where">{chosenMachine ? `on ${machineName}` : harness === "windlass" ? "hosted or any machine" : "hosted"}</span>
+			</span>
+		</div>
+	);
+	const providerTabs =
+		tabs.length > 1 ? (
+			<div className="picker-providers" role="toolbar" aria-label="Show one provider's models">
+				<span className="picker-providers-label" aria-hidden="true">
+					{shownTab ? SOURCE_NAMES[shownTab] : "All providers"}
+				</span>
+				{tabs.map((tab) => (
+					<Tooltip key={tab} content={shownTab === tab ? "Show every provider" : `Only ${SOURCE_NAMES[tab]}`}>
+						<button type="button" className="picker-provider" data-source={tab} aria-label={SOURCE_NAMES[tab]} aria-pressed={shownTab === tab} onPointerDown={(event) => event.preventDefault()} onClick={() => setProviderTab(shownTab === tab ? null : tab)}>
+							<ProviderLogo provider={tab === "other" ? "opencode" : tab} size={13} />
+						</button>
+					</Tooltip>
+				))}
+			</div>
 		) : null;
-	const agentModel = !other ? model || "default model" : model !== "" ? modelName(modelList, model) : reportedDefault !== null && modelList ? modelLabel(modelList, reportedDefault) : "default model";
-	const effortRows = effortGroup(efforts, effort, agentModel, setEffort);
+	const agentModel = !other ? (model ? cleanModelName(model) : "default model") : model !== "" ? cleanModelName(model, modelName(modelList, model)) : reportedDefault !== null && modelList ? cleanModelName(reportedDefault, modelLabel(modelList, reportedDefault)) : "default model";
 	const agentSpec: MenuSpec = {
 		label: "Agent and model",
-		width: 304,
-		maxHeight: 520,
-		filter: agentGroups.reduce((sum, group) => sum + group.items.length, 0) > 7 ? { placeholder: "Filter models…" } : undefined,
-		header:
-			agentSwitch || offersOther || (!other && ignored.model) || harnessProblem ? (
-				<>
-					{agentSwitch}
-					{chosenMachine && offersOther
-						? <details className="agent-commands">
-								<summary>Terminal sign-in commands</summary>
-								{offeredHarnesses(chosenMachine).map(offered => <HarnessStatus key={offered.id} harness={offered} />)}
-							</details>
-						: null}
-					{(["claude", "opencode", "codex"] as const).map(id => catalogs[id].error && <p key={id} role="status">
-						{HARNESS_NAMES[id]} models: {catalogs[id].error} <button type="button" className="link" onClick={catalogs[id].retry}>Retry</button>
-					</p>)}
-					{harnessProblem ? <p className="tone-warn" role="status">{harnessProblem}</p> : null}
-					{!other && ignored.model ? <p className="tone-warn">{ignored.model}</p> : null}
-				</>
-			) : undefined,
-		groups: [...agentGroups, ...(effortRows ? [effortRows] : [])],
+		width: 340,
+		maxHeight: 540,
+		filter: chosenGroup.items.length > 7 ? { placeholder: "Filter models…" } : undefined,
+		header: (
+			<>
+				{agentSwitch}
+				{providerTabs}
+				{(["claude", "opencode", "codex"] as const).map(id => catalogs[id].error && <p key={id} role="status">
+					{HARNESS_NAMES[id]} models: {catalogs[id].error} <button type="button" className="link" onClick={catalogs[id].retry}>Retry</button>
+				</p>)}
+				{harnessProblem ? <p className="tone-warn" role="status">{harnessProblem}</p> : null}
+				{!other && ignored.model ? <p className="tone-warn">{ignored.model}</p> : null}
+			</>
+		),
+		groups: modelGroups,
 		footer: (
 			<>
 				{item && other ? <p className="ui-menu-note">{other} works on the item in the hardened container without asking, and runs Quick: Plan first is Windlass's.{capabilitiesOf(harness).checks === "platform" ? " The platform runs this repository's saved checks when it ends a turn." : capabilitiesOf(harness).checks === "none" ? " It does not run this repository's checks, so CI decides." : ""}</p> : null}
-				{!item && chosenMachine && machineHarness(harness) ? <p className="ui-menu-note">{machineAgentLine(machineHarness(harness)!)}{onPullRequest(harness)}</p> : null}
-				<p className="ui-menu-note">{other && !chosenMachine ? "The agent reports its available models when the session starts." : other ? `The models “${chosenMachine ? machineLabel(chosenMachine) : ""}”'s runner reported for ${other}.` : modelList ? modelsNote(modelList) : null}</p>
+				{other && !chosenMachine ? <p className="ui-menu-note">Hosted agents always use your Settings keys.</p> : null}
+				{other && chosenMachine ? <p className="ui-menu-note">Choose whose sign-in it uses on the <a className="link" {...linkProps({ name: "machines" })}>Machines</a> page.{onPullRequest(harness)}</p> : null}
+				{!other && modelList && modelList.source !== "account" ? <p className="ui-menu-note">{modelsNote(modelList)}</p> : null}
+				{other && chosenMachine && machineEntry && machineEntry.signIn !== "token" ? (
+					<details className="agent-commands">
+						<summary>Sign-in command</summary>
+						<HarnessStatus harness={machineEntry} />
+					</details>
+				) : null}
 				{modelChanged ? (
 					<button type="button" className="ui-menu-action start-back" onClick={() => setModel("")}>
-						Back to the default ({whose(defaults.from.model)}: {defaults.model})
+						Back to the default ({whose(defaults.from.model)}: {cleanModelName(defaults.model ?? "")})
 					</button>
 				) : null}
 			</>
 		),
 	};
+	const effortSpec: MenuSpec | null = efforts.length > 0 ? { label: "Effort", width: 220, groups: [effortGroup(efforts, effort, agentModel, setEffort)!], hints: false } : null;
 	const agentValue = `${HARNESS_NAMES[harness]} · ${agentModel}`;
 	const agentWarn = harnessProblem !== null || (!other && ignored.model !== null);
 
@@ -1157,9 +1211,10 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 						onOpenChange={openOnly("agent")}
 						surface={phone ? undefined : "popover"}
 						trigger={(props) => (
-							<AgentPill trigger={props} harness={harness} name={HARNESS_NAMES[harness]} model={agentModel} effort={effort} efforts={efforts} dot={agentWarn ? "warn" : modelChanged ? "changed" : null} dotLabel={harnessProblem ? "the last agent cannot be used here" : agentWarn ? "the saved default cannot be used" : undefined} changed={modelChanged} data-value={agentValue} data-effort={effort || "default"} />
+							<AgentPill trigger={props} harness={harness} name={HARNESS_NAMES[harness]} model={agentModel} dot={agentWarn ? "warn" : modelChanged ? "changed" : null} dotLabel={harnessProblem ? "the last agent cannot be used here" : agentWarn ? "the saved default cannot be used" : undefined} changed={modelChanged} data-value={agentValue} />
 						)}
 					/>
+					{effortSpec ? <Menu spec={effortSpec} open={open === "effort"} onOpenChange={openOnly("effort")} surface={phone ? undefined : "popover"} trigger={(props) => <EffortButton trigger={props} effort={effort} efforts={efforts} />} /> : null}
 					<span className="tray-where-anchor" ref={anchors.where}>
 						<Menu
 							spec={whereSpec}
@@ -1256,4 +1311,13 @@ function sentence(parts: readonly string[]): string {
 		.filter((part) => part !== "")
 		.map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}.`)
 		.join(" ");
+}
+
+/** A model's provider mark in the square an agent's badge has (`AgentGlyph`). */
+function ProviderGlyph({ source }: { source: ModelSource }) {
+	return (
+		<span className="ui-glyph ui-glyph-logo" aria-hidden="true" data-source={source}>
+			<ProviderLogo provider={source === "other" ? "opencode" : source} size={12} />
+		</span>
+	);
 }
