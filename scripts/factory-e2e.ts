@@ -860,6 +860,37 @@ if (!only.length || only.some(name => name.startsWith("cross-repo"))) {
 	if (only.length === 1) { await standin.stop(); process.exit(failed ? 1 : 0); }
 }
 
+await check("reviewer: plan questions go to the critic only with recommendations", async () => {
+	const server = new Server();
+	try {
+		const repo = standin.addRepository({ owner: "ada", name: "plan-questions", installation, files: { ".github/workflows/build.yml": "on: push\n" } });
+		const { user, client, auth } = await world(server, standin, { WLP_FEATURE_TEST_GIT: join(server.storage, "git") });
+		await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "build", command: "true" }] });
+		for (const scenario of ["off", "missing", "reject", "accept"] as const) {
+			if (scenario === "missing") await user.saveRepositoryDefaults({ repositoryId: repo.id, autoApprovePlans: true });
+			const body = "Update two files. (plan-question)" + (scenario === "missing" ? "" : " (recommend-newline)") + (scenario === "reject" ? " (reject-newline)" : "");
+			const item = await user.createItem({ mode: "orchestrate", repository: { id: repo.id }, profile: "docker-windlass-sandbox", title: "Update the guide", body, start: true });
+			const view = await untilItem(user, item.id, scenario + " plan decision", v => !!v.question || !!v.children?.length);
+			const planner = await client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } }).snapshot();
+			const prompt = planner.timeline.find(e => e.kind === "user");
+			assert(prompt?.text.includes("Ask only questions whose answers change the work") === (scenario !== "off"), "Wrong planner guidance with scenario " + scenario);
+			const question = view.plan?.questions[0];
+			assert(question?.id === "newline", stateOf(view));
+			if (scenario === "accept") {
+				assert(view.plan?.approvedBy === "critic" && question.answer === "Yes" && question.answeredBy === "critic", stateOf(view));
+				const child = await user.item(view.children![0].id);
+				assert(child.task.body.includes(JSON.stringify({ text: question.text, answer: "Yes" })), "The subtask did not receive the accepted answer.");
+			} else {
+				assert(view.question?.kind === "plan_approval" && !question.answer && !question.answeredBy, stateOf(view));
+				assert((view.question.criticFindings?.[0] === "The owner must decide the newline policy.") === (scenario === "reject"), stateOf(view));
+			}
+		}
+		await client.dispose();
+	} finally { await server.stop(); server.remove(); }
+	return "checked planner guidance, both owner fallbacks and the answer delivered to the first subtask";
+});
+if (only.length === 1 && only[0] === "reviewer: plan questions") { await standin.stop(); process.exit(failed ? 1 : 0); }
+
 if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 	await check("reviewer: autonomy uses a restricted critic and merges the reviewed single item", async () => {
 		const server = new Server();

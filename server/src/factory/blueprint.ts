@@ -2073,13 +2073,17 @@ function proposePlan(c: Change, fact: Extract<Fact, { kind: "edit_plan" | "file_
 	if (item.forceSplit && plan.singleSuggested) throw new PlanError("Propose two to six subtasks as requested.");
 	const keys = [...plannedJobs.map(job => job.task.key), ...plan.subtasks.map(task => task.key)];
 	if (new Set(keys).size > 6) throw new PlanError("A feature may have at most six distinct subtasks across its plans.");
-	if (fact.kind === "file_plan") {
-		const approvedPlan = item.replans ? item.approvedPlan : undefined;
-		for (const q of plan.questions) {
-			const answer = approvedPlan?.questions.find(old => old.text === q.text && old.id !== "scope-change")?.answer;
-			if (answer && q.id !== "scope-change") q.answer = answer;
+	const approvedPlan = item.replans ? item.approvedPlan : undefined;
+	const previous = fact.kind === "file_plan" ? approvedPlan : item.featurePlan;
+	for (const q of plan.questions) {
+		const old = previous?.questions.find(old => old.text === q.text && old.id !== "scope-change");
+		if (fact.kind === "file_plan") {
+			if (old?.answer && q.id !== "scope-change") q.answer = old.answer;
 			else delete q.answer;
 		}
+		if (old?.answeredBy && q.answer && q.answer === old.answer) q.answeredBy = old.answeredBy;
+	}
+	if (fact.kind === "file_plan") {
 		// A re-plan keeps each approved subtask's agent: only the person changes it, on the card.
 		if (approvedPlan) for (const task of plan.subtasks) {
 			const approved = approvedPlan.subtasks.find(s => s.key === task.key);
@@ -2143,7 +2147,15 @@ function finishCritic(c: Change, fact: Extract<Fact, { kind: "review_ended" }>) 
 	if (!trustedPlanInputs(c.item) || !review || fact.outcome !== "succeeded" || fact.refused || fact.providerRefusal || fact.sandboxFailed ||
 		fact.outOfMemory || fact.stepLimit !== undefined || fact.spend.tokens <= 0) return askPlan(c);
 	if (review.decision === "approve" && fact.by === "critic") {
-		if (c.item.featurePlan?.singleSuggested) runSingle(c);
+		const plan = c.item.featurePlan;
+		if (plan?.status !== "proposed" || c.item.filedTurn !== c.key) return askPlan(c);
+		const pending = plan.questions.filter(q => !q.answer);
+		if (pending.some(q => !q.recommended)) return askPlan(c);
+		for (const q of pending) {
+			q.answer = q.recommended;
+			q.answeredBy = "critic";
+		}
+		if (plan.singleSuggested) runSingle(c);
 		else if (!approveFeature(c, fact.inventory)) return askPlan(c);
 		c.say("Approved automatically: " + (review.findings.join(" ") || "The critic approved the plan as filed."));
 		return;

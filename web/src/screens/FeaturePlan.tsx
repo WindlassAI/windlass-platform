@@ -99,7 +99,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 			{plan.questions.length > 0 ? (
 				<div className="plan-asks">
 					{plan.questions.map((question) => (
-						<PlanAsk key={question.id} question={question} value={review.answers[question.id] ?? ""} disabled={busy} onChange={(text) => review.setAnswer(question.id, text)} />
+						<PlanAsk key={question.id} question={question} edit={{ value: review.answers[question.id] ?? "", disabled: busy, onChange: text => review.setAnswer(question.id, text) }} />
 					))}
 				</div>
 			) : null}
@@ -144,7 +144,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 				{offerAutoApprove && !review.edits && (
 					<div className="plan-auto-approve">
 						<Check checked={autoApprove} disabled={busy} onChange={setAutoApprove} label={`Approve small plans automatically in ${view.repository.owner}/${view.repository.name}`} />
-						<Tooltip content="Up to 3 parts, no open questions, and at most 3× a Quick item's budget. An independent reviewer checks each one; anything bigger still comes to you.">
+						<Tooltip content="Up to 3 parts and at most 3× a Quick item's budget. Any open question needs a recommended answer the reviewer accepts.">
 							<button type="button" className="icon-button icon-button-small" aria-label="Which plans can be approved automatically?"><InfoIcon size={15} /></button>
 						</Tooltip>
 					</div>
@@ -204,7 +204,7 @@ export function questionParts(question: Pick<FeaturePlan["questions"][number], "
 
 const ASK_SHORT = 160;
 
-function PlanAsk({ question, value, disabled, onChange }: { question: FeaturePlan["questions"][number]; value: string; disabled: boolean; onChange(text: string): void }) {
+function PlanAsk({ question, edit }: { question: FeaturePlan["questions"][number]; edit?: { value: string; disabled: boolean; onChange(text: string): void } }) {
 	const id = useId();
 	const { ask, why } = questionParts(question);
 	const background = why ? (
@@ -220,11 +220,13 @@ function PlanAsk({ question, value, disabled, onChange }: { question: FeaturePla
 		return (
 			<div className="plan-ask plan-ask-answered">
 				<p className="plan-ask-text">{ask}</p>
-				<p className="plan-ask-answer">{question.answer}</p>
+				<p className="plan-ask-answer">{question.answeredBy === "critic" && "Answered by the reviewer: "}{question.answer}</p>
 				{background}
 			</div>
 		);
 	}
+	if (!edit) return null;
+	const { value, disabled, onChange } = edit;
 	return (
 		<div className="plan-ask">
 			<p className="plan-ask-text" id={id}>
@@ -381,6 +383,8 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 			<LongText lines={3} className="plan-goal">
 				<Inline text={plan.spec.goal} />
 			</LongText>
+
+			{plan.status !== "proposed" && plan.questions.map(question => <PlanAsk key={question.id} question={question} />)}
 
 			{specParts(plan).length > 0 ? (
 				<details className="plan-spec-fold">

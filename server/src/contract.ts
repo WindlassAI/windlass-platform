@@ -1846,7 +1846,7 @@ export interface FeaturePlanEdit {
 	finalIntegration?: FinalIntegration;
 	overflow?: boolean;
 	/** Optional why supplies background shown separately from the question. */
-	questions: { id: string; text: string; options?: string[]; why?: string; answer?: string }[];
+	questions: { id: string; text: string; options?: string[]; why?: string; recommended?: string; answer?: string; answeredBy?: "critic" }[];
 	spec: { goal: string; requirements: string[]; outOfScope: string[]; acceptance: string[] };
 	subtasks: PlanSubtask[];
 	singleSuggested: string | null;

@@ -220,9 +220,13 @@ describe("a feature's plan on its page", () => {
 	});
 
 	it("links a reviewer-approved plan to the repository's work item approvals", async () => {
-		make({ items: "features" }, item => item.plan ? { ...item, plan: { ...item.plan, approvedBy: "critic" } } : item);
+		make({ items: "features" }, item => item.plan ? { ...item, plan: { ...item.plan, approvedBy: "critic",
+			questions: [{ id: "newline", text: "Add a trailing newline?", answer: "Yes", answeredBy: "critic" }] } } : item);
 		const feature = await featureNamed("Export the release manifest as CSV");
 		await show(`/items/${feature.id}`);
+		openPlan();
+		expect(host.querySelector(".feature-plan .plan-ask-text")?.textContent).toBe("Add a trailing newline?");
+		expect(host.querySelector(".feature-plan .plan-ask-answer")?.textContent).toBe("Answered by the reviewer: Yes");
 		const change = host.querySelector('.feature-plan a[aria-label="Change work item approvals"]');
 		expect(change?.textContent).toBe("Change");
 		expect(change?.getAttribute("href")).toBe(`/repositories/${feature.repository.id}/settings#autonomy`);

@@ -1167,7 +1167,9 @@ export class FakeWindlass implements Windlass {
 						} else {
 						const reply = await input.onPlan({ messageId: "plan", callId: "file", arguments: {
 							spec: { goal: "Index and search documents", requirements:["Index documents"], outOfScope:[], acceptance:["Documents can be found."] },
-							questions: [], singleSuggested: single ? "Only one file." : null, subtasks: single ? [] : ["index","search"].map((key,i) => ({
+							questions: text.includes("(plan-question)") ? [{ id: "newline", text: "Should each file end with a trailing newline?", options: ["Yes", "No"],
+								...(text.includes("(recommend-newline)") && { recommended: "Yes" }) }] : [],
+							singleSuggested: single ? "Only one file." : null, subtasks: single ? [] : ["index","search"].map((key,i) => ({
 								key,title:key,brief:"Implement " + key + ". (report)", acceptance:["Run pnpm test"],owns:[key+"/**"],dependsOn:i ? ["index"] : [],
 								budget:{tokens:600000},
 							})),
@@ -1178,7 +1180,9 @@ export class FakeWindlass implements Windlass {
 					if (input.onPlanReview) {
 						if (!input.planner || offered.size !== 1 || !offered.has("file_plan_review") || input.servers?.length || input.checks?.length ||
 							input.onPush || input.onReport || input.onPublish || input.onFetchBase || !text.includes("tracked repository tree:")) throw new Error("Invalid critic tools or missing repository tree.");
-						await input.onPlanReview({ messageId: "critic", callId: "file", arguments: { decision: "approve", findings: ["The plan covers the task within budget."] } }, signal ?? new AbortController().signal);
+						const review = text.includes("(reject-newline)") ? { decision: "revise", findings: ["The owner must decide the newline policy."] }
+							: { decision: "approve", findings: ["The plan covers the task within budget."] };
+						await input.onPlanReview({ messageId: "critic", callId: "file", arguments: review }, signal ?? new AbortController().signal);
 					}
 					if (input.onPlanReview || input.onPlan || input.onReview || input.onReport) emit({ type: "fake.session_open", data: { method: continued ? "session/resume" : "session/new", params }, seq: 0 });
 					if (input.onReview) {

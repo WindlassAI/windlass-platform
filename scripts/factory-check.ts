@@ -1853,6 +1853,26 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	assert.equal(approved.item.spent.tokens - critic.item.spent.tokens, 17);
 	assert.ok(approved.last.events.some(e => e.by === "critic" && e.said === "Approved automatically: Covers the requested change."));
 	assert.ok(!approved.item.question && effect(approved.last, "dispatch"));
+	const newline = { id: "newline", text: "Should each file end with a trailing newline?", options: ["Yes", "No"], recommended: "Yes" };
+	const encoding = { id: "encoding", text: "Which encoding?", recommended: "UTF-8" };
+	const pending = start({ ...plan, questions: [newline, encoding] });
+	const prompt = effect(pending.last, "deliver")!.text;
+	assert.match(prompt, /accept every recommended answer/);
+	for (const { text, recommended } of [newline, encoding]) assert.ok(prompt.includes(JSON.stringify({ text, recommended })));
+	const accepted = walk(pending.item, [finish("approve", [])]);
+	assert.deepEqual(accepted.item.approvedPlan?.questions, [newline, encoding].map(q => ({ ...q, answer: q.recommended, answeredBy: "critic" })));
+	assert.ok(effect(accepted.last, "dispatch"));
+	const rejected = walk(pending.item, [finish("revise", ["The owner must choose the encoding."])]);
+	assert.equal(rejected.item.question?.kind, "plan_approval");
+	assert.deepEqual(rejected.item.question?.criticFindings, ["The owner must choose the encoding."]);
+	assert.ok(rejected.item.featurePlan!.questions.every(q => !q.answer && !q.answeredBy));
+	const undecided = start({ ...plan, questions: [newline, { id: "format", text: "Which format?", answer: "JSON", answeredBy: "critic" }] });
+	assert.equal(undecided.item.question?.kind, "plan_approval");
+	assert.ok(!effect(undecided.last, "deliver"));
+	assert.ok(undecided.item.featurePlan!.questions.every(q => !q.answer && !q.answeredBy));
+	for (const recommended of ["Maybe", " ", "x".repeat(81), 42])
+		assert.throws(() => start({ ...plan, questions: [{ ...newline, recommended }] }));
+	expect("the critic accepts every recommendation or leaves all open questions for the owner", true);
 	const outside = start(plan, true, { ...feature, untrusted: ["issue #7 by @alex"] });
 	assert.equal(outside.item.question?.kind, "plan_approval");
 	assert.equal(effect(outside.last, "deliver"), undefined);

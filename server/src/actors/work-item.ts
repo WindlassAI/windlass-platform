@@ -349,14 +349,18 @@ async function repositoryAutonomy(c: Ctx, meta: ItemMeta, repositoryId = meta.re
 	catch { return { autoApprovePlans: false, autoMergeSingles: false, waitForCiOnEachPart: false }; }
 }
 
+async function autoApprovePlans(c: Ctx, { item, meta }: Stored) {
+	const repositories = item.repos?.map(r => r.repositoryId) ?? [meta.repository.id];
+	const settings = await Promise.all(repositories.map(id => repositoryAutonomy(c, meta, id)));
+	return settings.length > 0 && settings.every(s => s.autoApprovePlans);
+}
+
 /** Both receipt paths charge the same settled holds, including a replay after a restart. */
 async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void> {
 	if (fact.kind === "turn_ended" || fact.kind === "review_ended") {
 		const { item, meta } = stored;
 		if (currentKey(item) === fact.key && (item.run?.step.kind === "refine" || item.run?.step.kind === "plan_review")) {
-			const repositories = item.repos?.map(r => r.repositoryId) ?? [meta.repository.id];
-			const settings = await Promise.all(repositories.map(id => repositoryAutonomy(c, meta, id)));
-			const enabled = settings.length > 0 && settings.every(s => s.autoApprovePlans);
+			const enabled = await autoApprovePlans(c, stored);
 			if (fact.kind === "turn_ended") fact = { ...fact, autoApprovePlans: enabled };
 			else if (fact.planReview?.decision === "approve") {
 				try {
@@ -1828,6 +1832,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const selected = preferred?.place;
 				const defaultPlace = selected && typeof selected === "object" ? { kind: "machine" as const, machineId: selected.machine }
 					: selected === "hosted" ? { kind: "hosted" as const } : parent;
+				if (await autoApprovePlans(c, stored)) text += "\nThis repository auto-approves small plans. Ask only questions whose answers change the work and state the obvious defaults in the spec.";
 				text += plannerReadiness(await userActor(c, meta.uid).internalReadinessLevel(meta.repository.id));
 				text += "\n" + plannerCapacityText(defaultPlace, inventory.machines, inventory.hostedCapacity);
 				if (preferred?.place) {
@@ -2215,7 +2220,7 @@ export const workItem = actor({
 			const repo = crossRepo(s.item) ? repoOf(s.item, job.task.repo) : null;
 			return { paused: !!s.item.featureUpdate || s.item.question?.kind === "feature_update", job: { ...job, start: repo?.head ?? s.item.head, dispatchKey: job.dispatchKey ?? currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
 				repository: repo && { id: repo.repositoryId, base: repo.baseRef, alias: repo.alias },
-				joinOnGate: !!(repo ?? s.item).featureCi, featureBody: s.item.task.body, context: JSON.stringify({ spec: s.item.featurePlan.spec, reports }),
+				joinOnGate: !!(repo ?? s.item).featureCi, featureBody: s.item.task.body, context: JSON.stringify({ spec: s.item.featurePlan.spec, answers: s.item.featurePlan.questions.map(({ text, answer }) => ({ text, answer })), reports }),
 				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place },
 				// The subtask's task was planned from the feature's (its sources go with it), and quotes the reports of subtasks before it.
 				untrusted: sources(s.item.untrusted, job.ciFix && [untrustedWords.ci(job.ciFix.head)], reports.length ? [untrustedWords.earlier] : []),
