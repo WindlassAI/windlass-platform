@@ -3,7 +3,7 @@ import type { RawAccess } from "rivetkit/db";
 import { config } from "../config.js";
 import type { EnvironmentBuild, GithubId, RepositoryCheck } from "../contract.js";
 import { environmentInputs, readEnvironments, sameInputs } from "../environments.js";
-import { scoreReadiness, type Finding, type Judgment, type RepositoryReadiness } from "../factory/readiness.js";
+import { setupReport, type CiHistory, type Finding, type Judgment, type RepositoryReadiness } from "../factory/readiness.js";
 import type { SetupDiagnosis } from "../repo-setup/types.js";
 import type { SetupScan } from "../github/setup-checks.js";
 import { digest } from "../sandbox/snapshot-key.js";
@@ -23,9 +23,19 @@ export const READINESS_TABLE = `CREATE TABLE IF NOT EXISTS readiness (
 export const SETUP_TURN_MS = Math.min(config.turnTimeoutMs, 20 * 60_000);
 export const SETUP_LEASE_MS = SETUP_TURN_MS + 6 * 60_000;
 
+type ReadinessScan = SetupScan & { ci: CiHistory | null; ciReadFailed: boolean };
+
 export async function cachedScan(db: Db, project: string) {
 	const [row] = await db.execute<{ at: number; scan: string }>("SELECT at, scan FROM setup_scan WHERE project=?", project);
-	return row && { at: row.at, ...JSON.parse(row.scan) as SetupScan };
+	return row && { at: row.at, ...JSON.parse(row.scan) as ReadinessScan };
+}
+
+export async function saveSetupScan(db: Db, project: string, at: number, files: SetupScan, ci: CiHistory | null) {
+	const previous = await cachedScan(db, project);
+	if (previous && previous.at > at) return previous;
+	const scan = { ...files, ci: ci ?? previous?.ci ?? null, ciReadFailed: ci === null };
+	await db.execute("INSERT OR REPLACE INTO setup_scan (project,at,scan) VALUES (?,?,?)", project, at, JSON.stringify(scan));
+	return { ...scan, at };
 }
 
 export function buildProof(build: EnvironmentBuild | undefined, checks: RepositoryCheck[]) {
@@ -38,7 +48,7 @@ export function buildProof(build: EnvironmentBuild | undefined, checks: Reposito
 	};
 }
 
-export async function setupInputs(db: Db, project: string, scan: SetupScan & { at: number }, setup: string, checks: RepositoryCheck[]) {
+export async function setupInputs(db: Db, project: string, scan: ReadinessScan & { at: number }, setup: string, checks: RepositoryCheck[]) {
 	const hashes = environmentInputs(setup, checks);
 	const measured = (await readEnvironments(db, project)).flatMap(row => [row.attempt, row.ready])
 		.filter((b): b is EnvironmentBuild => !!b?.finishedAt && sameInputs(b, hashes))
@@ -49,7 +59,7 @@ export async function setupInputs(db: Db, project: string, scan: SetupScan & { a
 		{ id: "checks", pass: checks.length ? null : false, reason: checks.length ? "Checks saved. Finish setup to check their results and time." : "No checks are saved." },
 		...scan.findings,
 	];
-	return { key: digest([scan.commit, hashes, evidence]), findings, evidence, at: scan.at };
+	return { key: digest([scan.commit, hashes, evidence]), findings, evidence, at: scan.at, ci: scan.ci, ciReadFailed: scan.ciReadFailed };
 }
 
 export async function repositoryReadiness(db: Db, project: string, inputs: Awaited<ReturnType<typeof setupInputs>> | null, weekly: boolean, scanError: string | null = null): Promise<RepositoryReadiness> {
@@ -73,9 +83,9 @@ export async function repositoryReadiness(db: Db, project: string, inputs: Await
 			}
 			return answer;
 		});
-		latest = scoreReadiness(findings, last?.at ?? inputs.at);
+		latest = setupReport(findings, last?.at ?? inputs.at, inputs.ci);
 	}
-	return { latest, weekly, ...(attempt?.diagnosis && { diagnosis: JSON.parse(attempt.diagnosis) as SetupDiagnosis }), run: running ? "running" : attempt ? "finished" : "new", error: scanError ?? (pending && !running ? "The setup check was interrupted." : attempt?.error ?? null) };
+	return { latest, weekly, ciReadFailed: inputs?.ciReadFailed, ...(attempt?.diagnosis && { diagnosis: JSON.parse(attempt.diagnosis) as SetupDiagnosis }), run: running ? "running" : attempt ? "finished" : "new", error: scanError ?? (pending && !running ? "The setup check was interrupted." : attempt?.error ?? null) };
 }
 
 export async function claimAssessment(db: Db, project: string, session: string, now: number): Promise<boolean> {

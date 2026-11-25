@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { readinessCriteria, readinessItem, readinessLevels, type CriterionId } from "../../../server/src/factory/readiness";
-import { plural } from "../lib/format";
+import { readinessCriteria, readinessItem, type CriterionId } from "../../../server/src/factory/readiness";
+import { absoluteTime, percent, plural } from "../lib/format";
 import { linkProps } from "../lib/router";
 import type { RepositoryPage } from "../screens/Repository";
 import { useApp, useAuth } from "../state/app";
@@ -8,7 +8,7 @@ import { useApp, useAuth } from "../state/app";
 export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryPage; offersItems: boolean }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const [busy, setBusy] = useState<"run" | "notes" | "weekly" | "guides" | CriterionId | null>(null);
+	const [busy, setBusy] = useState<"run" | "notes" | "weekly" | "guides" | CriterionId | number | null>(null);
 	const [error, setError] = useState("");
 	const [filed, setFiled] = useState<Record<string, string>>({});
 	const data = page.view?.readiness;
@@ -46,10 +46,20 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 		finally { setBusy(null); }
 	}
 	if (!data) return null;
-	const disabled = !!busy || page.access.state !== "usable";
+	const disabled = busy !== null || page.access.state !== "usable";
 	const checking = busy === "run" || running;
 	const pending = report?.findings.filter(f => f.pass === null).length ?? 0;
-	const score = report && <p className="setup-score"><strong>{report.passed} of {readinessCriteria.length} setup checks passed</strong> · Level: {report.level}{pending > 0 && ` · ${pending} pending`}</p>;
+	const ci = report?.ci;
+	function fileButton(criterion: CriterionId | number, label: string) {
+		if (!report || !offersItems) return null;
+		const task = readinessItem(page.id, report, criterion);
+		const key = task.idempotencyKey!;
+		return filed[key] ? <a className="link" {...linkProps({ name: "item", id: filed[key]! })}>Open work item</a>
+			: <button className="link" type="button" disabled={disabled} onClick={() => submit(criterion, async () => {
+				const made = await client.user(auth).createItem(task);
+				setFiled(old => ({ ...old, [key]: made.id }));
+			})}>{busy === criterion ? "Filing…" : label}</button>;
+	}
 	return <section id="repo-setup" className="usage-section ws-section repo-setup" aria-labelledby="setup-title">
 		<header className="ws-list-head">
 			<h2 id="setup-title" className="ws-section-title">Repo setup</h2>
@@ -58,6 +68,17 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 				if (mounted.current) page.replace(next);
 			})}>{checking ? "Checking…" : data.run === "finished" ? "Run again" : "Finish setup"}</button>
 		</header>
+		{report && <div className="setup-summary">
+			<p><strong>Setup {report.passed} of {readinessCriteria.length}</strong>{pending > 0 && ` · ${pending} pending`} · Level: <strong>{report.level}</strong></p>
+			<p><strong>CI history (30 days):</strong> {ci ? <>
+				{ci.checked ? `${percent(ci.green / ci.checked)} green on ${ci.branch}` : ci.hasCi ? `No finished checks on ${ci.branch}` : "No CI to read"}
+				{ci.hasCi && ` · ${plural(ci.flaky.length, "flaky job")}`}
+				{!!ci.flaky.length && ": " + ci.flaky.map(job => `${job.name} (${job.count}×)`).join(", ")}
+				{` · ${plural(ci.reverts, "revert")}`}{ci.redMerges > 0 && ` · ${plural(ci.redMerges, "red commit")} after a merge`}
+			</> : "Could not read CI history from GitHub"}</p>
+			{ci && <p className="usage-note">{data.ciReadFailed && "Could not refresh CI history from GitHub. "}Last read {absoluteTime(ci.at)}</p>}
+			{ci?.flaky.map((job, i) => <div key={job.name}>{fileButton(i, "File as work item: make " + job.name + " reliable")}</div>)}
+		</div>}
 		<p className="usage-note">Draft contributor guides and skills from the repository and its latest build. A second reviewer checks the files before the pull request opens.</p>
 		{check && <label className="check setup-weekly"><input role="switch" type="checkbox" checked={check.enabled} disabled={disabled} onChange={e => submit("guides", async () =>
 			page.replace(await client.user(auth).setGuideCheck(page.id, e.target.checked)))} /> Check pull requests for broken guide references</label>}
@@ -93,7 +114,6 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 			<strong>Left out</strong>
 			<ul>{data.diagnosis.leftOut.map(note => <li key={note}>{note}</li>)}</ul>
 		</div>}
-		{publication && score}
 		<details className="setup-notes" open={!notes.length}>
 			<summary><strong>Notes from your agents{notes.length > 0 && ` (${notes.length})`}</strong></summary>
 			<div className="setup-note-fields">
@@ -124,7 +144,7 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 					if (decision && !details.length) details.push("Left out: " + (decision.verdict === "question" ? "needs an answer" : decision.verdict));
 					return <div className="setup-note-row" key={n.id}>
 						<label className="check"><input type="checkbox" checked={!excluded.includes(n.id)} onChange={e => setExcluded(e.target.checked ? excluded.filter(id => id !== n.id) : [...excluded, n.id])} />{n.label}</label>
-						<button className="link" disabled={!!busy} onClick={() => submit("notes", async () => page.replace(await client.user(auth).deleteSetupNote(page.id, n.id)))}>Delete</button>
+						<button className="link" disabled={busy !== null} onClick={() => submit("notes", async () => page.replace(await client.user(auth).deleteSetupNote(page.id, n.id)))}>Delete</button>
 						<details><summary>{details.join(" · ") || "View note"}</summary><p>{n.text}</p>
 							{decision && <><p>{decision.reason} {decision.verdict === "secret" && "Replace this secret."}</p>
 								{decision.question && <p>{decision.question}</p>}
@@ -134,29 +154,27 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 				})}
 			</div>
 		</details>
-		<label className="check setup-weekly"><input role="switch" type="checkbox" checked={data.weekly} disabled={!!busy || (!data.weekly && page.access.state !== "usable")} onChange={event => submit("weekly", async () => {
+		<label className="check setup-weekly"><input role="switch" type="checkbox" checked={data.weekly} disabled={busy !== null || (!data.weekly && page.access.state !== "usable")} onChange={event => submit("weekly", async () => {
 			await client.user(auth).setSetupWeekly(page.id, event.target.checked);
 			if (mounted.current) reload();
 		})} /> Run setup checks weekly</label>
 		{report ? <>
-			{!publication && score}
-			{readinessLevels.map(level => <div className="readiness-group" key={level}>
-				<h3>{level}</h3>
-				<ul>{readinessCriteria.filter(c => c.level === level).map(c => {
+			<div className="readiness-group">
+				<ul>{readinessCriteria.map(c => {
 					const row = report.findings.find(f => f.id === c.id)!;
-					const key = report.at + c.id;
-					const item = filed[key];
-					const canFile = offersItems && row.pass === false && !item;
 					return <li key={c.id}>
-						<span className={canFile ? "tone-warn" : "tone-dim"}>{row.pass === null ? "Pending" : row.pass ? "Pass" : "Fail"}</span>
+						<span className={row.pass === false ? "tone-warn" : "tone-dim"}>{row.pass === null ? "Pending" : row.pass ? "Pass" : "Fail"}</span>
 						<div><strong>{c.title}</strong><p>{row.reason}</p></div>
-						{item ? <a className="link" {...linkProps({ name: "item", id: item })}>Open work item</a> : canFile && <button className="link" type="button" disabled={disabled} onClick={() => submit(c.id, async () => {
-							const made = await client.user(auth).createItem(readinessItem(page.id, report, c.id));
-							setFiled(old => ({ ...old, [key]: made.id }));
-						})}>{busy === c.id ? "Filing…" : "File as work item"}</button>}
+						{row.pass === false && fileButton(c.id, "File as work item")}
 					</li>;
 				})}</ul>
-			</div>)}
+			</div>
+			<h3 className="ws-section-title">Next steps after verified work here</h3>
+			<ul>
+				<li><strong>Small plans</strong> · Complete small items with passing checks and no reverts.</li>
+				<li><strong>Full plans</strong> · Finish larger features that rarely need fixes to pass checks.</li>
+				<li><strong>Earned merge</strong> · Build a clean record for one kind of work, such as tests.</li>
+			</ul>
 		</> : <p className="usage-empty">{page.access.state === "usable" ? "Waiting for the default branch checks." : "Connect this repository to see its setup checks."}</p>}
 		{(error || data.error) && <p role="alert" className="usage-note">{error || data.error}</p>}
 	</section>;

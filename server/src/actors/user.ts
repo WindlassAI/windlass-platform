@@ -97,9 +97,10 @@ import { serverSealer } from "../signin/seal.js";
 import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, hostedLimitsApply } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/hosted-network.js";
-import { cachedScan, claimAssessment, finishAssessment, repositoryReadiness, READINESS_TABLE, READINESS_TICK, SETUP_LEASE_MS, scheduleName, scheduleSetup, setupInputs } from "./user-readiness.js";
+import { cachedScan, saveSetupScan, claimAssessment, finishAssessment, repositoryReadiness, READINESS_TABLE, READINESS_TICK, SETUP_LEASE_MS, scheduleName, scheduleSetup, setupInputs } from "./user-readiness.js";
 import type { Judgment } from "../factory/readiness.js";
 import { readinessPrompt } from "../factory/readiness-filing.js";
+import { scanCiHistory } from "../github/ci-history.js";
 import { scanRepoSetup } from "../github/setup-checks.js";
 import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { BuildStartRefused, buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, wakeEnvironments, type EnvironmentHost } from "./user-environments.js";
@@ -410,11 +411,13 @@ async function refreshSetupScan(c: UserCtx, id: GithubId, project: string) {
 	const at = Date.now();
 	const app = requireGithub();
 	const { installation } = await resolveRepository(app, requireConnection(c), id, "read");
-	const scan = await app.withToken(installation.id, { repositoryId: id, permissions: { contents: "read", metadata: "read" } },
-		async token => scanRepoSetup(app, token, await app.repositoryById(token, id)), { revokeAfter: true });
-	await c.db.execute(`INSERT INTO setup_scan VALUES (?,?,?) ON CONFLICT(project) DO UPDATE SET at=excluded.at,scan=excluded.scan WHERE excluded.at>=setup_scan.at`,
-		project, at, JSON.stringify(scan));
-	return { ...scan, at };
+	const { repo, files } = await app.withToken(installation.id, { repositoryId: id, permissions: { contents: "read", metadata: "read" } }, async token => {
+		const repo = await app.repositoryById(token, id);
+		return { repo, files: await scanRepoSetup(app, token, repo) };
+	}, { revokeAfter: true });
+	const ci = await app.withToken(installation.id, { repositoryId: id, permissions: { metadata: "read", contents: "read", checks: "read", statuses: "read", pull_requests: "read", actions: "read" } },
+		token => scanCiHistory(app, token, repo, files.commit, at), { revokeAfter: true }).catch(() => null);
+	return c.db.transaction(tx => saveSetupScan(tx, project, at, files, ci));
 }
 
 function guideFilesFor(c: Pick<CreateCtx, "client">, id: GithubId) {

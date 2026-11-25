@@ -48,7 +48,7 @@ describe("the mock's repository page", () => {
 		mock.dispose();
 	});
 
-	it("shows a partial score, finishes setup and files a failed check once", async () => {
+	it("shows the current setup checks, finishes setup and files a failed check once", async () => {
 		const mock = make();
 		const user = mock.user(ada);
 		const partial = (await user.repository(7101)).readiness;
@@ -56,10 +56,10 @@ describe("the mock's repository page", () => {
 		expect(partial.latest?.findings.filter(f => f.pass === null)).toHaveLength(3);
 		await user.setSetupWeekly(7101, true);
 		const { readiness } = await user.runReadiness(7101);
-		expect(readiness).toMatchObject({ weekly: true, run: "finished", latest: { passed: 6, level: "Functional" } });
+		expect(readiness).toMatchObject({ weekly: true, run: "finished", latest: { passed: 6, level: "Ask first" } });
 		const task = readinessItem(7101, readiness.latest!, "areas");
 		const item = await user.createItem(task);
-		expect(item).toMatchObject({ title: "Guides for large folders", state: "draft", repository: { id: 7101 } });
+		expect(item).toMatchObject({ title: "Give folders with 50 or more source files a guide", state: "draft", repository: { id: 7101 } });
 		expect((await user.item(item.id)).task.body).toBe(task.body);
 		expect((await user.createItem(task)).id).toBe(item.id);
 		await user.forgetRepository(7101);
