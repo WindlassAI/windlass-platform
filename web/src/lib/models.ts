@@ -138,11 +138,12 @@ type ListedHarness = NonNullable<MachineSummary["harnesses"]>[number];
  */
 export function credentialWords(harness: HarnessId, source: ModelSource, entry: ListedHarness | null, machine: string | null): string {
 	if (source === "chatgpt") return "ChatGPT plan";
-	if (source === "opencode") return "free";
+	if (source === "opencode") return entry?.machineProviders?.includes("free") ? "free" : machine ? `OpenCode Zen login · ${machine}` : "";
 	if (source === "other") return entry && machine ? `login on ${machine}` : "";
 	const key = `${SOURCE_NAMES[source]} key`;
 	if (harness === "windlass" || !entry || !machine) return key;
 	if (entry.platformKeys?.includes(source)) return key;
+	if (entry.id === "opencode" && !entry.machineProviders && !entry.keyRelay && entry.signIn === "token") return `login on ${machine}`;
 	if (!entry.machineSignIns?.includes(source)) return entry.signIn === "unknown" ? `sign-in unchecked · ${machine}` : "sign in needed";
 	if (harness === "claude") return `Claude subscription · ${machine}`;
 	const chatgpt = harness === "codex" ? entry.method === "chatgpt" : source === "openai" && entry.machineProviders?.includes("chatgpt");

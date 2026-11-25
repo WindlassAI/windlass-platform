@@ -703,6 +703,8 @@ type OfferedHarness = NonNullable<NonNullable<MachineFacts["report"]>["harnesses
 export async function turnCredential(c: Ctx, meta: SessionMeta, offered: OfferedHarness | undefined, model: string, signal?: AbortSignal, pinned?: TurnCredential): Promise<TurnCredential> {
 	if (pinned) {
 		const key = pinned.key;
+		if (key && meta.place.kind === "machine" && machineHarness(meta.harness) && !offered?.keyRelay)
+			throw new UserError("This runner cannot relay the Settings key for the paused turn.", { code: "harness_signed_out" });
 		if (key && await modelKeyActor(c, meta.uid).internalModelKeyGeneration(key.provider) !== key.generation)
 			throw new UserError("The Settings key for this turn changed or was removed. Start a new turn.", { code: "harness_signed_out" });
 		return pinned;
@@ -722,13 +724,19 @@ export async function turnCredential(c: Ctx, meta: SessionMeta, offered: Offered
 	// On a machine its own sign-in serves its providers first, unless the owner chose keys (`usableKeys`).
 	const providers = hosted || !offered ? keys.map(k => k.provider) : usableKeys(offered, keys.map(k => k.provider), source ?? undefined);
 	if (harness === "opencode" && model === "default") {
-		if (meta.place.kind === "machine" && keys.length)
+		if (meta.place.kind === "machine" && providers.length)
 			model = await runnerLink(c, meta.place.machineId).request("openCodeDefault", { providers }, { signal });
 		else if (hosted) model = meta.harnessModels?.defaultModel ?? model;
 	}
 	const provider = hosted ? hostedProvider(harness, model, providers) : selectedKey(harness, model, providers);
 	if (hosted && !provider) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
-	return { model, key: keys.find(k => k.provider === provider) };
+	const key = keys.find(k => k.provider === provider);
+	// An explicit switch to a key, or a fallback from a filed key, uses this turn's billing method.
+	if (offered && meta.origin && (meta.origin.filedWithKey || (key && source === "key"))) {
+		const effective = withSettingsKeys(offered, provider ? [provider] : []);
+		return { model, key, itemSignIn: effective.method };
+	}
+	return { model, key };
 }
 
 /** Persist admission before any server forwards the request. A resumed segment inherits the balance. */
@@ -741,12 +749,12 @@ export function takeTurnRequest(c: Ctx, meta: SessionMeta, run: TurnRun, active:
 	});
 }
 
-function itemSignInRefusal(meta: SessionMeta, facts: MachineFacts, offered: OfferedHarness | undefined, provider?: import("../contract.js").ModelProvider) {
+function itemSignInRefusal(meta: SessionMeta, facts: MachineFacts, offered: OfferedHarness | undefined, credential: TurnCredential) {
 	const machine = machineHarness(meta.harness);
 	if (!machine || !facts.report) return null;
 	if (!offered) return `This machine does not offer ${machine.name}.`;
-	const effective = withSettingsKeys(offered, provider ? [provider] : []);
-	return itemSignInMessage(machine, facts.name, effective.signIn) ?? itemSignInChanged(machine, facts.name, meta.origin?.signIn, effective.method);
+	const effective = withSettingsKeys(offered, credential.key ? [credential.key.provider] : []);
+	return itemSignInMessage(machine, facts.name, effective.signIn) ?? itemSignInChanged(machine, facts.name, credential.itemSignIn ?? meta.origin?.signIn, effective.method);
 }
 
 // Acquire before awaiting. Idle cleanup cannot run while a reader, publisher or turn owns the sandbox.
@@ -2324,6 +2332,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 	let lastStepRefusal: ProviderRefusal | null = null;
 	const account: AccountLocation = { place: meta.place.kind === "machine" ? meta.place.machineId : "hosted", harness: meta.harness ?? "windlass" as const };
 	let generation: string | null = null;
+	let itemSignIn = run?.credential?.itemSignIn ?? meta.origin?.signIn;
 	const observe = async (observation: UsageObservation) => {
 		if (generation !== null) await userActor(c, meta.uid).internalObserveUsage(account, generation, observation)
 			.catch(() => c.log.warn({ msg: "Could not record provider usage" }));
@@ -2407,17 +2416,19 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		// A person's turn is checked when it is sent; nobody sends an item's. Refused before the sandbox opens: the item asks, with the login hint.
 		const facts = meta.place.kind === "machine" && machineHarness(meta.harness) ? await runnerLink(c, meta.place.machineId).facts() : null;
 		const offered = facts?.report?.harnesses?.find(h => h.id === meta.harness);
-		const { model, key } = active.credential ?? await turnCredential(c, meta, offered, meta.model, signal, run?.credential).catch(error => {
+		const credential = active.credential ?? await turnCredential(c, meta, offered, meta.model, signal, run?.credential).catch(error => {
 			if (!(error instanceof UserError) || error.code !== "harness_signed_out") throw error;
 			return refuseItemPolicy(active.item, error.message);
 		});
+		const { model, key } = credential;
+		itemSignIn = credential.itemSignIn ?? meta.origin?.signIn;
 		if (run) {
-			run.credential = { model, key };
+			run.credential = credential;
 			if (key && meta.place.kind === "hosted") run.remainingRequests ??= config.modelRelay.turnRequests;
 			await writeMeta(c, meta);
 		}
 		const takeRequest = run?.remainingRequests !== undefined ? () => takeTurnRequest(c, meta, run, active) : undefined;
-		const signedOut = active.item && facts ? itemSignInRefusal(meta, facts, offered, key?.provider) : null;
+		const signedOut = active.item && facts ? itemSignInRefusal(meta, facts, offered, credential) : null;
 		if (signedOut) refuseItemPolicy(active.item, signedOut);
 		// Refuse unsafe outside text before acquiring secrets or opening the sandbox.
 		if (handling.kind === "stop") refuseUntrusted(active.item, handling, active.item?.row.text ?? text);
@@ -3064,7 +3075,7 @@ fi`, { signal, timeoutMs: 5000 });
 		const unpushed = !reviewer && meta.repo && used ? await unpushedWork(c, meta, meta.repo, c.vars.workspace?.files ?? null).catch(() => null) : null;
 		// The agent had the platform publish in this turn, before the turn's checks ran, and nothing changed since: the pull request's description is told what they came to.
 		if (active.published && unpushed === false && used) await describeAfterTurn(c, meta, used, turn);
-		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, stepLimit, verified, used, unpushed, usage, checks: active.secrets?.checks ?? [], acp: result?.acp });
+		if (active.item) await itemTurnEnded(c, meta, active.item, { outcome, itemSignIn, stepLimit, verified, used, unpushed, usage, checks: active.secrets?.checks ?? [], acp: result?.acp });
 		await persist(c);
 		await within(c.vars.reporting, REPORT_WAIT_MS);
 	} catch (error) {
@@ -3968,7 +3979,7 @@ async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<Acti
 }
 
 // Persist the item's terminal fact before sending it, so a lost acknowledgement can be retried.
-async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, ended: { outcome: TurnOutcome; stepLimit?: number; verified: Verified | null; used: SandboxHandle | null; unpushed: boolean | null; usage: TurnUsage | null; checks: RepositoryCheck[]; acp?: RunTurnResult["acp"] }): Promise<void> {
+async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, ended: { outcome: TurnOutcome; itemSignIn: TurnCredential["itemSignIn"]; stepLimit?: number; verified: Verified | null; used: SandboxHandle | null; unpushed: boolean | null; usage: TurnUsage | null; checks: RepositoryCheck[]; acp?: RunTurnResult["acp"] }): Promise<void> {
 	const { row } = item;
 	if ((item.full !== null || item.machineAway) && !item.started) {
 		await serial(c, () =>
@@ -3983,7 +3994,7 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		return;
 	}
 	let fact: EndedFact;
-	const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart, meta.origin?.signIn);
+	const agent = agentTurn(meta.harness, ended.usage, ended.acp?.usage, ended.acp?.fiveHourAtStart, ended.itemSignIn);
 	if (meta.origin?.role === "reviewer") {
 		fact = { ...reviewEndedFactOf(row.key, ended.outcome, meta.review, item.said ?? null, item.refused ?? null, ended.usage, agent), ...(item.planReview && { planReview: item.planReview }) };
 	} else {

@@ -408,7 +408,7 @@ function CredentialChoice({ machine, harness, providers, onChanged }: { machine:
 	const shown = busy ?? saved;
 	const here = machine.os.toLowerCase().startsWith("mac") || machine.os === "Darwin" ? "this Mac" : `“${machineLabel(machine)}”`;
 	const keys = anyOf(providers.map((provider) => KEY_NAMES[provider]));
-	const plan = harness.id === "claude" ? "Claude subscription" : harness.method === "chatgpt" || harness.machineProviders?.includes("chatgpt") ? "ChatGPT plan" : `${keys} login${providers.length > 1 ? "s" : ""}`;
+	const plan = harness.id === "claude" ? "Claude subscription" : harness.machineMethod === "chatgpt" || (providers.includes("openai") && harness.machineProviders?.includes("chatgpt")) ? "ChatGPT plan" : `${keys} login${providers.length > 1 ? "s" : ""}`;
 	const choices: Array<{ id: CredentialSource; label: string; means: string }> = [
 		{ id: "machine", label: `Use ${here}'s ${plan}`, means: `Your ${plan} on ${here} pays for its turns. Your ${keys} key is used only if ${here} is signed out.` },
 		{ id: "key", label: `Use your ${keys} key${providers.length > 1 ? "s" : ""}`, means: `Each turn is billed to your ${keys} key by the token, even while ${here} is signed in.` },

@@ -130,6 +130,12 @@ describe("the picker's model names and credentials", () => {
 		expect(cleanModelName("opus", "Opus")).toBe("Opus");
 	});
 
+	it("distinguishes a paid OpenCode Zen login from its free models", () => {
+		const entry = { id: "opencode" as const, adapter: "", image: "", signIn: "token" as const };
+		expect(credentialWords("opencode", "opencode", { ...entry, machineProviders: ["opencode"] }, "nas")).toBe("OpenCode Zen login · nas");
+		expect(credentialWords("opencode", "opencode", { ...entry, machineProviders: ["free"] }, "nas")).toBe("free");
+	});
+
 	it("puts each model under its provider", () => {
 		expect(sourceOf("windlass", "gpt-6.1-sol")).toBe("chatgpt");
 		expect(sourceOf("windlass", "anthropic/claude-opus-5-5")).toBe("anthropic");
@@ -145,6 +151,8 @@ describe("the picker's model names and credentials", () => {
 		expect(credentialWords("claude", "anthropic", { ...claude, platformKeys: ["anthropic"], source: "key" }, "mac-mini")).toBe("Anthropic key");
 		expect(credentialWords("claude", "anthropic", null, null)).toBe("Anthropic key");
 		const opencode = { id: "opencode" as const, adapter: "", image: "", signIn: "token" as const, machineProviders: ["chatgpt"], machineSignIns: ["openai" as const], platformKeys: ["google" as const] };
+		const legacy = { id: "opencode" as const, adapter: "", image: "", signIn: "token" as const };
+		expect(credentialWords("opencode", "openai", legacy, "nas")).toBe("login on nas");
 		expect(credentialWords("opencode", "openai", opencode, "nas")).toBe("ChatGPT plan · nas");
 		expect(credentialWords("opencode", "google", opencode, "nas")).toBe("Gemini key");
 		expect(credentialWords("windlass", "chatgpt", null, null)).toBe("ChatGPT plan");

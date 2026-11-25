@@ -4,12 +4,11 @@
  * timers for replay, pending questions and cancellation.
  */
 import { modelRefusal } from "../../../server/src/account-models.js";
-import { listedHarness } from "../../../server/src/sandbox/harnesses.js";
 import { changedPlace, changesPlace, placeProblem, savedPlace } from "../../../server/src/factory/default-place";
 import type { ItemPlaceDefaults } from "@contract";
 import { shiftMonths } from "../../../server/src/billing/meter.js";
 import { machineDetails } from "../../../server/src/machines/details.js";
-import { withSettingsKeys, windlassModels, windlassProvider, hostedCatalog, hostedKeyMessage, hostedProfiles, hostedProvider, initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
+import { listedHarness, windlassModels, windlassProvider, hostedCatalog, hostedKeyMessage, hostedProfiles, hostedProvider, initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
 import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
 import { mockEnvironments, mockRebuild, mockSchedule } from "./mock-environments";

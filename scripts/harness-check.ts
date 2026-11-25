@@ -68,8 +68,25 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	assert.deepEqual(await opencode("anthropic/claude-haiku-5-5", ["anthropic"]), {model:"anthropic/claude-haiku-5-5", key:undefined});
 	assert.deepEqual(await opencode("openai/gpt-5.4", ["anthropic"]), {model:"openai/gpt-5.4", key:{provider:"openai",generation:"o"}});
 	assert.deepEqual(await opencode("openai/gpt-5.4", ["chatgpt"]), {model:"openai/gpt-5.4", key:undefined});
+	calls.length = 0;
+	assert.deepEqual(await opencode("default", ["anthropic", "chatgpt"]), {model:"default", key:undefined});
+	assert.deepEqual(calls, ["keys"]);
 	source = "key";
 	assert.deepEqual(await opencode("anthropic/claude-haiku-5-5", ["anthropic"]), {model:"anthropic/claude-haiku-5-5", key:{provider:"anthropic",generation:"a"}});
+	const { agentTurn } = await import("../server/src/factory/budget.js");
+	const item = (signIn: "api-key" | "subscription", filedWithKey = false) =>
+		turnCredential(ctx as never, {place:machine, uid:"owner", harness:"claude", origin:{signIn, filedWithKey}} as never,
+			{id:"claude", keyRelay:true, signIn:"token"} as never, "opus");
+	const switched = await item("subscription");
+	await assert.rejects(turnCredential(ctx as never, { place: machine, uid: "owner", harness: "claude" } as never,
+		{ id: "claude", signIn: "token" } as never, "opus", undefined, switched), /relay/);
+	assert.equal(switched.itemSignIn, "api-key");
+	assert.equal(agentTurn("claude", null, null, undefined, switched.itemSignIn)?.counted, true);
+	keys.length = 0;
+	const fallback = await item("api-key", true);
+	assert.equal(fallback.key, undefined);
+	assert.equal(fallback.itemSignIn, "subscription");
+	assert.equal(agentTurn("claude", null, null, undefined, fallback.itemSignIn)?.counted, false);
 	source = null;
 	calls.length = 0;
 	for (const place of [hosted, machine]) {

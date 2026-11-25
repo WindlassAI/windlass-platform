@@ -19,7 +19,7 @@ import type { MachineUpdate } from "./machine.js";
 import { asPairingError, pairingGone } from "./machine-pairing.js";
 
 import { savedModelKeys } from "../model-providers.js";
-import { keyProviders, listedHarness, machineHarness } from "../sandbox/harnesses.js";
+import { listedHarness, machineHarness } from "../sandbox/harnesses.js";
 import { PROVIDER_TABLE, accountsAt, providerAccounts } from "./provider-accounts.js";
 
 interface Ctx {
@@ -82,6 +82,7 @@ export async function machineTables(db: RawAccess) {
 	END`);
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_details (id TEXT PRIMARY KEY, data TEXT NOT NULL)");
 	await db.execute("CREATE TABLE IF NOT EXISTS credential_sources (machine TEXT NOT NULL, harness TEXT NOT NULL, source TEXT NOT NULL, PRIMARY KEY (machine, harness))");
+	await db.execute("CREATE TRIGGER IF NOT EXISTS forget_credential_sources AFTER DELETE ON machines BEGIN DELETE FROM credential_sources WHERE machine=OLD.id; END");
 	await db.execute("CREATE TABLE IF NOT EXISTS machine_claims (at INTEGER NOT NULL)");
 }
 
@@ -104,12 +105,13 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 	const sources = await credentialSources(c.db);
 	return rows.map(row => {
 		const { report, ...facts }: MachineUpdate = JSON.parse(row.facts);
+		const harnesses = report?.harnesses?.map(h => listedHarness(h, keys, sources.get(`${row.id}/${h.id}`)));
 		const sessions = [...c.vars.sessions.values()].filter(s => s.place.kind === "machine" && s.place.machineId === row.id);
 		const titles = new Map(sessions.map(s => [s.id, s.title]));
 		return {
 			whenToUse: "", tags: [], orchestrator: "yes" as const,
 			...(row.details && JSON.parse(row.details) as import("../contract.js").MachineDetails),
-			providerAccounts: accountsAt(accounts, row.id, keys.filter(p => report?.harnesses?.some(h => h.keyRelay && keyProviders(h.id).includes(p)))),
+			providerAccounts: accountsAt(accounts, row.id, keys.filter(p => harnesses?.some(h => h.platformKeys?.includes(p)))),
 			personalRunning: sessions.filter(s => !s.item && s.status !== "idle").length,
 			host: row.host ? JSON.parse(row.host) : undefined, screenshots: report?.screenshots,
 			name: row.name, os: row.os, arch: row.arch, ...facts, machineId: row.id,
@@ -119,7 +121,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 			...(report && { egress: report.egress ?? "open", allowedProfiles: report.allowedProfiles ?? [...MACHINE_PROFILES] }),
 			...(report?.egressDomains && { egressDomains: report.egressDomains }),
 			...(report?.claudeRelay && { claudeRelay: true as const }),
-			...(report?.harnesses ? { harnesses: report.harnesses.map(h => listedHarness(h, keys, sources.get(`${row.id}/${h.id}`))) } : {}),
+			...(harnesses && { harnesses }),
 			...(report?.warmSpares && { readySandboxes: report.warmSpares.ready }),
 			...(report?.maxRunning !== undefined ? { maxRunning: report.maxRunning } : {}),
 			...(report?.maxSandboxes !== undefined ? { maxSandboxes: report.maxSandboxes } : {}),
@@ -135,10 +137,17 @@ export async function changed(c: Ctx) {
 }
 
 /** The owner's credential choices by "machine/harness"; one machine's with `machine`. */
-export async function credentialSources(db: RawAccess, machine?: string): Promise<Map<string, CredentialSource>> {
+async function credentialSources(db: RawAccess, machine?: string): Promise<Map<string, CredentialSource>> {
 	const rows = await db.execute<{ machine: string; harness: string; source: CredentialSource }>(
 		`SELECT machine, harness, source FROM credential_sources${machine ? " WHERE machine = ?" : ""}`, ...(machine ? [machine] : []));
 	return new Map(rows.map(row => [`${row.machine}/${row.harness}`, row.source]));
+}
+
+export async function credentialSource(db: RawAccess, machine: string, harness: string): Promise<CredentialSource | null> {
+	const [row] = await db.execute<{ source: CredentialSource | null }>(`SELECT s.source FROM machines m
+		LEFT JOIN credential_sources s ON s.machine=m.id AND s.harness=? WHERE m.id=? AND m.expires IS NULL`, harness, machine);
+	if (!row) throw missing();
+	return row.source;
 }
 
 export async function machineSecrets(db: RawAccess, id: string): Promise<boolean | null> {
@@ -268,8 +277,10 @@ export const machineActions = {
 		if (input?.source !== "machine" && input?.source !== "key") throw new UserError("Choose the machine's sign-in or your Settings key.", { code: "bad_input" });
 		const harness = machineHarness(input.harness);
 		if (!harness) throw new UserError("Unknown agent.", { code: "bad_input" });
-		if (typeof input.machineId !== "string" || await machineSecrets(c.db, input.machineId) === null) throw missing();
-		await c.db.execute("INSERT OR REPLACE INTO credential_sources (machine, harness, source) VALUES (?, ?, ?)", input.machineId, harness.id, input.source);
+		if (typeof input.machineId !== "string") throw missing();
+		const rows = await c.db.execute(`INSERT OR REPLACE INTO credential_sources (machine, harness, source)
+			SELECT id, ?, ? FROM machines WHERE id=? AND expires IS NULL RETURNING machine`, harness.id, input.source, input.machineId);
+		if (!rows.length) throw missing();
 		return changed(c);
 	},
 	async internalMachineCreated(c: Ctx, id: string): Promise<boolean> {

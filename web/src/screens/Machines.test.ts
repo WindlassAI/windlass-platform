@@ -132,4 +132,8 @@ it("chooses whose credential an agent uses where the machine's sign-in and a Set
 	const [mac] = await client.user(ada).machines();
 	expect(mac!.harnesses?.find((h) => h.id === "claude")).toMatchObject({ source: "key", platformKeys: ["anthropic"], method: "api-key" });
 	expect(host.textContent).toContain("Each turn is billed to your Anthropic key by the token");
+	const codex = [...host.querySelectorAll<HTMLElement>(".machine-agent")].find(row => row.textContent?.includes("this Mac's ChatGPT plan"))!;
+	await act(async () => codex.querySelector<HTMLInputElement>('label[data-source="key"] input')!.click());
+	await settle();
+	expect(codex.textContent).toContain("Use this Mac's ChatGPT plan");
 });

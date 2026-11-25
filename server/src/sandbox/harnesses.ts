@@ -235,9 +235,12 @@ export function withSettingsKeys<T extends KeyHarness & { signIn: "token" | "non
 
 /** A machine's agent as the Machines page lists it: its own sign-in, the owner's choice, and the keys that choice leaves. */
 export function listedHarness<T extends KeyHarness & ReportedSignIn & { method?: SignInMethod }>(entry: T, saved: readonly ModelProvider[], source?: CredentialSource):
-	T & { platformKeys?: ModelProvider[]; machineSignIns?: ModelProvider[]; source?: CredentialSource } {
+	T & { platformKeys?: ModelProvider[]; machineSignIns?: ModelProvider[]; machineMethod?: "api-key" | "chatgpt"; source?: CredentialSource } {
 	const own = machineSignIns(entry);
-	return { ...withSettingsKeys(entry, usableKeys(entry, saved, source)), ...(own.length && { machineSignIns: own }), ...(source && { source }) };
+	return { ...withSettingsKeys(entry, usableKeys(entry, saved, source)),
+		...(entry.machineProviders && entry.signIn !== "token" && { machineProviders: [] }),
+		...(own.length && { machineSignIns: own }),
+		...(entry.id === "codex" && (entry.method === "chatgpt" || entry.method === "api-key") && { machineMethod: entry.method }), ...(source && { source }) };
 }
 
 export const machineHarnesses = { claude: CLAUDE, opencode: OPENCODE, codex: CODEX };

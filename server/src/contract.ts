@@ -1101,7 +1101,7 @@ export interface MachineSummary extends Partial<MachineDetails> {
 	 * `machineSignIns`: the providers the machine's own sign-in serves. `platformKeys`: the Settings keys its turns
 	 * use, after `source`, the owner's choice (absent: the machine's sign-in first, keys for the rest).
 	 */
-	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; keyRelay?: true; machineProviders?: string[]; machineSignIns?: ModelProvider[]; source?: CredentialSource; platformKeys?: ModelProvider[]; method?: "api-key" | "chatgpt" | "subscription"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; signInReason?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
+	harnesses?: Array<{ id: Exclude<HarnessId, "windlass">; adapter: string; image: string; loginGeneration?: string; keyRelay?: true; machineProviders?: string[]; machineSignIns?: ModelProvider[]; machineMethod?: "api-key" | "chatgpt"; source?: CredentialSource; platformKeys?: ModelProvider[]; method?: "api-key" | "chatgpt" | "subscription"; modes?: string[]; modeReason?: string; signIn: "token" | "none" | "unknown"; signInReason?: string; optionsDigest?: string; optionsCheckedAt?: number; options?: HarnessOptions }>;
 	machineId: string;
 	/** Its latest reported name and the OS and architecture supplied at pairing. Nobody checked them. */
 	name: string;
