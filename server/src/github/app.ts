@@ -566,17 +566,17 @@ export class GithubApp {
 		return "none";
 	}
 
-	async findCheckRun(token: string, owner: string, name: string, sha: string, item: string): Promise<string | null> {
+	async findCheckRun(token: string, owner: string, name: string, sha: string, item: string, checkName = VERIFIED_NAME): Promise<string | null> {
 		const { items, truncated } = await this.pages({
 			path: `/repos/${owner}/${name}/commits/${sha}/check-runs`, auth: { bearer: token }, what: "find the item's check run",
-			query: { check_name: VERIFIED_NAME, app_id: this.settings.appId, filter: "all" },
+			query: { check_name: checkName, app_id: this.settings.appId, filter: "all" },
 		}, body => {
 			const runs = record(body).check_runs;
 			if (!Array.isArray(runs)) throw new Error("GitHub did not list check runs");
 			return runs;
 		});
 		for (const fields of items.map(record)) {
-			if (fields.name !== VERIFIED_NAME || fields.head_sha !== sha || decimalId(record(fields.app).id) !== this.settings.appId) continue;
+			if (fields.name !== checkName || fields.head_sha !== sha || decimalId(record(fields.app).id) !== this.settings.appId) continue;
 			const external = text(fields.external_id);
 			if (external.startsWith(item + ":") || external.startsWith("pending:" + item + ":")) {
 				const id = decimalId(fields.id);
@@ -588,9 +588,9 @@ export class GithubApp {
 		return null;
 	}
 
-	async createCheckRun(token: string, owner: string, name: string, sha: string, update: CheckRunUpdate): Promise<string> {
+	async createCheckRun(token: string, owner: string, name: string, sha: string, update: CheckRunUpdate, checkName = VERIFIED_NAME): Promise<string> {
 		const { body } = await this.call({ method: "POST", path: `/repos/${owner}/${name}/check-runs`, auth: { bearer: token },
-			body: { ...update, name: VERIFIED_NAME, head_sha: sha }, what: "create the item's check run" });
+			body: { ...update, name: checkName, head_sha: sha }, what: "create the item's check run" });
 		const id = decimalId(record(body).id);
 		if (!id) throw new Error("GitHub returned an invalid check run id");
 		return id;

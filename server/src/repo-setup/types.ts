@@ -5,7 +5,8 @@ export interface NoteUse { path: string; line: number; evidence: string }
 export interface NoteDecision { noteId: string; verdict: Verdict; reason: string; uses: NoteUse[]; question?: string }
 export interface SetupNote extends NoteInput { id: string; decision?: NoteDecision }
 export interface NoteInput { label: string; text: string }
-export interface SetupPublication { pull: PullRequestInfo; files: string[] }
+export interface GuideCheckStatus { enabled: boolean; result: { conclusion: "failure" | "success"; title: string; url: string } | null }
+export interface SetupPublication { head?: string; pull: PullRequestInfo; files: string[] }
 export interface SetupKnowledge { notes: SetupNote[]; publication: SetupPublication | null }
 export interface DraftRequest {
 	areas: string[];

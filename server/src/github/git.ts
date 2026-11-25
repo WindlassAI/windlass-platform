@@ -438,15 +438,22 @@ export function reviewCheckoutScript(directory: string, head: string): string {
 
 /** A PR comment requests a source inspection. The transport user owns both the checkout and its
  * parent under sticky /tmp, so even an unattended agent with a shell cannot edit the reviewed tree. */
-export async function readOnlyReview(sandbox: SandboxHandle, url: string, token: string, head: string, base: string, signal: AbortSignal, setupNotes?: { id: string; text: string }[]): Promise<string> {
+export async function readOnlyReview(sandbox: SandboxHandle, url: string, token: string, head: string, base: string, signal: AbortSignal, setupNotes?: { id: string; text: string }[], draft?: ReadonlyMap<string, string>): Promise<string> {
 	if (![head, base].every(sha => /^[0-9a-f]{40}$/.test(sha))) throw new Error("Invalid review target.");
 	const id = randomBytes(16).toString("hex");
 	if (setupNotes?.some(n => !/^[a-f0-9]{20}$/.test(n.id))) throw Error("Invalid setup note id.");
-	const notesDir = ".windlass-inputs/notes";
+	const inputs = (setupNotes ?? []).map(n => ({ path: "notes/" + n.id + ".md", text: n.text }));
+	for (const [path, text] of draft ?? []) {
+		if (path.split("/").some(s => !/^[\w.-]+$/.test(s) || [".", ".."].includes(s))) throw Error("Invalid draft path.");
+		inputs.push({ path: "draft/" + path, text });
+	}
 	const script = [
 		startTransport(id), READ_TOKEN, tokenGit(hostOf(url)), PLAIN_GIT,
-		...(setupNotes?.length ? [`mkdir -p -- ${notesDir}`, ...setupNotes.map(n =>
-			`IFS= read -r encoded; printf %s "$encoded" | base64 -d > ${notesDir}/${n.id}.md; chmod 444 ${notesDir}/${n.id}.md`), `chmod 555 .windlass-inputs ${notesDir}`] : []),
+		...inputs.map(({ path }) => {
+			const file = ".windlass-inputs/" + path;
+			return `mkdir -p -- '${file.slice(0, file.lastIndexOf("/"))}'; IFS= read -r encoded; printf %s "$encoded" | base64 -d > '${file}'; chmod 444 '${file}'`;
+		}),
+		...(inputs.length ? ["chmod -R a+rX,a-w .windlass-inputs"] : []),
 		"plain_git init -q --template= repo",
 		`wlp_git -C repo fetch --quiet --no-tags -- ${shellQuote(url)} ${base} ${head}`,
 		"WLP_T=",
@@ -455,7 +462,7 @@ export async function readOnlyReview(sandbox: SandboxHandle, url: string, token:
 		...(setupNotes ? ["rm -rf -- repo/.git", "find repo -type l -delete"] : []),
 		'chmod -R a+rX repo', setupNotes ? 'chmod 755 "$private"' : 'chmod 711 "$private"',
 	].join("\n");
-	const result = await run(sandbox, script, { gitUser: true, stdin: [token, ...(setupNotes ?? []).map(n => Buffer.from(n.text).toString("base64"))].join("\n") + "\n", secrets: [token], timeoutMs: CLONE_TIMEOUT_MS, signal });
+	const result = await run(sandbox, script, { gitUser: true, stdin: [token, ...inputs.map(n => Buffer.from(n.text).toString("base64"))].join("\n") + "\n", secrets: [token], timeoutMs: CLONE_TIMEOUT_MS, signal });
 	if (!result.ok) throw new GithubProblem("github_gone", "Could not open the requested pull request at its pinned commit.");
 	return setupNotes ? transportDirectory(id) : transportDirectory(id) + "/repo";
 }

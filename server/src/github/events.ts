@@ -8,9 +8,9 @@ type InstallationSender = { senderId: GithubId | null };
 type Fields = {
 	issues: { issue: number; sender: Sender; label?: string };
 	issue_comment: { issue: number; sender: Sender; commentId: string; body: string; isPullRequest: boolean };
-	pull_request: { pr: number; head: string; merged: boolean; setupGuides?: true; toDefault?: true };
+	pull_request: { pr: number; head: string; base?: string; merged: boolean; setupGuides?: true; toDefault?: true };
 	/** A push to the repository's default branch, for its prepared environments (environments.ts). */
-	push: { head: string };
+	push: { head: string; base?: string };
 	pull_request_review: { pr: number; reviewId: string; state: string; body: string; commitId: string; sender: Sender };
 	pull_request_review_comment: { pr: number; commentId: string; body: string; path: string; line: number | null; commitId: string; sender: Sender };
 	check_run: { head: string; runId?: string };
@@ -77,7 +77,8 @@ export function edge(event: string, payload: unknown, meta: { slug: string; appI
 		// Only the default branch moving matters, and not its deletion.
 		const branch = str(obj(p.repository).default_branch);
 		const head = sha(p.after);
-		return branch && p.ref === "refs/heads/" + branch && p.deleted !== true && head && !/^0+$/.test(head) ? { ...base, event, data: { head } } : null;
+		const before = sha(p.before);
+		return branch && p.ref === "refs/heads/" + branch && p.deleted !== true && head && !/^0+$/.test(head) ? { ...base, event, data: { head, ...(before && !/^0+$/.test(before) && { base: before }) } } : null;
 	}
 	if (event === "status") {
 		const head = sha(p.sha);
@@ -87,8 +88,9 @@ export function edge(event: string, payload: unknown, meta: { slug: string; appI
 	const pr = id(pull.number) ?? id(p.number);
 	if (event === "pull_request") {
 		const head = sha(obj(pull.head).sha);
-		return pr && head && typeof pull.merged === "boolean" && ["closed", "reopened", "synchronize"].includes(action)
-			? { ...base, event, data: { pr, head, merged: pull.merged, ...(action === "closed" && /^windlass\/repo-setup-\d{8}$/.test(str(obj(pull.head).ref)) && { setupGuides: true as const }), ...(pull.merged === true && action === "closed" && str(obj(pull.base).ref) !== "" && str(obj(pull.base).ref) === str(obj(p.repository).default_branch) && { toDefault: true as const }) } } : null;
+		const target = sha(obj(pull.base).sha);
+		return pr && head && typeof pull.merged === "boolean" && (["closed", "reopened", "synchronize"].includes(action) || (action === "opened" && target))
+			? { ...base, event, data: { pr, head, ...(target && { base: target }), merged: pull.merged, ...(action === "closed" && /^windlass\/repo-setup-\d{8}$/.test(str(obj(pull.head).ref)) && { setupGuides: true as const }), ...(pull.merged === true && action === "closed" && str(obj(pull.base).ref) !== "" && str(obj(pull.base).ref) === str(obj(p.repository).default_branch) && { toDefault: true as const }) } } : null;
 	}
 	const author = obj(p.sender);
 	const userId = githubId(author.id);

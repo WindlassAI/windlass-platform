@@ -159,7 +159,7 @@ export interface SessionFeed {
 	onConnection(state: ConnectionState, error?: PlatformError): void;
 }
 
-export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelProviders" | "saveModelProvider" | "checkModelProvider" | "removeModelProvider" | "addSetupNotes" | "deleteSetupNote" | "runReadiness"> {
+export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelProviders" | "saveModelProvider" | "checkModelProvider" | "removeModelProvider" | "addSetupNotes" | "deleteSetupNote" | "setGuideCheck" | "runReadiness"> {
 	me(): Promise<UserProfile>;
 	linkedLogins(): Promise<LinkedLogin[]>;
 	unlinkLogin(provider: LoginProvider): Promise<void>;

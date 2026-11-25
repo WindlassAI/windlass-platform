@@ -416,7 +416,11 @@ async function refreshSetupScan(c: UserCtx, id: GithubId, project: string) {
 	return { ...scan, at };
 }
 
-async function repositoryView(c: UserCtx & { cron: Pick<ActorCron, "get"> }, repositoryId: GithubId, project: string): Promise<RepositoryView> {
+function guideFilesFor(c: Pick<CreateCtx, "client">, id: GithubId) {
+	return c.client().githubRepository.getOrCreate([String(id)], { params: serviceParams() });
+}
+
+async function repositoryView(c: UserCtx & Pick<CreateCtx, "client"> & { cron: Pick<ActorCron, "get"> }, repositoryId: GithubId, project: string): Promise<RepositoryView> {
 	const defaults = await readDefaults(c.db, project);
 	const setup = await readSetup(c.db, project);
 	const [secrets] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ?", project);
@@ -436,11 +440,13 @@ async function repositoryView(c: UserCtx & { cron: Pick<ActorCron, "get"> }, rep
 		try { scan = await refreshSetupScan(c, repositoryId, project); }
 		catch { scanError = "Could not read the default branch. Open this page again to retry."; }
 	}
+	const knowledge = await setupKnowledge(c.db, c.vars.profile!.uid, project);
 	const inputs = scan ? await setupInputs(c.db, project, scan, setup.command, checks) : null;
 	return {
 		id: repositoryId,
 		name: name === "" ? null : name,
-		knowledge: await setupKnowledge(c.db, c.vars.profile!.uid, project),
+		knowledge,
+		guideCheck: scan ? await guideFilesFor(c, repositoryId).internalGuideSettings(knowledge.publication?.head) : { enabled: true, result: null },
 		readiness: await repositoryReadiness(c.db, project, inputs, !!await c.cron.get(scheduleName(repositoryId)), scanError),
 		defaults,
 		approvals: [...approvals.values()],
@@ -2041,6 +2047,13 @@ export const user = actor({
 			const session = "s_" + digest(["readiness", id, fire.scheduledAt]).slice(0, 16);
 			await assessRepository(c, c.vars.profile, id, session);
 		},
+		setGuideCheck: async (c, id: GithubId, enabled: boolean) => {
+			requireUser(c);
+			if (typeof enabled !== "boolean") throw new UserError("Choose whether to check guides.", { code: "bad_input" });
+			await resolveRepository(requireGithub(), requireConnection(c), id, "write");
+			await guideFilesFor(c, id).internalSetGuideCheck({ enabled });
+			return repositoryView(c, id, setupKeyOf(id));
+		},
 		setSetupWeekly: async (c, id: GithubId, enabled: boolean): Promise<void> => {
 			requireUser(c);
 			setupKeyOf(id);
@@ -2076,13 +2089,20 @@ export const user = actor({
 			if (selected.length !== ids.length) throw new UserError("A selected note was deleted or expired.", { code: "bad_input" });
 			return selected;
 		},
-		internalSetupPublished: async (c, session: string, publication: SetupPublication, decisions: NoteDecision[]) => {
+		internalSetupPublished: async (c, session: string, publication: SetupPublication, decisions: NoteDecision[], installation: GithubId, source: string) => {
 			requireServiceFor(c, "call");
 			const s = c.vars.sessions.get(session);
 			if (!s?.readiness || !s.repository) throw new UserError("Setup session unavailable.", { code: "forbidden" });
 			const id = s.repository.id;
 			if (decisions.length) await c.cron.set({ name: "setup-note-cleanup-" + id, expression: `${Number(BigInt(id) % 60n)} * * * *`, action: "internalCheckSetupPulls", args: [id], maxHistory: 0 });
 			await c.db.transaction(tx => savePublication(tx, c.key[0], setupKeyOf(id), publication, decisions, session));
+			const head = publication.head;
+			await guideFilesFor(c, id).internalSetGuideCheck({ installation });
+			// The PR's event can arrive before the installation is registered. Retry the check through the same queue.
+			if (head) await c.client().githubInbox.getOrCreate([String(installation)], { params: serviceParams() }).internalReceive({
+				event: "pull_request", action: "opened", guid: "guide-" + id + "-" + head, installationId: installation, repositoryId: id, at: Date.now(),
+				data: { pr: publication.pull.number, head, base: source, merged: false },
+			});
 		},
 		// Reconcile missed close deliveries and installations without webhooks.
 		internalCheckSetupPulls: async (c, id: GithubId) => {

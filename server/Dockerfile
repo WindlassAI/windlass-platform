@@ -57,7 +57,6 @@ COPY --from=deps /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml 
 COPY --from=deps /app/node_modules node_modules
 COPY --from=deps /app/server server
 COPY --from=deps --chown=node:node /app/.data .data
-COPY scripts/agents-docs-check.ts scripts/
 COPY server/tsconfig.json server/
 COPY server/src server/src
 COPY sandbox/seccomp-bwrap.json sandbox/seccomp-bwrap.LICENSE sandbox/

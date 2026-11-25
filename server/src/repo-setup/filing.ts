@@ -2,7 +2,7 @@ import { record as row } from "../github/app.js";
 import { readinessJudgment } from "../factory/readiness-filing.js";
 import type { Judgment } from "../factory/readiness.js";
 import { pushTokenKinds, redact } from "../github/redact.js";
-import { checkGuide, guideTree } from "../../../scripts/agents-docs-check.js";
+import { checkGuide, guideTree, skillPath } from "./guide-check.js";
 import type { DraftRequest, NoteDecision, SetupNote, Verdict } from "./types.js";
 
 interface DraftContext {
@@ -15,7 +15,7 @@ interface DraftContext {
 	redact(text: string): string;
 }
 export interface AcceptedDraft {
-	score: Judgment; files: Map<string, string>; decisions: NoteDecision[];
+	score: Judgment; files: Map<string, string>; decisions: NoteDecision[]; skills: Map<string, "ran" | "static only">;
 }
 const verdicts: Verdict[] = ["team", "personal", "private", "secret", "stale", "question", "duplicate"];
 const opaqueCredential = /\b(?=[A-Za-z0-9_+/=-]{32,}\b)(?=[A-Za-z0-9_+/=-]*[A-Z])(?=[A-Za-z0-9_+/=-]*[a-z])(?=[A-Za-z0-9_+/=-]*\d)[A-Za-z0-9_+/=-]{32,}/;
@@ -87,19 +87,28 @@ export function validateDraft(args: unknown, ctx: DraftContext): AcceptedDraft {
 	const files = new Map<string, string>();
 	const allowed = new Set(["AGENTS.md", ...ctx.request.areas.map(d => d + "/AGENTS.md")]);
 	const tree = guideTree([...ctx.paths, ...allowed], path => ctx.read.get(path));
-	let bytes = 0;
+	const skills: AcceptedDraft["skills"] = new Map();
+	const seen = new Set<string>();
+	let skillCount = 0, bytes = 0;
 	for (const f of list(a.files, 20)) {
-		if (typeof f.path !== "string" || !allowed.delete(f.path) || typeof f.content !== "string" || f.kind !== (f.path === "AGENTS.md" ? "guide" : "area")) throw Error("File only the requested guides, one per folder.");
+		if (typeof f.path !== "string" || typeof f.content !== "string" || seen.has(f.path)) throw Error("File each guide once.");
+		seen.add(f.path);
+		const skill = skillPath.exec(f.path)?.[1];
+		if (skill) {
+			if (f.kind !== "skill" || ++skillCount > 5) throw Error("Use at most five skill files.");
+		} else if (!allowed.delete(f.path) || f.kind !== (f.path === "AGENTS.md" ? "guide" : "area")) throw Error("File the requested guides.");
 		if (!safeTarget(f.path) || privateLine(f.path, ctx)) throw Error("An area name cannot be published safely.");
 		if (ctx.paths.includes(f.path) && !ctx.read.has(f.path)) throw Error("An existing guide could not be read safely.");
 		if (/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(f.content)) throw Error("Remove the entire private key before filing.");
 		const size = Buffer.byteLength(f.content);
 		bytes += size;
-		if (size > 12 * 1024 || bytes > 80 * 1024 || f.content.trimEnd().split("\n").length > (f.path === "AGENTS.md" ? 150 : 40) || f.content.includes("\0")) throw Error("Shorten the guides to the requested limits.");
+		if (size > 12 * 1024 || bytes > 80 * 1024 || f.content.trimEnd().split("\n").length > (skill ? 60 : f.path === "AGENTS.md" ? 150 : 40) || f.content.includes("\0")) throw Error("Shorten the guides to the requested limits.");
 		if (ctx.redact(f.content) !== f.content) throw Error("Remove saved secret values before filing.");
 		const path = f.path;
+		const command = skill && smokeCommand(f.content);
 		const proposed = f.content.split(/\r?\n/);
 		const issues = checkGuide(path, f.content, tree);
+		if (skill && (issues.length || !skillFormat(proposed, skill))) continue;
 		const original = ctx.read.get(path)?.split(/\r?\n/) ?? [];
 		const old = new Set(original);
 		const removed = list(f.removed ?? [], 150);
@@ -115,9 +124,14 @@ export function validateDraft(args: unknown, ctx: DraftContext): AcceptedDraft {
 			if (excludedLines.some(q => line.includes(q))) continue;
 			const proofs = claims.map(r => evidence(r.evidence, ctx, line));
 			const layout = /^\s*(?:$|`{3}\w*$|[| :\-]+$|#{1,6} [\w &-]{1,50}$)/.test(line);
-			if ((!layout && !old.has(line) && !claims.length) || proofs.some(p => !p)) continue;
+			const format = skill && (i < 4 || command && (line === command || line === "`" + command + "`"));
+			if ((!layout && !format && !old.has(line) && !claims.length) || proofs.some(p => !p)) continue;
 			kept.push(line);
 			sources.forEach((d, j) => d?.uses.push({ path, line: kept.length, evidence: proofs[j]! }));
+		}
+		if (skill) {
+			if (kept.length !== proposed.length) continue;
+			skills.set(path, "static only");
 		}
 		if (!kept.some(l => l.trim()) || (path === "AGENTS.md" && !kept.includes("## Terms"))) throw Error("Include a Terms section in the root guide.");
 		if (path === "AGENTS.md") {
@@ -129,10 +143,16 @@ export function validateDraft(args: unknown, ctx: DraftContext): AcceptedDraft {
 		files.set(path, kept.join("\n").trimEnd() + "\n");
 	}
 	if (allowed.size) throw Error("Include the root guide and every chosen area.");
+	const draft = { score, files, decisions, skills };
+	pruneCitations(draft);
+	return draft;
+}
+
+export function pruneCitations({ files, decisions }: AcceptedDraft) {
+	for (const d of decisions) d.uses = d.uses.filter(u => files.has(u.path));
 	for (const d of decisions) if (d.verdict === "team" && !d.uses.length) {
 		d.verdict = "stale"; d.reason = "No guide line passed the evidence checks.";
 	}
-	return { score, files, decisions };
 }
 
 export function evidencePaths(args: unknown) {
@@ -146,4 +166,24 @@ export function evidencePaths(args: unknown) {
 
 export function safeTarget(path: string) {
 	return path.split("/").every(p => /^[\w.-]+$/.test(p) && !["..", ".", ".git"].includes(p.toLowerCase()));
+}
+
+function skillFormat(lines: string[], name: string) {
+	const header = lines.slice(1, 3);
+	if (lines[0] !== "---" || lines[3] !== "---" || !header.includes("name: " + name) ||
+		!header.some(l => /^description: \S/.test(l))) return false;
+	return ["When to use", "Steps", "Check"].every(title => {
+		const start = lines.indexOf("## " + title);
+		return start >= 4 && lines.slice(start + 1).find(l => l.trim())?.startsWith("#") === false;
+	});
+}
+
+// Only these single, read-only checks may be replayed by the host in the pinned checkout.
+export function smokeCommand(content: string) {
+	const section = content.split(/^## Check\s*$/m)[1]?.split(/^## /m)[0];
+	const line = section?.split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("```"));
+	if (line?.length !== 1) return null;
+	const command = line[0].replace(/^`([^`]+)`$/, "$1");
+	const path = /^(?:test -[efd]|ls --) ([\w.-]+(?:\/[\w.-]+)*)$/.exec(command)?.[1];
+	return path && safeTarget(path) ? command : null;
 }
