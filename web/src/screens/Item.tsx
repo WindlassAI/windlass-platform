@@ -3,6 +3,7 @@ import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type I
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
+import { MissingPageLinks } from "../components/MissingPageLinks";
 import { Inline, PlacementQuestion, PlanQuestion, PlanSection } from "./FeaturePlan";
 import { usePlanReview, type PlanActing as Acting } from "./usePlanReview";
 import { ItemSpend } from "../components/ItemSpend";
@@ -953,9 +954,7 @@ export function Item({ page }: { page: ItemPage }) {
 							<h2>{page.missing ? "This work item is not one of yours" : "The work item could not be loaded"}</h2>
 							<p>{page.error}</p>
 							{page.missing ? (
-								<a className="button button-outline" {...linkProps({ name: "home" })}>
-									Back to your agents
-								</a>
+								<MissingPageLinks section="factory" />
 							) : (
 								<button type="button" className="button button-outline" onClick={page.reload}>
 									Try again
