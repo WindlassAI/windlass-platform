@@ -147,9 +147,9 @@ describe("filing a work item", () => {
 		};
 		await start("online");
 		// Windlass on this platform: the account's models, and the efforts of the chosen one.
-		expect(efforts()).toEqual(["default", "low", "medium", "high", "xhigh", "max"]);
+		expect(efforts()).toEqual(["default", "low", "medium", "high", "xhigh"]);
 		choose("Model", "gpt-6-luna");
-		expect(efforts()).toEqual(["default", "low", "medium", "high", "xhigh", "max"]);
+		expect(efforts()).toEqual(["default", "low", "medium"]);
 		choose("Effort", "medium");
 		typeTitle("Cache the station list");
 		await file();
