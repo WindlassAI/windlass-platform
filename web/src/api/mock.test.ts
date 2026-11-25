@@ -141,7 +141,7 @@ describe("what the mock serves", () => {
 		expect(MOCK_PROFILES).toEqual(PROFILES);
 		expect(MOCK_E2B_PROFILES).toEqual(profilesFor("e2b", { windlassSandbox: true, openProfile: true }));
 		// No command reads the sign-in anywhere; the access token only where commands run outside Windlass's sandbox.
-		expect(MOCK_PROFILES.filter((profile) => profile.commandsCanReadAccessToken).map((profile) => profile.id)).toEqual(["docker-hardened", "e2b-open"]);
+		expect(MOCK_PROFILES.filter((profile) => profile.commandsCanReadAccessToken).map((profile) => profile.id)).toEqual(["docker-hardened", "e2b-open", "daytona"]);
 		expect(MOCK_PROFILES.every((profile) => !/sign-in volume|does not do yet/.test(`${profile.summary} ${profile.unavailableReason ?? ""}`))).toBe(true);
 	});
 
