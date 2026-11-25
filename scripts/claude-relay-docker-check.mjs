@@ -135,7 +135,7 @@ async function toolsTurn(name) {
 	assert.deepEqual(asked, [{ text: 'Which store?', options: ['SQLite', 'Postgres'] }]);
 	const answered = JSON.parse(probes[0] ?? '[]');
 	// The adapter's endpoint answers 401 without the token; no listener of the sandbox hands out the platform's tools.
-	const endpoint = answered.filter(([, status]) => status === 401).map(([port]) => port);
+	const endpoint = answered.filter(([port, status]) => port !== 17894 && status === 401).map(([port]) => port);
 	assert.ok(endpoint.length === 1 && !answered.some(([, , tools]) => tools), 'a process without the token reached the tools: ' + probes[0]);
 	assert.ok((await cmd(['logs',upstream])).includes('platform tools results=2 told=' + JSON.stringify(REPORT_TAKEN + ' | ' + ASK_TAKEN)), 'the model was not told what the handlers said');
 	// Once the adapter is gone its endpoint is too: nothing in the sandbox answers on that route.

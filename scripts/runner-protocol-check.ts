@@ -577,7 +577,9 @@ async function durableRestart(): Promise<void> {
 	void outcome(s1.request("writeSecretFile", { ...box, path: "/dev/shm/access-token-box.json", content: "SECRET-TOKEN-VALUE" }));
 	void outcome(s1.request("modelRelayToken", { ...box, lease: "a".repeat(32), accessToken: "RELAY-TOKEN-VALUE-0123", expiresAt: 1 }));
 	store.save(s1);
-	const stored = JSON.stringify(store.read());
+	const replay = store.read()!;
+	const cancels = replay.frames.map(([, frame]) => JSON.parse(frame).body).filter(body => body?.kind === "cancel").map(body => body.id);
+	const stored = JSON.stringify(replay);
 	expect("durable: no frame that carries a token is stored", !stored.includes("SECRET-TOKEN-VALUE") && !stored.includes("RELAY-TOKEN-VALUE"));
 	a.cut();
 	// The server is gone; the runner keeps its process, which goes on printing.
@@ -593,7 +595,8 @@ async function durableRestart(): Promise<void> {
 	expect("durable: the restarted server resumes the same conversation; the runner resets nothing", log.resets.length === 0 && resets.length === 0 && s2.connected);
 	expect("durable: output received but not committed, and output made during the gap, arrive once", out2.join() === "two,three", out2.join());
 	expect("durable: frames the runner had not received are sent again, once", log.input.join() === "steer");
-	expect("durable: a token's frame goes again as a cancel the runner ignores", !log.ops.includes("writeSecretFile") && !log.ops.includes("modelRelayToken") && log.cancels.length === 0, log.ops.join());
+	expect("durable: both secret frames replay as cancellations of operations the runner never received",
+		new Set(cancels).size === 2 && log.cancels.join() === cancels.join() && log.ops.join() === "start", log.ops.join());
 	r.end(start.id, done);
 	b.flush();
 	expect("durable: the process taken up ends as it ends", (await taken!.ended).code === 0);

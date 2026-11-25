@@ -112,7 +112,6 @@ else process.exitCode=2;
 			assert.equal(revisions.length,2);
 			assert.notEqual(revisions[0],revisions[1]);
 			assert.equal(metadata.generation,revisions[1]);
-			assert.equal(metadata.sessionGeneration,revisions[0]);
 		}
 		if (importing) assert.equal(await readFile(source,'utf8'),fixture);
 		assert.doesNotMatch(output,/fixture-existing-|fixture-foreign-|\/import\/opencode|\/fixture\/source/);

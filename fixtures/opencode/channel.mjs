@@ -46,11 +46,11 @@ export async function channelTurn(owner, session, id, model, expectedFailure, co
 			const ctx = {vars:{runner:link}, client:() => ({user:{get:() => ({
 				internalModelKeys:async () => providers.map(provider => ({provider, generation:'fixture'})),
 			})}})};
-			const credential = await turnCredential(ctx, {uid:owner.identity.uid, place:{kind:'machine', machineId:owner.identity.machineId}},
+			const credential = await turnCredential(ctx, {uid:owner.identity.uid, harness:harness.id, place:{kind:'machine', machineId:owner.identity.machineId}},
 				{id:harness.id, keyRelay:owner.harnessKeyRelays}, model);
 			const turn = await harness.runTurn(box, {
 				prompt: 'Say relay proof.', mode, model:credential.model,
-				...(credential.key && { machineKey: { sessionId: session, key:credential.key } }), windlassSessionId: previous,
+				...(credential.key && { modelKey: { sessionId: session, key:credential.key } }), windlassSessionId: previous,
 				signal: AbortSignal.timeout(expectedFailure ? 150000 : 90000),
 				onAcpModes(current, choices) {
 					assert.deepEqual(choices.map(c => c.id), codex ? ['agent-full-access'] : ['build','plan']);
