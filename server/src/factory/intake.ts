@@ -69,8 +69,8 @@ export const refusals = {
 	other: "Not taken: this issue already has a work item of another Windlass user.",
 };
 
-export function issueMode(note: string, labels: unknown[], enabled = true) {
-	const quick = /^quick(?:\s|$)/i.test(note) || labels.includes("windlass:quick");
+export function issueMode(note: string, labels: unknown[], enabled = true, quickLabels: readonly string[] = ["windlass:quick"]) {
+	const quick = /^quick(?:\s|$)/i.test(note) || quickLabels.some(label => labels.includes(label));
 	const requested = /^orchestrate(?:\s|$)/i.test(note) || labels.includes("windlass:orchestrate");
 	const bug = labels.some(label => typeof label === "string" && label.toLowerCase() === "bug");
 	if (bug || quick || !enabled) return {
@@ -129,7 +129,7 @@ export interface LinearFiling {
 		title: string;
 		/** Markdown, as Linear has it; empty for none. */
 		description: string;
-		/** Names of its labels. `windlass:quick` selects Quick. */
+		/** Names of its labels. `windlass-quick` and `windlass:quick` select Quick. */
 		labels: string[];
 		/** Its creator; null for one Linear did not name (an integration, a deleted user): then the text is third-party. */
 		creator: { id: string; name: string } | null;

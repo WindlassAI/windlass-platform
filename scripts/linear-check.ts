@@ -651,6 +651,19 @@ async function run() {
 			assert.equal(await code(owner.linearComplete(ticket)), "linear_ticket");
 		});
 
+		await check("Quick labels: filing and mode from a single Linear label", async () => {
+			await owner.linearComplete(ticketFrom(await callback(await begin())));
+			await owner.saveLinearMapping({ teamId: eng.id, repositoryId: repo.id });
+			for (const [label, mode] of [["Windlass-Quick", "single"], ["windlass:quick", "single"], ["windlass", "orchestrate"]]) {
+				const { issue, payload } = created(eng, { labels: [label] });
+				assert.equal((await qualifying(payload)).kind, "filed", label);
+				assert.deepEqual((await itemsOf(issue)).map(item => item.mode), [mode], label);
+			}
+			const bare = created(eng, { labels: ["quick"] });
+			await ignored(bare.payload);
+			assert.deepEqual(await itemsOf(bare.issue), []);
+		});
+
 		await check("the platform logged no credential", async () => {
 			assert.ok(logs.includes("linear.connected"), "the connection was logged");
 			assert.ok(logs.includes("linear.delivery.filed"));

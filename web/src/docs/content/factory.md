@@ -57,10 +57,10 @@ Where the platform has a Linear OAuth client and signing secret, you can file a 
 
 **Triggers.**
 
-- An issue gains the label `windlass`; or
+- An issue gains `windlass`, `windlass-quick`, or `windlass:quick`; or
 - an issue is assigned to the Windlass app user.
 
-`windlass:quick` selects **Quick**; otherwise the item is **Plan first**, with the same rules as for GitHub issues. An unrelated edit to an issue that already has the label or the assignment does not file anything. Each delivery from Linear is taken once, and one active issue files one item however many events qualify.
+`windlass-quick` (Linear does not allow a colon in a plain label name) selects **Quick**. The existing `windlass:quick` spelling also selects **Quick**. A plain `windlass` label selects **Plan first** by default. As on GitHub, a `bug` label selects **Quick** on a qualifying issue. An unrelated edit to an issue that already has the label or the assignment does not file anything. Each delivery from Linear is taken once, and one active issue files one item however many events qualify.
 
 **Placement and limits.** The item uses the same intake as GitHub: the repository's **Where work items run** setting, then the account setting, then Hosted. It shares the daily limit with GitHub issues, drafts and filings in progress included, so a day's items from GitHub and Linear are counted together. If the daily limit is full, a later trigger or redelivery can file the issue once there is room.
 

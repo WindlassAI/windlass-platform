@@ -28,7 +28,7 @@ import { githubId, isGithubId } from "../github/ids.js";
 import { GithubProblem, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { LinearError, isLinearId, linearApp, newVerifier, challengeOf, redactLinear, type LinearApp, type LinearToken, type LinearWrite, type LinearTeam as ProtocolTeam } from "../linear/app.js";
 import { type LinearClaim, type LinearConnectStore, openLinearTicket } from "../linear/connect.js";
-import { QUICK_LABEL, TRIGGER_LABEL, type LinearDelivery, type LinearDispatch } from "../linear/webhook.js";
+import { isTriggerLabel, type LinearDelivery, type LinearDispatch } from "../linear/webhook.js";
 import { openSecret, sealSecret } from "../repo-secrets.js";
 import { readSignedPayload, signedPayload } from "../signatures.js";
 import { serverSealer } from "../signin/seal.js";
@@ -509,7 +509,7 @@ async function decide(c: LinearCtx, app: LinearApp, stored: Stored, delivery: Li
 	if (lower(issue.teamId) !== teamId) return { kind: "ignored", why: "The issue is not in the mapped team." };
 
 	const holds = {
-		label: issue.labels.some(label => [TRIGGER_LABEL, QUICK_LABEL].includes(label.name.trim().toLowerCase())),
+		label: issue.labels.some(label => isTriggerLabel(label.name)),
 		assignment: issue.assigneeId !== null && lower(issue.assigneeId) === stored.appUser.id,
 	};
 	const via = reasons.find(reason => holds[reason]);
