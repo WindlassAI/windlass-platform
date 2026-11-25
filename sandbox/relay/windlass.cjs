@@ -49,9 +49,9 @@ function wireTarget(provider, path, incoming, credential) {
 	if (wire.betas && incoming['anthropic-beta'] !== undefined) {
 		const beta = incoming['anthropic-beta'];
 		if (method !== 'POST' || typeof beta !== 'string') return;
-		const values = beta.split(',').map(value => value.trim());
-		if (!values.every(value => wire.betas.includes(value))) return;
-		headers['anthropic-beta'] = values.join(',');
+		// Like the machine relay: a beta the relay does not know is dropped, not the request.
+		const values = beta.split(',').map(value => value.trim()).filter(value => wire.betas.includes(value));
+		if (values.length) headers['anthropic-beta'] = values.join(',');
 	}
 	if (provider === 'openai' && method === 'POST' && incoming['content-encoding'] === 'zstd') headers['content-encoding'] = 'zstd';
 	for (const [name, value] of Object.entries(incoming)) {

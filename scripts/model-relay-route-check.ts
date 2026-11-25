@@ -584,7 +584,10 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 		if (mode === "error") return res.writeHead(429, {"retry-after": key}).end(JSON.stringify({error:{code:key, type:key, param:key, message:key}}));
 		if (provider === "anthropic") {
 			assert.equal(req.headers["anthropic-version"], "2023-06-01");
-			if (req.method === "POST") assert.ok(req.headers["anthropic-beta"]?.includes("interleaved-thinking-2025-05-14"));
+			if (req.method === "POST") {
+				assert.ok(req.headers["anthropic-beta"]?.includes("interleaved-thinking-2025-05-14"));
+				assert.ok(!req.headers["anthropic-beta"]?.includes("unknown-beta-2099-01-01"));
+			}
 		}
 		if (path.endsWith("/models") || path.endsWith(":generateContent")) {
 			res.writeHead(200, {"content-type":"application/json"});
@@ -638,7 +641,7 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 	}
 	const endpoint = (path: string, headers: Record<string,string> = {}) => new Request(origin + "/model-relay" + path, {
 		method: path.split("?")[0]!.endsWith("/models") ? "GET" : "POST", headers: { [auth]: credential(lease.placeholder),
-			...(path === "/v1/messages" && { "anthropic-beta": "interleaved-thinking-2025-05-14" }), ...headers },
+			...(path === "/v1/messages" && { "anthropic-beta": "interleaved-thinking-2025-05-14,unknown-beta-2099-01-01" }), ...headers },
 	});
 	const localPlaceholder = "wlp-model." + randomBytes(16).toString("hex");
 	const previousUrl = config.modelRelay.url;
