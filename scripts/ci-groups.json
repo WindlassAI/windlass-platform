@@ -117,11 +117,15 @@
         "web/src/api/**",
         "scripts/check-listeners.ts",
         "scripts/check-secret.ts",
-        "scripts/{idempotency,signin,http-limits}-check.ts",
+        "scripts/{idempotency,kept-sandbox,signin,http-limits}-check.ts",
+        "server/src/usage.ts",
+        "server/src/sandbox/e2b/**",
+        "fixtures/acp-agent/**",
         "scripts/connection-e2e.ts"
       ],
       "checks": {
         "idempotency": "tsx ../scripts/idempotency-check.ts",
+        "kept-sandbox": "tsx --test --test-force-exit ../scripts/kept-sandbox-check.ts",
         "signin": "tsx ../scripts/signin-check.ts",
         "connection-e2e": "tsx ../scripts/connection-e2e.ts",
         "http-limits": "tsx ../scripts/http-limits-check.ts"
