@@ -1,4 +1,5 @@
 /** cd server && npx tsx ../scripts/http-limits-check.ts */
+import { loginHttp } from "./login-http.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
@@ -60,7 +61,7 @@ await test("public HTTP limits on two listeners sharing one engine", async t => 
 		await start(false);
 		await start(true);
 		const client = createClient<Registry>({ endpoint, headers: { Origin: origin } });
-		const auth = await client.login.getOrCreate([randomUUID()]).demo();
+		const auth = await loginHttp(primary).demo();
 		const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 		github.addUser("ada");
 		const installation = github.addInstallation("ada", "User");

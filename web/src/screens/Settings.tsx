@@ -13,8 +13,8 @@
  * sandbox, so the list of secrets is said for the sandbox a new agent starts in when nothing else is
  * chosen: the account's default, or the deployment's first.
  */
-import type { AccountSettings, LastStart } from "@contract";
-import { useState } from "react";
+import type { AccountSettings, LastStart, LoginProvider } from "@contract";
+import { useEffect, useState } from "react";
 import { Dialog } from "../components/Dialog";
 import { ApiTokens } from "../components/ApiTokens";
 import { AccountSecretsBlock } from "../components/Secrets";
@@ -127,6 +127,7 @@ export function Settings() {
 				</div>
 			</header>
 
+			{!auth.profile.demo && <LoginMethods />}
 			{info?.billing ? <PlanSection /> : null}
 
 			{settings === null ? (
@@ -219,6 +220,44 @@ export function Settings() {
 			<SessionSettings />
 		</main>
 	);
+}
+
+function LoginMethods() {
+	const { client, platform, explain } = useApp();
+	const auth = useAuth();
+	const [linked, setLinked] = useState<LoginProvider[] | null>(null);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState("");
+	useEffect(() => {
+		let active = true;
+		client.user(auth).linkedLogins().then(methods => { if (active) setLinked(methods); })
+			.catch(failure => { if (active) setError(explain(failure)); });
+		return () => { active = false; };
+	}, [auth, client, explain]);
+	async function change(provider: LoginProvider) {
+		setBusy(true);
+		setError("");
+		try {
+			if (linked?.includes(provider)) {
+				await client.user(auth).unlinkLogin(provider);
+				setLinked(await client.user(auth).linkedLogins());
+			} else {
+				location.assign((await client.login.start(provider, auth)).url);
+			}
+		} catch (failure) { setError(explain(failure)); }
+		finally { setBusy(false); }
+	}
+	return <section className="usage-section" aria-labelledby="account-login">
+		<h2 className="usage-title" id="account-login">Account</h2>
+		<div className="login-methods">{(["github", "google"] as const).filter(p => p === "github" ? platform.info?.github : platform.info?.googleLogin).map(p => {
+			const present = linked?.includes(p);
+			return <button key={p} type="button" className="button button-outline button-small"
+				disabled={!linked || busy || (present && linked.length < 2)} onClick={() => void change(p)}>
+				{present ? "Unlink" : "Link"} {p === "github" ? "GitHub" : "Google"}
+			</button>;
+		})}</div>
+		{error && <p role="alert">{error}</p>}
+	</section>;
 }
 
 function SessionSettings() {

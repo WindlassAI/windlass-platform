@@ -16,6 +16,7 @@
  * Prints one PASS/FAIL/SKIP line per check and exits 1 if any failed.
  */
 
+import { loginHttp } from "./login-http.js";
 import { commitsBehindBase, subtaskBranch } from "../server/src/github/feature.js";
 import { BaseMergeConflict, branchFor, updateBranchFromBase } from "../server/src/github/publish.js";
 import { StandInObjectStore } from "../server/src/bucket/stand-in.js";
@@ -157,8 +158,8 @@ class Server {
 type Client = ReturnType<typeof createClient<Registry>>;
 
 async function fixtureLogin(client: Client, standin: GithubStandin, code: string) {
-	const login = client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]);
-	const { url } = await login.start("github", ORIGIN);
+	const login = loginHttp(API, ORIGIN);
+	const { url } = await login.start("github");
 	const auth = await login.finish(standin.authorize("ada", url));
 	const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 	const plan = await user.startChatgpt();
@@ -170,7 +171,7 @@ async function fixtureLogin(client: Client, standin: GithubStandin, code: string
 async function world(server: Server, standin: GithubStandin, env: Record<string, string> = {}, loginCode?: string) {
 	await server.start({ ...standin.env(), ...env });
 	const client: Client = createClient<Registry>({ endpoint: ENDPOINT, headers: { Origin: ORIGIN } });
-	const auth: AuthResult = loginCode ? await fixtureLogin(client, standin, loginCode) : await client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]).demo();
+	const auth: AuthResult = loginCode ? await fixtureLogin(client, standin, loginCode) : await loginHttp(API).demo();
 	const user = client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 	const { url } = await user.githubConnect({ origin: ORIGIN });
 	const back = await fetch(standin.authorize("ada", url), { redirect: "manual" });
@@ -291,7 +292,7 @@ if (!only.length || only.some(name => name.startsWith("user-limits"))) {
 			const { user, client, auth } = await world(server, standin, { WLP_SECRET: config.signingKeys[0].secret.toString(), WLP_DAILY_TOKENS: "9000000" });
 			try {
 				const uid = auth.profile.uid, operator = "test-operator";
-				const second = await client.login.getOrCreate([`a_${randomBytes(8).toString("hex")}`]).demo();
+				const second = await loginHttp(API).demo();
 				const other = client.user.getOrCreate([second.profile.uid], { params: { token: second.token } });
 				const params = { token: issueServiceToken(limitsSubject(uid, operator)) };
 				const admin = client.user.get([uid], { params });

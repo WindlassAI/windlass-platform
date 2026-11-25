@@ -956,7 +956,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	const now = () => clock ?? realNow();
 
 	const worlds = new Map<string, World>();
-	let attempt: { provider: LoginProvider; state: string; expiresAt: number } | null = null;
+	let attempt: { owner?: string; provider: LoginProvider; state: string; expiresAt: number } | null = null;
 	const modelAttempts = new Map<string, { state: string; expiresAt: number }>();
 	let disposed = false;
 	const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -3325,6 +3325,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	function userApi(auth: AuthResult): UserApi {
 		const world = () => worldOf(auth);
 		return {
+			async linkedLogins() {
+				return (["github", "google"] as const).filter(p => recall("wlp.mock.identity." + p) === world().profile.uid);
+			},
+			async unlinkLogin(provider) {
+				const methods = await this.linkedLogins();
+				if (methods.length < 2) throw new PlatformError("user", "Link another login method first.");
+				if (methods.includes(provider)) keep("wlp.mock.identity." + provider, "");
+			},
 			...machineCalls(auth),
 			...items.calls(auth),
 			async signOutEverywhere(options) {
@@ -4260,14 +4268,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			return { demoEnabled: true, googleLogin: true, windlassVersion: "0.4.0", profiles, ...(options.sizes === "one" ? {} : { hostedSizes: MOCK_SIZES }), ...(githubOn ? { github: GITHUB } : {}), ...machines, ...(billingState === "off" ? {} : { billing: { plans: MOCK_PLANS } }), ...(options.items === "off" ? {} : { items: { reviewer: options.reviewer !== false, orchestrate: true, screenshots: options.screenshots !== false } }) };
 		},
 		login: {
-			async start(provider = "github"): Promise<LoginStart> {
+			async start(provider = "github", auth): Promise<LoginStart> {
 				await latency(400);
-				attempt = { provider, state: hex(16), expiresAt: now() + 10 * MINUTE };
+				attempt = { owner: auth && worldOf(auth).profile.uid, provider, state: hex(16), expiresAt: now() + 10 * MINUTE };
 				if (typeof sessionStorage !== "undefined") sessionStorage.setItem("wlp.mock.login", JSON.stringify(attempt));
 				const redirectPrefix = origin + "/signin";
 				return { url: redirectPrefix + "?" + new URLSearchParams({ code: "mock_login", state: attempt.state }), redirectPrefix, expiresAt: attempt.expiresAt };
 			},
-			async finish(callback: string): Promise<AuthResult> {
+			async finish(callback: string, auth): Promise<AuthResult> {
 				await latency(500);
 				attempt ??= typeof sessionStorage === "undefined" ? null : JSON.parse(sessionStorage.getItem("wlp.mock.login") ?? "null");
 				if (!attempt || now() > attempt.expiresAt) throw new PlatformError("user", "This sign-in attempt has expired. Start again.");
@@ -4276,7 +4284,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				if (url.searchParams.has("error")) throw new PlatformError("user", "Sign-in refused: " + url.searchParams.get("error"));
 				if (!url.searchParams.get("code")) throw new PlatformError("user", "There is no sign-in code.");
 				if (url.searchParams.get("state") !== attempt.state) throw new PlatformError("user", "Start sign-in in this tab.");
-				const uid = attempt.provider === "github" ? "u_ada" : "u_google_ada";
+				if (attempt.owner !== auth?.profile.uid) throw new PlatformError("user", "Return to the account that started this link.");
+				const key = "wlp.mock.identity." + attempt.provider;
+				const existing = recall(key);
+				if (auth && existing && existing !== auth.profile.uid) throw new PlatformError("user", "This identity is already linked.");
+				const uid = auth ? worldOf(auth).profile.uid : existing || (existing === "" ? "u_" + hex(8) : attempt.provider === "github" ? "u_ada" : "u_google_ada");
+				keep(key, uid);
 				attempt = null;
 				if (typeof sessionStorage !== "undefined") sessionStorage.removeItem("wlp.mock.login");
 				const profile: UserProfile = { uid, email: "ada@example.com", demo: false };

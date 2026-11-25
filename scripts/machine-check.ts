@@ -1,4 +1,5 @@
 /** cd server && npx tsx ../scripts/machine-check.ts */
+import { loginHttp } from "./login-http.js";
 import { optionsDigest } from "../server/src/runner/catalog.js";
 import { localListeners } from "./check-listeners.js";
 import assert from "node:assert/strict";
@@ -142,7 +143,7 @@ async function check() {
 		const { issueTicket } = await import("../server/src/github/state.js");
 		const client = createClient<Registry>({ endpoint, token: "default", namespace: "default" });
 		async function account() {
-			const auth = await client.login.getOrCreate([randomUUID()]).demo();
+			const auth = await loginHttp(origin).demo();
 			return { uid: auth.profile.uid, user: client.user.getOrCreate([auth.profile.uid], { params: { token: auth.token } }) };
 		}
 		const accounts = await Promise.all([account(), account()]);

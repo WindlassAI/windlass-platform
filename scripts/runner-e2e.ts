@@ -13,6 +13,7 @@
  * The engine and HTTP server use ports reserved for this check. Nothing runs in
  * Docker. Prints one PASS/FAIL line per check and exits 1 if any failed.
  */
+import { loginHttp } from "./login-http.js";
 import { localListeners, portFree } from "./check-listeners.js";
 import { type ChildProcess, spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
@@ -1111,7 +1112,7 @@ async function main(): Promise<void> {
 	try {
 		await server.start({ ...github.env(), WLP_ITEMS: "1" });
 		const client = createClient<Registry>({ endpoint: ENDPOINT, token: "default", namespace: "default" });
-		const auth = await client.login.getOrCreate([randomUUID()]).demo();
+		const auth = await loginHttp(ORIGIN).demo();
 		const { uid } = auth.profile;
 		const token = auth.token;
 		const user = client.user.getOrCreate([uid], { params: { token } });

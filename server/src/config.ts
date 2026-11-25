@@ -787,6 +787,8 @@ function readHttpLimits() {
 		apiToken: perMinute("WLP_API_TOKEN_PER_MINUTE", 60),
 		apiFailures: perMinute("WLP_API_FAILURES_PER_MINUTE", 12),
 		webhookRefusals: perMinute("WLP_WEBHOOK_REFUSALS_PER_MINUTE", 30),
+		loginAddress: perMinute("WLP_LOGIN_ADDRESS_PER_MINUTE", 120),
+		loginTotal: perMinute("WLP_LOGIN_TOTAL_PER_MINUTE", 600),
 		runnerPoll: perMinute("WLP_RUNNER_POLLS_PER_MINUTE", 240),
 		runnerConnection: perMinute("WLP_RUNNER_CONNECTIONS_PER_MINUTE", 120),
 	};

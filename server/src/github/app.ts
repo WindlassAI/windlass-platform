@@ -60,6 +60,7 @@ export class GithubError extends Error {
 		what: string,
 		readonly headers = new Headers(),
 		readonly conflictFiles: string[] = [],
+		readonly oauthCode?: string,
 	) {
 		super(`${what}: ${status === 0 ? said : `GitHub answered ${status}${said ? ` (${said})` : ""}`}`);
 		this.name = "GithubError";
@@ -280,7 +281,7 @@ export class GithubApp {
 			] : [];
 			const files = conflicts.map(entry => text(record(entry).path) || text(record(entry).filename) || text(entry)).filter(Boolean)
 				.slice(0, 12).map(path => redact(path.replace(/\s+/g, " ").slice(0, 200), known));
-			throw new GithubError(refused && response.ok ? 400 : response.status, redact(said.replace(/\s+/g, " ").slice(0, 300), known), `could not ${call.what}`, response.headers, files);
+			throw new GithubError(refused && response.ok ? 400 : response.status, redact(said.replace(/\s+/g, " ").slice(0, 300), known), `could not ${call.what}`, response.headers, files, fields.error === "redirect_uri_mismatch" ? "redirect_uri_mismatch" : undefined);
 		}
 		return { status: response.status, body, link: response.headers.get("link") ?? "", next: /rel="next"/.test(response.headers.get("link") ?? "") };
 	}
@@ -490,7 +491,7 @@ export class GithubApp {
 				secrets: [userToken, clientSecret],
 			});
 		} catch (error) {
-			console.error(`[wlp] github.user_token.delete_failed: ${error instanceof Error ? error.message : "unknown error"}`);
+			console.error(`[wlp] github.user_token.delete_failed status=${error instanceof GithubError ? error.status : 0}`);
 		}
 	}
 

@@ -1,80 +1,91 @@
 import { randomUUID } from "node:crypto";
-import { actor } from "rivetkit";
+import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
-import type { createClient } from "rivetkit/client";
-import { mayUse, normalizeEmail } from "../access.js";
-import { isActorGone } from "../actor-errors.js";
-import { internalConnection, requireServiceFor, serviceParams } from "../auth.js";
-import { config, engineAdminToken, ownEngineEndpoint } from "../config.js";
-import type { Identity } from "../platform-login.js";
-import type { Registry } from "../registry.js";
+import { mayUse } from "../access.js";
+import { internalConnection, requireServiceFor } from "../auth.js";
+import { config } from "../config.js";
+import type { LoginProvider } from "../contract.js";
+import { loginIssuer, type Identity } from "../platform-login.js";
 
 export async function identityTables(sql: RawAccess) {
-	await sql.execute("CREATE TABLE IF NOT EXISTS legacy (uid TEXT PRIMARY KEY, email TEXT NOT NULL)");
-	await sql.execute("CREATE INDEX IF NOT EXISTS legacy_email ON legacy (email)");
-	await sql.execute("CREATE TABLE IF NOT EXISTS initialized (id INTEGER PRIMARY KEY)");
-	await sql.execute("CREATE TABLE IF NOT EXISTS identity (provider TEXT, sub TEXT, uid TEXT NOT NULL UNIQUE, PRIMARY KEY(provider, sub))");
+	await sql.execute("CREATE TABLE IF NOT EXISTS login_identity (provider TEXT NOT NULL, issuer TEXT NOT NULL, sub TEXT NOT NULL, uid TEXT NOT NULL, PRIMARY KEY(provider, issuer, sub), UNIQUE(uid, provider, issuer))");
+	// The old directory did not record whether an assignment was based on an email match.
+	await sql.execute("DROP TABLE IF EXISTS identity");
+	await sql.execute("DROP TABLE IF EXISTS legacy");
+	await sql.execute("DROP TABLE IF EXISTS initialized");
+	await sql.execute("CREATE TABLE IF NOT EXISTS login_budget (bucket TEXT PRIMARY KEY, minute INTEGER NOT NULL, used INTEGER NOT NULL)");
 }
 
-// The profile lives in each user actor. Snapshot those profiles once, before assigning any new uid.
-async function indexLegacy(sql: RawAccess, client: ReturnType<typeof createClient<Registry>>) {
-	if ((await sql.execute("SELECT id FROM initialized LIMIT 1")).length) return;
-	await sql.execute("DELETE FROM legacy");
-	const url = new URL(ownEngineEndpoint());
-	const token = engineAdminToken() ?? (decodeURIComponent(url.password) || process.env.RIVET_TOKEN || "default");
-	url.username = "";
-	url.password = "";
-	url.pathname = url.pathname.replace(/\/$/, "") + "/actors";
-	url.searchParams.set("namespace", config.engine.namespace);
-	url.searchParams.set("name", "user");
-	do {
-		const response = await fetch(url, { headers: { authorization: "Bearer " + token }, redirect: "error", signal: AbortSignal.timeout(10_000) });
-		if (!response.ok) throw new Error("Cannot read existing accounts (HTTP " + response.status + ")");
-		const page = await response.json() as { actors: { key: string }[]; pagination: { cursor: string | null } };
-		for (const { key } of page.actors) {
-			if (!/^u_[A-Za-z0-9_-]{1,62}$/.test(key)) continue;
-			let email: string | null;
-			try {
-				email = normalizeEmail(await client.user.get([key], { params: serviceParams() }).internalProfileEmail());
-			} catch (error) {
-				if (isActorGone(error)) continue;
-				throw error;
-			}
-			if (email) await sql.execute("INSERT OR REPLACE INTO legacy (uid,email) VALUES (?,?)", key, email);
+export async function resolveIdentity(sql: RawAccess, { provider, issuer, sub, email }: Identity): Promise<string | null> {
+	const key = [provider, issuer, sub];
+	const [known] = await sql.execute<{ uid: string }>("SELECT uid FROM login_identity WHERE provider=? AND issuer=? AND sub=?", ...key);
+	if (known) return known.uid;
+	const uid = "u_" + randomUUID();
+	if (!mayUse({ uid, email, demo: false }, config.access)) return null;
+	const [row] = await sql.execute<{ uid: string }>(`INSERT INTO login_identity VALUES (?,?,?,?)
+		ON CONFLICT(provider,issuer,sub) DO UPDATE SET sub=excluded.sub RETURNING uid`, ...key, uid);
+	return row.uid;
+}
+
+async function linkIdentity(sql: RawAccess, uid: string, { provider, issuer, sub }: Pick<Identity, "provider" | "issuer" | "sub">) {
+	const [row] = await sql.execute(`INSERT INTO login_identity VALUES (?,?,?,?)
+		ON CONFLICT(provider,issuer,sub) DO UPDATE SET sub=excluded.sub WHERE uid=excluded.uid
+		ON CONFLICT DO NOTHING RETURNING uid`, provider, issuer, sub, uid);
+	if (!row) throw new UserError("That login identity or provider is already linked.", { code: "identity_linked" });
+}
+
+function requireCurrentIssuer({ provider, issuer }: Pick<Identity, "provider" | "issuer">) {
+	if (!issuer || loginIssuer(provider) !== issuer) throw new UserError("The login provider changed. Start again.", { code: "invalid_callback" });
+}
+
+async function linked(sql: RawAccess, uid: string): Promise<LoginProvider[]> {
+	const rows = await sql.execute<{ provider: LoginProvider; issuer: string }>("SELECT provider,issuer FROM login_identity WHERE uid=?", uid);
+	return rows.filter(row => row.issuer === loginIssuer(row.provider)).map(row => row.provider);
+}
+
+async function admitLogin(sql: RawAccess, address: string, perAddress: number, total: number) {
+	return sql.transaction(async tx => {
+		const minute = Math.floor(Date.now() / 60_000);
+		await tx.execute("DELETE FROM login_budget WHERE minute<>?", minute);
+		for (const [key, limit] of [["total", total], ["ip:" + address, perAddress]] as const) {
+			const used = await tx.execute<{ used: number }>("SELECT used FROM login_budget WHERE bucket=?", key);
+			if ((used[0]?.used ?? 0) >= limit) return false;
 		}
-		if (!page.pagination.cursor) break;
-		url.searchParams.set("cursor", page.pagination.cursor);
-	} while (true);
-	await sql.execute("INSERT INTO initialized VALUES (1)");
-}
-
-export async function resolveIdentity(sql: RawAccess, { provider, sub, email }: Identity): Promise<string | null> {
-	for (;;) {
-		const [known] = await sql.execute<{ uid: string }>("SELECT uid FROM identity WHERE provider = ? AND sub = ?", provider, sub);
-		if (known) return known.uid;
-		const [legacy] = await sql.execute<{ uid: string }>(`SELECT MIN(uid) AS uid FROM legacy WHERE email = ?
-			HAVING COUNT(*) = 1 AND MIN(uid) NOT IN (SELECT uid FROM identity)`, email);
-		const uid = legacy?.uid ?? "u_" + randomUUID();
-		if (!mayUse({ uid, email, demo: false }, config.access)) return null;
-		const inserted = await sql.execute("INSERT INTO identity (provider,sub,uid) VALUES (?,?,?) ON CONFLICT DO NOTHING RETURNING uid", provider, sub, uid);
-		if (inserted.length) return uid;
-		// Another login claimed either the identity or its legacy uid while we checked admission.
-	}
+		await tx.execute("INSERT INTO login_budget VALUES ('total',?,1),(?,?,1) ON CONFLICT(bucket) DO UPDATE SET used=used+1", minute, "ip:" + address, minute);
+		return true;
+	});
 }
 
 export const accountIdentities = actor({
 	onBeforeConnect: internalConnection,
 	db: db({ onMigrate: identityTables }),
-	createVars: () => ({ indexing: null as Promise<void> | null }),
 	actions: {
-		internalResolve: async (c, identity: Identity): Promise<string | null> => {
+		internalAdmit: (c, address: string): Promise<boolean> => {
 			requireServiceFor(c, "call");
-			c.vars.indexing ??= indexLegacy(c.db, c.client() as ReturnType<typeof createClient<Registry>>).catch(error => {
-				c.vars.indexing = null;
-				throw error;
-			});
-			await c.vars.indexing;
+			return admitLogin(c.db, address, config.httpLimits.loginAddress, config.httpLimits.loginTotal);
+		},
+		internalResolve: (c, identity: Identity): Promise<string | null> => {
+			requireServiceFor(c, "call");
+			requireCurrentIssuer(identity);
 			return resolveIdentity(c.db, identity);
+		},
+		internalLink: (c, uid: string, identity: Pick<Identity, "provider" | "issuer" | "sub">): Promise<void> => {
+			requireServiceFor(c, "call");
+			requireCurrentIssuer(identity);
+			return linkIdentity(c.db, uid, identity);
+		},
+		internalLinked: (c, uid: string): Promise<LoginProvider[]> => {
+			requireServiceFor(c, "call");
+			return linked(c.db, uid);
+		},
+		internalUnlink: (c, uid: string, provider: LoginProvider): Promise<void> => {
+			requireServiceFor(c, "call");
+			return c.db.transaction(async tx => {
+				const methods = await linked(tx, uid);
+				if (!methods.includes(provider)) return;
+				if (methods.length < 2) throw new UserError("Link another login method first.", { code: "last_login" });
+				await tx.execute("DELETE FROM login_identity WHERE uid=? AND provider=? AND issuer=?", uid, provider, loginIssuer(provider));
+			});
 		},
 	},
 });

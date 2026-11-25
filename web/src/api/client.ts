@@ -161,6 +161,8 @@ export interface SessionFeed {
 
 export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelProviders" | "saveModelProvider" | "checkModelProvider" | "removeModelProvider"> {
 	me(): Promise<UserProfile>;
+	linkedLogins(): Promise<LoginProvider[]>;
+	unlinkLogin(provider: LoginProvider): Promise<void>;
 	chatgpt(): Promise<ChatgptStatus>;
 	startChatgpt(): Promise<LoginStart>;
 	finishChatgpt(callback: string): Promise<void>;
@@ -356,8 +358,8 @@ export interface PlatformClient {
 	readonly endpoint: string | null;
 	info(): Promise<PlatformInfo>;
 	readonly login: {
-		start(provider?: LoginProvider): Promise<LoginStart>;
-		finish(pastedUrl: string): Promise<AuthResult>;
+		start(provider?: LoginProvider, auth?: AuthResult): Promise<LoginStart>;
+		finish(pastedUrl: string, auth?: AuthResult): Promise<AuthResult>;
 		demo(): Promise<AuthResult>;
 	};
 	user(auth: AuthResult): UserApi;

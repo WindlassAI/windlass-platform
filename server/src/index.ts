@@ -17,6 +17,7 @@ import { serviceParams } from "./auth.js";
 import { isActorGone, isSessionGone } from "./actor-errors.js";
 import { RETENTION_PATH } from "./runner/frame-auth.js";
 
+import { loginResponse } from "./login-route.js";
 import { runnerResponse } from "./runner-routes.js";
 import { INSTALL_SCRIPT_PATH, installScriptResponse } from "./install-script.js";
 import { modelRelayRoute } from "./model-relay-route.js";
@@ -174,6 +175,7 @@ async function route(request: Request): Promise<Response> {
 	// Windlass's model requests from E2B sandboxes (docs/model-relay.md): on the relay's own hostname, and only there; nothing else is.
 	const relayRoute = modelRelayRoute(request, pathname, relayHost);
 	if (relayRoute) return relayRoute;
+	if (pathname.startsWith("/platform/login/")) return loginResponse(request, pathname.slice("/platform/login/".length));
 	if ([RETENTION_PATH, RUNNER_PAIR_PATH, RUNNER_PAIR_POLL_PATH, RUNNER_CONNECTION_PATH].includes(pathname)) return runnerResponse(request);
 	if (pathname === PLATFORM_INFO_PATH) return platformInfoResponse(request);
 	if (pathname === INSTALL_SCRIPT_PATH) return installScriptResponse(request);
@@ -190,7 +192,9 @@ async function route(request: Request): Promise<Response> {
 	if (pathname === BILLING_WEBHOOK_PATH) return billingWebhookRoute(request);
 	// For a load balancer or the host's health check: the node's own view of its connection to the engine.
 	if (pathname === "/health") return registry.routes.health();
-	const page = web ? await web(request) : null;
+	// The SPA reads OAuth parameters from the browser address. Static serving only needs the path.
+	const pageRequest = pathname === "/signin" ? new Request(new URL(pathname, request.url), { method: request.method }) : request;
+	const page = web ? await web(pageRequest) : null;
 	if (page) return page;
 	return new Response("Not found\n", { status: 404, headers: { "content-type": "text/plain; charset=utf-8" } });
 }

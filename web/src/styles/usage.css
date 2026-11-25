@@ -344,6 +344,11 @@
 .provider-row .field-note {
 	margin: 4px 0 0;
 }
+.login-methods {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
 .provider-actions {
 	display: flex;
 	flex-wrap: wrap;

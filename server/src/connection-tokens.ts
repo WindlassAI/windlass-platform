@@ -7,8 +7,7 @@
  * namespace, for the operations it names and for a limited time, and of no use for getting another.
  * (The fixed `pk_...` tokens belong to Rivet Cloud's projects, another product; a cluster has none.)
  *
- * It is not a user's token. Whoever opens the web app gets one before signing in, because the sign-in
- * itself is an actor, and a client that sends no origin gets one too: it stands where a public token
+ * It is not a user's token. Whoever opens the web app gets one before signing in, and a client that sends no origin gets one too: it stands where a public token
  * would, and says only "this is a client of this deployment". Who the caller is, and what of a user's
  * they may touch, is decided by the platform's own token in every actor (auth.ts), as before.
  *
@@ -18,19 +17,16 @@
 import type { ConnectionToken } from "./contract.js";
 
 /**
- * What the web app does, and no more. Each was tried against a cluster's engine (3.1.1) by taking it
- * away: without `list` or without `actor_gateway`'s `create` the sign-in fails, and without `read`
- * opening a session is refused with `auth.insufficient_permissions`.
+ * Browser handles look up existing actors. The login HTTP service creates attempts and users.
  *
- *   actor          create, list, read   `getOrCreate` of a sign-in attempt and of the user's actor;
- *                                       finding a session's actor by its key
+ *   actor          list, read           finding an existing user or session by key
  *   actor_gateway  read, create         calling an actor's actions and holding a connection to it
  *
  * Not granted: updating, deleting or forking an actor, and everything about nodes and pools. A
  * session's actor is created and destroyed by the user's actor, on a server.
  */
 export const CONNECTION_GRANTS = [
-	{ resource: "actor", target: "any", operations: ["create", "list", "read"] },
+	{ resource: "actor", target: "any", operations: ["list", "read"] },
 	{ resource: "actor_gateway", target: "any", operations: ["read", "create"] },
 ] as const;
 

@@ -174,7 +174,7 @@ async function main(): Promise<void> {
 					namespace: "default",
 					duration: 3600,
 					grants: [
-						{ resource: "actor", target: "any", operations: ["create", "list", "read"] },
+						{ resource: "actor", target: "any", operations: ["list", "read"] },
 						{ resource: "actor_gateway", target: "any", operations: ["read", "create"] },
 					],
 				}) && plain(CONNECTION_GRANTS) === plain((asked?.body as { grants: unknown }).grants),

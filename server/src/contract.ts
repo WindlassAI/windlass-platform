@@ -168,13 +168,6 @@ export interface LoginStart {
 	expiresAt: number;
 }
 
-export interface LoginActions {
-	start(provider: LoginProvider, origin: string): Promise<LoginStart>;
-	finish(callback: string): Promise<AuthResult>;
-	/** Signs in as a fresh demo user. Throws when the server has no demo mode. */
-	demo(): Promise<AuthResult>;
-}
-
 // user actor
 
 export type SessionStatus =
@@ -1960,6 +1953,8 @@ export interface ApiToken {
 export interface UserActions {
 	signOutEverywhere(options?: { revokeApiTokens: boolean }): Promise<void>;
 	me(): Promise<UserProfile>;
+	linkedLogins(): Promise<LoginProvider[]>;
+	unlinkLogin(provider: LoginProvider): Promise<void>;
 	chatgpt(): Promise<ChatgptStatus>;
 	startChatgpt(): Promise<LoginStart>;
 	finishChatgpt(callback: string): Promise<void>;

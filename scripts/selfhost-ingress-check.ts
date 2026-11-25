@@ -1,7 +1,7 @@
 // Offline cloudflared rule matching, with real HTTP and WebSocket traffic to a loopback demo stack.
+import { loginHttp } from "./login-http.js";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { createServer, request } from "node:http";
 import { createClient, type Registry } from "../server/src/client.js";
 import { StandInRunner, until } from "./runner-standin.js";
@@ -34,7 +34,8 @@ const web = loopback(match(webHost, "/")).origin;
 for (const path of ["/health", "/platform/info", "/platform/connection", "/runner/pair", "/runner/pair/poll", "/runner/connection"]) {
 	assert.equal(match(webHost, path), web, path + " must reach the app");
 }
-const gateway = loopback(match(engineHost, "/gateway/login/action/demo")).origin;
+assert.equal(match(engineHost, "/gateway/login/action/start"), "http_status:404");
+const gateway = loopback(match(engineHost, "/gateway/user/action/me")).origin;
 assert((await (await fetch(web + "/platform/info")).json()).demoEnabled, "Requires a demo stack");
 const discovery = async () => (await (await fetch(web + "/platform/connection")).json());
 const info = await discovery();
@@ -92,8 +93,8 @@ try {
 	for (const path of ["/namespaces", "/pools", "/auth/tokens", "/envoys/connect", "/actors"]) {
 		assert.equal((await fetch(endpoint + path, options)).status, 404);
 	}
-	const { profile: { uid }, token } = await client.login.getOrCreate([randomUUID()]).demo();
-	const user = client.user.getOrCreate([uid], { params: { token } });
+	const { profile: { uid }, token } = await loginHttp(web).demo();
+	const user = client.user.get([uid], { params: { token } });
 	await runner.pair(user);
 	try {
 		await runner.connectControl();

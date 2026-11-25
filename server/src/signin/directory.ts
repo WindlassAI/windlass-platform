@@ -30,7 +30,7 @@ import type { Sealer } from "./seal.js";
 
 export interface SignInDirectory {
 	/** Replaces the user's sign-in with `sealed`: a finished sign-in, sealed for that user. */
-	adopt(uid: string, sealed: string): Promise<void>;
+	adopt(uid: string, sealed: string, pendingId?: string): Promise<void>;
 	status(uid: string): Promise<ChatgptAccount | null>;
 	logout(uid: string): Promise<void>;
 	accessToken(uid: string): Promise<AccessToken>;
@@ -72,7 +72,7 @@ export const tokenSubject = (uid: string, nonce: string) => `${uid}/${nonce}`;
 
 /** The actions of the `user` actor this directory calls (actors/user.ts). They accept a service token only. */
 interface UserSignInActions {
-	internalAdoptSignIn(sealed: string): Promise<SignInAnswer<null>>;
+	internalAdoptSignIn(sealed: string, pendingId?: string): Promise<SignInAnswer<null>>;
 	internalSignInStatus(): Promise<SignInAnswer<ChatgptAccount | null>>;
 	internalSignOut(): Promise<SignInAnswer<null>>;
 	internalAccessToken(nonce: string): Promise<SealedTokenAnswer>;
@@ -103,8 +103,8 @@ export class ActorSignInDirectory implements SignInDirectory {
 		return this.actors().user.get([uid], { params: serviceParams() }) as UserSignInActions;
 	}
 
-	async adopt(uid: string, sealed: string): Promise<void> {
-		const answer = await this.existing(uid).internalAdoptSignIn(sealed);
+	async adopt(uid: string, sealed: string, pendingId?: string): Promise<void> {
+		const answer = await this.existing(uid).internalAdoptSignIn(sealed, pendingId);
 		if (!answer.ok) throw errorOf(answer.problem);
 	}
 
@@ -201,8 +201,8 @@ export class MemorySignInDirectory implements SignInDirectory {
 		return holder;
 	}
 
-	adopt(uid: string, sealed: string): Promise<void> {
-		return this.holder(uid).adopt(sealed);
+	adopt(uid: string, sealed: string, pendingId?: string): Promise<void> {
+		return this.holder(uid).adopt(sealed, pendingId);
 	}
 
 	status(uid: string): Promise<ChatgptAccount | null> {

@@ -1,10 +1,10 @@
 import type { LoginProvider } from "@contract";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { InfoIcon, Mark, WarnIcon } from "../components/Icons";
 import { ThemeToggle, Wordmark } from "../components/TopBar";
 import { linkProps, navigate } from "../lib/router";
 import type { Theme } from "../lib/theme";
-import { useApp } from "../state/app";
+import { useApp, useAuth } from "../state/app";
 
 export function SignIn({ theme, onToggleTheme }: { theme: Theme; onToggleTheme(): void }) {
 	const { client, signIn, signedOutReason, platform, explain } = useApp();
@@ -98,6 +98,10 @@ export function SignIn({ theme, onToggleTheme }: { theme: Theme; onToggleTheme()
 							Continue with Google
 						</button>
 					)}
+					{platform.info?.github && <details className="signin-aside">
+						<summary>GitHub rejected the callback URL?</summary>
+						Add {location.origin}/signin to the GitHub App's callback URLs.
+					</details>}
 					{busy === "finish" && <p role="status">Finishing sign-in…</p>}
 					{platform.info && !platform.info.github && !platform.info.googleLogin && <p className="signin-aside">Account sign-in is unavailable on this deployment.</p>}
 					{platform.loading ? (
@@ -138,4 +142,24 @@ export function SignIn({ theme, onToggleTheme }: { theme: Theme; onToggleTheme()
 			</main>
 		</div>
 	);
+}
+
+export function LinkCallback() {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const handled = useRef(false);
+	const [error, setError] = useState("");
+	useEffect(() => {
+		if (handled.current) return;
+		handled.current = true;
+		const callback = new URL(location.href);
+		if (!callback.searchParams.has("code") && !callback.searchParams.has("error")) {
+			navigate({ name: "home" }, { replace: true });
+			return;
+		}
+		history.replaceState(history.state, "", callback.pathname);
+		client.login.finish(callback.href, auth).then(() => navigate({ name: "settings" }, { replace: true }))
+			.catch(failure => setError(explain(failure)));
+	}, [auth, client, explain]);
+	return <main className="state state-page">{error ? <><p role="alert">{error}</p><a className="link" {...linkProps({ name: "settings" })}>Back to Settings</a></> : <p role="status">Linking login method…</p>}</main>;
 }

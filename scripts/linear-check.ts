@@ -2,6 +2,7 @@
  * Test Linear filing through the platform's HTTP routes and actors, with stand-ins for Linear, GitHub and the sandbox.
  * The child process adds service-only fixture actions before registering the actors. Setup cases supply state for later mapping and filing checks.
  */
+import { loginHttp } from "./login-http.js";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -135,7 +136,7 @@ async function run() {
 		const neighbourInstallation = github.addInstallation("linear-neighbour", "User");
 		const foreign = github.addRepository({ owner: "linear-neighbour", name: "other", installation: neighbourInstallation });
 		Object.assign(github.appPermissions, { checks: "read", statuses: "read", actions: "read", issues: "write" });
-		const auth = await client.login.getOrCreate([randomUUID()]).demo();
+		const auth = await loginHttp(api).demo();
 		const uid = auth.profile.uid;
 		const owner = client.user.getOrCreate([uid], { params: { token: auth.token } });
 		const connectGithub = await owner.githubConnect({ origin: ORIGIN });
@@ -217,7 +218,7 @@ async function run() {
 			// Only the signed-in owner can redeem the returned ticket.
 			answer = await callback(consent.searchParams);
 			const ticket = ticketFrom(answer);
-			const stranger = await client.login.getOrCreate([randomUUID()]).demo();
+			const stranger = await loginHttp(api).demo();
 			const other = client.user.getOrCreate([stranger.profile.uid], { params: { token: stranger.token } });
 			assert.equal(await code(other.linearComplete(ticket)), "linear_ticket");
 			assert.deepEqual(await other.linear(), { state: "disconnected" });
@@ -654,7 +655,7 @@ async function run() {
 			const login2 = "linear-second";
 			github.addUser(login2);
 			const second = github.addRepository({ owner: login2, name: "other-factory", installation: github.addInstallation(login2, "User") });
-			const auth2 = await client.login.getOrCreate([randomUUID()]).demo();
+			const auth2 = await loginHttp(api).demo();
 			const other = client.user.getOrCreate([auth2.profile.uid], { params: { token: auth2.token } });
 			const gh = await other.githubConnect({ origin: ORIGIN });
 			await other.githubComplete((await fetch(github.authorize(login2, gh.url), { redirect: "manual" })).headers.get("location")!.split("#github=")[1]);

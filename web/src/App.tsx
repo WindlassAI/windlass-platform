@@ -13,7 +13,7 @@ import { Session, SessionCrumb, useSessionMachine } from "./screens/Session";
 import { Settings, SettingsCrumb } from "./screens/Settings";
 import { Plans, PlansCrumb } from "./screens/Plans";
 import { MockAuthorize } from "./components/ChatgptPlan";
-import { SignIn } from "./screens/SignIn";
+import { LinkCallback, SignIn } from "./screens/SignIn";
 import { Usage, UsageCrumb } from "./screens/Usage";
 import { Workspace, type Selection } from "./screens/Workspace";
 import { LANDING_TITLE } from "./site/content";
@@ -134,7 +134,6 @@ export function App() {
 	const repositoryId = route.name === "repository" ? route.id : route.name === "new" ? (route.repository ?? null) : null;
 	useEffect(() => {
 		if (needsAuth && !auth) navigate({ name: "signin" }, { replace: true });
-		if (route.name === "signin" && auth) navigate({ name: "home" }, { replace: true });
 	}, [needsAuth, auth, route.name]);
 
 	useEffect(() => {
@@ -178,7 +177,7 @@ export function App() {
 
 	if (route.name === "signin" || !auth) {
 		// While the redirect above is on its way, the sign-in screen is the right thing to show.
-		return auth ? null : <SignIn theme={theme} onToggleTheme={toggleTheme} />;
+		return auth ? <LinkCallback /> : <SignIn theme={theme} onToggleTheme={toggleTheme} />;
 	}
 
 	if (route.name === "session") return <SessionRoute key={route.id} sessionId={route.id} theme={theme} onToggleTheme={toggleTheme} />;

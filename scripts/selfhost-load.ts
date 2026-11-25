@@ -1,4 +1,5 @@
 // Run from the repository root. The public connection and demo sign-in are the same ones the web app uses.
+import { loginHttp } from "./login-http.js";
 import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -121,8 +122,8 @@ function summary() {
   }
 }
 try {
-  const { profile: { uid }, token } = await client.login.getOrCreate([randomUUID()]).demo();
-  const user = client.user.getOrCreate([uid], { params: { token } });
+  const { profile: { uid }, token } = await loginHttp(values.origin).demo();
+  const user = client.user.get([uid], { params: { token } });
   await runner.pair(user);
   await runner.connectControl();
   const place = { kind: "machine" as const, machineId: runner.id.machineId };

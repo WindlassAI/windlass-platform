@@ -121,7 +121,7 @@
         "server/src/actors/agent-session/**",
         "server/src/actors/user/**",
         "server/src/actors/{user,login,agent-session,turn-resume,session-inbox,account-identities,provider-accounts,internal}.ts",
-        "server/src/platform-login.ts",
+        "server/src/{platform-login,login-route,link-identity}.ts",
         "scripts/platform-login-check.ts",
         "web/src/api/**",
         "scripts/check-listeners.ts",
@@ -131,6 +131,7 @@
         "server/src/sandbox/e2b/**",
         "server/src/sandbox/command.ts",
         "fixtures/acp-agent/**",
+        "scripts/login-http.ts",
         "scripts/connection-e2e.ts"
       ],
       "checks": {
@@ -161,6 +162,7 @@
         "scripts/acp-agent-fake.ts",
         "scripts/check-listeners.ts",
         "scripts/{frame-auth,machine,machine-fairness}-check.ts",
+        "scripts/login-http.ts",
         "scripts/runner-e2e.ts",
         "scripts/runner-socket-probe.ts"
       ],
@@ -196,6 +198,7 @@
         "scripts/feature-git-fixture.ts",
         "scripts/factory-check.ts",
         "scripts/orchestrator-check.ts",
+        "scripts/login-http.ts",
         "scripts/factory-e2e.ts"
       ],
       "shards": {
@@ -221,6 +224,7 @@
         "server/src/index.ts",
         "server/src/registry.ts",
         "scripts/github-standin.ts",
+        "scripts/login-http.ts",
         "scripts/webhook-check.ts"
       ],
       "checks": {
@@ -244,6 +248,7 @@
         "server/src/actors/user/**",
         "server/src/actors/{user-linear,linear-workspace,issue-intake,github-intake,github-item,github-inbox,github-repository,github-account,user-github,user-items,user,work-item}.ts",
         "scripts/{github,linear}-standin.ts",
+        "scripts/login-http.ts",
         "scripts/linear-{check,protocol-check}.ts"
       ],
       "checks": {
@@ -363,6 +368,7 @@
         "scripts/check-image.ts",
         "scripts/check-listeners.ts",
         "scripts/github-standin.ts",
+        "scripts/login-http.ts",
         "scripts/e2e.ts"
       ],
       "shards": {
@@ -395,6 +401,7 @@
         "fixtures/acp-agent/**",
         "fixtures/claude-relay/**",
         "fixtures/opencode/**",
+        "scripts/login-http.ts",
         "scripts/runner-*.ts",
         "scripts/runner-build.sh",
         "scripts/acp-agent-fake.ts",

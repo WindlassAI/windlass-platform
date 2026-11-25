@@ -507,6 +507,20 @@ async function main(): Promise<void> {
 		const log = (line: string) => void (lines.push(line), console.log(line));
 		const make = (rows: Rows, commands: SignInCommands, extra: Partial<ConstructorParameters<typeof SignInHolder>[0]> = {}) => new SignInHolder({ uid, store: rows.store, commands, sealer, log, ...extra });
 
+		// A disconnect after the exchange invalidates the grant at the credential store.
+		{
+			const rows = new Rows();
+			const commands = new ScriptedCommands();
+			const holder = new SignInHolder({ uid, commands, sealer, store: { ...rows.store,
+				save: async (row, expected) => {
+					if (expected === "disconnected") throw new Error("attempt expired");
+					await rows.store.save(row);
+				},
+			} });
+			const stale = await caught(holder.adopt(seal(fakeMaterial("old", Date.now() + 60_000, 1)), "disconnected"));
+			expect("an invalidated attempt is refused at the final credential write", stale instanceof Error && rows.row === null);
+		}
+
 		// ---- nothing saved
 		{
 			const rows = new Rows();

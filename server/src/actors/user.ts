@@ -105,7 +105,7 @@ import { hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
 
 import { type SealedSecrets, type RequestedSecretSave, createSessionActor, isSessionGone, isDuplicateKey, itemActor, modelKeyCaller, secretsCaller, sessionActor } from "./internal.js";
 import { boundedText, type UserVars, type UserCtx } from "./user/state.js";
-import { modelInput, modelsOf, signinActions, type ModelsCtx } from "./user/signin.js";
+import { modelInput, modelsOf, signinActions, writeActorProfile, type ModelsCtx } from "./user/signin.js";
 import { readUsage, sizesOf, queueOverageReport, usageActions } from "./user/usage.js";
 export { itemSharing, readUsage } from "./user/usage.js";
 
@@ -172,20 +172,6 @@ async function armBackupRemoval(c: BackupRemovalCtx, session: string, tries: num
 	const at = Date.now() + BACKUP_REMOVE_FIRST_MS * 2 ** tries;
 	const id = await c.schedule.at(at, "internalRemoveBackup", session);
 	await c.db.execute("INSERT OR REPLACE INTO backup_removal (session, tries, due_at, schedule_id) VALUES (?, ?, ?, ?)", session, tries, at, id);
-}
-
-/** Keeps the profile of the newest valid token: the email can change between sign-ins. */
-async function rememberProfile(c: UserCtx, profile: UserProfile): Promise<void> {
-	const known = c.vars.profile;
-	c.vars.profile = profile;
-	if (known && known.email === profile.email && known.demo === profile.demo) return;
-	await c.db.execute(
-		"INSERT INTO profile (id, uid, email, demo, updated_at) VALUES (1, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET email = excluded.email, demo = excluded.demo, updated_at = excluded.updated_at",
-		profile.uid,
-		profile.email,
-		profile.demo ? 1 : 0,
-		Date.now(),
-	);
 }
 
 const MAX_GITHUB_PENDING = 20;
@@ -558,8 +544,6 @@ async function sessionHostedSize(c: CreateCtx, asked: unknown, project: string |
 }
 
 async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4], build?: EnvironmentBuildOrigin): Promise<SessionSummary> {
-	// Builds of prepared environments start from the actor's own alarm, with no caller: they need the profile kept.
-	if (!build && !c.vars.profile) await rememberProfile(c, profile);
 	const place = launchPlace(input.place);
 	if (input.size !== undefined && ![1, 2, 4].includes(input.size))
 		throw new UserError("Choose a sandbox size of 1, 2 or 4 slots.", { code: "bad_input" });
@@ -1078,6 +1062,7 @@ export const user = actor({
 			// Before the column checks below: the API token table is one of them.
 			for (const table of ITEM_TABLES) await db.execute(table);
 			for (const [table, column, definition] of [
+				["model_attempt", "attempt_id", "TEXT"],
 				["token_generation", "disconnected", "INTEGER NOT NULL DEFAULT 0"],
 				["token_generation", "disconnect_job", "TEXT"],
 				["sessions", "disconnect_pending", "INTEGER NOT NULL DEFAULT 0"],
@@ -1160,7 +1145,10 @@ export const user = actor({
 		assertOrigin(c);
 		try {
 			const caller = userActorCaller(c, params);
-			if (caller.kind === "user") c.vars.reached = true;
+			if (caller.kind === "user") {
+				c.vars.reached = true;
+				if (c.vars.profile === null) return writeActorProfile(c, caller.profile, false);
+			}
 		} catch (error) {
 			// `getOrCreate` makes the actor before this hook runs, so a call without a valid token can
 			// leave an empty actor behind under any key. One that no user has ever reached is removed.
@@ -1169,13 +1157,9 @@ export const user = actor({
 		}
 	},
 
-	onConnect: async (c, conn) => {
-		const caller = userActorCaller(c, conn.params);
-		if (caller.kind === "user") await rememberProfile(c, caller.profile);
-	},
-
 	onDestroy: async c => { await dropHostedSnapshots(c.key[0]); },
 	onWake: async (c) => {
+		await c.db.execute("DELETE FROM model_attempt WHERE attempt_id IS NULL OR expires<=?", Date.now());
 		queueOverageReport(c);
 		// Backfill saved connections on upgrade and repair a grant interrupted after the local write.
 		const connection = c.vars.github;
@@ -1210,7 +1194,9 @@ export const user = actor({
 			const claimed = await c.db.execute("UPDATE token_generation SET disconnect_job = ? WHERE gen = ? AND gen > disconnected AND disconnect_job IS ? RETURNING gen", next, pending.gen, pending.disconnect_job);
 			if (claimed.length) await sweep(c, pending.gen, delay === undefined);
 		},
-		internalProfileEmail: c => { requireServiceFor(c, "call"); return c.vars.profile?.uid === c.key[0] && !c.vars.profile.demo ? c.vars.profile.email : null; },
+		linkedLogins: signinActions.linkedLogins,
+		unlinkLogin: signinActions.unlinkLogin,
+		internalLogin: signinActions.internalLogin,
 		internalTokenGeneration: (c): number => { requireServiceFor(c, "call"); return c.vars.tokenGen; },
 		signOutEverywhere: async (c, options?: { revokeApiTokens: boolean }): Promise<void> => {
 			requireUser(c);
@@ -1385,12 +1371,9 @@ export const user = actor({
 		internalTurnDone: itemActions.internalTurnDone,
 		internalWithdrawTurn: itemActions.internalWithdrawTurn,
 		[QUEUE_ACTION]: (c): Promise<void> => itemActions.internalTurnQueue(c),
-		me: async (c): Promise<UserProfile> => {
-			const profile = requireUser(c);
-			await rememberProfile(c, profile);
-			return profile;
-		},
+		me: (c): UserProfile => requireUser(c),
 		startChatgpt: signinActions.startChatgpt,
+		expireModelAttempt: signinActions.expireModelAttempt,
 		finishChatgpt: signinActions.finishChatgpt,
 		chatgpt: signinActions.chatgpt,
 		forgetChatgpt: signinActions.forgetChatgpt,
@@ -1580,7 +1563,6 @@ export const user = actor({
 			const command = setupCommandOf(input?.command);
 			try {
 				const saved = await saveSetup(c, profile.uid, project, await labelFor(c, input.repositoryId, project), command);
-				await rememberProfile(c, profile);
 				await settingsChanged(environmentHost(c), project).catch((error: unknown) => c.log.warn({ msg: "environments could not be marked stale", error: String(error) }));
 				return saved;
 			} catch (error) {
@@ -1639,7 +1621,6 @@ export const user = actor({
 				// The list is written whole, in one statement: of two saves that run together, one stays as it was sent.
 				const saved = await saveChecks(c.db, project, await labelFor(c, input.repositoryId, project), checks, Date.now());
 				console.log(`[wlp] checks.saved uid=${profile.uid} project=${project} checks=${checks.length}`);
-				await rememberProfile(c, profile);
 				await settingsChanged(environmentHost(c), project).catch((error: unknown) => c.log.warn({ msg: "environments could not be marked stale", error: String(error) }));
 				return saved;
 			} catch (error) {
@@ -1775,12 +1756,12 @@ export const user = actor({
 		},
 
 		repositoryEnvironments: async (c, repositoryId: GithubId): Promise<RepositoryEnvironments> => {
-			await rememberProfile(c, requireUser(c));
+			requireUser(c);
 			try { return await environmentsView(environmentHost(c), setupKeyOf(repositoryId)); }
 			catch (error) { throw clientError(c.log, error, "The repository's environments could not be read. Try again."); }
 		},
 		rebuildEnvironment: async (c, input: { repositoryId: GithubId; place?: EnvironmentPlace }): Promise<RepositoryEnvironments> => {
-			await rememberProfile(c, requireUser(c));
+			requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			if (input.place !== undefined && (typeof input.place !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(input.place))) throw new UserError("Choose one of the places listed.", { code: "bad_input" });
 			const host = environmentHost(c);
@@ -1792,7 +1773,7 @@ export const user = actor({
 			return environmentsView(host, project);
 		},
 		saveEnvironmentSchedule: async (c, input: { repositoryId: GithubId; schedule: EnvironmentSchedule }): Promise<RepositoryEnvironments> => {
-			await rememberProfile(c, requireUser(c));
+			requireUser(c);
 			const project = setupKeyOf(input?.repositoryId);
 			if (!ENVIRONMENT_SCHEDULES.includes(input?.schedule)) throw new UserError("Choose nightly, every 12 hours, every 6 hours or off.", { code: "bad_input" });
 			const host = environmentHost(c);

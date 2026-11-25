@@ -105,7 +105,7 @@ export function webFiles(directory: string, { endpoint, publicUrl }: { endpoint?
 			headers: {
 				"content-type": found.type,
 				"content-length": String(found.body.length),
-				"cache-control": immutable ? "public, max-age=31536000, immutable" : "no-cache",
+				"cache-control": pathname === "/signin" ? "no-store" : immutable ? "public, max-age=31536000, immutable" : "no-cache",
 				"x-content-type-options": "nosniff",
 				"referrer-policy": "no-referrer",
 				"content-security-policy": csp,
