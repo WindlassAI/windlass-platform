@@ -7,12 +7,15 @@
 
 .ws {
 	--ws-rail: 272px;
+	/* The fold: the rail's track slides to nothing as its rows fade; the rows keep their width, so nothing in them rewraps. */
+	--ws-fold: 200ms;
 	display: grid;
 	grid-template-columns: var(--ws-rail) minmax(0, 1fr);
 	min-height: calc(100dvh - var(--topbar));
+	transition: grid-template-columns var(--ws-fold) var(--ease-out);
 }
 .ws-folded {
-	grid-template-columns: minmax(0, 1fr);
+	grid-template-columns: 0px minmax(0, 1fr);
 }
 
 /* ---- the rail ----------------------------------------------------------------------------------- */
@@ -23,11 +26,28 @@
 	display: flex;
 	flex-direction: column;
 	height: calc(100dvh - var(--topbar));
+	min-width: 0;
+	overflow: hidden;
 	border-right: 1px solid var(--line);
 	background: var(--bg-sunk);
+	transition: visibility 0s;
 }
-.ws-rail[hidden] {
-	display: none;
+/* Folding, the surface slides shut as its rows fade, faster than it closes; unfolding, they come in with it. */
+.ws-folded .ws-rail {
+	visibility: hidden;
+	transition: visibility 0s linear var(--ws-fold);
+}
+.ws-rail-inner {
+	display: flex;
+	flex: none;
+	flex-direction: column;
+	width: calc(var(--ws-rail) - 1px);
+	height: 100%;
+	transition: opacity var(--ws-fold) var(--ease-out);
+}
+.ws-folded .ws-rail-inner {
+	opacity: 0;
+	transition: opacity 120ms var(--ease);
 }
 .ws-rail-body {
 	display: flex;
@@ -501,13 +521,10 @@
 	position: relative;
 	min-width: 0;
 }
-/* The Factory's rail has no search: its name stands at its top, the fold beside it. */
-.factory-rail-top {
-	justify-content: space-between;
-}
-.factory-rail-label {
-	margin: 0;
-	padding-left: 8px;
+/* Folded, the page's top makes room for the button that brings the rail back, as the rail slides. */
+.ws-main > .factory,
+.ws-pane {
+	transition: padding-top var(--ws-fold) var(--ease-out);
 }
 .ws-folded .factory {
 	padding-top: 56px;
@@ -529,6 +546,13 @@
 	font: inherit;
 	font-size: var(--text-12);
 	cursor: pointer;
+	animation: ws-unfold-in var(--ws-fold) var(--ease-out) both;
+}
+@keyframes ws-unfold-in {
+	from {
+		opacity: 0;
+		transform: translateX(-6px);
+	}
 }
 .ws-unfold:hover {
 	border-color: var(--line-strong);
@@ -543,6 +567,20 @@
 }
 .ws-folded .ws-pane {
 	padding-top: 56px;
+}
+@media (prefers-reduced-motion: reduce) {
+	.ws,
+	.ws-rail,
+	.ws-folded .ws-rail,
+	.ws-rail-inner,
+	.ws-folded .ws-rail-inner,
+	.ws-main > .factory,
+	.ws-pane {
+		transition: none;
+	}
+	.ws-unfold {
+		animation: none;
+	}
 }
 /* The day's meter stands in the rail; it comes back to the head where the rail is away. */
 .ws:not(.ws-folded) .ws-head-usage {

@@ -19,19 +19,21 @@
  * heading says so and no row says a word of it.
  */
 import { type GithubId, type ItemState, type ItemSummary } from "@contract";
-import { useId, type ReactNode } from "react";
-import { Badges, EverythingIcon, moveFocus, RailFoldButton, RailFrame, RailLink, useRailFold } from "../components/Rail";
-import { RepoTile } from "../components/RepoTile";
+import { useId, useRef, type ReactNode } from "react";
+import { RailFrame, RepoRail, useRailFold, useSearchKey, type RailChoice } from "../components/Rail";
+import { RailFoot, useHostedUsage } from "../components/RailFoot";
 import { StartComposer } from "../components/StartComposer";
 import { ChevronIcon, FileIcon, Mark, RepoIcon, WarnIcon } from "../components/Icons";
 import { Menu, PHONE_QUERY, Pill, useMediaQuery, type MenuSpec } from "../components/ui";
 import { plural } from "../lib/format";
 import { feedCounts, feedRepositories, repositoryName, workingCounts } from "../lib/repositories";
-import { ITEM_SOURCES, linkProps, navigate, useHistoryState, type ItemSource } from "../lib/router";
+import { ITEM_SOURCES, linkProps, navigate, useHistoryState, type ItemSource, type Route } from "../lib/router";
+import { railOf, type Rail } from "../lib/workspace";
 import { useApp } from "../state/app";
 import { useFactoryLimits, useNow, useSessions } from "../state/hooks";
 import { BOARD_QUERY } from "../lib/board";
 import { FactoryBoard } from "./FactoryBoard";
+import { useSavedRepositories } from "./Home";
 import { asking, EndedFoot, endedWords, ItemRow, questionLine, useEndedPages, type ItemsState } from "./Items";
 
 /** How an item was filed, in the filter's words. */
@@ -158,6 +160,10 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	const [showEnded, setShowEnded] = useHistoryState("ended", false);
 	const phone = useMediaQuery(PHONE_QUERY);
 	const [folded, fold] = useRailFold(phone);
+	const search = useRef<HTMLInputElement>(null);
+	useSearchKey(search, { phone, folded, fold });
+	const saved = useSavedRepositories(sessions);
+	const usage = useHostedUsage(sessions);
 	// A phone has the list; anything wider the board.
 	const view = useMediaQuery(BOARD_QUERY) ? "board" : "list";
 	const ended = useId();
@@ -189,9 +195,16 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	// The hosted sandboxes at work, items and the person's own agents together, against the one ceiling on them.
 	const hosted = workingCounts(sessions ?? []).ceilinged;
 	const turnsUsed = limits && sessions !== null ? Math.min(hosted, limits.hostedRunning) : null;
+	const rail = factoryRail(railOf({ sessions, items: list, feed: items.feed, saved, keep: filters.repository ?? null }), filterItems(list ?? [], { from: filters.from }));
+	const railBody = (
+		<>
+			<RepoRail rail={rail} chosen={filters.repository === undefined ? { kind: "everything" } : { kind: "repository", id: filters.repository }} to={factoryRoute(filters.from)} replace noRepository={false} runningWord="in progress" search={search} onFold={() => fold(true)} />
+			<RailFoot usage={usage} sessions={sessions} ceiling={limits?.hostedRunning ?? null} />
+		</>
+	);
 
 	return (
-		<RailFrame label="Repositories" folded={folded} phone={phone} onUnfold={() => fold(false)} rail={<FactoryRail list={list ?? []} repositories={repositories} filters={filters} onFold={() => fold(true)} />}>
+		<RailFrame label="Repositories" folded={folded} phone={phone} onUnfold={() => fold(false)} rail={railBody}>
 			<main className={`home factory${view === "board" ? " factory-wide" : ""}`}>
 				<header className="home-head factory-head">
 					<div>
@@ -364,47 +377,27 @@ export function railCounts(list: readonly ItemSummary[]): { needs: number; progr
 }
 
 /**
- * The Factory's rail: "Everything" and each repository with work items, each with how many need you and
- * how many are in progress (under the "from" filter). Choosing one is the repository filter, in the address.
+ * The Factory's rail: the Agents home's repositories, in its order, each counting its work items under
+ * the "from" filter instead: in progress on the ring, what needs you in amber. One with no work item
+ * here stays in its place, quiet, so the rail does not change shape between the two pages; choosing it
+ * opens the composer on it. A work item is always on a repository: no "No repository" here.
  */
-function FactoryRail({ list, repositories, filters, onFold }: { list: readonly ItemSummary[]; repositories: ReturnType<typeof repositoriesOf>; filters: { repository?: GithubId; from?: ItemSource }; onFold(): void }) {
-	const kept = filterItems(list, { from: filters.from });
-	const badges = (items: readonly ItemSummary[], label: string) => {
-		const counts = railCounts(items);
-		return <Badges running={counts.progress > 0 ? counts.progress : false} needs={counts.needs} count={null} label={label} runningWord="in progress" />;
+export function factoryRail(rail: Rail, items: readonly ItemSummary[]): Rail {
+	const by = new Map<string, ItemSummary[]>();
+	for (const item of items) {
+		const key = String(item.repository.id);
+		by.set(key, [...(by.get(key) ?? []), item]);
+	}
+	const tally = (list: readonly ItemSummary[]) => {
+		const counts = railCounts(list);
+		return { count: list.length, running: counts.progress, needs: counts.needs };
 	};
-	return (
-		<div className="ws-rail-body">
-			<div className="ws-rail-top factory-rail-top">
-				<h2 className="ws-rail-label factory-rail-label">Repositories</h2>
-				<RailFoldButton label="Repositories" onFold={onFold} />
-			</div>
-			<div className="ws-rail-list" onKeyDown={(event) => moveFocus(event, event.currentTarget)}>
-				<ul className="ws-rail-rows">
-					<RailLink route={{ name: "factory", from: filters.from }} replace current={filters.repository === undefined} label="Everything" icon={<EverythingIcon />} badges={badges(kept, "Everything")} />
-				</ul>
-				<ul className="ws-rail-rows">
-					{repositories.map((repository) => {
-						const own = kept.filter((item) => String(item.repository.id) === String(repository.id));
-						const counts = railCounts(own);
-						const slash = repository.name.indexOf("/");
-						return (
-							<RailLink
-								key={String(repository.id)}
-								route={{ name: "factory", repository: repository.id, from: filters.from }}
-								replace
-								current={String(filters.repository) === String(repository.id)}
-								label={repository.name.slice(slash + 1)}
-								before={slash > 0 ? <span className="visually-hidden">{repository.name.slice(0, slash + 1)}</span> : null}
-								title={`${repository.name}: ${plural(repository.items, "work item")}`}
-								quiet={counts.needs === 0 && counts.progress === 0}
-								icon={<RepoTile name={repository.name.slice(slash + 1)} />}
-								badges={badges(own, repository.name)}
-							/>
-						);
-					})}
-				</ul>
-			</div>
-		</div>
-	);
+	return {
+		...rail,
+		everything: tally(items),
+		none: { count: 0, running: 0, needs: 0 },
+		groups: rail.groups.map((group) => ({ ...group, repositories: group.repositories.map((repository) => ({ ...repository, ...tally(by.get(String(repository.id)) ?? []), saved: false })) })),
+	};
 }
+
+const factoryRoute = (from: ItemSource | undefined) => (choice: RailChoice): Route => ({ name: "factory", repository: choice.kind === "repository" ? choice.id : undefined, from });
