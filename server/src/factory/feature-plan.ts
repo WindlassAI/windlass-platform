@@ -5,7 +5,6 @@ import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE
 
 /** The figures a budget has (`ItemBudget`). A subtask's plan budget has `tokens` only. */
 export const dimensions = ["tokens", "hostedSeconds"] as const;
-export const emptyBudget = (): ItemBudget => ({ tokens: 0, hostedSeconds: 0 });
 
 /** Planning receipts stay on the ledger. One implementer gets one item's budget on top of what planning spent. */
 export function singleAfterPlanning(single: ItemBudget, spent: Pick<ItemBudget, "tokens" | "hostedSeconds">): ItemBudget {

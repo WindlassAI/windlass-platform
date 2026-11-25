@@ -77,13 +77,7 @@ export function itemAgent(item: Pick<FactoryItem, "agent" | "spent">): ItemAgent
 /** An item's tokens as reported, cached input at full count; an item stored before they were kept has only `tokens`. */
 export const rawTokens = (spent: Pick<ItemSpend, "tokens" | "rawTokens">): number => spent.rawTokens ?? spent.tokens;
 
-/** Nothing spent yet. */
 export const noSpend = (): ItemSpend => ({ tokens: 0, rawTokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 });
-
-/** What an item has spent, as it is stored, with what items stored before a field was kept lack: their tokens are their raw ones. */
-export function spendOf(spent: Partial<ItemSpend> & Pick<ItemSpend, "tokens">): ItemSpend {
-	return { tokens: spent.tokens, rawTokens: spent.rawTokens ?? spent.tokens, turns: spent.turns ?? 0, activeSeconds: spent.activeSeconds ?? 0, hostedSeconds: spent.hostedSeconds ?? 0 };
-}
 
 /**
  * What a machine harness reported of a turn, read from the turn's usage (the `session/prompt` answer) and

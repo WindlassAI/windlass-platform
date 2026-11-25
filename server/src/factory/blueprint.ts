@@ -1,48 +1,3 @@
-/**
- * The blueprint (Plans "software factory" §2.1): the one fixed sequence a work item's run goes through,
- * as a pure function over the item and the facts that reach it. The model decides only inside a turn;
- * which step comes next is decided here, from what the platform observed, never from what the agent
- * says.
- *
- *   0 refine     (an orchestrated feature only) a turn as the read-only planner; a person approves
- *                the plan, or asks for another
- *   1 implement  a turn on the task
- *   2 gate       code: the turn's verification decides. fail → a "continue fixing" turn; pass or
- *                unverified → publish
- *   3 publish    the platform pushes and opens or updates the pull request; a network error is retried
- *                3 times, a refusal is a question with GitHub's reason
- *   4 ci         wait with the sandbox paused, polling CI: none after 10 min → hand over; still running
- *                after 90 min → ask; not readable → hand over saying so
- *   5 ci_fix     a turn with the failing checks and their logs; back to 2
- *   6 conflict   when GitHub says the pull request conflicts: a turn that merges the base; back to 2
- *     review     when enabled, a second session reviews the pushed head. approve → handoff. changes requested
- *                on a single item → review_fix, a turn on its blocking findings, back to 2, then a review of the
- *                new head; the same blocking findings again stop it. A fix that changes
- *                nothing has the same head reviewed again, with the builder's report. needs a person → a question.
- *                A pull request someone else pushed to during the review is handed over as moved. A feature's
- *                review hands over whatever it recommends.
- *   7 handoff    code: the verdict at the pushed head; the item goes to review
- *   8 merged     wait, polling the pull request: merged → done, closed → cancelled
- *
- * Stop rules (§2.4), checked before every turn:
- *   - the stuck detector: a fix turn for a failure this run already had a fix turn for (the same
- *     fingerprint of failing checks, of CI, of a conflict with the base, the same blocking review findings)
- *     stops the run and asks, "Try it once more";
- *   - the item's budget: cost-weighted tokens and, hosted, sandbox time. Used up, the item pauses and asks:
- *     "Give it N more" (a subtask's extra adds to its feature's budget), "Hand it over as it is" (pushing
- *     what the sandbox has first, when nothing is pushed yet), "Give up". Going on keeps the same session,
- *     sandbox and work;
- *   - a backstop on an item's turns (`RULES.turnBackstop`), so a loop that never repeats a failure ends
- *     too, and 3 cut-off turns per step (deploys and restarts, not rounds).
- * Nothing is stopped silently, and no choice throws work away.
- *
- * How the actor uses it (§2.5): it stores what `advance` returns, the item and its effects, in one write,
- * then performs the effects by their keys. Every fact about a turn, a push or a poll names the key of
- * the attempt it is about, and a fact whose key is not the current one changes nothing and asks for
- * nothing: a fact delivered twice, a turn reported both by the outbox and by the fallback check, a poll
- * that fires after the item moved on. No clock is read: every time is a fact's `at`.
- */
-
 import { defaultPlaceRetryAt } from "./default-place.js";
 import { criticPrompt, mergeCandidate, smallPlan } from "./autonomy.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
@@ -53,7 +8,7 @@ import { CI_POLLING, type CiReading, ciPollEvery, ciState, workflowOverdue } fro
 import { spellSeconds } from "../usage.js";
 import { approveRoutes, bindRoute, choosePlacement, freeMachineSlots, machineSlots, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
-import { answeredWords } from "./answered.js";
+import { answeredWords, choice, CHOICES } from "./answered.js";
 import { feedbackWords, fixText, replanText } from "./feedback.js";
 import type { FeedbackDecision, FeedbackInput } from "./types.js";
 import { sharedPaths, singleAfterPlanning, subtaskMinimum, validatePlan, planScope, PlanError, approvalText, unattendedKeys, agentProfileProblem, agentOf } from "./feature-plan.js";
@@ -63,7 +18,7 @@ import { PLATFORM_TOOLS, refusalMessage } from "../provider-refusal.js";
 import { budgetStop, itemAgent, newAgent, noSpend, noteAgentTurn, retryAt, spellTokens, unmeasuredTurn } from "./budget.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import { environmentFailure, outputExcerpt, type EnvironmentFailure } from "./check-environment.js";
-import type { ChoiceId, CiProgress, EarlierFinding, Fact, FeatureJob, HandoffReview, RequestedReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemSpend, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
+import type { ChoiceId, CiProgress, EarlierFinding, Fact, StepFact, FeatureJob, HandoffReview, RequestedReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemSpend, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { ASK_WHEN_BLOCKED, BUILDER_ASSUMPTIONS, PUBLISH_SERVER, REPORT_TOOL } from "../agent-publish.js";
 import { REVIEW_TOOL, type PersonDecision } from "./reviewer-task.js";
 import { runAnywayWords, sources, thirdParty, untrustedWords } from "./untrusted.js";
@@ -71,11 +26,6 @@ import { REVIEW_OFF_REASON, openFindings, openFingerprint, reviewAlsoText, revie
 import { harnessName } from "../sandbox/harnesses.js";
 import { ciFingerprint, ciSentence, failureFingerprint, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
 
-/**
- * §2.1 and §2.4. Design constants, not settings: none is a limit a person sets. Rounds of fixing are not
- * capped: the stuck detector (the same failure twice), the item's budget and `turnBackstop` end a run that
- * goes nowhere. What is left here are mechanical retries and bounds of one turn.
- */
 export const RULES = {
 	/** Loop guard for one builder turn (including planning and summary). */
 	maxSteps: 400,
@@ -84,21 +34,16 @@ export const RULES = {
 	feedbackRuns: 3,
 	reviewFilings: 4,
 	reviewRefiles: 1,
-	/**
-	 * The most turns an item takes before it asks whether to go on, across its runs (a feature: its own turns, not its
-	 * subtasks'). A backstop for a loop that never repeats a failure; the budget bounds it first in all but odd cases.
-	 */
+	/** Count a feature’s own turns across runs, excluding its subtasks. */
 	turnBackstop: 60,
-	/** Cut-off turns of one step (deploys, restarts) before it asks: the infrastructure's, not the agent's. */
+	/** Infrastructure interruptions per step. */
 	interruptions: 3,
-	/** Automatic tries after a provider's usage limit, each waiting for its reset. */
 	providerRetries: 3,
 	publishTries: 3,
-	/** The first retry of a push that did not get through; each next one waits twice as long. */
+	/** Double the delay after each transient push failure. */
 	publishRetryMs: 30_000,
-	/** §2.2's fallback: while a turn runs, the session is asked this often whether it still does. */
+	/** Check for a lost turn receipt. */
 	turnCheckMs: 5 * 60_000,
-	/** The person's decisions an item keeps for its reviewer (`FactoryItem.decisions`): the newest. */
 	personDecisions: 12,
 } as const;
 
@@ -133,7 +78,7 @@ function automatic(c: Change, policy: Policy, evidence: string, offered: readonl
 	const history = c.run.autoHistory?.[policy] ?? [];
 	const fingerprint = failureFingerprint([policy, evidence], []);
 	const steps = AUTO_POLICY[policy];
-	// The same failure again is not retried with the same choice; a different next step (a fresh sandbox after a retry) still runs.
+	// Retry the same evidence only with a different choice.
 	const triedHere = new Set(history.filter(step => step.fingerprint === fingerprint).flatMap(step => steps[step.position]!.choices));
 	for (let position = (history.at(-1)?.position ?? -1) + 1; position < steps.length; position++) {
 		const { choices, afterMs } = steps[position]!;
@@ -150,25 +95,23 @@ function automatic(c: Change, policy: Policy, evidence: string, offered: readonl
 	return null;
 }
 
-/** Keeps the person's own words to the work, for the second reviewer: they are the person's decisions, which stand over the task. */
 function decided(item: FactoryItem, decision: PersonDecision): void {
 	const text = decision.text.trim();
 	if (!text) return;
 	item.decisions = [...(item.decisions ?? []), { ...decision, text: text.slice(0, 4_000) }].slice(-RULES.personDecisions);
 }
 
-/** The builder's turns, which are offered `ask_person`: not the planner's, the summary's or the reviewer's. */
+/** Steps permitted to ask the owner a question. */
 const ASKING: ReadonlySet<TurnStepKind> = new Set(["implement", "ci_fix", "conflict", "review_fix"]);
 
 const FINAL: ReadonlySet<ItemState> = new Set(["done", "cancelled"]);
 const CUT_SHORT: ReadonlySet<TurnOutcome> = new Set(["stopped", "failed", "interrupted", "error"]);
 
-/** Whether a second review of this item's runs can send its builder back (R4): its reviewer is on, it runs hosted, and it is a single item. */
 export function reviewSendsBack(item: FactoryItem): boolean {
 	return !item.parent && item.mode !== "orchestrate" && item.reviewer !== undefined && "on" in item.reviewer && item.place.kind === "hosted";
 }
 
-/** `<itemId>:<run>:<step>:<attempt>` (§2.1): names one attempt of one step, and every effect made for it. */
+/** Stable identity for a step attempt and its effects. */
 export function stepKey(itemId: string, run: number, step: number, attempt: number): string {
 	return `${itemId}:${run}:${step}:${attempt}`;
 }
@@ -185,7 +128,6 @@ export interface NewItem {
 	agent?: { harness: HarnessId; model: string; effort?: string | null; signIn?: ItemAgent["signIn"] };
 }
 
-/** A new item, in "draft": a `start` fact queues it. */
 export function createItem(input: NewItem): FactoryItem {
 	return {
 		id: input.id,
@@ -212,7 +154,6 @@ export function createItem(input: NewItem): FactoryItem {
 	};
 }
 
-/** The key the item waits on now: of its current step's current attempt. Null before the first run. */
 export function currentKey(item: FactoryItem): string | null {
 	return item.run === null ? null : stepKey(item.id, item.run.n, item.run.step.n, item.run.step.attempt);
 }
@@ -221,7 +162,7 @@ export function canRetry(item: FactoryItem): boolean {
 	return item.state === "failed" && !item.machineRemoved && !item.parent && (!item.jobs?.length || !!item.approvedPlan);
 }
 
-/** The next state of `item` after `fact`, and what to do and record for it. A fact that changes nothing returns `item` itself, no effects and no events. */
+/** Use the fact's clock. Stale deliveries return the original item with no effects or events. */
 export function advance(item: FactoryItem, fact: Fact): Outcome {
 	const unchanged: Outcome = { item, effects: [], events: [] };
 	const receipt = (fact.kind === "turn_ended" || fact.kind === "review_ended") && item.state === "cancelled"
@@ -256,10 +197,6 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 	return { item: change.item, effects: change.effects, events: change.events, ...(change.feedback.length && { feedback: change.feedback }), ...(change.storeVerdict && { storeVerdict: change.storeVerdict }), ...(change.tookReview && { tookReview: change.tookReview }) };
 }
 
-// ---------------------------------------------------------------------------------------------
-// One change
-// ---------------------------------------------------------------------------------------------
-
 class Change {
 	storeVerdict?: Outcome["storeVerdict"];
 	tookReview?: string;
@@ -287,16 +224,11 @@ class Change {
 		this.events.push({ at: this.at, by: this.by, step: run === null || run.step.n === 0 ? null : { run: run.n, n: run.step.n, kind: run.step.kind, attempt: run.step.attempt }, said, ...(stopReason && { stopReason }), ...(asked !== undefined && { asked }) });
 	}
 
-	/**
-	 * A line about the item, not about the step it is at: what the person or GitHub did to it. Said within the wait for the
-	 * merge, "The pull request was closed without merging" would read as a line of the step named "merged", and a send-back
-	 * as one of the run it ends.
-	 */
+	/** Keep external events out of the current step's timeline. */
 	sayOfItem(said: string): void {
 		this.events.push({ at: this.at, by: this.by, step: null, said });
 	}
 
-	/** Moves the item to `next`, keeping its active time (§2.4: only time "working" counts). */
 	state(next: ItemState, wait: Wait | null = null): void {
 		const { item } = this;
 		if (item.state === "working" && next !== "working" && item.workingSince !== null) {
@@ -423,7 +355,7 @@ function apply(c: Change, fact: Fact): boolean {
 		}
 		case "cancel_subtask": {
 			const job = item.jobs?.find(j => j.task.key === fact.key && activeJob(j));
-			if (!job || job.task.key !== fact.key || job.cancelRequested || item.run?.step.kind !== "subtasks" || item.question || item.state !== "waiting") return false;
+			if (!job || job.cancelRequested || item.run?.step.kind !== "subtasks" || item.question || item.state !== "waiting") return false;
 			job.cancelRequested = true;
 			c.say("Requested cancellation of " + job.task.title + ".");
 			c.effects.push({kind:"cancel_children", key:String(item.revision+1), ids:[job.id]});
@@ -448,59 +380,12 @@ function apply(c: Change, fact: Fact): boolean {
 			return charged;
 		}
 		case "edit_plan":
-		case "file_plan": {
-			if (item.mode !== "orchestrate" || !item.singleBudget) return false;
-			if (fact.kind === "edit_plan") {
-				if (!item.featurePlan || item.featurePlan.version !== fact.version || !planQuestion(item)) return false;
-			} else if (!item.run?.step.turn || item.run.step.kind !== "refine" || c.key !== fact.key) return false;
-			const plannedJobs = item.jobs?.filter(j => !repair(j)) ?? [];
-			const completed = plannedJobs.filter(j => j.state === "done");
-			const plan = validatePlan(fact.plan, item.singleBudget, aliases(item));
-			if (fact.kind === "edit_plan" && !Object.hasOwn(fact.plan as object, "overflow")) plan.overflow = item.featurePlan?.overflow ?? false;
-			if (item.forceSplit && plan.singleSuggested) throw new PlanError("Propose two to six subtasks as requested.");
-			const keys = [...plannedJobs.map(job => job.task.key), ...plan.subtasks.map(task => task.key)];
-			if (new Set(keys).size > 6) throw new PlanError("A feature may have at most six distinct subtasks across its plans.");
-			if (fact.kind === "file_plan") {
-				const approvedPlan = item.replans ? item.approvedPlan : undefined;
-				for (const q of plan.questions) {
-					const answer = approvedPlan?.questions.find(old => old.text === q.text && old.id !== "scope-change")?.answer;
-					if (answer && q.id !== "scope-change") q.answer = answer;
-					else delete q.answer;
-				}
-				// A re-plan keeps each approved subtask's agent: only the person changes it, on the card.
-				if (approvedPlan) for (const task of plan.subtasks) {
-					const approved = approvedPlan.subtasks.find(s => s.key === task.key);
-					if (!approved) continue;
-					if (approved.agent) task.agent = structuredClone(approved.agent);
-					else delete task.agent;
-					// The kept agent is held to the re-plan's needs, as the planner's own choice is (`agentOf`).
-					const problem = agentProfileProblem(task);
-					if (problem) throw new PlanError(task.title + ": " + problem);
-				}
-				if (approvedPlan && planScope(plan) !== planScope(approvedPlan)) {
-					plan.questions = plan.questions.filter(q => q.id !== "scope-change");
-					plan.questions.push({ id: "scope-change", text: "The revised plan changes the approved scope or subtasks. Do you accept these changes?" });
-				}
-			}
-			if (item.replans) {
-				if (item.feedbackReplans && completed.length && plan.subtasks.every(s => completed.some(j => j.task.key === s.key)))
-					throw new PlanError("Add a fix subtask to the completed feature.");
-				if (plan.singleSuggested) throw new PlanError("Re-plan the remaining work on the existing feature branch.");
-				for (const job of completed) if (!isDeepStrictEqual(plan.subtasks.find(s => s.key === job.task.key), job.task)) throw new PlanError("Completed subtasks cannot be changed.");
-			}
-			// What the feature may spend if the person approves this plan: its own allowance and every subtask's budget.
-			const proposed = { ...plan, budget: featureTotal(item, plan), compare: { singleBudget: item.singleBudget }, version: (item.featurePlan?.version ?? 0) + 1, status: "proposed" as const };
-			if (fact.kind === "file_plan" && item.filedTurn === fact.key && item.featurePlan && isDeepStrictEqual({ ...proposed, version: item.featurePlan.version }, item.featurePlan)) return false;
-			item.featurePlan = proposed;
-			if (fact.kind === "file_plan") item.filedTurn = fact.key;
-			else askPlan(c);
-			return true;
-		}
+		case "file_plan":
+			return proposePlan(c, fact);
 		case "approve_plan":
 			if (!planQuestion(item) || item.featurePlan?.version !== fact.version) return false;
 			return approveFeature(c, fact.inventory, fact.agents, fact.bases);
 		case "set_subtask_agent": {
-			// After approval, a subtask that has not started yet runs the agent the person chooses now.
 			const plan = item.featurePlan;
 			const task = plan?.status === "approved" && item.run?.step.kind === "subtasks" && !item.jobs?.some(j => j.task.key === fact.key) && plan.subtasks.find(s => s.key === fact.key);
 			if (!task || !fact.inventory) return false;
@@ -624,7 +509,6 @@ function apply(c: Change, fact: Fact): boolean {
 			return true;
 		}
 		case "spent":
-			// The ledger only grows: an older figure that arrives late says nothing new.
 			if (item.place.kind !== "hosted" || !(fact.hostedSeconds > item.spent.hostedSeconds)) return false;
 			item.spent.hostedSeconds = fact.hostedSeconds;
 			return true;
@@ -633,8 +517,7 @@ function apply(c: Change, fact: Fact): boolean {
 	}
 }
 
-/** The facts about the current step. Each must name its current attempt. */
-function stepFact(c: Change, fact: Exclude<Fact, { kind: "request_review" | "default_place_ready" | "default_place_wait" | "update_feature" | "feature_updated" | "parent_update_finished" | "claim_join" | "finish_join" | "github_feedback" | "reverify" | "cancel_subtask" | "child_notice" | "edit_plan" | "approve_plan" | "set_subtask_agent" | "run_single" | "start" | "retry" | "send_back" | "note" | "cancel" | "answer" | "claim_secret" | "settle_secret" | "spent" | "ci_rerun_result" | "machine_removed" | "integration_started" | "integration_read" | "repo_pr_read" | "repo_pr_lost" }>): boolean {
+function stepFact(c: Change, fact: StepFact): boolean {
 	const run = c.item.run;
 	if (run === null || c.item.featureUpdate) return false;
 	const step = run.step;
@@ -643,7 +526,6 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "request_review" | "def
 	if (c.item.question?.kind === "machine_removed" || (c.item.machineRemoved && c.item.state === "failed")) {
 		if (fact.key !== key) return false;
 		if (fact.kind === "turn_ended" && step.turn === "started") {
-			// Its spend and what its agent reported are kept, as for any turn.
 			spendTurn(c, fact.spend, fact.providerRefusal);
 			return true;
 		}
@@ -653,85 +535,28 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "request_review" | "def
 		}
 		return false;
 	}
+	// These receipts name a child dispatch, poll, or merge attempt checked by its owner.
 	switch (fact.kind) {
-		case "secret_attempt":
-			if (fact.previous !== (run.asks ?? 0) || fact.key !== key || !ASKING.has(step.kind as TurnStepKind) || !step.turn || c.item.question || c.item.claimedSecret ||
-				!["queued", "working"].includes(c.item.state) || (run.asks ?? 0) >= MAX_SECRET_REQUESTS) return false;
-			run.asks = (run.asks ?? 0) + 1;
-			run.secretAttemptKey = key;
-			return true;
-		case "file_plan": return false;
-		case "feature_seed":
-			if (fact.key !== key || step.kind !== "subtasks") return false;
-			if (crossRepo(c.item)) {
-				if (!fact.repo || !recordSeed(c.item, fact.repo, fact.sha)) return false;
-			} else if (c.item.seed) return false;
-			else c.item.seed = fact.sha;
-			dispatchAgain(c);
-			return true;
-		case "feature_ready":
-			if (fact.key !== key || step.kind !== "subtasks") return false;
-			if (crossRepo(c.item)) {
-				if (!fact.repo || !recordOpened(c.item, fact.repo, fact.head, fact.pr)) return false;
-				if (!fact.waitForCiOnEachPart) repoOf(c.item, fact.repo).featureCi = { head: fact.head, since: c.at };
-				if (!featureOpened(c.item)) {
-					dispatchAgain(c);
-					return true;
-				}
-				c.effects.push({ kind: "link_prs", key });
-			} else if (c.item.pr) return false;
-			else {
-				c.item.pr = fact.pr; c.item.head = fact.head;
-				if (!fact.waitForCiOnEachPart) c.item.featureCi = { head: fact.head, since: c.at };
-			}
-			nextChild(c);
-			return true;
 		case "place_child":
 		case "placement_wait": {
 			const job = fact.child ? c.item.jobs?.find(j => j.id === fact.child) : c.item.jobs?.at(-1);
 			if (!job || fact.key !== (job.dispatchKey ?? key) || step.kind !== "subtasks" || c.item.question || job.cancelRequested || job.state !== "draft") return false;
-			let providerUntil: number | undefined;
-			let accountKey: string | undefined;
-			let sentence: string;
-			let dailyCap: boolean | undefined;
-			if (fact.kind === "place_child") {
-				if (!job.route || job.placement) return false;
-				const fit = choosePlacement(job.task, job.route, fact.inventory, job.warm, c.at);
-				if (fit.decision) {
-					delete job.placementWaitSince;
-					job.placement = fit.decision;
-					delete job.wait;
-					dispatchJob(c, job);
-					return true;
-				}
-				if (fit.refused !== undefined && fit.permanent) return placementRefused(c, job, fit.refused);
-				sentence = fit.refused ?? fit.wait;
-				providerUntil = fit.providerUntil;
-				accountKey = fit.accountKey;
-				dailyCap = fit.dailyCap;
-			} else {
+			if (fact.kind === "placement_wait") {
 				if (job.id !== fact.child) return false;
 				if (fact.refused) return placementRefused(c, job, fact.sentence);
-				sentence = fact.sentence;
-				providerUntil = fact.providerUntil;
-				accountKey = fact.accountKey;
-				dailyCap = fact.dailyCap;
+				return waitForPlacement(c, job, fact.sentence, fact);
 			}
-			let retry = placementRetryAt(c.at, providerUntil, dailyCap);
-			if (providerUntil === undefined && !dailyCap) {
-				job.placementWaitSince ??= c.at;
-				const deadline = job.placementWaitSince + AUTO_POLICY.placement_refused;
-				if (c.at >= deadline) {
-					job.placementRefusal = sentence;
-					job.wait = sentence;
-					return askPlacement(c, job);
-				}
-				retry = Math.min(retry, deadline);
-			} else delete job.placementWaitSince;
-			c.state("waiting", { reason: providerUntil !== undefined ? "provider" : dailyCap ? "capacity" : "machine", accountKey, sentence, retryAt: retry });
-			job.wait = sentence;
-			dispatchJob(c, job, retry);
-			return true;
+			if (!job.route || job.placement) return false;
+			const fit = choosePlacement(job.task, job.route, fact.inventory, job.warm, c.at);
+			if (fit.decision) {
+				delete job.placementWaitSince;
+				job.placement = fit.decision;
+				delete job.wait;
+				dispatchJob(c, job);
+				return true;
+			}
+			if (fit.refused !== undefined && fit.permanent) return placementRefused(c, job, fit.refused);
+			return waitForPlacement(c, job, fit.refused ?? fit.wait, fit);
 		}
 		case "child_update": {
 			const job = c.item.jobs?.find(j => j.id === fact.child);
@@ -763,110 +588,12 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "request_review" | "def
 			}
 			return true;
 		}
-		case "integrated":
-			if (fact.key !== key || !c.item.parent || step.kind !== "subtasks") return false;
-			c.effects.push({ kind: "notify_integrated", key, head: fact.head ?? c.item.head! });
-			if (fact.head) c.item.integratedHead = fact.head;
-			c.run.endedAt = c.at; c.state("done"); c.say("Integrated the verified subtask into the feature branch.");
-			return true;
-		case "feature_problem":
-			if (fact.key !== key || c.item.question) return false;
-			if (c.item.cancelAfterIntegration) {
-				cancel(c);
-				return true;
-			}
-			if (crossRepo(c.item) && !featureOpened(c.item)) {
-				// One repository refused its branch or draft PR: what opened stays, and "again" retries only the rest.
-				ask(c, "integration", `${fact.reason}. The pull requests opened so far are kept; no subtask runs until every repository has its draft.`, [{ id: "again", label: "Try the remaining repository again" }, choice("give_up")], null, null);
-			} else if (fact.missingTarget && c.item.mergeTarget) {
-				c.say(fact.reason);
-				c.run.endedAt = c.at;
-				c.state("failed");
-			} else if (fact.rebase && c.item.parent) {
-				nextTurn(c, conflictPlan(c.item.task.base));
-			} else ask(c, "publish_refused", fact.reason, [choice("give_up")], null, null);
-			return true;
-		case "sandbox_retry":
-			if (fact.key !== key || c.item.question || step.turn !== null || c.item.wait?.reason !== "capacity" || fact.at < (c.item.wait.retryAt ?? Infinity)) return false;
-			nextTurn(c, fact.plan);
-			return true;
-		case "provider_retry":
-			if (fact.key !== key || c.item.wait?.reason !== "provider" || (!fact.loginChanged && fact.at < (c.item.wait.retryAt ?? Infinity))) return false;
-			nextTurn(c, fact.plan);
-			return true;
-		case "sandbox_resize_refused":
-			if (fact.key !== key || c.item.question || step.turn !== null) return false;
-			ask(c, "turn_refused", `A ${fact.size} sandbox is no longer available to this account. Try again in the current sandbox, or give it up.`, [choice("again"), ...handOverAny(c.item), choice("give_up")], null, fact.plan);
-			return true;
-		case "sandbox_freed":
-			if (fact.key !== key || c.item.question || step.turn !== null) return false;
-			nextTurn(c, fact.plan);
-			return true;
-		case "turn_waiting": {
-			if (fact.key !== key || step.turn !== "delivered") return false;
-			const now = c.item.wait;
-			const wait = step.kind === "review" && run.review
-				? { ...fact.wait, sentence: `Second review of ${shortSha(run.review.head)}. ${fact.wait.sentence}` }
-				: fact.wait;
-			if (c.item.question) return false;
-			if (now?.reason === wait.reason && capacityDeadline(c, wait.reason, now.since, wait.sentence)) return true;
-			if (now !== null && now.reason === wait.reason && now.sentence === wait.sentence && now.retryAt === wait.retryAt) return false;
-			if (now?.reason !== wait.reason) c.say(wait.sentence);
-			c.state("waiting", wait);
-			return true;
-		}
-		case "session_deleted":
-			if (fact.key === key && step.kind === "plan_review" && step.turn) { step.turn = null; askPlan(c); return true; }
-			if (fact.key !== key || c.item.question?.kind === "turn_refused") return false;
-			step.turn = null;
-			ask(c, "turn_refused", "This agent was deleted.", [...handOver(c.item), choice("give_up")], null, null);
-			return true;
-		case "turn_started":
-			if (fact.key !== key || step.turn !== "delivered") return false;
-			step.turn = "started";
-			// A place was freed and the turn has its sandbox: the question about the cap is answered by that.
-			if (c.item.question?.kind === "sandboxes" || c.item.question?.kind === "machine_away") c.item.question = null;
-			c.state("working");
-			c.say("The turn started.");
-			checkTurn(c);
-			return true;
 		case "turn_running":
 			// Asked while delivered too: a turn whose slot was granted and never taken (a server stopped in between) is noticed.
 			if (step.turn === null || fact.key !== `${key}/check${step.checks}`) return false;
 			const wait = c.item.wait;
 			if (wait) capacityDeadline(c, wait.reason, wait.since, wait.sentence);
 			checkTurn(c);
-			return true;
-		case "turn_paused": {
-			// No failure and no question: the turn is not over, and resumes by itself when the machine is back.
-			if (fact.key !== key || step.turn !== "started") return false;
-			const sentence = `Paused: waiting for ${fact.machine ? `the machine “${fact.machine}”` : "the machine"} (offline since ${clock(fact.since)} UTC). The turn resumes by itself when it is back.`;
-			if (c.item.wait?.reason === "machine" && c.item.wait.sentence === sentence) return false;
-			c.say(sentence);
-			c.state("waiting", { reason: "machine", sentence, retryAt: null });
-			return true;
-		}
-		case "turn_resumed":
-			// Once only: a turn that already goes on again (the fact delivered twice) has nothing to change.
-			if (fact.key !== key || step.turn !== "started" || (c.item.wait?.reason !== "machine" && c.item.question?.kind !== "machine_away")) return false;
-			// The question about waiting longer is answered by the machine itself.
-			if (c.item.question?.kind === "machine_away") c.item.question = null;
-			c.say(`The machine came back after ${spellDuration(fact.offlineMs)}: the turn resumed where it was.`);
-			c.state("working");
-			return true;
-		case "machine_away":
-			if (fact.key !== key || step.turn !== "started" || step.awayAsked || c.item.question || c.item.wait?.reason !== "machine" || c.at < (fact.deadline ?? fact.since + AUTO_POLICY.machine_away)) return false;
-			step.awayAsked = true;
-			ask(c, "machine_away", `${fact.machine ? `The machine “${fact.machine}”` : "The machine"} has been offline since ${clock(fact.since)} UTC, and this item's turn is paused until it is back. Keep waiting, or give up on the item. To run it elsewhere, give up and start it again on another place.`, [choice("wait"), choice("give_up")], null, null);
-			return true;
-		case "turn_ended":
-			if (fact.key !== key || step.turn === null || step.kind === "review" || step.kind === "plan_review") return false;
-			turnEnded(c, fact);
-			return true;
-		case "review_ended":
-			if (fact.key === key && step.turn && step.kind === "plan_review") { finishCritic(c, fact); return true; }
-			if (fact.key !== key || step.turn === null || step.kind !== "review") return false;
-			reviewEnded(c, fact);
 			return true;
 		case "auto_merge_result":
 			if (!run.ci || run.ci.autoMergeKey !== fact.key || step.kind !== "merged" || c.item.state !== "review" || fact.head !== c.item.head) return false;
@@ -884,25 +611,6 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "request_review" | "def
 			else {
 				prRead(c, { mergedByApp: true, kind: "pr_read", key, at: c.at, state: "merged", prHead: fact.head, webhooks: !!run.ci?.webhooks });
 			}
-			return true;
-		case "base_conflict":
-			if (fact.key !== key || step.kind !== "publish" || !run.updateFromBase || c.item.question) return false;
-			delete run.updateFromBase;
-			// The update already spent this conflict round.
-			nextTurn(c, { ...conflictPlan(c.item.task.base), charge: null, fingerprint: null });
-			return true;
-		case "published":
-		case "publish_failed":
-			if (step.kind !== "publish" || fact.key !== key) return false;
-			if (fact.kind === "published") published(c, fact);
-			else publishFailed(c, fact);
-			return true;
-		case "ci_rerun_started":
-			if (step.kind !== "ci" || fact.key !== key || !run.ci || c.item.ciReruns?.[fact.head]) return false;
-			// Commit the claim and the next poll before the POST. Replaying the effect cannot request a second run.
-			(c.item.ciReruns ??= {})[fact.head] = { jobs: fact.jobs };
-			step.attempt++;
-			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the interrupted checks.");
 			return true;
 		case "ci_read":
 			if (step.kind === "subtasks") {
@@ -923,24 +631,163 @@ function stepFact(c: Change, fact: Exclude<Fact, { kind: "request_review" | "def
 			prRead(c, fact);
 			return true;
 	}
+	if (fact.key !== key) return false;
+	switch (fact.kind) {
+		case "secret_attempt":
+			if (fact.previous !== (run.asks ?? 0) || !ASKING.has(step.kind as TurnStepKind) || !step.turn || c.item.question || c.item.claimedSecret ||
+				!["queued", "working"].includes(c.item.state) || (run.asks ?? 0) >= MAX_SECRET_REQUESTS) return false;
+			run.asks = (run.asks ?? 0) + 1;
+			run.secretAttemptKey = key;
+			return true;
+		case "feature_seed":
+			if (step.kind !== "subtasks") return false;
+			if (crossRepo(c.item)) {
+				if (!fact.repo || !recordSeed(c.item, fact.repo, fact.sha)) return false;
+			} else if (c.item.seed) return false;
+			else c.item.seed = fact.sha;
+			dispatchAgain(c);
+			return true;
+		case "feature_ready":
+			if (step.kind !== "subtasks") return false;
+			if (crossRepo(c.item)) {
+				if (!fact.repo || !recordOpened(c.item, fact.repo, fact.head, fact.pr)) return false;
+				if (!fact.waitForCiOnEachPart) repoOf(c.item, fact.repo).featureCi = { head: fact.head, since: c.at };
+				if (!featureOpened(c.item)) {
+					dispatchAgain(c);
+					return true;
+				}
+				c.effects.push({ kind: "link_prs", key });
+			} else if (c.item.pr) return false;
+			else {
+				c.item.pr = fact.pr; c.item.head = fact.head;
+				if (!fact.waitForCiOnEachPart) c.item.featureCi = { head: fact.head, since: c.at };
+			}
+			nextChild(c);
+			return true;
+		case "integrated":
+			if (!c.item.parent || step.kind !== "subtasks") return false;
+			c.effects.push({ kind: "notify_integrated", key, head: fact.head ?? c.item.head! });
+			if (fact.head) c.item.integratedHead = fact.head;
+			c.run.endedAt = c.at; c.state("done"); c.say("Integrated the verified subtask into the feature branch.");
+			return true;
+		case "feature_problem":
+			if (c.item.question) return false;
+			if (c.item.cancelAfterIntegration) {
+				cancel(c);
+				return true;
+			}
+			if (crossRepo(c.item) && !featureOpened(c.item)) {
+				// One repository refused its branch or draft PR: what opened stays, and "again" retries only the rest.
+				ask(c, "integration", `${fact.reason}. The pull requests opened so far are kept; no subtask runs until every repository has its draft.`, [{ id: "again", label: "Try the remaining repository again" }, choice("give_up")], null, null);
+			} else if (fact.missingTarget && c.item.mergeTarget) {
+				c.say(fact.reason);
+				c.run.endedAt = c.at;
+				c.state("failed");
+			} else if (fact.rebase && c.item.parent) {
+				nextTurn(c, conflictPlan(c.item.task.base));
+			} else ask(c, "publish_refused", fact.reason, [choice("give_up")], null, null);
+			return true;
+		case "sandbox_retry":
+			if (c.item.question || step.turn !== null || c.item.wait?.reason !== "capacity" || fact.at < (c.item.wait.retryAt ?? Infinity)) return false;
+			nextTurn(c, fact.plan);
+			return true;
+		case "provider_retry":
+			if (c.item.wait?.reason !== "provider" || (!fact.loginChanged && fact.at < (c.item.wait.retryAt ?? Infinity))) return false;
+			nextTurn(c, fact.plan);
+			return true;
+		case "sandbox_resize_refused":
+			if (c.item.question || step.turn !== null) return false;
+			ask(c, "turn_refused", `A ${fact.size} sandbox is no longer available to this account. Try again in the current sandbox, or give it up.`, [choice("again"), ...handOverAny(c.item), choice("give_up")], null, fact.plan);
+			return true;
+		case "sandbox_freed":
+			if (c.item.question || step.turn !== null) return false;
+			nextTurn(c, fact.plan);
+			return true;
+		case "turn_waiting": {
+			if (step.turn !== "delivered") return false;
+			const now = c.item.wait;
+			const wait = step.kind === "review" && run.review
+				? { ...fact.wait, sentence: `Second review of ${shortSha(run.review.head)}. ${fact.wait.sentence}` }
+				: fact.wait;
+			if (c.item.question) return false;
+			if (now?.reason === wait.reason && capacityDeadline(c, wait.reason, now.since, wait.sentence)) return true;
+			if (now !== null && now.reason === wait.reason && now.sentence === wait.sentence && now.retryAt === wait.retryAt) return false;
+			if (now?.reason !== wait.reason) c.say(wait.sentence);
+			c.state("waiting", wait);
+			return true;
+		}
+		case "session_deleted":
+			if (step.kind === "plan_review" && step.turn) { step.turn = null; askPlan(c); return true; }
+			if (c.item.question?.kind === "turn_refused") return false;
+			step.turn = null;
+			ask(c, "turn_refused", "This agent was deleted.", [...handOver(c.item), choice("give_up")], null, null);
+			return true;
+		case "turn_started":
+			if (step.turn !== "delivered") return false;
+			step.turn = "started";
+			if (c.item.question?.kind === "sandboxes" || c.item.question?.kind === "machine_away") c.item.question = null;
+			c.state("working");
+			c.say("The turn started.");
+			checkTurn(c);
+			return true;
+		case "turn_paused": {
+			if (step.turn !== "started") return false;
+			const sentence = `Paused: waiting for ${fact.machine ? `the machine “${fact.machine}”` : "the machine"} (offline since ${clock(fact.since)} UTC). The turn resumes by itself when it is back.`;
+			if (c.item.wait?.reason === "machine" && c.item.wait.sentence === sentence) return false;
+			c.say(sentence);
+			c.state("waiting", { reason: "machine", sentence, retryAt: null });
+			return true;
+		}
+		case "turn_resumed":
+			if (step.turn !== "started" || (c.item.wait?.reason !== "machine" && c.item.question?.kind !== "machine_away")) return false;
+			if (c.item.question?.kind === "machine_away") c.item.question = null;
+			c.say(`The machine came back after ${spellDuration(fact.offlineMs)}: the turn resumed where it was.`);
+			c.state("working");
+			return true;
+		case "machine_away":
+			if (step.turn !== "started" || step.awayAsked || c.item.question || c.item.wait?.reason !== "machine" || c.at < (fact.deadline ?? fact.since + AUTO_POLICY.machine_away)) return false;
+			step.awayAsked = true;
+			ask(c, "machine_away", `${fact.machine ? `The machine “${fact.machine}”` : "The machine"} has been offline since ${clock(fact.since)} UTC, and this item's turn is paused until it is back. Keep waiting, or give up on the item. To run it elsewhere, give up and start it again on another place.`, [choice("wait"), choice("give_up")], null, null);
+			return true;
+		case "turn_ended":
+			if (step.turn === null || step.kind === "review" || step.kind === "plan_review") return false;
+			turnEnded(c, fact);
+			return true;
+		case "review_ended":
+			if (step.turn && step.kind === "plan_review") { finishCritic(c, fact); return true; }
+			if (step.turn === null || step.kind !== "review") return false;
+			reviewEnded(c, fact);
+			return true;
+		case "base_conflict":
+			if (step.kind !== "publish" || !run.updateFromBase || c.item.question) return false;
+			delete run.updateFromBase;
+			// The update already spent this conflict round.
+			nextTurn(c, { ...conflictPlan(c.item.task.base), charge: null, fingerprint: null });
+			return true;
+		case "published":
+		case "publish_failed":
+			if (step.kind !== "publish") return false;
+			if (fact.kind === "published") published(c, fact);
+			else publishFailed(c, fact);
+			return true;
+		case "ci_rerun_started":
+			if (step.kind !== "ci" || !run.ci || c.item.ciReruns?.[fact.head]) return false;
+			// Commit the claim and the next poll before the POST. Replaying the effect cannot request a second run.
+			(c.item.ciReruns ??= {})[fact.head] = { jobs: fact.jobs };
+			step.attempt++;
+			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the interrupted checks.");
+			return true;
+	}
 }
-
-// ---------------------------------------------------------------------------------------------
-// Runs and turns
-// ---------------------------------------------------------------------------------------------
 
 const IMPLEMENT: TurnPlan = { kind: "implement", text: "", newStep: true, charge: null, fingerprint: null, fetchBase: null };
 
-/**
- * A delivery's `unsandboxed`: someone else's text in it, all of which the person chose to run anyway where no
- * agent can contain it ("Docker, hardened"); the session refuses the turn there otherwise (untrusted.ts, `untrustedTurn`).
- */
+/** The owner must have approved every uncontained source before delivery. */
 const unsandboxedOf = (item: FactoryItem, list: readonly string[] | undefined): { unsandboxed?: true } => {
 	const outside = thirdParty(list);
 	return outside.length && outside.every(source => item.unsandboxed?.includes(source)) ? { unsandboxed: true } : {};
 };
 
-/** A plan's `untrusted`: the sources, each once; nothing for none, so a trusted plan stays as it was. */
 const marked = (...lists: Array<readonly string[] | undefined | null>): Pick<TurnPlan, "untrusted"> => {
 	const list = sources(...lists);
 	return list.length ? { untrusted: list } : {};
@@ -952,7 +799,6 @@ function taskText(task: Task): string {
 	return `${task.title}\n\n${task.body}${criteria}${feature}`.trim();
 }
 
-/** A run's first turn: the plan (step 0) for an orchestrated feature, the task otherwise. */
 function firstPlan(item: FactoryItem, note: string | null): TurnPlan {
 	const plan = singleFirstPlan(item, note);
 	if (item.mergeTarget && item.childBase) plan.fetchBase = item.childBase;
@@ -976,16 +822,14 @@ function singleFirstPlan({ task, mode, featurePlan, untrusted }: FactoryItem, no
 	return { ...IMPLEMENT, text, ...marked(untrusted) };
 }
 
-/** Said first to an agent that goes on with a step it has no conversation of (`Delivery.fresh`). */
 export const FRESH_START = "Your earlier conversation about this task is gone, and so is any work that was not pushed: this turn starts without them. Work on the task from the start:";
 
-/** The prompt for a builder that goes on with a step and lost its conversation: the run's first turn's task, as it was marked. Null for a feature's planning. */
+/** Rebuild the original builder task and its trust labels after conversation loss. */
 function freshPlan(item: FactoryItem): Pick<TurnPlan, "text" | "untrusted"> | null {
 	const first = firstPlan(item, null);
 	return first.kind === "refine" ? null : { text: `${FRESH_START}\n\n${first.text}`, ...marked(first.untrusted) };
 }
 
-/** The person's own words to the agent, trusted: a note with a turn's prompt, or steered into a running turn. */
 export const personAdds = (note: string) => `The person adds: ${note}`;
 const withNote = (text: string, note: string | null) => (note === null ? text : `${text}\n\n${personAdds(note)}`);
 
@@ -1080,7 +924,6 @@ function takeFeedback(c: Change, batch: FeedbackInput, approved = false, also?: 
 	const feature = item.mode === "orchestrate";
 	let text = fixText(batch.text);
 	if (feature) {
-		// Feedback re-plans the feature: its planner's turn is held to the feature's own allowance, which asks for more when used.
 		if (batch.others && !approved) {
 			const reason = feedbackWords.feature(authors(batch));
 			f.awaiting = batch;
@@ -1114,7 +957,6 @@ function takeFeedback(c: Change, batch: FeedbackInput, approved = false, also?: 
 	if (reopened) reopened.feedback = true;
 }
 
-/** What a feature spent itself, apart from its subtasks: its planning, summary and review. */
 function ownSpent(item: FactoryItem, spent: ItemSpend): ItemSpend {
 	const own = { ...spent };
 	for (const job of item.jobs ?? []) {
@@ -1124,14 +966,9 @@ function ownSpent(item: FactoryItem, spent: ItemSpend): ItemSpend {
 	return own;
 }
 
-/** A feature's own allowance of tokens (`FactoryItem.ownTokens`), also of one stored before it was kept. */
 const ownTokens = (item: FactoryItem): number => item.ownTokens ?? item.singleBudget?.tokens ?? item.budget.tokens;
 
-/**
- * What a feature may spend under `plan`: its own allowance, the budget of every subtask that has run or runs
- * now (as it was raised since), and the plan's budget for each subtask still to run. A subtask that stopped
- * and runs again under a new plan is counted once more: the person approved its new budget.
- */
+/** Keep completed spend and reserve new allowances for the remaining subtasks. */
 function featureTotal(item: FactoryItem, plan: Pick<import("../contract.js").FeaturePlanEdit, "subtasks"> | undefined = item.approvedPlan): ItemBudget {
 	const jobs = item.jobs ?? [];
 	let tokens = ownTokens(item);
@@ -1139,17 +976,12 @@ function featureTotal(item: FactoryItem, plan: Pick<import("../contract.js").Fea
 	const placed = new Set(jobs.filter(job => job.state !== "failed" && job.state !== "cancelled").map(job => job.task.key));
 	const remaining = plan?.subtasks.filter(task => !placed.has(task.key)) ?? [];
 	for (const task of remaining) tokens += task.budget.tokens;
-	// A revised plan carries settled spend forward and gives every remaining subtask a fresh allowance.
 	const hostedSeconds = plan?.subtasks.length
 		? (item.replans ? item.spent.hostedSeconds : 0) + remaining.length * (item.singleBudget ?? item.budget).hostedSeconds
 		: item.budget.hostedSeconds;
 	return { tokens, hostedSeconds };
 }
 
-/**
- * The budget figures a feature's planner proposes against (file_plan's description points here): one item's weighted
- * budget, the least and most a subtask may have, the feature's own allowance on top, and what it has spent.
- */
 export function plannerBudgetText(item: FactoryItem): string {
 	const single = (item.singleBudget ?? item.budget).tokens;
 	const n = (value: number) => Math.round(value).toLocaleString("en-US");
@@ -1172,7 +1004,6 @@ export function plannerCapacityText(place: FactoryItem["place"], machines: Place
 	return `Your machine '${machine?.name ?? place.machineId}' can run ${parts} part${parts === 1 ? "" : "s"} at once. Additional parts wait for a slot.`;
 }
 
-/** The turns an item has taken toward the backstop: a feature's own, not its subtasks'. */
 const backstopTurns = (item: FactoryItem): number => (item.mode === "orchestrate" ? ownSpent(item, item.spent).turns : item.spent.turns) - (item.backstopFrom ?? 0);
 
 /** The failures this run already had a fix turn for (the stuck detector): a run stored before they were kept has its last one. */
@@ -1187,10 +1018,8 @@ function turnBudgetStop(c: Change) {
 	return budgetStop(feature ? { ...item.budget, tokens: ownTokens(item) } : item.budget, feature ? ownSpent(item, spent) : spent, item.place);
 }
 
-/** Starts the turn of `plan`, unless a stop rule holds: then the person is asked, and the turn is what "go on" resumes. */
 function nextTurn(c: Change, plan: TurnPlan): void {
 	const { item, run } = c;
-	// The stuck detector: a fix for a failure this run already tried to fix. Then the backstops: cut-off turns, the item's turns.
 	if (plan.fingerprint !== null && failuresOf(run).includes(plan.fingerprint)) {
 		if (plan.fingerprint === NO_GATE)
 			return ask(c, "rounds", SUBTASK_CHECK_QUESTION, subtaskChoices(), "repeated", plan);
@@ -1217,20 +1046,15 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	// A newly delivered summary, including a retry saved by an older server, has all its evidence
 	// even when its agent starts a new conversation. Keep any instructions the person added.
 	if (summary && plan.newStep) plan = { ...plan, text: [summary.text, plan.text].filter(Boolean).join("\n\n"), ...marked(summary.untrusted, plan.untrusted) };
-	// A planning turn is told its budget figures each time, from the item as it is now.
 	const delivery = { kind: "deliver" as const, key: c.key, text: plan.kind === "refine" ? plan.text + plannerBudgetText(item) : plan.text, fetchBase: plan.fetchBase, ...(plan.feedbackQuote && { feedbackQuote: plan.feedbackQuote }) };
-	// A builder's turn that goes on with its step also carries the step's whole task, for an agent that lost its conversation.
 	const fresh = plan.to !== "review" && !plan.newStep ? summary ?? (ASKING.has(plan.kind) ? freshPlan(item) : null) : null;
 	if (plan.to === "review") {
 		if (!plan.checkout || !run.ci || !run.review) throw new Error("a reviewer turn needs its checkout and verdict");
 		if (plan.newStep) c.say(`A second agent reviews ${shortSha(run.review.head)}.`);
-		// The reviewer always reads another agent's report, and the task as the item has it (a feature's with its subtasks' reports).
 		const untrusted = marked(item.untrusted, [untrustedWords.builder(plan.checkout.pr)], item.approvedPlan ? [untrustedWords.reports] : []);
 		c.effects.push({ ...delivery, to: "review", checkout: plan.checkout, reviewerInput: reviewerInput(c, run.ci, plan.checkout.pr), agent: null, maxSteps: RULES.reviewMaxSteps, ...untrusted, ...unsandboxedOf(item, untrusted.untrusted) });
 	} else {
-		// One question a turn, which the session holds to; a run asks as often as its turns do, each a stop that waits for the person.
 		const asking = ASKING.has(plan.kind) ? { asksLeft: 1 } : {};
-		// The person's notes go with the builder's next turn, whichever text the session sends.
 		const note = ASKING.has(plan.kind) ? item.ownerNote ?? null : null;
 		if (note !== null) delete item.ownerNote;
 		const untrusted = marked(plan.untrusted);
@@ -1271,21 +1095,13 @@ export function turnCheckEffect(turn: string, step: Run["step"], at: number): Ex
 	return { kind: "check_turn", key: `${turn}/check${step.checks}`, turn, at, ...(step.kind === "plan_review" ? { to: "critic" } : step.kind === "review" && { to: "review" }) };
 }
 
-/**
- * The session could not prepare the turn's sandbox (`sandboxFailed`): the agent never ran, so this is not one of the
- * step's cut-offs. The recovery policy covers the current and fresh sandbox attempts.
- */
+/** Sandbox preparation failures do not count as interrupted agent turns. */
 function sandboxFailed(c: Change, said: string, resume: TurnPlan): void {
 	const reason = said.trim().replace(/[.\s]+$/, "");
 	const text = `The sandbox could not be prepared for the turn: ${reason}. The agent did not run. A fresh sandbox starts from the repository on GitHub and loses any unpushed work.`;
 	ask(c, "sandbox_failed", text, [choice("again"), choice("fresh_sandbox"), ...handOverAny(c.item), choice("give_up")], null, resume);
 }
 
-/**
- * The turn's sandbox ran out of memory and the turn did not finish (`turn_ended.outOfMemory`): the person is
- * asked, with the figures, whether to go on in a sandbox of the next size (`larger_sandbox`), which starts from the
- * repository on GitHub, or in the same one.
- */
 function outOfMemory(c: Change, memory: OutOfMemory, resume: TurnPlan): void {
 	if (c.item.place.kind === "machine") {
 		const text = `${outOfMemoryWords(memory, [], "machine")} The agent's turn did not finish. Go on anyway to try again in the same slot.`;
@@ -1336,27 +1152,25 @@ function askProviderRefusal(c: Change, refusal: ItemProviderRefusal, plan: TurnP
 		{ ...plan, ...refusal.retry, newStep: false });
 }
 
+function startRetryPlan(item: FactoryItem, kind: TurnStepKind): TurnPlan {
+	return { ...IMPLEMENT, kind, text: `Your last turn could not start, so nothing of it reached you. Carry on with the task:\n\n${taskText(item.task)}`, newStep: false, ...marked(item.untrusted) };
+}
+
 function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void {
 	const { item, run } = c;
 	const step = run.step;
 	const kind = step.kind as TurnStepKind;
 	spendTurn(c, fact.spend, fact.providerRefusal);
-	// The provider refused the turn: that is what the person is told, with its retry and hand-over choices, before anything
-	// about the turn's tokens. A refused turn reported none because the provider answered none; the next one is measured again.
+	// A provider refusal reports no tokens. Handle it before checking the budget.
 	if (fact.providerRefusal) return askProviderRefusal(c, fact.providerRefusal, { ...IMPLEMENT, kind });
-	// A turn whose tokens should count but were not reported stops the item: another turn would run unbounded by its token budget.
-	// One the session refused before the agent ran used none.
-	// A turn whose sandbox ran out of memory and did not finish: in the same size the same commands run it out again.
+	// Missing billable usage would let another turn exceed its budget.
 	const memory = fact.outOfMemory && fact.outcome !== "succeeded" ? fact.outOfMemory : null;
 	const unmeasured = fact.refused || fact.sandboxFailed || (memory && fact.outcome === "error") ? null : unmeasuredTurn(fact.spend, itemAgent(item));
-	// The sandbox could not be prepared: the agent never ran, so nothing of the turn is judged and it is no cut-off.
-	if (fact.sandboxFailed) return sandboxFailed(c, fact.sandboxFailed, { ...IMPLEMENT, kind, text: `Your last turn could not start, so nothing of it reached you. Carry on with the task:\n\n${taskText(item.task)}`, newStep: false, ...marked(item.untrusted) });
+	if (fact.sandboxFailed) return sandboxFailed(c, fact.sandboxFailed, startRetryPlan(item, kind));
 	delete step.sandboxFailures;
 	if (memory) return outOfMemory(c, memory, { ...IMPLEMENT, kind, text: `Your last turn ran the sandbox out of memory and did not finish. Carry on with the task, and keep the memory your commands use at once low (fewer tests or workers in parallel):\n\n${taskText(item.task)}`, newStep: false, ...marked(item.untrusted) });
 	if (unmeasured) return ask(c, "budget", unmeasured, [...handOver(item), choice("give_up")], "tokens", null);
 
-	// The agent asked to leave its sandbox, which this profile never allows: nothing of the turn is judged, and trying again
-	// would most likely ask the same. The person files the work again where commands run unasked, or gives up.
 	if (fact.escaped) return ask(c, "turn_refused", sandboxEscapeQuestion(item, fact.escaped), [...handOver(item), choice("give_up")], null, null);
 	const result = gateResult(fact.outcome, fact.verified, kind === "run_checks");
 	// Refused on "Docker, hardened" for someone else's text: the person may run that very turn anyway, labelled only.
@@ -1366,12 +1180,10 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	}
 	// A startup failure uses its own retry allowance. Sign-in and other policy refusals need the owner.
 	if (fact.refused) {
-		const resume: TurnPlan = { ...IMPLEMENT, kind, text: `Your last turn could not start, so nothing of it reached you. Carry on with the task:\n\n${taskText(item.task)}`, newStep: false, ...marked(item.untrusted) };
-		// Two sentences: the session's own may be several, and starts with a capital.
+		const resume: TurnPlan = startRetryPlan(item, kind);
 		return ask(c, "turn_refused", `The agent's turn could not start. ${fact.refused}`, [choice("again"), ...handOver(item), choice("give_up")], null, resume, undefined, { policy: fact.policyRefusal ? undefined : "turn_start" });
 	}
-	// The builder asked its person (`ask_person`) and was told the question is recorded: it is asked, even of a turn cut short.
-	// Nothing of the turn is judged: the workspace and any pushed head stay as they are, and the answer resumes this step.
+	// Surface a recorded question even when its turn was cut short.
 	const prepaid = run.secretAttemptKey === fact.key;
 	if (fact.secret && ASKING.has(kind) && !secretRequestLimit(fact.secret.name, prepaid ? 0 : run.asks ?? 0, run.declinedSecrets ?? [], "run")) {
 		if (!prepaid) run.asks = (run.asks ?? 0) + 1; // A receipt from a session predating upfront accounting.
@@ -1394,7 +1206,6 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		if (!fact.report) return ask(c, "turn_refused", ["The final summary was not filed.", fact.reportProblem].filter(Boolean).join(" "), [choice("again"), choice("give_up")], null, { ...IMPLEMENT, kind }, undefined, { policy: "summary_missing" });
 		c.enter("publish"); c.effects.push({ kind: "describe_feature", key: c.key }); return;
 	}
-	// Only an orchestrated feature plans (`singleFirstPlan`): one implementer is given the task.
 	if (kind === "refine") return fact.autoApprovePlans ? considerCritic(c) : askPlan(c);
 	// A builder that changed nothing for a review answers it in its report: the same head is reviewed again, with that report.
 	if (!fact.changes && kind === "review_fix" && run.ci && run.review && run.ci.head === item.head) {
@@ -1408,6 +1219,11 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 		return ask(c, "no_change", "The agent ended its turn without changing anything.", [choice("again"), ...handOver(item), choice("give_up")], null, resume);
 	}
 
+	finishGate(c, fact, kind, result);
+}
+
+function finishGate(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>, kind: TurnStepKind, result: ReturnType<typeof gateResult>): void {
+	const { run } = c;
 	if (kind === "run_checks" && result !== "unverified") {
 		run.failures = failuresOf(run).filter(failure => failure !== NO_GATE);
 		if (run.lastFailure === NO_GATE) run.lastFailure = null;
@@ -1415,15 +1231,13 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	c.enter("gate");
 	run.gate = { turn: fact.key, ...(kind === "run_checks" && { forcedChecks: true }), outcome: fact.outcome, verified: fact.verified, flags: fact.flags };
 	if (result === "fail" && fact.verified !== null) {
-		// Every check that failed did so because the sandbox could not run it: that says nothing about the code, and
-		// another turn of fixing would only fail the same way. The person is asked instead.
+		// Fixing code cannot repair the sandbox that runs its checks.
 		const environment = environmentChecks(fact.verified);
 		const failing = failingNames(fact.verified.run?.checks ?? []);
 		if (environment.length && !failing) return askEnvironment(c, kind, environment);
 		c.say(`The checks failed: ${failing}.`);
 		return nextTurn(c, { ...IMPLEMENT, kind, text: gateFixText(failing), charge: "gate", fingerprint: gateFingerprint(fact.verified) });
 	}
-	// What is true of the checks: none set is no shortcoming (CI decides); a turn with no record of them says so, whatever is set.
 	const said =
 		result === "pass"
 			? "The checks passed."
@@ -1436,19 +1250,16 @@ function turnEnded(c: Change, fact: Extract<Fact, { kind: "turn_ended" }>): void
 	publish(c);
 }
 
-/** The platform's sentence of an `agent_ask` question. The agent's own words are beside it (`Question.asked`), never in it. */
+/** Keep the agent's words in Question.asked, separate from the platform message. */
 const AGENT_ASKS = "The agent stopped to ask you a question before it goes on.";
 
-/** The question of a step that ended because the agent asked to leave its sandbox (`turn_ended.escaped`): the platform's note, and what the person can do. */
 export function sandboxEscapeQuestion(item: Pick<FactoryItem, "agent">, note: string): string {
 	const name = harnessName(item.agent?.harness ?? "windlass");
 	return `${name} asked to leave its sandbox, which “Docker + Windlass sandbox” never allows, so the step was stopped. ${note} File the work again on “Docker, hardened”, where ${name}'s commands run in the container without asking, or give up.`;
 }
 
-/** The next turn's message after the person answered the agent's question: their own words, trusted as a note is. */
 const answeredText = (note: string) => `The person answered your question:\n\n${note}\n\nGo on with the task.`;
 
-/** The checks that failed for the agent's code: started, did not pass, and not for their environment (check-environment.ts). */
 function failingNames(checks: VerifiedCheck[]): string {
 	return checks
 		.filter((check) => check.status !== "passed" && check.startError === undefined && environmentFailure(check) === null)
@@ -1468,7 +1279,6 @@ function stepLimitReached(c: Change, plan: TurnPlan, limit: number, verified: Ve
 	nextTurn(c, { ...plan, text, newStep: false, ...(failing && verified && { charge: "gate", fingerprint: gateFingerprint(verified) }) });
 }
 
-/** The checks of the gate's run that failed because the sandbox could not run them, each with why. */
 function environmentChecks(verified: Verified): Array<{ check: VerifiedCheck; failure: EnvironmentFailure }> {
 	return (verified.run?.checks ?? []).flatMap((check) => {
 		const failure = environmentFailure(check);
@@ -1482,15 +1292,9 @@ const ENVIRONMENT_WORDS: Record<EnvironmentFailure["kind"], string> = {
 	not_found: "the shell did not find the command",
 };
 
-/**
- * The question of a gate whose only failing checks could not run in the sandbox: names the first one and why;
- * "Run the step again" resumes this step in the same session and sandbox once the person fixed it;
- * no round is charged, and nothing loops: each such failure asks again.
- */
 export function environmentQuestion(failed: ReadonlyArray<{ check: Pick<VerifiedCheck, "name" | "command">; failure: EnvironmentFailure }>): string {
 	const [{ check, failure }] = failed;
 	const others = failed.length > 1 ? ` ${failed.length - 1 === 1 ? "One more check" : `${failed.length - 1} more checks`} failed the same way.` : "";
-	// The command and its output stand under the question on the item page: the sentence stays short.
 	return `The check “${check.name}” could not run in the sandbox: ${ENVIRONMENT_WORDS[failure.kind]}.${others} This is not a code problem, so the agent was not sent back. Fix the environment, then run the step again.`;
 }
 
@@ -1505,10 +1309,6 @@ function askEnvironment(c: Change, kind: TurnStepKind, failed: Array<{ check: Ve
 	ask(c, "check_environment", environmentQuestion(failed), [{ id: "again", label: "Run the step again" }, ...handOver(c.item), choice("give_up")], null, resume, undefined,
 		{ check: { name: check.name, command: check.command, exitCode: check.exitCode, kind: failure.kind, line: failure.line, excerpt: outputExcerpt(check.output) } });
 }
-
-// ---------------------------------------------------------------------------------------------
-// Publishing, CI and review
-// ---------------------------------------------------------------------------------------------
 
 function publish(c: Change): void {
 	c.enter("publish");
@@ -1583,14 +1383,13 @@ function published(c: Change, fact: Extract<Fact, { kind: "published" }>): void 
 
 function publishFailed(c: Change, fact: Extract<Fact, { kind: "publish_failed" }>): void {
 	const step = c.run.step;
-	// The attempt is used up, whatever follows: the same fact again names an earlier one.
+	// Consume the attempt before emitting the retry.
 	step.attempt += 1;
 	if (fact.transient && step.attempt <= RULES.publishTries) {
 		c.say(`The push did not get through (${fact.said}); it is tried again.`);
 		c.effects.push({ kind: "publish", key: c.key, at: c.at + RULES.publishRetryMs * 2 ** (step.attempt - 2) });
 		return;
 	}
-	// GitHub's own sentence may say so already (github/publish.ts): it is not said twice.
 const said = fact.said.replace(/^GitHub refused the push(?::\s*|\s+(?=because))/, "");
 ask(c, "publish_refused", `GitHub refused the push${/^because/.test(said) ? " " : ": "}${said}`, [choice("again"), choice("give_up")], null, null);
 }
@@ -1634,7 +1433,6 @@ function ciFixText(head: string, reading: Extract<CiReading, { kind: "read" }>):
 /** A full commit SHA: what git said it pushed. A branch's name stands in where it said nothing, and is not compared. */
 const isSha = (head: string) => /^[0-9a-f]{40}$/.test(head);
 
-/** The commit the pull request holds, when GitHub named one other than `head`. */
 const movedFrom = (head: string, prHead: string | null) => (prHead && isSha(head) && prHead !== head ? prHead : null);
 
 function conflictPlan(base: string): TurnPlan {
@@ -1659,12 +1457,8 @@ function updateFromBase(c: Change): boolean {
 	return true;
 }
 
-/** Apply the fixed CI rules to one pinned reading, including infrastructure recovery. */
-function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
-	const { run } = c;
-	const ci = run.ci;
-	if (ci === null) return;
-	// A reading GitHub gave for another commit than the one asked of it is not a reading of this one: it waits as a reading that failed.
+function recordCiRead(c: Change, ci: CiProgress, fact: Extract<Fact, { kind: "ci_read" }>) {
+	// Evidence for another commit cannot settle this head.
 	const reading: CiReading =
 		fact.reading.kind === "read" && isSha(ci.head) && fact.reading.head !== ci.head ? { kind: "failed", said: `GitHub answered for commit ${shortSha(fact.reading.head)}, not ${shortSha(ci.head)}` } : fact.reading;
 	const rerun = reading.kind === "read" ? c.item.ciReruns?.[reading.head]?.jobs : undefined;
@@ -1674,15 +1468,14 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		rerun?.some(job => !reading.runs.some(check => check.name === job.name))) state = "pending";
 	ci.lastReadState = state;
 	ci.webhooks = fact.webhooks;
-	// The poll is used up, whatever follows: the same reading again names an earlier one.
-	run.step.attempt += 1;
+	// Consume this poll before scheduling another.
+	c.run.step.attempt += 1;
 	ci.mergeable = fact.mergeable;
 	const since = c.at - ci.since;
-	// "No CI" and "nothing passed" are kept as what CI came to only once the wait for it is over: an early empty reading followed
-	// by readings that failed would otherwise be handed over as "no CI ran", when CI may well have run since.
+	// An empty reading is provisional until GitHub has had time to list checks.
 	const settled = (state !== "none" && state !== "skipped") || since >= CI_POLLING.noneAfterMs;
 	ci.last = null;
-	if (reading.kind === "read" && state !== "retry" && state !== "not_permitted" && (settled || run.step.kind === "handoff")) {
+	if (reading.kind === "read" && state !== "retry" && state !== "not_permitted" && (settled || c.run.step.kind === "handoff")) {
 		ci.last = {
 			state,
 			runs: reading.runs.map(({ name, app, state, conclusion, url, retryRunId }) => ({ name, app, conclusion: state === "not_run" ? "not_run" : conclusion, url, ...(state === "cancelled" && !retryRunId && { stopped: true as const }) })),
@@ -1697,6 +1490,15 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			ci.reviewPush = moved ? { head: moved } : undefined;
 		ci.moved = moved;
 	}
+	return { reading, state, since, rerun };
+}
+
+function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
+	const { run } = c;
+	const ci = run.ci;
+	if (ci === null) return;
+	const { reading, state, since, rerun } = recordCiRead(c, ci, fact);
+	const waitForReading = () => pollCi(c, fact.openItems, reading.kind === "rate_limited" ? reading.retryAt : null, ciWaitSentence(ci.head, reading));
 	if (c.item.featureCi && c.item.state !== "review") {
 		if (fact.prHead === ci.head && state === "failed" && reading.kind === "read") {
 			c.item.featureCi = { head: ci.head, since: ci.since };
@@ -1707,10 +1509,9 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		}
 		if ((fact.prHead !== null && fact.prHead !== ci.head) || fact.mergeable === false)
 			return ask(c, "ci_timeout", "The feature PR must be at the verified head and free of conflicts before handover.", [choice("wait"), choice("give_up")], null, null);
-		if (state !== "passed" || fact.prHead !== ci.head) return pollCi(c, fact.openItems, reading.kind === "rate_limited" ? reading.retryAt : null, ciWaitSentence(ci.head, reading));
+		if (state !== "passed" || fact.prHead !== ci.head) return waitForReading();
 	}
-	// A person requested this handover, or a moved PR needs a replacement verdict. One reading
-	// settles it, even if still pending or unavailable, without starting another fix or asking again.
+	// One read settles a handoff even if CI is still pending.
 	if (run.step.kind === "handoff") {
 		const review = ci.moved ? skippedReview(MOVED) : ci.secondReview ?? skippedReview("this item was handed over before second reviews were available");
 		if (c.item.state !== "review" && fact.autoMergeSingles && fact.prHead === ci.head && mergeCandidate(c.item, review) && verdictAt(c, ci).verdict.result === "pass") {
@@ -1740,6 +1541,7 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	const baseAhead = fact.baseAhead ?? 0;
 	const canUpdate = baseAhead > 0 && isSha(ci.head) && ci.head === c.item.head && c.item.mode !== "orchestrate" &&
 		(!failuresOf(run).includes(`conflict:${c.item.task.base}`) || newerPartBase(c.item, ci));
+	const canUpdateSubtask = !!c.item.parent && (canUpdate || !!fact.featureTarget);
 	const ciEvidence = [ci.head, state, ...(reading.kind === "read" ? reading.runs.map(r => [r.app, r.name, r.conclusion, r.jobId].join("/")).sort() : [])].join(" ");
 	const question = (sentence: string, plan: TurnPlan | null = null, infrastructure = false) => {
 		const choices = plan ? [{ id: "again" as const, label: "Have the agent fix CI" }] : [choice("wait")];
@@ -1775,11 +1577,11 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			return afterCi(c, ci);
 		case "not_permitted":
 			c.say("CI could not be read: GitHub does not let the platform see it.");
-			if ((canUpdate || fact.featureTarget) && c.item.parent) return question("CI could not be read on this subtask.");
+			if (canUpdateSubtask) return question("CI could not be read on this subtask.");
 			return afterCi(c, ci);
 		case "incomplete":
 			c.say(reading.kind === "read" && reading.runs.length === 0 ? "GitHub reported CI but supplied no readable check results." : "CI has more checks than the platform reads; none of those it read failed.");
-			if ((canUpdate || fact.featureTarget) && c.item.parent) return question("CI could not be read in full on this subtask.");
+			if (canUpdateSubtask) return question("CI could not be read in full on this subtask.");
 			return afterCi(c, ci);
 		case "failed": {
 			if (reading.kind !== "read") return;
@@ -1804,14 +1606,14 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		case "none":
 			if (since >= CI_POLLING.noneAfterMs) {
 				c.say(`No CI ran within ${spellSeconds(CI_POLLING.noneAfterMs / 1000)} of the push.`);
-				if ((canUpdate || fact.featureTarget) && c.item.parent) return question("No passing CI reported on the subtask push.");
+				if (canUpdateSubtask) return question("No passing CI reported on the subtask push.");
 				return afterCi(c, ci);
 			}
 			break;
 		case "skipped":
 			// Waited for as "no CI" is: a job that needs another may not be listed yet.
 			if (since >= CI_POLLING.noneAfterMs) {
-				if ((canUpdate || fact.featureTarget) && c.item.parent) return question("CI skipped every check on the subtask push.");
+				if (canUpdateSubtask) return question("CI skipped every check on the subtask push.");
 				c.say(`CI ran, and nothing in it passed within ${spellSeconds(CI_POLLING.noneAfterMs / 1000)} of the push: every check was skipped or neutral.`);
 				return afterCi(c, ci);
 			}
@@ -1824,11 +1626,10 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			if (workflowOverdue(reading, c.at)) return question("A GitHub Actions workflow has been in progress for more than six hours.", null, true);
 			break;
 		case "retry":
-			// GitHub itself out of reach (not a queued run): the person is asked once that lasts.
 			if (since >= CI_POLLING.unreachableMs) return question(`CI could not be read for ${spellSeconds(since / 1000)} after the push.`);
 			break;
 	}
-	pollCi(c, fact.openItems, reading.kind === "rate_limited" ? reading.retryAt : null, ciWaitSentence(ci.head, reading));
+	waitForReading();
 }
 
 /** Request a durable, immediate read of the commit before publishing a verdict outside a CI poll. */
@@ -1844,19 +1645,14 @@ const skippedReview = (why: string): HandoffReview => ({ review: null, reviewNon
 const MOVED = "the pull request moved after the agent pushed";
 const PERSON_HANDOVER = "handed over as it is, as you asked";
 
-/** The run's last review filing: this round's, or the one before's while this round has filed none. */
 const lastFiling = (review: Run["review"]) => review?.filed ?? review?.before ?? null;
 
-/**
- * A head handed over with no review of its own after the run's last filing did not approve (the next round was refused, filed
- * nothing readable, or was handed over before it ran): its check must not read as a success.
- */
+/** An unreviewed head cannot inherit success after a non-approving review. */
 function unfinishedReview(run: Run, review: HandoffReview): boolean {
 	const last = lastFiling(run.review);
 	return review.review === null && last !== null && last.recommendation !== "approve";
 }
 
-/** "Hand it over as it is" keeps the second review filed for the commit it hands over. */
 function keptReview(run: Run, ci: CiProgress): HandoffReview {
 	if (ci.secondReview?.review) return ci.secondReview;
 	// A round on the same head as the one before (a fix that changed nothing) keeps that one's filing until it files its own.
@@ -1947,7 +1743,6 @@ function afterCi(c: Change, ci: CiProgress): void {
 	startReview(c, ci);
 }
 
-/** A round of the second review of `ci.head`: after CI, or again on the same head when a fix changed nothing. */
 function startReview(c: Change, ci: CiProgress): void {
 	const { item, run } = c;
 	c.enter("review");
@@ -2052,15 +1847,10 @@ function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): 
 
 const REVIEW_REPEATED = "The second agent asks again for the same changes after a round of fixes, so the factory stopped instead of trying them again.";
 
-/** The builder's turn on a review's findings (and, after the person's choice, its questions). */
 function reviewFixPlan(filed: ItemReview, person: boolean, earlier: EarlierFinding[] | undefined): TurnPlan {
 	return { ...IMPLEMENT, kind: "review_fix", charge: "review", text: reviewFixText(filed, person, earlier), ...marked([untrustedWords.review(filed.head)]) };
 }
 
-/**
- * Starts the builder's turn on a review, unless a stop rule holds; the reviewed head's check then says a fix is being worked on.
- * A pull request that moved while the person was asked is handed over instead: a fix on the reviewed head could not be pushed.
- */
 function fixAfterReview(c: Change, plan: TurnPlan): void {
 	const ci = c.run.ci;
 	if (ci?.moved) return readForHandoff(c, ci, keptReview(c.run, ci));
@@ -2068,7 +1858,6 @@ function fixAfterReview(c: Change, plan: TurnPlan): void {
 	if (c.item.question === null) sendBackForReview(c, c.run.review?.round ?? 1);
 }
 
-/** The reviewed head stays in progress while the builder answers its review, and is completed by the head a later round hands over. */
 function sendBackForReview(c: Change, round: number): void {
 	const head = c.run.review?.head;
 	if (!head || c.item.parent) return;
@@ -2077,10 +1866,7 @@ function sendBackForReview(c: Change, round: number): void {
 	if (check) check.reviewRound = round;
 }
 
-/**
- * Feedback from GitHub held while the reviewer ran goes first (G4): the run ends for it, and the new run's text carries the
- * reviewer's points after the feedback. A batch the person must be asked about first stays held for the next handoff.
- */
+/** Held feedback goes first and carries the reviewer's points into the next run. */
 function personFirst(c: Change, ci: CiProgress, filed: ItemReview): boolean {
 	const { item, run } = c;
 	const f = item.feedback;
@@ -2101,7 +1887,6 @@ function personFirst(c: Change, ci: CiProgress, filed: ItemReview): boolean {
 	return true;
 }
 
-/** Hands over the commit this run pushed, with the evidence kept for that commit: never a later, unpushed turn's. */
 function handoff(c: Change, review: HandoffReview, merging = false): void {
 	const { item, run } = c;
 	const ci = run.ci;
@@ -2124,11 +1909,7 @@ function handoff(c: Change, review: HandoffReview, merging = false): void {
 	}
 }
 
-/**
- * The verdict for the commit this run pushed, as CI and the pull request now stand, handed over. Made again after a move, it
- * keeps the first one's id and key: it replaces that verdict and its effect, so a first comment still to be posted cannot
- * come after it and put the older verdict back on the pull request.
- */
+/** Reuse the verdict ID and effect key so a replay cannot post stale evidence. */
 function verdictAt(c: Change, ci: CiProgress) {
 	const { item, run } = c;
 	const key = ci.handed ?? c.key;
@@ -2252,9 +2033,53 @@ function cancel(c: Change): void {
 	c.state("cancelled");
 }
 
-// ---------------------------------------------------------------------------------------------
-// Questions
-// ---------------------------------------------------------------------------------------------
+function proposePlan(c: Change, fact: Extract<Fact, { kind: "edit_plan" | "file_plan" }>): boolean {
+	const { item } = c;
+	if (item.mode !== "orchestrate" || !item.singleBudget) return false;
+	if (fact.kind === "edit_plan") {
+		if (!item.featurePlan || item.featurePlan.version !== fact.version || !planQuestion(item)) return false;
+	} else if (!item.run?.step.turn || item.run.step.kind !== "refine" || c.key !== fact.key) return false;
+	const plannedJobs = item.jobs?.filter(j => !repair(j)) ?? [];
+	const completed = plannedJobs.filter(j => j.state === "done");
+	const plan = validatePlan(fact.plan, item.singleBudget, aliases(item));
+	if (fact.kind === "edit_plan" && !Object.hasOwn(fact.plan as object, "overflow")) plan.overflow = item.featurePlan?.overflow ?? false;
+	if (item.forceSplit && plan.singleSuggested) throw new PlanError("Propose two to six subtasks as requested.");
+	const keys = [...plannedJobs.map(job => job.task.key), ...plan.subtasks.map(task => task.key)];
+	if (new Set(keys).size > 6) throw new PlanError("A feature may have at most six distinct subtasks across its plans.");
+	if (fact.kind === "file_plan") {
+		const approvedPlan = item.replans ? item.approvedPlan : undefined;
+		for (const q of plan.questions) {
+			const answer = approvedPlan?.questions.find(old => old.text === q.text && old.id !== "scope-change")?.answer;
+			if (answer && q.id !== "scope-change") q.answer = answer;
+			else delete q.answer;
+		}
+		// A re-plan keeps each approved subtask's agent: only the person changes it, on the card.
+		if (approvedPlan) for (const task of plan.subtasks) {
+			const approved = approvedPlan.subtasks.find(s => s.key === task.key);
+			if (!approved) continue;
+			if (approved.agent) task.agent = structuredClone(approved.agent);
+			else delete task.agent;
+			const problem = agentProfileProblem(task);
+			if (problem) throw new PlanError(task.title + ": " + problem);
+		}
+		if (approvedPlan && planScope(plan) !== planScope(approvedPlan)) {
+			plan.questions = plan.questions.filter(q => q.id !== "scope-change");
+			plan.questions.push({ id: "scope-change", text: "The revised plan changes the approved scope or subtasks. Do you accept these changes?" });
+		}
+	}
+	if (item.replans) {
+		if (item.feedbackReplans && completed.length && plan.subtasks.every(s => completed.some(j => j.task.key === s.key)))
+			throw new PlanError("Add a fix subtask to the completed feature.");
+		if (plan.singleSuggested) throw new PlanError("Re-plan the remaining work on the existing feature branch.");
+		for (const job of completed) if (!isDeepStrictEqual(plan.subtasks.find(s => s.key === job.task.key), job.task)) throw new PlanError("Completed subtasks cannot be changed.");
+	}
+	const proposed = { ...plan, budget: featureTotal(item, plan), compare: { singleBudget: item.singleBudget }, version: (item.featurePlan?.version ?? 0) + 1, status: "proposed" as const };
+	if (fact.kind === "file_plan" && item.filedTurn === fact.key && item.featurePlan && isDeepStrictEqual({ ...proposed, version: item.featurePlan.version }, item.featurePlan)) return false;
+	item.featurePlan = proposed;
+	if (fact.kind === "file_plan") item.filedTurn = fact.key;
+	else askPlan(c);
+	return true;
+}
 
 function planQuestion(item: FactoryItem) {
 	return item.mode === "orchestrate" && ["plan_approval", "replan_approval", "single_suggested"].includes(item.question?.kind ?? "");
@@ -2318,6 +2143,25 @@ function askPlan(c: Change) {
 	ask(c, c.item.replans ? "replan_approval" : "plan_approval", approvalText(p), [...(unanswered.length ? [] : [choice("approve")]), ...revise, choice("give_up")], null, null);
 }
 
+function waitForPlacement(c: Change, job: FeatureJob, sentence: string, wait: { providerUntil?: number; dailyCap?: boolean; accountKey?: string }): boolean {
+	const { providerUntil, dailyCap, accountKey } = wait;
+	let retry = placementRetryAt(c.at, providerUntil, dailyCap);
+	if (providerUntil === undefined && !dailyCap) {
+		job.placementWaitSince ??= c.at;
+		const deadline = job.placementWaitSince + AUTO_POLICY.placement_refused;
+		if (c.at >= deadline) {
+			job.placementRefusal = sentence;
+			job.wait = sentence;
+			return askPlacement(c, job);
+		}
+		retry = Math.min(retry, deadline);
+	} else delete job.placementWaitSince;
+	c.state("waiting", { reason: providerUntil !== undefined ? "provider" : dailyCap ? "capacity" : "machine", accountKey, sentence, retryAt: retry });
+	job.wait = sentence;
+	dispatchJob(c, job, retry);
+	return true;
+}
+
 function placementRefused(c: Change, job: FeatureJob, reason: string): true {
 	job.placementRefusal = reason;
 	// Other children keep their places and may finish integration before the feature asks.
@@ -2346,10 +2190,7 @@ function dispatchAgain(c: Change, at = c.at) {
 	c.effects.push({ kind: "dispatch", key: c.key, at });
 }
 
-/**
- * A subtask's spend, as its item last said it, onto the feature's ledger; and its budget, which the person may have
- * raised: the feature's budget grows by as much. Cumulative child receipts charge each dimension once.
- */
+/** Child receipts are cumulative. Only charge increases to the parent. */
 function chargeChild(item: FactoryItem, job: FeatureJob, observed: Partial<ItemSpend> & Pick<ItemSpend, "tokens">, budget?: ItemBudget): boolean {
 	let changed = false;
 	const seen = { ...noSpend(), ...job.spent };
@@ -2382,14 +2223,12 @@ function summaryTask(item: FactoryItem): Pick<TurnPlan, "text" | "untrusted"> {
 	};
 }
 
-/** Every subtask is done (and, for a cross-repo feature, the repositories passed together): the summary turn. */
 function closing(c: Change) {
 	const { item } = c, plan = item.featurePlan!;
 	item.task.acceptance = [...plan.spec.acceptance, ...plan.subtasks.flatMap(s => s.acceptance)];
 	return nextTurn(c, { ...IMPLEMENT, kind: "summary" });
 }
 
-/** Blueprint.ts's change of the item, as cross-repo.ts takes it. */
 function flow(c: Change): Flow {
 	return {
 		item: c.item, at: c.at, get key() { return c.key; }, get run() { return c.run; }, effects: c.effects,
@@ -2481,7 +2320,6 @@ function cancelActive(c: Change) {
 	c.effects.push({ kind: "cancel_children", key: String(c.item.revision + 1), ids: active.map(j => j.id) });
 }
 
-/** The feature is planned again: why, in the words its revised plan's card leads with. */
 function replanning(item: FactoryItem, why: string) {
 	item.replans = (item.replans ?? 0) + 1;
 	item.replanWhy = why;
@@ -2657,7 +2495,6 @@ function nextChild(c: Change) {
 	return crossRepo(item) ? beginIntegration(flow(c)) : closing(c);
 }
 
-/** The keys of the subtasks whose work is integrated: approval neither places nor confirms them again. */
 export const completedKeys = (item: Pick<FactoryItem, "jobs">): Set<string> => new Set(item.jobs?.filter(j => j.state === "done").map(j => j.task.key));
 
 function featureSettled(item: FactoryItem): boolean {
@@ -2666,17 +2503,11 @@ function featureSettled(item: FactoryItem): boolean {
 		featureBranches(item).every(b => !b.featureCi || (b.featureCi.passed && b.featureCi.head === b.head));
 }
 
-/**
- * The plan is approved: each subtask still to run is bound to its places. A subtask whose agent works
- * without asking (Claude Code, OpenCode) is approved only where the person confirmed it by its key: the
- * planner reads text anyone filing an issue may write, so its choice of such an agent is never taken on
- * an approval that did not name it.
- */
+/** Planner input can be untrusted. The owner must confirm each unattended agent by subtask key. */
 function approveFeature(c: Change, inventory?: PlacementInventory, agents: readonly string[] = [], bases: Readonly<Record<string, string>> = {}): boolean {
 	const p = c.item.featurePlan;
 	if (!p || p.status !== "proposed" || p.questions.some(q => !q.answer) || p.singleSuggested || c.item.filedTurn !== c.key) return false;
-	// A base the person reconfirmed after it moved (the actor refuses an approval that does not name a moved one).
-	// The actor took it only when it is the head its admission read (`repositoryAdmission`).
+	// Admission checked the reconfirmed base against the live head.
 	for (const [alias, sha] of Object.entries(bases)) if (crossRepo(c.item) && c.item.repos!.some(r => r.alias === alias) && /^[0-9a-f]{40}$/.test(sha)) repoOf(c.item, alias).planningBaseSha = sha;
 	const completed = completedKeys(c.item);
 	const unconfirmed = p.subtasks.filter(s => unattendedKeys(p, completed).includes(s.key) && !agents.includes(s.key));
@@ -2689,7 +2520,6 @@ function approveFeature(c: Change, inventory?: PlacementInventory, agents: reado
 	c.item.question = null;
 	c.enter("subtasks");
 	c.state("waiting", { reason: "children", sentence: "Running the approved subtasks in dependency order.", retryAt: null });
-	// What the person approved is what the feature may spend: its own allowance and its subtasks' budgets.
 	c.item.budget = featureTotal(c.item, p);
 	if (featureOpened(c.item)) nextChild(c);
 	else c.effects.push({ kind: "dispatch", key: c.key });
@@ -2716,42 +2546,11 @@ function runSingle(c: Change) {
 	nextTurn(c, firstPlan(c.item, null));
 }
 
-const CHOICES: Record<ChoiceId, string> = {
-	send_back: "Hand it back", dismiss: "Dismiss",
-	send: feedbackWords.send, leave: feedbackWords.leave,
-	run_single: "Approve for one implementer", orchestrate_anyway: "Ask for subtasks",
-	approve: "Approve the plan",
-	revise: "Revise the plan",
-	raise: "Go on",
-	// Offered by no question any more (a stored one keeps its label); a failed item's "Start over" is the `retry` action.
-	retry: "Start over (discards the sandbox's work)",
-	again: "Try again",
-	wait: "Keep waiting",
-	hand_over: "Hand it over as it is",
-	run_checks: "Run the checks again",
-	ci_alone: "Integrate on CI alone",
-	update_feature: "Update the feature",
-	update_from_base: "Update from the base branch and run CI again",
-	give_up: "Give up",
-	add_secret: "Add it and continue",
-	without_secret: "Continue without it",
-	fix: "Have the agent change it",
-	reply: "Answer the agent",
-	run_anyway: "Run it anyway",
-	fresh_sandbox: "Start on a fresh sandbox",
-	larger_sandbox: "Go on in a larger sandbox",
-};
-const choice = (id: ChoiceId) => ({ id, label: CHOICES[id] });
-/**
- * "Hand it over as it is" is offered only for a commit this run pushed, whose evidence it holds. A run
- * that pushed nothing yet (sent back, and stopped before a push) has nothing of its own to hand over.
- */
 function handOver(item: FactoryItem) {
 	if (item.featureCi && !featureSettled(item)) return [];
 	return !item.parent && item.run?.ci && item.run.ci.head === item.head ? [choice("hand_over")] : [];
 }
 
-/** What the stuck detector says when a fix turn would be for a failure this run already tried to fix. */
 function repeatedWords(kind: TurnPlan["kind"], task: Task): string {
 	switch (kind) {
 		case "conflict": return `The pull request conflicts with ${task.base} again after a round of merging it.`;
@@ -2760,33 +2559,24 @@ function repeatedWords(kind: TurnPlan["kind"], task: Task): string {
 	}
 }
 
-/** "Raise" after a failure that came back is no limit raised: the fix is tried once more (`raise`), and its button says so. */
 export const TRY_AGAIN_LABEL = "Try the fix once more";
 
-/** "Go on" in the words of what stopped the run. */
 const GO_ON: Partial<Record<StopCause, string>> = {
 	repeated: TRY_AGAIN_LABEL,
 	interruptions: "Try again",
 	turns: `Let it take ${RULES.turnBackstop} more turns`,
 };
 
-/** A stop that is not the budget's (§2.4): the person lets it go on in the same session and sandbox, takes the work as it is, or gives up. */
 function stop(c: Change, cause: StopCause, sentence: string, resume: TurnPlan): void {
 	ask(c, "rounds", sentence, [{ id: "raise", label: GO_ON[cause] ?? CHOICES.raise }, ...handOverAny(c.item), choice("give_up")], cause, resume);
 }
 
-/** How much "Give it N more" adds to a budget figure: what the item started with (a feature: its own allowance's start; a subtask: its plan's). */
 function extraOf(item: FactoryItem, cause: keyof ItemBudget): number {
 	return Math.max(1, (item.singleBudget ?? item.budget)[cause]);
 }
 
 const spellExtra = (cause: keyof ItemBudget, n: number) => (cause === "tokens" ? `${spellTokens(n)} more tokens` : `${spellSeconds(n)} more hosted time`);
 
-/**
- * The item's budget is used up (§2.4): it pauses and asks. "Give it N more" goes on with the same session, sandbox and
- * work; for a subtask the extra adds to its feature's budget. "Hand it over as it is" pushes what the sandbox holds, when
- * nothing is pushed yet, and hands that over. Nothing is thrown away.
- */
 function askBudget(c: Change, cause: keyof ItemBudget, sentence: string, resume: TurnPlan): void {
 	const { item } = c;
 	const n = extraOf(item, cause);
@@ -2795,20 +2585,17 @@ function askBudget(c: Change, cause: keyof ItemBudget, sentence: string, resume:
 	ask(c, "budget", text, [{ id: "raise", label }, ...handOverAny(item), choice("give_up")], cause, resume);
 }
 
-/**
- * "Hand it over as it is" where there is a pull request to hand over, or where the item can push one: a single item
- * that has pushed nothing of this run yet pushes its workspace first. A subtask owns no pull request, and a feature's is
- * made by its subtasks.
- */
-const handOverAny = (item: FactoryItem) => (handOver(item).length || item.parent || item.mode === "orchestrate" || item.run === null ? handOver(item) : [choice("hand_over")]);
+/** A single item may push its workspace before handover. */
+function handOverAny(item: FactoryItem) {
+	if (!item.parent && item.mode !== "orchestrate" && item.run !== null) return [choice("hand_over")];
+	return handOver(item);
+}
 
-/** A moment as an item's log reads it: the hour and minute in UTC, with the day when it is not today's. */
 function clock(at: number): string {
 	const iso = new Date(at).toISOString();
 	return iso.slice(0, 10) === new Date().toISOString().slice(0, 10) ? iso.slice(11, 16) : `${iso.slice(0, 10)} ${iso.slice(11, 16)}`;
 }
 
-/** A stretch of time in the largest unit that fits: "50 minutes", "3 hours", "2 days". */
 function spellDuration(ms: number): string {
 	const minutes = Math.max(1, Math.round(ms / 60_000));
 	if (minutes < 120) return `${minutes} minute${minutes === 1 ? "" : "s"}`;
@@ -2872,7 +2659,9 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 
 function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "answer" }>, note: string | null, auto = false): boolean {
 	const { item } = c;
-	const refused = item.jobs?.find(j => j.id === question.child) ?? item.jobs?.find(j => j.placementRefusal && activeJob(j)) ?? item.jobs?.at(-1);
+	const refused = question.kind === "placement_refused"
+		? item.jobs?.find(j => j.id === question.child) ?? item.jobs?.find(j => j.placementRefusal && activeJob(j)) ?? item.jobs?.at(-1)
+		: undefined;
 	if (fact.choice === "retry" && item.jobs?.length) {
 		retryFeature(c);
 		return true;
@@ -2895,6 +2684,7 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 	}
 	const run = c.run;
 	const resume = question.resume;
+	const resumeWithNote = resume && { ...resume, text: withNote(resume.text, note) };
 	if (question.kind === "integration") return integrationAnswer(flow(c), fact.choice, question.text);
 	switch (fact.choice) {
 		case "send_back":
@@ -2959,22 +2749,20 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 			if (run.step.turn === "delivered") item.forceSplit = true;
 			break;
 		case "approve":
-			// Offered only on a feature's plan (`askPlan`).
 			if (item.mode !== "orchestrate") throw new PlanError("Only a planned feature has a plan to approve.");
 			return approveFeature(c, fact.inventory, fact.agents);
 		case "revise":
 			if (question.kind === "placement_refused") {
 				for (const job of item.jobs!.filter(activeJob)) job.state = "cancelled";
 			}
-			// After subtasks stopped (a "rounds" question of the feature's), the person asks for the rest planned again.
 			if ((question.kind === "budget" || question.kind === "placement_refused" || (question.kind === "rounds" && item.approvedPlan)) && item.mode === "orchestrate")
 				replanning(item, "You asked for a revised plan");
 			nextTurn(c, { ...IMPLEMENT, kind: "refine", charge: "plan", text: withNote(question.kind === "placement_refused" ? "Revise the placement and file the remaining plan again. Placement refusal (quoted data):\n" + question.text : "Revise your plan and file it again.", note) });
 			break;
 		case "raise":
 			raise(c, question.cause, fact.budget, resume);
-			if (resume?.charge === "review") fixAfterReview(c, { ...resume, text: withNote(resume.text, note) });
-			else if (resume !== null) nextTurn(c, { ...resume, text: withNote(resume.text, note) });
+			if (resumeWithNote?.charge === "review") fixAfterReview(c, resumeWithNote);
+			else if (resumeWithNote) nextTurn(c, resumeWithNote);
 			else if (item.approvedPlan && run.step.kind === "subtasks") nextChild(c);
 			break;
 		case "again":
@@ -2986,7 +2774,7 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 				c.state("waiting", { reason: "children", sentence: "Checking the approved places again.", retryAt: null });
 				dispatchJob(c, refused!);
 			} else if (question.kind === "publish_refused") publish(c);
-			else if (resume !== null) nextTurn(c, { ...resume, text: withNote(resume.text, note) });
+			else if (resumeWithNote) nextTurn(c, resumeWithNote);
 			break;
 		case "retry":
 			run.stopReason = "retried";
@@ -3009,41 +2797,38 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 		case "hand_over":
 			if (run.ci !== null && run.ci.head === item.head) readForHandoff(c, run.ci, keptReview(run, run.ci));
 			else if (!item.parent && item.mode !== "orchestrate") {
-				// Nothing of this run is pushed yet (a budget or stuck stop before the first push): the workspace is pushed as it
-				// is, and handed over once CI on it is read once.
 				run.handOver = true;
 				c.say("The work is pushed as it is, to be handed over.");
 				publish(c);
 			} else return false;
 			break;
 		case "fix":
-			if (question.kind !== "review_question" || resume === null) return false;
-			fixAfterReview(c, { ...resume, text: withNote(resume.text, note) });
+			if (question.kind !== "review_question" || !resumeWithNote) return false;
+			fixAfterReview(c, resumeWithNote);
 			break;
 		case "run_anyway": {
-			// Someone else's text on "Docker, hardened" (untrusted.ts, `untrustedTurn`): the person lets it go labelled only, its
-			// commands uncontained, for this turn and for any later one (and subtask) that carries no source beyond these.
+			// Approval covers only these named sources on subsequent turns.
 			const outside = thirdParty(resume?.untrusted);
-			if (question.kind !== "turn_refused" || resume === null || !outside.length) return false;
+			if (question.kind !== "turn_refused" || !resumeWithNote || !outside.length) return false;
 			item.unsandboxed = sources(item.unsandboxed, outside);
 			c.say(runAnywayWords(itemAgent(item).harness, outside));
-			nextTurn(c, { ...resume, text: withNote(resume.text, note) });
+			nextTurn(c, resumeWithNote);
 			break;
 		}
 		case "larger_sandbox": {
 			const larger = question.kind === "out_of_memory" ? question.largerSize : undefined;
-			if (item.place.kind !== "hosted" || larger === undefined || resume === null) return false;
+			if (item.place.kind !== "hosted" || larger === undefined || !resumeWithNote) return false;
 			c.say(`The sandbox is removed, and the step goes on in a new ${larger} one.`);
 			c.state("working");
-			c.effects.push({ kind: "fresh_sandbox", key: c.key, plan: { ...resume, text: withNote(resume.text, note) }, hostedSize: larger, ...(resume.to === "review" && { to: "review" as const }) });
+			c.effects.push({ kind: "fresh_sandbox", key: c.key, plan: resumeWithNote, hostedSize: larger, ...(resumeWithNote.to === "review" && { to: "review" as const }) });
 			break;
 		}
 		case "fresh_sandbox":
-			if (question.kind !== "sandbox_failed" || resume === null) return false;
+			if (question.kind !== "sandbox_failed" || !resumeWithNote) return false;
 			// The old sandbox goes first; `sandbox_freed` starts the step once it is gone.
 			c.say("The sandbox is removed, and the step starts again in a new one.");
 			c.state(item.place.kind === "machine" ? "queued" : "working");
-			c.effects.push({ kind: "fresh_sandbox", key: c.key, plan: { ...resume, text: withNote(resume.text, note) }, ...(resume.to === "review" && { to: "review" as const }) });
+			c.effects.push({ kind: "fresh_sandbox", key: c.key, plan: resumeWithNote, ...(resumeWithNote.to === "review" && { to: "review" as const }) });
 			break;
 		case "add_secret":
 		case "without_secret":
@@ -3052,7 +2837,6 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 			nextTurn(c, { ...resume, includeInFresh: true, text: fact.choice === "add_secret" ? `${question.secret.name} is now set in your environment.` : `Continue without ${question.secret.name}.` });
 			break;
 		case "reply":
-			// An answer needs words: the page does not send one without them.
 			if (question.kind !== "agent_ask" || resume === null || note === null) return false;
 			// The person's answer, and nothing the agent wrote: trusted, whatever the turn it resumes carried.
 			nextTurn(c, { ...resume, text: answeredText(note), untrusted: undefined });
@@ -3061,12 +2845,7 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 	return true;
 }
 
-/**
- * "Go on": the stuck detector forgets the failure that stopped the run, so it is tried once more; the backstops count
- * again from here; a budget takes the person's figure, or one more start's worth ("Give it N more"). A subtask's new
- * budget reaches its feature, whose budget grows by as much (`chargeChild`). Questions stored before one stuck detector
- * name a round cap: they go on as a repeated failure does.
- */
+/** Stored round-cap causes resume like a repeated failure. */
 function raise(c: Change, cause: StopCause | null, budget: Partial<ItemBudget> | undefined, resume: TurnPlan | null): void {
 	const { item, run } = c;
 	switch (cause) {
@@ -3077,7 +2856,6 @@ function raise(c: Change, cause: StopCause | null, budget: Partial<ItemBudget> |
 		case "conflict":
 		case "review":
 			{
-				// The failure that came back: the one the stopped fix turn is for.
 				const again = resume?.fingerprint ?? run.lastFailure;
 				if (again !== null) run.failures = failuresOf(run).filter(one => one !== again);
 				run.lastFailure = null;
