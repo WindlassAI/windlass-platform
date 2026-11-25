@@ -162,7 +162,7 @@ async function fakeChecks() {
 		const w = world();
 		await w.saved("u1");
 		const theirs = await w.create("u2", request());
-		expect("another user of the same repository starts cold", !w.fake.sandboxes.get(theirs)!.metadata[SNAP_META.from] && w.fake.sandboxes.get(theirs)!.template === SETTINGS.template);
+		expect("another user of the same repository starts cold", !w.fake.sandboxes.get(theirs)!.metadata[SNAP_META.from] && w.fake.sandboxes.get(theirs)!.template === SETTINGS.templates.small.template);
 		// The record names u1: even a sandbox of u2's made from u1's snapshot by mistake would not be handed out.
 		const [snapshotId] = [...w.fake.snapshots.keys()];
 		const name = snapshotId!.slice(snapshotId!.indexOf("/") + 1).split(":")[0]!;
@@ -181,17 +181,17 @@ async function fakeChecks() {
 		const other = await w.create("u1", request({ inputs: digest(["inputs", 2]) }));
 		expect("other dependency inputs: cold", !w.fake.sandboxes.get(other)!.metadata[SNAP_META.from]);
 		const shots = await w.sandboxes.create({ uid: "u1", sessionId: "s", profile: "e2b", screenshots: true, fromSnapshot: request() });
-		expect("the screenshots variant: cold, from the shots template", w.fake.sandboxes.get(shots)!.template === SETTINGS.shotsTemplate);
-		w.fake.builds.set(SETTINGS.template, "build-2");
+		expect("the screenshots variant: cold, from the shots template", w.fake.sandboxes.get(shots)!.template === SETTINGS.templates.small.shotsTemplate);
+		w.fake.builds.set(SETTINGS.templates.small.template, "build-2");
 		w.clock.now += 6 * MINUTE;
 		const rebuilt = await w.create("u1", request());
 		expect("a rebuilt template: cold", !w.fake.sandboxes.get(rebuilt)!.metadata[SNAP_META.from]);
 		const ask = request({ inputs: DEFERRED_INPUTS });
 		const id = await w.create("u1", ask);
-		w.fake.builds.set(SETTINGS.template, "build-3");
+		w.fake.builds.set(SETTINGS.templates.small.template, "build-3");
 		w.clock.now += 6 * MINUTE;
 		expect("a sandbox made before a rebuild is not saved after it", !(await w.sandboxes.saveSnapshot!(id, { ...ask, inputs: INPUTS, commit: COMMIT, created: w.clock.now })));
-		w.fake.builds.delete(SETTINGS.template);
+		w.fake.builds.delete(SETTINGS.templates.small.template);
 		w.clock.now += 6 * MINUTE;
 		const unknown = await w.create("u1", request());
 		expect("a template whose build is unknown: cold, and no candidate to save", !w.fake.sandboxes.get(unknown)!.metadata[SNAP_META.candidate]);
@@ -350,9 +350,9 @@ async function liveCheck() {
 		for (const info of await client.list({ metadata: { [META.deployment]: settings.deployment } }).catch(() => [])) await client.kill(info.sandboxId).catch(() => undefined);
 		for (const row of await store.rows().catch(() => [])) await client.deleteSnapshot(row.id).catch(() => undefined);
 	}
-	console.log(`INFO  deployment label ${settings.deployment}; template ${settings.template}; to remove by hand: e2b-cleanup.ts --kill with WLP_E2B_DEPLOYMENT=${settings.deployment}`);
+	console.log(`INFO  deployment label ${settings.deployment}; template ${settings.templates.small.template}; to remove by hand: e2b-cleanup.ts --kill with WLP_E2B_DEPLOYMENT=${settings.deployment}`);
 	try {
-		const build = await client.templateBuild(settings.template);
+		const build = await client.templateBuild(settings.templates.small.template);
 		if (!expect("the template's tag names a build", build !== null, String(build))) return;
 		const ask = request({ inputs: DEFERRED_INPUTS });
 		let began = Date.now();

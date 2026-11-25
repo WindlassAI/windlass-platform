@@ -96,16 +96,12 @@ export function createSandboxLayer(options: SandboxLayerOptions = {}): DockerSan
 	};
 }
 
-// Keep vendor SDKs out of Docker, fake and runner processes.
-const hostedLayers = {
-	e2b: async () => (await import("./e2b/index.js")).createE2bSandboxLayer,
-};
-
 export async function createHostedLayer(settings: NonNullable<typeof config.hosted>): Promise<SandboxLayer> {
-	const createLayer = await hostedLayers[settings.provider]();
+	// Load the vendor SDK only on servers configured for E2B.
+	const { createE2bSandboxLayer } = await import("./e2b/index.js");
 	const { backupsFromConfig } = await import("./backup.js");
 	const signIns = actorSignIns();
-	return createLayer({
+	return createE2bSandboxLayer({
 		logins: signIns.logins,
 		tokens: signIns.tokens,
 		backups: await backupsFromConfig(),

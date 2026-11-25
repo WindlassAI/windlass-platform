@@ -141,6 +141,7 @@ test("a sweep frees expired snapshot builders and counts only retained sessions"
 	now -= BUILD_LOST_MS;
 	const plant = (session: string, candidate: string) => fake.plant({
 		[META.deployment]: settings.deployment, [META.uid]: uid, [META.session]: session, [META.profile]: "e2b", [META.size]: "standard",
+		...(candidate && { [META.environmentBuild]: "true" }),
 		[SNAP_META.attempt]: "a".repeat(32), [SNAP_META.build]: "standard-build", [SNAP_META.variant]: "base", [SNAP_META.candidate]: candidate,
 	}, "paused");
 	const ids = ["s_personal", "s_item", "s_reader"];

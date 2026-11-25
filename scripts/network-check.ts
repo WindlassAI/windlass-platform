@@ -46,8 +46,8 @@ import {
 	hostsForTurn,
 } from "../server/src/repository-network.js";
 import { GithubApp, type GithubAppSettings } from "../server/src/github/app.js";
-import { MAX_HOSTS, PRESETS, readHostedNetwork, withHosts } from "../server/src/sandbox/hosted-network.js";
-import { DNS_STUB, GUEST_DNS_SCRIPT, blockedLookups, guestDnsArgv, networkConfig } from "../server/src/sandbox/e2b/network.js";
+import { MAX_HOSTS, PRESETS } from "../server/src/sandbox/hosted-network.js";
+import { DNS_STUB, GUEST_DNS_SCRIPT, readE2bNetwork, withHosts, blockedLookups, guestDnsArgv, networkConfig } from "../server/src/sandbox/e2b/network.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
@@ -72,7 +72,7 @@ for (const page of ["sessions", "settings"]) {
 	expect(page + " describes only network observations the web app renders", !/Network refusals appear during the turn|refused DNS names appear during a turn/i.test(doc));
 }
 
-const RESTRICTED = readHostedNetwork({ WLP_E2B_NETWORK: "restricted" });
+const RESTRICTED = readE2bNetwork({ WLP_E2B_NETWORK: "restricted" });
 {
 	expect("presets and exact names are kept, lower case, each once, in the order given", plain(cleanEntries(["@playwright", "Registry.Example.com.", "@playwright", "registry.example.com"])) === plain(["@playwright", "registry.example.com"]));
 	expect("presets expand to their hosts, sorted", plain(expandEntries(["@prisma", "a.example.org", "@node"])) === plain(["a.example.org", "binaries.prisma.sh", "nodejs.org"]));
@@ -113,8 +113,8 @@ const RESTRICTED = readHostedNetwork({ WLP_E2B_NETWORK: "restricted" });
 	expect("restricted: the repository's hosts are added to the deployment's, sorted, each once", network.hosts.includes("registry.example.com") && RESTRICTED.hosts.every((host) => network.hosts.includes(host)) && plain(network.hosts) === plain([...new Set(network.hosts)].sort()) && dropped.length === 0);
 	expect("E2B is asked for the whole of it", plain(networkConfig(network)?.allowOut) === plain(network.hosts));
 	expect("the guest script pins the repository's hosts too", guestDnsArgv(network).includes("registry.example.com"));
-	const open = readHostedNetwork({});
-	const none = readHostedNetwork({ WLP_E2B_NETWORK: "none" });
+	const open = readE2bNetwork({});
+	const none = readE2bNetwork({ WLP_E2B_NETWORK: "none" });
 	expect("open and none are as the deployment has them: a repository's list applies only in restricted", withHosts(open, extra).network === open && withHosts(none, extra).network === none);
 	const full = withHosts(RESTRICTED, Array.from({ length: 80 }, (_, index) => `x${String(index).padStart(2, "0")}.example.org`));
 	expect("beyond MAX_HOSTS the repository's hosts that do not fit are left out and named, the deployment's all kept", full.network.hosts.length === MAX_HOSTS && full.dropped.length === 80 - (MAX_HOSTS - RESTRICTED.hosts.length) && RESTRICTED.hosts.every((host) => full.network.hosts.includes(host)));

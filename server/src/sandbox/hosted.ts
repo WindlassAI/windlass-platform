@@ -2,55 +2,27 @@ import type { EgressMode, HostedSizeOption, SandboxProfile, SandboxProfileId } f
 import { SandboxUserError, type ConnectOptions, type CreateSandboxInput, type ListedSandbox, type Sandboxes, type SandboxObservation, type SandboxPrice } from "./api.js";
 import type { TurnSandbox } from "./provider.js";
 
-type SessionLimit = { source: "config" | "api"; value: number | "unlimited" } | { source: "unknown" };
-
-export class HostedProviderError extends SandboxUserError {
-	constructor(readonly kind: "limited" | "busy" | "invalidSize" | "unsupportedPolicy", message: string) {
-		super(message);
-	}
-}
-
-type CapacityReading =
-	| { scope: "deployment"; observedAt: number; running: number; maxRunning: number }
-	| { scope: "organization-region"; observedAt: number; resources: readonly { unit: "vCPU" | "MiB" | "GiB"; used: number; limit: number }[] };
-
-export interface HostedCapabilities {
-	canPause: boolean;
-	persistenceOnStop: "disk" | "none" | "unsupported";
-	persistenceOnPause: "disk+memory" | "unsupported";
-	snapshots: { bootFromArtifact: boolean; filesystemCapture: "running" | "stopped" | "unsupported" };
-	maxSession: { continuousMs: SessionLimit; wallClockMs: SessionLimit; resumeResetsContinuous: boolean };
-	sizes: readonly HostedSizeOption[];
-	egress: { allowList: boolean };
-	concurrency: { source: "account-count" | "regional-resource-pool" | "unknown" };
-}
-
-type RetainedState = "paused" | "stopped" | "archived";
-type HostedObservation = { state: "running" | RetainedState | "none"; pausedAt?: number };
-type HostedInventory = Omit<ListedSandbox, "state"> & { state: "running" | RetainedState };
 type SnapshotOperations = Required<Pick<Sandboxes, "hasSnapshot" | "saveSnapshot" | "dropSnapshots" | "sweepSnapshots">>;
 
 /** One configured deployment. Only acquire may wake a retained workspace. Inspect and inventory
  * must reject on ambiguous state or incomplete reads so actors keep their existing claims. */
 export interface HostedSandboxProvider {
-	readonly id: string;
-	readonly capabilities: HostedCapabilities;
+	readonly supportsAllowList: boolean;
 	readonly idleStopMs: number;
 	readonly network: { mode: EgressMode; hosts: readonly string[] };
 	readonly artifacts?: SnapshotOperations;
-	capacity(): Promise<CapacityReading>;
+	sizes(): HostedSizeOption[];
 	price(): SandboxPrice;
 	profiles(): SandboxProfile[];
 	readonly openProfileId: SandboxProfileId;
 	provision(input: CreateSandboxInput): Promise<string>;
 	acquire(id: string, options?: ConnectOptions): Promise<TurnSandbox | undefined>;
-	inspect(id: string): Promise<HostedObservation>;
-	inventory(uid: string): Promise<HostedInventory[]>;
+	inspect(id: string): Promise<SandboxObservation>;
+	inventory(uid: string): Promise<ListedSandbox[]>;
 	owners(): Promise<string[]>;
 	suspend(id: string): Promise<void>;
 	destroy(id: string): Promise<void>;
 	applyEgress(id: string, hosts: readonly string[]): Promise<boolean>;
-	forgetTokenFiles(uid: string): Promise<void>;
 }
 
 const ALLOW_LIST_UNAVAILABLE = "This provider cannot enforce a network allow-list.";
@@ -63,29 +35,27 @@ export class HostedSandboxes implements Sandboxes {
 	readonly sweepSnapshots?: Sandboxes["sweepSnapshots"];
 
 	constructor(readonly provider: HostedSandboxProvider) {
-		if (!provider.capabilities.egress.allowList && provider.network.mode !== "open")
-			throw new HostedProviderError("unsupportedPolicy", "This provider cannot enforce the deployment's network allow-list.");
-		const artifacts = provider.artifacts;
-		if (artifacts) {
-			this.hasSnapshot = artifacts.hasSnapshot.bind(artifacts);
-			this.saveSnapshot = artifacts.saveSnapshot.bind(artifacts);
-			this.dropSnapshots = artifacts.dropSnapshots.bind(artifacts);
-			this.sweepSnapshots = artifacts.sweepSnapshots.bind(artifacts);
-		}
+		if (!provider.supportsAllowList && provider.network.mode !== "open")
+			throw new SandboxUserError("This provider cannot enforce the deployment's network allow-list.");
+		const snapshots = provider.artifacts;
+		this.hasSnapshot = snapshots?.hasSnapshot.bind(snapshots);
+		this.saveSnapshot = snapshots?.saveSnapshot.bind(snapshots);
+		this.dropSnapshots = snapshots?.dropSnapshots.bind(snapshots);
+		this.sweepSnapshots = snapshots?.sweepSnapshots.bind(snapshots);
 	}
 
 	get idleStopMs() { return this.provider.idleStopMs; }
 	price() { return this.provider.price(); }
-	sizes() { return this.provider.capabilities.sizes.map(size => ({ ...size })); }
+	sizes() { return this.provider.sizes(); }
 	egress() { return this.provider.network.mode; }
 	allowedHosts() { return this.provider.network.hosts; }
 	setNetwork(id: string, hosts: readonly string[]) { return this.provider.applyEgress(id, hosts); }
 	owners() { return this.provider.owners(); }
 
 	profiles(): SandboxProfile[] {
-		const { allowList } = this.provider.capabilities.egress;
+		if (this.provider.supportsAllowList) return this.provider.profiles();
 		return this.provider.profiles().map(profile =>
-			profile.available && !allowList && profile.id !== this.provider.openProfileId
+			profile.available && profile.id !== this.provider.openProfileId
 				? { ...profile, available: false, unavailableReason: ALLOW_LIST_UNAVAILABLE }
 				: profile);
 	}
@@ -97,20 +67,13 @@ export class HostedSandboxes implements Sandboxes {
 	}
 
 	async create(input: CreateSandboxInput) {
-		if (!this.provider.capabilities.egress.allowList && input.profile !== this.provider.openProfileId)
-			throw new HostedProviderError("unsupportedPolicy", ALLOW_LIST_UNAVAILABLE);
+		if (!this.provider.supportsAllowList && input.profile !== this.provider.openProfileId)
+			throw new SandboxUserError(ALLOW_LIST_UNAVAILABLE);
 		return this.provider.provision(input);
 	}
 
-	async list(uid: string): Promise<ListedSandbox[]> {
-		return (await this.provider.inventory(uid)).map(row => ({ ...row, state: row.state === "running" ? "running" : "paused" }));
-	}
-
-	async observe(id: string): Promise<SandboxObservation> {
-		const row = await this.provider.inspect(id);
-		return { ...row, state: row.state === "stopped" || row.state === "archived" ? "paused" : row.state };
-	}
-
+	list(uid: string) { return this.provider.inventory(uid); }
+	observe(id: string) { return this.provider.inspect(id); }
 	async state(id: string) { return (await this.observe(id)).state; }
 	connect(id: string, options?: ConnectOptions) { return this.provider.acquire(id, options); }
 	suspend(id: string) { return this.provider.suspend(id); }

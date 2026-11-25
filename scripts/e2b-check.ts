@@ -48,7 +48,7 @@ import type { AccessTokens, ChatgptLogins, RunTurnResult, ScriptedModel, TurnQue
 import { cleanupDeployment } from "../server/src/sandbox/e2b/cleanup.js";
 import type { E2bClient, E2bSandboxInfo } from "../server/src/sandbox/e2b/client.js";
 import { readE2bSettings } from "../server/src/sandbox/e2b/config.js";
-import { hostedModelRelay, readHostedNetwork } from "../server/src/sandbox/hosted-network.js";
+import { e2bModelRelay, readE2bNetwork } from "../server/src/sandbox/e2b/network.js";
 import { cloneWithToken } from "../server/src/github/git.js";
 import { describeUsage } from "../server/src/sandbox/e2b/pricing.js";
 import { type E2bSandboxHandle, e2bSandboxes, META } from "../server/src/sandbox/e2b/sandboxes.js";
@@ -104,7 +104,7 @@ async function main(): Promise<number> {
 	// A label no other sandbox has: everything this run makes, and nothing else, is found by it.
 	const deployment = `check-${randomId(4)}`;
 	const settings = { ...readE2bSettings(), deployment, maxRunning: 1, pause: true, windlassSandbox: false, openProfile: false };
-	console.log(`e2b-check: template "${settings.template}", deployment label "${deployment}", time limit ${Math.round(limitMs / 1000)} s.`);
+	console.log(`e2b-check: template "${settings.templates.small.template}", deployment label "${deployment}", time limit ${Math.round(limitMs / 1000)} s.`);
 	console.log(`e2b-check: should this process be killed, its sandbox is paused by its own timeout within ${Math.round(settings.turnLeaseMs / 1000)} s; remove it with: npx tsx ../scripts/e2b-cleanup.ts --deployment ${deployment} --kill`);
 
 	// E2B's SDK is loaded here and not before: without a key nothing of it is needed.
@@ -308,12 +308,12 @@ async function main(): Promise<number> {
 		if (process.env.WLP_E2B_CHECK_NETWORK !== "1") return;
 		// The model relay's settings as the servers have them: with them the sandbox reaches the relay's hostname and not api.openai.com.
 		const relayEnv = Object.fromEntries(["WLP_MODEL_RELAY", "WLP_MODEL_RELAY_URL", "WLP_E2B_WINDLASS_VERSION"].map((name) => [name, process.env[name] ?? ""]));
-		const relay = hostedModelRelay(relayEnv);
+		const relay = e2bModelRelay(relayEnv);
 		console.log(`      model relay: ${"host" in relay ? relay.origin : `off (${relay.off})`}`);
 		const publicHost = (() => { try { return new URL(process.env.WLP_PUBLIC_URL ?? "").hostname; } catch { return null; } })();
 		for (const mode of ["restricted", "none"] as const) {
 			await step(`network: ${mode}`, async () => {
-				const boxes = e2bSandboxes(client, { ...settings, network: readHostedNetwork({ WLP_E2B_NETWORK: mode, ...relayEnv, ...(mode === "restricted" ? { WLP_E2B_NETWORK_ALLOW: "@npm" } : {}) }) }, { log: (line) => console.log(`      ${line}`) });
+				const boxes = e2bSandboxes(client, { ...settings, network: readE2bNetwork({ WLP_E2B_NETWORK: mode, ...relayEnv, ...(mode === "restricted" ? { WLP_E2B_NETWORK_ALLOW: "@npm" } : {}) }) }, { log: (line) => console.log(`      ${line}`) });
 				const id = await boxes.create({ uid: "check", sessionId: `network-${mode}`, profile: "e2b" });
 				runs();
 				try {

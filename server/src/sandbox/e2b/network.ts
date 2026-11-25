@@ -1,37 +1,21 @@
-/**
- * The network of a deployment's E2B sandboxes (WLP_E2B_NETWORK): `open`, `restricted` or `none`, the
- * hosted counterpart of a machine's `--egress` (docs/operating.md, "E2B", "Network").
- *
- * Everything is enforced by E2B outside the microVM, with the options of its own network configuration
- * (https://docs.e2b.dev/network/internet-access.md): nothing inside the sandbox can change it, and the
- * agent's commands, Windlass's engine and the platform's own steps all share it, since all of them run in
- * the same microVM. So the hosts the platform's own steps need are always in the list, computed from the
- * server's configuration and never typed by hand:
- *
- *   the model API      Windlass's engine calls api.openai.com (its RESPONSES_BASE_URL) from the sandbox,
- *                      or, with the model relay, WLP_MODEL_RELAY_URL's host and not api.openai.com
- *                      (`hostedModelRelay`): the relay's own name, which the server serves nothing else on
- *   the git host       clone, fetch and push run in the sandbox as the transport user, against
- *                      WLP_GITHUB_URL (github.com): `restricted` only, `none` refuses repositories
- *   the bucket         memory backups and screenshots are sent from the sandbox with a signed link to
- *                      WLP_BUCKET_ENDPOINT's host (with the bucket before it in virtual style)
- *
- * What E2B is asked for, in `restricted` and `none`: every destination denied (`0.0.0.0/0`), the hosts
- * allowed by name (E2B matches the TLS server name on 443 and the Host header on 80, and connects to
- * the name itself, whatever address the sandbox dialled), and no DNS server allowed (`dnsServers: []`).
- * Without that last part E2B lets all traffic to 8.8.8.8 through, which carries any name a command
- * wants to look up. Inside the sandbox the allowed names are written into /etc/hosts and the resolver
- * file is emptied, as root, at create and at every resume (`guestDnsScript`), so allowed names resolve
- * and every other lookup fails at once.
- *
- * `open` is today's sandbox: no network option is sent at all. E2B blocks private and link-local ranges
- * towards its own network in every sandbox and mode, so what a machine calls `restricted` (no private
- * network, no cloud metadata) already holds there; the stricter step on E2B is a list of hosts.
- */
+/** E2B enforces the allow-list outside the microVM. With DNS egress closed, the guest pins
+ * allowed names in /etc/hosts and logs blocked lookups locally. */
 
-import { isHostName, type HostedNetwork } from "../hosted-network.js";
+import type { EgressMode } from "../../contract.js";
+import { MODEL_RELAY_WINDLASS, parseModelRelayUrl, readsModelRelay } from "../../model-relay-url.js";
+import { MAX_HOSTS, MODEL_HOSTS, PRESETS, isHostName } from "../hosted-network.js";
+import { hostedName, wholeNumber } from "../hosted-settings.js";
+
+const DEFAULT_ALLOW = "@npm,@pypi,@github";
 
 export const PIN_ADDRESS = "1.1.1.1";
+
+export interface E2bNetwork {
+	mode: EgressMode;
+	/** The names E2B allows, sorted, each once. Empty in `open`. */
+	hosts: string[];
+	maxHosts: number;
+}
 
 /** What is sent to E2B: `network` of `Sandbox.create`, and the body of `updateNetwork`. Null: no option (open). */
 export interface E2bNetworkConfig {
@@ -40,8 +24,113 @@ export interface E2bNetworkConfig {
 	dnsServers: string[];
 }
 
+/** The name of an https address on the default port, or a refusal naming the variable. */
+function platformHost(name: string, raw: string, extra = ""): string {
+	let url: URL;
+	try {
+		url = new URL(raw);
+	} catch {
+		throw new Error(`${name} is not an address`);
+	}
+	const host = url.hostname.toLowerCase();
+	if (url.protocol !== "https:" || url.port !== "" || !isHostName(host))
+		throw new Error(`WLP_E2B_NETWORK=restricted and none allow hosts by name, which E2B matches only for HTTPS on port 443: ${name} must be an https address with a DNS name and no port${extra}`);
+	return host;
+}
+
+/** The bucket's host, when a bucket is configured (the four variables of config.ts `backupConfig`). */
+function bucketName(env: NodeJS.ProcessEnv): string | null {
+	const read = (name: string) => (env[name] ?? "").trim();
+	if (["WLP_BUCKET_ENDPOINT", "WLP_BUCKET_NAME", "WLP_BUCKET_ACCESS_KEY_ID", "WLP_BUCKET_SECRET_ACCESS_KEY"].some((name) => read(name) === "")) return null;
+	let endpoint: URL;
+	try {
+		endpoint = new URL(read("WLP_BUCKET_ENDPOINT"));
+	} catch {
+		// The value is not repeated: an endpoint may carry an account's id. config.ts refuses it too.
+		throw new Error("WLP_BUCKET_ENDPOINT is not a URL");
+	}
+	// As bucket/s3.ts names the host of a signed link: the bucket before the endpoint's host in virtual style.
+	const host = read("WLP_BUCKET_STYLE").toLowerCase() === "virtual" ? `${read("WLP_BUCKET_NAME")}.${endpoint.host}` : endpoint.host;
+	return platformHost("WLP_BUCKET_ENDPOINT", `${endpoint.protocol}//${host}`, " (with WLP_BUCKET_STYLE=virtual, the bucket's name must be a DNS label)");
+}
+
+/** The entries of WLP_E2B_NETWORK_ALLOW, presets expanded. Throws with the entry that is wrong. */
+function allowList(raw: string): string[] {
+	const out: string[] = [];
+	for (const entry of raw.toLowerCase().split(",").map((item) => item.trim()).filter(Boolean)) {
+		const preset = PRESETS[entry];
+		if (preset) out.push(...preset);
+		else if (entry.startsWith("@")) throw new Error(`WLP_E2B_NETWORK_ALLOW: "${entry}" is no preset; the presets are ${Object.keys(PRESETS).join(", ")}`);
+		else if (!isHostName(entry.replace(/\.$/, ""))) throw new Error(`WLP_E2B_NETWORK_ALLOW: "${entry}" is not a DNS name. Give exact host names or presets, comma-separated: no addresses, ports or wildcards`);
+		else out.push(entry.replace(/\.$/, ""));
+	}
+	return out;
+}
+
+/**
+ * Whether E2B sandboxes send Windlass's model requests to the relay route instead of api.openai.com
+ * (docs/model-relay.md), and where: the origin of WLP_MODEL_RELAY_URL, a hostname of the relay's own. Off,
+ * and the turn's token goes into the sandbox as before, with WLP_MODEL_RELAY=off, without
+ * WLP_MODEL_RELAY_URL (never the platform's whole public host instead), or when the template's Windlass
+ * (WLP_E2B_WINDLASS_VERSION) is not known to be 0.6.0 or later, the first release that routes ChatGPT through the relay.
+ */
+export function e2bModelRelay(env: NodeJS.ProcessEnv = process.env): { origin: string; host: string } | { off: string } {
+	if ((env.WLP_MODEL_RELAY ?? "").trim().toLowerCase() === "off") return { off: "WLP_MODEL_RELAY=off" };
+	const url = parseModelRelayUrl(env.WLP_MODEL_RELAY_URL);
+	if (url === null) return { off: "WLP_MODEL_RELAY_URL is not set" };
+	if ("problem" in url) return { off: url.problem };
+	const version = (env[hostedName(env, "WINDLASS_VERSION")] ?? "").trim();
+	if (!readsModelRelay(version))
+		return { off: `WLP_E2B_WINDLASS_VERSION is ${version === "" ? "not set" : version}, and the relay needs Windlass ${MODEL_RELAY_WINDLASS} or later in the template` };
+	return url;
+}
+
+/** WLP_E2B_NETWORK and WLP_E2B_NETWORK_ALLOW, with the platform's own hosts added. */
+export function readE2bNetwork(env: NodeJS.ProcessEnv = process.env, relay = e2bModelRelay(env)): E2bNetwork {
+	const modeName = hostedName(env, "NETWORK");
+	const allowName = hostedName(env, "NETWORK_ALLOW");
+	const raw = (env[modeName] ?? "").trim().toLowerCase();
+	const mode = raw || "open";
+	if (mode !== "open" && mode !== "restricted" && mode !== "none") throw new Error(`${modeName} must be open, restricted or none; got "${raw}"`);
+	const allow = env[allowName];
+	const maxHosts = wholeNumber(env, "WLP_HOSTED_NETWORK_MAX_HOSTS", MAX_HOSTS, 1, MAX_HOSTS);
+	if (allow !== undefined && allow.trim() !== "" && mode !== "restricted") throw new Error(`${allowName} applies only with ${modeName}=restricted`);
+	if (mode === "open") return { mode, hosts: [], maxHosts };
+	// With the model relay, its own host in place of the model API's, in `none` too: Windlass's requests go
+	// there (docs/model-relay.md), and nothing in the sandbox has a token api.openai.com would take.
+	const hosts = "host" in relay ? [relay.host] : [...MODEL_HOSTS];
+	const bucket = bucketName(env);
+	if (bucket !== null) hosts.push(bucket);
+	if (mode === "restricted") {
+		hosts.push(platformHost("WLP_GITHUB_URL", (env.WLP_GITHUB_URL ?? "").trim() || "https://github.com"));
+		hosts.push(...allowList(allow === undefined || allow.trim() === "" ? DEFAULT_ALLOW : allow));
+	}
+	const unique = [...new Set(hosts)].sort();
+	if (unique.length > maxHosts) throw new Error(`${allowName} names ${unique.length} hosts with the platform's own; at most ${maxHosts}`);
+	return { mode, hosts: unique, maxHosts };
+}
+
+/**
+ * The deployment's network with the hosts a session's repositories allow added (repository-network.ts):
+ * only in `restricted`, where a repository's list applies; `open` and `none` are as the deployment has
+ * them. The platform's and the deployment's hosts come first: when the whole would pass MAX_HOSTS, the
+ * repository's hosts that do not fit are left out and named in `dropped` (a save refuses a list that
+ * cannot fit, so this happens only when the deployment's own list grew after it).
+ */
+export function withHosts(network: E2bNetwork, extra: readonly string[] | undefined): { network: E2bNetwork; dropped: string[] } {
+	if (network.mode !== "restricted" || !extra || extra.length === 0) return { network, dropped: [] };
+	const hosts = new Set(network.hosts);
+	const dropped: string[] = [];
+	for (const host of [...new Set(extra)].sort()) {
+		if (hosts.has(host) || !isHostName(host)) continue;
+		if (hosts.size >= network.maxHosts) dropped.push(host);
+		else hosts.add(host);
+	}
+	return { network: { ...network, hosts: [...hosts].sort() }, dropped };
+}
+
 /** What E2B is asked for. Null in `open`: nothing is sent, as before network modes. */
-export function networkConfig(network: HostedNetwork): E2bNetworkConfig | null {
+export function networkConfig(network: E2bNetwork): E2bNetworkConfig | null {
 	if (network.mode === "open") return null;
 	return { denyOut: ["0.0.0.0/0"], allowOut: [...network.hosts], dnsServers: [] };
 }
@@ -255,6 +344,6 @@ export function guestNetworkStep(stdout: string): string {
 	return GUEST_STEPS[last] ?? `its last step was ${last}`;
 }
 
-export function guestDnsArgv(network: HostedNetwork, address = PIN_ADDRESS): string[] {
+export function guestDnsArgv(network: E2bNetwork, address = PIN_ADDRESS): string[] {
 	return ["/bin/sh", "-c", GUEST_DNS_SCRIPT, "wlp-network", network.mode, address, ...network.hosts];
 }

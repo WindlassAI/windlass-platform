@@ -72,7 +72,7 @@ async function main(): Promise<number> {
 	// A label no other sandbox has, and a prefix no other object has: everything this run makes, and nothing else, is found by them.
 	const deployment = `backup-check-${run}`;
 	const settings = { ...readE2bSettings(), deployment, maxRunning: 1, pause: true, windlassSandbox: false, openProfile: false };
-	console.log(`e2b-backup-check: template "${settings.template}", deployment label "${deployment}", time limit ${LIMIT_MS / 1000} s.`);
+	console.log(`e2b-backup-check: template "${settings.templates.small.template}", deployment label "${deployment}", time limit ${LIMIT_MS / 1000} s.`);
 	console.log(`e2b-backup-check: should this process be killed, its sandbox is paused by its own timeout within ${Math.round(settings.turnLeaseMs / 1000)} s; remove it with: npx tsx ../scripts/e2b-cleanup.ts --deployment ${deployment} --kill`);
 
 	const store = new S3ObjectStore(bucket);

@@ -28,7 +28,7 @@ import { forwardProof, proofHeader } from "../sandbox/relay/wires.cjs";
 import { type RelayRouteDeps, modelRelayResponse, modelRelayRoute, upstreamFetch } from "../server/src/model-relay-route.js";
 import { createServer } from "node:http";
 import { brotliCompressSync, gzipSync } from "node:zlib";
-import { hostedModelRelay, hostedModelRelayOrigin, readHostedNetwork } from "../server/src/sandbox/hosted-network.js";
+import { e2bModelRelay, readE2bNetwork } from "../server/src/sandbox/e2b/network.js";
 import { parseModelRelayUrl } from "../server/src/model-relay-url.js";
 import { dayOf, TOKEN_USAGE_TABLE, recordTurnTokens, tokensOn } from "../server/src/usage.js";
 import { checkHostedTurn } from "./hosted-agent-turn.js";
@@ -870,15 +870,15 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 
 {
 	const env = (extra: Record<string, string>) => ({ WLP_PUBLIC_URL: "https://wlp.example.com", WLP_MODEL_RELAY_URL: "https://relay.example.com", WLP_E2B_WINDLASS_VERSION: "0.7.1", WLP_E2B_NETWORK: "restricted", ...extra }) as NodeJS.ProcessEnv;
-	const hosts = (extra: Record<string, string> = {}) => readHostedNetwork(env(extra)).hosts;
+	const hosts = (extra: Record<string, string> = {}) => readE2bNetwork(env(extra)).hosts;
 	expect("E2B restricted allows the relay's own host, not the platform's public host, and not api.openai.com", hosts().includes("relay.example.com") && !hosts().includes("wlp.example.com") && !hosts().includes("api.openai.com"), hosts().join());
 	expect("E2B none allows the relay's host only, and no git host", hosts({ WLP_E2B_NETWORK: "none" }).join() === "relay.example.com", hosts({ WLP_E2B_NETWORK: "none" }).join());
-	expect("with WLP_MODEL_RELAY=off: api.openai.com, no relay host, and the turn's token goes into the sandbox", hosts({ WLP_MODEL_RELAY: "off" }).includes("api.openai.com") && !hosts({ WLP_MODEL_RELAY: "off" }).includes("relay.example.com") && hostedModelRelayOrigin(env({ WLP_MODEL_RELAY: "off" })) === null);
+	expect("with WLP_MODEL_RELAY=off: api.openai.com, no relay host, and the turn's token goes into the sandbox", hosts({ WLP_MODEL_RELAY: "off" }).includes("api.openai.com") && !hosts({ WLP_MODEL_RELAY: "off" }).includes("relay.example.com") && readE2bSettings(env({ WLP_MODEL_RELAY: "off" })).modelRelayOrigin === null);
 	const unset = env({ WLP_MODEL_RELAY_URL: "" });
-	expect("without WLP_MODEL_RELAY_URL the relay is off, and the platform's whole public host is never allowed in its place", hostedModelRelayOrigin(unset) === null && !readHostedNetwork(unset).hosts.includes("wlp.example.com") && readHostedNetwork(unset).hosts.includes("api.openai.com"));
+	expect("without WLP_MODEL_RELAY_URL the relay is off, and the platform's whole public host is never allowed in its place", readE2bSettings(unset).modelRelayOrigin === null && !readE2bNetwork(unset).hosts.includes("wlp.example.com") && readE2bNetwork(unset).hosts.includes("api.openai.com"));
 	for (const version of ["0.5.9", ""]) {
 		const old = env({ WLP_E2B_WINDLASS_VERSION: version });
-		expect(`with the template's Windlass ${version || "unknown"} the relay is off for E2B, and api.openai.com stays`, hostedModelRelayOrigin(old) === null && readHostedNetwork(old).hosts.includes("api.openai.com") && "off" in hostedModelRelay(old));
+		expect(`with the template's Windlass ${version || "unknown"} the relay is off for E2B, and api.openai.com stays`, readE2bSettings(old).modelRelayOrigin === null && readE2bNetwork(old).hosts.includes("api.openai.com") && "off" in e2bModelRelay(old));
 	}
 	const settings = readE2bSettings(env({ WLP_E2B_WINDLASS_VERSION: "0.6.0" }));
 	const owner = new E2bProvider({} as never, settings, { log() {} });
@@ -894,8 +894,8 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 	await assert.rejects(openModelKeyRelay(guest, "session", { ...key, harness: "windlass" }), /Hosted Windlass needs 0.7.1 to use Settings keys/);
 	for (const harness of ["claude", "codex", "opencode"] as const)
 		await (await openModelKeyRelay(guest, "session", { ...key, harness })).close();
-	expect("Windlass 0.6.0 keeps the ChatGPT and ACP relay origin", hostedModelRelayOrigin(env({ WLP_E2B_WINDLASS_VERSION: "0.6.0" })) === "https://relay.example.com");
-	expect("with Windlass 0.7.1 and WLP_MODEL_RELAY_URL the relay's origin is its own host", hostedModelRelayOrigin(env({})) === "https://relay.example.com");
+	expect("Windlass 0.6.0 keeps the ChatGPT and ACP relay origin", readE2bSettings(env({ WLP_E2B_WINDLASS_VERSION: "0.6.0" })).modelRelayOrigin === "https://relay.example.com");
+	expect("with Windlass 0.7.1 and WLP_MODEL_RELAY_URL the relay's origin is its own host", readE2bSettings(env({})).modelRelayOrigin === "https://relay.example.com");
 }
 
 console.log(failed === 0 ? "\nall model relay checks passed" : `\n${failed} model relay check(s) failed`);

@@ -32,9 +32,9 @@
  * scripts/network-check.ts runs them against a database of its own.
  */
 
-import { MAX_REPOSITORY_HOSTS, WIDE_HOSTS, type NetworkPreset, type NetworkProposal, type NetworkRequest } from "./contract.js";
+import { MAX_REPOSITORY_HOSTS, NETWORK_PRESETS, WIDE_HOSTS, type NetworkPreset, type NetworkProposal, type NetworkRequest } from "./contract.js";
 import type { DefaultsDb } from "./repository-defaults.js";
-import { MAX_HOSTS, PRESET_LIST, PRESETS, isHostName } from "./sandbox/hosted-network.js";
+import { MAX_HOSTS, PRESETS, isHostName } from "./sandbox/hosted-network.js";
 
 /** How many repositories one user may have a list for; the ones saved longest ago go first. */
 export const MAX_NETWORK_REPOSITORIES = 500;
@@ -49,7 +49,7 @@ export class NetworkProblem extends Error {}
 
 /** The presets as a client shows them. */
 export function networkPresets(): NetworkPreset[] {
-	return PRESET_LIST.map((preset) => ({ id: preset.id, name: preset.name, about: preset.about, hosts: [...preset.hosts] }));
+	return NETWORK_PRESETS.map((preset) => ({ id: preset.id, name: preset.name, about: preset.about, hosts: [...preset.hosts] }));
 }
 
 /** One entry as it is saved: a preset's id, or an exact DNS name, lower case, without a trailing dot. Null for anything else. */
@@ -99,7 +99,7 @@ export function cleanEntries(raw: unknown, deploymentHosts: readonly string[] = 
 			const shown = typeof item === "string" ? `"${item.trim().slice(0, 80)}"` : "An entry";
 			throw new NetworkProblem(
 				typeof item === "string" && item.trim().startsWith("@")
-					? `${shown} is no preset. The presets are ${PRESET_LIST.map((preset) => preset.id).join(", ")}.`
+					? `${shown} is no preset. The presets are ${NETWORK_PRESETS.map((preset) => preset.id).join(", ")}.`
 					: `${shown} is not an exact host name. Give names such as registry.example.com: no addresses, ports, paths or wildcards.`,
 			);
 		}
