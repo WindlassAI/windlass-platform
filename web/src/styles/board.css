@@ -22,10 +22,12 @@
 	color: var(--ink);
 }
 
+/* In Board mode the whole page takes the board's width: head, composer, filters and board share one pair of edges. */
+.home.factory-wide {
+	width: min(calc(1400px + 2 * var(--gutter)), 100%);
+}
 .factory-board {
-	--board: min(1400px, calc(100vw - 2 * var(--gutter)));
-	width: var(--board);
-	margin: 18px 0 0 calc((100% - var(--board)) / 2);
+	margin-top: 18px;
 	display: grid;
 	gap: 18px;
 	font-size: var(--text-12);

@@ -191,7 +191,7 @@ export function Factory({ filters, items }: { filters: { repository?: GithubId; 
 	const turnsUsed = limits && sessions !== null ? Math.min(hosted, limits.hostedRunning) : null;
 
 	return (
-		<main className="home factory">
+		<main className={`home factory${view === "board" ? " factory-wide" : ""}`}>
 			<header className="home-head factory-head">
 				<div>
 					<h1 className="display">Factory</h1>
