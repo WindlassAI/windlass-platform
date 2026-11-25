@@ -806,15 +806,14 @@ async function main(server: Server | null): Promise<void> {
 		assert(response.headers.get("content-type")?.startsWith("application/json"), `content-type is ${response.headers.get("content-type")}`);
 		const info = (await response.json()) as import("../server/src/contract.js").PlatformInfo;
 		assert(info.demoEnabled === true, "demoEnabled is not true: start the server with WLP_DEMO=1");
-		assert(info.profiles.length >= 2, "fewer than two profiles");
-		const available = info.profiles.filter((profile) => profile.available);
-		assert(available.length >= 1, "no available profile");
-		assert(info.profiles.some((profile) => !profile.available && profile.unavailableReason), "no unavailable profile with a reason");
+		const [first] = info.profiles;
+		assert(first, "no available profile");
+		assert(info.profiles.every(profile => profile.available && profile.unavailableReason === undefined), `unavailable profile in platform info: ${plain(info.profiles)}`);
 		// The models are each user's own (`user.models`): the deployment names none.
 		assert(!("models" in info) && !("efforts" in info), `the platform's information still names models or efforts: ${plain(Object.keys(info))}`);
 		if (!FAKE) assert(typeof info.windlassVersion === "string" && info.windlassVersion !== "", "windlassVersion is null: is the sandbox image built?");
-		availableProfile = available[0].id;
-		commandsSandboxed = available[0].approval === "auto" && !available[0].commandNetwork && !available[0].commandsCanReadAccessToken;
+		availableProfile = first.id;
+		commandsSandboxed = first.approval === "auto" && !first.commandNetwork && !first.commandsCanReadAccessToken;
 		if (OWN_SERVER) {
 			// The information is no actor's: none named "platform" exists, whoever asked.
 			const listed = (await (await controlPlane("/actors?namespace=default&name=platform")).json()) as { actors?: unknown[] };
@@ -823,7 +822,7 @@ async function main(server: Server | null): Promise<void> {
 		const health = await fetch(`${API}/health`);
 		assert(health.ok, `GET /health answered ${health.status}`);
 		assert((await fetch(`${API}/nothing-here`)).status === 404, "an unknown path did not answer 404");
-		return `windlass ${info.windlassVersion}, ${available.length}/${info.profiles.length} profiles available; /health ${health.status}`;
+		return `windlass ${info.windlassVersion}, ${info.profiles.length} available profiles; /health ${health.status}`;
 	});
 
 	await check("platform info: only the web app's origin may read it", async () => {

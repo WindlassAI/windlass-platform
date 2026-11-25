@@ -237,7 +237,9 @@ async function check() {
 		await eventually(() => events.some(rows => rows.some(r => r.status === "online" && r.freeDiskBytes === runner.report.freeDiskBytes)));
 		loginSocket.send({ ...runner.report, name: "F892B469D6C5" });
 		await eventually(async () => (await row()).name === "F892B469D6C5");
-		assert((await row()).profiles.every(p => p.name.includes("Linux arm64 machine (f892b4)")));
+		const renamedProfiles = (await row()).profiles;
+		assert.deepEqual(renamedProfiles.map(p => p.name), ["Strict", "Open"]);
+		assert(renamedProfiles.every(p => p.details?.includes('your machine "Linux arm64 machine (f892b4)"')));
 		assert.equal((await service().internalFacts()).name, "Linux arm64 machine (f892b4)");
 		loginSocket.send({ ...runner.report, freeDiskBytes: 123 });
 		await eventually(async () => (await row()).freeDiskBytes === 123);
@@ -275,7 +277,7 @@ async function check() {
 		await eventually(async () => (await service().internalFacts()).report?.claudeLogin === true);
 		const listed = await row();
 		assert.deepEqual(listed.profiles.map(p => p.id), ["docker-windlass-sandbox", "docker-hardened"]);
-		assert(listed.profiles.every(p => p.available && p.name.includes("Workshop")));
+		assert(listed.profiles.every(p => p.available && p.details?.includes('your machine "Workshop"')));
 		const launched = await user.createSession({ profile: "docker-hardened", place: { kind: "machine", machineId } });
 		await user.saveAccountSecret({ name: "EXAMPLE_SETTING", value: "fixture value", scope: "setup", profile: "docker-hardened" });
 		const readSecrets = () => secretsActor({ client: () => client }, uid, launched.id).internalSessionSecrets(launched.id);

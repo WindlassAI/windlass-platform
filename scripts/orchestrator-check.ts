@@ -621,7 +621,7 @@ test("an exhausted subtask asks for more, and its new budget grows its feature's
 	const stopped = advance(child, {kind:"start", at:1, by:"person"}).item;
 	assert.equal(stopped.question!.kind, "budget");
 	assert.deepEqual(stopped.question!.choices.map(c => c.id), ["raise", "give_up"]);
-	assert.match(stopped.question!.text, /adds to the feature's budget/);
+	assert.match(stopped.question!.text, /increases the feature's budget/);
 	const more = advance(stopped, {kind:"answer", question:stopped.question!.id, choice:"raise", at:2, by:"person"});
 	assert.equal(more.item.budget.tokens, 2 * single.tokens);
 	assert.equal(more.item.run!.n, 1);

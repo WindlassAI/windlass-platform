@@ -595,7 +595,8 @@ async function linkChecks(): Promise<void> {
 			await advance(50);
 			assert(b.log.calls.join() === "facts", `calls: ${b.log.calls.join()}`);
 			const profile = b.sandboxes.profile("docker-windlass-sandbox");
-			assert(profile.name.includes('"Bench"') && !profile.available, `profile: ${profile.name}, available ${profile.available}`);
+			assert(profile.name === "Strict" && profile.details?.includes('your machine "Bench"'), `profile: ${profile.name}, ${profile.details}`);
+			assert(!profile.available && profile.unavailableReason === "Bubblewrap could not start", `availability: ${profile.available}, ${profile.unavailableReason}`);
 			return `${profile.name}: ${profile.unavailableReason}`;
 		});
 
@@ -1250,7 +1251,11 @@ async function main(): Promise<void> {
 			await forceSleep(main.id);
 			const before = runner.attaches;
 			const snapshot = await snapshotOf(client, uid, main.id, token);
-			assert(snapshot.summary.sandbox === "none" && snapshot.profile.available && snapshot.profile.name.includes(runner.fake.details.name), `profile: ${snapshot.profile.name} (available: ${snapshot.profile.available})`);
+			assert(snapshot.summary.sandbox === "none", `sandbox: ${snapshot.summary.sandbox}`);
+			const machine = (await user.machines()).find(row => row.machineId === place.machineId);
+			const open = machine?.profiles.find(profile => profile.id === "docker-hardened");
+			assert(open?.name === "Open" && open.available && open.details?.includes(runner.fake.details.name), `machine profile: ${JSON.stringify(open)}`);
+			deepStrictEqual(snapshot.profile, open);
 			assert(runner.attaches === before, "reading the profile opened a runner socket");
 			return snapshot.profile.name;
 		});

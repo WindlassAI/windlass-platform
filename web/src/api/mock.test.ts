@@ -122,10 +122,15 @@ describe("what the mock serves", () => {
 		expect((await after(500, user.createSession({ profile, mode: "ask" }))).mode).toBe("ask");
 	});
 
-	it("lists the two sandbox profiles this deployment can run, Strict and Open, and none it cannot", async () => {
+	it.each([
+		["docker", "docker-windlass-sandbox", "docker-hardened"],
+		["e2b", "e2b", "e2b-open"],
+	] as const)("lists only the Strict and Open profiles offered on %s", async (sandbox, strict, open) => {
+		client.dispose();
+		client = createMockClient({ sandbox });
 		const info = await after(500, client.info());
 		expect(info.demoEnabled).toBe(true);
-		expect(info.profiles.map((profile) => [profile.id, profile.name])).toEqual([["docker-windlass-sandbox", "Strict"], ["docker-hardened", "Open"]]);
+		expect(info.profiles.map((profile) => [profile.id, profile.name])).toEqual([[strict, "Strict"], [open, "Open"]]);
 		expect(info.profiles.every((profile) => profile.available && profile.unavailableReason === undefined)).toBe(true);
 		// The models are each user's own: the deployment names none.
 		expect(info).not.toHaveProperty("models");

@@ -156,13 +156,16 @@ await section("profiles", async () => {
 	expect("with it, both E2B profiles are offered, the one with Windlass's sandbox first (the picker's default)", both.filter((profile) => profile.available).map((profile) => profile.id).join() === "e2b,e2b-open");
 	expect(
 		"the microVM-only profile says what it gives up: network, the access token, no questions",
-		open?.approval === "full" && open.commandNetwork && open.commandsCanReadAccessToken && open.layers.length === 1 && /any host on the network/.test(open.summary) && /access token/.test(open.summary) && /without asking/.test(open.summary) && /never in the microVM/.test(open.summary),
-		open?.summary,
+		open?.name === "Open" && open.approval === "full" && open.commandNetwork && open.commandsCanReadAccessToken && open.layers.length === 1
+			&& open.details !== undefined && /any host on the network/.test(open.details) && /access token/.test(open.details)
+			&& /without asking/.test(open.details) && /never in the microVM/.test(open.details),
+		open?.details,
 	);
 	expect(
 		"what it promises holds with or without bubblewrap: Windlass asks or sandboxes, and commands are not said to be without network or token",
-		e2b?.approval === "auto" && e2b.commandNetwork === true && e2b.commandsCanReadAccessToken === true && /asks before running a command it cannot sandbox/.test(e2b.summary) && /never in the microVM/.test(e2b.summary),
-		e2b?.summary,
+		e2b?.name === "Strict" && e2b.approval === "auto" && e2b.commandNetwork && e2b.commandsCanReadAccessToken
+			&& e2b.details !== undefined && /asks before running a command it cannot sandbox/.test(e2b.details) && /never in the microVM/.test(e2b.details),
+		e2b?.details,
 	);
 	expect("the Docker profiles say why they cannot be chosen there", onE2b.filter((profile) => profile.id.startsWith("docker-")).every((profile) => !profile.available && /E2B/.test(profile.unavailableReason ?? "")));
 	const onDocker = profilesFor("docker");
@@ -170,10 +173,6 @@ await section("profiles", async () => {
 	expect("and the microVM-only profile too", onDocker.find((profile) => profile.id === "e2b-open")?.available === false && /WLP_E2B_OPEN_PROFILE=1/.test(onDocker.find((profile) => profile.id === "e2b-open")?.unavailableReason ?? ""));
 	const strong = e2bProfile({ windlassSandbox: true });
 	expect("with WLP_E2B_WINDLASS_SANDBOX=1 the stronger promise is made", strong.available && strong.approval === "auto" && !strong.commandNetwork && !strong.commandsCanReadAccessToken && strong.layers.length === 2);
-	const mock = readFileSync(join(root, "web/src/api/mock.ts"), "utf8");
-	const listed = PROFILES.find((profile) => profile.id === "e2b");
-	expect("web/src/api/mock.ts repeats the E2B profile's texts", listed !== undefined && mock.includes(JSON.stringify(listed.unavailableReason)) && mock.includes(JSON.stringify(listed.summary)));
-	expect("and the microVM-only profile's", open !== undefined && mock.includes(JSON.stringify(open.name)) && mock.includes(JSON.stringify(open.summary)) && mock.includes(JSON.stringify(open.layers[0])));
 	const { sandboxes } = world();
 	expect("the provider answers profiles() and profile() from the same list", JSON.stringify(sandboxes.profiles()) === JSON.stringify(onE2b) && sandboxes.profile("e2b").available && sandboxes.sessionsLiveInSandbox === true);
 });
@@ -701,7 +700,7 @@ await section("a sandbox that ran out of memory", async () => {
 	expect("the guest's own count of programs killed for memory, and its memory", plain(events) === plain({ oomKills: 3, totalMiB: 977 }), JSON.stringify(events));
 	fake.samples.set(id, [{ at: Date.now(), memUsed: 300 * MiB, memTotal: 977 * MiB }]);
 	expect("samples far from the total are no running out", (await handle.memoryPeak(0)) === null);
-	expect("the largest size says to use less memory instead", /largest size this deployment has: have the agent's commands use less memory/.test(outOfMemoryWords({ usedMiB: 8000, totalMiB: 8100, size: "large" })) && /Large · 4 vCPU, 8 GiB/.test(outOfMemoryWords({ usedMiB: 4000, totalMiB: 4000, size: "standard" })));
+	expect("the largest size says to use less memory instead", /largest size this deployment has: have the agent's commands use less memory/.test(outOfMemoryWords({ usedMiB: 8000, totalMiB: 8100, size: "large" })) && /Large · 4 CPU · 8 GB/.test(outOfMemoryWords({ usedMiB: 4000, totalMiB: 4000, size: "standard" })));
 });
 
 await section("a machine slot that ran out of memory", async () => {
@@ -998,12 +997,12 @@ await section("network modes", async () => {
 	// What the user reads.
 	const facts = (mode: "open" | "restricted" | "none") => profilesFor("e2b", { windlassSandbox: false, openProfile: true, network: mode });
 	const [plain, microvm] = ["e2b", "e2b-open"].map((profileId) => facts("restricted").find((profile) => profile.id === profileId)!);
-	expect("restricted: the E2B profiles' facts and summaries say what commands reach", plain.commandNetwork && plain.commandNetworkText === hostedNetworkText("restricted") && /hosts its operator allows/.test(plain.summary) && /model API, GitHub and the hosts this deployment allows, and no other host/.test(microvm.summary) && microvm.commandNetworkText === hostedNetworkText("restricted"), microvm.summary);
+	expect("restricted: the E2B profiles' facts and details say what commands reach", plain.commandNetwork && plain.commandNetworkText === hostedNetworkText("restricted") && /hosts its operator allows/.test(plain.details ?? "") && /model API, GitHub and the hosts this deployment allows, and no other host/.test(microvm.details ?? "") && microvm.commandNetworkText === hostedNetworkText("restricted"), microvm.details);
 	const noneOpen = facts("none").find((profile) => profile.id === "e2b-open")!;
-	expect("none: commands are said to have no network but the model API", !noneOpen.commandNetwork && noneOpen.commandNetworkText === "commands can reach only the model API" && /cannot have a repository/.test(facts("none").find((profile) => profile.id === "e2b")!.summary));
+	expect("none: commands are said to have no network but the model API", !noneOpen.commandNetwork && noneOpen.commandNetworkText === "commands can reach only the model API" && /cannot have a repository/.test(facts("none").find((profile) => profile.id === "e2b")!.details ?? ""));
 	expect("open: the facts are what they were", JSON.stringify(facts("open")) === JSON.stringify(profilesFor("e2b", { windlassSandbox: false, openProfile: true })) && facts("open").every((profile) => profile.commandNetworkText === undefined));
 	const sandboxed = e2bProfile({ windlassSandbox: true, network: "restricted" });
-	expect("with Windlass's sandbox, sandboxed commands keep no network, and the summary says what else the microVM reaches", !sandboxed.commandNetwork && sandboxed.commandNetworkText === undefined && /hosts its operator allows/.test(sandboxed.summary));
+	expect("with Windlass's sandbox, sandboxed commands keep no network, and the details say what else the microVM reaches", !sandboxed.commandNetwork && sandboxed.commandNetworkText === undefined && /hosts its operator allows/.test(sandboxed.details ?? ""));
 	expect("the provider lists its profiles with its mode", w.sandboxes.profile("e2b").commandNetworkText === hostedNetworkText("restricted"));
 	const reachOf = personalServerReach(facts("restricted"), "restricted").find((entry) => entry.profile === "e2b")!;
 	expect("Settings says a server by address must be on an allowed host, and what a started one can reach", /must be one of them/.test(reachOf.address) && /only the network this deployment allows/.test(reachOf.command), reachOf.address);
@@ -1019,7 +1018,7 @@ await section("network modes", async () => {
 	const [two, eight, plainTask, unsized, tooBig, notBuilt] = [sized({ cpus: 2 }, all), sized({ memoryGiB: 6 }, all), sized({}, all), sized({ cpus: 1 }), sized({ cpus: 16 }, all), sized({ memoryGiB: 8 }, ["small", "standard"])];
 	expect(
 		"hosted takes cpus and memoryGiB as a size: the least that has them, none without them, and refuses what no offered size has",
-		two.decision?.hostedSize === "standard" && eight.decision?.hostedSize === "large" && plainTask.decision !== undefined && plainTask.decision.hostedSize === undefined && unsized.decision !== undefined && unsized.decision.hostedSize === undefined && /at most 4 vCPU and 8 GiB/.test(tooBig.refused ?? "") && /no large sandbox/.test(notBuilt.refused ?? ""),
+		two.decision?.hostedSize === "standard" && eight.decision?.hostedSize === "large" && plainTask.decision !== undefined && plainTask.decision.hostedSize === undefined && unsized.decision !== undefined && unsized.decision.hostedSize === undefined && /at most 4 vCPU and 8 GiB/.test(tooBig.refused ?? "") && /no Large sandbox/.test(notBuilt.refused ?? ""),
 		JSON.stringify([two, eight, plainTask, unsized, tooBig, notBuilt]),
 	);
 });
