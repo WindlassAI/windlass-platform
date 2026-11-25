@@ -2976,7 +2976,8 @@ fi`, { signal, timeoutMs: 5000 });
 				const diagnosis = setupPhase.diagnosis();
 				meta.readiness.error = setupPhase.clean(why, 360);
 				meta.readiness.diagnosis = diagnosis;
-				c.log.warn({ msg: "repo setup phase failed", session: meta.sessionId, turn, error: meta.readiness.error, ...diagnosis });
+				const skills = { ...diagnosis.skills, filings: diagnosis.skills.filings.map(({ proposals, ...summary }) => summary) };
+				c.log.warn({ msg: "repo setup phase failed", session: meta.sessionId, turn, error: meta.readiness.error, ...diagnosis, skills });
 			} else {
 				meta.readiness.error = (setupStage === "publish" ? "The guides could not be published. " : "Repo setup could not save the result. ") + setupPhase.clean(why);
 			}

@@ -12,17 +12,17 @@ Run one command from the repository root.
 
 ## Key files
 
-- `App.tsx` selects screens from the current route.
-- `api/client.ts` defines the actions and live feeds that screens consume.
-- `api/rivet.ts` adapts actor calls, connections and snapshots to that interface.
-- `api/mock.ts` implements the client used without a backend.
-- `docs/pages.ts` lists the user documentation in reading order.
+- `./App.tsx` selects screens from the current route.
+- `./api/client.ts` defines the actions and live feeds that screens consume.
+- `./api/rivet.ts` adapts actor calls, connections and snapshots to that interface.
+- `./api/mock.ts` implements the client used without a backend.
+- `./docs/pages.ts` lists the user documentation in reading order.
 
 ## Non-obvious patterns
 
 - Change the client interface and both adapters together when adding an action. [Contract](../../server/src/contract.ts) supplies the shared shapes.
 - Rebuild a feed from a fresh snapshot after reconnect. Events broadcast during the disconnect are lost.
-- Add behaviour pages under [docs content](docs/content/) and register them in the page list so the UI can find them.
+- Add behaviour pages under [docs content](./docs/content/) and register them in the page list so the UI can find them.
 
 ## See also
 

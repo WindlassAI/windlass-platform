@@ -3,8 +3,14 @@ import { posix } from "node:path";
 const { dirname, join, relative, resolve, matchesGlob } = posix;
 const root = "/";
 
-const commandStart = /^(?:test|ls|cd|node|npx|npm|pnpm|tsx|bash|sh|corepack)\s|^(?:[A-Z_][A-Z_0-9]*=(?:"[^"]*"|'[^']*'|\S+)|(?:\.{0,2}\/)?[\w./-]+\.sh)\s/;
+const commandStart = /^(?:test|ls|cd|node|npx|npm|pnpm|bun|tsx|bash|sh|corepack)\s|^(?:[A-Z_][A-Z_0-9]*=(?:"[^"]*"|'[^']*'|\S+)|(?:\.{0,2}\/)?[\w./-]+\.sh)\s/;
+const glob = /[*?\[{]/;
 const pathLike = /^(?:\.{1,2}\/|[\w.*-]+\/|[\w*-][\w.*-]*\.[\w-]+$)/;
+
+// Paths named in guides and skills start at the checkout unless explicitly file-relative.
+export function guideReference(guide: string, target: string) {
+	return relative(root, resolve(root, /^\.{1,2}\//.test(target) ? dirname(guide) : "", target));
+}
 
 export function guideTree(files: string[], read: (path: string) => string | undefined, hasBin?: (dir: string, tool: string) => boolean) {
 	const paths = new Set(files);
@@ -23,14 +29,13 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 		catch { return {}; }
 	}
 	const lines = contents.split(/\r?\n/);
-	const here = dirname(join(root, guide));
 	let line = 0;
 	const fail = (message: string) => errors.push({ path: guide, line: line + 1, message });
 
 	function checkPath(target: string, cwd: string) {
-		const path = resolve(cwd, target);
-		const found = target.includes("*") ? files.some(f => matchesGlob(f, relative(root, path))) : paths.has(relative(root, path));
-		if (!found) fail(`missing path ${relative(root, path)}`);
+		const path = relative(root, resolve(cwd, target));
+		const found = glob.test(target) ? files.some(f => matchesGlob(f, path)) : paths.has(path);
+		if (!found) fail(`missing path ${path}`);
 	}
 
 	function command(source: string, cwd: string) {
@@ -65,7 +70,7 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 				dir = resolve(dir, args[1] ?? ".");
 				args.splice(0, 2);
 			}
-			if ((tool === "pnpm" && args[0] !== "exec") || (tool === "npm" && args[0] === "run")) {
+			if ((tool === "pnpm" && args[0] !== "exec") || (["npm", "bun"].includes(tool) && args[0] === "run")) {
 				if (args[0] === "run") args.shift();
 				const script = args.shift();
 				if (script && script !== "install" && !Object.hasOwn(manifest(dir)?.scripts ?? {}, script)) {
@@ -77,7 +82,8 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 				if (tool && hasBin && !hasBin(relative(root, dir), tool)) fail(`missing executable ${tool} in ${relative(root, dir)}`);
 			}
 			for (const [i, arg] of args.entries()) {
-				if (args[i - 1] !== "--base" && pathLike.test(arg)) checkPath(arg, dir);
+				const value = arg.replace(/^--[\w-]+=/, "");
+				if (args[i - 1] !== "--base" && !arg.startsWith("--base=") && pathLike.test(value)) checkPath(value, dir);
 			}
 			if (tool && ["node", "tsx", "bash", "sh"].includes(tool) && args[0] && !args[0].startsWith("-")) checkPath(args[0], dir);
 			if (tool === "tsc" && args.includes("-p")) {
@@ -89,8 +95,10 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 	}
 
 	const checkingSkill = skillPath.test(guide);
-	// Skill procedures use the checkout as their working directory. Markdown links remain document-relative.
-	const proseDir = (target: string) => checkingSkill && !target.startsWith(".") && paths.has(target) ? root : here;
+	function reference(target: string) {
+		const path = guideReference(guide, target);
+		checkPath(!target.includes("/") && glob.test(target) ? "**/" + path : path, root);
+	}
 	let fence: string | undefined;
 	let cwd = root;
 	for (const contents of lines) {
@@ -105,15 +113,18 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 		} else {
 			const prose = contents.replace(/`([^`]+)`/g, (_, code: string) => {
 				if (commandStart.test(code)) command(code, root);
-				else if (!/\s/.test(code) && pathLike.test(code)) checkPath(code, proseDir(code));
+				else if (/^--?[a-z][\w-]*[=\s]/i.test(code)) {
+					const value = code.replace(/^--?[\w-]+[=\s]+/, "").replace(/^(["'])(.*)\1$/, "$2");
+					if (pathLike.test(value)) checkPath(value, root);
+				} else if (!/\s/.test(code) && (pathLike.test(code) || glob.test(code))) reference(code);
 				return "";
 			}).replace(/\]\(([^)]+)\)/g, (_, link: string) => {
 				const target = link.split("#")[0];
-				if (target && !/^(?:\w+:|\/\/)/.test(target)) checkPath(target, here);
+				if (target && !/^(?:\w+:|\/\/)/.test(target)) reference(target);
 				return "";
 			});
-			for (const match of prose.matchAll(/(?:^|[\s(])((?:[.\w*-]+\/)*[\w*-][\w.*-]*\.(?:[cm]?[jt]sx?|md|json|ya?ml|sh|py|css)|(?:server|web|runner|scripts|sandbox|docs|fixtures|deploy|\.github)\/[\w./*-]+)(?=[\s.,:;)!?]|$)/g)) {
-				checkPath(match[1], proseDir(match[1]));
+			for (const match of prose.matchAll(/(?:^|[\s(])((?:[.\w*-]+\/)*[\w*-][\w.*-]*\.(?:[cm]?[jt]sx?|md|json|ya?ml|sh|py|css)|(?:packages|server|web|runner|scripts|sandbox|docs|fixtures|deploy|\.github|\.{1,2})\/[\w./*-]+)(?=[\s.,:;)!?]|$)/g)) {
+				reference(match[1].replace(/\.$/, ""));
 			}
 		}
 		line++;

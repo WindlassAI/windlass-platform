@@ -1,5 +1,6 @@
 import "./check-secret.js";
 import { privateLine, validateDraft } from "../server/src/repo-setup/filing.js";
+import { checkGuide, guideTree } from "../server/src/repo-setup/guide-check.js";
 import { setupBodies } from "../server/src/repo-setup/publish.js";
 import { setupGuide } from "./setup-guide-fixture.js";
 import { emptyRow, environmentInputs, ENVIRONMENT_TABLE, writeEnvironment } from "../server/src/environments.js";
@@ -132,6 +133,51 @@ test("only verified guide lines get citations, and filenames and reasons stay ou
 	assert.match(body, /1 line from 1 imported note/);
 	assert.doesNotMatch(body, /local-note|package.json|AGENTS.md:3/);
 	assert.match(privateBody!, /AGENTS.md:3 \| local-note.md \| package.json:1/);
+});
+
+test("skills and folder guides resolve root paths and explicit file-relative references", () => {
+	const scenarios = "packages/core/test/scenarios";
+	for (const folder of [".agents/skills/update-step-loop-scenarios", "docs/area"]) {
+		const guide = folder + (folder.startsWith(".agents") ? "/SKILL.md" : "/AGENTS.md");
+		const paths = [scenarios + "/step.ts", folder + "/x", folder + "/local.ts", "root.ts", folder.slice(0, folder.lastIndexOf("/")) + "/sibling.ts"];
+		const tree = guideTree(paths, () => undefined);
+		const good = [`Edit \`${scenarios}\`.`, `Look in ${scenarios}.`, "Read `./x` and [steps](packages/core/test/scenarios).",
+			"Read [the sibling](../sibling.ts) and `root.ts`."];
+		assert.deepEqual(checkGuide(guide, good.join("\n"), tree), []);
+		assert.deepEqual(checkGuide(guide, "Read `local.ts` and `./root.ts`.", tree).map(e => e.message),
+			["missing path local.ts", "missing path " + folder + "/root.ts"]);
+	}
+});
+
+test("team note uses Bun script definitions, tracked globs and flags at the cited lines", () => {
+	const note = "`bun run test:unit` skips every *.e2e.test.ts file and preloads test/unit-preload.ts; `bun run test:e2e` runs only the e2e files";
+	const manifest = JSON.stringify({ scripts: { "test:unit": "bun test --preload ./test/unit-preload.ts --path-ignore-patterns='**/*.e2e.test.ts'",
+		"test:e2e": "bun test .e2e.test.ts" } }, null, 2);
+	const paths = ["package.json", "README.md", "test/nested/step.e2e.test.ts", "test/unit-preload.ts"];
+	const ctx = { request: { areas: [], later: 0, noteIds: ["team"], previous: null }, owner: "team", host: "github.com",
+		notes: [{ id: "team", text: note, label: "team.md" }], paths,
+		read: new Map([["package.json", manifest], ["README.md", "Use the flag --preload"]]), redact: (s: string) => s };
+	const validate = (line: string, citations: number[], file = "package.json") => {
+		const guide = setupGuide("", "# Guide", "A fixture is a test input.", line);
+		guide.lines[0].noteId = undefined;
+		guide.lines.push(...citations.map(n => ({ line: 4, noteId: "team", evidence: { file, line: n } })));
+		return validateDraft({ score: answers().slice(0, 3), notes: [{ noteId: "team", verdict: "team", reason: "Checked the scripts." }], files: [guide] }, ctx);
+	};
+	const accepted = validate(note, [3, 4]);
+	assert.ok(accepted.files.get("AGENTS.md")!.includes(note));
+	assert.equal(accepted.decisions[0].verdict, "team");
+	assert.deepEqual(accepted.decisions[0].uses, [3, 4].map(n => ({ path: "AGENTS.md", line: 4, evidence: "package.json:" + n })));
+	for (const snippet of ["--preload", "--path-ignore-patterns='**/*.e2e.test.ts'", "bun test --preload ./test/unit-preload.ts", "*.e2e.test.ts"])
+		assert.equal(validate("Use `" + snippet + "`.", [3]).decisions[0].verdict, "team", snippet);
+	assert.equal(validate("Use `--preload`.", [1], "README.md").decisions[0].verdict, "team");
+	assert.equal(validate("Use `test:unit`.", [3]).decisions[0].verdict, "team");
+	for (const [line, citations] of [[note, [3]], [note.replace("test:e2e", "test:nope"), [3, 4]],
+		["Use `--preload`.", [4]], ["Use `--pre`.", [3]], ["Use `*.missing.test.ts`.", [3]], ["Use `*.missing`.", [3]],
+		[note.replace("test/unit-preload.ts", "test/missing.ts"), [3, 4]]] as const) {
+		const rejected = validate(line, [...citations]);
+		assert.deepEqual(rejected.decisions[0].uses, []);
+		assert.equal(rejected.decisions[0].verdict, "stale", line);
+	}
 });
 
 test("reconcile each reviewed guide with the filing its published lines came from", async () => {

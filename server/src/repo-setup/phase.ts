@@ -1,7 +1,7 @@
 import { redact } from "../github/redact.js";
 import type { RunTurnInput, RunTurnResult, TurnPublishRequest } from "../sandbox/api.js";
 import { skillPath } from "./guide-check.js";
-import { privateLine } from "./filing.js";
+import { privateLine, skillFrontmatter } from "./filing.js";
 import type { SetupDiagnosis, SetupNote, SkillFiling } from "./types.js";
 
 export class SetupPhase {
@@ -38,8 +38,18 @@ export class SetupPhase {
 	}
 
 	startSkillFiling(files: unknown, revision: boolean): SkillFiling {
-		const proposed = Array.isArray(files) ? files.filter(f => f?.kind === "skill" || typeof f?.path === "string" && skillPath.test(f.path)).length : 0;
-		const filing: SkillFiling = { phase: revision ? "revision" : "draft", proposed, staticallyRejected: [], smokeTested: 0, droppedBySmoke: [], kept: 0 };
+		const candidates = Array.isArray(files) ? files.filter(f => f?.kind === "skill" || typeof f?.path === "string" && skillPath.test(f.path)) : [];
+		const proposals: SkillFiling["proposals"] = candidates.map(f => {
+			const lines: string[] = typeof f.content === "string" ? f.content.split(/\r?\n/) : [];
+			const parsed = skillFrontmatter(lines);
+			const body = parsed ? lines.slice(parsed.end + 1) : lines;
+			const description = parsed?.header?.description;
+			return { path: typeof f.path === "string" ? f.path : "(invalid skill path)",
+				description: this.clean(typeof description === "string" ? description : lines.find(line => /^(?:description:|# )/.test(line)) ?? ""),
+				body: this.clean(body.join("\n"), 300), outcome: "dropped", reason: "The review did not finish." };
+		});
+		const filing: SkillFiling = { phase: revision ? "revision" : "draft", proposed: proposals.length, proposals,
+			staticallyRejected: [], smokeTested: 0, droppedBySmoke: [], kept: 0 };
 		this.skills.filings.push(filing);
 		return filing;
 	}
@@ -47,7 +57,12 @@ export class SetupPhase {
 	diagnosis(): SetupDiagnosis {
 		const cleanDrop = ({ path, reason }: { path: string; reason: string }) => ({ path: this.clean(path), reason: this.clean(reason) });
 		const skills = { kept: this.skills.kept, droppedByReview: this.skills.droppedByReview.map(cleanDrop),
-			filings: this.skills.filings.map(f => ({ ...f, staticallyRejected: f.staticallyRejected.map(cleanDrop), droppedBySmoke: f.droppedBySmoke.map(cleanDrop) })) };
+			filings: this.skills.filings.map(f => {
+				const drops = [...f.staticallyRejected, ...f.droppedBySmoke];
+				const proposals = f.proposals.map(p => ({ ...p, path: this.clean(p.path),
+					reason: this.clean(drops.find(d => d.path === p.path)?.reason ?? f.refused ?? p.reason) }));
+				return { ...f, proposals, staticallyRejected: f.staticallyRejected.map(cleanDrop), droppedBySmoke: f.droppedBySmoke.map(cleanDrop) };
+			}) };
 		return { skills, phase: this.phase, model: this.clean(this.model), toolOffered: this.offered, attempts: this.calls.size,
 			...(this.leftOut.length > 0 && { leftOut: this.leftOut }),
 			rejections: [...this.calls.values()].filter((s): s is string => s !== null),

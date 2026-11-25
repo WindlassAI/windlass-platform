@@ -81,9 +81,13 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 			{data.diagnosis.skills.filings.map((f, i) => <div key={i}>
 				<p>{f.phase === "draft" ? "Draft" : "Revision"} filing {i + 1} · {f.proposed} proposed · {f.staticallyRejected.length} rejected by static checks · {f.smokeTested} smoke-tested · {f.droppedBySmoke.length} failed smoke checks · {f.kept} kept</p>
 				{f.refused && <p>Filing refused. {f.refused}</p>}
-				{[...f.staticallyRejected, ...f.droppedBySmoke].map((drop, j) => <p key={j}>{drop.path} · {drop.reason}</p>)}
+				{f.proposals ? f.proposals.map((p, j) => <div key={j}>
+					<p><strong>{p.path}</strong> · {p.outcome} · {p.reason}</p>
+					{p.description && <p>{p.description}</p>}
+					{p.body && <p>{p.body}</p>}
+				</div>) : [...f.staticallyRejected, ...f.droppedBySmoke].map((drop, j) => <p key={j}>{drop.path} · {drop.reason}</p>)}
 			</div>)}
-			{data.diagnosis.skills.droppedByReview.map(drop => <p key={drop.path}>{drop.path} · {drop.reason}</p>)}
+			{data.diagnosis.skills.filings.some(f => !f.proposals) && data.diagnosis.skills.droppedByReview.map(drop => <p key={drop.path}>{drop.path} · {drop.reason}</p>)}
 		</details>}
 		{!!data.diagnosis?.leftOut?.length && <div className="setup-result">
 			<strong>Left out</strong>

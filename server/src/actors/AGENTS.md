@@ -12,10 +12,10 @@ Run one command from the repository root.
 
 ## Key files
 
-- `user.ts` owns account state and the actions that create sessions and items. [Sign-in](user/signin.ts) and [usage](user/usage.ts) own their account operations.
-- `agent-session.ts` owns the live turn, its SQLite timeline and client snapshots. Its [session modules](agent-session/timeline.ts) share the write queue and own timeline, questions, runner binding, summary and workspace recovery.
-- `work-item.ts` commits blueprint outcomes, performs queued effects and schedules retries.
-- `internal.ts` defines actor-to-actor calls and the service credentials they use.
+- `./user.ts` owns account state and the actions that create sessions and items. [Sign-in](./user/signin.ts) and [usage](./user/usage.ts) own their account operations.
+- `./agent-session.ts` owns the live turn, its SQLite timeline and client snapshots. Its [session modules](./agent-session/timeline.ts) share the write queue and own timeline, questions, runner binding, summary and workspace recovery.
+- `./work-item.ts` commits blueprint outcomes, performs queued effects and schedules retries.
+- `./internal.ts` defines actor-to-actor calls and the service credentials they use.
 
 ## Non-obvious patterns
 

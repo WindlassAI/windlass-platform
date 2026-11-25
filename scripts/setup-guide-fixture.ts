@@ -2,7 +2,7 @@
 export function setupGuide(area: string, title: string, note: string, extra = "") {
 	const lines = area ? [
 		title, "## Quick commands", note, "Start from the repository root.",
-		"## Key files", "- `f0.ts` defines the first fixture.", "- `f1.ts` defines the second fixture.", "- `f2.ts` defines the third fixture.",
+		"## Key files", "- `./f0.ts` defines the first fixture.", `- \`${area}/f1.ts\` defines the second fixture.`, "- `./f2.ts` defines the third fixture.",
 		"## Non-obvious patterns", "Keep fixtures independent.", "Preserve existing exports.",
 		"## See also", "Read the [repository readme](../README.md).",
 	] : [

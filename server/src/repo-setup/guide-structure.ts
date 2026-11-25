@@ -1,4 +1,4 @@
-import { posix } from "node:path";
+import { guideReference } from "./guide-check.js";
 
 export const rootSections = ["Setup", "Checks by change", "Leave to CI", "Handoff", "Terms"];
 export const areaSections = ["Quick commands", "Key files", "Non-obvious patterns", "See also"];
@@ -24,10 +24,10 @@ export function requireGuideStructure(path: string, lines: string[], files: Read
 			const entries = body.filter(line => /^\s*[-*+]\s/.test(line));
 			const targets = entries.map(line => {
 				const ref = line.match(/`([^`]+)`|\]\(([^)]+)\)/);
-				return ref && posix.join(posix.dirname(path), (ref[1] ?? ref[2]).split("#")[0]);
+				return ref && guideReference(path, (ref[1] ?? ref[2]).split("#")[0]);
 			});
 			if (entries.length < 3 || entries.length > 5 || new Set(targets).size !== entries.length || targets.some(file => !file || !files.has(file)))
-				throw Error(`${path}: list three to five key files, each in its own cited bullet with a distinct guide-relative path in backticks or a Markdown link.`);
+				throw Error(`${path}: list three to five key files, each in its own cited bullet with a distinct file path in backticks or a Markdown link.`);
 		}
 	}
 	const count = lines.filter(line => line.trim()).length;

@@ -12,11 +12,11 @@ Run one command from the repository root.
 
 ## Key files
 
-- `main.ts` dispatches the CLI commands and validates their options.
-- `control.ts` pairs the machine and maintains its control connection.
-- `session.ts` handles per-session operations, streamed output and cancellation.
-- `docker-executor.ts` creates and manages the local containers and their resources.
-- `claude-relay.ts` provisions harness relays and projects placeholder credentials into sessions.
+- `./main.ts` dispatches the CLI commands and validates their options.
+- `./control.ts` pairs the machine and maintains its control connection.
+- `./session.ts` handles per-session operations, streamed output and cancellation.
+- `./docker-executor.ts` creates and manages the local containers and their resources.
+- `./claude-relay.ts` provisions harness relays and projects placeholder credentials into sessions.
 
 ## Non-obvious patterns
 

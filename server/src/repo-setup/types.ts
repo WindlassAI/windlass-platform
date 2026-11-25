@@ -3,6 +3,7 @@ import type { PullRequestInfo } from "../contract.js";
 export interface SkillFiling {
 	phase: "draft" | "revision";
 	proposed: number;
+	proposals: { path: string; description: string; body: string; outcome: "kept" | "dropped"; reason: string }[];
 	staticallyRejected: { path: string; reason: string }[];
 	smokeTested: number;
 	droppedBySmoke: { path: string; reason: string }[];
