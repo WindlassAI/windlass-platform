@@ -3,7 +3,7 @@
 
 import { resolveDefaultPlace, savedPlace, changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
 import type { AccountDefaultsPatch, CredentialSource, ItemPlaceDefaults, RepositoryDefaultsPatch } from "../contract.js";
-import { snapshotGeneration } from "../sandbox/snapshot-key.js";
+import { digest, snapshotGeneration } from "../sandbox/snapshot-key.js";
 import { plannerMachines } from "../machines/details.js";
 import type { AgentModels } from "../factory/placement.js";
 import { mayUse } from "../access.js";
@@ -18,8 +18,8 @@ import type { EnvironmentPlace, EnvironmentSchedule, RepositoryEnvironments, San
 import { ENVIRONMENT_SCHEDULES } from "../contract.js";
 import { HOSTED_SIZES, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, type HostedSize } from "../contract.js";
 import type { GithubId, CreateItemInput, ItemListPage, ItemSummary } from "../contract.js";
-import { createHash, randomBytes } from "node:crypto";
-import { actor, event, UserError } from "rivetkit";
+import { randomBytes } from "node:crypto";
+import { actor, event, UserError, type ActorCron } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { serviceParams } from "../auth.js";
 import { assertOrigin, disconnectRevoked, userActorCaller, clientError, maySubscribe, requireService, requireServiceFor, requireUser } from "../auth.js";
@@ -94,8 +94,9 @@ import { serverSealer } from "../signin/seal.js";
 import { recordTurnTokens, tokensOn, usesPlatformModel, type TokenReceipt, hostedLimitsApply } from "../usage.js";
 import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY } from "../sandbox/hosted-network.js";
-import { cachedScan, claimAssessment, finishAssessment, repositoryReadiness, READINESS_TABLE, READINESS_TICK, SCAN_TABLE, scheduleName, scheduleSetup, setupInputs, type SetupCron } from "./user-readiness.js";
-import { readinessPrompt, type Judgment } from "../factory/readiness.js";
+import { cachedScan, claimAssessment, finishAssessment, repositoryReadiness, READINESS_TABLE, READINESS_TICK, scheduleName, scheduleSetup, setupInputs } from "./user-readiness.js";
+import type { Judgment } from "../factory/readiness.js";
+import { readinessPrompt } from "../factory/readiness-filing.js";
 import { scanRepoSetup } from "../github/setup-checks.js";
 import { ENVIRONMENT_SCHEDULE_TABLE, ENVIRONMENT_TABLE, HOSTED } from "../environments.js";
 import { buildResult, environmentsView, forgetEnvironments, nudge as environmentNudge, pushed as environmentPushed, rebuild as rebuildEnvironments, saveSchedule, sessionEnvironment, settingsChanged, tick as environmentTick, type EnvironmentHost } from "./user-environments.js";
@@ -413,7 +414,7 @@ async function refreshSetupScan(c: UserCtx, id: GithubId, project: string) {
 	return { ...scan, at };
 }
 
-async function repositoryView(c: UserCtx & { cron: SetupCron }, repositoryId: GithubId, project: string): Promise<RepositoryView> {
+async function repositoryView(c: UserCtx & { cron: Pick<ActorCron, "get"> }, repositoryId: GithubId, project: string): Promise<RepositoryView> {
 	const defaults = await readDefaults(c.db, project);
 	const setup = await readSetup(c.db, project);
 	const [secrets] = await c.db.execute<{ n: number }>("SELECT COUNT(*) AS n FROM repo_secret WHERE project = ?", project);
@@ -698,7 +699,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, ...itemRole, ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && offered?.platformKeys?.length && { filedWithKey: true as const }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(!item && size > 1 && { size }),
 			...(build && { environmentBuild: build }),
-			...(readiness && { readiness: readiness.commit }),
+			...(readiness && { readiness: { commit: readiness.commit } }),
 			...(hostedSize && { hostedSize }),
 			title: summary.title,
 			titleIsTyped: !item && givenTitle !== null,
@@ -813,13 +814,12 @@ async function assessRepository(c: CreateCtx, profile: UserProfile, id: GithubId
 		await makeSession(c, profile, { title: "Repo setup", repository: { id }, place: destination.place, profile: profileId }, null, undefined, { readiness: { session, commit: scan.commit } });
 		await sessionActor(c, profile.uid, session).internalAssessRepository(readinessPrompt(inputs.evidence));
 	} catch (error) {
-		await finishAssessment(c.db, session, null, error instanceof UserError ? error.message : "The setup check could not start.");
+		await finishAssessment(c.db, session, error instanceof UserError ? error.message : "The setup check could not start.");
 		await removeSession(c, profile.uid, session);
 		throw error;
 	}
 }
 
-/** The user actor as user-environments.ts takes it. */
 function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 	const uid = c.vars.profile?.uid ?? "";
 	return {
@@ -1138,7 +1138,7 @@ export const user = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS snapshot_place (project TEXT NOT NULL, place TEXT NOT NULL, saved_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, connected_at INTEGER NOT NULL, PRIMARY KEY (project, place))");
 			// The last launch claim's generation (`UserVars.launchClaim`): kept on its own, so that it only ever grows.
 			await db.execute(ENVIRONMENT_TABLE);
-			await db.execute(SCAN_TABLE);
+			await db.execute("CREATE TABLE IF NOT EXISTS setup_scan (project TEXT PRIMARY KEY, at INTEGER NOT NULL, scan TEXT NOT NULL)");
 			await db.execute(READINESS_TABLE);
 			await db.execute("CREATE INDEX IF NOT EXISTS readiness_project ON readiness(project,at DESC)");
 			await db.execute(ENVIRONMENT_SCHEDULE_TABLE);
@@ -1995,13 +1995,11 @@ export const user = actor({
 			return { project, requestedNames, network, ...(snapshotSetup?.command && { snapshotSetup }), ...(environment && { environment }), ...(redactOnly && { redactOnly }), screenshots, secrets: rows.map((row) => ({ name: row.name, scope: row.scope === "agent" ? "agent" : "setup", sealed: row.sealed })), checks, account };
 		},
 
-		// --- a repository's page ----------------------------------------------------------------------
-
 		[READINESS_TICK]: async (c, id: GithubId): Promise<void> => {
 			const fire = c.scheduledFire;
 			if (fire?.name !== scheduleName(id)) throw new UserError("This action is internal.", { code: "forbidden" });
 			if (!c.vars.profile || !await c.cron.get(fire.name)) return;
-			const session = "s_" + createHash("sha256").update(`readiness/${id}/${fire.scheduledAt}`).digest("hex").slice(0, 16);
+			const session = "s_" + digest(["readiness", id, fire.scheduledAt]).slice(0, 16);
 			await assessRepository(c, c.vars.profile, id, session);
 		},
 		setSetupWeekly: async (c, id: GithubId, enabled: boolean): Promise<void> => {
@@ -2019,7 +2017,7 @@ export const user = actor({
 		internalReadinessResult: async (c, session: string, report: Judgment | null): Promise<void> => {
 			requireServiceFor(c, "call");
 			if (!c.vars.sessions.get(session)?.readiness) return;
-			await finishAssessment(c.db, session, report, report ? null : "The turn ended before filing its setup checks.");
+			await finishAssessment(c.db, session, report ?? "The turn ended before filing its setup checks.");
 			await removeSession(c, c.key[0], session);
 		},
 		internalReadinessLevel: async (c, id: GithubId) => {

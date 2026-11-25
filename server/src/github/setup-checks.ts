@@ -1,15 +1,13 @@
 import { minimatch } from "minimatch";
 import { parse } from "yaml";
+import type { ScanEntry } from "../repository-network.js";
 import type { Finding } from "../factory/readiness.js";
 import { GithubError, type GithubApp, type Repository } from "./app.js";
 
-type Entry = { path: string; type: string; size: number | null };
 export interface SetupScan { commit: string | null; findings: Finding[] }
-const guide = /^(AGENTS|CLAUDE)\.md$/;
 const workflow = /^\.github\/workflows\/[^/]+\.ya?ml$/i;
 const source = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|kts|swift|c|cc|cpp|h|hpp|cs|rb|php|scala|sh|vue|svelte|dart|exs?|hs|lua)$/i;
 const generated = /(?:^|\/)(?:node_modules|vendor|third_party|generated|__generated__|dist|build|target|coverage)\/|(?:\.min|\.generated|\.g|\.pb)\.[^/]+$/i;
-const isSource = (path: string) => source.test(path) && !generated.test(path);
 const bytesPerFile = 1024 * 1024;
 
 function ignored(text: string, path: string) {
@@ -24,28 +22,31 @@ function ignored(text: string, path: string) {
 }
 
 export async function scanRepoSetup(app: GithubApp, token: string, repo: Repository): Promise<SetupScan> {
-	let entries: Entry[] = [];
+	let paths: string[] = [];
+	let sources: ScanEntry[] = [];
 	let truncated = false;
 	const scan = await app.scanFiles(token, repo.owner, repo.name, repo.defaultBranch, (tree, short) => {
-		entries = tree.filter(f => f.type === "blob");
+		const entries = tree.filter(f => f.type === "blob");
+		paths = entries.map(f => f.path);
 		truncated = short;
 		const config = entries.filter(f => workflow.test(f.path) || f.path === ".gitignore");
 		// Fewer than 1,501 bytes cannot contain more than 1,500 lines. Read the largest candidates first.
-		const sources = entries.filter(f => isSource(f.path) && (f.size ?? Infinity) > 1500).sort((a, b) => (b.size ?? 0) - (a.size ?? 0));
-		const paths = [...config, ...sources].filter(f => f.size === null || f.size <= bytesPerFile).slice(0, 96).map(f => f.path);
-		return { paths, more: false, maxBytes: 6 * bytesPerFile, maxFileBytes: bytesPerFile };
+		sources = entries.filter(f => source.test(f.path) && !generated.test(f.path));
+		const large = sources.filter(f => (f.size ?? Infinity) > 1500).sort((a, b) => (b.size ?? 0) - (a.size ?? 0));
+		const selected = [...config, ...large].filter(f => f.size === null || f.size <= bytesPerFile).slice(0, 96).map(f => f.path);
+		return { paths: selected, more: false, maxBytes: 6 * bytesPerFile, maxFileBytes: bytesPerFile };
 	}).catch((error: unknown) => {
 		if (error instanceof GithubError && error.status === 409 && /repository is empty/i.test(error.said))
 			return { commit: null, files: [] };
 		throw error;
 	});
 	const files = new Map(scan.files.map(f => [f.path, f.text]));
-	const paths = new Set(entries.map(f => f.path));
-	const rootGuide = [...paths].find(p => guide.test(p));
+	const known = new Set(paths);
+	const rootGuide = paths.find(p => /^(AGENTS|CLAUDE)\.md$/.test(p));
 	const dirs = new Map<string, number>();
 	let oversized: string | undefined;
 	let unreadSource = truncated;
-	for (const entry of entries.filter(f => isSource(f.path))) {
+	for (const entry of sources) {
 		const parts = entry.path.split("/");
 		for (let i = 1; i < parts.length; i++) {
 			const dir = parts.slice(0, i).join("/");
@@ -56,11 +57,11 @@ export async function scanRepoSetup(app: GithubApp, token: string, repo: Reposit
 		if (text === undefined) unreadSource = true;
 		else if (text.replace(/\n$/, "").split("\n").length > 1500) oversized ??= entry.path;
 	}
-	const missingGuide = [...dirs].find(([dir, count]) => count >= 50 && !["AGENTS.md", "CLAUDE.md", "README.md"].some(name => paths.has(dir + "/" + name)));
-	const pr = [...paths].some(p => /^(?:(?:docs|\.github)\/)?pull_request_template(?:\.md|\/[^/]+\.md)$/i.test(p));
-	const issue = [...paths].some(p => /^(?:(?:docs|\.github)\/)?issue_template(?:\.md|\/(?!config\.ya?ml$)[^/]+\.(?:md|ya?ml))$/i.test(p));
+	const missingGuide = [...dirs].find(([dir, count]) => count >= 50 && !["AGENTS.md", "CLAUDE.md", "README.md"].some(name => known.has(dir + "/" + name)));
+	const pr = paths.some(p => /^(?:(?:docs|\.github)\/)?pull_request_template(?:\.md|\/[^/]+\.md)$/i.test(p));
+	const issue = paths.some(p => /^(?:(?:docs|\.github)\/)?issue_template(?:\.md|\/(?!config\.ya?ml$)[^/]+\.(?:md|ya?ml))$/i.test(p));
 	let pullChecks = false, scanner = !!repo.secretScanning, unreadWorkflow = truncated;
-	for (const path of [...paths].filter(p => workflow.test(p))) {
+	for (const path of paths.filter(p => workflow.test(p))) {
 		const text = files.get(path);
 		if (text === undefined) { unreadWorkflow = true; continue; }
 		try {
@@ -77,23 +78,19 @@ export async function scanRepoSetup(app: GithubApp, token: string, repo: Reposit
 	const env = ignore !== undefined && [".env", ".env.local"].every(path => ignored(ignore, path));
 	const unknown = "The file list was incomplete.";
 	const found = (yes: boolean, partial = truncated) => yes ? true : partial ? null : false;
-	let protection: Finding;
-	if (ignore === undefined && (paths.has(".gitignore") || truncated)) {
-		protection = { id: "secrets", pass: null, reason: "The ignore rules could not be checked." };
-	} else if (!env) {
-		protection = { id: "secrets", pass: false, reason: "The ignore rules do not cover .env and .env.local." };
-	} else if (scanner) {
-		protection = { id: "secrets", pass: true, reason: "Environment files are ignored and secret scanning is enabled." };
-	} else {
-		protection = { id: "secrets", pass: found(false, unreadWorkflow), reason: unreadWorkflow ? "Some workflows could not be checked for a secret scan." : "Environment files are ignored. No secret scan was found." };
-	}
-	const findings: Finding[] = [
-		{ id: "guide", pass: rootGuide ? null : found(false), reason: rootGuide ? `${rootGuide} found. Finish setup to check its instructions.` : truncated ? unknown : "The root folder has no AGENTS.md or CLAUDE.md." },
+	const missingIgnore = ignore === undefined && (known.has(".gitignore") || truncated);
+	const protectedEnv = missingIgnore ? null : env && found(scanner, unreadWorkflow);
+	const protectionReason = missingIgnore ? "The ignore rules could not be checked."
+		: !env ? "The ignore rules do not cover .env and .env.local."
+		: scanner ? "Environment files are ignored and secret scanning is enabled."
+		: unreadWorkflow ? "Some workflows could not be checked for a secret scan."
+		: "Environment files are ignored. No secret scan was found.";
+	return { commit: scan.commit, findings: [
+		{ id: "guide", pass: rootGuide || truncated ? null : false, reason: rootGuide ? `${rootGuide} found. Finish setup to check its instructions.` : truncated ? unknown : "The root folder has no AGENTS.md or CLAUDE.md." },
 		{ id: "areas", pass: missingGuide ? false : truncated ? null : true, reason: missingGuide ? `${missingGuide[0]} has ${missingGuide[1]} source files and no guide.` : truncated ? unknown : "Every folder with 50 or more source files has a guide." },
 		{ id: "templates", pass: found(pr && issue), reason: pr && issue ? "Both templates are present." : truncated ? unknown : `Missing ${[!pr && "pull request", !issue && "issue"].filter(Boolean).join(" and ")} template.` },
 		{ id: "size", pass: oversized ? false : unreadSource ? null : true, reason: oversized ? `${oversized} exceeds 1,500 lines.` : unreadSource ? "Some source files exceeded the automatic scan limit." : "No source file exceeds 1,500 lines." },
 		{ id: "ci", pass: found(pullChecks, unreadWorkflow), reason: pullChecks ? "A workflow runs on pull requests." : unreadWorkflow ? "Some workflows could not be checked." : "No workflow runs on pull requests." },
-		protection,
-	];
-	return { commit: scan.commit, findings };
+		{ id: "secrets", pass: protectedEnv, reason: protectionReason },
+	] };
 }

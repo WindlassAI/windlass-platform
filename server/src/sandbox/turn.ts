@@ -414,8 +414,7 @@ class Turn {
 				}
 			} else if (release !== null && (await this.prepare(scriptPath, agentFile)) && !this.abortRequested) {
 				if (input.repoSetup && configHome) {
-					// The private working directory contains only the read-only, symlink-free checkout.
-					// Only relative file reads inside it may reach the engine, even on an open machine.
+					// Relative paths keep reads inside the symlink-free checkout, including on an open machine.
 					const filter = '.tool.arguments | type == "object" and ((.path // ".") | type == "string" and (startswith("/") or startswith("~") | not) and (split("/") | all(. != "..")))';
 					await sandbox.writeTextFile(configHome + "/windlass/config.json", JSON.stringify({ hooks: { beforeTool: [{
 						name: "setup-files", tools: ["read", "ls"], sandbox: false, onError: "refuse",

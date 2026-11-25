@@ -447,7 +447,7 @@ export async function readOnlyReview(sandbox: SandboxHandle, url: string, token:
 		`wlp_git -C repo fetch --quiet --no-tags -- ${shellQuote(url)} ${base} ${head}`,
 		"WLP_T=",
 		`plain_git -C repo checkout -q --detach ${head}`,
-		// Start source inspections above the tree so project hooks, checks and agent definitions stay inert.
+		// Project hooks and agent definitions must stay inert during setup checks.
 		...(sourceOnly ? ["rm -rf -- repo/.git", "find repo -type l -delete"] : []),
 		'chmod -R a+rX repo', sourceOnly ? 'chmod 755 "$private"' : 'chmod 711 "$private"',
 	].join("\n");

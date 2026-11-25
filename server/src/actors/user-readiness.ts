@@ -1,27 +1,22 @@
+import type { ActorCron } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { config } from "../config.js";
 import type { EnvironmentBuild, GithubId, RepositoryCheck } from "../contract.js";
 import { environmentInputs, readEnvironments, sameInputs } from "../environments.js";
-import { readinessCriteria, scoreReadiness, type Finding, type Judgment, type RepositoryReadiness } from "../factory/readiness.js";
+import { scoreReadiness, type Finding, type Judgment, type RepositoryReadiness } from "../factory/readiness.js";
 import type { SetupScan } from "../github/setup-checks.js";
 import { digest } from "../sandbox/snapshot-key.js";
 
 type Db = Pick<RawAccess, "execute">;
 export const READINESS_TICK = "internalReadinessTick";
 export const scheduleName = (id: GithubId) => "repo-setup-" + id;
-export interface SetupCron {
-	get(name: string): Promise<unknown>;
-	set(job: { name: string; expression: string; action: string; args: unknown[]; maxHistory: number }): Promise<unknown>;
-	delete(name: string): Promise<unknown>;
-}
-export async function scheduleSetup(cron: SetupCron, id: GithubId, enabled: boolean) {
+export async function scheduleSetup(cron: Pick<ActorCron, "set" | "delete">, id: GithubId, enabled: boolean) {
 	const name = scheduleName(id);
-	if (!enabled) { if (await cron.get(name)) await cron.delete(name); return; }
+	if (!enabled) return cron.delete(name);
 	const minute = Number(BigInt(id) % 10080n);
 	await cron.set({ name, expression: `${minute % 60} ${Math.floor(minute / 60) % 24} * * ${Math.floor(minute / 1440)}`, action: READINESS_TICK, args: [id], maxHistory: 0 });
 }
 
-export const SCAN_TABLE = "CREATE TABLE IF NOT EXISTS setup_scan (project TEXT PRIMARY KEY, at INTEGER NOT NULL, scan TEXT NOT NULL)";
 export const READINESS_TABLE = `CREATE TABLE IF NOT EXISTS readiness (
 	project TEXT NOT NULL, session TEXT PRIMARY KEY, at INTEGER NOT NULL, inputs TEXT, judgment TEXT, error TEXT)`;
 const RUN_LEASE = config.turnTimeoutMs + 5 * 60_000;
@@ -46,8 +41,7 @@ export async function setupInputs(db: Db, project: string, scan: SetupScan & { a
 	const measured = (await readEnvironments(db, project)).flatMap(row => [row.attempt, row.ready])
 		.filter((b): b is EnvironmentBuild => !!b?.finishedAt && sameInputs(b, hashes))
 		.sort((a, b) => b.finishedAt! - a.finishedAt!).at(0);
-	const proof = buildProof(measured, checks);
-	const evidence = { hasSavedSetup: !!setup, savedChecks: checks.map(c => c.name), buildCommit: measured?.commit ?? null, ...proof };
+	const evidence = { hasSavedSetup: !!setup, savedChecks: checks.map(c => c.name), buildCommit: measured?.commit ?? null, ...buildProof(measured, checks) };
 	const findings: Finding[] = [
 		{ id: "setup", pass: setup ? null : false, reason: setup ? "Setup command saved. Finish setup to check that it works." : "No setup command is saved." },
 		{ id: "checks", pass: checks.length ? null : false, reason: checks.length ? "Checks saved. Finish setup to check their results and time." : "No checks are saved." },
@@ -56,14 +50,13 @@ export async function setupInputs(db: Db, project: string, scan: SetupScan & { a
 	return { key: digest([scan.commit, hashes, evidence]), findings, evidence, at: scan.at };
 }
 
-type Inputs = Awaited<ReturnType<typeof setupInputs>>;
-export async function repositoryReadiness(db: Db, project: string, inputs: Inputs | null, weekly: boolean, scanError: string | null = null): Promise<RepositoryReadiness> {
+export async function repositoryReadiness(db: Db, project: string, inputs: Awaited<ReturnType<typeof setupInputs>> | null, weekly: boolean, scanError: string | null = null): Promise<RepositoryReadiness> {
 	const [attempt] = await db.execute<{ judgment: string | null; error: string | null; at: number }>("SELECT judgment,error,at FROM readiness WHERE project=? ORDER BY at DESC, rowid DESC LIMIT 1", project);
 	const pending = !!attempt && !attempt.judgment && !attempt.error;
 	const running = pending && Date.now() - attempt.at < RUN_LEASE;
-	const [last] = inputs ? await db.execute<{ judgment: string; at: number }>("SELECT judgment,at FROM readiness WHERE project=? AND inputs=? AND judgment IS NOT NULL ORDER BY at DESC LIMIT 1", project, inputs.key) : [];
 	let latest = null;
 	if (inputs) {
+		const [last] = await db.execute<{ judgment: string; at: number }>("SELECT judgment,at FROM readiness WHERE project=? AND inputs=? AND judgment IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1", project, inputs.key);
 		const result: Judgment | undefined = last && JSON.parse(last.judgment);
 		const findings = inputs.findings.map(f => {
 			const answer = result?.findings.find(r => r.id === f.id);
@@ -72,9 +65,9 @@ export async function repositoryReadiness(db: Db, project: string, inputs: Input
 			if (f.id === "checks" && !inputs.evidence.checksPassed) return { ...f, pass: false, reason: "No matching build passed all saved checks within five minutes." };
 			return answer;
 		});
-		latest = scoreReadiness(readinessCriteria.map(c => findings.find(f => f.id === c.id)!), last?.at ?? inputs.at);
+		latest = scoreReadiness(findings, last?.at ?? inputs.at);
 	}
-	return { latest, weekly, running, error: scanError ?? (pending && !running ? "The setup check was interrupted." : attempt?.error ?? null) };
+	return { latest, weekly, run: running ? "running" : attempt ? "finished" : "new", error: scanError ?? (pending && !running ? "The setup check was interrupted." : attempt?.error ?? null) };
 }
 
 export async function claimAssessment(db: Db, project: string, session: string, now: number): Promise<boolean> {
@@ -84,7 +77,7 @@ export async function claimAssessment(db: Db, project: string, session: string, 
 	return rows.length > 0;
 }
 
-export async function finishAssessment(db: Db, session: string, result: Judgment | null, error: string | null) {
+export async function finishAssessment(db: Db, session: string, result: Judgment | string) {
 	await db.execute("UPDATE readiness SET judgment=?,error=? WHERE session=? AND judgment IS NULL AND error IS NULL",
-		result ? JSON.stringify(result) : null, error, session);
+		typeof result === "string" ? null : JSON.stringify(result), typeof result === "string" ? result : null, session);
 }

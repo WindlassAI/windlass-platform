@@ -2186,7 +2186,7 @@ async function runTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: stri
 }
 
 function reportAssessment(c: Ctx, meta: SessionMeta) {
-	void c.keepAwake(userActor(c, meta.uid).internalReadinessResult(meta.sessionId, meta.assessment ?? null).catch(error =>
+	void c.keepAwake(userActor(c, meta.uid).internalReadinessResult(meta.sessionId, meta.readiness?.result ?? null).catch(error =>
 		c.log.warn({ msg: "could not save the readiness assessment", error: describeError(error) })));
 }
 
@@ -2570,10 +2570,11 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			&& (await sandbox.run("test -x /usr/local/bin/wlp-shot", { signal, timeoutMs: 5000 })).exitCode === 0;
 		const unavailable = held.screenshots ? "Screenshots are unavailable in this sandbox. File without screenshots." : NO_REPO_SHOTS;
 		let filings = Promise.resolve("");
-		const onReport: RunTurnInput["onReport"] = meta.readiness ? async (request, withdrawn) => {
-			if (!open || withdrawn.aborted || meta.assessment) return "These setup checks have already been filed.";
-			const answer = fileReadiness(request.arguments, held.redactor, report => { meta.assessment = report; });
-			if (meta.assessment) await persist(c);
+		const setup = meta.readiness;
+		const onReport: RunTurnInput["onReport"] = setup ? async (request, withdrawn) => {
+			if (!open || withdrawn.aborted || setup.result) return "These setup checks have already been filed.";
+			const answer = fileReadiness(request.arguments, held.redactor, report => { setup.result = report; });
+			if (setup.result) await persist(c);
 			return answer;
 		} : item && !planning && !reviewer && platformTool("report") ? (request, withdrawn) => {
 			const file = async () => {
@@ -2619,15 +2620,13 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		let uiChanged = false;
 		let filingFiles: (() => { read(path: string, sha: string): Promise<string>; close(): Promise<void> }) | null = null;
 		let storedBrief: string | null = null;
-		if (meta.readiness) {
+		if (setup) {
 			const app = githubApp(), repo = meta.repo, connection = await githubConnection(c, meta);
 			if (!app || !repo || !connection) throw new TurnProblem("The repository connection is unavailable.");
 			const { installation, repository } = await sessionRepository(app, connection, repo, "read");
 			const { owner, name } = repository;
-			const head = meta.readiness;
-			common.reviewDirectory = await app.withToken(installation.id, { repositoryId: repo.id, permissions: { contents: "read", metadata: "read" } }, async token => {
-				return readOnlyReview(sandbox, app.cloneUrl(owner, name), token, head, head, signal, true);
-			}, { revokeAfter: true });
+			common.reviewDirectory = await app.withToken(installation.id, { repositoryId: repo.id, permissions: { contents: "read", metadata: "read" } },
+				token => readOnlyReview(sandbox, app.cloneUrl(owner, name), token, setup.commit, setup.commit, signal, true), { revokeAfter: true });
 		}
 		if (reviewer && (checkout || critic) && item) {
 			const repo = meta.repo;

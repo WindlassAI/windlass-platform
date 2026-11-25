@@ -13,7 +13,7 @@ const now = Date.now();
 const answers = (...fail: CriterionId[]) => readinessCriteria.map(({ id }) => ({ id, pass: !fail.includes(id), reason: "Evidence for " + id }));
 
 test("levels require all earlier levels, and only failures can be filed", () => {
-	for (const [fails, expected] of [[[], "Standardized"], [["ci"], "Documented"], [["areas"], "Functional"], [["checks"], "Below Functional"]] as const) {
+	for (const [fails, expected] of [[[], "Standardized"], [["ci"], "Documented"], [["areas"], "Functional"], [["checks"], "not reached yet"]] as const) {
 		const report = scoreReadiness(answers(...fails).reverse(), now);
 		assert.equal(report.level, expected);
 		assert.equal(report.passed, 8 - fails.length);
@@ -78,8 +78,8 @@ test("measured evidence requires every saved check and includes exactly five min
 });
 
 test("weekly runs require opting in and share the manual claim", async () => {
-	const jobs = new Map<string, unknown>();
-	const cron = { get: async (key: string) => jobs.get(key), set: async (job: { name: string }) => jobs.set(job.name, job), delete: async (key: string) => jobs.delete(key) };
+	const jobs = new Set<string>();
+	const cron = { set: async (job: { name: string }) => { jobs.add(job.name); }, delete: async (key: string) => jobs.delete(key) };
 	assert.equal(jobs.size, 0);
 	await scheduleSetup(cron, 7, true); assert.equal(jobs.size, 1);
 	await scheduleSetup(cron, 7, false); assert.equal(jobs.size, 0);
@@ -92,8 +92,8 @@ test("weekly runs require opting in and share the manual claim", async () => {
 		findings: answers("areas").map(f => ({ ...f, pass: ["setup", "checks", "guide"].includes(f.id) ? null : f.pass })) };
 	await db.execute("UPDATE readiness SET inputs='base'");
 	const view = () => repositoryReadiness(db, "repo", inputs, false);
-	assert.equal((await view()).running, true);
-	await finishAssessment(db, "scheduled", { findings: answers().slice(0, 3) }, null);
+	assert.equal((await view()).run, "running");
+	await finishAssessment(db, "scheduled", { findings: answers().slice(0, 3) });
 	const result = (await view()).latest!;
 	assert.equal(result.passed, 5);
 	assert.equal(result.findings.find(f => f.id === "checks")?.pass, false);
@@ -101,7 +101,7 @@ test("weekly runs require opting in and share the manual claim", async () => {
 	assert.equal((await view()).latest?.findings[0]?.pass, null);
 	assert.equal(await claimAssessment(db, "repo", "scheduled", now), false);
 	assert.equal(await claimAssessment(db, "repo", "manual", now + 1), true);
-	await finishAssessment(db, "manual", null, "Could not read repository.");
+	await finishAssessment(db, "manual", "Could not read repository.");
 	assert.equal((await view()).error, "Could not read repository.");
 	sqlite.close();
 });

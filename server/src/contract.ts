@@ -893,7 +893,6 @@ export interface RepositoryApproval {
 	definitions: number;
 }
 
-/** Locally saved repository settings contain no secret values and require no GitHub lookup. */
 export interface RepositoryView {
 	readiness: import("./factory/readiness.js").RepositoryReadiness;
 	/** GitHub's id for the repository. */

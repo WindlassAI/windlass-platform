@@ -12,7 +12,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
 import { listedHarness, windlassModels, windlassProvider, hostedCatalog, hostedKeyMessage, hostedProfiles, hostedProvider, initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
 import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
-import { mockSetupChecks } from "./mock-readiness";
+import { scoreReadiness } from "../../../server/src/factory/readiness";
 import { mockEnvironments, mockRebuild, mockSchedule } from "./mock-environments";
 import { PROFILES, initialSessionModes, offeredProfiles, profilesFor } from "../../../server/src/sandbox/profiles.js";
 import { githubId } from "../../../server/src/github/ids.js";
@@ -2696,15 +2696,28 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			if (listed) listed.definitions += 1;
 			else approvals.set(approval.name, { name: approval.name, approvedAt: approval.approvedAt, expiresAt: approval.expiresAt, definitions: 1 });
 		}
-		let setup = world.readiness.get(repositoryId);
-		if (!setup && world.github && GITHUB_REPOSITORIES.some(r => r.id === repositoryId)) {
-			setup = { at: now(), finished: false, weekly: false };
-			world.readiness.set(repositoryId, setup);
+		let assessment = world.readiness.get(repositoryId);
+		if (!assessment && world.github && GITHUB_REPOSITORIES.some(r => r.id === repositoryId)) {
+			assessment = { at: now(), finished: false, weekly: false };
+			world.readiness.set(repositoryId, assessment);
 		}
+		const hasSetup = world.setups.has(repositoryId);
+		const hasChecks = !!world.checks.get(repositoryId)?.checks.length;
+		const finished = assessment?.finished;
+		const latest = assessment ? scoreReadiness([
+			{ id: "setup", pass: hasSetup ? finished || null : false, reason: !hasSetup ? "No setup command is saved." : finished ? "The latest build installed the project with one command." : "Setup command saved. Finish setup to check that it works." },
+			{ id: "checks", pass: hasChecks ? finished || null : false, reason: !hasChecks ? "No checks are saved." : finished ? "Both saved checks passed in 43 seconds." : "Checks saved. Finish setup to check their results and time." },
+			{ id: "guide", pass: finished || null, reason: finished ? "The root guide names the working setup and check commands." : "AGENTS.md found. Finish setup to check its instructions." },
+			{ id: "areas", pass: false, reason: "src/services has 78 source files and no guide." },
+			{ id: "templates", pass: true, reason: "Both templates are present." },
+			{ id: "size", pass: true, reason: "The largest source file has 680 lines." },
+			{ id: "ci", pass: true, reason: "The test workflow runs on pull requests." },
+			{ id: "secrets", pass: false, reason: "Environment files are ignored. No secret scan was found." },
+		], assessment.at) : null;
 		return {
 			id: repositoryId,
 			name: repositoryNameOf(world, repositoryId),
-			readiness: setup ? mockSetupChecks(setup.at, world.setups.has(repositoryId), !!world.checks.get(repositoryId)?.checks.length, setup.finished, setup.weekly) : { latest: null, running: false, weekly: false, error: null },
+			readiness: { latest, weekly: assessment?.weekly ?? false, run: finished ? "finished" : "new", error: null },
 			defaults: defaultsOf(world, repositoryId),
 			approvals: [...approvals.values()],
 			forgetting: MOCK_FORGETTING,

@@ -26,9 +26,7 @@ import type { InboxRow } from "../session-inbox.js";
 export type FeedbackPrompt = { text: string; entries: FeedbackEntry[] };
 
 export interface SessionMeta {
-	/** Pinned default-branch commit for this one-turn setup check. */
-	readiness?: string;
-	assessment?: Judgment;
+	readiness?: { commit: string; result?: Judgment };
 	githubFeedback?: { pending?: FeedbackPrompt; seen: { id: string; at: number }[] };
 	secretRequest?: SessionSnapshot["secretRequest"];
 	/** Plain sessions have no item run. Count requests and remember skipped names across their turns. */

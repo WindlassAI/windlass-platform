@@ -25,7 +25,7 @@ import { issueServiceToken, verifyToken } from "../tokens.js";
 
 /** What `user` passes when it creates an `agentSession`. */
 export interface SessionCreateInput {
-	readiness?: string;
+	readiness?: { commit: string };
 	size?: number;
 	/** Hosted only, where the layer offers sizes (`Sandboxes.sizes`): the sandbox's size. */
 	hostedSize?: HostedSize;
