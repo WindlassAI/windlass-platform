@@ -66,7 +66,9 @@ Where the platform has a Linear OAuth client and signing secret, you can file a 
 
 **Trust.** Linear identifies the Windlass app as the connected user. Issues arrive as drafts with their authors' text quoted. Review and start the item in Windlass. Its page and list link to the Linear issue by its identifier, for example ENG-123.
 
-**Updates on the issue.** Windlass comments when the item opens its pull request and attaches the PR link to the issue. It comments once at handover and when the item merges, fails or is cancelled. Each comment includes the PR link when one exists. Only a merge moves the issue to a completed state for its team, if Linear allows the change. A write failure is logged and the item continues. If you connected Linear before Windlass requested the `write` scope, reconnect to grant it.
+**Updates on the issue.** When you start the item, Windlass moves the issue to the first state in the team's Started category. If the issue is already started, it keeps its current state. When a plan needs approval or the item asks you a question, Windlass comments once for that question with a link to the item page.
+
+Windlass attaches the pull request and comments when it opens, at handover, and when the item merges, fails or is cancelled. These comments include the PR link when available. At PR open or handover, Windlass moves the issue to **In Review** if the team has a Started state with that exact name and the move is forward. A merge moves the issue to a Completed state. Giving up or cancelling leaves the status for you to decide. Windlass preserves completed and canceled issues' statuses and only updates issues still in their mapped team. The item continues if Linear is unavailable. If you connected Linear before Windlass requested the `write` scope, reconnect to grant it.
 
 Removing a label, unassigning, editing or closing the Linear issue leaves the item as filed. To stop it, cancel it in Windlass. After the item ends, a new qualifying event on the active issue can file another item.
 
