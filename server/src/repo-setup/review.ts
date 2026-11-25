@@ -101,6 +101,21 @@ export async function reviewSetup(turn: SetupTurn, input: RunTurnInput, run: (in
 			: decision ? "The revision did not supply the requested fix." : "Added during revision without review.";
 		observation.skills.droppedByReview.push({ path, reason });
 	}
+	for (const filing of observation.skills.filings) {
+		if (filing.refused) continue;
+		const source = filing.phase === "draft" ? original : filed;
+		for (const proposal of filing.proposals) {
+			const path = proposal.path;
+			if (!source.skills.has(path)) continue;
+			if (accepted.files.get(path) === source.files.get(path)) {
+				proposal.outcome = "kept";
+				proposal.reason = "Accepted after review.";
+			} else {
+				proposal.reason = observation.skills.droppedByReview.find(d => d.path === path)?.reason ??
+					(filing.phase === "draft" ? "Replaced by the reviewed revision." : "The reviewer kept the original draft.");
+			}
+		}
+	}
 	observation.leftOut = accepted.leftOut;
 	if (!accepted.files.size) throw Error("The review left no files to publish.");
 	return { filed: accepted, result };

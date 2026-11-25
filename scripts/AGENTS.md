@@ -12,10 +12,10 @@ Run one command from the repository root.
 
 ## Key files
 
-- `ci-groups.json` maps source paths to heavy checks, shard arguments, environments and images.
-- `ci-heavy.mjs` selects jobs from that map and runs their commands in the server workspace.
-- `agents-docs-check.ts` checks references relative to the guide and commands relative to their working directory.
-- `workflow-lint.ts` checks Actions permissions and requires actions pinned by commit.
+- `./ci-groups.json` maps source paths to heavy checks, shard arguments, environments and images.
+- `./ci-heavy.mjs` selects jobs from that map and runs their commands in the server workspace.
+- `./agents-docs-check.ts` checks paths from the repository root, explicit `./` and `../` paths from the guide, and commands from their working directory.
+- `./workflow-lint.ts` checks Actions permissions and requires actions pinned by commit.
 
 ## Non-obvious patterns
 

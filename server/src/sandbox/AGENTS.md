@@ -12,15 +12,15 @@ Run one command from the repository root.
 
 ## Key files
 
-- `api.ts` defines the actor-facing sandbox interface and errors.
-- `provider.ts` defines the operations turn code can ask of a sandbox.
-- `turn.ts` coordinates a Windlass turn over that provider interface.
-- `model-relay.ts` manages Docker relay containers and per-turn forwarders.
-- `relay-leases.ts` holds E2B turn credentials and resolves their signed placeholders.
+- `./api.ts` defines the actor-facing sandbox interface and errors.
+- `./provider.ts` defines the operations turn code can ask of a sandbox.
+- `./turn.ts` coordinates a Windlass turn over that provider interface.
+- `./model-relay.ts` manages Docker relay containers and per-turn forwarders.
+- `./relay-leases.ts` holds E2B turn credentials and resolves their signed placeholders.
 
 ## Non-obvious patterns
 
-- Put common turn behaviour behind the provider interface. Check both the [Docker](sandboxes.ts) and [E2B](e2b/sandboxes.ts) implementations when changing it.
+- Put common turn behaviour behind the provider interface. Check both the [Docker](./sandboxes.ts) and [E2B](./e2b/sandboxes.ts) implementations when changing it.
 - Model relay token files in sessions contain a per-turn placeholder. Refresh the real credential at the relay and revoke access when the turn closes.
 - A signed E2B placeholder can reach another server process. The process hosting the session actor owns the live lease.
 

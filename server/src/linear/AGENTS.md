@@ -12,9 +12,9 @@ Run one command from the repository root.
 
 ## Key files
 
-- `app.ts` implements the OAuth and GraphQL client, including issue reads and writebacks.
-- `connect.ts` consumes OAuth state, exchanges the code using PKCE and seals the connection ticket.
-- `webhook.ts` verifies the raw signature and signed timestamp, then classifies issue transitions.
+- `./app.ts` implements the OAuth and GraphQL client, including issue reads and writebacks.
+- `./connect.ts` consumes OAuth state, exchanges the code using PKCE and seals the connection ticket.
+- `./webhook.ts` verifies the raw signature and signed timestamp, then classifies issue transitions.
 - [User integration](../actors/user-linear.ts) stores the owner's connection and team mappings.
 
 ## Non-obvious patterns

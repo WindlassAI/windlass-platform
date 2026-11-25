@@ -258,9 +258,17 @@ await check("repo-setup: draft guides with imported notes and delete them on clo
 			for (const [i, filing] of skills.filings.entries()) {
 				const candidates = repeat ? 3 : 4 + i;
 				assert(filing.proposed === candidates && filing.smokeTested === candidates - 1 && filing.kept === candidates - 2, "Incorrect skill counts.");
+				assert(filing.proposals.length === candidates, "Missing skill previews.");
+				for (const proposal of filing.proposals) {
+					assert(proposal.description === "Verify the starter service's source layout." && proposal.body.startsWith("## When to use"), "Missing skill description or body.");
+					const reason = proposal.path.includes("/bad-read/") ? "Smoke check exited 1." : proposal.path.includes("/bad-reference/") ? "missing path missing"
+						: proposal.path.includes("/unreviewed/") ? "Added during revision without review." : "Accepted after review.";
+					assert(proposal.reason.includes(reason) && proposal.outcome === (reason === "Accepted after review." ? "kept" : "dropped"), "Wrong skill outcome for " + proposal.path);
+				}
 				assert(filing.staticallyRejected.length === 1 && filing.staticallyRejected[0].reason.includes("missing path missing"), "Missing static drop reason.");
 				assert(filing.droppedBySmoke.length === 1 && filing.droppedBySmoke[0].reason === "Smoke check exited 1.", "Missing smoke failure.");
 			}
+			assert(!pull.body.includes("Verify the starter service") && !pull.body.includes("Use before changing the starter service"), "Skill preview appeared in the pull request body.");
 			assert(skills.droppedByReview.length === (repeat ? 0 : 1), "Missing review drop reason.");
 			assert(!pull.body.includes("windlass-platform:verified") && !pull.body.includes("What was verified"), "Setup PR contains session verification.");
 			if (repeat) {
@@ -340,7 +348,12 @@ await check("repo-setup: keep the failed phase on the owner's run", async () => 
 			const opened = name !== "setup-startup";
 			assert(d?.phase === "draft" && d.toolOffered === opened && d.attempts === rejections.length, "Missing filing diagnostics");
 			assert(d.skills.kept === 0 && d.skills.filings.length === rejections.length, "Failed run lost its skill filings.");
-			if (name === "setup-refused") assert(d.skills.filings[1].proposed === 1 && d.skills.filings[1].refused === rejections[1], "Missing refused skill filing.");
+			if (name === "setup-refused") {
+				const filing = d.skills.filings[1], proposal = filing.proposals[0];
+				assert(filing.proposed === 1 && filing.refused === rejections[1] && proposal.outcome === "dropped" && proposal.reason === filing.refused, "Missing refused skill filing.");
+				assert(proposal.description === "# Inspect source" && proposal.body.includes("Owner preview [redacted]") && proposal.body.length === 300, "Missing redacted preview.");
+				assert(!server.text.includes("Owner preview"), "Owner preview appeared in a server log.");
+			}
 			assert(JSON.stringify(d.rejections) === JSON.stringify(rejections), "Lost rejection reasons");
 			assert(d.model === (opened ? "account-default" : "saved-choice"), "Wrong setup model");
 			assert(d.outcome === (opened ? "succeeded" : "failed") && d.stopReason === (opened ? "end_turn" : "unknown_model"), "Lost stop reason");

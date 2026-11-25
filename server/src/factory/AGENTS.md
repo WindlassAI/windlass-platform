@@ -12,10 +12,10 @@ Run one command from the repository root.
 
 ## Key files
 
-- `blueprint.ts` holds `advance(item, fact)` and the rules for waits, questions and retries.
-- `types.ts` defines the stored item, incoming facts, outgoing effects and decision result.
-- `feature-plan.ts` validates the planner's proposed subtasks and dependencies.
-- `untrusted.ts` names the sources to carry with text supplied to a turn.
+- `./blueprint.ts` holds `advance(item, fact)` and the rules for waits, questions and retries.
+- `./types.ts` defines the stored item, incoming facts, outgoing effects and decision result.
+- `./feature-plan.ts` validates the planner's proposed subtasks and dependencies.
+- `./untrusted.ts` names the sources to carry with text supplied to a turn.
 
 ## Non-obvious patterns
 

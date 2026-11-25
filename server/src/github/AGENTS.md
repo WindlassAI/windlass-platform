@@ -12,11 +12,11 @@ Run one command from the repository root.
 
 ## Key files
 
-- `app.ts` handles App authentication and GitHub API requests.
-- `publish.ts` coordinates repository clone, branch push and pull request creation.
-- `webhook.ts` authenticates incoming deliveries and routes them to actors.
-- `events.ts` normalizes supported events into the fields needed downstream.
-- `ids.ts` preserves numeric GitHub IDs as decimal strings.
+- `./app.ts` handles App authentication and GitHub API requests.
+- `./publish.ts` coordinates repository clone, branch push and pull request creation.
+- `./webhook.ts` authenticates incoming deliveries and routes them to actors.
+- `./events.ts` normalizes supported events into the fields needed downstream.
+- `./ids.ts` preserves numeric GitHub IDs as decimal strings.
 
 ## Non-obvious patterns
 

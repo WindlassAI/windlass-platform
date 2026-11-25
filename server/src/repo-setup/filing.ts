@@ -46,29 +46,47 @@ function short(v: unknown) {
 	return v.trim();
 }
 
-function supportsCommands(line: string, source: string) {
-	const commands = [...line.matchAll(/`([^`]+)`/g)].map(m => m[1]);
-	if (/^\s*(?:npm|pnpm|yarn|node|npx|make|cargo|go|python3?|git|bash|sh)\s/.test(line)) commands.push(line.trim());
-	return commands.every(command => {
-		if (!command.includes(" ") || source.includes(command)) return true;
-		const script = /^(?:npm run|pnpm(?: run)?|yarn(?: run)?) ([\w:-]+)$/.exec(command)?.[1];
-		return !!script && source.includes(JSON.stringify(script) + ":");
-	});
-}
-function evidence(value: unknown, ctx: DraftContext, claim = "") {
+interface Proof { label: string; file?: string; source?: string }
+
+function evidence(value: unknown, ctx: DraftContext): Proof | null {
 	const e = row(value);
 	if (typeof e.file === "string" && ctx.paths.includes(e.file) && !privateLine(e.file, ctx)) {
-		const text = ctx.read.get(e.file);
-		if (!supportsCommands(claim, text ?? "")) return null;
-		if (e.line === undefined) return e.file;
-		if (Number.isSafeInteger(e.line) && Number(e.line) > 0 && text?.split("\n")[Number(e.line) - 1]?.trim()) return e.file + ":" + e.line;
+		if (e.line === undefined) return { label: e.file };
+		if (Number.isSafeInteger(e.line) && Number(e.line) > 0) {
+			const source = ctx.read.get(e.file)?.split("\n")[Number(e.line) - 1];
+			if (source?.trim()) return { label: e.file + ":" + e.line, file: e.file, source };
+		}
 	}
 	// Replay only path-existence checks against the trusted tree. Never execute submitted commands.
 	if (typeof e.command === "string" && e.exit === 0 && typeof e.said === "string" && e.said.length <= 200) {
 		const path = /^(?:test -[ef]|ls --|git ls-files --error-unmatch) ([\w./-]+)$/.exec(e.command)?.[1];
-		if (path && ctx.paths.includes(path) && supportsCommands(claim, "") && !privateLine(e.command, ctx)) return e.command;
+		if (path && ctx.paths.includes(path) && !privateLine(e.command, ctx)) return { label: e.command };
 	}
 	return null;
+}
+
+function containsLiteral(source: string, value: string) {
+	const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	return new RegExp("(?<![\\w-])" + escaped + "(?![\\w-])").test(source);
+}
+
+function supportsCommands(line: string, proofs: (Proof | null)[], ctx: DraftContext) {
+	const commands = [...line.matchAll(/`([^`]+)`/g)].map(m => m[1]).filter(s => /\s|^--?[a-z]|^[\w-]+:[\w:-]+$/i.test(s));
+	if (/^\s*(?:npm|pnpm|bun|yarn|node|npx|make|cargo|go|python3?|git|bash|sh)\s/.test(line)) commands.push(line.trim());
+	return commands.every(command => proofs.some(proof => {
+		if (!proof?.source || !proof.file) return false;
+		const { source, file } = proof;
+		if (!/(^|\/)package\.json$/.test(file)) return containsLiteral(source, command);
+		const script = /^(?:(?:npm run|bun run|pnpm(?: run)?|yarn(?: run)?) )?([\w:-]+)$/.exec(command)?.[1];
+		try {
+			const scripts = JSON.parse(ctx.read.get(file) ?? "{}").scripts ?? {};
+			return Object.entries(scripts).some(([name, value]) => {
+				if (typeof value !== "string") return false;
+				if (name === script && new RegExp(`"${script}"\\s*:`).test(source)) return true;
+				return source.includes(JSON.stringify(value)) && containsLiteral(value, command);
+			});
+		} catch { return false; }
+	}));
 }
 
 export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFiling): AcceptedDraft {
@@ -92,7 +110,8 @@ export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFil
 	const allowed = new Set(["AGENTS.md", ...ctx.request.areas.map(d => d + "/AGENTS.md")]);
 	const entries = list(a.files, 20);
 	const repoFiles = new Set(ctx.paths);
-	const tree = guideTree([...ctx.paths, ...entries.map(f => f.path).filter((p): p is string => typeof p === "string" && allowed.has(p))], path => ctx.read.get(path));
+	const tree = guideTree(ctx.paths, path => ctx.read.get(path));
+	for (const { path } of entries) if (typeof path === "string" && allowed.has(path)) tree.paths.add(path);
 	const skills: AcceptedDraft["skills"] = new Map();
 	const seen = new Set<string>();
 	let skillCount = 0, bytes = 0;
@@ -100,7 +119,7 @@ export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFil
 		if (typeof f.path !== "string" || typeof f.content !== "string" || seen.has(f.path)) throw Error("File each guide once.");
 		seen.add(f.path);
 		const skill = skillPath.exec(f.path)?.[1];
-		const rejectSkill = (reason: string) => stats?.staticallyRejected.push({ path: skill ? String(f.path) : "(invalid skill path)", reason });
+		const rejectSkill = (reason: string) => stats?.staticallyRejected.push({ path: String(f.path), reason });
 		if (skill || f.kind === "skill") {
 			if (++skillCount > 5) throw Error("Use at most five skill files.");
 			if (!skill || f.kind !== "skill") {
@@ -141,7 +160,7 @@ export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFil
 		for (const [i, line] of proposed.entries()) {
 			const claims = refs.filter(r => r.line === i + 1);
 			const sources = claims.map(r => decisions.find(n => n.noteId === r.noteId));
-			const proofs = claims.map(r => evidence(r.evidence, ctx, line));
+			const proofs = claims.map(r => evidence(r.evidence, ctx));
 			const layout = /^\s*(?:$|`{3}\w*$|[| :\-]+$|#{1,6} [\w &-]{1,50}$)/.test(line);
 			const format = skill && (i <= headerEnd || command && (line === command || line === "`" + command + "`"));
 			let issue = "";
@@ -150,14 +169,14 @@ export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFil
 			else if (claims.some((r, j) => r.noteId && (!sources[j] || !["team", "duplicate"].includes(sources[j]!.verdict) || ctx.request.answers?.[String(r.noteId)] === "drop")))
 				issue = "The cited note was excluded.";
 			else if (!layout && !format && !old.has(line) && !claims.length) issue = "A new instruction needs a repository citation.";
-			else if (proofs.some(p => !p)) issue = "The cited evidence does not support this line.";
+			else if (proofs.some(p => !p) || claims.length && !supportsCommands(line, proofs, ctx)) issue = "The cited evidence does not support this line.";
 			if (issue) {
 				if (!skill) continue;
 				skillIssue = `Line ${i + 1}: ${issue}`;
 				break;
 			}
 			kept.push(line);
-			sources.forEach((d, j) => d?.uses.push({ path, line: kept.length, evidence: proofs[j]! }));
+			sources.forEach((d, j) => d?.uses.push({ path, line: kept.length, evidence: proofs[j]!.label }));
 		}
 		if (skill) {
 			if (skillIssue) {
@@ -194,14 +213,21 @@ export function safeTarget(path: string) {
 	return path.split("/").every(p => /^[\w.-]+$/.test(p) && !["..", ".", ".git"].includes(p.toLowerCase()));
 }
 
-function skillHeaderEnd(lines: string[], name: string) {
+export function skillFrontmatter(lines: string[]) {
 	const end = lines.indexOf("---", 1);
-	if (lines[0] !== "---" || end < 2) return -1;
+	if (lines[0] !== "---" || end < 2) return;
 	try {
 		const header = parse(lines.slice(1, end).join("\n"), { maxAliasCount: 0 });
-		if (header?.name !== name || typeof header.description !== "string" || !header.description.trim() ||
-			Object.keys(header).some(key => key !== "name" && key !== "description")) return -1;
-	} catch { return -1; }
+		return { end, header };
+	} catch { return; }
+}
+
+function skillHeaderEnd(lines: string[], name: string) {
+	const parsed = skillFrontmatter(lines);
+	if (!parsed) return -1;
+	const { header, end } = parsed;
+	if (header?.name !== name || typeof header.description !== "string" || !header.description.trim() ||
+		Object.keys(header).some(key => key !== "name" && key !== "description")) return -1;
 	for (const title of ["When to use", "Steps", "Check"]) {
 		const start = lines.indexOf("## " + title);
 		const first = lines.slice(start + 1).find(l => l.trim());

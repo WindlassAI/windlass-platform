@@ -54,7 +54,8 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 		input.onHostTools?.(names);
 		if (input.prompt.includes("ada/setup-no-filing") || input.prompt.includes("ada/setup-refused")) {
 			if (input.prompt.includes("ada/setup-refused")) {
-				for (const [i, args] of [{}, { files: [{ kind: "skill", path: ".agents/skills/read-source/SKILL.md", lines: [] }], notes: [], score: [] }].entries()) {
+				for (const [i, args] of [{}, { files: [{ kind: "skill", path: ".agents/skills/read-source/SKILL.md",
+					content: "# Inspect source\nOwner preview ghs_diagnosisFixtureSecret123. " + "x".repeat(350), lines: [] }], notes: [], score: [] }].entries()) {
 					const reply = await input.onSetup!({ messageId: "draft", callId: "file-" + i, arguments: args }, input.signal!);
 					if (!reply.includes("Correct the filing")) throw Error("Expected a retryable rejection.");
 				}
