@@ -112,6 +112,7 @@ interface Stored {
 }
 
 interface ItemVars {
+	jiraRetry?: Promise<boolean>;
 	featureCi?: Partial<Record<PreviewSlot, { key: string; reading: Promise<Preview> }>>;
 	savingSecret?: Promise<void>;
 	/** Null for an actor `user` did not create. */
@@ -456,6 +457,12 @@ function filingNote(meta: ItemMeta) {
 	if (meta.linear) return filedFromLinear(meta.linear.origin);
 	if (meta.jira) return filedFromJira(meta.jira.origin);
 	return `Filed from ${meta.source === "api" ? "the API" : "the web app"}.`;
+}
+
+async function activateJiraIssue(c: Pick<Ctx, "client">, uid: string, item: string, binding: JiraBinding) {
+	const site = c.client().jiraSite.get([binding.siteId], { params: serviceParams() });
+	if (!await site.internalActivateIssue(binding.origin.jira.id, uid, item, binding.generation))
+		throw new UserError("A newer item has been filed for this Jira issue.", { code: "item_conflict" });
 }
 
 /** Each Jira milestone has one outbox key and one receipt for the lifetime of the item. */
@@ -2189,6 +2196,7 @@ export const workItem = actor({
 				if (input.meta.linear) effects.push(...linearEffects(input.item, item, false));
 			}
 			if (input.meta.jira) {
+				await activateJiraIssue(c, input.meta.uid, item.id, input.meta.jira);
 				effects.push(jiraComment({ key: "filed", itemUrl: itemUrl(item.id) }), ...jiraEffects(input.item, item));
 			}
 			await c.db.transaction(async (tx) => {
@@ -2329,6 +2337,8 @@ export const workItem = actor({
 		},
 		internalSummary: async (c): Promise<ItemSummary> => {
 			requireService(c);
+			// A site probe after retry authorization must see the committed transition.
+			if (c.vars.jiraRetry) await c.vars.jiraRetry.catch(() => {});
 			if (!c.vars.stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
 			return indexedSummary(c, c.vars.stored);
 		},
@@ -2406,7 +2416,12 @@ export const workItem = actor({
 					fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
 					if (advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored, fact.kind === "approve_plan" ? fact.bases : undefined);
 				}
-				changed = await take(c, fact);
+				if (fact.kind === "retry" && stored.meta.jira && canRetry(stored.item)) {
+					if (c.vars.jiraRetry) throw new UserError("A retry is already in progress.", { code: "item_conflict" });
+					c.vars.jiraRetry = activateJiraIssue(c, stored.meta.uid, stored.item.id, stored.meta.jira).then(() => take(c, fact));
+					try { changed = await c.vars.jiraRetry; }
+					finally { delete c.vars.jiraRetry; }
+				} else changed = await take(c, fact);
 			} catch (error) {
 				if (error instanceof PlanError) throw new UserError(error.message, { code: "bad_input" });
 				throw clientError(c.log, error, "The item could not be changed. Try again.");

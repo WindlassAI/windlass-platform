@@ -1,7 +1,7 @@
 /** The owner queue, reservations, cap and saved policy shared by issue intakes. */
 
 import { serviceParams } from "../auth.js";
-import type { JiraClaimRef } from "./jira-site.js";
+import type { JiraClaimRef, JiraReservation } from "./jira-site.js";
 import { mayUse } from "../access.js";
 import { readAccountDefaults } from "../account-defaults.js";
 import { config } from "../config.js";
@@ -36,7 +36,7 @@ export function inIntakeQueue<T>(c: ItemsCtx, job: () => Promise<T>): Promise<T>
 	return next;
 }
 
-export async function existingItem(c: ItemsCtx, uid: string, id: string) {
+export async function existingItem(c: Pick<ItemsCtx, "client">, uid: string, id: string) {
 	try { return await itemActor(c, uid, id).internalSummary(); }
 	catch (error) { if (!isActorGone(error) && (error as { code?: string })?.code !== "item_not_found") throw error; }
 }
@@ -108,7 +108,7 @@ export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling, file: Tracke
 		bind: fields => ({ ...fields, teamId: team.id, workspaceId: team.workspaceId, origin }) }, file);
 }
 
-export type SiteJiraFiling = JiraFiling & { reservation?: { ref: JiraClaimRef; generation: number } };
+export type SiteJiraFiling = JiraFiling & { reservation: { ref: JiraClaimRef; plan: JiraReservation } };
 export async function fileJiraIssue(c: ItemsCtx, f: SiteJiraFiling, file: TrackerFile<JiraBinding>, itemId: (uid: string, key: string) => string): Promise<JiraFiled> {
 	if (!wellFormed(f, jiraAccount) || !trackerId(f.project?.id) || !trackerId(f.project.siteId)
 		|| typeof f.issue.identifier !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,31}-\d{1,16}$/.test(f.issue.identifier)
@@ -116,13 +116,11 @@ export async function fileJiraIssue(c: ItemsCtx, f: SiteJiraFiling, file: Tracke
 		return { kind: "refused", reason: "The Jira issue was not well formed." };
 	const { issue, project } = f;
 	const origin = { jira: { id: issue.id, identifier: issue.identifier, url: issue.url, author: trackerName(issue.creator?.name), trusted: false as const }, sender: trackerName(f.trigger.sender.name) };
-	return fileTrackerIssue(c, f, { tracker: "Jira", keyPrefix: `jira:${project.siteId}:${issue.id}:`, generation: f.reservation?.generation, trusted: false, quickLabels: ["windlass:quick", "windlass-quick"],
+	return fileTrackerIssue(c, f, { tracker: "Jira", keyPrefix: `jira:${project.siteId}:${issue.id}:`, generation: f.reservation.plan.generation, trusted: false, quickLabels: ["windlass:quick", "windlass-quick"],
 		bugType: issue.issueType.trim().toLowerCase() === "bug",
 		bind: fields => ({ ...fields, projectId: project.id, siteId: project.siteId, origin }) }, async (owner, made) => {
-		if (f.reservation) {
-			const site = c.client().jiraSite.get([project.siteId], { params: serviceParams() });
-			await site.internalReserveIssue(f.reservation.ref, made.binding.generation, itemId(owner.uid, made.input.idempotencyKey!));
-		}
+		const site = c.client().jiraSite.get([project.siteId], { params: serviceParams() });
+		await site.internalReserveIssue(f.reservation.ref, f.reservation.plan, itemId(owner.uid, made.input.idempotencyKey!));
 		return file(owner, made);
 	});
 }
@@ -141,11 +139,9 @@ async function fileTrackerIssue<B>(c: ItemsCtx, f: TrackerFiling, rules: Tracker
 	const made = [...c.vars.items.created].flatMap(([key, entry]) => key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length)) ? [{ generation: Number(key.slice(prefix.length)), id: entry.id }] : []);
 	const last = made.sort((a, b) => a.generation - b.generation).at(-1);
 	const held = last && c.vars.items.items.get(last.id);
-	if (rules.generation !== undefined && last && (last.generation > rules.generation || (!held && last.generation !== rules.generation))) throw new Error("Jira intake generation mismatch");
-	if (last && held && (last.generation === rules.generation || !isEnded(held))) return { kind: "exists", itemId: last.id };
-	// An older Jira trigger delivered out of order belongs to the finished generation.
-	if (tracker === "Jira" && held?.endedAt !== undefined && trigger.at <= held.endedAt) return { kind: "exists", itemId: held.id };
-	const resuming = last && !held ? last : undefined;
+	if (rules.generation !== undefined && last && last.generation > rules.generation) throw new Error("Jira intake generation mismatch");
+	if (last && held && (rules.generation === undefined ? !isEnded(held) : last.generation === rules.generation)) return { kind: "exists", itemId: last.id };
+	const resuming = last && !held && (rules.generation === undefined || last.generation === rules.generation) ? last : undefined;
 	if (trigger.lapsed && !resuming) return { kind: "ignored", why: "The issue no longer has what qualified it." };
 	const generation = rules.generation ?? resuming?.generation ?? (last?.generation ?? 0) + 1;
 

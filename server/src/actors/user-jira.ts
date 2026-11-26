@@ -333,7 +333,7 @@ export function fileJiraDelivery(c: JiraCtx, d: JiraDelivery, file: (filing: Sit
 			const ref = { uid: c.key[0]!, projectId: d.projectId, issue: d.issueId, delivery: d.deliveryId };
 			const directory = siteDirectory(c, site.id);
 			const plan: JiraGeneration = await directory.internalGeneration(ref, d.sentAt);
-			const decision = plan.kind === "exists" ? plan : await file({ reservation: { ref, generation: plan.generation }, project: { id: issue.projectId, siteId: site.id }, repository: { id: mapping.repository.id },
+			const decision = plan.kind === "exists" ? plan : await file({ reservation: { ref, plan }, project: { id: issue.projectId, siteId: site.id }, repository: { id: mapping.repository.id },
 				issue: { id: issue.id, identifier: issue.key, url: `${site.url}/browse/${encodeURIComponent(issue.key)}`, title: issue.summary, description: issue.description,
 					issueType: issue.issueType, labels: issue.labels, creator: author && { id: author.accountId, name: author.displayName } },
 				trigger: { via: byAssignment ? "assignment" : byLabel || d.label ? "label" : "assignment", at: d.sentAt,

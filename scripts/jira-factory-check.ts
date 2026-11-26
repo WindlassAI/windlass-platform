@@ -1,8 +1,9 @@
 /** Exercise Jira filing through the user and work-item actions: real SQLite, a loopback GitHub and fixture sessions. */
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import type { ItemSummary, SessionSummary } from "../server/src/contract.js";
+import type { JiraClaimRef, JiraReservation } from "../server/src/actors/jira-site.js";
 import type { JiraFiling } from "../server/src/factory/intake.js";
 import type { ItemsCtx, MakeSession } from "../server/src/actors/user-items.js";
 import type { ItemCreateInput } from "../server/src/actors/work-item.js";
@@ -28,6 +29,10 @@ try {
 	await github.start();
 	Object.assign(process.env, github.env(), { WLP_SECRET: randomBytes(32).toString("hex"), WLP_SANDBOX: "fake", WLP_WEB_ORIGINS: "http://localhost:5173", WLP_DEMO: "1", WLP_FACTORY_REVIEWER: "off", WLP_ITEMS: "1", WLP_FACTORY_ORCHESTRATE: "1" });
 	const { serviceParams } = await import("../server/src/auth.js");
+	const { jiraSite, jiraSiteTables } = await import("../server/src/actors/jira-site.js");
+	const siteActions = jiraSite.config.actions!;
+	type Site = Parameters<typeof siteActions.internalGeneration>[0];
+	const sites = new Map<string, Site>();
 	const { workItem, jiraEffects } = await import("../server/src/actors/work-item.js");
 	const { ITEM_TABLES, loadItems, itemActions } = await import("../server/src/actors/user-items.js");
 	const { ACCOUNT_DEFAULTS_TABLE, saveAccountDefaults } = await import("../server/src/account-defaults.js");
@@ -66,6 +71,13 @@ try {
 	const sessions = new Map<string, SessionSummary>();
 	let interrupt = false;
 	const client = () => ({
+		jiraSite: { get: ([id]: string[]) => {
+			const site = sites.get(id)!;
+			return {
+				internalReserveIssue: (ref: JiraClaimRef, plan: JiraReservation, item: string) => siteActions.internalReserveIssue(site, ref, plan, item),
+				internalActivateIssue: (issue: string, uid: string, item: string, generation: number) => siteActions.internalActivateIssue(site, issue, uid, item, generation),
+			};
+		} },
 		githubRepository: { getOrCreate: () => ({ internalForget: async () => {} }) },
 		agentSession: { get: () => ({}) },
 		user: { get: () => ({ internalItemChanged: async (item: ItemSummary) => {
@@ -103,7 +115,26 @@ try {
 			title: "Add the greeting", description: "Print hello.\n- [ ] It prints hello\n<!-- hidden words -->", labels: ["windlass"] },
 		project: { siteId: "acme-cloud", id: "10000" }, repository: { id: repo.id }, trigger: { via: "label", sender: author, at: Date.now() },
 	});
-	const file = (f: JiraFiling) => itemActions.internalJiraIntake(ctx, f, makeSession);
+	for (const id of ["acme-cloud", "other-cloud"]) {
+		const site = { key: [id], db: database(), conn, client } as unknown as Site;
+		sites.set(id, site);
+		await jiraSiteTables(site.db);
+		await siteActions.internalClaim(site, { projectId: "10000", uid: vars.profile.uid });
+	}
+	const planDelivery = async (f: JiraFiling, uid = vars.profile.uid) => {
+		const site = sites.get(f.project.siteId)!;
+		const ref = { uid, projectId: f.project.id, issue: f.issue.id, delivery: randomUUID() };
+		await site.db.execute("INSERT INTO delivery SELECT ?,epoch,project,?,0,? FROM project_owner WHERE project=? AND uid=?", ref.delivery, ref.issue, Date.now(), ref.projectId, uid);
+		return { site, ref, plan: await siteActions.internalGeneration(site, ref, f.trigger.at) };
+	};
+	const file = async (f: JiraFiling) => {
+		const { site, ref, plan } = await planDelivery(f);
+		if (plan.kind === "exists") return plan;
+		const result = await itemActions.internalJiraIntake(ctx, { ...f, reservation: { ref, plan } }, makeSession);
+		if (result.kind === "filed" || result.kind === "exists")
+			await siteActions.internalFinishIssue(site, ref, plan.generation, result.itemId);
+		return result;
+	};
 	const first = event(1);
 	// Race two different qualifying deliveries for the same issue and site, with no previous filing.
 	const assigned: JiraFiling = { ...first, trigger: { ...first.trigger, via: "assignment" } };
@@ -212,6 +243,51 @@ try {
 	assert.equal(race.filter(r => r.kind === "filed").length, 1, JSON.stringify(race));
 	assert.equal(race.filter(r => r.kind === "refused" && r.dailyCap).length, 1, JSON.stringify(race));
 	assert.equal(vars.items.items.size, before + 4);
+	// The first owner stops immediately after reserving. A late create cannot use that key after handoff.
+	vars.items.limits.overrides.githubItemsPerDay += 5;
+	const handoff = event(20), site = sites.get(handoff.project.siteId)!;
+	const current = { uid: vars.profile.uid, projectId: handoff.project.id };
+	const former = { ...current, uid: "former-owner" };
+	await siteActions.internalRelease(site, current);
+	await siteActions.internalClaim(site, former);
+	const interrupted = await planDelivery(handoff, former.uid);
+	assert.ok(interrupted.plan.kind === "file");
+	await siteActions.internalReserveIssue(site, interrupted.ref, interrupted.plan, "former-item");
+	await siteActions.internalRelease(site, former);
+	await siteActions.internalClaim(site, current);
+	const recovered = await file(handoff);
+	assert.ok(recovered.kind === "filed");
+	assert.equal(actors.get(recovered.itemId)!.vars.stored!.meta.jira?.generation, 2);
+	assert.equal(await siteActions.internalActivateIssue(site, handoff.issue.id, former.uid, "former-item", 1), false);
+	assert.deepEqual(await file(handoff), { kind: "exists", itemId: recovered.itemId });
+
+	// Start from a persisted failed item and interleave the owner action with the site's replacement plan.
+	for (const retryFirst of [true, false]) {
+		const f = event(retryFirst ? 21 : 22);
+		const made = await file(f);
+		assert.ok(made.kind === "filed");
+		const old = actors.get(made.itemId)!;
+		const failed = old.vars.stored!;
+		Object.assign(failed.item, { state: "failed", endedAt: f.trigger.at });
+		await old.db.execute("UPDATE item SET data=?", JSON.stringify(failed));
+		f.trigger.at++;
+		const retryItem = () => workItem.config.actions!.internalAct(old, { action: { kind: "retry" }, by: "person:" + current.uid });
+		if (retryFirst) {
+			const stale = await planDelivery(f);
+			assert.ok(stale.plan.kind === "file");
+			await retryItem();
+			await assert.rejects(siteActions.internalReserveIssue(site, stale.ref, stale.plan, "replacement"), /generation changed/);
+			assert.deepEqual(await file(f), { kind: "exists", itemId: made.itemId });
+		} else {
+			const replacement = await file(f);
+			assert.ok(replacement.kind === "filed" && replacement.state === "draft");
+			await assert.rejects(retryItem(), { code: "item_conflict" });
+			assert.equal(old.vars.stored!.item.state, "failed");
+		}
+		const live = [...actors.values()].map(a => a.vars.stored!).filter(s => s.meta.jira?.origin.jira.id === f.issue.id && s.item.state !== "failed");
+		assert.equal(live.length, 1);
+		await drain();
+	}
 	assert.ok(!github.requests.some(r => r.path.includes("/issues")), "Jira filing must not touch GitHub issues");
 	console.log("PASS Jira factory: trust, modes, placement, permissions, concurrent intake, quota, recovery and lifecycle writeback");
 } finally { for (const sqlite of databases) sqlite.close(); await github.stop(); }
