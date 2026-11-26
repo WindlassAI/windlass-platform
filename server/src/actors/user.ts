@@ -37,8 +37,6 @@ import {
 	type GithubRepository,
 	type GithubRepositoryList,
 	type GithubStatus,
-	type JiraProjectList,
-	type JiraStatus,
 	type LinearStatus,
 	type LinearTeamList,
 	isolationName,
@@ -1474,52 +1472,12 @@ export const user = actor({
 		},
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) => itemActions.internalGithubIntake(c, input, itemSession(c)),
 
-		jira: (c): Promise<JiraStatus> => {
-			requireUser(c);
-			return jira.jiraStatus(c);
-		},
-		jiraConnect: (c, input: { origin: string }) => {
-			requireUser(c);
-			const origin = c.conn.state?.origin;
-			if (origin && origin !== input?.origin) throw new UserError("The Jira connection origin does not match.", { code: "origin_not_allowed" });
-			return jira.beginJiraConnect(c, input);
-		},
-		jiraComplete: (c, ticket: string): Promise<JiraStatus> => {
-			requireUser(c);
-			return jira.finishJiraConnect(c, ticket, c.conn.state?.origin);
-		},
-		jiraSelectSite: (c, siteId: string): Promise<JiraStatus> => {
-			requireUser(c);
-			return jira.selectJiraSite(c, siteId);
-		},
-		jiraProjects: (c): Promise<JiraProjectList> => {
-			requireUser(c);
-			return jira.jiraProjects(c);
-		},
-		saveJiraMapping: (c, input: { siteId: string; projectId: string; repositoryId: GithubId }): Promise<JiraProjectList> => {
-			requireUser(c);
-			return jira.saveJiraMapping(c, input);
-		},
-		removeJiraMapping: (c, input: { siteId: string; projectId: string }): Promise<JiraProjectList> => {
-			requireUser(c);
-			return jira.removeJiraMapping(c, input);
-		},
-		disconnectJira: (c): Promise<JiraStatus> => {
-			requireUser(c);
-			return jira.disconnectJira(c);
-		},
-		internalJiraClaim: (c, nonce: string) => {
+		...jira.jiraSettingsActions,
+		internalJiraCallback: (c, nonce: string, origin: string, code: string | null, hash: string) => {
 			requireServiceFor(c, "call");
-			return jira.claimJiraState(c, nonce);
+			return jira.stageGrant(c, nonce, origin, code, hash);
 		},
-		internalJiraComplete: (c, nonce: string, sealed: string) => {
-			requireServiceFor(c, "call");
-			return jira.completeJiraConnection(c, nonce, sealed);
-		},
-		internalJiraHoldsProject: (c, siteId: string, projectId: string) => {
-			requireServiceFor(c, "call");
-			return jira.jiraHoldsProject(c, siteId, projectId);
-		},
+		internalJiraSite: c => { requireServiceFor(c, "call"); return jira.selectedSite(c); },
 		internalJiraRenew: (c) => {
 			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
 			return jira.renewJiraWebhooks(c);
@@ -1528,9 +1486,9 @@ export const user = actor({
 			requireServiceFor(c, "call");
 			return jira.writeJiraItem(c, input);
 		},
-		internalJiraDelivery: (c, delivery: JiraDelivery) => {
+		internalJiraDelivery: (c, delivery: JiraDelivery, digest: string) => {
 			requireServiceFor(c, "call");
-			return jira.fileJiraDelivery(c, delivery, filing => itemActions.internalJiraIntake(c, filing, itemSession(c)));
+			return jira.fileJiraDelivery(c, delivery, digest, filing => itemActions.internalTrackerIntake(c, filing, itemSession(c)));
 		},
 
 		linear: async (c): Promise<LinearStatus> => {
@@ -1575,7 +1533,7 @@ export const user = actor({
 		},
 		internalLinearDelivery: (c, delivery: import("../linear/webhook.js").LinearDelivery) => {
 			requireServiceFor(c, "call");
-			return fileLinearDelivery(c, delivery, filing => itemActions.internalLinearIntake(c, filing, itemSession(c)));
+			return fileLinearDelivery(c, delivery, filing => itemActions.internalTrackerIntake(c, filing, itemSession(c)));
 		},
 		createItem: (c, input: CreateItemInput): Promise<ItemSummary> => itemActions.createItem(c, input, itemSession(c)),
 		actOnItem: itemActions.actOnItem,

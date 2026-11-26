@@ -52,20 +52,13 @@ export function taskOfIssue(input: { title: string; body: string; number: number
 		by: `@${author.login}`, tracker: "GitHub", trusted: author.id === sender.id, note: input.note });
 }
 
-/** A tracker user's name as one short line: it goes into the task, the sources of a turn and the item's first log line. */
+/** A tracker user's name in a task or timeline entry. */
 export const trackerName = (name: unknown) => cut(plain(typeof name === "string" ? name : "").replace(/[\s;]+/g, " "), 60) || "an unknown author";
 
-export const linearName = trackerName;
-
-interface TrackerText { title: string; body: string; identifier: string; url: string; author: string }
-
-function taskOfTracker(tracker: "Jira" | "Linear", input: TrackerText, trusted: boolean) {
-	return taskOfText({ title: input.title, body: input.body, fallbackTitle: `Issue ${input.identifier}`, from: `From ${tracker} issue ${input.identifier}. ${input.url}`,
-		by: input.author, tracker, trusted, note: "" });
+export function taskOfTracker(input: { title: string; body: string; identifier: string; url: string; author: string; trusted: boolean }, tracker: "Linear" | "Jira") {
+	return taskOfText({ ...input, fallbackTitle: `Issue ${input.identifier}`, from: `From ${tracker} issue ${input.identifier}. ${input.url}`,
+		by: input.author, tracker, note: "" });
 }
-
-export const taskOfJira = (input: TrackerText) => taskOfTracker("Jira", input, false);
-export const taskOfLinear = (input: TrackerText & { trusted: boolean }) => taskOfTracker("Linear", input, input.trusted);
 
 export const refusals = {
 	connection: "Windlass couldn't start this issue because your GitHub account's Windlass connection does not include this repository's installation. Connect GitHub again in Windlass's Settings, then label the issue again.",
@@ -106,8 +99,13 @@ export interface IssueBinding {
 
 export type IssueFiling = { input: CreateItemInput; binding: IssueBinding };
 
-/** A generation is reserved before the item exists and reused on retry. */
-export interface TrackerBinding {
+/** The source issue and workspace for a Linear item's progress updates. */
+export interface LinearBinding {
+	origin: LinearIssueOrigin;
+	/** The Linear issue's own id, and its workspace and team: the same issue is one item at a time. */
+	workspaceId: string;
+	teamId: string;
+	/** Which filing of this issue it is (1, then 2 once the first ended and the issue qualified again). */
 	generation: number;
 	via: "label" | "assignment";
 	triggeredAt: number;
@@ -116,64 +114,56 @@ export interface TrackerBinding {
 	modeReason?: string | null;
 }
 
-export interface LinearBinding extends TrackerBinding {
-	workspaceId: string;
-	teamId: string;
-	origin: LinearIssueOrigin;
-}
-
-export interface JiraBinding extends TrackerBinding {
+export interface JiraBinding extends Omit<LinearBinding, "origin" | "teamId" | "workspaceId"> {
+	origin: JiraIssueOrigin;
 	siteId: string;
 	projectId: string;
-	origin: JiraIssueOrigin;
 }
-
-/** A tracker binding is separate from the repository where the PR is opened. */
 export type Intake = { github: IssueBinding; linear?: undefined; jira?: undefined }
 	| { linear: LinearBinding; github?: undefined; jira?: undefined }
 	| { jira: JiraBinding; github?: undefined; linear?: undefined };
 
-/** A verified trigger, the current issue snapshot and the repository it maps to. */
-export interface TrackerFiling {
+/** Verified Linear trigger, issue snapshot and repository mapping. */
+export interface LinearFiling {
 	issue: {
 		id: string;
+		/** "ENG-12". */
 		identifier: string;
 		url: string;
 		title: string;
+		/** Markdown, as Linear has it; empty for none. */
 		description: string;
+		/** Names of its labels. `windlass-quick` and `windlass:quick` select Quick. */
 		labels: string[];
+		/** Its creator; null for one Linear did not name (an integration, a deleted user): then the text is third-party. */
 		creator: { id: string; name: string } | null;
+		/** The issue is archived, cancelled or completed in Linear: not filed. */
 		closed?: boolean;
 	};
+	/** The mapped team and the owner's repository it files to. */
+	team: { id: string; workspaceId: string };
 	repository: { id: GithubId };
-	/** If qualification lapsed, only finish an interrupted filing. */
+	/** The Linear user who connected the workspace. Their own issues are the owner's own text. */
+	owner: { linearUserId: string };
+	/**
+	 * What qualified it: the label added or the assignment to the Windlass app user, by whom and when. `lapsed`: the issue, as
+	 * read now, no longer has it. Only a filing that was interrupted is finished then.
+	 */
 	trigger: { via: "label" | "assignment"; at: number; sender: { id: string; name: string }; lapsed?: true };
 }
 
-export interface LinearFiling extends TrackerFiling {
-	team: { id: string; workspaceId: string };
-	owner: { linearUserId: string };
-}
-
-export interface JiraFiling extends TrackerFiling {
-	issue: TrackerFiling["issue"] & { issueType: string };
-	project: { id: string; siteId: string };
-}
-
+/** Outcome of filing a verified tracker issue. */
 export type TrackerFiled =
 	| { kind: "filed"; itemId: string; state: ItemState }
 	| { kind: "exists"; itemId: string }
 	| { kind: "ignored"; why: string }
 	| { kind: "refused"; reason: string; dailyCap?: true };
 
-export type LinearFiled = TrackerFiled;
-export type JiraFiled = TrackerFiled;
-
-/** The writer renders these stored links; it deduplicates by item ID and milestone key. */
-export type JiraCommentAction =
-	| { key: "filed"; itemUrl: string }
-	| { key: "opened"; itemUrl: string; pr: string }
-	| { key: "done" | "failed" | "cancelled"; itemUrl: string; pr: string | null };
+export interface JiraFiling extends Omit<LinearFiling, "team" | "owner"> {
+	issue: LinearFiling["issue"] & { issueType: string };
+	project: { id: string; siteId: string };
+}
+export type JiraCommentAction = { key: "filed" | "opened" | "done" | "failed" | "cancelled"; itemUrl: string; pr?: string | null };
 
 export type IntakeTrigger = { repositoryId: GithubId; installationId: GithubId; issue: number; senderId: GithubId } & ({ via: "label"; label?: string } | { via: "mention"; commentId: string });
 

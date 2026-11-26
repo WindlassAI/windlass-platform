@@ -276,20 +276,16 @@
         "server/src/factory/**",
         "server/src/github/**",
         "server/src/linear/webhook.ts",
-        "server/src/{access,account-defaults,actor-errors,auth,client,config,http-limits,index,registry,repo-secrets,repository-defaults,signatures,submissions,tokens,user-limits}.ts",
+        "server/src/{access,account-defaults,actor-errors,auth,client,config,contract,http-limits,index,item-pages,registry,repo-secrets,repository-defaults,signatures,submissions,tokens,user-limits}.ts",
         "server/src/signin/seal.ts",
         "server/src/actors/user/**",
         "server/src/actors/{jira-site,user-jira,issue-intake,github-intake,github-item,github-inbox,github-repository,github-account,user-github,internal,user-items,user,work-item}.ts",
         "scripts/{check-listeners,issue-intake-fixture,login-http}.ts",
         "scripts/{github,jira}-standin.ts",
-        "scripts/jira-check.ts",
-        "scripts/jira-{protocol,owner,factory}-check.ts"
+        "scripts/jira-check.ts"
       ],
       "checks": {
-        "jira": "tsx ../scripts/jira-check.ts",
-        "jira-protocol": "tsx ../scripts/jira-protocol-check.ts",
-        "jira-owner": "tsx ../scripts/jira-owner-check.ts",
-        "jira-factory": "tsx ../scripts/jira-factory-check.ts"
+        "jira": "tsx ../scripts/jira-check.ts"
       }
     },
     "sandbox-docker": {

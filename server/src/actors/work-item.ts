@@ -152,7 +152,7 @@ type IssueCheck = IssueChanges & { kind: "check_issue"; key: "pending"; at: numb
 const ISSUE_CHANGE_WINDOW_MS = 15_000;
 
 type FeedbackEffect = { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string } | { kind: "feedback_comment"; key: string; run: number; who: string };
-type JiraEffect = { kind: "jira_comment"; key: JiraCommentAction["key"]; action: JiraCommentAction };
+type JiraEffect = { kind: "jira_comment" } & JiraCommentAction;
 /** `register`'s `repo`: a cross-repo feature's other repository, by alias, registered with that repository's directory. */
 type Effect = JiraEffect | ({ kind: "linear_write" } & LinearWrite) | BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
 type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
@@ -465,22 +465,6 @@ async function activateJiraIssue(c: Pick<Ctx, "client">, uid: string, item: stri
 		throw new UserError("A newer item has been filed for this Jira issue.", { code: "item_conflict" });
 }
 
-/** Each Jira milestone has one outbox key and one receipt for the lifetime of the item. */
-function jiraComment(action: JiraCommentAction): JiraEffect {
-	return { kind: "jira_comment", key: action.key, action };
-}
-
-export function jiraEffects(before: FactoryItem, next: FactoryItem): JiraEffect[] {
-	const effects: JiraEffect[] = [];
-	const url = itemUrl(next.id);
-	const pr = next.pr?.url ?? null;
-	if (!before.pr && pr) effects.push(jiraComment({ key: "opened", itemUrl: url, pr }));
-	if (before.state !== next.state && (next.state === "done" || next.state === "failed" || next.state === "cancelled")) {
-		effects.push(jiraComment({ key: next.state, itemUrl: url, pr }));
-	}
-	return effects;
-}
-
 type CheckReceipt = { kind: "check_recorded"; at: number; effect: VerifiedCheckEffect; id: string | null; installationId: GithubId };
 
 /**
@@ -556,7 +540,12 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 		if (before.state === "failed" && !ENDED.has(next.state)) effects.push({ kind: "register_issue", key: String(next.revision) });
 	}
 	if (stored.meta.linear) effects.push(...linearEffects(before, next, !!handoff));
-	if (stored.meta.jira) effects.push(...jiraEffects(before, next));
+	if (stored.meta.jira) {
+		const pr = next.pr?.url, url = itemUrl(next.id);
+		if (!before.pr && pr) effects.push({ kind: "jira_comment", key: "opened", itemUrl: url, pr });
+		if (before.state !== next.state && (next.state === "done" || next.state === "failed" || next.state === "cancelled"))
+			effects.push({ kind: "jira_comment", key: next.state, itemUrl: url, pr });
+	}
 	const sibling = fact.kind === "feature_ready" && fact.repo && crossRepo(next) && repoOf(next, fact.repo) !== next.repos![0] ? fact.repo : null;
 	if (sibling && fact.kind === "feature_ready") effects.push({ kind: "register", key: fact.key + "/" + sibling, pr: fact.pr.number, head: fact.head, repo: sibling });
 	else if (fact.kind === "feature_ready" || (fact.kind === "published" && fact.pr)) effects.push({ kind: "register", key: fact.key, pr: fact.pr!.number, head: fact.head });
@@ -1648,7 +1637,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		let posted: boolean;
 		if (effect.kind === "jira_comment") {
 			const { siteId, projectId, origin } = meta.jira!;
-			posted = await owner.internalJiraWrite({ siteId, projectId, issueId: origin.jira.id, itemId: item.id, action: effect.action });
+			posted = await owner.internalJiraWrite({ siteId, projectId, issueId: origin.jira.id, itemId: item.id, action: effect });
 		} else {
 			const { workspaceId, teamId, origin } = meta.linear!;
 			posted = await owner.internalLinearWrite({ workspaceId, teamId, issueId: origin.linear.id, itemId: item.id, write: effect });
@@ -2197,7 +2186,7 @@ export const workItem = actor({
 			}
 			if (input.meta.jira) {
 				await activateJiraIssue(c, input.meta.uid, item.id, input.meta.jira);
-				effects.push(jiraComment({ key: "filed", itemUrl: itemUrl(item.id) }), ...jiraEffects(input.item, item));
+				effects.push({ kind: "jira_comment", key: "filed", itemUrl: itemUrl(item.id) });
 			}
 			await c.db.transaction(async (tx) => {
 				if (input.meta.github) {

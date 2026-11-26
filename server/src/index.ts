@@ -11,7 +11,6 @@
  * See config.ts for the variables.
  */
 
-import { AsyncLocalStorage } from "node:async_hooks";
 import { debuglog } from "node:util";
 import { createClient, type Registry } from "./client.js";
 import { serviceParams } from "./auth.js";
@@ -31,9 +30,7 @@ import { DEFAULT_ENDPOINT, PLATFORM_CONNECTION_PATH, PLATFORM_INFO_PATH } from "
 import { webhookRoute } from "./github/webhook.js";
 import { githubApp } from "./github/app.js";
 import { GITHUB_CALLBACK_PATH, githubCallbackResponse } from "./github/connect.js";
-import { jiraOwnerCallbackResponse } from "./actors/user-jira.js";
-import { dispatchJiraWebhook, resolveJiraWebhook } from "./actors/jira-site.js";
-import { JIRA_CALLBACK_PATH } from "./jira/connect.js";
+import { JIRA_CALLBACK_PATH, jiraCallbackResponse } from "./jira/connect.js";
 import { JIRA_WEBHOOK_PATH, jiraWebhookRoute } from "./jira/webhook.js";
 import { actorLinearConnectStore, dispatchLinearDelivery } from "./actors/user-linear.js";
 import { LINEAR_CALLBACK_PATH, linearCallbackResponse } from "./linear/connect.js";
@@ -182,21 +179,6 @@ const web = config.webDir ? webFiles(config.webDir, {
 }) : null;
 if (config.webDir) console.log(`[wlp] web app: served from ${config.webDir}`);
 
-// Keep the verified registration with this dispatch, even when two callbacks race
-// or one outlives the HTTP deadline. The refusal budget is shared across requests.
-const jiraRegistration = new AsyncLocalStorage<{ key?: string }>();
-const jiraWebhooks = jiraWebhookRoute({
-	resolve: async key => {
-		const binding = await resolveJiraWebhook(key);
-		if (binding) jiraRegistration.getStore()!.key = key;
-		return binding;
-	},
-	dispatch: delivery => {
-		const key = jiraRegistration.getStore()?.key;
-		if (!key) throw new Error("Missing verified Jira registration");
-		return dispatchJiraWebhook(delivery, key);
-	},
-});
 const linearWebhooks = linearWebhookRoute({ dispatch: dispatchLinearDelivery });
 
 async function route(request: Request): Promise<Response> {
@@ -217,10 +199,8 @@ async function route(request: Request): Promise<Response> {
 	// Linear's: where its authorization sends the owner's browser back to, and its signed webhook deliveries (docs: factory.md). Not found where Linear is off.
 	if (pathname === LINEAR_CALLBACK_PATH) return linearCallbackResponse(request, { store: actorLinearConnectStore });
 	if (pathname === LINEAR_WEBHOOK_PATH) return (await linearWebhooks(request))!;
-	if (pathname === JIRA_CALLBACK_PATH) return jiraOwnerCallbackResponse(request);
-	if (pathname === JIRA_WEBHOOK_PATH || pathname.startsWith(`${JIRA_WEBHOOK_PATH}/`)) {
-		return (await jiraRegistration.run({}, () => jiraWebhooks(request)))!;
-	}
+	if (pathname === JIRA_CALLBACK_PATH) return jiraCallbackResponse(request);
+	if (pathname === JIRA_WEBHOOK_PATH || pathname.startsWith(`${JIRA_WEBHOOK_PATH}/`)) return jiraWebhookRoute(request);
 	// The payment provider's webhooks (docs/billing.md); not found where billing is off.
 	if (pathname === BILLING_WEBHOOK_PATH) return billingWebhookRoute(request);
 	// For a load balancer or the host's health check: the node's own view of its connection to the engine.

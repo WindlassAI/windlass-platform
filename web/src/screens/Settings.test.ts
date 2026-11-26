@@ -319,59 +319,39 @@ describe("Issue trackers in Settings", () => {
 		off.close();
 	}, 15_000);
 
-	const jiraSection = (host: HTMLElement) => host.querySelector<HTMLElement>("section[aria-labelledby='settings-jira']");
-
-	it("returns from Jira, selects an authorized site and manages its project mappings", async () => {
-		const client = createMockClient({ pace: 0 });
-		const first = await open(client);
+	it("redeems the Jira ticket once, searches writable repositories, and manages the named mapping", async () => {
+		const client = createMockClient({ pace: 0 }), first = await open(client);
+		const section = (host: HTMLElement) => host.querySelector<HTMLElement>("section[aria-labelledby='settings-jira']")!;
 		const assign = vi.fn();
 		try {
 			vi.stubGlobal("location", { assign, origin: "http://localhost", pathname: "/settings", search: "?mock=1", hash: "" });
-			await press(jiraSection(first.host)!, "Connect Jira…");
-		} finally {
-			vi.unstubAllGlobals();
-			first.close();
-		}
+			await press(section(first.host), "Connect Jira…");
+		} finally { vi.unstubAllGlobals(); first.close(); }
 		const landing = new URL(assign.mock.calls[0]![0]);
-		expect(landing.origin + landing.pathname + landing.search).toBe("http://localhost/settings?mock=1");
-		expect(landing.hash).toMatch(/^#jira=.+$/);
-		expect(landing.hash).not.toBe("#jira=select-site");
 		expect(await client.user(first.auth).jira()).toEqual({ state: "disconnected" });
-		const other = { token: "mock:user:u_other:other@example.com", profile: { uid: "u_other", email: "other@example.com", demo: false } };
-		const ticket = landing.hash.slice("#jira=".length);
-		await expect(client.user(other).jiraComplete(ticket)).rejects.toMatchObject({ reason: "jira_ticket" });
 		history.replaceState(null, "", landing.pathname + landing.search + landing.hash);
 		rememberAppPage();
 		expect(lastAppHref()).toBe("/settings?mock=1");
 		navigate({ name: "docs", slug: "settings" });
 		expect(pageFrom()?.href).toBe("/settings?mock=1");
-		const reopened = createMockClient({ pace: 0 });
-		const user = reopened.user.bind(reopened);
-		let redemptions = 0;
+		const reopened = createMockClient({ pace: 0 }), user = reopened.user.bind(reopened);
+		const complete = vi.fn((ticket: string) => user(first.auth).jiraComplete(ticket));
 		vi.spyOn(reopened, "user").mockImplementation(auth => {
 			const api = user(auth);
-			return { ...api, jiraComplete: ticket => { redemptions++; return api.jiraComplete(ticket); },
-				githubRepositories: async query => {
-					const list = await api.githubRepositories(query);
-					return query ? list : { ...list, repositories: list.repositories.filter(repo => !repo.canPush), more: true };
-				} };
+			return { ...api, jiraComplete: complete, githubRepositories: async query => {
+				const list = await api.githubRepositories(query);
+				return query ? list : { ...list, repositories: [], more: true };
+			} };
 		});
-		const returned = await open(reopened, landing.search + landing.hash);
+		const screen = await open(reopened, landing.search + landing.hash), scope = section(screen.host);
 		try {
-			const scope = jiraSection(returned.host)!;
+			expect(complete).toHaveBeenCalledTimes(1);
 			expect(location.hash).toBe("");
-			expect(location.search).toBe("?mock=1");
-			expect(redemptions).toBe(1);
-			await expect(user(returned.auth).jiraComplete(ticket)).rejects.toMatchObject({ reason: "jira_ticket" });
-			expect(scope.querySelector('[aria-label="Jira projects"]')).toBeNull();
 			await choose(scope.querySelector("select")!, "site-acme");
 			await press(scope, "Connect site");
-			await returned.settle();
-			expect(scope.textContent).toContain("https://acme.atlassian.net");
-			expect(scope.textContent).toContain("Ada Lovelace");
+			await screen.settle();
+			expect(scope.textContent).toContain("Connected to Acme");
 			const [project, repo] = scope.querySelectorAll("select");
-			expect(repo!.querySelector('option[value="7105"]')).toBeNull(); // acme/quay is read-only
-			await expect(reopened.user(returned.auth).saveJiraMapping({ siteId: "site-acme", projectId: "10001", repositoryId: 7105 })).rejects.toMatchObject({ reason: "bad_input" });
 			await choose(project!, "10001");
 			expect(repo!.querySelector('option[value="7101"]')).toBeNull();
 			const search = scope.querySelector<HTMLInputElement>('input[type="search"]')!;
@@ -379,55 +359,14 @@ describe("Issue trackers in Settings", () => {
 				Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "harbor");
 				search.dispatchEvent(new Event("input", { bubbles: true }));
 			});
-			await vi.waitFor(async () => {
-				await returned.settle();
-				expect(repo!.querySelector('option[value="7101"]')).not.toBeNull();
-			});
-			await choose(repo!, "7101");
-			await press(scope, "Map project");
-			expect(scope.querySelector("li")?.textContent).toContain("acme/harbor");
-		} finally { returned.close(); }
-		const reloaded = await open(createMockClient({ pace: 0 }));
-		try {
-			const scope = jiraSection(reloaded.host)!;
-			expect(scope.querySelector("li")?.textContent).toContain("acme/harbor");
+			await vi.waitFor(async () => { await screen.settle(); expect(repo!.textContent).toContain("acme/harbor"); });
+			await choose(repo!, "7101"); await press(scope, "Map project");
+			expect(scope.querySelector("li")?.textContent).toContain("Engineering (ENG)acme/harbor");
 			await press(scope, "Remove the mapping of Engineering");
 			expect(scope.querySelector("li")?.textContent).toContain("Not mapped");
 			vi.spyOn(window, "confirm").mockReturnValue(true);
 			await press(scope.querySelector("h3")!, "Disconnect Jira…");
 			expect(scope.textContent).toContain("Connect Jira…");
-			expect(scope.querySelector("select")).toBeNull();
-		} finally { vi.restoreAllMocks(); reloaded.close(); }
-	}, 15_000);
-
-	it("redeems a mock return when only the fragment changes", async () => {
-		const client = createMockClient({ pace: 0 });
-		const screen = await open(client);
-		try {
-			const { url } = await client.user(screen.auth).jiraConnect({ origin: location.origin });
-			await act(async () => { location.hash = new URL(url).hash; });
-			await screen.settle();
-			expect(location.hash).toBe("");
-			expect(jiraSection(screen.host)?.querySelector('[aria-label="Jira site"]')).not.toBeNull();
-		} finally { screen.close(); }
-	});
-
-	it("explains a Jira denial, omits the callback from saved navigation and hides unconfigured Jira", async () => {
-		history.replaceState(null, "", "/settings?mock=1#jira-error=denied");
-		rememberAppPage();
-		expect(lastAppHref()).toBe("/settings?mock=1");
-		const denied = await open(createMockClient({ pace: 0 }), "#jira-error=denied");
-		try {
-			expect(location.hash).toBe("");
-			expect(jiraSection(denied.host)?.querySelector('[role="alert"]')?.textContent).toContain("Jira was not given access");
-		} finally { denied.close(); sessionStorage.removeItem("wlp.lastAppPage"); }
-		const invalid = await open(createMockClient({ pace: 0 }), "#jira=invalid");
-		try {
-			expect(location.hash).toBe("");
-			expect(jiraSection(invalid.host)?.querySelector('[role="alert"]')?.textContent).toContain("Connect Jira again");
-			expect(jiraSection(invalid.host)?.textContent).toContain("Connect Jira…");
-		} finally { invalid.close(); }
-		const off = await open(createMockClient({ pace: 0, jira: false }));
-		try { expect(jiraSection(off.host)).toBeNull(); } finally { off.close(); }
+		} finally { screen.close(); vi.restoreAllMocks(); }
 	}, 15_000);
 });

@@ -123,13 +123,11 @@ Removing a label, unassigning, editing or closing the Linear issue leaves the it
 
 ### From a Jira issue
 
-If Jira is missing from Settings, ask the operator to enable work items (`WLP_ITEMS=1`) and configure a Jira Cloud OAuth app as described in the [configuration reference](https://github.com/WindlassAI/windlass-platform/blob/main/docs/configuration.md#jira-cloud). Windlass registers and renews its own webhooks; there is no webhook to create in Jira.
+Connect Jira Cloud and map a project to a writable GitHub repository in [Settings](/docs/settings#jira-cloud). If Jira is missing, ask the operator to enable work items and [configure the Jira app](https://github.com/WindlassAI/windlass-platform/blob/main/docs/configuration.md#jira-cloud).
 
-In **Settings**, connect GitHub if needed, then connect Jira and approve access in Atlassian. Back in Settings, select the Jira Cloud site you want to use. Map a project on that site to a repository you can write to through your GitHub connection. Connecting a site alone does not tell Windlass where to file its issues.
+To try it, add `windlass` to an open issue or assign it to the account that connected Jira. Creating an issue with either also files a draft. Use `windlass-quick` for Quick mode. A qualifying Bug or issue labelled `bug` also uses Quick. Windlass quotes the issue text for you to review before starting the draft.
 
-In a mapped project, add `windlass` to an open issue to file a **Plan first** draft, or `windlass-quick` for a **Quick** draft. Assigning the issue to the Jira account that authorized the connection also triggers filing. Use a dedicated account at authorization if you want assignments to go to Windlass rather than to you. Creating an issue with the label or assignment qualifies; editing its description later does not. On a qualifying issue, the Bug issue type or a `bug` label selects Quick. Neither files an issue by itself.
-
-Even if you wrote the issue, Windlass quotes the Jira text and waits for you to review and start the draft. Use the issue key on the item to return to Jira. Repeated triggers reuse the active item. After it ends, a new qualifying event can file another. Look for a comment linking to the draft, another linking to the pull request when it opens, and a final comment reporting the outcome. A failure is reported even if no pull request opened. Windlass does not change the Jira workflow status. Remove the project mapping or disconnect Jira in Settings to stop new filings; existing items stay.
+Jira receives a comment linking to the draft, another when the PR opens, and a final outcome with the PR link when available. The issue keeps its Jira status. Only one item is active per site and issue, even after a project changes owners. A fresh trigger after it ends can file another.
 
 ### From the API
 

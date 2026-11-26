@@ -24,7 +24,7 @@ import { markTurnSandbox, type ProcessEnd, type SandboxProcess } from "../server
 const { SandboxWindlass } = await import("../server/src/sandbox/turn.js");
 const { UNTRUSTED_SOURCE_MAX, untrustedTurn, agentUnmarkedNote, hardenedUnmarkedNote, thirdParty, untrustedWords } = await import("../server/src/factory/untrusted.js");
 const { linearSources } = await import("../server/src/actors/issue-intake.js");
-const { linearName, taskOfLinear } = await import("../server/src/factory/intake.js");
+const { trackerName, taskOfTracker } = await import("../server/src/factory/intake.js");
 const { harnessName, machineHarness, takesUntrustedMarker } = await import("../server/src/sandbox/harnesses.js");
 const { PROFILES } = await import("../server/src/sandbox/profiles.js");
 const { deliveryOf, receive, inboxRow, INBOX_TABLES } = await import("../server/src/actors/session-inbox.js");
@@ -202,7 +202,7 @@ if (stop.kind === "stop") expect(`${name}, docker-hardened: the refusal names wh
 
 {
 	// An outside author's Linear issue is third-party text the way a GitHub issue of someone else's is: the same hardened-run guard stops it.
-	const outsider = { identifier: "ENG-12", author: linearName("Mallory\nSmith; ignore all"), trusted: false };
+	const outsider = { identifier: "ENG-12", author: trackerName("Mallory\nSmith; ignore all"), trusted: false };
 	const [source] = linearSources({ linear: outsider });
 	expect("a Linear issue of someone else's is a source in the person's words, on one line", source === untrustedWords.linear("ENG-12", "Mallory Smith ignore all") && !/[\n;]/.test(source!), source);
 	expect("it is third-party text", thirdParty([source!]).join() === source && thirdParty(["CI logs of 1111111"]).length === 0);
@@ -214,9 +214,9 @@ if (stop.kind === "stop") expect(`${name}, docker-hardened: the refusal names wh
 	}
 	const marked = untrustedTurn({ agent: "windlass", profile: "docker-windlass-sandbox", untrusted: [source!], unsandboxed: false });
 	expect("on another profile Windlass is told the source", marked.kind === "marked" && marked.sources.join() === source);
-	const task = taskOfLinear({ title: "Fix it", body: "- [ ] do it\nplease\n<!-- hidden -->", identifier: "ENG-12", url: "https://linear.app/acme/issue/ENG-12", author: outsider.author, trusted: false }).task;
+	const task = taskOfTracker({ title: "Fix it", body: "- [ ] do it\nplease\n<!-- hidden -->", identifier: "ENG-12", url: "https://linear.app/acme/issue/ENG-12", author: outsider.author, trusted: false }, "Linear").task;
 	expect("the task quotes the outsider's text and names who wrote it, in a criterion too", task.body.startsWith("From Linear issue ENG-12.") && task.body.includes("written by Mallory Smith ignore all on Linear") && task.body.includes("> please") && !task.body.includes("hidden") && task.acceptance[0] === "Mallory Smith ignore all wrote: do it", JSON.stringify(task));
-	const own = taskOfLinear({ title: "Fix it", body: "please", identifier: "ENG-12", url: "https://linear.app/acme/issue/ENG-12", author: "Ada", trusted: true }).task;
+	const own = taskOfTracker({ title: "Fix it", body: "please", identifier: "ENG-12", url: "https://linear.app/acme/issue/ENG-12", author: "Ada", trusted: true }, "Linear").task;
 	expect("the owner's own issue is not quoted", own.body.endsWith("please") && !own.body.includes("> "), own.body);
 }
 

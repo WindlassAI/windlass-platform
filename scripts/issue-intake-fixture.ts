@@ -9,7 +9,6 @@ export async function readProvenance(c: ItemContext) {
 	return {
 		github: meta.github ?? null,
 		linear: meta.linear ?? null,
-		jira: meta.jira ?? null,
 		untrusted: item.untrusted ?? null,
 		bindingRows: binding?.n ?? 0,
 		issueEffects: (await c.db.execute("SELECT 1 FROM effects WHERE id LIKE '%issue%'")).length,

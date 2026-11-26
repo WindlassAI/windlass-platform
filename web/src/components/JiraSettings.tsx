@@ -4,14 +4,11 @@ import { useHash } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useRepositorySearch } from "./RepositoryMenu";
 
-function callbackError(reason: string | undefined) {
-	switch (reason) {
-		case "denied": return "Jira was not given access. Connect again when you’re ready.";
-		case "scope": return "Jira did not grant the required permissions. Connect again.";
-		case "sites": return "No Jira sites granted all the required permissions. Check your site access and connect again.";
-		default: return "Jira could not be connected. Try again.";
-	}
-}
+const callbackErrors: Record<string, string> = {
+	denied: "Jira was not given access. Connect again when you’re ready.",
+	scope: "Jira did not grant the required permissions. Connect again.",
+	sites: "No Jira sites granted all the required permissions. Check your site access and connect again.",
+};
 
 export function JiraSettings() {
 	const { client, explain } = useApp();
@@ -31,28 +28,16 @@ export function JiraSettings() {
 		if (back) {
 			history.replaceState(history.state, "", location.pathname + location.search);
 			document.getElementById("settings-jira")?.scrollIntoView?.({ block: "center" });
-			if (back[1] === "jira-error") setError(callbackError(back[2]));
+			if (back[1] === "jira-error") setError(callbackErrors[back[2]!] ?? "Jira could not be connected. Try again.");
 			else redemption.current = { auth, client, result: api.jiraComplete(back[2]!) };
 		}
 		const pending = redemption.current;
-		void (async () => {
-			try {
-				if (pending?.auth === auth && pending.client === client) {
-					try {
-						const next = await pending.result;
-						if (live) setStatus(next);
-						return;
-					} catch (failure) {
-						if (!live) return;
-						setError(explain(failure));
-					} finally {
-						if (live) redemption.current = null;
-					}
-				}
-				const next = await api.jira();
-				if (live) setStatus(next);
-			} catch (failure) { if (live) setError(explain(failure)); }
-		})();
+		const result = pending?.auth === auth && pending.client === client ? pending.result.catch(failure => {
+			if (live) setError(explain(failure));
+			return api.jira();
+		}) : api.jira();
+		void result.then(next => { if (live) { setStatus(next); redemption.current = null; } },
+			failure => { if (live) setError(explain(failure)); });
 		return () => { live = false; };
 	}, [client, auth, explain, hash]);
 
@@ -118,7 +103,7 @@ function JiraProjects({ site, busy, run }: { site: JiraSite; busy: boolean; run:
 	const repository = repositories.find(repo => String(repo.id) === repositoryId);
 	const api = client.user(auth);
 	return <>
-		<details className="field-note"><summary>How filing works</summary>In a mapped project, add <code>windlass</code> or assign the issue to the Jira account shown above to file a draft. Use <code>windlass-quick</code> to file in Quick mode. A qualifying issue with the Bug type or a <code>bug</code> label also uses Quick. Review and start drafts in Windlass.</details>
+		<details className="field-note"><summary>How filing works</summary>Add <code>windlass</code> or assign the issue to the Jira account shown above to file a draft. Use <code>windlass-quick</code> to file in Quick mode. Qualifying bugs also use Quick.</details>
 		{projectError ? <p className="callout callout-warn" role="alert">{projectError}</p> : projects === null ? <p className="field-note" aria-busy="true">Loading Jira projects…</p> : projects.length === 0 ? <p>No Jira projects found on this site.</p> :
 			<ul className="settings-list" aria-label="Jira projects">{projects.map(project => <li key={project.id} className="usage-kept-row">
 				<div className="usage-kept-main"><span className="usage-kept-title">{project.name} ({project.key})</span>

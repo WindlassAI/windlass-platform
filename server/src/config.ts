@@ -234,13 +234,6 @@
  *   WLP_LINEAR_API_URL         Linear's API (default https://api.linear.app); the checks point it at a stand-in
  *   WLP_LINEAR_URL             Linear itself, where the owner authorizes (default https://linear.app)
  *
- * Jira Cloud 3LO (`jiraConfig`). Both client credentials are required.
- *   WLP_JIRA_CLIENT_ID         deployment's Atlassian developer console app
- *   WLP_JIRA_CLIENT_SECRET     exchanges codes, refreshes tokens and verifies dynamic webhook JWTs
- *   WLP_JIRA_REDIRECT_URL      registered callback (default: public URL + /jira/callback)
- *   WLP_JIRA_AUTH_URL          auth.atlassian.com by default; override for the local stand-in
- *   WLP_JIRA_API_URL           api.atlassian.com by default; override for the local stand-in
- *
  * Machines of the users' own (Plans/2026-11-19 "bring your own computer"). A user pairs a Linux
  * machine with Docker, and the runner on it dials out to the platform and runs the sandboxes of the
  * sessions launched there. The same on every server.
@@ -644,17 +637,9 @@ export function linearClientSecret(env: NodeJS.ProcessEnv = process.env): string
 	return secret === "" ? null : secret;
 }
 
-/** Jira Cloud 3LO. Only the public settings may be returned to a caller. */
-export interface JiraConfig {
-	app: { clientId: string; authUrl: string; apiUrl: string; redirectUrl: string } | null;
-	missing: string[];
-}
-
-export function jiraClientSecret(env: NodeJS.ProcessEnv = process.env): string | null {
-	return env.WLP_JIRA_CLIENT_SECRET?.trim() || null;
-}
-
-export function jiraConfig(env: NodeJS.ProcessEnv = process.env): JiraConfig {
+/** Keep the client secret out of enumerable configuration. */
+export const jiraClientSecret = () => process.env.WLP_JIRA_CLIENT_SECRET?.trim();
+export function jiraConfig(env: NodeJS.ProcessEnv = process.env) {
 	const required = ["WLP_JIRA_CLIENT_ID", "WLP_JIRA_CLIENT_SECRET"];
 	const missing = required.filter(name => !env[name]?.trim());
 	if (missing.length) return { app: null, missing: missing.length === required.length ? [] : missing };

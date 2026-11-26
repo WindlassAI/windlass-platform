@@ -33,8 +33,8 @@ import { harnessName, itemHarnessProblem, itemProfiles, knownHarness } from "../
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch, subtaskBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
-import { fileJiraIssue, fileLinearIssue, inIntakeQueue, INTAKE_SOURCES, intakeScope, linearSources, type SiteJiraFiling } from "./issue-intake.js";
-import type { Intake, IntakeTrigger, JiraFiled, LinearFiled, LinearFiling } from "../factory/intake.js";
+import { fileTrackerIssue, inIntakeQueue, INTAKE_SOURCES, intakeScope, linearSources, type SiteJiraFiling } from "./issue-intake.js";
+import type { Intake, IntakeTrigger, TrackerFiled, LinearFiling } from "../factory/intake.js";
 import { GithubProblem, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { githubApp } from "../github/app.js";
 import { refHead } from "../github/feature.js";
@@ -1164,19 +1164,10 @@ export const itemActions = {
 			key => githubItemId(c.key[0]!, key),
 			(profile, filing) => fileItem(c, profile, filing.input, "github", makeSession, { github: filing.binding })));
 	},
-	/**
-	 * Files a Linear issue the platform has validated, on the repository its team is mapped to (`fileLinearIssue`): in the queue, under the cap and
-	 * through the reservations of `internalGithubIntake`, and as an item with its Linear provenance and no GitHub issue. The answer says what happened.
-	 */
-	internalLinearIntake(c: ItemsCtx, filing: LinearFiling, makeSession: MakeSession): Promise<LinearFiled> {
+	internalTrackerIntake(c: ItemsCtx, filing: LinearFiling | SiteJiraFiling, makeSession: MakeSession): Promise<TrackerFiled> {
 		requireServiceFor(c, "call");
-		return inIntakeQueue(c, () => fileLinearIssue(c, filing,
-			(profile, made) => fileItem(c, profile, made.input, "linear", makeSession, { linear: made.binding })));
-	},
-	internalJiraIntake(c: ItemsCtx, filing: SiteJiraFiling, makeSession: MakeSession): Promise<JiraFiled> {
-		requireServiceFor(c, "call");
-		return inIntakeQueue(c, () => fileJiraIssue(c, filing,
-			(profile, made) => fileItem(c, profile, made.input, "jira", makeSession, { jira: made.binding }), githubItemId));
+		return inIntakeQueue(c, () => fileTrackerIssue(c, filing, githubItemId,
+			(profile, input, intake) => fileItem(c, profile, input, intake.jira ? "jira" : "linear", makeSession, intake)));
 	},
 	internalReserveAttachment(c: ItemsCtx, input: Reservation) {
 		requireService(c);
