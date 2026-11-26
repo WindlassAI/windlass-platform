@@ -1,5 +1,7 @@
 /** Shared wire types and runtime constants for the actors, runner and web app. Keep all runtime imports browser-safe. */
 
+import type { SlackSettingsActions } from "./contract/slack.js";
+export type * from "./contract/slack.js";
 import type { UsageNumbers, BillingPeriod, PlanInfo, BillingView, UsageView } from "./contract/usage.js";
 export type { UsageNumbers, HostedMonth, PlanId, BillingPeriod, PlanInfo, BillingView, UsageSession, UsageDay, KeptSandbox, UsagePrice, UsageView } from "./contract/usage.js";
 import type { HostedSize, HostedSizeOption } from "./contract/hosted-sizes.js";
@@ -1596,7 +1598,7 @@ export interface ItemAgent {
 }
 
 /** How a work item was filed. "github" and "linear" are the two intakes that file from an issue (factory/intake.ts). */
-export type ItemSource = "web" | "api" | "github" | "linear";
+export type ItemSource = "web" | "api" | "github" | "linear" | "slack";
 
 /** The PR closes this issue in the item's repository. The sender added the label or wrote the command. */
 export interface GithubIssueOrigin {
@@ -1987,7 +1989,7 @@ export interface ApiToken {
 	usedAt: number | null;
 }
 
-export interface UserActions {
+export interface UserActions extends SlackSettingsActions {
 	signOutEverywhere(options?: { revokeApiTokens: boolean }): Promise<void>;
 	me(): Promise<UserProfile>;
 	linkedLogins(): Promise<LinkedLogin[]>;

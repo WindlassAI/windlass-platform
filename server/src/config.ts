@@ -234,6 +234,13 @@
  *   WLP_LINEAR_API_URL         Linear's API (default https://api.linear.app); the checks point it at a stand-in
  *   WLP_LINEAR_URL             Linear itself, where the owner authorizes (default https://linear.app)
  *
+ * Slack (read by `slackConfig` only on the server). All three credentials are required:
+ *   WLP_SLACK_CLIENT_ID, WLP_SLACK_CLIENT_SECRET   workspace bot OAuth v2 client
+ *   WLP_SLACK_SIGNING_SECRET   key for the exact event/command request bytes
+ *   WLP_SLACK_REDIRECT_URL     registered callback (default <public URL>/slack/callback)
+ *   WLP_SLACK_AUTHORIZE_URL    authorization page (default https://slack.com/oauth/v2/authorize)
+ *   WLP_SLACK_API_URL          Web API root (default https://slack.com/api)
+ *
  * Machines of the users' own (Plans/2026-11-19 "bring your own computer"). A user pairs a Linux
  * machine with Docker, and the runner on it dials out to the platform and runs the sandboxes of the
  * sessions launched there. The same on every server.
@@ -635,6 +642,44 @@ export function linearConfig(env: NodeJS.ProcessEnv = process.env): LinearConfig
 export function linearClientSecret(env: NodeJS.ProcessEnv = process.env): string | null {
 	const secret = (env.WLP_LINEAR_CLIENT_SECRET ?? "").trim();
 	return secret === "" ? null : secret;
+}
+
+/** Server-only. Kept out of `config` and the shared Settings contract. */
+export interface SlackConfig {
+	clientId: string;
+	clientSecret: string;
+	signingSecret: string;
+	apiUrl: string;
+	authorizeUrl: string;
+	redirectUrl: string;
+}
+
+/** Any missing credential disables both OAuth and signed intake. */
+export function slackConfig(env: NodeJS.ProcessEnv = process.env): SlackConfig | null {
+	const read = (name: string) => (env[name] ?? "").trim();
+	const clientId = read("WLP_SLACK_CLIENT_ID");
+	const clientSecret = read("WLP_SLACK_CLIENT_SECRET");
+	const signingSecret = read("WLP_SLACK_SIGNING_SECRET");
+	if (!clientId || !clientSecret || !signingSecret) return null;
+	// Plain HTTP is for loopback stand-ins only: these endpoints handle credentials.
+	const address = (name: string, fallback: string) => {
+		const url = URL.parse(read(name) || fallback);
+		if (!url || url.username || url.password || url.search || url.hash ||
+			!(url.protocol === "https:" || (url.protocol === "http:" && LOOPBACK.has(url.hostname)))) {
+			throw new Error(`${name} must be an HTTPS URL (or loopback HTTP), without credentials, query or fragment`);
+		}
+		return url.href.replace(/\/+$/, "");
+	};
+	const settings = {
+		clientId,
+		get clientSecret() { return clientSecret; },
+		get signingSecret() { return signingSecret; },
+		apiUrl: address("WLP_SLACK_API_URL", "https://slack.com/api"),
+		authorizeUrl: address("WLP_SLACK_AUTHORIZE_URL", "https://slack.com/oauth/v2/authorize"),
+		redirectUrl: address("WLP_SLACK_REDIRECT_URL", `${read("WLP_PUBLIC_URL").replace(/\/+$/, "") || `http://localhost:${config.httpPort}`}/slack/callback`),
+	};
+	for (const key of ["clientSecret", "signingSecret"]) Object.defineProperty(settings, key, { enumerable: false });
+	return settings;
 }
 
 /** A day: the longest a Rivet Cloud cluster issues a token for. */
