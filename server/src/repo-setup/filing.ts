@@ -93,7 +93,8 @@ export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFil
 	const a = row(args);
 	const safe = (v: unknown) => { const s = short(v); return privateLine(s, ctx) ? "Details withheld." : s; };
 	const score = readinessJudgment(a.score, safe);
-	const notes = list(a.notes, 200);
+	// With no notes selected, whatever the agent sends under `notes` (often repository files named like notes) is ignored.
+	const notes = ctx.notes.length ? list(a.notes, 200) : [];
 	if (notes.length !== ctx.notes.length) throw Error("Classify every selected note once.");
 	const decisions = ctx.notes.map((n): NoteDecision => {
 		const r = notes.find(r => r.noteId === n.id);

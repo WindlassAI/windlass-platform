@@ -256,7 +256,7 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		const evidence = { type: "object", description: "A repository file with an optional line, or a verified path check with command, exit and said.",
 			properties: { file: text, line: number, command: text, exit: number, said: text } };
 		return [tool("file_repo_setup", "Submit the complete proposed guides for review. Use one-based line numbers and repository-relative evidence paths. Correct any refused filing and call again.", {
-			type: "object", required: ["score", "files", "notes"], properties: {
+			type: "object", required: ["score", "files"], properties: {
 				score: rows({ id: { type: "string", enum: ["setup", "checks", "guide"] }, pass: { type: "boolean" }, reason: text }, ["id", "pass", "reason"]),
 				files: rows({ kind: { type: "string", enum: ["guide", "area", "skill"] }, path: text, content: text,
 					lines: rows({ line: number, noteId: text, evidence }, ["line", "evidence"]),
