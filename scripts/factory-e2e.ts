@@ -2103,6 +2103,7 @@ async function memoryChecks(): Promise<void> {
 	});
 	await check("memory: a creation tried again under its key with another body is refused, even when the first never reached the index", async () => {
 		const q = await queue({});
+		await q.db.execute((await import("../server/src/repository-defaults.js")).DEFAULTS_TABLE);
 		const { issueUserToken } = await import("../server/src/tokens.js");
 		const profile = { uid: "u", email: null, demo: false };
 		(q.c.conn as { params: unknown }).params = { token: issueUserToken(profile, 0) };

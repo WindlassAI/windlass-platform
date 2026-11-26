@@ -925,7 +925,7 @@ async function run() {
 			return delivered("issue_comment", commentFields(pull.number, id, author));
 		};
 		const reviewerSettings = () => client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkReviewer(enabled: boolean): Promise<void> };
-		await check("G4 requested PR review binds the selected machine agent", async () => {
+		await check("G4 requested PR review uses the default Windlass model on the selected machine", async () => {
 			const machines = client.user.get([uid], service()) as unknown as { checkPlaceMachine(id: string, state: string): Promise<void> };
 			const place = { kind: "machine" as const, machineId: "m_0000000000000042" };
 			await machines.checkPlaceMachine(place.machineId, "online");
@@ -937,9 +937,9 @@ async function run() {
 				assert.ok(view.reviewerSessionId);
 				const reviewer = (await client.agentSession.get([uid, view.reviewerSessionId], { params: { token: ownerToken } }).snapshot()).summary;
 				assert.deepEqual(reviewer.place, place);
-				assert.equal(reviewer.harness, "claude");
+				assert.equal(reviewer.harness ?? "windlass", "windlass");
 				assert.equal(reviewer.profile, "docker-hardened");
-				assert.equal(reviewer.model, view.agent?.model);
+				assert.equal(reviewer.model, (await g2User.models()).defaultModel);
 			} finally {
 				await reviewerSettings().checkReviewer(process.env.WLP_FACTORY_REVIEWER === "on");
 				await machines.checkPlaceMachine(place.machineId, "removed");
@@ -1342,7 +1342,7 @@ async function run() {
 
 			await repo({ ...policy, placeFallback: "hosted" });
 			await machine.checkPlaceMachine(mac, "signed-out");
-			assert.match((await file(true)).question!.text, /sign.in|sign in/i);
+			assert.match((await file(true)).question!.text, /not signed in/i);
 			await assert.rejects(repo(policy), /sign-in|supports/i);
 			const draftFeature = make(++number, reader);
 			await applyLabel(draftFeature, "windlass:orchestrate", writer);

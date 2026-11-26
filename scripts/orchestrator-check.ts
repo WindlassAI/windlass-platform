@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { config } from "../server/src/config.js";
 import { createItem, advance, canRetry, currentKey } from "../server/src/factory/blueprint.js";
 import * as intake from "../server/src/factory/intake.js";
 import { edge } from "../server/src/github/events.js";
 import { MAX_ITEM_BODY_CHARS, type FeaturePlanEdit } from "../server/src/contract.js";
+
+config.sandbox = "fake";
+const bucket = mkdtempSync(join(tmpdir(), "wlp-orchestrator-shots-"));
+process.env.WLP_FAKE_BACKUP_DIR = bucket;
+after(() => rmSync(bucket, { recursive: true, force: true }));
 
 const single = { tokens: 10000, hostedSeconds: 500 };
 const zero = { tokens: 0, rawTokens: 0, turns: 0, activeSeconds: 0, hostedSeconds: 0 };

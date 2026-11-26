@@ -999,19 +999,22 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				assert(code === "bad_input", String(code));
 				return code;
 			});
-			await check("a Claude Code work item runs on the machine without asking; its reviewer can use Claude and Plan first requires Windlass", async () => {
+			await check("a Claude Code work item asks for unavailable placements and runs on a compatible machine; Plan first requires Windlass", async () => {
 				const raw = { title: "Inspect", body: "Read the repo", repository: { id: repo.id }, harness: "claude" as const };
-				const hosted = await refusal(user.createItem({ ...raw, mode: "single", profile: "docker-hardened" }));
+				for (const [destination, requestedProfile] of [[{ kind: "hosted" }, profile], [place, "docker-windlass-sandbox"]] as const) {
+					const waiting = await user.createItem({ ...raw, place: destination, mode: "single", profile: requestedProfile, start: true });
+					assert(waiting.question?.kind === "run_place" && waiting.awaitingPlace, "missing placement question");
+					assert(!(await user.listSessions()).some(s => s.id === waiting.sessionId), "started a builder on an unavailable placement");
+					await user.actOnItem({ id: waiting.id, action: { kind: "cancel" } });
+				}
 				const planFirst = await refusal(user.createItem({ ...raw, place, mode: "orchestrate" }));
-				const { createSessionActor } = await import("../server/src/actors/internal.js");
-				const reviewer = await refusal(createSessionActor({ client: () => client }, uid, randomUUID(), { ...launch, model: "default", demo: false, title: "Inspect", titleIsTyped: true, repoUrl: null, createdAt: Date.now(), origin: { kind: "item", role: "reviewer", itemId: "i_fixture" } }));
-				assert(hosted === "profile_unavailable" && planFirst === "bad_input" && reviewer === "accepted", `hosted, plan first, reviewer: ${[hosted, planFirst, reviewer].join(", ")}`);
-				const item = await user.createItem({ ...raw, place, mode: "single", profile: "docker-windlass-sandbox" });
+				assert(planFirst === "bad_input", `Plan first: ${planFirst}`);
+				const item = await user.createItem({ ...raw, place, mode: "single", profile });
 				const builder = (await user.listSessions()).find(s => s.id === item.sessionId);
 				assert(item.agent?.harness === "claude" && builder?.harness === "claude" && builder.profile === "docker-hardened" && builder.mode === "bypassPermissions",
 					JSON.stringify({ agent: item.agent, harness: builder?.harness, profile: builder?.profile, mode: builder?.mode }));
 				await user.actOnItem({ id: item.id, action: { kind: "cancel" } }).catch(() => undefined);
-				return "hosted without a relay and Plan first refused; Claude reviewer accepted and builder in bypassPermissions";
+				return "unavailable placements asked, Plan first refused, compatible builder in bypassPermissions";
 			});
 			await check("Claude bounds the serialized item, live deltas and reconnect text", async () => {
 				const { id } = await acpSession();

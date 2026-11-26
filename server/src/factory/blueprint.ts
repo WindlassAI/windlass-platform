@@ -2309,7 +2309,7 @@ function askPlan(c: Change, criticReason?: string, criticFindings?: string[]) {
 		return askOwner("single_suggested", p.singleSuggested + (crossRepo(c.item) ? ` One implementer works on ${c.item.repos![0].alias} only: ${c.item.repos!.slice(1).map(r => r.alias).join(", ")} would be left out.` : ""),
 			[choice("run_single"), choice("orchestrate_anyway")]);
 	if (p.subtasks.some(s => subtaskHarness(s) === "codex"))
-		return askOwner("plan_approval", "Codex cannot build Plan-first parts. Choose an agent for the Codex parts, then review the updated plan.", [choice("use_windlass"), choice("use_claude"), choice("use_opencode"), ...revise]);
+		return askOwner("plan_approval", `${harnessName("codex")} cannot build Plan-first parts. Choose another agent for those parts, then review the updated plan.`, [choice("use_windlass"), choice("use_claude"), choice("use_opencode"), ...revise]);
 	const larger = p.subtasks.filter(t => t.requestedLargerSize);
 	if (larger.length) return askOwner(c.item.replans ? "replan_approval" : "plan_approval",
 		larger.map(t => `${t.title} needs a ${t.requestedLargerSize} hosted sandbox at ${SIZE_WEIGHT[t.requestedLargerSize!]}× the standard hosted rate.`).join("\n"),

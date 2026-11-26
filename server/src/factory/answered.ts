@@ -1,7 +1,8 @@
 import type { ChoiceId } from "../contract.js";
+import { harnessName } from "../sandbox/harnesses.js";
 
 export const CHOICES: Record<ChoiceId, string> = {
-	use_hosted: "Run on Hosted", use_windlass: "Windlass", use_claude: "Claude Code", use_opencode: "OpenCode",
+	use_hosted: "Run on Hosted", use_windlass: harnessName("windlass"), use_claude: harnessName("claude"), use_opencode: harnessName("opencode"),
 	send_back: "Hand it back", dismiss: "Dismiss",
 	send: "Send it to the agent", leave: "Leave it",
 	run_single: "Approve the current Windlass session as one implementer", orchestrate_anyway: "Ask for subtasks",

@@ -210,7 +210,7 @@ async function check() {
 	assert.equal(runner.report().harnesses[0].signIn, 'none');
 	assert.ok(runner.report().harnesses[0].options?.models.length, 'signed-out inventory missing');
 	boxes.push(await runner.create('first', 'docker-hardened', false, 'codex'));
-	await channelTurn(runner, 'first', boxes[0], undefined, undefined, { observe }, { providers: ['openai'] });
+	await channelTurn(runner, 'first', boxes[0], undefined, undefined, { observe }, { providers: ['openai'], source: 'key' });
 	assert.match(await cmd(['logs', upstream]), /settings POST \/model-relay\/v1\/responses/);
 	console.log('PASS Codex with a Settings key and no machine login.');
 	const credential = {
