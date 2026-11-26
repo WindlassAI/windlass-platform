@@ -962,9 +962,7 @@ export function Item({ page }: { page: ItemPage }) {
 	if (view.canUpdateFeature && !view.question?.choices.some(choice => choice.id === "update_feature")) {
 		moreActions.push({ id: "update_feature", label: `Update the feature from ${view.task.base}`, onSelect: () => acting.act({ kind: "update_feature" }) });
 	}
-	if (view.mode !== "orchestrate" && view.state === "review" && machine !== null) {
-		moreActions.push({ id: "send_back", label: "Send back…", onSelect: () => setDialog("send_back") });
-	}
+	const canSendBack = view.mode !== "orchestrate" && view.state === "review" && machine !== null;
 	if (!ended) moreActions.push({ id: "cancel", label: "Cancel…", onSelect: () => setDialog("cancel") });
 
 	return (
@@ -982,6 +980,11 @@ export function Item({ page }: { page: ItemPage }) {
 					) : null}
 					{view.reviewerSessionId ? (
 						<a className="button button-outline button-small" {...linkProps({ name: "session", id: view.reviewerSessionId })}>Code review</a>
+					) : null}
+					{canSendBack ? (
+						<button type="button" className="button button-outline button-small" onClick={() => setDialog("send_back")} disabled={busy} title="Send it back to the agent with what to change">
+							Send back
+						</button>
 					) : null}
 					{view.state === "draft" && !reading ? (
 						<button type="button" className="button button-outline button-small" onClick={() => acting.act({ kind: "start" })} disabled={busy}>
