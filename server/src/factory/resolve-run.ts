@@ -34,10 +34,10 @@ export type ActualRun = Omit<ResolvedRun, "size"> & { size: HostedSize | number 
 export interface ResolvedRun extends RunValues {
 	sources: Record<keyof RunValues, Source>;
 }
-export function partRun(context: RunContext, task: Pick<PlanSubtask, "agent" | "needs" | "repo" | "place">, role: RunRole = "part", machines?: readonly { name: string; machineId: string }[]) {
+export function partRun(context: RunContext, task: Pick<PlanSubtask, "agent" | "needs" | "repo" | "place">, role: "part" | "repair" = "part", machines?: readonly { name: string; machineId: string }[]) {
 	const repository = task.repo ? context.repositories?.[task.repo] ?? context.repository : context.repository;
 	const place = task.place?.prefer;
-	const item = place ? { ...context.item, place: place === "hosted" ? "hosted" as const : { machine: machines?.find(m => m.name === place)?.machineId ?? place } } : context.item;
+	const item: RunSettings | undefined = place ? { ...context.item, place: place === "hosted" ? "hosted" : { machine: machines?.find(m => m.name === place)?.machineId ?? place } } : context.item;
 	return resolveRun({ ...context, repository, item }, role, task);
 }
 
@@ -49,42 +49,48 @@ export const runPlace = (place: SandboxPlace): DefaultPlace => place.kind === "m
 
 /** Model ids belong to their agent. The Windlass model also serves the planning and review roles. */
 export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanSubtask, "agent" | "needs">): ResolvedRun {
-	const layers: [Source, RunSettings][] = [["deployment", context.deployment ?? {}], ["account", context.account ?? {}], ["repository", context.repository ?? {}], ["item", context.item ?? {}]];
-	if (part) layers.push(["item", { harness: part.agent?.harness, model: part.agent?.harness === "windlass" ? part.agent.model : undefined,
-		machineModel: part.agent?.model, machineEffort: part.agent?.effort, effort: part.agent?.effort, hostedSize: part.needs?.hostedSize, profile: part.needs?.profile, machineProfile: part.needs?.profile }]);
-	const run: ResolvedRun = { place: "hosted", fallback: "wait", agent: "windlass", model: null, effort: null, profile: null,
-		size: ITEM_HOSTED_SIZE, payer: "windlass", sources: { place: "deployment", fallback: "deployment", agent: "deployment", model: "deployment",
-			effort: "deployment", profile: "deployment", size: "deployment", payer: "deployment" } };
+	const layers: [Source, RunSettings][] = [
+		["deployment", context.deployment ?? {}],
+		["account", context.account ?? {}],
+		["repository", context.repository ?? {}],
+		["item", context.item ?? {}],
+	];
+	if (part) {
+		const { agent, needs } = part;
+		layers.push(["item", { harness: agent?.harness, model: agent?.harness === "windlass" ? agent.model : undefined,
+			machineModel: agent?.model, effort: agent?.effort, machineEffort: agent?.effort,
+			hostedSize: needs?.hostedSize, profile: needs?.profile, machineProfile: needs?.profile }]);
+	}
+
+	// The final place selects the profile column. A machine model belongs to the agent in scope at its layer.
+	const priority = [...layers].reverse();
+	const placeLayer = priority.find(([, settings]) => settings.place != null);
+	const implementation = role === "builder" || role === "part" || role === "repair";
+	const agentLayer = implementation ? priority.find(([, settings]) => settings.harness != null) : undefined;
+	const place = placeLayer?.[1].place ?? "hosted";
+	const agent = agentLayer?.[1].harness ?? "windlass";
+	const values: RunValues = { place, fallback: "wait", agent, model: null, effort: null, profile: null, size: ITEM_HOSTED_SIZE,
+		payer: agent === "windlass" ? "windlass" : place === "hosted" ? "key" : "machine" };
+	const sources: ResolvedRun["sources"] = { place: placeLayer?.[0] ?? "deployment", fallback: "deployment", agent: agentLayer?.[0] ?? "deployment",
+		model: "deployment", effort: "deployment", profile: "deployment", size: "deployment", payer: "deployment" };
 	function set<K extends keyof RunValues>(key: K, value: RunValues[K] | undefined | null, source: Source) {
 		if (value == null) return;
-		(run as RunValues)[key] = value;
-		run.sources[key] = source;
+		values[key] = value;
+		sources[key] = source;
 	}
-	const implementation = role === "builder" || role === "part" || role === "repair";
+	if (agent !== "windlass" && typeof place === "object") set("payer", context.machinePayers?.[place.machine]?.[agent], "account");
+	let layerAgent: HarnessId = "windlass";
 	for (const [source, layer] of layers) {
-		set("place", layer.place, source);
+		layerAgent = layer.harness ?? layerAgent;
 		set("fallback", layer.placeFallback, source);
-		if (implementation) set("agent", layer.harness, source);
 		set("size", layer.hostedSize, source);
-	}
-	let agent: HarnessId = "windlass";
-	for (const [source, layer] of layers) {
-		agent = layer.harness ?? agent;
-		if (run.agent === "windlass") {
-			set("model", layer.model, source);
-			set("effort", layer.effort, source);
-		} else if (agent === run.agent) {
-			set("model", layer.machineModel, source);
-			set("effort", layer.machineEffort, source);
+		set("profile", place === "hosted" ? layer.profile : layer.machineProfile, source);
+		if (agent !== "windlass") set("payer", layer.payer, source);
+		if (agent === "windlass" || agent === layerAgent) {
+			set("model", agent === "windlass" ? layer.model : layer.machineModel, source);
+			set("effort", agent === "windlass" ? layer.effort : layer.machineEffort, source);
 		}
-		set("profile", run.place === "hosted" ? layer.profile : layer.machineProfile, source);
 	}
-	if (run.agent !== "windlass") {
-		run.payer = run.place === "hosted" ? "key" : "machine";
-		if (typeof run.place === "object") set("payer", context.machinePayers?.[run.place.machine]?.[run.agent], "account");
-		for (const [source, layer] of layers) set("payer", layer.payer, source);
-	} else if (windlassProvider(run.model ?? undefined)) {
-		set("payer", "key", run.sources.model);
-	}
-	return run;
+	if (agent === "windlass" && windlassProvider(values.model ?? undefined)) set("payer", "key", sources.model);
+	return { ...values, sources };
 }
