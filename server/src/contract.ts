@@ -1767,10 +1767,11 @@ export interface ItemView extends ItemSummary {
 export type ItemMode = "single" | "orchestrate";
 
 export interface PlacementNeeds {
+	hostedSize?: HostedSize;
 	tags?: string[];
 	screenshots?: boolean;
 	egress?: "open" | "restricted";
-	profile?: "docker-hardened" | "docker-windlass-sandbox" | "e2b-open" | "daytona";
+	profile?: SandboxProfileId;
 	cpus?: number;
 	memoryGiB?: number;
 }

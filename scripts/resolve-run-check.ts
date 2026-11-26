@@ -1,0 +1,39 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { resolveRun, partRun, type RunContext } from "../server/src/factory/resolve-run.js";
+
+const context: RunContext = {
+	deployment: { model: "deployment-model", hostedSize: "small" },
+	account: { place: { machine: "mac" }, placeFallback: "hosted", harness: "claude", model: "windlass-model", effort: "low", machineModel: "sonnet", hostedSize: "large" },
+	repository: { harness: "opencode", machineModel: "openai/repo-model", machineEffort: "high", machineProfile: "docker-hardened" },
+	machinePayers: { mac: { opencode: "key" } },
+	item: { hostedSize: "small" },
+};
+
+test("each field has its own precedence and source", () => {
+	const run = resolveRun(context, "builder");
+	assert.deepEqual(run, { place: { machine: "mac" }, fallback: "hosted", agent: "opencode", model: "openai/repo-model", effort: "high",
+		profile: "docker-hardened", size: "small", payer: "key", sources: { place: "account", fallback: "account", agent: "repository",
+			model: "repository", effort: "repository", profile: "repository", size: "item", payer: "account" } });
+	assert.equal(resolveRun({ deployment: context.deployment }, "planner").model, "deployment-model");
+});
+
+test("planning, review, critic, summary and setup use the Windlass model", () => {
+	for (const role of ["planner", "reviewer", "critic", "summary", "setup", "environment"] as const) {
+		const { agent, model, effort, sources } = resolveRun(context, role);
+		assert.equal(agent, "windlass");
+		assert.equal(model, "windlass-model");
+		assert.equal(effort, "low");
+		assert.equal(sources.model, "account");
+	}
+});
+
+test("parts and repairs inherit their repository and keep agent-specific models separate", () => {
+	const withSibling = { ...context, repositories: { sibling: { harness: "codex" as const } } };
+	for (const role of ["part", "repair"] as const) {
+		assert.equal(partRun(withSibling, {}, role).agent, "opencode");
+		assert.equal(partRun(withSibling, { repo: "sibling" }, role).model, null);
+		const explicit = partRun(withSibling, { agent: { harness: "claude", model: "opus", effort: "max" } }, role);
+		assert.deepEqual([explicit.agent, explicit.model, explicit.effort, explicit.sources.model], ["claude", "opus", "max", "item"]);
+	}
+});
