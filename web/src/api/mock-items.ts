@@ -55,6 +55,7 @@ import {
 	type ModelList,
 } from "@contract";
 import { FACTORY_DEFAULTS } from "../../../server/src/factory/budget";
+import { finishedItem } from "../../../server/src/factory/readiness-track";
 import { type CleanPage, ItemPageProblem, cleanItemPage, itemFeed, itemPage } from "../../../server/src/item-pages";
 import { PlatformError, type UserApi, type UserFeed } from "./client";
 
@@ -689,7 +690,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 				on: repos[index % repos.length] as typeof HARBOR,
 				state,
 				filed,
-				...(state === "done" ? { pr: 100 + index } : {}),
+				...(state === "done" ? { pr: 100 + index, verdicts: [{ result: "pass" as const, gate: passingGate, ci: ci.passed(3), flags: [], mergeable: true, run: 1, ago: filed - 50 }] } : {}),
 				run: { n: 1, started: filed, ended: filed - 50, stopReason: state === "failed" ? "ci" : state === "cancelled" ? "cancelled" : null, rounds: { plan: 0, gate: 0, ci: state === "failed" ? 2 : 0, conflict: 0 }, step: { n: 6, kind: state === "done" ? "merged" : "implement", started: filed - 50 } },
 				spent: { tokens: 300_000 + (index % 7) * 110_000, turns: 1 + (index % 3), activeSeconds: (20 + (index % 9) * 5) * 60, hostedSeconds: (20 + (index % 9) * 5) * 60 },
 			};
@@ -2292,7 +2293,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		change(auth, item, { state: "working", wait: null, question: null }, [answeredWords(picked, null), "The turn started."], "person");
 		return item.repository;
 	}
-	return { calls, machinesChanged, prepare, setRequestedSecret, revokeAllApiTokens(auth: AuthResult) { keptOf(auth).tokens = []; } };
+	return { records: (uid: string, id: GithubId) => (kept.get(uid)?.items ?? []).filter(i => i.repository.id === id && !i.parent && !i.repositories?.length && ["done", "failed", "cancelled"].includes(i.state)).map(i => finishedItem(i)), calls, machinesChanged, prepare, setRequestedSecret, revokeAllApiTokens(auth: AuthResult) { keptOf(auth).tokens = []; } };
 }
 
 // ---- the agent's reports on the item's page (Reviewer slice R1-C) -----------------------------------

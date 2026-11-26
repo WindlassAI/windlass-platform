@@ -2232,15 +2232,15 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	}
 	expect("owned paths and scheduling overlaps respect glob depth", true);
 
-	const { turnFlags } = await import("../server/src/actors/session-inbox.js");
+	const { turnChanges } = await import("../server/src/actors/session-inbox.js");
 	const sandbox = { run: async (command: string) => {
 		const mark = command.match(/\bwlp-[a-f0-9]{18}\b/)![0];
 		const stdout = ["M\0src/file.ts\0D\0test/old.test.ts\0", "", "absent", "absent", "absent", "absent", ""].join("\n" + mark + "\n");
 		return { exitCode: 0, stdout, stderr: "" };
-	} } as Parameters<typeof turnFlags>[0];
+	} } as Parameters<typeof turnChanges>[0];
 	const removed = { kind: "tests_removed", where: ["test/old.test.ts"] };
-	assert.deepEqual(await turnFlags(sandbox, H(1), [], null, []), [removed]);
-	assert.deepEqual(await turnFlags(sandbox, H(1), [], null, ["src"]), [removed, { kind: "outside_scope", where: ["test/old.test.ts"] }]);
+	assert.deepEqual(await turnChanges(sandbox, H(1), [], null, []), { taskKind: "other", flags: [removed] });
+	assert.deepEqual(await turnChanges(sandbox, H(1), [], null, ["src"]), { taskKind: "other", flags: [removed, { kind: "outside_scope", where: ["test/old.test.ts"] }] });
 	expect("empty owns skips the scope warning and keeps other review flags", true);
 
 	const seconds = FACTORY_DEFAULTS.item.hostedSeconds;
@@ -3618,6 +3618,7 @@ try {
 			await assert.rejects(attempt(base), /CI no longer passes/);
 			checks.runs = [checkRun(42, "build", "success")];
 			await assert.rejects(attempt(H(8)), /base branch changed/);
+			await assert.rejects(mergeReviewedPull(app, token, { ...target, head }, pull, base, ["docs-only"]), /off for this kind/);
 			standin.commit(repo, "merge-base", { later: "new" }, "Advance base");
 			assert.equal(await attempt(base), "behind");
 			assert.equal(puts(), 0);

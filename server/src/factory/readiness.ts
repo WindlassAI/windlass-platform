@@ -1,10 +1,12 @@
 import { MAX_TITLE_CHARS, type CreateItemInput, type GithubId } from "../contract.js";
 
-export type ReadinessLevel = "Not ready" | "Ask first";
+import { trackRecord, type ReadinessLevel, type ItemRecord, type RevertedPulls, type TrackRecord } from "./readiness-track.js";
+export type { ReadinessLevel } from "./readiness-track.js";
 const MIN_GREEN_RATE = 0.8;
 const MAX_FLAKES = 3;
 
 export interface CiHistory {
+	revertedPulls?: RevertedPulls;
 	at: number; branch: string; checked: number; green: number; hasCi: boolean;
 	flaky: { name: string; count: number }[]; reverts: number; redMerges: number;
 }
@@ -22,14 +24,16 @@ export const readinessCriteria = [
 export type CriterionId = typeof readinessCriteria[number]["id"];
 export interface Finding { id: CriterionId; pass: boolean | null; reason: string }
 export interface Judgment { findings: Finding[] }
-export interface SetupReport { at: number; level: ReadinessLevel; ci: CiHistory | null; passed: number; findings: Finding[] }
-export interface RepositoryReadiness { ciReadFailed?: boolean; latest: SetupReport | null; run: "new" | "running" | "finished"; weekly: boolean; error: string | null; diagnosis?: import("../repo-setup/types.js").SetupDiagnosis }
+export interface SetupReport { record: TrackRecord; at: number; level: ReadinessLevel; ci: CiHistory | null; passed: number; findings: Finding[] }
+export interface RepositoryReadiness { builds?: { passed: number; total: number; setupPassed: number }; switchNote?: string; ciReadFailed?: boolean; latest: SetupReport | null; run: "new" | "running" | "finished"; weekly: boolean; error: string | null; diagnosis?: import("../repo-setup/types.js").SetupDiagnosis }
 
-export function setupReport(findings: Finding[], at: number, ci: CiHistory | null): SetupReport {
+export function setupReport(findings: Finding[], at: number, ci: CiHistory | null, items: ItemRecord[] = []): SetupReport {
 	const proven = (id: CriterionId) => findings.some(f => f.id === id && f.pass);
 	const healthy = ci && ci.checked > 0 && ci.green / ci.checked >= MIN_GREEN_RATE && ci.flaky.every(job => job.count <= MAX_FLAKES);
-	const level = proven("setup") && proven("checks") && healthy ? "Ask first" : "Not ready";
-	return { at, level, ci, passed: findings.filter(row => row.pass).length, findings };
+	const record = trackRecord(items, ci?.revertedPulls);
+	const level = proven("setup") && proven("checks") && healthy ? record.level : "Not ready";
+	if (!proven("setup") || !proven("checks") || !healthy) { record.earned = {}; record.progress = "Finish setup and pass CI to reach Ask first."; }
+	return { at, level, ci, record, passed: findings.filter(row => row.pass).length, findings };
 }
 
 export function readinessItem(id: GithubId, report: SetupReport, criterion: CriterionId | number): CreateItemInput {

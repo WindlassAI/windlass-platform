@@ -47,9 +47,9 @@ async function settle(steps = 14): Promise<void> {
 	for (let step = 0; step < steps; step++) await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 2))));
 }
 
-async function show(path: string): Promise<void> {
+async function show(path: string, items?: "many"): Promise<void> {
 	history.replaceState(null, "", path);
-	client = createMockClient({ pace: 0, origin: "http://localhost:5173" });
+	client = createMockClient({ pace: 0, origin: "http://localhost:5173", items });
 	saveAuth("mock", ada);
 	root = createRoot(host);
 	act(() => root?.render(createElement(AppProvider, { client, children: createElement(App) })));
@@ -213,7 +213,7 @@ describe("a repository's old addresses", () => {
 		expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Overview");
 		const setup = host.querySelector("#repo-setup")!;
 		for (const words of ["Setup 3 of 8", "Level: Not ready", "CI history (30 days): 94% green on main", "1 flaky job: e2e (macos)", "0 reverts", "1 red commit after a merge",
-			"Next steps after verified work here", "Small plans", "Full plans", "Earned merge"]) expect(setup.textContent).toContain(words);
+			"Track record:", "sent back", "Finish setup and pass CI to reach Ask first."]) expect(setup.textContent).toContain(words);
 		const file = [...setup.querySelectorAll("button")].find(b => b.textContent === "File as work item: make e2e (macos) reliable")!;
 		act(() => file.click());
 		await settle();
@@ -223,6 +223,23 @@ describe("a repository's old addresses", () => {
 		expect(document.title).toBe("acme/harbor · Windlass");
 		// The bar says the page is part of Agents.
 		expect(host.querySelector('nav[aria-label="Main"] a[aria-current="page"]')?.textContent).toMatch(/^Agents/);
+	});
+
+	it("offers small-plan approval once clean items and a working setup earn it", async () => {
+		await show("/repositories/7101", "many");
+		const setup = host.querySelector("#repo-setup")!;
+		const offer = () => [...setup.querySelectorAll("label")].find(l => l.textContent?.includes("This repo earned Small plans"));
+		expect(offer()).toBeUndefined();
+		await act(async () => (setup.querySelector("header button") as HTMLButtonElement).click());
+		await settle();
+		expect(setup.textContent).toContain("Level: Small plans");
+		expect(setup.textContent).toContain("0 of 3 verified features toward Full plans");
+		const toggle = offer()!.querySelector("input")!;
+		expect(toggle.checked).toBe(false);
+		await act(async () => toggle.click());
+		await settle();
+		expect(offer()).toBeUndefined();
+		expect((await client.user(ada).repository(7101)).defaults.autoApprovePlans).toBe(true);
 	});
 
 	it("open its saved settings and its pull requests in the same place, with the way back to the overview", async () => {

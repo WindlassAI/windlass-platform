@@ -12,6 +12,7 @@ import { machineDetails } from "../../../server/src/machines/details.js";
 import { listedHarness, windlassModels, windlassProvider, hostedCatalog, hostedKeyMessage, hostedProfiles, hostedProvider, initialHarnessModels, sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
 import { workspaceNetwork } from "../lib/machines";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
+import { applyOffers, offered, type OfferRow } from "../../../server/src/factory/readiness-track";
 import { setupReport } from "../../../server/src/factory/readiness";
 import { mockEnvironments, mockRebuild, mockSchedule } from "./mock-environments";
 import { PROFILES, initialSessionModes, offeredProfiles, profilesFor } from "../../../server/src/sandbox/profiles.js";
@@ -751,6 +752,7 @@ function takenUnder<Answer>(kept: Map<string, Taken<Answer>>, key: string | null
 type SavedDefaults = AccountDefaults & { updatedAt: number };
 
 interface World {
+	offers: Map<GithubId, OfferRow[]>;
 	planConnected: boolean;
 	guideChecks: Map<GithubId, RepositoryView["guideCheck"]>;
 	knowledge: Map<GithubId, RepositoryView["knowledge"]>;
@@ -961,7 +963,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { guideChecks: new Map(), knowledge: new Map(), readiness: new Map(), planConnected: recall("wlp.mock.plan." + uid) === "1", profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { providers: new Map(), checks: { minute: 0, used: 0 }, defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
+			world = { offers: new Map(), guideChecks: new Map(), knowledge: new Map(), readiness: new Map(), planConnected: recall("wlp.mock.plan." + uid) === "1", profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { providers: new Map(), checks: { minute: 0, used: 0 }, defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
 			// The seeded user starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "user"))) world.github = connectionFor(world.profile);
@@ -2718,14 +2720,17 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			{ id: "size", pass: true, reason: "The largest source file has 680 lines." },
 			{ id: "ci", pass: true, reason: "The test workflow runs on pull requests." },
 			{ id: "secrets", pass: false, reason: "Environment files are ignored. No secret scan was found." },
-		], assessment.at, { at: assessment.at, branch: "main", checked: 50, green: 47, flaky: [{ name: "e2e (macos)", count: 2 }], reverts: 0, redMerges: 1, hasCi: true }) : null;
+		], assessment.at, { at: assessment.at, branch: "main", checked: 50, green: 47, flaky: [{ name: "e2e (macos)", count: 2 }], reverts: 0, redMerges: 1, hasCi: true }, items.records(world.profile.uid, repositoryId)) : null;
+		const rows = world.offers.get(repositoryId) ?? [];
+		const policy = applyOffers(defaultsOf(world, repositoryId), latest?.record, rows);
+		for (const r of rows) if (policy.expired.includes(r.offer)) r.off = 1;
 		return {
 			id: repositoryId,
 			name: repositoryNameOf(world, repositoryId),
 			guideCheck: world.guideChecks.get(repositoryId) ?? { enabled: true, result: null },
 			knowledge: world.knowledge.get(repositoryId) ?? { notes: [], publication: null },
-			readiness: { latest, weekly: assessment?.weekly ?? false, run: finished ? "finished" : "new", error: null },
-			defaults: defaultsOf(world, repositoryId),
+			readiness: { latest, switchNote: policy.switchNote, weekly: assessment?.weekly ?? false, run: finished ? "finished" : "new", error: null },
+			defaults: policy.defaults,
 			approvals: [...approvals.values()],
 			forgetting: MOCK_FORGETTING,
 			saved: { setup: world.setups.has(repositoryId), secrets: world.secrets.get(repositoryId)?.size ?? 0, checks: world.checks.get(repositoryId)?.checks.length ?? 0, network: world.network.get(repositoryId)?.entries.length ?? 0 },
@@ -2762,7 +2767,16 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** Saves as the server does (server/src/repository-defaults.ts): the same refusals in the same words, and only the fields that are named. */
 	/** Each repository's saved hosted size. */
 	const hostedSizes = new Map<GithubId, HostedSize>();
-	function saveDefaults(world: World, machines: MachineSummary[], repositoryId: GithubId, { screenshots, hostedSize, autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, ...change }: RepositoryDefaultsPatch): RepositoryDefaults {
+	function saveDefaults(world: World, machines: MachineSummary[], repositoryId: GithubId, { offer, screenshots, hostedSize, autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, ...change }: RepositoryDefaultsPatch): RepositoryDefaults {
+		const rows = world.offers.get(repositoryId) ?? [];
+		if (offer !== undefined) {
+			const { readiness, defaults } = repositoryViewOf(world, repositoryId);
+			const record = readiness.latest?.record;
+			if (!record || !offered(record, defaults).includes(offer)) throw Error("This offer is no longer available.");
+			world.offers.set(repositoryId, [...rows.filter(r => r.offer !== offer), { offer, earned: record.earned[offer]!, off: 0 }]);
+			return repositoryViewOf(world, repositoryId).defaults;
+		}
+		world.offers.set(repositoryId, rows.filter(r => (r.offer === "Small plans" ? autoApprovePlans : autoMergeSingles) === undefined));
 		if (screenshots !== undefined && typeof screenshots !== "boolean") throw new PlatformError("user", "Screenshots must be true or false.", { reason: "bad_input" });
 		if (hostedSize !== undefined && hostedSize !== null && !isHostedSize(hostedSize)) throw new PlatformError("user", "Choose one of the hosted sizes: Small, Medium, Large.", { reason: "bad_input" });
 		const next = changedDefaults(world.defaults.get(repositoryId) ?? null, change, modelsFor(world.profile), machines);
@@ -2771,7 +2785,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		if (next === null) world.defaults.delete(repositoryId);
 		else world.defaults.set(repositoryId, next);
 		const flags = { ...world.autonomy.get(repositoryId), updatedAt: now() };
-		for (const [key, value] of Object.entries({ autoApprovePlans, autoMergeSingles, waitForCiOnEachPart }) as Array<[keyof RepositoryAutonomy, boolean | undefined]>) {
+		for (const [key, value] of Object.entries({ autoApprovePlans, autoMergeSingles, waitForCiOnEachPart }) as Array<[keyof Omit<RepositoryAutonomy, "mergeKinds">, boolean | undefined]>) {
 			if (value === true) flags[key] = true;
 			else if (value === false) delete flags[key];
 		}
@@ -2779,7 +2793,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		else world.autonomy.delete(repositoryId);
 		if (screenshots === false) world.screenshotsEnabled.delete(repositoryId);
 		if (screenshots === true) world.screenshotsEnabled.set(repositoryId, now());
-		return defaultsOf(world, repositoryId);
+		return repositoryViewOf(world, repositoryId).defaults;
 	}
 
 	/** What is saved after a change, for a repository or for the account: null when nothing is left. */
@@ -3628,6 +3642,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				current.network.delete(repositoryId);
 				current.defaults.delete(repositoryId);
 				current.autonomy.delete(repositoryId);
+				current.offers.delete(repositoryId);
 				current.screenshotsEnabled.delete(repositoryId);
 				current.approvals = current.approvals.filter((approval) => approval.project !== `github:${repositoryId}`);
 				current.names.delete(repositoryId);

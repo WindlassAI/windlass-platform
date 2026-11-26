@@ -1,15 +1,22 @@
+import { taskKind, type TaskKind } from "../factory/readiness-track.js";
 import { GithubError, type GithubApp, type Pull } from "./app.js";
 import { ciState, readCi, type CiTarget } from "./ci.js";
 
 /** Called under the item write queue, after checking its review, feedback and repository setting. */
 export async function mergeReviewedPull(app: GithubApp, token: string, target: CiTarget,
-	pull: Pick<Pull, "number" | "title" | "base" | "baseSha">, reviewedBase?: string) {
+	pull: Pick<Pull, "number" | "title" | "base" | "baseSha">, reviewedBase?: string, kinds?: TaskKind[]) {
 	const ci = await readCi(app, target);
 	if (ci.kind !== "read" || ci.head !== target.head || ciState(ci) !== "passed")
 		throw new Error("CI no longer passes on the reviewed head.");
 	const compared = await compareBranches(app, token, target.owner, target.name, pull.base, target.head);
 	if (compared.behind > 0) return "behind";
 	if (compared.base !== reviewedBase || compared.base !== pull.baseSha) throw new Error("The base branch changed before merge.");
+	if (kinds) {
+		// GitHub caps comparisons at 300 files. A partial list cannot authorize a merge.
+		const files = compared.files;
+		const kind = files?.length && files.length < 300 && taskKind(files.flatMap(f => f.previous_filename ? [f.previous_filename, f.filename] : [f.filename]));
+		if (!kind || !kinds.includes(kind)) throw new Error("Automatic merge is off for this kind of change.");
+	}
 	await app.squashMerge(token, target.owner, target.name, pull.number, target.head, pull.title);
 	return "merged";
 }
@@ -46,7 +53,7 @@ export async function compareBranches(app: GithubApp, token: string, owner: stri
 	const { body } = await app.call({ path, query: { per_page: 1 }, auth: { bearer: token }, what: "compare the item with its base branch" });
 	const behind = obj(body).behind_by;
 	if (typeof behind !== "number" || !Number.isSafeInteger(behind) || behind < 0) throw new Error("GitHub did not report how far the base branch is ahead.");
-	return { behind, base: sha(obj(obj(body).base_commit).sha), files: obj(body).files as { filename: string }[] | undefined };
+	return { behind, base: sha(obj(obj(body).base_commit).sha), files: obj(body).files as { filename: string; previous_filename?: string }[] | undefined };
 }
 
 export async function advanceFeatureRef(app: GithubApp, token: string, owner: string, repo: string, id: string, base: string, head: string) {

@@ -118,7 +118,7 @@ export interface UserInternal {
 	internalProviderGeneration(location: import("./provider-accounts.js").AccountLocation): Promise<string | null>;
 	internalObserveUsage(location: import("./provider-accounts.js").AccountLocation, generation: string, observation: import("../provider-usage.js").UsageObservation): Promise<void>;
 	internalLimitedAccounts(): Promise<ReturnType<typeof import("./provider-accounts.js").limitedAccounts>>;
-	internalRepositoryAutonomy(repositoryId: GithubId): Promise<Required<RepositoryAutonomy>>;
+	internalRepositoryAutonomy(repositoryId: GithubId): Promise<RepositoryAutonomy>;
 	internalPlanCritic(builderId: string): Promise<void>;
 	internalPlannerCapacity(): Promise<{ machines: ReturnType<typeof import("../machines/details.js").plannerMachines>; hostedCapacity: number }>;
 	internalAgentModels(): Promise<import("../factory/placement.js").AgentModels>;

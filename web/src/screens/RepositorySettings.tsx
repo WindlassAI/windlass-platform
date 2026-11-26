@@ -85,7 +85,7 @@ function AutonomySettings({ page, view }: { page: RepositoryPage; view: Reposito
 			</Check>
 			<Check checked={!!view.defaults.autoMergeSingles} disabled={busy} onChange={on => save("autoMergeSingles", on)}>
 				<span className="check-name">Auto-merge single items</span>
-				<span className="check-means">Merge when checks, CI and review pass.</span>
+				<span className="check-means">Merge when checks, CI and review pass.{view.defaults.mergeKinds && " Enabled for: " + view.defaults.mergeKinds.join(", ") + "."}</span>
 			</Check>
 			<Check checked={!!view.defaults.waitForCiOnEachPart} disabled={busy} onChange={on => save("waitForCiOnEachPart", on)}>
 				<span className="check-name">Wait for CI on each part</span>

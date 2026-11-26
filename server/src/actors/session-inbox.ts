@@ -33,6 +33,7 @@ import { readWork } from "../github/git.js";
 import type { SandboxHandle } from "../sandbox/api.js";
 import { workFlags } from "../verified.js";
 import { itemActor, userActor } from "./internal.js";
+import { taskKind } from "../factory/readiness-track.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 
 export const INBOX_TABLES = [
@@ -392,9 +393,11 @@ export async function sendOutbox(c: InboxCtx, uid: string): Promise<void> {
 }
 
 /** The observations on the turn's changes that a reviewer would want to look at (verified.ts), from git in the sandbox; none when git says nothing. */
-export async function turnFlags(sandbox: SandboxHandle, baseSha: string | null, checks: ReadonlyArray<RepositoryCheck>, verified: Verified | null, owns?: string[]) {
+export async function turnChanges(sandbox: SandboxHandle, baseSha: string | null, checks: ReadonlyArray<RepositoryCheck>, verified: Verified | null, owns?: string[]) {
 	const work = await readWork(sandbox, baseSha);
-	return work === null ? [] : workFlags(work, [...checks, ...(verified?.run?.checks ?? [])], owns?.length ? path => ownsPath(owns, path) : undefined);
+	if (!work) return { flags: [] };
+	const paths = work.files.flatMap(f => f.to ? [f.path, f.to] : [f.path]);
+	return { taskKind: paths.length ? taskKind(paths) : undefined, flags: workFlags(work, [...checks, ...(verified?.run?.checks ?? [])], owns?.length ? path => ownsPath(owns, path) : undefined) };
 }
 
 /** The fact of a turn's end, for the item. `hostedSeconds` is the ledger's, which the item reads from the user's actor. */

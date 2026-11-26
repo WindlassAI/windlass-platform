@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { offered } from "../../../server/src/factory/readiness-track";
 import { readinessCriteria, readinessItem, type CriterionId } from "../../../server/src/factory/readiness";
 import { absoluteTime, percent, plural } from "../lib/format";
 import { linkProps } from "../lib/router";
@@ -8,7 +9,7 @@ import { useApp, useAuth } from "../state/app";
 export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryPage; offersItems: boolean }) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
-	const [busy, setBusy] = useState<"run" | "notes" | "weekly" | "guides" | CriterionId | number | null>(null);
+	const [busy, setBusy] = useState<"offer" | "run" | "notes" | "weekly" | "guides" | CriterionId | number | null>(null);
 	const [error, setError] = useState("");
 	const [filed, setFiled] = useState<Record<string, string>>({});
 	const data = page.view?.readiness;
@@ -70,6 +71,15 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 		</header>
 		{report && <div className="setup-summary">
 			<p><strong>Setup {report.passed} of {readinessCriteria.length}</strong>{pending > 0 && ` · ${pending} pending`} · Level: <strong>{report.level}</strong></p>
+			<p><strong>Track record:</strong> {report.record.verified} verified · {report.record.sentBack} sent back · {plural(report.record.reverts, "revert")}</p>
+			<p>{report.record.progress}</p>
+			{offered(report.record, page.view!.defaults).map(offer => <label key={offer} className="check setup-weekly">
+				<input type="checkbox" role="switch" checked={false} disabled={disabled} onChange={() => submit("offer", async () => {
+					await client.user(auth).saveRepositoryDefaults(page.id, { offer });
+					reload();
+				})} />{offer === "Small plans" ? "This repo earned Small plans — turn on auto-approve for small plans?" : `This repo earned merge for ${offer} — turn on auto-merge for ${offer} items?`}
+			</label>)}
+			<details><summary>Track record details</summary><p>{report.record.firstTry} verified first try · {report.record.verified - report.record.firstTry} after fixes · {report.record.ciPassed} passed CI · {report.record.flaky} had a check fail on the base branch too · {report.record.merged} merged · {report.record.closed} closed without merging{data.builds && ` · ${data.builds.passed} of ${data.builds.total} recorded builds passed · setup succeeded in ${data.builds.setupPassed}`}</p></details>
 			<p><strong>CI history (30 days):</strong> {ci ? <>
 				{ci.checked ? `${percent(ci.green / ci.checked)} green on ${ci.branch}` : ci.hasCi ? `No finished checks on ${ci.branch}` : "No CI to read"}
 				{ci.hasCi && ` · ${plural(ci.flaky.length, "flaky job")}`}
@@ -169,12 +179,7 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 					</li>;
 				})}</ul>
 			</div>
-			<h3 className="ws-section-title">Next steps after verified work here</h3>
-			<ul>
-				<li><strong>Small plans</strong> · Complete small items with passing checks and no reverts.</li>
-				<li><strong>Full plans</strong> · Finish larger features that rarely need fixes to pass checks.</li>
-				<li><strong>Earned merge</strong> · Build a clean record for one kind of work, such as tests.</li>
-			</ul>
+
 		</> : <p className="usage-empty">{page.access.state === "usable" ? "Waiting for the default branch checks." : "Connect this repository to see its setup checks."}</p>}
 		{(error || data.error) && <p role="alert" className="usage-note">{error || data.error}</p>}
 	</section>;

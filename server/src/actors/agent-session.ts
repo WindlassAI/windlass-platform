@@ -138,7 +138,7 @@ import type { ItemPublishAnswer } from "./work-item.js";
 import { fetchBase, sessionRepository } from "../github/publish.js";
 import { CRASHES_ALLOWED, type PauseReason, type TurnRun, type TurnCredential, addUsage, crashCount, pausedLine, resumePrompt, restartShellResult, resumedLine, segmentLimit, sessionWholeTask } from "./turn-resume.js";
 import { ConversationLost } from "../runner/channel.js";
-import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, itemTurnText, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, settleTokenReceipts, turnFlags, waitingRows, withdrawWaiting } from "./session-inbox.js";
+import { type EndedFact, type InboxRow, reviewEndedFactOf, INBOX_TABLES, itemTurnText, OUTBOX_ACTION, deliveryOf, endedFact, endedFactOf, flushOutbox, inboxRow, machineUnavailable, markEnded, markTaken, publishReceipt, queueMessage, receive, rememberPublish, requestTurn, requeue, rowOfTurn, sendOutbox, settleTokenReceipts, turnChanges, waitingRows, withdrawWaiting } from "./session-inbox.js";
 import { persist, note, append, serial, writeItems, insertItems, keepDelta, acpRecorder, onWindlassEvent, writeMeta } from "./agent-session/timeline.js";
 import { orNull, RECALL_WAIT_MS, str, takeQuestion, duration, abortTurn, askQuestion, askServer, serverKey, ago, rememberServer, knowServers, sealTurn, sessionServers, serverApprovals, serversChanged } from "./agent-session/questions.js";
 import type { Ctx, SessionMeta, HeldSecrets, ActiveTurn, WorkspaceCopy, PublishAnswer, Asked, PromptAnswer, FeedbackPrompt, SessionVars } from "./agent-session/state.js";
@@ -4144,12 +4144,12 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 	if (meta.origin?.role === "reviewer") {
 		fact = { ...reviewEndedFactOf(row.key, ended.outcome, meta.review, item.said ?? null, item.refused ?? null, ended.usage, agent), ...(item.planReview && { planReview: item.planReview }) };
 	} else {
-		const flags = ended.used && meta.repo ? await turnFlags(ended.used, meta.repo.baseSha ?? null, ended.checks, ended.verified, meta.origin?.owns).catch(() => []) : [];
+		const changes = ended.used && meta.repo ? await turnChanges(ended.used, meta.repo.baseSha ?? null, ended.checks, ended.verified, meta.origin?.owns).catch(() => ({ flags: [] })) : { flags: [] };
 		// Not known (git said nothing): taken as changed, and the push says whether there was anything. What the agent pushed itself in the turn is a change too.
 		const changed = ended.unpushed !== false || (meta.pushedHead ?? null) !== item.pushedAtStart;
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
-		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, flags, changed, item.report, ended.usage, agent, item.asked), ...(meta.secretRequest && { secret: { name: meta.secretRequest.name, why: meta.secretRequest.why, notice: meta.secretRequest.notice } }), pushedHead, ...(row.agent === "summary" && item.said && { reportProblem: item.said }), ...(item.refused ? { refused: item.refused, policyRefusal: item.policyRefusal } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
+		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, changes.flags, changed, item.report, ended.usage, agent, item.asked), ...changes, ...(meta.secretRequest && { secret: { name: meta.secretRequest.name, why: meta.secretRequest.why, notice: meta.secretRequest.notice } }), pushedHead, ...(row.agent === "summary" && item.said && { reportProblem: item.said }), ...(item.refused ? { refused: item.refused, policyRefusal: item.policyRefusal } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
 	}
 	if (ended.stepLimit !== undefined) fact.stepLimit = ended.stepLimit;
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;

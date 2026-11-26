@@ -53,7 +53,11 @@ Notes are encrypted for your account and repository. You can delete them here. S
 
 The level is **Ask first** once Finish setup confirms the saved setup command and checks pass, at least four in five checked default-branch commits are green, and no job was flaky more than three times. Until then the level is **Not ready**, including when there is no finished CI result. At both levels the planner asks for smaller, independently checkable parts.
 
-The next levels depend on verified work in this repository. **Small plans** needs small items with passing checks and no reverts. **Full plans** needs larger features that rarely need CI fixes. **Earned merge** needs a clean record for a particular kind of work.
+**Track record** counts finished work in this repository. Five clean single items earn **Small plans**. A clean item merged with a passing verdict and green CI, without fixes, review requests for changes, or flagged changes. Three verified features earn **Full plans** when at most one in four features needed a CI fix. From Small plans onward the planner can choose the size of each part.
+
+At Full plans, five clean single items of one kind earn **Earned merge** for that kind. Markdown and reStructuredText files count as docs, test paths count as tests, and changes limited to supported dependency manifests and lockfiles count as dependency bumps. Mixed changes count as other. Repo setup offers to turn on small-plan approval or automatic merge for a kind you earned. Each switch needs your approval.
+
+A revert of an agent pull request or three failed verifications in a row drops one level. Repo setup records the reason and turns off settings accepted through an offer that was lost. A switch you enabled yourself in Saved settings stays on. Refusals, budget stops, and sandbox problems do not count as failed verifications.
 
 ## File a work item
 

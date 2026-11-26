@@ -7,8 +7,9 @@ import { emptyRow, environmentInputs, ENVIRONMENT_TABLE, writeEnvironment } from
 import assert from "node:assert/strict";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { test } from "node:test";
+import { applyOffers, BARS, finishedItem, offered, taskKind, trackRecord, type ItemRecord } from "../server/src/factory/readiness-track.js";
 import { buildProof, cachedScan, saveSetupScan, claimAssessment, finishAssessment, READINESS_TABLE, repositoryReadiness, scheduleSetup, setupInputs } from "../server/src/actors/user-readiness.js";
-import type { EnvironmentBuild } from "../server/src/contract.js";
+import type { EnvironmentBuild, ItemView } from "../server/src/contract.js";
 import { fileReadiness } from "../server/src/factory/readiness-filing.js";
 import { plannerReadiness, readinessCriteria, readinessItem, setupReport, type CiHistory, type CriterionId, type Judgment } from "../server/src/factory/readiness.js";
 import { GithubError, GithubApp, type Repository } from "../server/src/github/app.js";
@@ -35,13 +36,63 @@ test("working setup and passing CI earn Ask first at both boundaries", () => {
 	assert.equal(plannerReadiness(null), "");
 });
 
+test("levels, offers and recovery follow finished work in order", () => {
+	const clean = (at: number, change: Partial<ItemRecord> = {}): ItemRecord => ({ at, pr: at, kind: "docs-only", clean: true, verified: true,
+		feature: false, merged: true, closed: false, failed: false, fixed: false, sentBack: false, flaky: false, ciFix: false, ciPassed: true, ...change });
+	const singles = Array.from({ length: BARS.singles }, (_, i) => clean(i + 1));
+	const small = trackRecord(singles);
+	assert.equal(trackRecord(singles.slice(1)).level, "Ask first");
+	assert.deepEqual(offered(small, {}), ["Small plans"]);
+	assert.deepEqual(offered(small, { autoApprovePlans: true }), []);
+	const features = [6,7,8].map(at => clean(at, { feature: true }));
+	assert.equal(trackRecord([...singles.map((r, i) => ({ ...r, kind: i % 2 ? "other" as const : r.kind })), ...features]).level, "Full plans");
+	assert.equal(trackRecord([...singles, ...features.slice(1), clean(6, { feature: true, ciFix: true, fixed: true, clean: false })]).level, "Small plans");
+	const top = trackRecord([...singles, ...features]);
+	assert.equal(top.level, "Earned merge");
+	assert.deepEqual(offered(top, { autoApprovePlans: true }), ["docs-only"]);
+	const grant = { offer: "docs-only" as const, earned: top.earned["docs-only"]!, off: 0 };
+	assert.deepEqual(applyOffers({}, top, [grant]).defaults, { autoMergeSingles: true, mergeKinds: ["docs-only"] });
+	const down = trackRecord([...features, ...singles], { 2: 9, 77: 10 });
+	assert.equal(down.level, "Full plans");
+	assert.equal(down.reverts, 1);
+	assert.match(down.note, /#2 was reverted/);
+	assert.deepEqual(applyOffers({}, down, [grant]).expired, ["docs-only"]);
+	assert.deepEqual(applyOffers({}, down, [grant]).defaults, {});
+	assert.deepEqual(applyOffers({ autoMergeSingles: true }, down, []).defaults, { autoMergeSingles: true });
+	const misses = [10,11,12].map(at => clean(at, { verified: false, clean: false, failed: true }));
+	const lost = trackRecord([...singles, ...misses]);
+	assert.equal(lost.level, "Ask first");
+	const plan = { offer: "Small plans" as const, earned: small.earned["Small plans"]!, off: 0 };
+	const recovered = trackRecord([...singles, ...misses, ...singles.map(r => ({ ...r, at: r.at + 20 }))]);
+	assert.deepEqual(applyOffers({}, recovered, [plan]).expired, ["Small plans"]);
+	assert.deepEqual(applyOffers({ autoApprovePlans: true }, lost, []).defaults, { autoApprovePlans: true });
+	assert.doesNotMatch(plannerReadiness("Full plans"), /smaller/);
+});
+
+test("only current-head verification and repository failures count", () => {
+	const item = { head: "head", state: "done", pullRequest: { number: 8 }, run: { n: 1, rounds: {} },
+		verdicts: [{ head: "head", run: 1, result: "pass", flags: [], ci: { state: "passed" }, gate: { required: [] } }],
+		events: [], reviews: [], feedback: { batches: [] } } as unknown as ItemView;
+	assert.ok(finishedItem(item).clean);
+	assert.equal(finishedItem({ ...item, head: "new" }).verified, false);
+	assert.equal(finishedItem({ ...item, review: { state: "filed", recommendation: "needs_person" } }).clean, false);
+	for (const stopReason of ["tokens", "turn_refused", "sandboxes"])
+		assert.equal(finishedItem({ ...item, state: "failed", run: { ...item.run!, stopReason } }).failed, false);
+});
+
+test("each changed path must belong to the same kind", () => {
+	for (const [paths, expected] of [[["docs/setup.md", "README.rst"], "docs-only"], [["tests/a.ts", "src/a.test.ts"], "tests-only"],
+		[["pkg/package.json", "yarn.lock"], "dependency bumps"], [["README.md", "app.ts"], "other"], [[], "other"]] as const)
+		assert.equal(taskKind([...paths]), expected);
+});
+
 test("CI history reads default-branch checks and statuses, merge results and rerun attempts", async () => {
 	const app = new GithubApp({ appId: "1", slug: "ci", clientId: "", apiUrl: "https://api.example", webUrl: "" }, { clientSecret: () => null, privateKey: () => null });
 	const repo = { owner: "team", name: "repo", defaultBranch: "trunk" } as Repository;
 	const since = new Date(now - 30 * 86_400_000).toISOString();
 	const revert = { number: 7, title: "Revert the change", baseRefName: "trunk", mergedAt: new Date(now).toISOString(), mergeCommit: { oid: "merge" } };
 	const commit = (oid: string, parent: string, state: string | null, message = "", pulls: typeof revert[] = [], parents = 1) => ({
-		oid, message, parents: { totalCount: parents, nodes: [{ oid: parent }] }, statusCheckRollup: state && { state }, associatedPullRequests: { nodes: pulls },
+		oid, message, committedDate: new Date(now).toISOString(), parents: { totalCount: parents, nodes: [{ oid: parent }] }, statusCheckRollup: state && { state }, associatedPullRequests: { nodes: pulls },
 	});
 	const job = (name: string, run_attempt: number, conclusion: string, head_sha = "head") => ({ name, run_attempt, conclusion, head_sha });
 	const run = { id: "12", run_attempt: 2, head_sha: "head", head_branch: "work", event: "pull_request" };
@@ -53,7 +104,7 @@ test("CI history reads default-branch checks and statuses, merge results and rer
 			const { variables, query } = call.body as { variables: { after: string | null; since: string; head: string }; query: string };
 			assert.match(query, /statusCheckRollup/);
 			assert.deepEqual([variables.head, variables.since], ["head", since]);
-			const nodes = variables.after ? [commit("old", "none", "ERROR"), commit("side", "old", "FAILURE", 'Revert "bad change"', [revert])]
+			const nodes = variables.after ? [commit("old", "none", "ERROR", "", [{ ...revert, number: 2, title: "bad change", mergeCommit: { oid: "old" } }]), commit("side", "old", "FAILURE", 'Revert "bad change"', [revert])]
 				: [commit("head", "merge", "SUCCESS", "Tidy up\n\nThis reverts commit abc."), commit("merge", "pending", "FAILURE", "", [revert], 2), commit("pending", "old", "PENDING")];
 			body = { data: { repository: { object: { history: { nodes, pageInfo: { endCursor: "next", hasNextPage: !variables.after } } } } } };
 		} else if (call.path.endsWith("/actions/runs")) {
@@ -68,7 +119,7 @@ test("CI history reads default-branch checks and statuses, merge results and rer
 		return { status: 200, next: false, link: "", body };
 	};
 	const actual = await scanCiHistory(app, "install", repo, "head", now);
-	assert.deepEqual(actual, { ...history, green: 1, checked: 3, reverts: 2, redMerges: 1, flaky: [{ name: "e2e", count: 2 }] });
+	assert.deepEqual(actual, { ...history, revertedPulls: { 2: now }, green: 1, checked: 3, reverts: 2, redMerges: 2, flaky: [{ name: "e2e", count: 2 }] });
 	assert.equal((await scanCiHistory(app, "install", repo, null, now)).hasCi, false);
 	limited = true;
 	await assert.rejects(scanCiHistory(app, "install", repo, "head", now), GithubError);
@@ -147,7 +198,7 @@ test("weekly runs require opting in and share the manual claim", async () => {
 	const db = { execute: async (q: string, ...args: SQLInputValue[]) => sqlite.prepare(q).all(...args) } as Parameters<typeof claimAssessment>[0];
 	assert.equal(await claimAssessment(db, "repo", "scheduled", now), true);
 	assert.equal(await claimAssessment(db, "repo", "manual", now), false);
-	const inputs = { key: "base", ci: history, ciReadFailed: true, at: now, evidence: { hasSavedSetup: true, savedChecks: ["test"], buildCommit: null, ...buildProof(undefined, []) },
+	const inputs = { builds: { passed: 0, total: 0, setupPassed: 0 }, key: "base", ci: history, ciReadFailed: true, at: now, evidence: { hasSavedSetup: true, savedChecks: ["test"], buildCommit: null, ...buildProof(undefined, []) },
 		findings: answers("areas").map(f => ({ ...f, pass: ["setup", "checks", "guide"].includes(f.id) ? null : f.pass })) };
 	await db.execute("UPDATE readiness SET inputs='base'");
 	const view = () => repositoryReadiness(db, "repo", inputs, false);
