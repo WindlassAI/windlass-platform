@@ -91,8 +91,10 @@ test("CI history reads default-branch checks and statuses, merge results and rer
 	const repo = { owner: "team", name: "repo", defaultBranch: "trunk" } as Repository;
 	const since = new Date(now - 30 * 86_400_000).toISOString();
 	const revert = { number: 7, title: "Revert the change", baseRefName: "trunk", mergedAt: new Date(now).toISOString(), mergeCommit: { oid: "merge" } };
+	const contexts = (state: string) => state === "ERROR" ? [{ state }] : state === "CANCELLED" ? [{ conclusion: "CANCELLED" }, { conclusion: "SUCCESS" }] : [{ conclusion: state }];
 	const commit = (oid: string, parent: string, state: string | null, message = "", pulls: typeof revert[] = [], parents = 1) => ({
-		oid, message, committedDate: new Date(now).toISOString(), parents: { totalCount: parents, nodes: [{ oid: parent }] }, statusCheckRollup: state && { state }, associatedPullRequests: { nodes: pulls },
+		oid, message, committedDate: new Date(now).toISOString(), parents: { totalCount: parents, nodes: [{ oid: parent }] },
+		statusCheckRollup: state && { state: state === "CANCELLED" ? "FAILURE" : state, contexts: { nodes: contexts(state) } }, associatedPullRequests: { nodes: pulls },
 	});
 	const job = (name: string, run_attempt: number, conclusion: string, head_sha = "head") => ({ name, run_attempt, conclusion, head_sha });
 	const run = { id: "12", run_attempt: 2, head_sha: "head", head_branch: "work", event: "pull_request" };
@@ -105,7 +107,7 @@ test("CI history reads default-branch checks and statuses, merge results and rer
 			assert.match(query, /statusCheckRollup/);
 			assert.deepEqual([variables.head, variables.since], ["head", since]);
 			const nodes = variables.after ? [commit("old", "none", "ERROR", "", [{ ...revert, number: 2, title: "bad change", mergeCommit: { oid: "old" } }]), commit("side", "old", "FAILURE", 'Revert "bad change"', [revert])]
-				: [commit("head", "merge", "SUCCESS", "Tidy up\n\nThis reverts commit abc."), commit("merge", "pending", "FAILURE", "", [revert], 2), commit("pending", "old", "PENDING")];
+				: [commit("head", "superseded", "SUCCESS", "Tidy up\n\nThis reverts commit abc."), commit("superseded", "merge", "CANCELLED"), commit("merge", "pending", "FAILURE", "", [revert], 2), commit("pending", "old", "PENDING")];
 			body = { data: { repository: { object: { history: { nodes, pageInfo: { endCursor: "next", hasNextPage: !variables.after } } } } } };
 		} else if (call.path.endsWith("/actions/runs")) {
 			assert.deepEqual(call.query, { per_page: 100, created: ">=" + since });

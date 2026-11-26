@@ -5,16 +5,18 @@ const commitsQuery = `query($owner: String!, $name: String!, $head: GitObjectID!
 	repository(owner: $owner, name: $name) { object(oid: $head) { ... on Commit {
 		history(first: 100, since: $since, after: $after) {
 			pageInfo { hasNextPage endCursor }
-			nodes { oid committedDate message parents(first: 1) { totalCount nodes { oid } } statusCheckRollup { state }
+			nodes { oid committedDate message parents(first: 1) { totalCount nodes { oid } } statusCheckRollup { state contexts(first: 100) { nodes { ... on CheckRun { conclusion } ... on StatusContext { state } } } }
 				associatedPullRequests(first: 5) { nodes { number title baseRefName mergedAt mergeCommit { oid } } }
 			}
 		}
 	} } }
 }`;
 
+const FAILED_CHECK = new Set(["FAILURE", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]), FAILED_STATUS = new Set(["FAILURE", "ERROR"]);
+
 interface Commit {
 	oid: string; committedDate: string; message: string; parents: { totalCount: number; nodes: { oid: string }[] };
-	statusCheckRollup: { state: string } | null;
+	statusCheckRollup: { state: string; contexts?: { nodes: { conclusion?: string | null; state?: string }[] } } | null;
 	associatedPullRequests: { nodes: { number: number; title: string; baseRefName: string; mergedAt: string | null; mergeCommit: { oid: string } | null }[] };
 }
 interface HistoryPage { nodes: Commit[]; pageInfo: { hasNextPage: boolean; endCursor: string } }
@@ -61,6 +63,8 @@ export async function scanCiHistory(app: GithubApp, token: string, repo: Reposit
 		const state = commit.statusCheckRollup?.state;
 		if (state) history.hasCi = true;
 		if (state !== "SUCCESS" && state !== "FAILURE" && state !== "ERROR") continue;
+		// A run cancelled because a newer push replaced it says nothing about this commit.
+		if (state !== "SUCCESS" && !commit.statusCheckRollup!.contexts?.nodes.some(c => c.state ? FAILED_STATUS.has(c.state) : FAILED_CHECK.has(c.conclusion ?? ""))) continue;
 		history.checked++;
 		if (state === "SUCCESS") history.green++;
 		else if (commit.parents.totalCount > 1 || commit.associatedPullRequests.nodes.some(p => p.baseRefName === branch && p.mergeCommit?.oid === oid && p.mergedAt))
