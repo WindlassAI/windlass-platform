@@ -34,7 +34,14 @@ Account secrets go to MCP servers by default: your own, and a repository's once 
 
 ### GitLab
 
-In **Settings → Integrations**, choose **Connect GitLab…** and approve access on the GitLab instance configured for this deployment. When you return, search for a project, choose its namespace and name, then select **Save project**. Saving registers a project webhook and requires Maintainer access or higher. Settings shows the saved project and its default branch. **Disconnect…** forgets the GitLab connection and selected project without changing your GitHub connection.
+GitLab appears under **Settings → Integrations** only when the deployment operator has configured OAuth for one GitLab instance. On the server, set `WLP_GITLAB_BASE_URL` to `https://gitlab.com` or the self-managed instance’s base URL (including any path prefix), and set `WLP_GITLAB_CLIENT_ID` and `WLP_GITLAB_CLIENT_SECRET` for that instance’s OAuth application.
+
+1. Choose **Connect GitLab…** and approve access on GitLab. This connects your GitLab account for project work; it does not change how you sign in to Windlass.
+2. Back in Settings, search for a project, choose its namespace and name, then select **Save project**. You need Maintainer access or higher so Windlass can register the project webhook. Settings shows the selected project and its default branch.
+
+Windlass generates a secret for the project hook; you do not need to enter one. Deliveries with a missing or incorrect `X-Gitlab-Token` are refused and file nothing. To try the connection, [file an item from a GitLab issue](/docs/factory#from-a-gitlab-issue).
+
+Choose **Disconnect…** and confirm to forget the connection and selected project. Windlass no longer accepts events for that connection. Your GitHub connection is unchanged.
 
 ### Linear
 
