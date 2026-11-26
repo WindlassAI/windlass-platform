@@ -163,6 +163,17 @@ describe("subtasks in parallel, grouped", () => {
 		expect(doneWords(groups.done)).toBe("1 integrated");
 	});
 
+	it("a repair the factory filed itself runs with the parts, but the integrated count stays the plan's", () => {
+		const done = (parallel.children ?? []).find((child) => child.parent?.key === "parser")!;
+		const repair = { ...done, id: "it_repair", title: "Fix failing feature checks", state: "working" as const, createdAt: done.createdAt + 1, parent: { ...done.parent!, key: "ci-fix-9" } };
+		const groups = groupSubtasks(parallel.plan!, [...(parallel.children ?? []), repair], parallel.subtasks);
+		expect(keys(groups.running)).toContain("ci-fix-9");
+		const html = renderToStaticMarkup(createElement(SubtasksBlock, { plan: parallel.plan!, children: [...(parallel.children ?? []), repair], jobs: parallel.subtasks, now: Date.now() }));
+		const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+		expect(text).toContain("Fix failing feature checks");
+		expect(text).toContain(`1 of ${parallel.plan!.subtasks.length} integrated`);
+	});
+
 	it("draws Running now (2 of 3), Up next with what holds each, and Done folded", () => {
 		const now = parallel.subtasks!.find((job) => job.key === "units")!.startedAt! + 19 * 60_000;
 		const html = renderToStaticMarkup(createElement(SubtasksBlock, { plan: parallel.plan!, children: parallel.children ?? [], jobs: parallel.subtasks, now }));
