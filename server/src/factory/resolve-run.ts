@@ -51,14 +51,26 @@ export function deploymentSize(offered: readonly HostedSize[], preferred = ITEM_
 
 export const runPlace = (place: SandboxPlace): DefaultPlace => place.kind === "machine" ? { machine: place.machineId } : "hosted";
 
-/** Model ids belong to their agent. The Windlass model also serves the planning and review roles. */
-export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanSubtask, "agent" | "needs">): ResolvedRun {
-	const layers: [Source, RunSettings][] = [
+function runLayers(context: RunContext): [Source, RunSettings][] {
+	return [
 		["deployment", context.deployment ?? {}],
 		["account", context.account ?? {}],
 		["repository", context.repository ?? {}],
 		["item", context.item ?? {}],
 	];
+}
+
+const agentLayerOf = (layers: [Source, RunSettings][]) => layers.findLast(([, settings]) => settings.harness != null);
+
+/** Store a filed model and effort under the agent they belong to, including an inherited agent. */
+export function filedAgentSettings(context: RunContext, model: string | null, effort: string | null): RunSettings {
+	const agent = agentLayerOf(runLayers(context))?.[1].harness ?? "windlass";
+	return agent === "windlass" ? { model, effort } : { machineModel: model, machineEffort: effort };
+}
+
+/** Model ids belong to their agent. The Windlass model also serves the planning and review roles. */
+export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanSubtask, "agent" | "needs">): ResolvedRun {
+	const layers = runLayers(context);
 	if (part) {
 		const { agent, needs } = part;
 		layers.push(["item", { harness: agent?.harness, model: agent?.harness === "windlass" ? agent.model : undefined,
@@ -70,7 +82,7 @@ export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanS
 	const priority = [...layers].reverse();
 	const placeLayer = priority.find(([, settings]) => settings.place != null);
 	const implementation = role === "builder" || role === "part" || role === "repair";
-	const agentLayer = implementation ? priority.find(([, settings]) => settings.harness != null) : undefined;
+	const agentLayer = implementation ? agentLayerOf(layers) : undefined;
 	const place = placeLayer?.[1].place ?? "hosted";
 	const agent = agentLayer?.[1].harness ?? "windlass";
 	const values: RunValues = { place, fallback: "wait", agent, model: null, effort: null, profile: null, size: ITEM_HOSTED_SIZE,

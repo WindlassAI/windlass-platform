@@ -219,12 +219,13 @@ function machineSignIns(entry: ReportedSignIn): ModelProvider[] {
 	return (entry.machineProviders ?? []).map(p => p === "chatgpt" ? "openai" : p).filter(isModelProvider);
 }
 
-export function machinePayerProblem(entry: ReportedSignIn & { keyRelay?: true }, model: string | undefined, source: CredentialSource, keys: readonly ModelProvider[]) {
+export function machinePayerProblem(entry: ReportedSignIn & { keyRelay?: true }, model: string | undefined, source: CredentialSource, keys: readonly ModelProvider[], itemMachine?: string) {
 	if (source === "key") {
 		if (!entry.keyRelay) return "The selected Settings key needs a runner with key relay support.";
 		if (!hostedProvider(entry.id, model, keys)) return hostedKeyMessage(entry.id, model);
 	} else {
-		if (entry.signIn !== "token") return `Sign in to ${harnessName(entry.id)} on the machine or choose a Settings key.`;
+		if (entry.signIn !== "token") return itemMachine ? itemSignInMessage(machineHarnesses[entry.id], itemMachine, entry.signIn)
+			: `Sign in to ${harnessName(entry.id)} on the machine or choose a Settings key.`;
 		if (entry.id === "opencode" && model && model !== "default" && !(entry.machineProviders ?? []).some(p =>
 			model.startsWith((p === "free" ? "opencode" : p === "chatgpt" ? "openai" : p) + "/")))
 			return `The machine sign-in cannot run ${model}. Sign in to its provider or choose a Settings key.`;

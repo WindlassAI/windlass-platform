@@ -131,7 +131,7 @@ export const freeMachineSlots = ({ max, busy }: Pick<ReturnType<typeof machineSl
  * was chosen. Windlass without a model of its own runs the feature's (`featureModel`): an effort alone is held
  * to that model, and is not judged where the feature's model is not known.
  */
-export function agentModelProblem(agent: PlanSubtask["agent"], list: ModelList | null | undefined, featureModel?: string): string | null {
+export function agentModelRefusal(agent: PlanSubtask["agent"], list: ModelList | null | undefined, featureModel?: string) {
 	if (!agent || !list || (agent.model === undefined && agent.effort === undefined)) return null;
 	const machine = machineHarness(agent.harness) !== null;
 	if (agent.model === undefined && !machine && featureModel === undefined) return null;
@@ -140,9 +140,15 @@ export function agentModelProblem(agent: PlanSubtask["agent"], list: ModelList |
 		if (agent.effort !== undefined) checkItemEffort(list, model, agent.effort, machine);
 		return null;
 	} catch (error) {
-		if (error instanceof ModelProblem) return `${harnessName(agent.harness)}: ${error.message.replace(/[.:]?\s*$/, "")}`;
+		if (error instanceof ModelProblem) {
+			return { code: error.code, message: error.message, reason: `${harnessName(agent.harness)}: ${error.message.replace(/[.:]?\s*$/, "")}` };
+		}
 		throw error;
 	}
+}
+
+export function agentModelProblem(agent: PlanSubtask["agent"], list: ModelList | null | undefined, featureModel?: string): string | null {
+	return agentModelRefusal(agent, list, featureModel)?.reason ?? null;
 }
 
 /**

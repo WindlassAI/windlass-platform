@@ -743,7 +743,8 @@ export async function turnCredential(c: Ctx, meta: SessionMeta, offered: Offered
 	if (!hosted && meta.origin?.payer && meta.origin.payer !== payer)
 		throw new UserError("The selected payer changed. Restore the item's payer on Machines or file a new item.", { code: "harness_signed_out" });
 	if (!hosted) {
-		const problem = offered ? machinePayerProblem(offered, model, payer, providers) : "The selected machine agent is unavailable.";
+		const itemMachine = meta.origin?.kind === "item" ? c.vars.runner?.known?.name || meta.machineName || "your machine" : undefined;
+		const problem = offered ? machinePayerProblem(offered, model, payer, providers, itemMachine) : "The selected machine agent is unavailable.";
 		if (problem) throw new UserError(problem, { code: "harness_signed_out" });
 	}
 	if (harness === "opencode" && model === "default") {

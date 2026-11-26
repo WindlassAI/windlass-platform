@@ -1,7 +1,7 @@
 import { machineLabel, type HarnessId, type ItemMode, type ItemPlaceDefaults, type MachineSummary, type SandboxPlace, type SandboxProfileId } from "../contract.js";
 import { harnessName, itemModeOf, itemProfiles, initialHarnessModels, machinePayerProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarness } from "../sandbox/harnesses.js";
 import { resolveRun, runAgent, type ResolvedRun } from "./resolve-run.js";
-import { agentModelProblem, machineSlots, runnerProblem, type AgentModels } from "./placement.js";
+import { agentModelRefusal, machineSlots, runnerProblem, type AgentModels } from "./placement.js";
 
 export function savedPlace(repo?: ItemPlaceDefaults | null, account?: ItemPlaceDefaults | null): ItemPlaceDefaults | undefined {
 	if (!repo?.place && !account?.place && !repo?.harness && !account?.harness) return;
@@ -61,6 +61,7 @@ export interface DefaultDestination {
 	harness: HarnessId;
 	profile?: SandboxProfileId;
 	wait?: string;
+	refusal?: { code: "harness_signed_out" | "bad_effort" | "bad_model" | "bad_input"; message: string };
 }
 
 export function resolveDefaultPlace(defaults: ItemPlaceDefaults, machines: readonly MachineSummary[], mode: ItemMode): DefaultDestination {
@@ -72,21 +73,30 @@ export function checkRunPlace(run: ResolvedRun, machines: readonly MachineSummar
 	if (run.place === "hosted") return { place: { kind: "hosted" }, harness, profile: run.profile ?? undefined };
 	const candidates = placeMachines(run.place, machines);
 	const reasons: string[] = [];
+	let refusal: DefaultDestination["refusal"];
 	for (const machine of candidates) {
 		const label = machineLabel(machine);
 		const profiles = profilesForItems(machine, harness);
 		const profile = run.profile ?? profiles[0]?.id;
 		const offered = machine.harnesses?.find(h => h.id === harness);
 		const runner = runnerProblem(machine.warnings);
-		const payer = offered && machinePayerProblem(offered, run.model ?? undefined, offered.source ?? "machine", offered.platformKeys ?? []);
+		const source = offered?.source ?? "machine";
+		const payer = offered && machinePayerProblem(offered, run.model ?? undefined, source, offered.platformKeys ?? [], label);
 		const list = harness === "windlass" ? models?.windlass : models?.machines?.[machine.machineId]?.[harness] ?? initialHarnessModels(offered?.options);
-		const model = agentModelProblem(runAgent(run), list);
+		const model = agentModelRefusal(runAgent(run), list);
 		if (machine.status !== "online") reasons.push(`“${label}” is offline.`);
 		else if (runner) reasons.push(`“${label}”: ${runner}`);
-		else if (offered && typeof run.place === "object" && run.payer !== (offered.source ?? "machine")) reasons.push(`“${label}”: restore the payer selected for this run before retrying.`);
-		else if (payer) reasons.push(`“${label}”: ${payer}`);
-		else if (model) reasons.push(`“${label}”: ${model}.`);
-		else if (run.profile && !machine.profiles.some(p => p.id === run.profile && p.available)) reasons.push(
+		else if (offered && typeof run.place === "object" && run.payer !== source) reasons.push(`“${label}”: restore the payer selected for this run before retrying.`);
+		else if (payer) {
+			if (source === "machine" && offered.signIn !== "token") {
+				refusal = { code: "harness_signed_out", message: payer };
+				reasons.push(payer);
+			} else reasons.push(`“${label}”: ${payer}`);
+		} else if (model) {
+			const catalogModel = model.code === "bad_model" && list?.source === "harness" && list.fetchedAt != null;
+			refusal = { code: catalogModel ? "bad_input" : model.code, message: model.message };
+			reasons.push(`“${label}”: ${model.reason}.`);
+		} else if (run.profile && !machine.profiles.some(p => p.id === run.profile && p.available)) reasons.push(
 			`“${label}” cannot run ${run.profile}. ${machine.profiles.find(p => p.id === run.profile)?.unavailableReason ?? "Choose another profile or enable it on the runner."}`);
 		else if (!profiles.some(p => p.id === profile)) reasons.push(`“${label}” cannot run ${harnessName(harness)} with ${profile ?? "an available profile"}. Check its allowed profiles and payer.`);
 		else {
@@ -97,7 +107,7 @@ export function checkRunPlace(run: ResolvedRun, machines: readonly MachineSummar
 	}
 	const wait = reasons.join(" ") || "No paired machine matches this choice.";
 	const machineId = typeof run.place === "object" ? run.place.machine : candidates[0]?.machineId;
-	return { place: { kind: "machine", machineId: machineId ?? "any-machine" }, harness, profile: run.profile ?? undefined, wait };
+	return { place: { kind: "machine", machineId: machineId ?? "any-machine" }, harness, profile: run.profile ?? undefined, wait, ...(typeof run.place === "object" && refusal && { refusal }) };
 }
 
 export const changesPlace = (change: ItemPlaceDefaults) =>
