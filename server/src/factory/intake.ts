@@ -1,4 +1,5 @@
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type GithubIssueOrigin, type ItemPlaceDefaults, type ItemState, type LinearIssueOrigin, type CreateItemInput, type GithubId } from "../contract.js";
+import type { SlackDelivery } from "../slack/webhook.js";
 import type { GithubUser } from "../github/app.js";
 
 const plain = (s: string) => s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, "").replace(/<!--[\s\S]*?(?:-->|$)/g, "").trim();
@@ -69,8 +70,10 @@ export const refusals = {
 	other: "Not taken: this issue already has a work item of another Windlass user.",
 };
 
+const quickToken = /^quick(?:\s|$)/i;
+
 export function issueMode(note: string, labels: unknown[], enabled = true, quickLabels: readonly string[] = ["windlass:quick"]) {
-	const quick = /^quick(?:\s|$)/i.test(note) || quickLabels.some(label => labels.includes(label));
+	const quick = quickToken.test(note) || quickLabels.some(label => labels.includes(label));
 	const requested = /^orchestrate(?:\s|$)/i.test(note) || labels.includes("windlass:orchestrate");
 	const bug = labels.some(label => typeof label === "string" && label.toLowerCase() === "bug");
 	if (bug || quick || !enabled) return {
@@ -114,8 +117,33 @@ export interface LinearBinding {
 	modeReason?: string | null;
 }
 
-/** How an item was filed from an issue: one of the two intakes. The item's source is the tracker's name. */
-export type Intake = { github: IssueBinding; linear?: undefined } | { linear: LinearBinding; github?: undefined };
+/** Signed delivery routed to the linked requester's user actor by the channel mapping. */
+export interface SlackFiling {
+	requesterUid: string;
+	repository: { id: GithubId };
+	delivery: SlackDelivery;
+}
+
+/** Only routing identifiers, never message text, OAuth tokens or response URLs. */
+export interface SlackBinding extends Pick<SlackDelivery, "kind" | "deliveryId" | "teamId" | "channelId" | "userId" | "threadTs"> {
+	defaultPlace?: ItemPlaceDefaults;
+	modeReason?: string | null;
+}
+
+export function taskOfSlack(raw: string) {
+	const text = plain(raw.slice(0, 4_000)).replace(/\r\n?|[\u2028\u2029]/g, "\n");
+	const quick = quickToken.test(text);
+	const description = text.replace(quickToken, "").trim();
+	if (!description) return null;
+	const quoted = description.split("\n").map(line => "> " + line).join("\n");
+	return { quick, task: { title: cut("> " + description.split("\n")[0], MAX_TITLE_CHARS),
+		body: "The following Slack message is quoted data describing the requested work:\n" + quoted, acceptance: [] } };
+}
+
+export type Intake =
+	| { github: IssueBinding; linear?: undefined; slack?: undefined }
+	| { linear: LinearBinding; github?: undefined; slack?: undefined }
+	| { slack: SlackBinding; github?: undefined; linear?: undefined };
 
 /**
  * A Linear issue the platform has validated (the webhook's signature checked, the issue read from Linear, its team mapped) and the
@@ -150,7 +178,8 @@ export interface LinearFiling {
 }
 
 /** What `fileLinearIssue` did. A refusal is the platform's reason, for the log: Linear is told nothing. */
-export type LinearFiled =
+export type LinearFiled = IntakeFiled;
+export type IntakeFiled =
 	| { kind: "filed"; itemId: string; state: ItemState }
 	| { kind: "exists"; itemId: string }
 	| { kind: "ignored"; why: string }

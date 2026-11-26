@@ -36,6 +36,7 @@ const short = (head: string) => (/^[0-9a-f]{40}$/.test(head) ? head.slice(0, 7) 
 
 /** Each source as the person reads it on the timeline and in Windlass's approval wording. */
 export const untrustedWords = {
+	slack: "a Slack request",
 	issue: (number: number, author: string) => `issue #${number} by @${author}`,
 	/** A Linear issue of someone else's: `identifier` is its own ("ENG-12"), `author` the creator's name as `linearName` made it. */
 	linear: (identifier: string, author: string) => `Linear issue ${identifier} by ${author}`,
@@ -57,7 +58,7 @@ export const untrustedWords = {
  * platform's own run made: no person outside put it there, though what it quotes is not vouched for.
  */
 export function thirdParty(list: readonly string[] | undefined | null): string[] {
-	return sources(list).filter(source => THIRD_PARTY.some(form => form.test(source)));
+	return sources(list).filter(source => source === untrustedWords.slack || THIRD_PARTY.some(form => form.test(source)));
 }
 
 /** `untrustedWords.issue`, `untrustedWords.linear` and `untrustedWords.feedback`, as they begin: every source is made by those words. */
