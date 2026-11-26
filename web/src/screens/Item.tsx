@@ -24,7 +24,7 @@ import { absoluteTime, clockTime, compact, plural, relativeTime, sandboxTime } f
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow, useSessions } from "../state/hooks";
-import { ItemGlyph, ItemRow, ItemStages, STATE_WORD } from "./Items";
+import { ItemGlyph, ItemRow, ItemStages, PartStages, STATE_WORD } from "./Items";
 import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
 import { AgentGlyph } from "../components/ui/Pill";
@@ -1099,7 +1099,7 @@ export function Item({ page }: { page: ItemPage }) {
 			) : null}
 
 			<section className="usage-section item-where" aria-label="Where it is">
-				<ItemStages item={view} reviewer={reviewer} step={view.run?.step.kind ?? null} />
+				{view.parent ? <PartStages item={view} step={view.run?.step.kind ?? null} /> : <ItemStages item={view} reviewer={reviewer} step={view.run?.step.kind ?? null} />}
 				{secretSaved !== null && !view.question ? (
 					<p className="callout secret-ask-saved" role="status">
 						<CheckIcon size={14} className="tone-good" />

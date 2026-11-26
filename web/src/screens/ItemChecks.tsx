@@ -81,17 +81,19 @@ export function checksSummary(view: ItemView): ChecksSummary {
 	const verdict = view.verdicts[view.verdicts.length - 1] ?? null;
 	const open: ChecksSummary["open"] = [];
 	const add = (count: number, one: string, many = `${one}s`) => count > 0 && open.push({ count, words: plural(count, one, many) });
+	// A part does not wait for CI and has no pull request: both are its feature's.
+	const part = !!view.parent;
 	if (verdict) {
-		const states = verdict.ci.runs.map((run) => ciState(run.conclusion));
+		const states = part ? [] : verdict.ci.runs.map((run) => ciState(run.conclusion));
 		const count = (state: CiState) => states.filter((one) => one === state).length;
 		add(count("failed"), "failed CI check");
 		add(count("running"), "CI check still running", "CI checks still running");
 		add(count("cancelled"), "cancelled CI check");
-		if (verdict.ci.runs.length === 0 && (verdict.ci.state === "timed_out" || verdict.ci.state === "not_run" || verdict.ci.state === "failed")) open.push({ count: 1, words: verdict.ci.state === "not_run" ? "CI did not start" : verdict.ci.state === "failed" ? "CI failed" : "CI unfinished" });
-		if (verdict.ci.state === "unread" || verdict.ci.state === "not_permitted") open.push({ count: 1, words: "CI not read" });
+		if (!part && verdict.ci.runs.length === 0 && (verdict.ci.state === "timed_out" || verdict.ci.state === "not_run" || verdict.ci.state === "failed")) open.push({ count: 1, words: verdict.ci.state === "not_run" ? "CI did not start" : verdict.ci.state === "failed" ? "CI failed" : "CI unfinished" });
+		if (!part && (verdict.ci.state === "unread" || verdict.ci.state === "not_permitted")) open.push({ count: 1, words: "CI not read" });
 		add(verdict.gate.required.filter((check) => check.status !== "passed").length, "check that did not pass", "checks that did not pass");
 		add(verdict.flags.length, "thing to look at", "things to look at");
-		if (verdict.mergeable === false) open.push({ count: 1, words: "a conflict with the base" });
+		if (!part && verdict.mergeable === false) open.push({ count: 1, words: "a conflict with the base" });
 		if (verdict.moved) open.push({ count: 1, words: "a commit nothing verified" });
 		if (open.length === 0 && verdict.result === "incomplete") open.push({ count: 1, words: "the last turn did not finish" });
 		if (open.length === 0 && verdict.result === "unverified") open.push({ count: 1, words: "nothing verified this commit" });
@@ -486,17 +488,26 @@ export function ItemChecks({ view, links, when }: { view: ItemView; links: Scree
 			<p className={`checks-summary${summary.ready ? " checks-ready" : ""}`}>
 				<span className="checks-summary-main">
 					{summary.ready ? <CheckIcon size={15} className="checks-summary-mark tone-good" /> : summary.open.length > 0 ? <span className={`checks-summary-mark checks-dot${verdict?.result === "fail" || summary.open.some((one) => one.words.endsWith("blocking finding") || one.words.endsWith("blocking findings")) ? " checks-dot-bad" : ""}`} aria-hidden="true" /> : null}
-					<span>{summary.ready ? "Ready to merge" : summary.open.length > 0 ? openLine(summary.open) : verdict ? "Nothing open" : "No verdict yet: one is made when the work is handed over."}</span>
+					<span>{summary.ready ? "Ready to merge" : summary.open.length > 0 ? openLine(summary.open) : verdict ? "Nothing open" : view.parent ? "Checked when it joins the feature. CI and the review run on the whole feature." : "No verdict yet: one is made when the work is handed over."}</span>
 				</span>
-				{summary.ready ? null : summary.reviewing ? <ReviewWord item={view} /> : verdict && view.review?.recommendation !== "changes_requested" ? <VerdictWord verdict={{ result: verdict.result, flags: verdict.flags, ci: verdict.ci.state }} /> : null}
+				{summary.ready || view.parent ? null : summary.reviewing ? <ReviewWord item={view} /> : verdict && view.review?.recommendation !== "changes_requested" ? <VerdictWord verdict={{ result: verdict.result, flags: verdict.flags, ci: verdict.ci.state }} /> : null}
 			</p>
 			<dl className="usage-facts item-facts checks-groups">
-				{verdict ? <Ci verdict={verdict} /> : null}
+				{verdict && view.parent ? (
+					<div>
+						<dt>CI</dt>
+						<dd>
+							<p className="checks-head tone-dim">
+								Runs on the whole feature, once its parts are in: <a className="link" {...linkProps({ name: "item", id: view.parent.itemId })}>{view.parent.title}</a>
+							</p>
+						</dd>
+					</div>
+				) : verdict ? <Ci verdict={verdict} /> : null}
 				{verdict ? <Gate gate={verdict.gate} /> : null}
 				<Review view={view} links={links} when={when} />
 				<Feedback view={view} when={when} />
 				{verdict ? <Flags verdict={verdict} /> : null}
-				{verdict && verdict.mergeable !== true ? (
+				{verdict && !view.parent && verdict.mergeable !== true ? (
 					<div>
 						<dt>Merging</dt>
 						<dd>

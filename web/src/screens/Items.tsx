@@ -242,6 +242,49 @@ export function itemTrack(item: Pick<ItemSummary, "state" | "wait" | "pullReques
 	}
 }
 
+/**
+ * A feature's part has its own short way: it is built, its checks run, and it is merged into the feature
+ * branch. CI, review and the hand-over belong to the feature, so a part's page never shows them as its own.
+ */
+export function partTrack(item: Pick<ItemSummary, "state" | "wait">, step: StepKind | null): { stages: string[]; at: number; now: boolean; word: string } | null {
+	const stages = ["built", "checked", "in the feature"];
+	switch (item.state) {
+		case "queued":
+			return { stages, at: 0, now: false, word: "queued" };
+		case "working":
+		case "waiting": {
+			const checking = step === "run_checks" || step === "gate";
+			const word = item.state === "waiting" && item.wait ? WAIT_DOING[item.wait.reason] : checking ? "checking" : "building";
+			return { stages, at: checking ? 2 : 1, now: item.state === "working", word };
+		}
+		case "review":
+		case "done":
+			return { stages, at: stages.length, now: false, word: "in the feature" };
+		default:
+			return null;
+	}
+}
+
+export function PartStages({ item, step = null }: { item: Pick<ItemSummary, "state" | "wait">; step?: StepKind | null }) {
+	const track = partTrack(item, step);
+	if (track === null) return null;
+	const done = track.at === track.stages.length && !track.now;
+	return (
+		<ol className={`item-stages item-stages-${done ? "done" : track.now ? "work" : "wait"}`} aria-label="Where this part is on its way into the feature">
+			{track.stages.map((stage, index) => {
+				const at = index === track.at - 1;
+				const isDone = index < track.at - 1 || (at && done);
+				return (
+					<li key={stage} className={`item-stage${isDone ? " item-stage-done" : ""}${at && track.now ? " item-stage-now" : at && !isDone ? " item-stage-at" : ""}`} aria-current={at ? "step" : undefined}>
+						<span className="item-stage-bar" aria-hidden="true" />
+						<span className="item-stage-name">{at && !isDone ? track.word : stage}</span>
+					</li>
+				);
+			})}
+		</ol>
+	);
+}
+
 /** The stage (from 1) a step of the blueprint belongs to: building and the checks, the push, CI and its fixes, the second review, the hand-over. */
 function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number {
 	switch (step) {
