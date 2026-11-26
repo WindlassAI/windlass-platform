@@ -26,7 +26,7 @@ import { agentModelsOf } from "../lib/subtask-agents";
 import { ArrowUpIcon, CheckIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SlidersIcon, WarnIcon } from "./Icons";
 import { modeMenu } from "./Modes";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
-import { hostedAgentProblem, capabilitiesOf } from "../../../server/src/sandbox/harnesses.js";
+import { hostedAgentProblem, capabilitiesOf, subtaskHarnessProblem } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_PROFILE, itemHarnesses, itemProfilesHere, machineUnusable, offeredHarnesses, onPullRequest } from "./PlaceChoice";
 import { repositoryMenu, useBranches, useRepositorySearch, type PickedRepository } from "./RepositoryMenu";
 import { SecretsField } from "./Secrets";
@@ -59,9 +59,10 @@ function launchLimit(numbers: UsageNumbers | null, hostedNotice = false): { text
 	return null;
 }
 
-export function useDefaults(repositoryId: GithubId | null): { defaults: RepositoryDefaults | null; checks: number | null; reading: boolean; error: string | null } {
+export function useDefaults(repositoryId: GithubId | null) {
 	const { client, explain } = useApp();
 	const auth = useAuth();
+	const [attempt, setAttempt] = useState(0);
 	const [state, setState] = useState<{ repositoryId: GithubId | null; defaults: RepositoryDefaults | null; checks: number | null; error: string | null }>({ repositoryId: null, defaults: null, checks: null, error: null });
 	useEffect(() => {
 		setState({ repositoryId, defaults: null, checks: null, error: null });
@@ -77,9 +78,22 @@ export function useDefaults(repositoryId: GithubId | null): { defaults: Reposito
 		return () => {
 			current = false;
 		};
-	}, [client, auth, explain, repositoryId]);
+	}, [client, auth, explain, repositoryId, attempt]);
 	const mine = state.repositoryId === repositoryId;
-	return { defaults: mine ? state.defaults : null, checks: mine ? state.checks : null, reading: repositoryId !== null && (!mine || (state.defaults === null && state.error === null)), error: mine ? state.error : null };
+	return { defaults: mine ? state.defaults : null, checks: mine ? state.checks : null, reading: repositoryId !== null && (!mine || (state.defaults === null && state.error === null)), error: mine ? state.error : null, reload: () => setAttempt(n => n + 1) };
+}
+
+export function useFilingDefaults(repositoryId: GithubId | null) {
+	const saved = useDefaults(repositoryId);
+	const account = useAccount();
+	const problem = saved.error ? `Repository defaults could not be read. ${saved.error}`
+		: account.error ? `Account defaults could not be read. ${account.error}` : null;
+	const retry = saved.error ? saved.reload : account.reload;
+	return { saved, account, problem, retry };
+}
+
+export function DefaultsProblem({ problem, retry }: { problem: string; retry(): void }) {
+	return <p className="field-note tone-warn" role="alert">{problem} <button type="button" className="link" onClick={retry}>Retry</button></p>;
 }
 
 /** Fetch the chosen machine's catalog once per digest, even as its host samples change. */
@@ -255,8 +269,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const source = connection ? (item ? "github" : (chosenSource ?? (repo.kind === "address" ? "address" : "github"))) : "address";
 	const notice = github.notice?.where === "launch" ? github.notice : null;
 
-	const saved = useDefaults(chosen?.repository.id ?? null);
-	const account = useAccount();
+	const { saved, account, problem: defaultsProblem, retry } = useFilingDefaults(chosen?.repository.id ?? null);
 	const models = useModels();
 	const repositoryDefaults = startingChoices(saved.defaults, info, models.list);
 	const accountDefaults = startingChoices(account.settings?.defaults ?? null, info, models.list, "account");
@@ -277,7 +290,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// A work item runs what the server's resolver gives: its own choices, then the repository's, then yours.
 	const itemLayers = { account: account.settings?.defaults, repository: saved.defaults, machines: machinesReading ? null : mine, sizes: info?.hostedSizes };
 	const itemPlace = placeChoice === undefined ? {} : { place: placeChoice === null ? ("hosted" as const) : { machine: placeChoice } };
-	const itemRole = info?.items?.orchestrate && (harnessChoice === null || harnessChoice === "windlass") && itemMode === "orchestrate" ? "part" : "builder";
+	const partProblem = harnessChoice && subtaskHarnessProblem(harnessChoice);
+	const itemRole = info?.items?.orchestrate && !partProblem && itemMode === "orchestrate" ? "part" : "builder";
 	const defaultRun = runOf(itemLayers);
 	const itemAgent = item ? runOf({ ...itemLayers, item: { ...itemPlace, harness: harnessChoice } }, itemRole).agent : "windlass";
 	const selectedLayers = { ...itemLayers, item: { ...itemPlace, harness: harnessChoice, hostedSize: sizeChoice, profile: profileChoice, machineProfile: profileChoice,
@@ -285,7 +299,6 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		...(effortChoice && effortChoice !== "default" && (itemAgent === "windlass" ? { effort: effortChoice } : { machineEffort: effortChoice })) } };
 	const itemRun = item ? runOf(selectedLayers, itemRole) : null;
 	const planning = item && itemRole === "part" ? runOf(selectedLayers, "planner") : null;
-	const usePolicy = item && harnessChoice === null;
 	const machineCatalogs = useCatalogs(item && !machinesReading ? mine : null);
 	const destination = itemRun ? checkRunPlace(itemRun, mine, agentModelsOf(mine, machineCatalogs, null)) : undefined;
 	const itemMachineId = placeChoice !== undefined ? placeChoice : destination?.place.kind === "machine" ? destination.place.machineId : null;
@@ -368,7 +381,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		.map((line) => line.trim())
 		.filter((line) => line !== "");
 	const criteriaWrong = acceptance.length > MAX_ACCEPTANCE_CRITERIA ? `At most ${MAX_ACCEPTANCE_CRITERIA}; there are ${acceptance.length}.` : acceptance.some((line) => line.length > MAX_NOTE_CHARS) ? `Each is at most ${count(MAX_NOTE_CHARS)} characters.` : null;
-	const canFile = item && !reading && chosen !== null && filing !== null && title.trim() !== "" && !tooLong && criteriaWrong === null && busy === null;
+	const canFile = item && !defaultsProblem && !reading && chosen !== null && filing !== null && title.trim() !== "" && !tooLong && criteriaWrong === null && busy === null;
 
 	// Reuse the key if a launch or filing succeeded but its response was lost.
 	const asked = useRef<Submission | null>(null);
@@ -418,7 +431,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		if (!canFile || !chosen || !filing) return;
 		setOpen(null);
 		setError(null);
-		const mode = info?.items?.orchestrate && (!other || usePolicy) ? itemMode : "single";
+		const mode = info?.items?.orchestrate && !partProblem ? itemMode : "single";
 		const input: Omit<CreateItemInput, "idempotencyKey"> = {
 			repository: { id: chosen.repository.id, branch: chosen.branch },
 			title,
@@ -899,7 +912,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		groups: modelGroups,
 		footer: (
 			<>
-				{item && other ? <p className="ui-menu-note">{other} works on the item in Open isolation without asking, and runs Quick: Plan first is Windlass's.{capabilitiesOf(harness).checks === "platform" ? " The platform runs this repository's saved checks when it ends a turn." : capabilitiesOf(harness).checks === "none" ? " It does not run this repository's checks, so CI decides." : ""}</p> : null}
+				{item && other ? <p className="ui-menu-note">{subtaskHarnessProblem(harness) ?? `Windlass plans the work. ${other} can build approved parts without asking.`}{capabilitiesOf(harness).checks === "platform" ? " The platform runs this repository's saved checks when it ends a turn." : capabilitiesOf(harness).checks === "none" ? " It does not run this repository's checks, so CI decides." : ""}</p> : null}
 				{other && !chosenMachine ? <p className="ui-menu-note">Hosted agents always use your Settings keys.</p> : null}
 				{other && chosenMachine ? <p className="ui-menu-note">Choose whose sign-in it uses on the <a className="link" {...linkProps({ name: "machines" })}>Machines</a> page.{onPullRequest(harness)}</p> : null}
 				{!other && modelList && modelList.source !== "account" ? <p className="ui-menu-note">{modelsNote(modelList)}</p> : null}
@@ -935,7 +948,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	);
 
 	const orchestrateOffered = item && Boolean(info?.items?.orchestrate);
-	const quickOnly = !!other && !usePolicy;
+	const quickOnly = !!partProblem;
 	const orchestrating = orchestrateOffered && itemMode === "orchestrate" && !quickOnly;
 	const orchestrateWarn = orchestrating ? orchestrateProblem(saved.checks) : null;
 	const shownItemMode: ItemMode = quickOnly ? "single" : itemMode;
@@ -987,7 +1000,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								id: one,
 								value: one,
 								label: ITEM_MODE_WORDS[one].name,
-								description: one === "orchestrate" && quickOnly ? `${other} runs Quick: Plan first is Windlass's.` : ITEM_MODE_LINES[one],
+								description: one === "orchestrate" && quickOnly ? partProblem! : ITEM_MODE_LINES[one],
 								wrap: true,
 								checked: shownItemMode === one,
 								disabled: busy !== null || (one === "orchestrate" && quickOnly),
@@ -1216,9 +1229,13 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			</div>
 			{itemRun ? (
 				<div className="start-run">
-					<RunLine run={itemRun} machines={machinesReading ? null : mine} list={other ? options.models : models.list} lead={itemRole === "part" ? "Parts run on" : "Runs on"} onChange={() => setOpen("agent")} changeLabel="Change for this item" />
-					{planning && <p className="field-note">Planning and review run on Windlass with {runModelName(planning, models.list)}.</p>}
-					{destination?.wait ? <p className="field-note tone-warn">{destination.wait} The item waits and asks before it runs anywhere else.</p> : null}
+					{defaultsProblem ? <DefaultsProblem problem={defaultsProblem} retry={retry} /> : (
+						<>
+							<RunLine run={itemRun} machines={machinesReading ? null : mine} list={other ? options.models : models.list} lead={itemRole === "part" ? "Parts run on" : "Runs on"} onChange={() => setOpen("agent")} changeLabel="Change for this item" />
+							{planning && <p className="field-note">Planning and review run on Windlass with {runModelName(planning, models.list)}.</p>}
+							{destination?.wait ? <p className="field-note tone-warn">{destination.wait} The item waits and asks before it runs anywhere else.</p> : null}
+						</>
+					)}
 				</div>
 			) : null}
 			{item && (filing || editedTitle !== null) ? (

@@ -3,17 +3,16 @@ import { sandboxTime } from "../lib/format";
 import { flagWords } from "../../../server/src/verified";
 import type { ItemPlaceDefaults } from "@contract";
 import { type DefaultDestination, defaultPlaceRetryAt, resolveDefaultPlace } from "../../../server/src/factory/default-place";
-import { filedAgentSettings, partRun, resolveProposedParts, runAgent, resolveRun, runPlace, type RunContext } from "../../../server/src/factory/resolve-run";
-import { approvalText, planTokens, singleAfterPlanning, subtaskHarness, unsupportedParts, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
+import { filedAgentSettings, partRun, runAgent, resolveRun, runPlace, type RunContext } from "../../../server/src/factory/resolve-run";
+import { approvalText, planRecovery, editablePartAgents, planTokens, singleAfterPlanning, subtaskHarness, unsupportedParts, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
 import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
 import { withAgent } from "../lib/subtask-agents";
-import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses.js";
+import { harnessName, knownHarness, subtaskHarnessProblem } from "../../../server/src/sandbox/harnesses.js";
 import { checkItemEffort } from "../../../server/src/account-models.js";
-import { approveRoutes, bindRoute, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
+import { reviewPart, approveRoutes, bindRoute, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
 import { plannerMachines } from "../../../server/src/machines/details.js";
 import { answeredWords, choice } from "../../../server/src/factory/answered.js";
 import {
-	machineLabel,
 	MAX_ACCEPTANCE_CRITERIA,
 	MAX_API_TOKENS,
 	MAX_ITEM_BODY_CHARS,
@@ -73,7 +72,7 @@ export const MOCK_ITEMS_STATES = ["all", "few", "features", "none", "full", "man
 export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 
 export interface MockItemsDeps {
-	hosted(auth: AuthResult): Pick<PlacementInventory, "hostedProfiles" | "keyProfiles" | "hostedKeys">;
+	hosted(auth: AuthResult): Pick<PlacementInventory, "hostedProfiles" | "keyProfiles" | "hostedKeys" | "hostedSizes" | "hostedRates">;
 	defaultPlace(auth: AuthResult, repo: GithubId): ItemPlaceDefaults | undefined;
 	/** The settings layers a new item resolves over, as the server reads them (user-items.ts, `makeItem`). */
 	runContext(auth: AuthResult, repo: GithubId): RunContext;
@@ -95,7 +94,7 @@ export interface MockItemsDeps {
 	session(auth: AuthResult, input: Omit<CreateSessionInput, "profile"> & { profile?: SandboxProfileId }): Promise<SessionSummary>;
 	discardSession(auth: AuthResult, id: string): Promise<void>;
 	/** The models an item's new agent would offer: the account's for Windlass, what the machine reported for another harness. */
-	models(auth: AuthResult, harness: HarnessId, machineId: string | null): Promise<ModelList>;
+	models(auth: AuthResult, harness: HarnessId, machineId: string | null): ModelList;
 	/** Makes a seeded item's own agent session, with its turns so far, and answers its id. */
 	seededSession(auth: AuthResult, item: ItemView): string;
 	/**
@@ -1298,7 +1297,7 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 	);
 	const search = feature(
 		{ n: 61, title: "Search the docs from the command line", on: HARBOR, state: "waiting", filed: 24, body: "Add a `harbor search` command over the docs and release notes.", acceptance: searchPlan.spec.acceptance,
-			question: { kind: "plan_approval", text: approvalText(searchPlan), choices: choices("approve", "revise", "give_up"), asked: 9 },
+			question: { kind: "plan_approval", text: approvalText(searchPlan), choices: choices("revise", "give_up"), asked: 9 },
 			run: { n: 1, started: 23, stopReason: null, rounds: { plan: 2, gate: 0, ci: 0, conflict: 0 }, step: { n: 2, kind: "refine", started: 12 } },
 			events: [[23, "Started.", undefined, true], [22, "The planner's turn started.", [1, 1, "refine"]], [16, "The planner filed a proposal.", [1, 1, "refine"]], [12, "Asked for a revision: keep the docs change separate.", [1, 2, "refine"], true], [9, "The planner filed a revised proposal.", [1, 2, "refine"]]],
 			spent: { tokens: 380_000, turns: 2, activeSeconds: 11 * 60, hostedSeconds: 11 * 60 } },
@@ -1803,7 +1802,10 @@ export function createMockItems(deps: MockItemsDeps) {
 	/** Where an item on a machine stands with it now: null for a hosted item. */
 	/** The places a feature's subtasks may take, as the server reads them for placement: the user's machines, and the platform's own sandboxes. */
 	function placementInventory(auth: AuthResult): PlacementInventory {
-		return { machines: plannerMachines(deps.machines(auth)?.list ?? []), ...deps.hosted(auth) };
+		const machines = plannerMachines(deps.machines(auth)?.list ?? []);
+		const catalogs = Object.fromEntries(machines.map(m => [m.machineId, Object.fromEntries(
+			(m.harnesses ?? []).map(h => [h.id, deps.models(auth, h.id, m.machineId)]))]));
+		return { machines, models: { machines: catalogs }, ...deps.hosted(auth) };
 	}
 
 	function machineOfItem(auth: AuthResult, item: ItemView): { machine: MachineSummary | null } | null {
@@ -1935,10 +1937,14 @@ export function createMockItems(deps: MockItemsDeps) {
 		const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:FEATURE_REVIEW,
 			pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,rawTokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, startedAt: at, step: { ...item.run!.step, startedAt: at, kind: "implement", turn: "started" } },
 			place: fit.decision.place, placement: fit.decision, agent: newAgent(session.harness ?? "windlass", session.model, agent?.effort) };
-		delete child.placementReview;
 		keptOf(auth).items.push(child); deps.itemChanged(auth, child);
 		return change(auth, item, { ...patch, children: keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf),
 			wait: { reason: "children", sentence: "Running " + sub.title, since: at, retryAt: null } }, [said], "person");
+	}
+
+	function editableAgents(item: ItemView, plan: FeaturePlan) {
+		const keys = [...(item.subtasks ?? []).map(job => job.key), ...(item.children ?? []).flatMap(child => child.parent ? [child.parent.key] : [])];
+		return editablePartAgents(plan, item.state, item.run?.step.kind, keys);
 	}
 
 	function currentParts(auth: AuthResult, item: ItemView) {
@@ -1946,7 +1952,23 @@ export function createMockItems(deps: MockItemsDeps) {
 		if (item.plan?.status === "proposed") {
 			const context = { ...deps.runContext(auth, item.repository.id), item: contexts.get(item)?.item };
 			if (item.repositories) context.repositories = Object.fromEntries(item.repositories.map(r => [r.alias, deps.runContext(auth, r.repositoryId).repository ?? {}]));
-			resolveProposedParts(item.plan.subtasks, context, completed, deps.machines(auth)?.list);
+			const inventory = placementInventory(auth);
+			let changed = false;
+			for (const task of item.plan.subtasks) {
+				if (completed.has(task.key)) continue;
+				const reviewed = task.review !== undefined;
+				if (reviewPart(task, context, item.place, !!item.plan.overflow, inventory) && reviewed) changed = true;
+			}
+			if (item.question && !item.plan.singleSuggested) {
+				const recovery = planRecovery(item.plan, completed);
+				if (changed) {
+					item.plan.version++;
+					item.question.id = item.id + ":plan" + item.plan.version;
+					item.question.text = approvalText(item.plan);
+					item.question.choices = item.plan.questions.some(q => !q.answer) ? choices("revise", "give_up") : choices("approve", "revise", "give_up");
+				}
+				if (recovery) Object.assign(item.question, recovery);
+			}
 		}
 		return completed;
 	}
@@ -1972,9 +1994,13 @@ export function createMockItems(deps: MockItemsDeps) {
 				return act(auth, child, {kind:"cancel"});
 			}
 			case "set_subtask_agent": {
-				const task = plan?.status === "approved" && !keptOf(auth).items.some(c => c.parent?.itemId === item.id && c.parent.key === action.key) ? plan.subtasks.find(s => s.key === action.key) : undefined;
-				if (!task) throw conflict("That subtask has started or the plan changed.");
-				return change(auth, item, { plan: { ...plan!, subtasks: plan!.subtasks.map(s => s === task ? withAgent(s, action.agent) : s) } }, [`‘${task.title}’ will run ${harnessName(action.agent?.harness ?? "windlass")}${action.agent?.model ? " on " + action.agent.model : ""}.`], "person");
+				if (!plan || !editableAgents(item, plan).includes(action.key)) throw conflict("That subtask has started or the plan changed.");
+				const task = plan.subtasks.find(s => s.key === action.key)!;
+				const updated = withAgent(task, action.agent);
+				reviewPart(updated, deps.runContext(auth, item.repository.id), item.place, !!plan.overflow, placementInventory(auth));
+				if (updated.placementProblem) throw new PlatformError("user", updated.placementProblem, { reason: "bad_input" });
+				const run = updated.resolved!;
+				return change(auth, item, { plan: { ...plan, subtasks: plan.subtasks.map(s => s === task ? updated : s) } }, [`‘${task.title}’ will run ${harnessName(run.agent)}${run.model ? " on " + run.model : ""}.`], "person");
 			}
 			case "run_single":
 				if (!current) throw conflict("The feature no longer has an open plan.");
@@ -1984,17 +2010,17 @@ export function createMockItems(deps: MockItemsDeps) {
 			case "edit_plan": {
 				if (!current || action.version !== plan.version) throw conflict("Read the latest plan before editing.");
 				let edited;
-				try { edited = validatePlan(action.plan, plan.compare.singleBudget); }
+				try { edited = validatePlan(action.plan, plan.compare.singleBudget, item.repositories?.map(r => r.alias)); }
 				catch (error) { throw new PlatformError("user", (error as Error).message, { reason: "bad_input" }); }
 				const kind = edited.singleSuggested ? "single_suggested" : item.question?.kind === "replan_approval" ? "replan_approval" : "plan_approval";
 				const offered = kind === "single_suggested" ? choices("run_single","orchestrate_anyway") : edited.questions.some(q => !q.answer) ? choices("revise","give_up") : choices("approve","revise","give_up");
 				return change(auth, item, { plan: { ...plan, ...edited, budget: { ...plan.budget, tokens: plan.budget.tokens - planTokens(plan) + planTokens(edited) }, version: plan.version+1 }, question: { ...item.question!, kind, choices: offered, id: item.id + ":plan" + (plan.version+1), text: edited.singleSuggested ?? approvalText({ ...plan, ...edited }) } }, ["Edited the plan."], "person");
 			}
 			case "approve_plan": {
-				if (!current || action.version !== plan.version || plan.singleSuggested || plan.questions.some(q => !q.answer)) throw conflict("Answer all questions on the current plan first.");
+				if (!current) throw conflict("Review the latest plan before approval.");
 				const completed = currentParts(auth, item);
-				const unsupported = unsupportedParts(plan, completed);
-				if (unsupported.length) return change(auth, item, { question: { ...item.question!, text: harnessName(subtaskHarness(unsupported[0]!)) + " cannot build Plan-first parts. Choose another agent.", choices: choices("use_windlass","use_claude","use_opencode","revise") } }, [], "platform");
+				if (action.version !== plan.version || plan.singleSuggested || plan.questions.some(q => !q.answer)) throw conflict("Answer all questions on the current plan first.");
+				if (planRecovery(plan, completed)) throw conflict("Review the requested changes before approval.");
 				// An agent that works without asking runs only where the person confirmed it (blueprint.ts, `approveFeature`).
 				const unconfirmed = plan.subtasks.filter(s => unattendedKeys(plan, completed).includes(s.key) && !action.agents?.includes(s.key));
 				if (unconfirmed.length) throw new PlatformError("user", unconfirmed.map(s => `${s.title}: confirm that it runs ${harnessName(subtaskHarness(s))}, which works without asking.`).join(" "), { reason: "bad_input" });
@@ -2068,6 +2094,11 @@ export function createMockItems(deps: MockItemsDeps) {
 					for (const task of unsupportedParts(edit, completed)) task.agent = { harness };
 					return act(auth, item, { kind: "edit_plan", version: plan.version, plan: edit });
 				}
+				if (current && action.choice === "larger_sandbox" && question.choices.some(c => c.id === action.choice)) {
+					const edit = structuredClone(plan);
+					for (const task of edit.subtasks) if (task.requestedLargerSize) task.needs = { ...task.needs, hostedSize: task.requestedLargerSize };
+					return act(auth, item, { kind: "edit_plan", version: plan.version, plan: edit });
+				}
 				if (current && action.choice === "revise") return beginRun(auth,item,"Revised the plan.");
 				const picked = question.choices.find((option) => option.id === action.choice);
 				if (!picked) throw conflict("That is not one of the question's answers.");
@@ -2118,7 +2149,7 @@ export function createMockItems(deps: MockItemsDeps) {
 	/** As the server's page: with a plan, what approval counts as integrated and still to confirm (work-item.ts, `pageOf`). */
 	const pageOf = (auth: AuthResult, item: ItemView) => {
 		const completed = currentParts(auth, item);
-		return structuredClone({ ...item, canRetry: canRetry(item), ...(item.plan && { unattended: unattendedKeys(item.plan, completed), completedSubtasks: [...completed] }) });
+		return structuredClone({ ...item, canRetry: canRetry(item), ...(item.plan && { editableAgents: editableAgents(item, item.plan), unattended: unattendedKeys(item.plan, completed), completedSubtasks: [...completed] }) });
 	};
 
 	/** As the server's `partScreenshots`: a feature's page carries its parts' screenshot sets, the newest first. */
@@ -2131,24 +2162,6 @@ export function createMockItems(deps: MockItemsDeps) {
 			return filed.filter((one) => one.screenshots.length > 0).map((one) => ({ itemId: summary.id, key: summary.parent?.key ?? "", title: summary.title, by: one.by, head: one.head, at: one.at, screenshots: structuredClone(one.screenshots) }));
 		});
 		if (sets.length) view.partScreenshots = sets.sort((a, b) => b.at - a.at);
-		return view;
-	}
-
-	/**
-	 * A feature's page while its plan is proposed carries the owner's current secrets policy for each place
-	 * the plan names, or inherits (user-items.ts, `attachmentStates`).
-	 */
-	function withPlacementReview(auth: AuthResult, view: ItemView): ItemView {
-		delete view.placementReview;
-		if (view.mode !== "orchestrate" || view.plan?.status !== "proposed") return view;
-		const names = new Set(view.plan.subtasks.flatMap((t) => (t.place ? [t.place.prefer, ...(t.place.allow ?? [])] : [])));
-		const parent = view.place;
-		const inheritsPlace = view.plan.subtasks.some((t) => !t.place);
-		if (inheritsPlace && parent.kind === "hosted") names.add("hosted");
-		view.placementReview = (deps.machines(auth)?.list ?? [])
-			.filter((m) => names.has(machineLabel(m)) || (parent.kind === "machine" && parent.machineId === m.machineId && inheritsPlace))
-			.map((m) => ({ name: machineLabel(m), sendSecrets: m.sendSecrets }));
-		if (names.has("hosted")) view.placementReview.push({ name: "hosted", sendSecrets: true });
 		return view;
 	}
 
@@ -2173,7 +2186,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			},
 			async item(id) {
 				await answer(220);
-				return withPlacementReview(auth, withPartScreenshots(auth, pageOf(auth, itemOf(auth, id))));
+				return withPartScreenshots(auth, pageOf(auth, itemOf(auth, id)));
 			},
 			// As the server's `links`: the kept screenshots only, each a fresh ten-minute link. The mock's are the
 			// fixtures under web/public/mock/, with a query that differs on every answer as a signed link does.
@@ -2208,9 +2221,13 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (input.body.length > MAX_ITEM_BODY_CHARS) throw new PlatformError("user", `What to do is at most ${MAX_ITEM_BODY_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
 				if (acceptance.length > MAX_ACCEPTANCE_CRITERIA) throw new PlatformError("user", `An item takes at most ${MAX_ACCEPTANCE_CRITERIA} acceptance criteria.`, { reason: "bad_input" });
 				if (acceptance.some((line) => line.length > MAX_NOTE_CHARS)) throw new PlatformError("user", `An acceptance criterion is at most ${MAX_NOTE_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
+				const requested = knownHarness(input.harness ?? "windlass");
+				if (requested === null) throw new PlatformError("user", "Choose an agent this platform runs: windlass, or one of your machine's.", { reason: "bad_input" });
+				const partProblem = input.mode !== "single" && subtaskHarnessProblem(requested);
+				if (partProblem) throw new PlatformError("user", partProblem, { reason: "bad_input" });
 				const context = deps.runContext(auth, input.repository.id);
 				context.item = { place: input.place && runPlace(input.place), harness: input.harness, hostedSize: input.hostedSize, profile: input.profile, machineProfile: input.profile };
-				Object.assign(context.item, filedAgentSettings(context, input.model ?? null, input.effort ?? null));
+				Object.assign(context.item, { reviewModel: input.reviewModel }, filedAgentSettings(context, input.model ?? null, input.effort ?? null));
 				const resolved = resolveRun(context, input.mode === "single" ? "builder" : "planner");
 				input.model = resolved.model ?? undefined;
 				input.effort = resolved.effort ?? undefined;
@@ -2224,9 +2241,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				// On a machine, its first available sandbox unless the one asked for is available (user-items.ts, `itemProfile`).
 				const place: SandboxPlace = input.place?.kind === "machine" ? { kind: "machine", machineId: input.place.machineId } : { kind: "hosted" };
 				// The builder's agent, as user-items.ts `cleanItemInput` and user.ts `makeSession` take it.
-				const harness = input.harness === undefined ? "windlass" : knownHarness(input.harness);
-				if (harness === null) throw new PlatformError("user", "Choose an agent this platform runs: windlass, or one of your machine's.", { reason: "bad_input" });
-				if (!destination?.wait && harness !== "windlass" && (input.mode ?? "orchestrate") === "orchestrate") throw new PlatformError("user", `Plan first runs only with Windlass. Choose Quick for ${harnessName(harness)}.`, { reason: "bad_input" });
+				const harness = resolved.agent;
 				if (!destination?.wait && harness !== "windlass" && place.kind === "machine") {
 					const offered = machineFor(auth, place.machineId).harnesses?.find((one) => one.id === harness);
 					if (!offered) throw new PlatformError("user", `This machine does not offer ${harnessName(harness)}.`, { reason: "bad_input" });
@@ -2243,7 +2258,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				}
 				// The effort every turn runs at: one the agent reported for the item's model, as the server holds it.
 				if (input.effort !== undefined && input.effort !== null) {
-					const list = await deps.models(auth, harness, place.kind === "machine" ? place.machineId : null);
+					const list = deps.models(auth, harness, place.kind === "machine" ? place.machineId : null);
 					const model = input.model || list.defaultModel;
 					try {
 						checkItemEffort(list, model, input.effort, harness !== "windlass");
@@ -2308,7 +2323,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				await answer(360);
 				const item = itemOf(auth, id);
 				await act(auth, item, action);
-				return withPlacementReview(auth, withPartScreenshots(auth, pageOf(auth, item)));
+				return withPartScreenshots(auth, pageOf(auth, item));
 			},
 			// Answered without work items too, as the server answers it: the ceiling on running agents is every agent's.
 			async factoryLimits() {

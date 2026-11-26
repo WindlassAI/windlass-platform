@@ -48,6 +48,7 @@ export async function savedProviders(db: DefaultsDb): Promise<ModelProvider[]> {
 
 function status(row: StatusRow): ModelProviderStatus {
 	return { provider: row.provider, last4: row.last4, addedAt: row.added_at, checkedAt: row.checked_at, ok: !!row.check_ok,
+		...(row.check_ok && row.windlass_models === null && (row.provider === "google" || row.provider === "openrouter") && { needsWindlassCheck: true }),
 		...(row.models !== null && { models: JSON.parse(row.models) as string[] }),
 		...(row.windlass_models !== null && { windlassModels: JSON.parse(row.windlass_models) as string[] }) };
 }

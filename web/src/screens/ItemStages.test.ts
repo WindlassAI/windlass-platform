@@ -6,7 +6,7 @@
 import type { ItemSummary, StepKind } from "@contract";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { ItemStages } from "./Items";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -56,4 +56,14 @@ it("says yours only once it is handed over", () => {
 it("fills built once the item is past it", () => {
 	const drawn = stages({ ...waiting, wait: { ...waiting.wait!, reason: "ci" } }, "ci");
 	expect(drawn.map(([, state]) => state)).toEqual(["item-stage-done", "item-stage-done", "item-stage-now", "", ""]);
+});
+
+describe("partTrack", () => {
+	it("gives a part its own way into the feature, without CI, review or hand-over", async () => {
+		const { partTrack } = await import("./Items");
+		expect(partTrack({ state: "working", wait: null }, "implement")).toMatchObject({ stages: ["built", "checked", "in the feature"], at: 1, now: true, word: "building" });
+		expect(partTrack({ state: "working", wait: null }, "run_checks")).toMatchObject({ at: 2, word: "checking" });
+		expect(partTrack({ state: "done", wait: null }, null)).toMatchObject({ at: 3, now: false });
+		expect(partTrack({ state: "failed", wait: null }, null)).toBeNull();
+	});
 });

@@ -4,7 +4,8 @@ import { nextUtcDay, usesPlatformModel } from "../usage.js";
 import { HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, hostedSizeFor, isolationName, sandboxSlots } from "../contract.js";
 import type { ChildPlacement, EgressMode, HostedSize, FeaturePlanEdit, HarnessId, MachineSummary, ModelList, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
 import type { plannerMachines } from "../machines/details.js";
-import { runAgent } from "./resolve-run.js";
+import { SIZE_WEIGHT } from "../billing/meter.js";
+import { changesMachinePayer, partRun, runAgent, type RunContext } from "./resolve-run.js";
 import { PlanError, subtaskHarness } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
 import { type CheckedProvider, windlassProvider, hostedCatalog, hostedProvider, hostedKeyMessage, initialHarnessModels, selectedKey, machinePayerProblem, harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
@@ -16,7 +17,7 @@ const HARNESS_PROFILE = "docker-hardened";
 /**
  * The models each agent offers, as a session would be checked against them (user.ts, `makeSession`):
  * Windlass's are the account's wherever it runs; a machine harness's are its runner's catalog, or only its
- * default where it reported none. A list left out is not judged here: the child's creation checks it.
+ * default where it reported none. An explicit choice waits for an advertised list that could not be read.
  */
 export interface AgentModels {
 	windlass?: ModelList | null;
@@ -25,7 +26,7 @@ export interface AgentModels {
 
 type Machine = ReturnType<typeof plannerMachines>[number];
 export interface PlacementInventory {
-	defaults?: Pick<import("./resolve-run.js").RunContext, "account" | "repository" | "repositories" | "machinePayers">;
+	defaults?: RunContext;
 	screenshotsEnabled?: boolean;
 	screenshotStorage?: boolean;
 	repositoryScreenshots?: Record<string, boolean>;
@@ -36,6 +37,7 @@ export interface PlacementInventory {
 	hostedKeys?: readonly CheckedProvider[];
 	/** The hosted sizes the deployment offers (`Sandboxes.sizes`), smallest first. Absent: one size, which takes no `cpus` or `memoryGiB`. */
 	hostedSizes?: HostedSize[];
+	hostedRates?: Partial<Record<HostedSize, number | null>>;
 	/** What hosted sandboxes may reach (`Sandboxes.egress`); `none` takes no repository work. */
 	hostedEgress?: EgressMode;
 	defaultProfile?: SandboxProfileId;
@@ -198,6 +200,12 @@ function capabilityFit(machine: Machine, task: PlanSubtask, inventory: Placement
 	return null;
 }
 
+/** The terms shown for an allowed destination are the terms a child receives there. */
+function destinationTerms(place: SandboxPlace, machine: Machine | undefined, harness: HarnessId) {
+	const payer = harness === "windlass" ? "windlass" : place.kind === "hosted" ? "key" : machine?.harnesses?.find(h => h.id === harness)?.source ?? "machine";
+	return { place, name: machine?.name ?? placeKey(place), payer, sendSecrets: place.kind === "hosted" || (machine?.repositorySecrets ?? null) } as const;
+}
+
 function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementInventory, preferred: boolean, warm: string[], at: number, name?: string): Candidate {
 	const resolved = task.resolved;
 	const needs = task.needs ?? {};
@@ -212,7 +220,14 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	const bonus = (preferred ? 3 : 0) + Number(warm.includes(placeKey(place)));
 	// Usage limits are an account's: only those of the subtask's own agent there hold it back.
 	const m = place.kind === "machine" ? inventory.machines.find(m => m.machineId === place.machineId) : undefined;
-	const keys = m?.harnesses?.find(h => h.id === harness)?.platformKeys ?? [];
+	const terms = destinationTerms(place, m, harness);
+	const destination = { place, name: terms.name, sendSecrets: terms.sendSecrets === true,
+		...(terms.payer !== "windlass" && { harness, payer: terms.payer }) };
+	const offered = m?.harnesses?.find(h => h.id === harness);
+	const keys = offered?.platformKeys ?? [];
+	const reviewed = task.review?.places.find(p => placeKey(p.place) === placeKey(place));
+	if (reviewed && m && reviewed.sendSecrets !== terms.sendSecrets)
+		return { refused: `The repository secrets policy for ‘${m.name}’ changed after approval. Review the placement again.`, permanent: true };
 	const model = task.agent?.model ?? (harness === "windlass" ? inventory.featureModel : inventory.models?.machines?.[placeKey(place)]?.[harness]?.defaultModel);
 	const tokenWait = usesPlatformModel(harness, model) ? inventory.dailyTokenWait : null;
 	const provider = harness === "windlass" ? windlassProvider(model) : place.kind === "hosted" ? hostedProvider(harness, model, inventory.hostedKeys?.map(k => k.provider) ?? []) : selectedKey(harness, model, keys);
@@ -223,7 +238,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 			: providerWait(harness, name, placementRetryAt(at, limit.limitedUntil, dailyCap)).sentence;
 		return { wait, providerUntil: limit.limitedUntil, accountKey: limit.accountKey, dailyCap };
 	};
-	const reason = preferred ? task.place?.reason ?? "Same place as the feature" : `Approved overflow from ‘${task.place?.prefer ?? "the preferred machine"}’`;
+	const reason = preferred ? task.place?.reason ?? (task.resolved ? "Resolved default for this part" : "Same place as the feature") : `Approved overflow from ‘${task.place?.prefer ?? "the preferred machine"}’`;
 	const notForSubtasks = subtaskHarnessProblem(harness);
 	if (notForSubtasks) return { refused: notForSubtasks, permanent: true };
 	if (place.kind === "hosted") {
@@ -250,11 +265,14 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 			return { refused: `This part needs ${HOSTED_SIZE_NAMES[sized]}. Choose that hosted size or reduce the part’s resource request.`, permanent: true,
 				larger: inventory.hostedSizes?.includes(sized) ? sized : undefined };
 		const size = resolved && inventory.hostedSizes?.length ? resolved.size : sized;
+		const quote = task.review?.hosted;
+		if (quote && (quote.size !== size || quote.usdPerHour !== (inventory.hostedRates?.[quote.size] ?? null)))
+			return { refused: "The reviewed hosted size or rate has changed. Review the placement again.", permanent: true };
 		if (size && !(inventory.hostedSizes ?? ["small"]).includes(size)) return { refused: `hosted has no ${HOSTED_SIZE_NAMES[size]} sandbox (${HOSTED_SIZE_SPECS[size].cpus} vCPU, ${HOSTED_SIZE_SPECS[size].memoryMiB / 1024} GiB) on this deployment`, permanent: true };
 		if (limited) return waiting(limited, "hosted");
 		if (tokenWait) return { wait: tokenWait, dailyCap: true };
-		const profile = needs.profile ?? profiles.find(p => p === inventory.defaultProfile) ?? (harness === "windlass" ? undefined : profiles[0]);
-		return { decision: { name: "hosted", place, ...(harness !== "windlass" && { harness }), units: 1, reason, sendSecrets: true, profile, ...(size && inventory.hostedSizes && { hostedSize: size }) }, score: bonus };
+		const profile = needs.profile ?? profiles.find(p => p === inventory.defaultProfile) ?? profiles[0];
+		return { decision: { ...destination, units: 1, reason, profile, ...(size && inventory.hostedSizes && { hostedSize: size }) }, score: bonus };
 	}
 	if (!m) return { refused: (name ? "‘" + name + "’" : "The selected machine") + " is no longer one of your machines.", permanent: true };
 	const never = (message: string): Candidate => ({ refused: `‘${m.name}’: ${message}.`, permanent: true });
@@ -276,6 +294,8 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	if (limited) return waiting(limited, m.name);
 	if (tokenWait) return { wait: tokenWait, dailyCap: true };
 	if (!m.online) return { wait: `Waiting for ‘${m.name}’ to come back online.`, offline: true };
+	if (offered?.optionsDigest && (task.agent?.model || task.agent?.effort) && !inventory.models?.machines?.[m.machineId]?.[harness])
+		return { wait: `Waiting for the current ${harnessName(harness)} model list on ‘${m.name}’.` };
 	if (needs.cpus && slots.unit.cpus <= 0) return notNow("per-slot CPU capacity is unknown");
 	if ((m.freeDiskBytes ?? 0) < 5 * GiB) return notNow("at least 5 GiB of reported free disk is required");
 	const allowed = m.availableProfiles.filter(p => !m.allowedProfiles || m.allowedProfiles.some(id => id === p));
@@ -286,7 +306,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	if (m.sandboxes.running >= (m.sandboxes.maxRunning ?? Infinity)) return { wait: `‘${m.name}’ is at its running sandbox limit.` };
 	if (m.sandboxes.kept >= (m.sandboxes.maxSandboxes ?? Infinity)) return { wait: `‘${m.name}’ is at its kept sandbox limit.` };
 	if (free < units) return { wait: slotWait(m.name, units, free) };
-	return { decision: { name: m.name, place, reason, units, sendSecrets: m.repositorySecrets, profile, ...(onMachine && { harness: onMachine }) },
+	return { decision: { ...destination, reason, units, profile },
 		score: bonus + Math.min(free, 3) - slots.queued - m.personalRunning };
 }
 
@@ -295,29 +315,88 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
  * place is refused for good: approval refuses then, and nothing the owner waits for would help.
  */
 export function choosePlacement(task: PlanSubtask, route: PlacementRoute, inventory: PlacementInventory, warm: string[] = [], at = Date.now()) {
+	if (task.resolved?.payer === "unconfirmed")
+		return { refused: "This plan did not record the machine agent’s payer. Revise the placement and approve it with the intended payer.", permanent: true } as const;
 	if (task.resolved) {
 		if (task.resolved.agent === "windlass") inventory = { ...inventory, featureModel: inventory.models?.windlass?.defaultModel };
-		task = { ...task, agent: runAgent(task.resolved), needs: { ...task.needs, profile: task.needs?.profile ?? task.resolved.profile ?? undefined } };
+		task = { ...task, agent: runAgent(task.resolved) };
 	}
-	const candidates = [route.preferred, ...route.alternatives].map((p, i) => candidate(task, p, inventory, i === 0, warm, at, route.names?.[placeKey(p)] ?? (i === 0 ? task.place?.prefer : undefined)));
+	const candidates = [route.preferred, ...route.alternatives].map((place, i) => {
+		let profile = task.resolved?.profile;
+		if (task.resolved && (task.resolved.place === "hosted") !== (place.kind === "hosted")) {
+			const prefer = place.kind === "hosted" ? "hosted" : place.machineId;
+			profile = partRun(inventory.defaults ?? {}, { ...task, place: { prefer, reason: "" } }).profile;
+		}
+		const needs = { ...task.needs, profile: task.needs?.profile ?? profile ?? undefined };
+		return candidate({ ...task, needs }, place, inventory, i === 0, warm, at, route.names?.[placeKey(place)] ?? (i === 0 ? task.place?.prefer : undefined));
+	});
 	const first = candidates[0]!;
-	if ("decision" in first) return { decision: first.decision } as const;
+	const changesPayer = ({ place, payer }: ChildPlacement) => {
+		if (!task.resolved || !payer) return false;
+		const reviewed = task.review?.places.find(p => placeKey(p.place) === placeKey(place));
+		if (reviewed && reviewed.payer !== payer) return true;
+		return place.kind === "machine" ? changesMachinePayer(task.resolved, place.machineId, payer, inventory.defaults?.machinePayers) : payer !== task.resolved.payer;
+	};
+	if ("decision" in first && !changesPayer(first.decision)) return { decision: first.decision } as const;
 	const decided = candidates.flatMap(c => "decision" in c ? [{ ...c, snapshot: !!inventory.snapshotPlaces?.includes(placeKey(c.decision.place)) }] : []);
-	const ready = decided.sort((a, b) =>
+	decided.sort((a, b) =>
 		(route.preferred.kind === "machine" ? Number(a.decision.place.kind === "hosted") - Number(b.decision.place.kind === "hosted") : 0) ||
-		(b.score + (b.snapshot ? SNAPSHOT_BONUS : 0)) - (a.score + (a.snapshot ? SNAPSHOT_BONUS : 0)))[0];
-	if (ready && ready.decision.place.kind === "hosted" && route.preferred.kind === "machine") {
-		const reason = "wait" in first ? first.wait : first.refused;
-		if (!route.waitForMachine) return { wait: reason, askMachine: true, offerHosted: true };
+		(b.score + (b.snapshot ? SNAPSHOT_BONUS : 0)) - (a.score + (a.snapshot ? SNAPSHOT_BONUS : 0)));
+	const ready = decided.find(c => !changesPayer(c.decision)) ?? decided[0];
+	const reason = "wait" in first ? first.wait : "refused" in first ? first.refused : "The selected payer is unavailable.";
+	if (ready?.decision.place.kind === "hosted" && route.preferred.kind === "machine") {
+		if (!route.waitForMachine) return { wait: reason, askMachine: true, offerHosted: true, hostedProfile: ready.decision.profile };
+	} else if (ready && changesPayer(ready.decision) && ready.decision.place.kind === "machine" && ready.decision.payer) {
+		const { place, payer, name, profile } = ready.decision;
+		if (!route.waitForMachine) return { wait: reason, askMachine: true, offerPayer: { place, payer, name, profile } };
 	} else if (ready) return { decision: ready.decision } as const;
 	const waits = candidates.filter(c => "wait" in c);
 	const deadline = (wait: typeof waits[number]) => placementRetryAt(at, wait.providerUntil, wait.dailyCap);
 	const waiting = waits.sort((a, b) => deadline(a) - deadline(b))[0];
 	if (waiting) return { wait: waiting.wait, askMachine: waiting.offline && !route.waitForMachine, retryAt: deadline(waiting), providerUntil: waiting.providerUntil,
 		dailyCap: waiting.dailyCap, accountKey: waiting.accountKey } as const;
+	if (ready) return { wait: reason, retryAt: placementRetryAt(at) };
 	const refusals = candidates.flatMap(c => "refused" in c ? [c] : []);
 	const larger = refusals.find(c => c.larger)?.larger;
 	return { refused: refusals.map(c => c.refused).join(" "), larger, permanent: refusals.every(c => c.permanent) } as const;
+}
+
+export function hostedTerms(saved: HostedSize, size: HostedSize, inventory: PlacementInventory) {
+	return { saved, size, rate: SIZE_WEIGHT[size], usdPerHour: inventory.hostedRates?.[size] ?? null };
+}
+
+// A busy destination can become ready without changing what its owner authorizes.
+const offerOf = (task: PlanSubtask) => JSON.stringify([task.resolved, task.review, task.placementProblem, task.requestedLargerSize]);
+
+/** Resolve the version the owner reviews using the inventory that admits the plan. */
+export function reviewPart(task: PlanSubtask, context: RunContext | undefined, parent: SandboxPlace, overflow: boolean, inventory: PlacementInventory) {
+	const previous = offerOf(task);
+	delete task.review;
+	delete task.requestedLargerSize;
+	delete task.placementProblem;
+	delete task.placementWait;
+	if (context) task.resolved = partRun(context, task, "part", inventory.machines);
+	try {
+		const route = bindRoute(task, parent, overflow, inventory.machines);
+		const fit = choosePlacement(task, route, { ...inventory, defaults: context });
+		if (fit.permanent) task.placementProblem = fit.refused;
+		else if (fit.wait || fit.refused) task.placementWait = fit.wait ?? fit.refused;
+		if (fit.larger) task.requestedLargerSize = fit.larger;
+		const run = task.resolved;
+		const places = [route.preferred, ...route.alternatives].map(place =>
+			destinationTerms(place, place.kind === "machine" ? inventory.machines.find(m => m.machineId === place.machineId) : undefined, subtaskHarness(task)));
+		const inherited = partRun(context ?? {}, { repo: task.repo });
+		task.review = { places, inherited };
+		if (places.some(p => p.place.kind === "hosted") && (inventory.hostedSizes?.length || task.needs?.hostedSize)) {
+			const saved = inherited.size;
+			const size = fit.larger ?? run?.size ?? task.needs?.hostedSize ?? saved;
+			task.review.hosted = hostedTerms(saved, size, inventory);
+		}
+	} catch (error) {
+		if (!(error instanceof PlanError)) throw error;
+		task.placementProblem = error.message;
+	}
+	return previous !== offerOf(task);
 }
 
 export function approveRoutes(plan: FeaturePlanEdit, parent: SandboxPlace, inventory: PlacementInventory, completed: Set<string>) {

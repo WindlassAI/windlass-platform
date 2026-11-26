@@ -24,7 +24,7 @@ import { Dialog } from "../components/Dialog";
 import { PlaceChoice, itemHarnesses, itemProfilesHere, machineUnusable } from "../components/PlaceChoice";
 import { RunLine } from "../components/RunSettings";
 import { runModelName, runOf } from "../lib/run";
-import { hostedAgentProblem } from "../../../server/src/sandbox/harnesses.js";
+import { hostedAgentProblem, subtaskHarnessProblem } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_NAMES } from "../lib/acp";
 import { AskIcon, ChevronIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRequestIcon, RingIcon, StopIcon, WarnIcon } from "../components/Icons";
 import { absoluteTime, count, plural, relativeTime } from "../lib/format";
@@ -34,9 +34,9 @@ import { submissionOf, type Submission } from "../lib/submission";
 import { RECOMMENDATION_WORD } from "../components/SecondReview";
 import { StatusBadge } from "../components/Status";
 import { useApp, useAuth } from "../state/app";
-import { useAccount, useCatalogs, useHostedProviders, useModels, useNow } from "../state/hooks";
+import { useCatalogs, useHostedProviders, useModels, useNow } from "../state/hooks";
 import { agentModelsOf } from "../lib/subtask-agents";
-import { useDefaults, useCatalog } from "../components/StartComposer";
+import { DefaultsProblem, useFilingDefaults, useCatalog } from "../components/StartComposer";
 import { effortChoices, effortsOf, harnessOptions } from "../lib/models";
 import { EffortSelect, ModelSelect, agentDefaultLabel, modelDisplay } from "../components/ModelPicker";
 import { useMachines } from "./Machines";
@@ -240,6 +240,49 @@ export function itemTrack(item: Pick<ItemSummary, "state" | "wait" | "pullReques
 		default:
 			return null;
 	}
+}
+
+/**
+ * A feature's part has its own short way: it is built, its checks run, and it is merged into the feature
+ * branch. CI, review and the hand-over belong to the feature, so a part's page never shows them as its own.
+ */
+export function partTrack(item: Pick<ItemSummary, "state" | "wait">, step: StepKind | null): { stages: string[]; at: number; now: boolean; word: string } | null {
+	const stages = ["built", "checked", "in the feature"];
+	switch (item.state) {
+		case "queued":
+			return { stages, at: 0, now: false, word: "queued" };
+		case "working":
+		case "waiting": {
+			const checking = step === "run_checks" || step === "gate";
+			const word = item.state === "waiting" && item.wait ? WAIT_DOING[item.wait.reason] : checking ? "checking" : "building";
+			return { stages, at: checking ? 2 : 1, now: item.state === "working", word };
+		}
+		case "review":
+		case "done":
+			return { stages, at: stages.length, now: false, word: "in the feature" };
+		default:
+			return null;
+	}
+}
+
+export function PartStages({ item, step = null }: { item: Pick<ItemSummary, "state" | "wait">; step?: StepKind | null }) {
+	const track = partTrack(item, step);
+	if (track === null) return null;
+	const done = track.at === track.stages.length && !track.now;
+	return (
+		<ol className={`item-stages item-stages-${done ? "done" : track.now ? "work" : "wait"}`} aria-label="Where this part is on its way into the feature">
+			{track.stages.map((stage, index) => {
+				const at = index === track.at - 1;
+				const isDone = index < track.at - 1 || (at && done);
+				return (
+					<li key={stage} className={`item-stage${isDone ? " item-stage-done" : ""}${at && track.now ? " item-stage-now" : at && !isDone ? " item-stage-at" : ""}`} aria-current={at ? "step" : undefined}>
+						<span className="item-stage-bar" aria-hidden="true" />
+						<span className="item-stage-name">{at && !isDone ? track.word : stage}</span>
+					</li>
+				);
+			})}
+		</ol>
+	);
 }
 
 /** The stage (from 1) a step of the blueprint belongs to: building and the checks, the push, CI and its fixes, the second review, the hand-over. */
@@ -731,8 +774,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const machines = useMachines(machinesInfo !== null);
 	const now = useNow(30_000);
 	const mine = machinesInfo === null ? [] : (machines.list ?? []);
-	const saved = useDefaults(repositoryId);
-	const account = useAccount();
+	const { saved, account, problem: defaultsProblem, retry } = useFilingDefaults(repositoryId);
 	const keys = useHostedProviders();
 	const accountModels = useModels();
 	// What this item changes for itself; everything else comes from the repository, then your defaults.
@@ -743,8 +785,8 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [effortChoice, setEffort] = useState("");
 	const [modeChoice, setMode] = useState<ItemMode>("orchestrate");
 	const orchestrate = !!platform.info?.items?.orchestrate;
-	// Plan first plans on Windlass: choosing another agent for this item files it as Quick. Its parts may still inherit one.
-	const mode: ItemMode = orchestrate && (agentChoice === null || agentChoice === "windlass") ? modeChoice : "single";
+	const partProblem = agentChoice && subtaskHarnessProblem(agentChoice);
+	const mode: ItemMode = orchestrate && !partProblem ? modeChoice : "single";
 	const layers = { account: account.settings?.defaults, repository: saved.defaults, machines: machines.list, sizes: platform.info?.hostedSizes };
 	const placeLayer = placeChoice === undefined ? {} : { place: placeChoice === null ? ("hosted" as const) : { machine: placeChoice } };
 	const agentRun = runOf({ ...layers, item: { ...placeLayer, harness: agentChoice } }, mode === "orchestrate" ? "part" : "builder");
@@ -782,7 +824,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const tooLong = acceptance.some((line) => line.length > MAX_NOTE_CHARS);
 	const defaultsLoading = saved.reading || (account.reading && !account.settings);
 	const machinesLoading = machinesInfo && !machines.list && !machines.error;
-	const ready = !defaultsLoading && !machinesLoading && title.trim() !== "" && !tooMany && !tooLong && body.length <= MAX_ITEM_BODY_CHARS;
+	const ready = !defaultsProblem && !defaultsLoading && !machinesLoading && title.trim() !== "" && !tooMany && !tooLong && body.length <= MAX_ITEM_BODY_CHARS;
 
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
@@ -865,11 +907,15 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 				</div>
 				<div className="item-run">
 					<span className="label">Runs with</span>
-					<RunLine run={run} machines={machines.list} list={modelList} lead={mode === "orchestrate" ? "Parts run on" : "Runs on"} onChange={changing ? undefined : () => setChanging(true)} changeLabel="Change for this item">
-						{changed ? <button type="button" className="link run-line-change" onClick={useDefault} disabled={busy}>Use the default</button> : null}
-					</RunLine>
-					{planning ? <p className="field-note">Planning and review run on Windlass with {runModelName(planning, accountModels.list)}.</p> : null}
-					{destination.wait ? <p className="field-note tone-warn">{destination.wait} The item waits and asks before it runs anywhere else.</p> : null}
+					{defaultsProblem ? <DefaultsProblem problem={defaultsProblem} retry={retry} /> : (
+						<>
+							<RunLine run={run} machines={machines.list} list={modelList} lead={mode === "orchestrate" ? "Parts run on" : "Runs on"} onChange={changing ? undefined : () => setChanging(true)} changeLabel="Change for this item">
+								{changed ? <button type="button" className="link run-line-change" onClick={useDefault} disabled={busy}>Use the default</button> : null}
+							</RunLine>
+							{planning ? <p className="field-note">Planning and review run on Windlass with {runModelName(planning, accountModels.list)}.</p> : null}
+							{destination.wait ? <p className="field-note tone-warn">{destination.wait} The item waits and asks before it runs anywhere else.</p> : null}
+						</>
+					)}
 				</div>
 				{changing ? (
 					<div className="item-run-change">
@@ -888,7 +934,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 									</label>
 								))}
 							</div>
-							{agentChoice && agentChoice !== "windlass" && orchestrate && modeChoice === "orchestrate" ? <p className="field-note">Plan first plans on Windlass, so choosing {HARNESS_NAMES[agentChoice]} here files this as Quick.</p> : null}
+							{partProblem && orchestrate && modeChoice === "orchestrate" ? <p className="field-note">{partProblem}</p> : null}
 						</div>
 						{modelList && modelList.models.length > 0 ? (
 							<div className="item-agent-fields">

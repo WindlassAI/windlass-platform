@@ -97,7 +97,7 @@ function AutonomySettings({ page, view }: { page: RepositoryPage; view: Reposito
 	</SettingsSection>;
 }
 
-const hasOverrides = (view: RepositoryView) => [view.defaults.place, view.defaults.placeFallback, view.defaults.harness, view.defaults.model, view.defaults.effort, view.defaults.reviewModel, view.defaults.reviewEffort, view.defaults.machineModel, view.defaults.machineEffort, view.defaults.profile, view.defaults.hostedSize].some((value) => value != null);
+const hasOverrides = (view: RepositoryView) => [view.defaults.place, view.defaults.machineProfile, view.defaults.placeFallback, view.defaults.harness, view.defaults.model, view.defaults.effort, view.defaults.reviewModel, view.defaults.reviewEffort, view.defaults.machineModel, view.defaults.machineEffort, view.defaults.profile, view.defaults.hostedSize].some((value) => value != null);
 
 /** `agents`: the user's own agents on it; `items`: the sessions of its work items, which stay with their items. */
 function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { page: RepositoryPage; view: RepositoryView; name: string; agents: number; items: number; onClose(): void; onDone(): void }) {

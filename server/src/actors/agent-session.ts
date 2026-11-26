@@ -743,7 +743,9 @@ export async function turnCredential(c: Ctx, meta: SessionMeta, offered: Offered
 	const [keys, source] = await Promise.all([keyActor.internalModelKeys(), meta.place.kind === "machine" ? keyActor.internalCredentialSource(meta.place.machineId, harness) : null]);
 	const payer = source ?? "machine";
 	const providers = hosted || payer === "key" ? keys.map(k => k.provider) : [];
-	if (!hosted && meta.origin?.payer && meta.origin.payer !== payer)
+	if (!hosted && meta.origin && !meta.origin.payer)
+		throw new UserError("This item did not record who pays for its agent. Choose the payer on Machines and file a new item to use it.", { code: "harness_signed_out" });
+	if (!hosted && meta.origin && meta.origin.payer !== payer)
 		throw new UserError("The selected payer changed. Restore the item's payer on Machines or file a new item.", { code: "harness_signed_out" });
 	if (!hosted) {
 		const itemMachine = meta.origin?.kind === "item" ? c.vars.runner?.known?.name || meta.machineName || "your machine" : undefined;
@@ -4339,6 +4341,12 @@ export const agentSession = actor({
 		const [row] = await c.db.execute<{ data: string }>("SELECT data FROM meta WHERE id = 1");
 		const [last] = await c.db.execute<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM timeline");
 		const meta = row ? (JSON.parse(row.data) as SessionMeta) : null;
+		if (meta?.origin && meta.place.kind === "machine" && machineHarness(meta.harness) && !meta.origin.payer) {
+			const origin = meta.origin as typeof meta.origin & { filedWithKey?: true };
+			if (origin.filedWithKey) origin.payer = "key";
+			else if (origin.signIn === "subscription" || origin.signIn === "chatgpt") origin.payer = "machine";
+			delete origin.filedWithKey;
+		}
 		if (meta?.place.kind === "machine" && typeof meta.machineName === "string" && isMachineIdName(meta.machineName)) {
 			const system = await userActor(c, meta.uid).internalMachineSystem(meta.place.machineId).catch(() => null);
 			meta.machineName = machineLabel({ name: meta.machineName, ...system });

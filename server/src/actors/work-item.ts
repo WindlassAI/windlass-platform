@@ -19,10 +19,10 @@ import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
 import { GithubProblem } from "../github/repos.js";
 import { verdictWords } from "../factory/verdict.js";
 import { mergeCandidate, requiredCiBranches } from "../factory/autonomy.js";
-import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
+import { editablePartAgents, PlanError, unattendedKeys } from "../factory/feature-plan.js";
 import { criticSessionId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
-import { resolveProposedParts, resolveRun } from "../factory/resolve-run.js";
+import { contextAtPlace, partRun, resolveRun, runPlace, type RunSettings } from "../factory/resolve-run.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf, branchFor } from "../github/publish.js";
@@ -37,8 +37,8 @@ import { filedFromIssue, filedFromLinear, recentSubject, type IssueBinding, type
 import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine } from "../factory/verified-check.js";
 import type { CheckRunUpdate } from "../github/checks.js";
 import type { GithubUser } from "../github/app.js";
-import { hostedCatalog } from "../sandbox/harnesses.js";
-import type { ItemReview, ModelList, PartScreenshots } from "../contract.js";
+import { hostedCatalog, worksWithoutAsking } from "../sandbox/harnesses.js";
+import { hostedSizeFor, type ItemReview, type ModelList, type PartScreenshots, type PlanSubtask, type SessionSummary } from "../contract.js";
 import { itemAgent, ledgerSeconds, retryAt } from "../factory/budget.js";
 import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
@@ -58,7 +58,7 @@ import { resolveCodeHost } from "../codehost/index.js";
 import { CI_POLLING, ciState, rerunnableJobs, workflowOverdue } from "../codehost/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { type RequestedSecretSave, secretsActor, grantIsValid, isSessionGone, itemActor, sessionActor, userActor } from "./internal.js";
-import type { ItemFacts } from "./user-items.js";
+import type { DefaultBuilder, ItemFacts } from "./user-items.js";
 
 /** What the item knows around the blueprint's `FactoryItem`. */
 export interface ItemMeta {
@@ -66,7 +66,7 @@ export interface ItemMeta {
 	flaky?: boolean;
 	ciCodeFailure?: boolean;
 	mergedDifferentHead?: true;
-	pendingBuilder?: import("./user-items.js").DefaultBuilder;
+	pendingBuilder?: DefaultBuilder;
 	/** Sealed by the requesting session. Kept with the claim until the save is settled. */
 	pendingSecret?: RequestedSecretSave;
 	/** Latest cumulative receipt for each session. A retry or an older receipt adds nothing. */
@@ -218,18 +218,17 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 
 // Read through the write queue so the current question and its log come from the same revision.
 async function viewOf(c: Ctx): Promise<ItemView> {
-	const { stored, view } = await queued(c, async () => {
+	const read = () => queued(c, async () => {
 		const stored = await load(c.db);
 		if (!stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
 		return { stored, view: await pageOf(c, stored) };
 	});
-	const { item } = stored;
-	if (view.plan?.status === "proposed") {
-		const fresh = await userActor(c, stored.meta.uid).internalPartDefaults(planRepositories(stored));
-		const completed = completedKeys(item);
-		resolveProposedParts(view.plan.subtasks, { ...item.context, ...fresh.context }, completed, fresh.machines);
-		view.unattended = unattendedKeys(view.plan, completed);
+	let { stored, view } = await read();
+	if (view.plan?.status === "proposed" && ["plan_approval", "replan_approval", "single_suggested"].includes(view.question?.kind ?? "")) {
+		const inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
+		if (await take(c, { kind: "refresh_plan", version: view.plan.version, inventory, at: Date.now() })) ({ stored, view } = await read());
 	}
+	const { item } = stored;
 	const q = view.question;
 	if (q && (q.kind === "plan_approval" || q.kind === "replan_approval") && item.featurePlan?.status === "proposed" && item.filedTurn === currentKey(item) && !crossRepo(item)) {
 		try {
@@ -325,7 +324,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		verifiedCheck: (await c.db.execute<NonNullable<ItemView["verifiedCheck"]>>("SELECT sha, state, conclusion, said FROM checks WHERE sha = ?", run?.ci?.moved ?? stored.item.head ?? ""))[0] ?? null,
 		plan: plan ?? null,
 		...(stored.item.jobs && { subtasks: stored.item.jobs.map(j => ({ id: j.id, key: j.task.key, state: j.state, dispatchedAt: j.dispatchedAt ?? null, startedAt: j.startedAt ?? null, wait: j.wait ?? j.placementRefusal ?? null })) }),
-		...(plan && { unattended: unattendedKeys(plan, completed), completedSubtasks: [...completed] }),
+		...(plan && { editableAgents: editablePartAgents(plan, stored.item.state, run?.step.kind, (stored.item.jobs ?? []).map(j => j.task.key)), unattended: unattendedKeys(plan, completed), completedSubtasks: [...completed] }),
 		...(stored.item.replanWhy && { replanWhy: stored.item.replanWhy }),
 		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
@@ -687,6 +686,76 @@ async function load(db: RawAccess): Promise<Stored | null> {
 	if (stored.item.parent && (!stored.item.reviewer || ("off" in stored.item.reviewer && stored.item.reviewer.off === "deployment"))) {
 		stored.item.reviewer = { off: "feature" };
 	} else if (!stored.item.awaitingPlace) stored.item.reviewer ??= { off: "deployment" };
+	return stored;
+}
+
+type OldBuilder = Omit<DefaultBuilder, "context" | "role"> & {
+	policy: RunSettings; mode: "single" | "orchestrate"; model: string | null; effort: string | null;
+	machineModel?: string; machineEffort?: string; hostedProfile: RunSettings["profile"]; hostedSize?: RunSettings["hostedSize"];
+};
+
+/** Upgrade the filed job and every copy of an approved task before the outbox can retry them. */
+async function loadOnWake(c: Pick<Ctx, "db" | "client">) {
+	const stored = await load(c.db);
+	if (!stored) return null;
+	const { item, meta } = stored;
+	const pending = meta.pendingBuilder as DefaultBuilder | OldBuilder | undefined;
+	const old = pending && "policy" in pending ? pending : undefined;
+	// A bound single item has no builder to place or subtasks to resolve.
+	if (!old && (item.mode !== "orchestrate" || (item.context && item.runRole))) return stored;
+	const { defaultPlace } = meta as ItemMeta & { defaultPlace?: RunSettings };
+	const role = item.parent ? "part" : (old?.mode ?? item.mode) === "orchestrate" ? "planner" : "builder";
+	const settings: RunSettings = { ...defaultPlace };
+	if (old) {
+		Object.assign(settings, old.policy, { profile: old.hostedProfile, hostedSize: old.hostedSize,
+			model: old.model, effort: old.effort, machineModel: old.machineModel, machineEffort: old.machineEffort });
+		// Old Plan-first jobs always selected Windlass and its first machine profile.
+		if (old.mode === "orchestrate") Object.assign(settings, { harness: "windlass", machineProfile: null });
+	} else {
+		// A bound session wins over the filing policy, which may have overflowed to Hosted.
+		const session: SessionSummary | null = await sessionActor(c, meta.uid, meta.sessionId).internalSummary().catch(error => {
+			if (isSessionGone(error)) return null;
+			throw error;
+		});
+		const agent = itemAgent(item);
+		const place = session?.place ?? item.place;
+		const model = session?.model ?? agent.model;
+		settings.place = runPlace(place);
+		settings.harness = session?.harness ?? agent.harness;
+		settings.placeFallback = "wait";
+		if (settings.harness === "windlass") Object.assign(settings, { model, effort: agent.effort });
+		else Object.assign(settings, { machineModel: model, machineEffort: agent.effort });
+		if (place.kind === "machine") settings.machineProfile = session?.profile ?? item.placement?.profile ?? settings.machineProfile;
+		else Object.assign(settings, { profile: session?.profile ?? item.placement?.profile, hostedSize: session?.hostedSize ?? item.placement?.hostedSize });
+	}
+	if (settings.harness && settings.harness !== "windlass" && settings.place !== "hosted") {
+		const signIn = item.agent?.signIn;
+		settings.payer = signIn === "subscription" || signIn === "chatgpt" ? "machine" : "unconfirmed";
+	}
+	// A proposal already refreshed on a newer server can have repository layers but no filed item layer.
+	const context = item.context = { ...item.context, item: { ...settings, ...item.context?.item } };
+	item.runRole = role;
+	item.resolved = resolveRun(context, role);
+	if (old) meta.pendingBuilder = { context, role, title: old.title, repository: old.repository, issue: old.issue };
+	delete (meta as ItemMeta & { defaultPlace?: RunSettings }).defaultPlace;
+
+	function recoverPart(task: PlanSubtask, route = item.routes?.[task.key]) {
+		if (task.resolved) return;
+		const place = route?.preferred ?? item.place;
+		const part = { place: runPlace(place), model: settings.model,
+			effort: task.agent?.model ? task.agent.effort : settings.effort,
+			hostedSize: task.needs?.hostedSize ?? hostedSizeFor(task.needs ?? {}) ?? undefined };
+		// Resolve the saved machine id from the approved route, never a possibly renamed display name.
+		const resolved = partRun({ item: part }, { ...task, place: undefined });
+		if (resolved.agent !== "windlass" && (place.kind === "machine" || route?.alternatives.some(p => p.kind === "machine")))
+			resolved.payer = "unconfirmed";
+		task.resolved = resolved;
+	}
+	for (const plan of [item.approvedPlan, item.featurePlan]) {
+		if (plan?.status === "approved") for (const task of plan.subtasks) recoverPart(task);
+	}
+	for (const job of item.jobs ?? []) recoverPart(job.task, job.route);
+	await c.db.execute("UPDATE item SET data=? WHERE id=1", JSON.stringify(stored));
 	return stored;
 }
 
@@ -1761,13 +1830,15 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return true;
 		case "resolve_default_place": {
 			if (!meta.pendingBuilder) return false;
-			const result = await userActor(c, meta.uid).internalDefaultBuilder({ id: item.id, job: item.useHosted ? { ...meta.pendingBuilder, context: { ...meta.pendingBuilder.context, item: { ...meta.pendingBuilder.context.item, place: "hosted" } } } : meta.pendingBuilder });
+			const context = item.context ?? meta.pendingBuilder.context;
+			const job = { ...meta.pendingBuilder, context: item.useHosted ? contextAtPlace(context, "hosted") : context };
+			const result = await userActor(c, meta.uid).internalDefaultBuilder({ id: item.id, job });
 			if (!result || !c.vars.stored || !live(c.vars.stored.item, effect)) return false;
-			if (!("session" in result)) await take(c, { kind: "default_place_wait", at: Date.now(), sentence: result.wait, reviewer: result.reviewer });
+			if (!("session" in result)) await take(c, { kind: "default_place_wait", at: Date.now(), sentence: result.wait, reviewer: result.reviewer, offerPayer: result.offerPayer });
 			else {
 				const session = result.session;
 				await take(c, { kind: "default_place_ready", at: Date.now(), place: session.place, reviewer: result.reviewer, reviewerSessionId: result.reviewerSessionId,
-					agent: newAgent(session.harness ?? "windlass", session.model, resolveRun(meta.pendingBuilder.context, meta.pendingBuilder.role).effort, session.item?.signIn) });
+					agent: newAgent(session.harness ?? "windlass", session.model, resolveRun(job.context, job.role).effort, session.item?.signIn) });
 			}
 			return true;
 		}
@@ -2367,7 +2438,7 @@ export const workItem = actor({
 
 	createVars: async (c): Promise<ItemVars> => {
 		const [row] = await c.db.execute<{ due: string | null }>("SELECT due FROM item WHERE id = 1");
-		return { stored: await load(c.db), writing: Promise.resolve(), performing: new Set(), handoff: Promise.resolve(), due: row?.due ? (JSON.parse(row.due) as ItemVars["due"]) : null, reporting: null, reportAgain: false };
+		return { stored: await loadOnWake(c), writing: Promise.resolve(), performing: new Set(), handoff: Promise.resolve(), due: row?.due ? (JSON.parse(row.due) as ItemVars["due"]) : null, reporting: null, reportAgain: false };
 	},
 
 	onDestroy: async (c) => {
@@ -2466,7 +2537,8 @@ export const workItem = actor({
 			requireService(c);
 			const s = c.vars.stored, job = s?.item.jobs?.find(j => j.id === id);
 			const paused = !!s?.item.featureUpdate || s?.item.question?.kind === "feature_update" || s?.item.question?.kind === "branch_push";
-			if (!s || !job || !activeJob(job) || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || (s.item.question && !paused) || ENDED.has(s.item.state)) return null;
+			if (!s || !job || job.repairOffer || !activeJob(job) || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || (s.item.question && !paused) || ENDED.has(s.item.state)) return null;
+			if (!job.placement && (job.ciFix || job.conflictFix || job.reviewFix) && job.task.resolved && worksWithoutAsking(job.task.resolved.agent)) return null;
 			const completed = s.item.jobs?.filter(j => j.state === "done") ?? [];
 			const previous = completed.at(-1);
 			const reports = completed.filter(j => job.task.dependsOn.includes(j.task.key)).map(j => j.report);
@@ -2583,6 +2655,8 @@ export const workItem = actor({
 					if (advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored, fact.kind === "approve_plan" ? fact.bases : undefined);
 				}
 				changed = await take(c, fact);
+				if (approving && c.vars.stored?.item.featurePlan?.status === "proposed" && changed)
+					throw new PlanError("The plan settings changed. Review the new version before approving.");
 			} catch (error) {
 				if (error instanceof PlanError) throw new UserError(error.message, { code: "bad_input" });
 				throw clientError(c.log, error, "The item could not be changed. Try again.");

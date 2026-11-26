@@ -999,7 +999,7 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 				assert(code === "bad_input", String(code));
 				return code;
 			});
-			await check("a Claude Code work item asks for unavailable placements and runs on a compatible machine; Plan first requires Windlass", async () => {
+			await check("Claude Code can be chosen for a planned item and runs Quick on a compatible machine", async () => {
 				const raw = { title: "Inspect", body: "Read the repo", repository: { id: repo.id }, harness: "claude" as const };
 				for (const [destination, requestedProfile] of [[{ kind: "hosted" }, profile], [place, "docker-windlass-sandbox"]] as const) {
 					const waiting = await user.createItem({ ...raw, place: destination, mode: "single", profile: requestedProfile, start: true });
@@ -1007,14 +1007,15 @@ async function claudeChecks(client: Client, uid: string, token: string, windlass
 					assert(!(await user.listSessions()).some(s => s.id === waiting.sessionId), "started a builder on an unavailable placement");
 					await user.actOnItem({ id: waiting.id, action: { kind: "cancel" } });
 				}
-				const planFirst = await refusal(user.createItem({ ...raw, place, mode: "orchestrate" }));
-				assert(planFirst === "bad_input", `Plan first: ${planFirst}`);
+				const planFirst = await user.createItem({ ...raw, place, mode: "orchestrate", start: false });
+				assert(planFirst.mode === "orchestrate" && planFirst.resolved?.agent === "windlass", "Choosing Claude Code changed the planning role");
+				await user.actOnItem({ id: planFirst.id, action: { kind: "cancel" } });
 				const item = await user.createItem({ ...raw, place, mode: "single", profile });
 				const builder = (await user.listSessions()).find(s => s.id === item.sessionId);
 				assert(item.agent?.harness === "claude" && builder?.harness === "claude" && builder.profile === "docker-hardened" && builder.mode === "bypassPermissions",
 					JSON.stringify({ agent: item.agent, harness: builder?.harness, profile: builder?.profile, mode: builder?.mode }));
 				await user.actOnItem({ id: item.id, action: { kind: "cancel" } }).catch(() => undefined);
-				return "unavailable placements asked, Plan first refused, compatible builder in bypassPermissions";
+				return "unavailable placements asked, Windlass plans, compatible Claude Code builder in bypassPermissions";
 			});
 			await check("Claude bounds the serialized item, live deltas and reconnect text", async () => {
 				const { id } = await acpSession();

@@ -125,6 +125,28 @@ describe("the Factory composer's mode choice", () => {
 		await settle();
 	}
 
+	it("holds keyboard filing until account defaults can be read", async () => {
+		make({});
+		const original = client.user.bind(client);
+		let unavailable = true;
+		client.user = who => {
+			const user = original(who);
+			return { ...user, account: async () => {
+				if (unavailable) throw new Error("offline");
+				return user.account();
+			} };
+		};
+		await show("/factory");
+		await file("Search the docs");
+		expect(filed).toHaveLength(0);
+		expect(host.querySelector(".start-run")?.textContent).toContain("Account defaults could not be read");
+		unavailable = false;
+		await act(async () => button("Retry")!.click());
+		await settle();
+		await file("Search the docs");
+		expect(filed).toHaveLength(1);
+	});
+
 	it("files Plan first by default, says it on File, and switches to Quick from File's menu, which this browser remembers", async () => {
 		make({});
 		await api().saveRepositoryDefaults(7102, { model: null });
@@ -181,13 +203,15 @@ describe("a feature's plan on its page", () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Search the docs from the command line");
 		await show(`/items/${feature.id}`);
+		act(() => host.querySelector<HTMLInputElement>(".plan-ask-options input")!.click());
+		await act(async () => button("Save as version 3")!.click());
+		await settle();
 		const checkbox = autoApprove()!;
 		expect(checkbox.checked).toBe(false);
 		expect(checkbox.labels?.[0]?.textContent).toBe("Approve small plans automatically in acme/harbor");
 		act(() => checkbox.click());
 		expect((await api().repository(feature.repository.id)).defaults.autoApprovePlans).toBeFalsy();
-		act(() => host.querySelector<HTMLInputElement>(".plan-ask-options input")!.click());
-		await act(async () => button("Approve")!.click());
+		await act(async () => button("Approve version 3")!.click());
 		await settle();
 		expect((await api().item(feature.id)).plan?.status).toBe("approved");
 		expect((await api().repository(feature.repository.id)).defaults.autoApprovePlans).toBe(true);
@@ -254,7 +278,7 @@ describe("a feature's plan on its page", () => {
 		expect(change?.getAttribute("href")).toBe(`/repositories/${feature.repository.id}/settings#autonomy`);
 	});
 
-	it("asks its questions first, and approves with the answers in one press, as the next version", async () => {
+	it("saves its answers and approves only the version showing them", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Search the docs from the command line");
 		await show(`/items/${feature.id}`);
@@ -264,15 +288,16 @@ describe("a feature's plan on its page", () => {
 		expect(host.querySelector(".plan-task:first-child .plan-task-files")?.textContent).toBe("2 files");
 		expect([...host.querySelectorAll(".plan-task:first-child .plan-path")].map((path) => path.textContent)).toEqual(["src/search/index/**", "scripts/release.ts"]);
 		// Not approvable until the question is answered.
-		expect(button("Approve version 2")?.disabled).toBe(true);
+		expect(button("Approve version 2")).toBeUndefined();
 		expect(host.querySelector(".plan-question .field-note")?.textContent).toBe("Answer the question first.");
 		// The options are radio rows under the question.
 		expect(host.querySelectorAll('.plan-ask-options [type="radio"]').length).toBeGreaterThan(1);
 		const option = [...host.querySelectorAll(".plan-ask-options input")].find((input) => (input as HTMLInputElement).value === "No, 2.0 and later") as HTMLInputElement;
 		act(() => option.click());
-		// An answer is not an edit of the plan: no "Save as version", one Approve that sends both.
-		expect(button("Save as version 3")).toBeUndefined();
-		const approve = button("Approve") as HTMLButtonElement;
+		// Saving answers obtains a fresh offer before approval.
+		await act(async () => button("Save as version 3")!.click());
+		await settle();
+		const approve = button("Approve version 3") as HTMLButtonElement;
 		expect(approve.disabled).toBe(false);
 		await act(async () => approve.click());
 		await settle();
@@ -322,7 +347,9 @@ describe("a feature's plan on its page", () => {
 			await api().actOnItem(id, { kind: "edit_plan", version: view.plan!.version, plan });
 		};
 		meanwhile = otherTab;
-		await act(async () => button("Approve")?.click());
+		await act(async () => button("Save as version 3")!.click());
+		await settle();
+		await act(async () => button("Approve version 3")!.click());
 		await settle();
 		expect(host.querySelector(".plan-question .callout-warn")?.textContent).toBe("The plan changed while you read it, here or in another tab: version 4 is shown now. Check it, then approve again.");
 		expect(host.querySelector(".feature-plan .usage-count")?.textContent).toBe("v4 · proposed");
@@ -362,6 +389,59 @@ describe("a feature's plan on its page", () => {
 		expect(budgetField("index", "Millions of tokens").value).toBe("1");
 	});
 
+	it("keeps exact budgets and cross-repository integration fields when saving an edit", async () => {
+		const repos = ["cli", "platform"];
+		const rollout = { repos, releaseGate: "request" as const, mergeOrder: repos.map(repo => ({ repo, prerequisite: [], intermediate: "Works with the previous release", evidence: "Contract test", fallback: "Revert" })),
+			earlyChecks: [{ repo: "cli", sibling: "platform", name: "Contract", command: "npm test" }],
+			finalIntegration: { runFrom: "cli", command: "npm test", inputs: repos, profile: "actions" as const, timeoutSeconds: 600, requiredCases: ["contract"], artifactOutputs: [] } };
+		make({ items: "features" }, view => {
+			if (!view.plan) return view;
+			Object.assign(view.plan, rollout);
+			view.plan.subtasks.forEach((task, i) => { task.repo = repos[i % 2]; });
+			view.plan.subtasks[0]!.budget.tokens = 245001;
+			return view;
+		});
+		const feature = await featureNamed("Email tide alerts to subscribers");
+		await show(`/items/${feature.id}`);
+		expect(button("Save as version 2")).toBeUndefined();
+		expect(budgetField("templates", "Millions of tokens").value).toBe("0.245001");
+		type(budgetField("sender", "Millions of tokens"), "0.41");
+		let save: ItemAction | undefined;
+		meanwhile = async (_, action) => { save = action; };
+		await act(async () => button("Save as version 2")!.click());
+		expect(save).toMatchObject({ kind: "edit_plan", plan: { ...rollout, subtasks: [
+			{ key: "templates", repo: "cli", budget: { tokens: 245001 } }, { key: "sender", repo: "platform", budget: { tokens: 410000 } }
+		] } });
+	});
+
+	it("displays the saved and proposed Hosted size and the billed rate on the approval card", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Email tide alerts to subscribers");
+		await api().saveRepositoryDefaults(feature.repository.id, { hostedSize: "small" });
+		const plan = feature.plan!;
+		const sender = plan.subtasks[1]!;
+		sender.place = { prefer: "hosted", reason: "Build on Hosted" };
+		sender.needs = { hostedSize: "large" };
+		await api().actOnItem(feature.id, { kind: "edit_plan", version: 1, plan });
+		await show(`/items/${feature.id}`);
+		expect(host.querySelectorAll(".plan-route")[1]?.textContent).toContain("Saved Small · Proposed Large · 2× standard hosted rate · est. $0.33/h");
+	});
+
+	it.each(["wait", "use_hosted"] as const)("sends the offered placement recovery %s on the current question", async id => {
+		make({ items: "features" }, item => {
+			if (item.question?.kind === "placement_refused") item.question.choices = [{ id, label: "Owner's recovery choice" }];
+			return item;
+		});
+		const feature = await featureNamed("Flood alerts by mail");
+		await show(`/items/${feature.id}`);
+		const choices = host.querySelectorAll<HTMLButtonElement>(".placement-question .item-choices button");
+		expect(choices).toHaveLength(1);
+		let sent: ItemAction | undefined;
+		meanwhile = async (_, action) => { sent = action; };
+		await act(async () => choices[0]!.click());
+		expect(sent).toEqual({ kind: "answer", question: feature.question!.id, choice: id });
+	});
+
 	it("shows the push CI blocker and single-item choice before approval", async () => {
 		const block = "Add windlass/** to the workflow’s push branches.";
 		make({}, item => item.question ? { ...item, question: { ...item.question, approvalBlock: block,
@@ -370,23 +450,19 @@ describe("a feature's plan on its page", () => {
 		const made = await api().createItem({ repository: { id: 7102 }, title: "Tide charts", body: "Draw the week's tides.", mode: "orchestrate", start: true });
 		await show(`/items/${made.id}`);
 		expect(host.querySelector(".plan-question .callout-warn")?.textContent).toContain(block);
-		expect(button("Approve version 1")?.disabled).toBe(true);
+		expect(button("Approve version 1")).toBeUndefined();
 		expect(button("Run as a single item")?.disabled).toBe(false);
 	});
 
-	it("says the server's refusal on a repository without checks, and offers the feature as one item", async () => {
+	it("says the server's refusal on a repository without checks, without inventing a single-item offer", async () => {
 		make({});
 		await api().saveRepositoryDefaults(7102, { model: null });
 		const made = await api().createItem({ repository: { id: 7102 }, title: "Tide charts", body: "Draw the week's tides.", mode: "orchestrate", start: true });
 		await show(`/items/${made.id}`);
 		await act(async () => button("Approve version 1")?.click());
 		await settle();
-		expect(host.querySelector(".plan-refused")?.textContent).toBe("Use a single item or add saved repository checks before approving orchestration. A single item needs neither.");
-		await act(async () => button("Run as a single item")?.click());
-		await settle();
-		expect((await api().item(made.id)).mode).toBe("single");
-		expect(host.querySelector(".item-meta")?.textContent).toContain("Plan first · one implementer");
-		expect(host.querySelector(".plan-total")).toBeNull();
+		expect(host.querySelector(".plan-refused")?.textContent).toBe("Use a single item or add saved repository checks before approving orchestration.");
+		expect(button("Run as a single item")).toBeUndefined();
 	});
 
 	it.each([
@@ -528,14 +604,30 @@ describe("placement in a feature's plan", () => {
 	const why = (key: string) => [...row(key).querySelectorAll(".plan-task-more-facts > div")].find((candidate) => candidate.querySelector("dt")?.textContent === "why there")?.querySelector("dd")?.textContent ?? null;
 	const pill = (label: string) => [...host.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-label") === label) as HTMLButtonElement;
 	/** The places of the approval card's row `n`, each with its secrets words. */
-	const routePlaces = (n: number) => [...(host.querySelectorAll(".plan-question .plan-route")[n]?.querySelectorAll(".plan-route-places > li") ?? [])].map((place) => place.textContent!.replace(/\s+/g, " ").trim());
+	const routePlaces = (n: number) => [...(host.querySelectorAll(".plan-question .plan-route")[n]?.querySelectorAll(".plan-route-places > li") ?? [])].map((place) => place.textContent!.split(" · ")[0]!.replace(/\s+/g, " ").trim());
 	const menuRow = (name: string) => [...document.querySelectorAll('[role="menuitemradio"]')].find((candidate) => candidate.textContent?.startsWith(name)) as HTMLElement;
+
+	it("shows the server’s Hosted screenshot refusal without a machine route", async () => {
+		const reason = "Enable screenshots for this repository or remove the screenshot requirement.";
+		make({ items: "features" }, view => {
+			const task = view.plan?.subtasks[0];
+			if (task) Object.assign(task, { needs: { screenshots: true }, place: { prefer: "hosted", reason: "Capture" }, placementProblem: reason });
+			return view;
+		});
+		const feature = await featureNamed("Search the docs from the command line");
+		const plan = feature.plan!;
+		await api().actOnItem(feature.id, { kind: "edit_plan", version: plan.version, plan: { ...plan,
+			questions: plan.questions.map(q => ({ ...q, answer: q.options?.[0] ?? "Yes" })) } });
+		await show(`/items/${feature.id}`);
+		expect(host.querySelector(".plan-route-problem")?.textContent).toContain(reason);
+		expect(host.querySelector<HTMLButtonElement>(".plan-question .button-primary")?.disabled).toBe(true);
+	});
 
 	it("shows each subtask's place, needs and reason, and the server's reason for a place it refuses", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Visual regression checks for the tide chart");
 		await show(`/items/${feature.id}`);
-		expect(host.querySelector(".plan-placement")?.textContent).toContain("Default place: nas.");
+		expect(host.querySelector(".plan-placement")?.textContent).toContain("Feature place: nas.");
 		expect(pill("Runs on: nas")).toBeTruthy();
 		expect(fact("fixtures", "needs")).toBe("4 CPUs6 GiB memory");
 		expect(why("capture")).toBe("The only machine that reports screenshots.");
@@ -563,8 +655,8 @@ describe("placement in a feature's plan", () => {
 		await settle(2);
 		expect(fact("compare", "can't place")).toBeNull();
 		expect(why("compare")).toBe("Chosen in plan review.");
-		// "studio" is busy: a wait, which approval allows.
-		expect(fact("compare", "if approved")).toBe("Waiting for 1 free slot on ‘studio’. 0 free now.");
+		// The saved version below carries the server’s placement check.
+		expect(fact("compare", "if approved")).toBe("Save to check this placement.");
 		await act(async () => button("Save as version 2")?.click());
 		await settle();
 		expect(button("Approve version 2")?.disabled).toBe(false);
@@ -592,17 +684,16 @@ describe("placement in a feature's plan", () => {
 		await act(async () => button("Save as version 2")?.click());
 		await settle();
 		expect((await api().item(feature.id)).plan?.overflow).toBe(false);
-		expect(host.querySelector(".plan-routes-overflow")?.textContent).toBe("Wait for the chosen place");
-		expect(routePlaces(1)).toEqual(["studio gets secrets", "or nas unused while waiting"]);
+
+		expect(routePlaces(1)).toEqual(["studio gets secrets"]);
 	});
 
 	it("lists on the approval card where each subtask runs, its alternatives and whether secrets go there, its reasons left to the rows", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Visual regression checks for the tide chart");
-		expect(feature.placementReview).toEqual([{ name: "nas", sendSecrets: true }, { name: "studio", sendSecrets: true }, { name: "ci-box", sendSecrets: false }]);
 		await show(`/items/${feature.id}`);
 		const card = host.querySelector(".plan-question .plan-routes") as HTMLElement;
-		expect(card.querySelector(".plan-routes-overflow")?.textContent).toBe("Use another free place");
+
 		expect([...card.querySelectorAll(".plan-route-title")].map((title) => title.textContent)).toEqual(["Record the chart fixtures", "Capture the chart in both themes", "Compare captures against the baseline"]);
 		// The reasons are each row's, under its Details: the card does not repeat them.
 		expect(card.querySelector(".plan-route-why")).toBeNull();
@@ -651,8 +742,8 @@ describe("a subtask the feature could not place", () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Flood alerts by mail");
 		await show(`/items/${feature.id}`);
-		expect(card().querySelector(".item-question-text")?.textContent).toBe("“Send the alert mails” can't be placed");
-		expect(fact("refused")).toBe("‘ci-box’: owner placement policy is never.");
+		expect(card().querySelector(".item-question-text")?.textContent).toContain("Send the alert mails");
+		expect(card().querySelector(".item-question-text")?.textContent).toBe("Send the alert mails: ‘ci-box’: owner placement policy is never.");
 		expect(fact("approved")).toBe("ci-box");
 		expect([...card().querySelectorAll(".item-choices button")].map((one) => one.textContent)).toEqual(["Revise the placement…", "Retry allowed places", "Give up the subtask"]);
 	});
@@ -667,7 +758,7 @@ describe("a subtask the feature could not place", () => {
 		const after = await api().item(feature.id);
 		expect(after.question?.kind).toBe("placement_refused");
 		expect(after.question?.id).not.toBe(asked);
-		expect(fact("refused")).toBe("‘ci-box’: owner placement policy is never.");
+		expect(card().querySelector(".item-question-text")?.textContent).toBe("Send the alert mails: ‘ci-box’: owner placement policy is never.");
 	});
 
 	it("revises the placement with a place picked from the owner's machines, sent to the planner as the owner's note", async () => {
@@ -683,7 +774,7 @@ describe("a subtask the feature could not place", () => {
 		expect(menuRow("ci-box")?.getAttribute("aria-disabled")).toBe("true");
 		act(() => menuRow("nas").click());
 		await settle(2);
-		expect(card().querySelector(".plan-place-problem dd")?.textContent).toBe("‘ci-box’: owner placement policy is never.");
+		expect(card().querySelector(".item-question-text")?.textContent).toBe("Send the alert mails: ‘ci-box’: owner placement policy is never.");
 		const sent: ItemAction[] = [];
 		meanwhile = async (_id, action) => void sent.push(action);
 		await act(async () => button("Ask for a revised plan")?.click());
@@ -694,7 +785,7 @@ describe("a subtask the feature could not place", () => {
 		expect(after.plan?.version).toBe(2);
 	});
 
-	it("allows a revision to a busy place, and says what it would wait for", async () => {
+	it("allows a revision to a busy place for the server to check", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Flood alerts by mail");
 		await show(`/items/${feature.id}`);
@@ -705,7 +796,7 @@ describe("a subtask the feature could not place", () => {
 		act(() => menuRow("studio").click());
 		await settle(2);
 		expect(button("Ask for a revised plan")?.disabled).toBe(false);
-		expect([...card().querySelectorAll(".plan-place-ahead dd")].map((one) => one.textContent)).toEqual(["Waiting for 1 free slot on ‘studio’. 0 free now."]);
+		expect([...card().querySelectorAll(".plan-place-ahead dd")].map((one) => one.textContent)).toEqual([]);
 	});
 
 	it("gives up the subtask", async () => {
@@ -827,18 +918,41 @@ describe("agents in a feature's plan", () => {
 		expect(after.children?.[0]?.placement?.harness).toBe("claude");
 	});
 
+	it("uses the sibling's bound Hosted destination for secrets and the agent picker", async () => {
+		make({ items: "features" }, view => {
+			if (view.plan && view.title === "Email tide alerts to subscribers") {
+				const part = view.plan.subtasks[1]!;
+				delete part.place;
+				part.repo = "sibling";
+				part.resolved!.place = "hosted";
+				part.review!.places = [{ place: { kind: "hosted" }, name: "hosted", sendSecrets: true, payer: "windlass" }];
+			}
+			return view;
+		});
+		const feature = await featureNamed("Email tide alerts to subscribers");
+		await api().setMachineSecrets({ machineId: "m_nas", send: false });
+		await show(`/items/${feature.id}`);
+		expect(host.querySelectorAll(".plan-route-places")[1]?.textContent).toContain("Hosted gets secrets");
+		act(() => pill("Agent: Windlass", row("sender")).click());
+		expect(menuRow("OpenCode")).toBeTruthy(); // nas offers only Claude Code.
+	});
+
 	it("reads the current default for inherited agents and asks before replacing unsupported parts", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Email tide alerts to subscribers");
 		await api().saveRepositoryDefaults(feature.repository.id, { harness: "claude" });
 		const fresh = await api().item(feature.id);
 		expect(fresh.unattended).toEqual(["templates", "sender"]);
-		await expect(api().actOnItem(feature.id, { kind: "approve_plan", version: 1, agents: ["templates"] })).rejects.toThrow(/confirm that it runs Claude Code/);
+		await show(`/items/${feature.id}`);
+		expect(confirmBoxes()[1]!.labels?.[0]?.textContent).toContain("Send alerts to subscribers on Claude Code");
+		act(() => root!.unmount());
+		root = null;
+		await expect(api().actOnItem(feature.id, { kind: "approve_plan", version: fresh.plan!.version, agents: ["templates"] })).rejects.toThrow(/confirm that it runs Claude Code/);
 		await api().saveRepositoryDefaults(feature.repository.id, { harness: "codex" });
 		await show(`/items/${feature.id}`);
-		expect(button("Choose another agent")).toBeTruthy();
+		expect(button("Approve version 1")).toBeUndefined();
+		expect(button("OpenCode")).toBeTruthy();
 		await act(async () => button("Use Windlass for these parts")!.click());
-		await act(async () => button("Save as version 2")!.click());
 		await settle();
 		const updated = await api().item(feature.id);
 		expect(updated.plan?.status).toBe("proposed");
@@ -878,6 +992,19 @@ describe("agents in a feature's plan", () => {
 		await show(`/items/${feature.id}`);
 		expect(confirmBoxes()).toHaveLength(1);
 		expect(button("Approve version 1")?.disabled).toBe(true);
+	});
+
+	it("locks an approved agent when its job is queued before the child appears", async () => {
+		make({ items: "features" }, view => {
+			if (view.plan?.status !== "approved") return view;
+			return { ...view, editableAgents: [view.plan.subtasks[1]!.key], children: [],
+				subtasks: [{ id: "queued", key: view.plan.subtasks[0]!.key, state: "draft", dispatchedAt: 1, startedAt: null, wait: null }] };
+		});
+		const feature = await featureNamed("Nightly tide table as a PDF");
+		await show(`/items/${feature.id}`);
+		openPlan();
+		expect(row(feature.plan!.subtasks[0]!.key).querySelector(".plan-agent button")).toBeNull();
+		expect(row(feature.plan!.subtasks[1]!.key).querySelector(".plan-agent button")).not.toBeNull();
 	});
 
 	it("approves without a confirmation when the server counts nothing left to confirm", async () => {

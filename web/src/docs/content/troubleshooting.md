@@ -143,9 +143,9 @@ Sign OpenCode in on the machine with `docker exec -it windlass-runner windlass-r
 
 Open **Settings → Model providers** and add an Anthropic key. Codex uses OpenAI. OpenCode can use any connected provider. The hosted profile must support the key relay.
 
-**"Plan first runs only with Windlass."**
+**"Codex runs Quick items only."**
 
-Choose **Quick** to file an item directly with Claude Code, Codex or OpenCode. For **Plan first**, start with Windlass and choose an available agent for each subtask on its plan.
+Choose **Quick** to run an item with Codex. In **Plan first**, Windlass plans the work. Its subtasks can run with Windlass, Claude Code or OpenCode.
 
 **"… asks you every time it wants to publish …"**\
 Claude Code, OpenCode and Codex can't publish without asking: they reach the publish tool from inside the sandbox, where another program could call it in the agent's name. Answer each request, or publish from the session panel.

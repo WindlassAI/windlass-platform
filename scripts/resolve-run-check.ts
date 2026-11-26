@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { resolveRun, partRun, type RunContext } from "../server/src/factory/resolve-run.js";
+import { resolveRun, filedAgentSettings, partRun, type RunContext } from "../server/src/factory/resolve-run.js";
 
 const context: RunContext = {
 	deployment: { model: "deployment-model", hostedSize: "small" },
@@ -28,12 +28,17 @@ test("planning, review, critic, summary and setup use the Windlass model", () =>
 	}
 });
 
-test("planning resolves each review field within each layer and charges the resolved provider", () => {
+test("planning prefers the review model over filed build models and charges its provider", () => {
 	const layers: RunContext = { account: { model: "astra", effort: "low", reviewModel: "anthropic/claude-opus", reviewEffort: "high" }, repository: { effort: "medium" } };
 	for (const role of ["planner", "reviewer", "critic", "summary"] as const) {
 		const run = resolveRun(layers, role);
 		assert.deepEqual([run.model, run.effort, run.sources.model, run.sources.effort, run.payer, run.sources.payer], ["anthropic/claude-opus", "medium", "account", "repository", "key", "account"]);
-		assert.equal(resolveRun({ ...layers, item: { model: "chosen" } }, role).model, "chosen");
+		const filed = filedAgentSettings(layers, "chosen", null);
+		assert.equal(resolveRun({ ...layers, item: filed }, role).model, "anthropic/claude-opus");
+		assert.equal(resolveRun({ ...layers, repository: { reviewModel: "repo-review" }, item: filed }, role).model, "repo-review");
+		assert.equal(resolveRun({ ...layers, item: { ...filed, reviewModel: "item-review" } }, role).model, "item-review");
+		assert.equal(resolveRun({ item: { model: "stored-build" } }, role).model, "stored-build");
+		assert.equal(resolveRun({ ...layers, item: filed }, "builder").model, "chosen");
 	}
 	for (const role of ["builder", "part", "repair", "setup", "environment"] as const)
 		assert.equal(resolveRun(layers, role).model, "astra");

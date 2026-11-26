@@ -7,7 +7,7 @@ import { deploymentSize, resolveRun, type RunContext } from "../factory/resolve-
 import { checkRunPlace, changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
 import type { AccountDefaultsPatch, CredentialSource, ItemPlaceDefaults, RepositoryDefaultsPatch } from "../contract.js";
 import { digest, snapshotGeneration } from "../sandbox/snapshot-key.js";
-import { partDefaults, placementInventory } from "./user-items.js";
+import { placementInventory } from "./user-items.js";
 import type { AgentModels } from "../factory/placement.js";
 import { mayUse } from "../access.js";
 import { githubId, isGithubId } from "../github/ids.js";
@@ -15,7 +15,7 @@ import type { MachineUpdate } from "./machine.js";
 import { accountLimits, changeUserLimit, limitsSubject, type LimitAuditRow, type LimitChange } from "../user-limits.js";
 import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage, type AccountLocation } from "./provider-accounts.js";
 import type { UsageObservation } from "../provider-usage.js";
-import { changed as machinesChanged, machineCatalog, itemMachines, launchPlace, listMachines, launchMachineProfiles, machineActions, machineSecrets, machineTables, credentialSource } from "./user-machines.js";
+import { changed as machinesChanged, machineCatalog, machineModelLists, itemMachines, launchPlace, listMachines, launchMachineProfiles, machineActions, machineSecrets, machineTables, credentialSource } from "./user-machines.js";
 import { keptFull, makeSandboxRoom } from "./user/kept-sandboxes.js";
 import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type MakeSession, type ItemSessionInput, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, plannerHostedCapacity, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { EnvironmentPlace, EnvironmentSchedule, RepositoryEnvironments, SandboxProfileId } from "../contract.js";
@@ -681,6 +681,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		if (repoUrl && place.kind === "hosted" && (await getLayer()).sandboxes.egress?.() === "none") throw new UserError(HOSTED_OFFLINE_REPOSITORY, { code: "bad_input" });
 		const offered = machine?.harnesses?.find(entry => entry.id === harness);
 		if (harness !== "windlass" && machine && !offered) throw new UserError(`This machine does not offer ${machineHarnesses[harness].name}.`, { code: "bad_input" });
+		if (item?.payer && offered && item.payer !== (offered.source ?? "machine"))
+			throw new UserError("The selected payer changed before launch. Restore it or choose a new placement.", { code: "bad_input" });
 		// A work item is not watched: one filed on a machine whose agent is not known to be signed in would only fail at its first turn.
 		const signedOut = item && harness !== "windlass" && offered ? itemSignInMessage(machineHarnesses[harness], machine?.name ?? "your machine", offered.signIn) : null;
 		if (signedOut) throw new UserError(signedOut, { code: "harness_signed_out" });
@@ -699,8 +701,8 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// Letting the agent publish unasked is for sandboxes whose commands cannot ask in its name.
 		const unaskedProblem = repo && input.publishUnasked === true ? publishUnaskedProblem(commandSandbox(chosen)) : null;
 		if (unaskedProblem !== null) throw new UserError(unaskedProblem, { code: "bad_input" });
-		const catalog = offered?.optionsDigest && place.kind === "machine" ? await machineCatalog(c, place.machineId, offered.id, offered.optionsDigest) : undefined;
-		if (offered?.optionsDigest && !catalog) throw new UserError("The machine’s model list changed. Choose the model again.", { code: "bad_input" });
+		const catalog = offered?.optionsDigest && place.kind === "machine" ? await machineCatalog(c, place.machineId, offered.id).catch(() => null) : undefined;
+		if (offered?.optionsDigest && !catalog) throw new UserError("The machine’s current model list could not be read. Try again.", { code: "bad_input" });
 		const providers = place.kind === "hosted" && harness !== "windlass" ? await providerStatuses(c.db) : undefined;
 		const options = providers ? hostedCatalog(harness, providers.filter(p => p.ok)) : availableCatalog(catalog ?? undefined, offered);
 		if (harness === "codex" && chosen.id === "docker-windlass-sandbox" && !offered?.modes?.includes("workspace-write"))
@@ -791,20 +793,14 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 /**
  * The models a subtask's agent may choose, by the lists `makeSession` holds a session to: the account's
  * for Windlass, each machine harness's catalog (or only its default where its runner reported none).
- * A list that cannot be read is left out, and the child's creation judges it. Each is read at once.
+ * An unread digest stays absent so placement can wait or try another machine.
  */
 export async function agentModels(c: CreateCtx & { key: string[] }): Promise<AgentModels> {
 	const profile = c.vars.profile;
-	const harnesses = [...c.vars.machines.values()].flatMap(m => (m.harnesses ?? []).filter(h => machineHarnesses[h.id]?.subtasks).map(h => ({ m, h })));
-	const [windlass, catalogs] = await Promise.all([
+	const [windlass, machines] = await Promise.all([
 		profile ? modelsOf(c, profile.demo).catch(() => null) : null,
-		Promise.all(harnesses.map(({ m, h }) => h.optionsDigest ? machineCatalog(c, m.machineId, h.id, h.optionsDigest).catch(() => null) : undefined)),
+		machineModelLists(c, [...c.vars.machines.values()], id => machineHarnesses[id].subtasks),
 	]);
-	const machines: NonNullable<AgentModels["machines"]> = {};
-	harnesses.forEach(({ m, h }, i) => {
-		const options = catalogs[i] === undefined ? h.options : catalogs[i];
-		if (options !== null) (machines[m.machineId] ??= {})[h.id] = initialHarnessModels(availableCatalog(options, h));
-	});
 	return { windlass, machines };
 }
 
@@ -1394,10 +1390,6 @@ export const user = actor({
 				if (c.vars.machines.size && (location.harness === "windlass" || location.place !== "hosted")) await machinesChanged(c);
 				queueChanged(c);
 			}
-		},
-		internalPartDefaults: (c, repositories: Record<string, GithubId>) => {
-			requireService(c);
-			return partDefaults(c, repositories);
 		},
 		internalPlacementInventory: async (c, repositories: Record<string, GithubId>, snapshot?: GithubId) => {
 			requireService(c);

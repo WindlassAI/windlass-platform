@@ -4,23 +4,20 @@
  * item's own choices) and says the result and where each part of it comes from.
  */
 import { machineLabel, type AccountDefaults, type HostedSizeOption, type MachineSummary, type ModelList, type RepositoryDefaults } from "@contract";
-import { deploymentSize, resolveRun, type ResolvedRun, type RunContext, type RunRole, type RunSettings } from "../../../server/src/factory/resolve-run";
+import { deploymentSize, machinePayers, resolveRun, type ResolvedRun, type RunRole, type RunSettings } from "../../../server/src/factory/resolve-run";
 import { HARNESS_NAMES } from "./acp";
 import { cleanModelName } from "./models";
 
 export type RunSource = ResolvedRun["sources"]["place"];
 const ORDER: RunSource[] = ["deployment", "account", "repository", "item"];
 
-/** Each machine agent's payer, as the machine reports it. */
-export function machinePayers(machines: readonly MachineSummary[] | null): RunContext["machinePayers"] {
-	return Object.fromEntries((machines ?? []).map((m) => [m.machineId, Object.fromEntries((m.harnesses ?? []).filter((h) => h.source).map((h) => [h.id, h.source]))]));
-}
+export { machinePayers };
 
 export function runOf(layers: { account?: AccountDefaults | null; repository?: RepositoryDefaults | null; item?: RunSettings; machines: readonly MachineSummary[] | null; sizes?: readonly HostedSizeOption[] }, role: RunRole = "builder"): ResolvedRun {
 	const sizes = layers.sizes?.map((size) => size.id) ?? [];
 	return resolveRun({
 		deployment: sizes.length ? { hostedSize: deploymentSize(sizes) } : {},
-		machinePayers: machinePayers(layers.machines),
+		machinePayers: machinePayers(layers.machines ?? []),
 		account: layers.account ?? undefined,
 		repository: layers.repository ?? undefined,
 		item: layers.item,
@@ -60,6 +57,7 @@ export function runWords(run: ResolvedRun, machines: readonly MachineSummary[] |
 
 /** Who pays for a machine agent's turns, in a few words; null for Windlass's own models. */
 export function payerWords(run: Pick<ResolvedRun, "agent" | "payer" | "place">): string | null {
+	if (run.payer === "unconfirmed") return "payer needs confirmation";
 	if (run.agent === "windlass" && run.payer === "windlass") return null;
 	return run.payer === "machine" ? "its own sign-in" : "your key";
 }

@@ -57,7 +57,7 @@ export function budgetProblems(single: Pick<ItemBudget, "tokens">, budgets: Reco
 }
 
 /** Subtask budgets are entered in millions of cost-weighted tokens. */
-export const tokenInput = (tokens: number) => String(Number((tokens / 1e6).toFixed(2)));
+export const tokenInput = (tokens: number) => String(tokens / 1e6);
 
 export function parseTokenInput(text: string): number {
 	const value = text.trim() === "" ? Number.NaN : Number(text);

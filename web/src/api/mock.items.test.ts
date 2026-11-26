@@ -122,12 +122,13 @@ describe("the mock's work items", () => {
 		mock.dispose();
 	});
 
-	it("files an item for Claude Code or OpenCode only on a machine signed into it, Quick, in the hardened container", async () => {
+	it("files Quick with the selected machine agent and Plan first with a Windlass planner", async () => {
 		const online = make(undefined, "online");
 		const user = online.user(auth);
 		const task = { repository: { id: 7101 }, title: "Log the release's checksum", body: "", mode: "single" as const };
 		await expect(user.createItem({ ...task, harness: "claude" })).rejects.toMatchObject({ reason: "harness_signed_out" });
-		await expect(user.createItem({ ...task, harness: "claude", mode: "orchestrate", place: { kind: "machine", machineId: "m_nas" } })).rejects.toMatchObject({ reason: "bad_input" });
+		const feature = await user.createItem({ ...task, harness: "claude", mode: "orchestrate", place: { kind: "machine", machineId: "m_nas" } });
+		expect(feature).toMatchObject({ mode: "orchestrate", agent: { harness: "windlass" } });
 		const claude = await user.createItem({ ...task, harness: "claude", place: { kind: "machine", machineId: "m_nas" } });
 		expect(claude.agent).toMatchObject({ harness: "claude", tokens: "not_reported", reportedTokens: 0 });
 		expect((await user.listSessions()).find((session) => session.id === claude.sessionId)).toMatchObject({ harness: "claude", profile: "docker-hardened" });

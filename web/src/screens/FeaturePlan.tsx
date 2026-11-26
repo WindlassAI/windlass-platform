@@ -1,8 +1,9 @@
 import { afterWords } from "../lib/subtasks";
+import { perHour } from "../lib/sizes";
 import { modelWords } from "../lib/models";
-import { MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemBudget, type SubtaskBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
+import { HOSTED_SIZE_NAMES, MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemBudget, type SubtaskBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
-import { singleAfterPlanning, subtaskHarness, unsupportedParts } from "../../../server/src/factory/feature-plan.js";
+import { singleAfterPlanning, subtaskHarness } from "../../../server/src/factory/feature-plan.js";
 import { ArrowDownIcon, ChevronIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { ItemSpend } from "../components/ItemSpend";
 import { FOLD_WORDS, FoldList, FoldToggle, LongText, PathList } from "../components/Fold";
@@ -11,16 +12,15 @@ import { Menu, type MenuItem, type MenuSpec } from "../components/ui/Menu";
 import { AgentGlyph, Pill } from "../components/ui/Pill";
 import { machineLabel } from "../lib/machines";
 import { HARNESS_NAMES } from "../lib/acp";
-import { SOURCE_WORDS, runModelName, sourceOf } from "../lib/run";
+import { SOURCE_WORDS, placeName, payerWords, runModelName, sourceOf } from "../lib/run";
 import { runAgent, type ResolvedRun } from "../../../server/src/factory/resolve-run";
-import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placementFit, placementProblem, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
+import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
 import { compact, plural } from "../lib/format";
 import { subscriptionSpend } from "../lib/item-agent";
 import type { useHostedProviders } from "../state/hooks";
 import { effortsOf, harnessOptions } from "../lib/models";
 import { modelMenu as sharedModelMenu } from "../components/ModelPicker";
 import { effortGroup } from "../components/TrayControls";
-import type { AgentModels } from "../../../server/src/factory/placement.js";
 import { agentChanged, agentChoices, agentParts, cleanAgent, machineModels, preferredMachine, UNATTENDED_MEANS, UNATTENDED_WORDS, worksWithoutAsking, type Catalogs } from "../lib/subtask-agents";
 import { subtaskFloor, sumBudgets } from "../lib/feature";
 import type { PlanActing, PlanReview } from "./usePlanReview";
@@ -30,17 +30,6 @@ import { Check } from "../components/ui/Check";
 import { Tooltip } from "../components/ui/Tooltip";
 import { useDefaults } from "../components/StartComposer";
 import { useApp, useAuth } from "../state/app";
-
-function unplaceableOf(view: ItemView, plan: FeaturePlan, machines: MachineSummary[] | null, models?: AgentModels): { task: PlanSubtask; reason: string }[] {
-	if (!machines) return [];
-	const done = new Set(view.completedSubtasks ?? []);
-	return plan.subtasks.flatMap((task) => {
-		const reason = done.has(task.key) ? null : placementProblem(task, view.place, plan.overflow === true, machines, models);
-		return reason ? [{ task, reason }] : [];
-	});
-}
-
-const SINGLE_INSTEAD = /single item/i;
 
 function approvalProblem(review: PlanReview, unconfirmed: number): string | null {
 	if (review.problems.any) return "Fix the figures marked below first.";
@@ -73,35 +62,26 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 	const single = view.question.kind === "single_suggested";
 	const replan = view.question.kind === "replan_approval";
 	const ciBlock = view.question.approvalBlock;
-	const fallback = !single && view.question.choices.some(choice => choice.id === "run_single");
-	const singleAnswer = { kind: "answer", question: view.question.id, choice: "run_single" } as const;
-	const finished = view.completedSubtasks?.length ?? 0;
-	const tasks = plan.subtasks.length - finished;
-	const unsupported = single ? [] : unsupportedParts(plan, new Set(view.completedSubtasks));
-	const totalTokens = review.allotted.tokens;
+	const question = view.question;
+	const offered = (id: string) => question.choices.some(choice => choice.id === id);
+	const canApprove = offered(single ? "run_single" : "approve");
 	const refused = review.refusal;
-	const unplaceable = single ? [] : unplaceableOf(view, plan, review.machines, review.models);
+	const unplaceable = single ? [] : plan.subtasks.filter(task => !view.completedSubtasks?.includes(task.key) && task.placementProblem);
 	const unconfirmed = single ? 0 : review.unconfirmed;
 	const blocked = approvalProblem(review, unconfirmed);
 	// Only a permanent placement refusal blocks approval.
-	const placeBlocked = !unsupported.length && blocked === null && unplaceable.length > 0 ? unplaceable[0]! : null;
-	const revise = view.question.choices.find((choice) => choice.id === "revise");
-	const giveUp = view.question.choices.find((choice) => choice.id === "give_up");
+	const placeBlocked = blocked === null && unplaceable.length > 0 ? unplaceable[0]! : null;
 	return (
 		<section className="item-question plan-question" aria-labelledby={title}>
 			<p className="item-question-head" id={title}>
 				It asks you
 				<span className="item-question-when">{when}</span>
 			</p>
-			<p className="item-question-text">
-				{single ? view.question.text : <>{replan ? `${view.replanWhy ? view.replanWhy + ". " : ""}Review the revised plan` : "Review the plan"}: {tasks} subtasks{finished ? " to run" : ""}, {compact(totalTokens)} of {compact(plan.budget.tokens)} tokens.</>}
-			</p>
-			{unsupported.length > 0 && <p className="callout callout-warn">{HARNESS_NAMES[subtaskHarness(unsupported[0]!)]} cannot build Plan-first parts. Choose an agent for {unsupported.map(task => task.title).join(", ")}.</p>}
+			<LongText className="item-question-text" lines={3}>{question.text}</LongText>
 			{!single && <PlanJump view={view} plan={plan} replan={replan} />}
 
-			{!single && view.question.criticReason && !view.question.criticFindings && <p className="callout callout-warn">{view.question.criticReason}</p>}
 			{view.question.criticFindings && <div className="callout callout-warn"><div>Critic recommends revision<ul>{view.question.criticFindings.map((finding, i) => <li key={i}>{finding}</li>)}</ul></div></div>}
-			{plan.subtasks.length > 0 ? <PlanRoutes view={view} plan={plan} machines={review.machines} models={review.models} catalogs={review.catalogs} accountModels={review.accountModels} refusal={refused} /> : null}
+			{plan.subtasks.length > 0 ? <PlanRoutes view={view} plan={plan} machines={review.machines} catalogs={review.catalogs} accountModels={review.accountModels} refusal={refused} /> : null}
 
 			{!single && review.unattended.length > 0 ? <UnattendedConfirm plan={plan} review={review} disabled={busy || review.edits} /> : null}
 
@@ -123,10 +103,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 			{refused && refused !== ciBlock ? (
 				<div className="callout callout-bad plan-refused" role="alert">
 					<WarnIcon />
-					<span>
-						{refused}
-						{SINGLE_INSTEAD.test(refused) && !replan ? " A single item needs neither." : null}
-					</span>
+					<span>{refused}</span>
 				</div>
 			) : acting.error && !refused && !conflicted ? (
 				<p className="callout callout-bad" role="alert">
@@ -136,7 +113,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 			) : null}
 
 			<div className="item-choices">
-				{review.edits ? (
+				{review.edits || (!single && review.answersOnly) ? (
 					<>
 						<button type="button" className="button button-primary" disabled={busy || review.problems.any} onClick={() => void review.save()}>
 							{acting.busy === "edit_plan" ? "Saving…" : `Save as version ${plan.version + 1}`}
@@ -145,17 +122,12 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 							Discard changes
 						</button>
 					</>
-				) : unsupported.length ? (
-					<>
-						<button type="button" className="button button-primary" disabled={busy} onClick={() => unsupported.forEach(task => review.setAgent(task.key, { harness: "windlass" }))}>Use Windlass for these parts</button>
-						<button type="button" className="button button-outline" disabled={busy} onClick={() => document.querySelector<HTMLButtonElement>(`.plan-task[data-key="${unsupported[0]!.key}"] .plan-agent button`)?.click()}>Choose another agent</button>
-					</>
-				) : (
-					<button type="button" className="button button-primary" disabled={busy || !!ciBlock || blocked !== null || placeBlocked !== null} onClick={() => void approve(single ? singleAnswer : undefined)} aria-describedby={blocked || placeBlocked ? `${title}-why` : undefined}>
-						{acting.busy === "edit_plan" || acting.busy === "approve_plan" || acting.busy === "run_single" ? "Approving…" : single ? "Approve for one implementer" : review.answersOnly ? "Approve" : `Approve version ${plan.version}`}
+				) : canApprove ? (
+					<button type="button" className="button button-primary" disabled={busy || !!ciBlock || blocked !== null || placeBlocked !== null} onClick={() => void approve(single ? { kind: "answer", question: question.id, choice: "run_single" } : undefined)} aria-describedby={blocked || placeBlocked ? `${title}-why` : undefined}>
+						{acting.busy === "edit_plan" || acting.busy === "approve_plan" || acting.busy === "run_single" ? "Approving…" : single ? "Approve for one implementer" : `Approve version ${plan.version}`}
 					</button>
-				)}
-				{offerAutoApprove && !review.edits && (
+				) : null}
+				{canApprove && offerAutoApprove && !review.edits && (
 					<div className="plan-auto-approve">
 						<Check checked={autoApprove} disabled={busy} onChange={setAutoApprove} label={`Approve small plans automatically in ${view.repository.owner}/${view.repository.name}`} />
 						<Tooltip content="Up to 3 parts and at most 3× a Quick item's budget. Any open question needs a recommended answer the reviewer accepts.">
@@ -163,26 +135,13 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 						</Tooltip>
 					</div>
 				)}
-				{single && !review.edits && view.question.choices.some(option => option.id === "orchestrate_anyway") && (
-					<button type="button" className="button button-outline" disabled={busy} onClick={() => void acting.act({ kind: "answer", question: view.question!.id, choice: "orchestrate_anyway" })}>
-						Ask for subtasks
+				{!review.edits && question.choices.filter(choice => choice.id !== "approve" && !(single && choice.id === "run_single")).map(choice => (
+					<button key={choice.id} type="button" className={`button ${choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
+						disabled={busy || (choice.id === "run_single" && review.unansweredLeft > 0)}
+						onClick={() => void acting.act({ kind: "answer", question: question.id, choice: choice.id })}>
+						{choice.label}
 					</button>
-				)}
-				{fallback || (refused && SINGLE_INSTEAD.test(refused) && !replan) ? (
-					<button type="button" className="button button-outline" disabled={busy || review.edits || review.unansweredLeft > 0} onClick={() => void approve(fallback ? singleAnswer : { kind: "run_single" })}>
-						{acting.busy === "run_single" ? "Starting…" : "Run as a single item"}
-					</button>
-				) : null}
-				{revise && !review.edits ? (
-					<button type="button" className="button button-outline" disabled={busy} onClick={() => void acting.act({ kind: "answer", question: view.question!.id, choice: "revise" })}>
-						{acting.busy === "revise" ? "Sending…" : view.question.recommended === "revise" ? "Ask for a new plan (recommended)" : "Ask for a new plan"}
-					</button>
-				) : null}
-				{giveUp && !review.edits ? (
-					<button type="button" className="button button-quiet" disabled={busy} onClick={() => void acting.act({ kind: "answer", question: view.question!.id, choice: "give_up" })}>
-						{acting.busy === "give_up" ? "Sending…" : giveUp.label}
-					</button>
-				) : null}
+				))}
 			</div>
 			{blocked && !review.edits ? (
 				<p className="field-note" id={`${title}-why`}>
@@ -192,14 +151,14 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 				<p className="field-note plan-blocked-place" id={`${title}-why`}>
 					<span className="plan-blocked-dot" aria-hidden="true" />
 					<span>
-						<strong>{placeBlocked.task.title}</strong>{unplaceable.length > 1 ? ` and ${unplaceable.length - 1} more` : ""} can't be placed: {placeBlocked.reason} Choose another place below and save, or ask for a new plan.
+						<strong>{placeBlocked.title}</strong>{unplaceable.length > 1 ? ` and ${unplaceable.length - 1} more` : ""} can't be placed: {placeBlocked.placementProblem} Choose another place below and save, or ask for a new plan.
 					</span>
 				</p>
 			) : null}
 
 			{!single && plan.subtasks.some(task => task.needs?.cpus !== undefined || task.needs?.memoryGiB !== undefined) && (
 				<details className="field-note"><summary>How subtask sizes are chosen</summary>
-					Hosted uses the smallest size that fits the requested CPU and memory. A machine uses its own slots.
+					Hosted uses the chosen size. A larger resource request needs approval. A machine uses its own slots.
 				</details>
 			)}
 		</section>
@@ -398,37 +357,35 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 	const machines = review.machines;
 	// A re-plan keeps finished subtasks as they ran: only the rest can change.
 	const done = new Set(view.completedSubtasks ?? []);
-	// After approval, a subtask that has not started may still change its agent.
-	const running = plan.status === "approved" && !["done", "cancelled", "failed"].includes(view.state);
-	const placing = plan.subtasks.some((task) => task.place || task.needs) || plan.overflow === true || (view.children ?? []).some((child) => child.placement);
+	const placing = plan.subtasks.some((task) => task.place || task.needs || task.review) || plan.overflow === true || (view.children ?? []).some((child) => child.placement);
 	const refusal = review.refusal;
 	// The subtask the feature waits to place: a machine wait is about the next one to start.
 	const waitingKey = plan.status === "approved" && view.wait?.reason === "machine" ? (nextSubtask(plan, view.children ?? [])?.key ?? null) : null;
 	const parent = parentPlaceName(view.place, machines);
 	const overflow = editing ? review.overflow : plan.overflow === true;
-	const place = (task: PlanSubtask, edited: PlanSubtask, routeEdited: boolean): PlaceRow => {
-		const fit = plan.status === "proposed" && machines ? placementFit(edited, view.place, overflow, machines, review.models) : null;
-		// A refusal refers to the saved route and agent.
-		const refusalApplies = plan.status === "proposed" && !routeEdited;
+	const place = (task: PlanSubtask, routeEdited: boolean): PlaceRow => {
+		const saved = !routeEdited && overflow === !!plan.overflow;
+		const preferred = task.review?.places[0];
 		return {
-			machines, parent, overflow,
+			machines, parent: task.place && task.review ? placeName(task.review.inherited.place, machines) : preferred?.name ?? parent, overflow,
 			draft: review.places[task.key] ?? placeDraftOf(task),
-			problem: (refusalApplies ? refusalFor(task, refusal) : null) ?? (fit && "refused" in fit ? fit.refused : null),
-			ahead: fit && "wait" in fit ? fit.wait : null,
+			problem: saved ? refusalFor(task, refusal) ?? task.placementProblem ?? null : null,
+			ahead: saved ? task.placementWait ?? null : "Save to check this placement.",
 			wait: task.key === waitingKey ? view.wait : null,
-			secrets: name => secretsFor(name, view.placementReview, machines),
+			secrets: name => saved && preferred?.name === name ? preferred.sendSecrets : secretsFor(name, machines),
 			onPlace: draft => review.setPlace(task.key, draft),
 		};
 	};
 	const agentRow = (task: PlanSubtask, edited: PlanSubtask): AgentRow => {
 		const draft = editing && task.key in review.agents ? review.agents[task.key] ?? undefined : task.agent;
-		const later = running && !children.has(task.key);
-		const machine = preferredMachine(editing ? edited : task, parent, machines);
+		const later = view.editableAgents?.includes(task.key) === true;
+		const moved = editing && task.place?.prefer !== edited.place?.prefer;
+		const machine = preferredMachine(moved ? edited : task, task.review ? placeName(task.review.inherited.place, machines) : parent, machines);
 		// With no agent of its own, a part runs the resolved default: the feature's, the repository's or yours.
-		const inherited = task.agent ? undefined : task.resolved;
+		const inherited = task.review?.inherited ?? (!task.agent ? task.resolved : undefined);
 		const harness = draft?.harness ?? inherited?.agent ?? "windlass";
 		return {
-			draft, inherited,
+			draft, inherited, resolved: edited.resolved,
 			changed: editing && agentChanged(task, review.agents[task.key]),
 			editable: (editing && !done.has(task.key)) || later,
 			machine,
@@ -468,7 +425,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 					<ol className="plan-tasks" aria-label="Subtasks">
 						{review.rows.map(({ task, edited, routeEdited }, index) => (
 							<SubtaskRow key={task.key} task={task} child={children.get(task.key) ?? null}
-								place={placing || editing ? place(task, edited, routeEdited) : null} agent={agentRow(task, edited)}
+								place={placing || editing ? place(task, routeEdited) : null} agent={agentRow(task, edited)}
 								n={index + 1} titles={titles} setAside={setAside}
 								editing={editing && !done.has(task.key)} finished={editing && done.has(task.key)}
 								draft={review.budgets[task.key]} invalid={!!review.problems.fields[task.key]?.tokens}
@@ -683,7 +640,7 @@ function FeaturePlacement({ parent, editing, overflow, disabled, onOverflow }: {
 			<p className="plan-placement-line">
 				<span className="plan-placement-term">placement</span>
 				<span>
-					Default place: <strong className="plan-place-name">{placeWord(parent)}</strong>.
+					Feature place: <strong className="plan-place-name">{placeWord(parent)}</strong>.
 				</span>
 			</p>
 			<div className="plan-placement-line">
@@ -726,7 +683,7 @@ function placeMenu(row: PlaceRow, current: string | null): MenuSpec {
 		label: "Runs on",
 		width: 320,
 		groups: [
-			{ id: "feature", items: [{ id: "inherit", label: "Same as the feature", description: placeWord(row.parent), checked: current === null, onSelect: () => row.onPlace({ prefer: null, allow: [] }) }] },
+			{ id: "feature", items: [{ id: "inherit", label: "Use the resolved default", checked: current === null, onSelect: () => row.onPlace({ prefer: null, allow: [] }) }] },
 			...(machineItems.length > 0 ? [{ id: "machines", label: "My machines", items: machineItems }] : []),
 			{ id: "hosted", items: [{ id: "hosted", label: "Hosted", description: "Gets secrets", checked: current === HOSTED, onSelect: () => row.onPlace({ prefer: HOSTED, allow: row.draft.allow.filter((other) => other !== HOSTED) }) }] },
 		],
@@ -760,7 +717,8 @@ function allowMenu(row: PlaceRow): MenuSpec {
 function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubtask; child: ItemSummary | null; row: PlaceRow; editing: boolean; disabled: boolean }) {
 	const needs = needsWords(task.needs);
 	const prefer = editing ? row.draft.prefer : (task.place?.prefer ?? null);
-	const allow = (editing ? row.draft.allow : (task.place?.allow ?? [])).filter((name) => name !== prefer);
+	const inheritedPlaces = !task.place && prefer === null ? task.review?.places.slice(1).map(p => p.name) : undefined;
+	const allow = (inheritedPlaces ?? (editing ? row.draft.allow : (task.place?.allow ?? []))).filter((name) => name !== prefer);
 	const preferMoved = editing && prefer !== (task.place?.prefer ?? null);
 	const allowMoved = editing && JSON.stringify(allow) !== JSON.stringify((task.place?.allow ?? []).filter((name) => name !== prefer));
 	const childWait = child?.wait?.reason === "machine" ? child.wait : null;
@@ -781,22 +739,23 @@ function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubta
 					<dd>
 						{editing ? (
 							<span className="plan-place-picks">
-								<Menu spec={placeMenu(row, prefer)} trigger={(props) => <Pill {...props} outlined disabled={disabled} dot={preferMoved ? "changed" : null} dotLabel={preferMoved ? "changed, not saved" : undefined} className="plan-place-pick" aria-label={`Runs on: ${prefer === null ? `same as the feature, ${placeWord(row.parent)}` : placeWord(prefer)}`} secondary={prefer === null ? placeWord(row.parent) : undefined}>{prefer === null ? "Same as the feature" : placeWord(prefer)}</Pill>} />
+								<Menu spec={placeMenu(row, prefer)} trigger={(props) => <Pill {...props} outlined disabled={disabled} dot={preferMoved ? "changed" : null} dotLabel={preferMoved ? "changed, not saved" : undefined} className="plan-place-pick" aria-label={`Runs on: ${prefer === null ? `resolved default, ${placeWord(row.parent)}` : placeWord(prefer)}`} secondary={prefer === null ? placeWord(row.parent) : undefined}>{prefer === null ? "Resolved default" : placeWord(prefer)}</Pill>} />
 								{prefer !== null ? (
 									<Menu spec={allowMenu(row)} trigger={(props) => <Pill {...props} disabled={disabled} dot={allowMoved ? "changed" : null} dotLabel={allowMoved ? "changed, not saved" : undefined} className="plan-place-pick plan-place-allow" aria-label={`Alternatives: ${allow.length ? allow.map(placeWord).join(", ") : "none"}`}>{allow.length ? `or ${allow.map(placeWord).join(", ")}` : "No alternatives"}</Pill>} />
 								) : null}
 								<SecretsTag sent={row.secrets(prefer ?? row.parent)} />
+								{inheritedPlaces?.length ? <span>or {inheritedPlaces.map(placeWord).join(", ")}</span> : null}
 							</span>
 						) : (
 							<>
 								<strong className="plan-place-name">{prefer === null ? placeWord(row.parent) : placeWord(prefer)}</strong>
-								{prefer === null ? <span className="tone-faint"> as the feature</span> : null}
+								{prefer === null ? <span className="tone-faint"> by default</span> : null}
 								<SecretsTag sent={row.secrets(prefer ?? row.parent)} />
 								{allow.length > 0 ? (
 									<span className={row.overflow ? "plan-place-alt" : "plan-place-alt tone-faint"}>
 										{" "}
 										or {allow.map(placeWord).join(", ")}
-										{row.overflow ? null : " · waits for its chosen place"}
+										{inheritedPlaces || row.overflow ? null : " · waits for its chosen place"}
 									</span>
 								) : null}
 							</>
@@ -845,6 +804,7 @@ function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubta
 }
 
 interface AgentRow {
+	resolved?: ResolvedRun;
 	inherited: ResolvedRun | undefined;
 	hostedKeys: ReturnType<typeof useHostedProviders>;
 	keyProfile: boolean;
@@ -919,7 +879,7 @@ function effortMenu(row: AgentRow, harness: HarnessId, efforts: string[], model:
 
 function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: string; child: ItemSummary | null; row: AgentRow; editing: boolean; disabled: boolean }) {
 	const { inherited } = row;
-	const shown = row.draft ?? (inherited && { harness: inherited.agent, ...(inherited.model && { model: inherited.model }), ...(inherited.effort && { effort: inherited.effort }) });
+	const shown = row.resolved ? runAgent(row.resolved) : row.draft ?? (inherited && runAgent(inherited));
 	const harness = shown?.harness ?? "windlass";
 	const parts = agentParts(shown, row.list);
 	const why = !row.draft && inherited ? <span className="plan-agent-why"> — {SOURCE_WORDS[sourceOf(inherited, ["agent", "model", "effort"])]}</span> : null;
@@ -940,7 +900,7 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 	}
 	// A model that reports its efforts only once selected: any effort its agent reported (account-models.ts, `checkItemEffort`).
 	const list = row.list;
-	const model = row.draft?.model ?? (harness === "windlass" ? "" : (list?.defaultModel ?? ""));
+	const model = shown?.model ?? list?.defaultModel ?? "";
 	const own = effortsOf(list, model);
 	const efforts = own.length > 0 || harness === "windlass" ? own : [...new Set((list?.models ?? []).flatMap((one) => one.efforts))];
 	return (
@@ -1018,19 +978,15 @@ function SecretsTag({ sent, done = false }: { sent: boolean | null; done?: boole
 	);
 }
 
-function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, refusal }: { view: ItemView; plan: FeaturePlan; machines: MachineSummary[] | null; models: AgentModels; catalogs: Catalogs; accountModels: ModelList | null; refusal: string | null }) {
+function PlanRoutes({ view, plan, machines, catalogs, accountModels, refusal }: { view: ItemView; plan: FeaturePlan; machines: MachineSummary[] | null; catalogs: Catalogs; accountModels: ModelList | null; refusal: string | null }) {
 	const heading = useId();
 	const parent = parentPlaceName(view.place, machines);
-	const overflow = plan.overflow === true;
-	const secrets = (name: string) => secretsFor(name, view.placementReview, machines);
 	const done = new Set(view.completedSubtasks ?? []);
 	return (
 		<div className="plan-routes" role="group" aria-labelledby={heading}>
 			<p className="plan-routes-head">
 				<span id={heading}>Where each subtask runs</span>
-				<span className="plan-routes-overflow">
-					<strong>{overflow ? "Use another free place" : "Wait for the chosen place"}</strong>
-				</span>
+
 			</p>
 			<ol className="plan-routes-list">
 				{plan.subtasks.map((task, index) => {
@@ -1046,10 +1002,9 @@ function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, ref
 								</div>
 							</li>
 						);
-					const route = routeWords(task, parent, overflow);
-					const fit = machines ? placementFit(task, view.place, overflow, machines, models) : null;
-					const problem = refusalFor(task, refusal) ?? (fit && "refused" in fit ? fit.refused : null);
-					const wait = !problem && fit && "wait" in fit ? fit.wait : null;
+					const route = task.review;
+					const problem = refusalFor(task, refusal) ?? task.placementProblem;
+					const wait = !problem && task.placementWait;
 					const harness = subtaskHarness(task);
 					const agent = agentParts(task.resolved ? runAgent(task.resolved) : task.agent, harness === "windlass" ? accountModels : machineModels(preferredMachine(task, parent, machines), harness, catalogs));
 					return (
@@ -1069,15 +1024,13 @@ function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, ref
 								{wait ? <p className="plan-route-wait">If approved now: {wait}</p> : null}
 							</div>
 							<ul className="plan-route-places" aria-label={`Places for ${task.title}`}>
-								<li>
-									<span className="plan-place-name">{placeWord(route.prefer)}</span>
-									<SecretsTag sent={secrets(route.prefer)} />
-								</li>
-								{route.alternatives.map((name) => (
-									<li key={name} className={overflow ? undefined : "plan-route-unused"}>
-										<span className="tone-faint">or </span>
+								{route?.places.map(({ place, name, sendSecrets, payer }, i) => (
+									<li key={place.kind === "hosted" ? "hosted" : place.machineId}>
+										{i > 0 && <span className="tone-faint">or </span>}
 										<span className="plan-place-name">{placeWord(name)}</span>
-										{overflow ? <SecretsTag sent={secrets(name)} /> : <span className="tone-faint"> unused while waiting</span>}
+										<SecretsTag sent={sendSecrets} />
+										{task.resolved && <span> · {payerWords({ ...task.resolved, payer }) ?? "Windlass usage"}</span>}
+										{place.kind === "hosted" && route.hosted && <p>Saved {HOSTED_SIZE_NAMES[route.hosted.saved]} · Proposed {HOSTED_SIZE_NAMES[route.hosted.size]} · {route.hosted.rate}× standard hosted rate{route.hosted.usdPerHour !== null && ` · est. ${perHour(route.hosted.usdPerHour)}`}</p>}
 									</li>
 								))}
 							</ul>
@@ -1097,26 +1050,20 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 	const [draft, setDraft] = useState<PlaceDraft>(() => (task ? placeDraftOf(task) : { prefer: null, allow: [] }));
 	const [note, setNote] = useState("");
 	const busy = acting.busy !== null;
-	const offered = (id: string) => question.choices.find((choice) => choice.id === id) ?? null;
-	const revise = offered("revise");
-	const again = offered("again");
-	const giveUp = offered("give_up");
+	const again = question.choices.some(choice => choice.id === "again");
 	const machines = review.machines;
 	const parent = parentPlaceName(view.place, machines);
 	const overflow = view.plan?.overflow === true;
 	const route = task ? routeWords(task, parent, overflow) : null;
 	const moved = task !== null && placeChanged(task, draft);
 	const picked = task && moved ? withPlace(task, draft) : null;
-	const check = picked && machines ? placementFit(picked, view.place, overflow, machines) : null;
-	const pickRefused = check && "refused" in check ? check.refused : null;
-	const pickWait = check && "wait" in check ? check.wait : null;
-	const row: PlaceRow = { machines, parent, overflow, draft, problem: pickRefused, wait: null, ahead: pickWait, secrets: (name) => secretsFor(name, view.placementReview, machines), onPlace: setDraft };
-	const send = (choice: "revise" | "again" | "give_up") => {
+	const row: PlaceRow = { machines, parent, overflow, draft, problem: null, wait: null, ahead: null, secrets: name => secretsFor(name, machines), onPlace: setDraft };
+	const revise = () => {
 		const words = [
 			...(picked ? [`Run “${picked.title}” on ${placeWord(draft.prefer ?? parent)}${draft.allow.length ? `, or ${draft.allow.map(placeWord).join(", ")}` : ""}.`] : []),
 			...(note.trim() ? [note.trim()] : []),
 		].join(" ").slice(0, MAX_NOTE_CHARS);
-		return acting.act({ kind: "answer", question: question.id, choice, ...(choice === "revise" && words ? { note: words } : {}) });
+		return acting.act({ kind: "answer", question: question.id, choice: "revise", ...(words && { note: words }) });
 	};
 	return (
 		<section className="item-question placement-question" aria-labelledby={ids.title}>
@@ -1124,23 +1071,19 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 				It asks you
 				<span className="item-question-when">{when}</span>
 			</p>
-			<p className="item-question-text">{task ? <>“{task.title}” can't be placed</> : "A subtask can't be placed"}</p>
+			<p className="item-question-text">{question.text}</p>
 			<dl className="placement-question-facts">
-				<div className="plan-place-problem">
-					<dt>refused</dt>
-					<dd role="alert">{about?.reason ?? question.text}</dd>
-				</div>
 				{route ? (
 					<div className="plan-place">
 						<dt>approved</dt>
 						<dd>
 							<strong className="plan-place-name">{placeWord(route.prefer)}</strong>
-							{route.inherited ? <span className="tone-faint"> as the feature</span> : null}
+							{route.inherited ? <span className="tone-faint"> by default</span> : null}
 							{route.alternatives.length > 0 ? (
 								<span className={overflow ? "plan-place-alt" : "plan-place-alt tone-faint"}>
 									{" "}
 									or {route.alternatives.map(placeWord).join(", ")}
-									{overflow ? null : " · waits for its chosen place"}
+									{route.overflowing ? null : " · waits for its chosen place"}
 								</span>
 							) : null}
 						</dd>
@@ -1160,7 +1103,7 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 						<textarea id={ids.note} className="input textarea item-note" value={note} maxLength={MAX_NOTE_CHARS - 200} onChange={(event) => setNote(event.target.value)} readOnly={busy} />
 					</div>
 					<div className="item-choices">
-						<button type="button" className="button button-primary" disabled={busy || pickRefused !== null} onClick={() => void send("revise")} aria-describedby={`${ids.title}-revise`}>
+						<button type="button" className="button button-primary" disabled={busy} onClick={() => void revise()} aria-describedby={`${ids.title}-revise`}>
 							{acting.busy === "revise" ? "Sending…" : "Ask for a revised plan"}
 						</button>
 						<button type="button" className="button button-quiet" disabled={busy} onClick={() => setRevising(false)}>
@@ -1168,9 +1111,7 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 						</button>
 					</div>
 					<p className="field-note" id={`${ids.title}-revise`}>
-						{pickRefused
-							? "Choose a place that can take it."
-							: picked
+						{picked
 								? "The planner files the remaining subtasks again with this place; the new plan comes to you for approval."
 								: "Pick where it should run, or leave the place to the planner. The new plan comes to you for approval."}
 					</p>
@@ -1178,29 +1119,21 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 			) : (
 				<>
 					<div className="item-choices">
-						{revise && task ? (
-							<button type="button" className="button button-primary" disabled={busy} onClick={() => setRevising(true)}>
-								{revise.label}…
-							</button>
-						) : null}
-						{again ? (
-							<button type="button" className={`button ${revise && task ? "button-outline" : "button-primary"}`} disabled={busy} onClick={() => void send("again")}>
-								{acting.busy === "again" ? "Checking…" : again.label}
-							</button>
-						) : null}
-						{giveUp ? (
-							<button type="button" className="button button-quiet" disabled={busy} onClick={() => void send("give_up")}>
-								{acting.busy === "give_up" ? "Sending…" : giveUp.label}
-							</button>
-						) : null}
+						{question.choices.map((choice, index) => {
+							const edit = choice.id === "revise" && task;
+							return <button key={choice.id} type="button" className={`button ${index === 0 ? "button-primary" : choice.id === "give_up" ? "button-quiet" : "button-outline"}`}
+								disabled={busy} onClick={() => edit ? setRevising(true) : void acting.act({ kind: "answer", question: question.id, choice: choice.id })}>
+								{choice.label}{edit ? "…" : ""}
+							</button>;
+						})}
 					</div>
-					<p className="field-note">
+					{again && <p className="field-note">
 						Retry once you have changed what refused it, on{" "}
 						<a className="link" {...linkProps({ name: "machines" })}>
 							Machines
 						</a>
 						. Giving up cancels the subtask; the planner then revises what is left for you to approve, or the feature stops.
-					</p>
+					</p>}
 				</>
 			)}
 			{acting.error ? (

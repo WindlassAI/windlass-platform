@@ -120,7 +120,6 @@ export interface UserInternal {
 
 	internalRepositoryAutonomy(repositoryId: GithubId): Promise<RepositoryAutonomy>;
 	internalPlanCritic(builderId: string, context: import("../factory/resolve-run.js").RunContext): Promise<void>;
-	internalPartDefaults(repositories: Record<string, GithubId>): ReturnType<typeof import("./user-items.js").partDefaults>;
 	internalPlacementInventory(repositories: Record<string, GithubId>, snapshot?: GithubId): Promise<import("../factory/placement.js").PlacementInventory & { hostedCapacity: number }>;
 
 	internalSessionChanged(summary: SessionSummary): Promise<void>;

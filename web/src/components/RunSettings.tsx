@@ -6,12 +6,12 @@
 import type { AccountDefaultsPatch, HarnessId, MachineSummary, ModelList, RepositoryDefaults, SandboxProfileId } from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { profilesForItems } from "../../../server/src/factory/default-place";
-import { hostedAgentProblem } from "../../../server/src/sandbox/harnesses.js";
+import { hostedAgentProblem, itemProfiles } from "../../../server/src/sandbox/harnesses.js";
 import type { ResolvedRun, RunSettings } from "../../../server/src/factory/resolve-run";
 import { HARNESS_NAMES } from "../lib/acp";
 import { machineLabel, machineProfileName } from "../lib/machines";
 import { effortsOf, harnessOptions } from "../lib/models";
-import { SOURCE_WORDS, placeName, runModelName, runOf, runWords, sourceOf, type RunSource } from "../lib/run";
+import { SOURCE_WORDS, payerWords, placeName, runModelName, runOf, runWords, sourceOf, type RunSource } from "../lib/run";
 import { sizeLabel, sizeName } from "../lib/sizes";
 import { linkProps } from "../lib/router";
 import { useMachines } from "../screens/Machines";
@@ -68,12 +68,15 @@ function useRunInputs() {
 		const host = run.place === "hosted" ? null : at ?? list?.find((m) => harnessOptions(m, run.agent, catalogs[m.machineId]?.[run.agent]).models) ?? null;
 		return harnessOptions(host, run.agent, host ? catalogs[host.machineId]?.[run.agent] : undefined, keys).models;
 	};
-	const agentProblem = (agent: HarnessId, place: ResolvedRun["place"]): string | null => {
+	const agentProblem = (agent: HarnessId, place: ResolvedRun["place"], profile: ResolvedRun["profile"]): string | null => {
 		if (agent === "windlass") return null;
 		if (place === "hosted") return keys ? hostedAgentProblem(agent, keys, keyProfile) : null;
 		const machine = typeof place === "object" ? list?.find((m) => m.machineId === place.machine) : null;
 		if (!machine) return null;
-		return profilesForItems(machine, agent).length ? null : `${HARNESS_NAMES[agent]} can't run on ${machineLabel(machine)} now. Check that it is signed in there.`;
+		const profiles = profilesForItems(machine, agent);
+		if (profile && profiles.length && !profiles.some(p => p.id === profile))
+			return `${HARNESS_NAMES[agent]} cannot use ${machineProfileName(profile)} on ${machineLabel(machine)}. Choose a compatible isolation under Place.`;
+		return profiles.length ? null : `${HARNESS_NAMES[agent]} can't run on ${machineLabel(machine)} now. Check that it is signed in there.`;
 	};
 	return { info, machines, list, models, sizes, modelsOf, agentProblem };
 }
@@ -162,18 +165,17 @@ function AgentFields({ run, inputs, disabled, onChange, review }: { run: Resolve
 	const windlass = run.agent === "windlass";
 	const model = run.model ?? "";
 	const efforts = effortsOf(list, model || (list?.defaultModel ?? ""));
-	const problem = inputs.agentProblem(run.agent, run.place);
-	// Another agent on a machine runs in a profile of its own: the first that machine offers it.
-	const place = run.place;
-	const machine = typeof place === "object" ? inputs.list?.find((m) => m.machineId === place.machine) : null;
-	const agentPatch = (harness: HarnessId): AccountDefaultsPatch => (machine ? { harness, machineProfile: profilesForItems(machine, harness)[0]?.id ?? null } : { harness });
+	const problem = inputs.agentProblem(run.agent, run.place, run.profile);
 	return (
 		<>
 			<div className="run-fields">
 				{!review ? <div className="field">
 					<label className="label" htmlFor={id}>Agent</label>
-					<select id={id} className="select" value={run.agent} disabled={disabled} onChange={(e) => onChange(agentPatch(e.target.value as HarnessId))}>
-						{AGENTS.map((agent) => <option key={agent} value={agent}>{HARNESS_NAMES[agent]}</option>)}
+					<select id={id} className="select" value={run.agent} disabled={disabled} onChange={(e) => onChange({ harness: e.target.value as HarnessId })}>
+						{AGENTS.map((agent) => {
+							const profiles = run.place !== "hosted" && agent !== "windlass" ? itemProfiles(agent) : [];
+							return <option key={agent} value={agent}>{HARNESS_NAMES[agent]}{profiles.length === 1 ? ` (requires ${machineProfileName(profiles[0]!)})` : ""}</option>;
+						})}
 					</select>
 				</div> : null}
 				<div className="field">
@@ -200,17 +202,31 @@ function AgentFields({ run, inputs, disabled, onChange, review }: { run: Resolve
 /** "Runs on mac · Codex · Astra · high — your default · Change". */
 export function RunLine({ run, machines, list, lead = "Runs on", why, onChange, changeLabel = "Change", children }: { run: ResolvedRun; machines: readonly MachineSummary[] | null; list: ModelList | null; lead?: string; why?: string; onChange?: () => void; changeLabel?: string; children?: ReactNode }) {
 	const source = sourceOf(run, ["place", "agent", "model", "effort"]);
+	const payer = payerWords(run);
 	return (
 		<p className="run-line" data-source={source}>
 			<span className="run-line-icon" aria-hidden="true">{run.place === "hosted" ? <CloudIcon size={13} /> : <MachineIcon size={13} />}</span>
 			<span className="run-line-lead">{lead}</span>
 			<AgentGlyph harness={run.agent} size={11} inline />
-			<strong className="run-line-value">{runWords(run, machines, list)}</strong>
+			<strong className="run-line-value">{runWords(run, machines, list)}{payer && ` · ${payer}`}</strong>
 			<span className="run-line-why">— {why ?? SOURCE_WORDS[source]}</span>
 			{children}
 			{onChange ? <button type="button" className="link run-line-change" onClick={onChange}>{changeLabel}</button> : null}
 		</p>
 	);
+}
+
+function PreviousStartPlace({ defaults, inputs, disabled, onChange }: {
+	defaults: Pick<RepositoryDefaults, "previousStartPlace" | "place">; inputs: RunInputs; disabled: boolean; onChange(patch: AccountDefaultsPatch): void;
+}) {
+	const start = defaults.previousStartPlace;
+	if (!start) return null;
+	const place = start.kind === "hosted" ? "hosted" : { machine: start.machineId };
+	const label = start.kind === "machine" ? `${placeName(place, inputs.list)} (${machineProfileName(start.profile)})` : "Hosted";
+	return <p className="field-note">Your previous default for new agents was {label}.{" "}
+		<button type="button" className="link" disabled={disabled} onClick={() => onChange({ place, machineProfile: start.kind === "machine" ? start.profile : null })}>Use it for all runs</button>{" · "}
+		<button type="button" className="link" disabled={disabled} onClick={() => onChange({ place: defaults.place ?? null })}>Keep the current place</button>
+	</p>;
 }
 
 // ---- Machines: the default place ------------------------------------------------------------------
@@ -231,6 +247,7 @@ export function DefaultPlace({ account }: { account: AccountState }) {
 	const usesHosted = run.place === "hosted" || run.fallback === "hosted";
 	return (
 		<div className="run-default">
+			<PreviousStartPlace defaults={defaults} inputs={inputs} disabled={saving} onChange={change} />
 			<PlaceFields run={run} inputs={inputs} disabled={saving} onChange={change} />
 			{usesHosted ? <HostedFields hosted={hosted} inputs={inputs} disabled={saving} onChange={change} /> : null}
 			<p className="field-note run-note">
@@ -317,11 +334,17 @@ export function RepositoryOverrides({ account, defaults, save, onSaved }: { acco
 	const change = (patch: AccountDefaultsPatch) => persist(async () => onSaved(await save(patch)));
 	const reset = (patch: AccountDefaultsPatch) => { setOpen(null); void change(patch); };
 	const list = inputs.modelsOf(run);
-	const placeValue = [placeName(run.place, inputs.list), run.place !== "hosted" ? (run.fallback === "wait" ? "waits when offline" : "offers Hosted when offline") : null].filter(Boolean).join(" · ");
+	const machineProfile = run.place === "hosted" ? defaults.machineProfile : run.profile;
+	const placeValue = [
+		placeName(run.place, inputs.list),
+		run.place !== "hosted" && (run.fallback === "wait" ? "waits when offline" : "offers Hosted when offline"),
+		machineProfile && `Machine isolation: ${machineProfileName(machineProfile)}`,
+	].filter(Boolean).join(" · ");
 	const hostedValue = [inputs.sizes.length > 1 ? sizeName(hosted.size) : null, inputs.info.profiles.find((p) => p.id === hosted.profile)?.name ?? inputs.info.profiles.find((p) => p.available)?.name].filter(Boolean).join(" · ");
 	return (
 		<div className="run-overrides">
-			<OverrideRow title="Place" value={placeValue} source={sourceOf(run, ["place", "fallback"])} open={open === "place"} disabled={saving}
+			<PreviousStartPlace defaults={defaults} inputs={inputs} disabled={saving} onChange={change} />
+			<OverrideRow title="Place" value={placeValue} source={defaults.machineProfile != null ? "repository" : sourceOf(run, ["place", "fallback"])} open={open === "place"} disabled={saving}
 				onOpen={() => setOpen("place")} onReset={() => reset({ place: null, machineProfile: null, placeFallback: null })}>
 				<PlaceFields run={run} inputs={inputs} disabled={saving} onChange={change} />
 			</OverrideRow>

@@ -15,7 +15,7 @@ it("shows a repository's inherited place and agent with their source, overrides 
 	const client = createMockClient({ pace: 0 });
 	const auth = { token: "mock:user:u_over:ada@example.com", profile: { uid: "u_over", email: "ada@example.com", demo: false } };
 	const user = client.user(auth);
-	await user.saveAccountDefaults({ place: { machine: "m_nas" }, machineProfile: "docker-hardened", placeFallback: "wait" });
+	await user.saveAccountDefaults({ place: { machine: "m_nas" }, machineProfile: "docker-windlass-sandbox", placeFallback: "wait" });
 	const start = (await user.repository(7103)).defaults;
 	saveAuth("mock", auth);
 	function Page() {
@@ -46,6 +46,22 @@ it("shows a repository's inherited place and agent with their source, overrides 
 		await press(row("Place"), "Use your default");
 		expect((await user.repository(7103)).defaults.place).toBeNull();
 		expect(row("Place").textContent).toContain("your default");
+		const chooseAgent = async () => {
+			await press(row("Agent"), "Override for this repository");
+			await act(async () => { const el = row("Agent").querySelector("select")!; el.value = "claude"; el.dispatchEvent(new Event("change", { bubbles: true })); });
+			await settle();
+		};
+		await chooseAgent();
+		expect((await user.repository(7103)).defaults.machineProfile).toBeNull();
+		await press(row("Agent"), "Use your default");
+		expect(row("Place").textContent).toContain("Strict");
+		await press(row("Place"), "Override for this repository");
+		await act(async () => { const el = row("Place").querySelectorAll("select")[1]!; el.value = "docker-hardened"; el.dispatchEvent(new Event("change", { bubbles: true })); });
+		await settle();
+		await chooseAgent();
+		await press(row("Agent"), "Use your default");
+		expect(row("Place").textContent).toContain("set for this repository");
+		expect((await user.repository(7103)).defaults.machineProfile).toBe("docker-hardened");
 		expect(row("Agent").textContent).toContain("Windlass");
 		expect(row("Plans & reviews").textContent).toContain("your default");
 		await press(row("Plans & reviews"), "Override for this repository");

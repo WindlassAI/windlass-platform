@@ -1,29 +1,10 @@
-/**
- * The placement words and checks of the plan view and the Machines page: what a subtask needs in
- * short words, an owner's choice of place applied to a subtask, the server's reason for a place it
- * would refuse, the part of an approval refusal about one subtask, and which subtask a wait is about.
- */
-import type { FeaturePlan, ItemSummary, MachineSummary, PlanSubtask } from "@contract";
+import type { FeaturePlan, ItemSummary, PlanSubtask } from "@contract";
 import { describe, expect, it } from "vitest";
-import { needsWords, nextSubtask, OWNER_REASON, orchestratorNote, placeChanged, placedWords, placeDraftOf, placementProblem, refusalFor, withPlace } from "./placement";
+import { needsWords, nextSubtask, OWNER_REASON, orchestratorNote, placeChanged, placedWords, placeDraftOf, refusalFor, withPlace } from "./placement";
 
 const budget = { tokens: 1_000_000, turns: 3, activeSeconds: 1800, hostedSeconds: 900 };
 const task = (key: string, patch: Partial<PlanSubtask> = {}): PlanSubtask => ({ key, title: `Do ${key}`, brief: "b", acceptance: ["Run `pnpm test`."], dependsOn: [], owns: [`src/${key}/**`], budget, ...patch });
 
-function machine(name: string, patch: Partial<MachineSummary> = {}): MachineSummary {
-	return {
-		machineId: `m_${name}`, name, os: "Linux", arch: "x64", runnerVersion: "0.2.1", status: "online", since: 0, agents: 0, sandboxes: [], commandSandbox: { ok: true }, freeDiskBytes: 100e9, egress: "open", sendSecrets: true, warnings: [],
-		profiles: [{ id: "docker-hardened", name: "", summary: "", layers: [], approval: "full", commandNetwork: true, commandsCanReadAccessToken: true, available: true }],
-		allowedProfiles: ["docker-hardened"], orchestrator: "yes", tags: [], whenToUse: "",
-		slots: { max: 2, busy: 0, queued: 0, unit: { cpus: 2, memoryBytes: 4 * 2 ** 30, pids: 512 } },
-		...patch,
-	} as MachineSummary;
-}
-
-const nas = machine("nas");
-const studio = machine("studio", { orchestrator: "named", screenshots: true, slots: { max: 2, busy: 2, queued: 0, unit: { cpus: 2, memoryBytes: 4 * 2 ** 30, pids: 512 } } });
-const ci = machine("ci-box", { orchestrator: "never" });
-const machines = [nas, studio, ci];
 const onNas = { kind: "machine" as const, machineId: "m_nas" };
 
 describe("placement words", () => {
@@ -64,36 +45,6 @@ describe("an owner's choice of place", () => {
 		expect(placeChanged(planned, { prefer: "studio", allow: ["nas", "studio"] })).toBe(false);
 		expect(placeChanged(planned, { prefer: "studio", allow: [] })).toBe(true);
 		expect(placeChanged(task("a"), { prefer: null, allow: [] })).toBe(false);
-	});
-});
-
-describe("a place the server would refuse", () => {
-	it("gives the server's reason for a machine whose owner said never", () => {
-		expect(placementProblem(task("a", { place: { prefer: "ci-box", reason: "Idle." } }), onNas, false, machines)).toBe("‘ci-box’: owner placement policy is never.");
-	});
-
-	it("refuses a machine kept for named plans when a subtask only inherits it", () => {
-		expect(placementProblem(task("a"), { kind: "machine", machineId: "m_studio" }, false, machines)).toBe("‘studio’: owner placement policy is named.");
-		expect(placementProblem(task("a", { place: { prefer: "studio", reason: "Named." } }), onNas, false, machines)).toBeNull();
-	});
-
-	it("says what a machine lacks, and a name that is none of the user's machines", () => {
-		expect(placementProblem(task("a", { place: { prefer: "nas", reason: "r" }, needs: { screenshots: true } }), onNas, false, machines)).toBe("‘nas’: start this runner with --screenshots and a pinned screenshot image.");
-		expect(placementProblem(task("a", { place: { prefer: "attic", reason: "r" } }), onNas, false, machines)).toBe("‘attic’ is not one of your machines.");
-	});
-
-	it("does not count a busy machine as a refusal: the subtask waits for it", () => {
-		expect(placementProblem(task("a", { place: { prefer: "studio", reason: "r" }, needs: { screenshots: true } }), onNas, false, machines)).toBeNull();
-	});
-
-	it("accepts a refused preference when an allowed alternative fits, with overflow on", () => {
-		const planned = task("a", { place: { prefer: "ci-box", reason: "r", allow: ["nas"] } });
-		expect(placementProblem(planned, onNas, false, machines)).toBe("‘ci-box’: owner placement policy is never.");
-		expect(placementProblem(planned, onNas, true, machines)).toBeNull();
-	});
-
-	it("leaves a place on this platform to the server", () => {
-		expect(placementProblem(task("a", { place: { prefer: "hosted", reason: "r" }, needs: { cpus: 8 } }), onNas, false, machines)).toBeNull();
 	});
 });
 
