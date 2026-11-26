@@ -253,7 +253,7 @@ export function platformTools(offer: PlatformToolOffer, questionTimeoutMs: numbe
 		const rows = (properties: Record<string, unknown>, required: string[]) => ({
 			type: "array", items: { type: "object", properties, required },
 		});
-		const evidence = { type: "object", description: "A repository file with an optional line, or a verified path check with command, exit and said.",
+		const evidence = { type: "object", description: "A repository file with an optional one-based line (install lockfile or manifest, script definition, or workflow run line), an exact saved setup or check command with command alone, or a verified path check with command, exit and said.",
 			properties: { file: text, line: number, command: text, exit: number, said: text } };
 		return [tool("file_repo_setup", "Submit the complete proposed guides for review. Use one-based line numbers and repository-relative evidence paths. Correct any refused filing and call again.", {
 			type: "object", required: ["score", "files"], properties: {

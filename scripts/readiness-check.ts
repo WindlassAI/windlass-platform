@@ -342,6 +342,78 @@ test("a five-source library can file an eight-line guide with just commands and 
 	assert.throws(() => file(content, [...paths, ...many]), /only 8 verified nonblank lines remain.*at least 30/);
 });
 
+// Tracked paths and cited source lines from windlass-evals/wlp-test-c-lint at 91984f7.
+test("the tiny-math guide keeps its lockfile install and manifest test command", () => {
+	const workflow = ".github/workflows/ci.yml";
+	const read = new Map([
+		["package.json", `{
+  "name": "tiny-math",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": { "test": "node --test" }
+}`],
+		["package-lock.json", '{\n  "name": "tiny-math",\n  "version": "0.1.0",\n  "lockfileVersion": 3\n}'],
+		["index.js", 'export * from "./src/math.js";'],
+		["src/math.js", "/** Returns the product of a and b. */\nexport function mul(a, b) {"],
+		["test/math.test.js", 'import { test } from "node:test";\nimport assert from "node:assert/strict";\nimport { mul } from "../src/math.js";'],
+		[workflow, "name: ci\non:\n  push:\n  pull_request:\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/setup-node@v4\n        with:\n          node-version: 22\n      - run: node --test"],
+	]);
+	const paths = [...read.keys(), ".gitignore", "README.md", "docs/NOTES-A.md",
+		...["range", "strings", "text"].flatMap(name => ["src/" + name + ".js", "test/" + name + ".test.js"])];
+	const ctx = { request: { areas: [], later: 0, noteIds: [], previous: null }, notes: [], owner: "windlass-evals", host: "github.com", paths, read, redact: (s: string) => s };
+	const content = ["# Tiny math", "## Quick commands", "- From the repository root, run `npm ci` to install dependencies.", "- Run `npm test` to run the tests.",
+		"## Key files", "- `package.json` declares the test script.", "- `src/math.js` implements multiplication.", "- `test/math.test.js` checks multiplication.",
+		"- `.github/workflows/ci.yml` runs tests on CI."].join("\n") + "\n";
+	const cite = (line: number, file: string, at: number) => ({ line, evidence: { file, line: at } });
+	const lines = [cite(3, "package-lock.json", 4), cite(4, "package.json", 7), cite(6, "package.json", 7),
+		cite(7, "src/math.js", 2), cite(8, "test/math.test.js", 3), cite(9, workflow, 13)];
+	const file = { kind: "guide", path: "AGENTS.md", content, lines };
+	const validate = (guide: typeof file) => validateDraft({ score: answers().slice(0, 3), files: [guide] }, ctx).files.get(guide.path);
+	assert.equal(validate(file), content);
+	const combined = content.replace(/^- From the repository root.*\n- Run .*$/m, "- From the root, run `npm ci` followed by `npm test`.") + "- `index.js` exports the library.\n";
+	const combinedRefs = [...lines.map(r => ({ ...r, line: r.line > 3 ? r.line - 1 : r.line })), cite(9, "index.js", 1)];
+	assert.equal(validate({ ...file, content: combined, lines: combinedRefs }), combined);
+});
+
+test("command evidence matches the install, saved command, workflow step or script definition", () => {
+	const workflow = ".github/workflows/ci.yaml";
+	const manifest = JSON.stringify({ name: "lib", scripts: { test: "node --test", "lint.js": "eslint ." } }, null, 2);
+	const read = new Map([["README.md", "Working here"], ["package.json", manifest], [workflow,
+		"jobs:\n  ci:\n    steps:\n      - name: echo imaginary\n        run: 'pnpm audit'\n      - run: |\n          echo first\n          echo second # checked"]]);
+	const paths = [...read.keys(), "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"];
+	const savedCommands = ["corepack enable", "make check"];
+	type Evidence = { file?: string; line?: number; command?: string };
+	const verify = (command: string, evidence: Evidence, pass: boolean) => {
+		const guide = setupGuide("", "# Guide", "Working here.", "Run `" + command + "`.");
+		const lines = [...guide.lines.map(r => ({ line: r.line, evidence: r.evidence })), { line: 4, evidence }];
+		const dropped: { path: string; line: number; text: string; reason: string }[] = [];
+		const ctx = { request: { areas: [], later: 0, noteIds: [], previous: null }, notes: [], owner: "team", host: "github.com", paths, read, savedCommands,
+			redact: (s: string) => s, onRefusedLine: (path: string, line: number, text: string, reason: string) => dropped.push({ path, line, text, reason }) };
+		const result = validateDraft({ score: answers().slice(0, 3), files: [{ ...guide, lines }] }, ctx);
+		assert.equal(result.files.get(guide.path)!.includes("Run `" + command + "`."), pass, command + " " + JSON.stringify(evidence));
+		assert.deepEqual(dropped.map(({ path, line, text }) => ({ path, line, text })), pass ? [] : [{ path: guide.path, line: 4, text: "Run `" + command + "`." }]);
+	};
+	for (const [command, file] of [["npm ci", "package-lock.json"], ["npm install", "package.json"], ["pnpm install", "pnpm-lock.yaml"],
+		["yarn install", "yarn.lock"], ["bun install", "bun.lock"], ["bun install", "bun.lockb"]]) verify(command, { file }, true);
+	for (const command of savedCommands) verify(command, { command }, true);
+	verify("pnpm audit", { file: workflow, line: 5 }, true);
+	verify("echo first", { file: workflow, line: 7 }, true);
+	verify("echo second", { file: workflow, line: 8 }, true);
+	verify("npm test", { file: "package.json", line: 4 }, true);
+	for (const command of ["npm run lint.js", "bun run lint.js", "pnpm lint.js"]) verify(command, { file: "package.json", line: 5 }, true);
+	verify("npm test", { file: "package.json" }, true);
+	verify("npm ci", { file: "pnpm-lock.yaml" }, false);
+	verify("npm test", { file: "package.json", line: 2 }, false);
+	verify("npm run typo", { file: "package.json" }, false);
+	verify("make fabricated", { file: "README.md", line: 1 }, false);
+	verify("make fabricated", { command: "make fabricated" }, false);
+	verify("make check extra", { command: "make check" }, false);
+	verify("echo imaginary", { file: workflow, line: 4 }, false);
+	verify("echo first", { file: workflow, line: 8 }, false);
+});
+
 test("guide minimums and sections are checked after filtering unsupported lines", () => {
 	const ctx = { request: { areas: ["src", "test"], later: 1, noteIds: [], previous: null }, notes: [], owner: "team", host: "github.com",
 		paths: ["README.md", ...Array.from({ length: 30 }, (_, i) => `src/f${i}.ts`)], read: new Map([["README.md", "Working here."]]), redact: (s: string) => s };

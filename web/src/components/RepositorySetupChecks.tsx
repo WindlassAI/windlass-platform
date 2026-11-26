@@ -112,6 +112,7 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 			{data.diagnosis.skills.filings.map((f, i) => <div key={i}>
 				<p>{f.phase === "draft" ? "Draft" : "Revision"} filing {i + 1} · {f.proposed} proposed · {f.staticallyRejected.length} rejected by static checks · {f.smokeTested} smoke-tested · {f.droppedBySmoke.length} failed smoke checks · {f.kept} kept</p>
 				{f.refused && <p>Filing refused. {f.refused}</p>}
+				{f.refusedLines?.map(r => <p key={r.path + ":" + r.line}><code>{r.path}:{r.line}</code> · {r.reason} <code>{r.text}</code></p>)}
 				{f.proposals ? f.proposals.map((p, j) => <div key={j}>
 					<p><strong>{p.path}</strong> · {p.outcome} · {p.reason}</p>
 					{p.description && <p>{p.description}</p>}

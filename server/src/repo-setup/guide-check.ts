@@ -22,7 +22,7 @@ export function guideTree(files: string[], read: (path: string) => string | unde
 	return { files, paths, dirs, read, hasBin };
 }
 
-export function checkGuide(guide: string, contents: string, { files, dirs, paths, read, hasBin }: ReturnType<typeof guideTree>) {
+export function checkGuide(guide: string, contents: string, { files, dirs, paths, read, hasBin }: ReturnType<typeof guideTree>, citedCommand?: (line: number, command: string) => boolean) {
 	const errors: { path: string; line: number; message: string }[] = [];
 	function manifest(dir: string) {
 		try { return JSON.parse(read(relative(root, join(dir, "package.json"))) ?? "{}"); }
@@ -39,6 +39,7 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 	}
 
 	function command(source: string, cwd: string) {
+		const verified = citedCommand?.(line + 1, source.trim());
 		for (const step of source.split(/\s*&&\s*/)) {
 			const words = step.match(/(?:[^\s'"]+|'[^']*'|"[^"]*")+/g) ?? [];
 			const args = words.map(word => word.replace(/['"]/g, ""));
@@ -73,7 +74,8 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 			if ((tool === "pnpm" && args[0] !== "exec") || (["npm", "bun"].includes(tool) && args[0] === "run")) {
 				if (args[0] === "run") args.shift();
 				const script = args.shift();
-				if (script && script !== "install" && !Object.hasOwn(manifest(dir)?.scripts ?? {}, script)) {
+				// pnpm also has builtins such as audit that need no package script.
+				if (script && script !== "install" && !verified && !Object.hasOwn(manifest(dir)?.scripts ?? {}, script)) {
 					fail(`missing script "${script}" in ${relative(root, join(dir, "package.json"))}`);
 				}
 			} else if (tool === "npx" || tool === "pnpm") {

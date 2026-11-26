@@ -239,6 +239,8 @@ await check("repo-setup: draft guides with imported notes and delete them on clo
 		const repo = standin.addRepository({ owner: "ada", name: "guide-fixture", installation, private: false, files: { ...files, ".claude/config.json": "{}", "contrib/AGENTS.md": "Read `older.md`.\n", "README.md": "# Guide fixture\n" } });
 		const base = standin.branchHead(repo, "main");
 		const { user } = await world(server, standin, { WLP_FEATURE_TEST_GIT: join(server.storage, "git"), WLP_GITHUB_WEBHOOK_SECRET: server.secret });
+		await user.saveRepositorySetup({ repositoryId: repo.id, command: "make prepare" });
+		await user.saveRepositoryChecks({ repositoryId: repo.id, checks: [{ name: "verify", command: "make verify" }] });
 		const saved = await user.addSetupNotes(repo.id, [{ label: "source-note.md", text: "See README.md." }, { label: "hidden.md", text: "password=fixture-only" }, { label: "release.md", text: "Check the release process." }]);
 		const ids = saved.knowledge.notes.map(n => n.id);
 		const question = saved.knowledge.notes.find(n => n.label === "release.md")!;
@@ -291,6 +293,7 @@ await check("repo-setup: draft guides with imported notes and delete them on clo
 		const [p] = pulls;
 		assert(/^windlass\/repo-setup-\d{8}$/.test(p.head) && p.base === "main" && base === standin.branchHead(repo, "main"), "Wrong target branch");
 		const guide = standin.fileOn(repo, p.head, "AGENTS.md")!;
+		assert(guide.includes("`make prepare`") && guide.includes("`make verify`"), "Saved command citations were dropped.");
 		assert(guide.includes("## Terms") && guide.includes("README.md") && !/fixture-only|missing.sh|echo hello/.test(guide), "Unverified or sensitive guide content");
 		assert(standin.fileOn(repo, p.head, "src/AGENTS.md")?.includes("../README.md"), "Missing area guide");
 		assert(p.body.includes("1 line from 1 imported note") && !/source-note|hidden.md|fixture-only/.test(p.body), "Public citations disclosed source details");
@@ -331,9 +334,10 @@ await check("repo-setup: keep the failed phase on the owner's run", async () => 
 		const repos = ["setup-no-filing", "setup-refused", "setup-startup"].map(name =>
 			standin.addRepository({ owner: "ada", name, installation, private: false, files: { "README.md": "# Example" } }));
 		const { user } = await world(server, standin, { WLP_FEATURE_TEST_GIT: join(server.storage, "git"), WLP_TEST_SETUP_MODEL: "1", WLP_ALLOWED_EMAILS: "ada@example.invalid" }, "routing");
+		const guideRefusal = "AGENTS.md: include ## Quick commands with cited content that survives the evidence checks.";
 		for (const [name, error, rejections] of [
 			["setup-no-filing", "The drafting agent stopped without proposing any guides. Run setup again.", []],
-			["setup-refused", "The proposed guides were refused. File the three requested checks.", ["Check the number of entries in each list.", "File the three requested checks."]],
+			["setup-refused", "The proposed guides were refused. " + guideRefusal, ["Check the number of entries in each list.", "File the three requested checks.", guideRefusal]],
 			["setup-startup", "The drafting agent could not start. The model is unavailable.", []],
 		] as const) {
 			const repo = repos.find(r => r.name === name)!;
@@ -352,6 +356,10 @@ await check("repo-setup: keep the failed phase on the owner's run", async () => 
 				const filing = d.skills.filings[1], proposal = filing.proposals[0];
 				assert(filing.proposed === 1 && filing.refused === rejections[1] && proposal.outcome === "dropped" && proposal.reason === filing.refused, "Missing refused skill filing.");
 				assert(proposal.description === "# Inspect source" && proposal.body.includes("Owner preview [redacted]") && proposal.body.length === 300, "Missing redacted preview.");
+				const lines = d.skills.filings[2].refusedLines;
+				assert(lines?.length === 10 && lines[0].path === "AGENTS.md" && lines[0].line === 3 && lines[9].line === 12, "Missing bounded guide line diagnosis.");
+				assert(lines[0].text === ("- Run `make invented` for " + "x".repeat(150)).slice(0, 120) && lines[0].reason.includes("does not support the command"), "Wrong command excerpt or reason.");
+				assert(lines[1].text === "[redacted]" && !server.text.includes("make invented"), "A private excerpt escaped the diagnosis.");
 				assert(!server.text.includes("Owner preview"), "Owner preview appeared in a server log.");
 			}
 			assert(JSON.stringify(d.rejections) === JSON.stringify(rejections), "Lost rejection reasons");
@@ -361,7 +369,7 @@ await check("repo-setup: keep the failed phase on the owner's run", async () => 
 			assert(server.text.includes("repo setup phase failed") && !server.text.includes("diagnosisFixtureSecret"), "Unsafe or missing log");
 			assert(!standin.pulls.some(p => p.repository === repo.id), "Failed setup published a pull request");
 		}
-		return "no filing, two rejections and a pre-prompt model failure";
+		return "no filing, three rejections and a pre-prompt model failure";
 	} finally {
 		await server.stop();
 		execFileSync("chmod", ["-R", "u+w", server.storage]);
