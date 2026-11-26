@@ -1,6 +1,8 @@
 import { availableCatalog } from "../../../server/src/sandbox/harnesses.js";
 import { resolveStartPlace } from "../../../server/src/start-place";
-import { resolveDefaultPlace, savedPlace } from "../../../server/src/factory/default-place";
+import { checkRunPlace } from "../../../server/src/factory/default-place";
+import { runOf } from "../lib/run";
+import { RunLine } from "./RunSettings";
 import { monthReset, monthState } from "../lib/hosted";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type HostedSize, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
@@ -273,12 +275,19 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		last: started.place, repository: saved.defaults?.startPlace, account: account.settings?.defaults.startPlace,
 		machines: machinesReading ? null : mine,
 	}) : null;
-	const policy = item && placeChoice === undefined ? savedPlace(saved.defaults, account.settings?.defaults) : undefined;
-	const usePolicy = !!policy && harnessChoice === null && profileChoice === null;
-	const destination = policy && resolveDefaultPlace(policy, mine, usePolicy && info?.items?.orchestrate ? itemMode : "single");
+	// A work item runs what the server's resolver gives: its own choices, then the repository's, then yours.
+	const itemLayers = { account: account.settings?.defaults, repository: saved.defaults, machines: machinesReading ? null : mine, sizes: info?.hostedSizes };
+	const itemPlace = placeChoice === undefined ? {} : { place: placeChoice === null ? ("hosted" as const) : { machine: placeChoice } };
+	const itemRole = info?.items?.orchestrate && (harnessChoice === null || harnessChoice === "windlass") && itemMode === "orchestrate" ? "part" : "builder";
+	const itemAgent = item ? runOf({ ...itemLayers, item: { ...itemPlace, harness: harnessChoice } }, itemRole).agent : "windlass";
+	const itemRun = item ? runOf({ ...itemLayers, item: { ...itemPlace, harness: harnessChoice, hostedSize: sizeChoice, profile: profileChoice, machineProfile: profileChoice,
+		...(modelChoice && (itemAgent === "windlass" ? { model: modelChoice } : { machineModel: modelChoice })),
+		...(effortChoice && effortChoice !== "default" && (itemAgent === "windlass" ? { effort: effortChoice } : { machineEffort: effortChoice })) } }, itemRole) : null;
+	const usePolicy = item && harnessChoice === null;
+	const destination = itemRun ? checkRunPlace(itemRun, mine) : undefined;
 	const itemMachineId = placeChoice !== undefined ? placeChoice : destination?.place.kind === "machine" ? destination.place.machineId : null;
 	const chosenMachine = startPlace ? startPlace.machine : mine.find(machine => machine.machineId === itemMachineId && why(machine) === null) ?? null;
-	const placeProblem = startPlace ? startPlace.notes.join(" ") || null : destination?.note ??
+	const placeProblem = startPlace ? startPlace.notes.join(" ") || null : destination?.wait ??
 		(itemMachineId && !chosenMachine && !machinesReading ? "The machine chosen can no longer be used, so this work item runs hosted." : null);
 	const keys = useHostedProviders();
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
@@ -315,9 +324,11 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const reportedDefault = other && modelList !== null && modelList.models.length > 0 ? modelList.defaultModel : null;
 	const harnessModel = (id: string) => (offers(id) ? (id === reportedDefault ? "" : id) : null);
 	// A work item's agent starts on its own default model unless one is chosen here: not on the last agent's.
-	const model = other ? (harnessModel(modelChoice) ?? (lastOf && !item ? harnessModel(lastOf.model) : null) ?? "") : startingModel(modelChoice, defaults, models.list, last.of.windlass?.model ?? null);
+	const wantedModel = modelChoice || (itemRun?.model ?? "");
+	const model = other ? (harnessModel(wantedModel) ?? (lastOf && !item ? harnessModel(lastOf.model) : null) ?? "") : startingModel(wantedModel, defaults, models.list, item ? null : (last.of.windlass?.model ?? null));
 	const efforts = effortsOf(modelList, model === "" && reportedDefault !== null ? reportedDefault : model);
-	const effort = efforts.includes(effortChoice) ? effortChoice : "";
+	const wantedEffort = effortChoice || (itemRun?.effort ?? "");
+	const effort = efforts.includes(wantedEffort) ? wantedEffort : "";
 	const chosenProfile = placeProfiles.find((candidate) => candidate.id === profile) ?? null;
 	const launch = launchModes(harness, chosenProfile);
 	const reportedModes = harness === "codex" && chosenProfile
@@ -340,7 +351,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// Wait for the selected repository and its inherited place before filing.
 	const checkingKeys = !chosenMachine && wantedHarness !== "windlass" && keys === null;
 	const reading = checkingKeys || (item
-		? info === null || (items === null && repositoryId === undefined) || (sessions === null && repositoryId === undefined && newestItem === null) || repoReading || saved.reading || accountReading || (machinesReading && !!policy?.place && policy.place !== "hosted")
+		? info === null || (items === null && repositoryId === undefined) || (sessions === null && repositoryId === undefined && newestItem === null) || repoReading || saved.reading || accountReading || (machinesReading && itemRun?.place !== "hosted")
 		: info === null || sessions === null || repoReading || saved.reading || accountReading || models.reading || (harness !== "windlass" && catalogs[harness].reading) || !!startPlace?.pending);
 	const canCreate = !item && !reading && profile !== null && !repoInvalid && busy === null;
 	const task = prompt.trim();
@@ -413,12 +424,12 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			body: title === filing.title && filing.body ? filing.body : task,
 			acceptance,
 			start: now,
-			...(usePolicy ? { useDefaultPlace: true } : { place: chosenMachine ? { kind: "machine", machineId: chosenMachine.machineId } : { kind: "hosted" } }),
-			...(!usePolicy && other ? { harness } : {}),
-			...(!usePolicy && profile && (chosenMachine || profileChoice || other) ? { profile } : {}),
-			...(model && (other || modelChoice !== "") ? { model } : {}),
-			...(effort && effort !== "default" ? { effort } : {}),
-			...(hostedSize ? { hostedSize } : {}),
+			...(placeChoice !== undefined && { place: placeChoice === null ? { kind: "hosted" } : { kind: "machine", machineId: placeChoice } }),
+			...(harnessChoice && { harness: harnessChoice }),
+			...(profileChoice && { profile: profileChoice }),
+			...(modelChoice && { model: modelChoice }),
+			...(effortChoice && effortChoice !== "default" && { effort: effortChoice }),
+			...(sizeChoice && { hostedSize: sizeChoice }),
 		};
 		asked.current = submissionOf(JSON.stringify(input), asked.current);
 		setBusy("filing");
@@ -766,7 +777,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	};
 	let placeName = "Hosted";
 	if (chosenMachine) placeName = machineLabel(chosenMachine);
-	else if (destination?.wait) placeName = policy?.place === "any-machine" ? "Any of my machines" : "Saved machine";
+	else if (destination?.wait) placeName = itemRun?.place === "any-machine" ? "Any of my machines" : "Saved machine";
 
 	const whereWarn = placeProblem !== null || chosenMachine?.status === "offline" || (!item && sandboxWarn);
 
@@ -1201,6 +1212,12 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					</PickerPanel>
 				</div>
 			</div>
+			{itemRun ? (
+				<div className="start-run">
+					<RunLine run={itemRun} machines={machinesReading ? null : mine} list={other ? options.models : models.list} lead={itemRole === "part" ? "Parts run on" : "Runs on"} onChange={() => setOpen("agent")} changeLabel="Change for this item" />
+					{destination?.wait ? <p className="field-note tone-warn">{destination.wait} The item waits and asks before it runs anywhere else.</p> : null}
+				</div>
+			) : null}
 			{item && (filing || editedTitle !== null) ? (
 				<label className="start-title">
 					Title

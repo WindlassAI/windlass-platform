@@ -8,7 +8,7 @@ import { issueMode, recentSubject, refusals, taskOfIssue, type IntakeTrigger, ty
 import type { GithubApp, Repository } from "../github/app.js";
 import { isAddressed } from "../github/events.js";
 import type { IssueClaim, IssueDecision } from "./github-repository.js";
-import { existingItem, intakeInput, intakePolicy, quotaRefusal } from "./issue-intake.js";
+import { existingItem, intakeInput, quotaRefusal } from "./issue-intake.js";
 import type { ItemsCtx } from "./user-items.js";
 
 async function command(app: GithubApp, token: string, repo: Repository, trigger: IntakeTrigger) {
@@ -80,12 +80,10 @@ export async function githubIntake(c: ItemsCtx, t: IntakeTrigger, itemId: (key: 
 		reason = refusal ?? await quotaRefusal(c);
 		if (!reason) {
 			const key = `github:${repo.id}#${issue.number}:${generation}`;
-			const policy = await intakePolicy(c, repo.id);
-			const { defaultPlace } = policy;
-			const binding = { ...(defaultPlace && { defaultPlace }), modeReason, triggerLabel: t.via === "label" ? t.label : undefined, installationId: t.installationId, generation, triggeredAt: subject.at, senderId: subject.author.id, issueId: issue.id, contentDigest: contentDigest(issue),
+			const binding = { modeReason, triggerLabel: t.via === "label" ? t.label : undefined, installationId: t.installationId, generation, triggeredAt: subject.at, senderId: subject.author.id, issueId: issue.id, contentDigest: contentDigest(issue),
 				reactionTarget: t.via === "mention" ? "issue_comment:" + t.commentId : "issue:" + issue.number,
 				origin: { issue: { number: issue.number, url: issue.url, author: issue.author.login, trusted }, sender: subject.author.login } };
-			decision = { kind: "file", itemId: itemId(key), filing: { binding, input: intakeInput(task, mode, { id: repo.id, branch: repo.defaultBranch }, policy, trusted, key) } };
+			decision = { kind: "file", itemId: itemId(key), filing: { binding, input: intakeInput(task, mode, { id: repo.id, branch: repo.defaultBranch }, trusted, key) } };
 		}
 	}
 	if (reason) decision = { kind: "refuse", reason, generation: create ? generation : claim?.generation ?? 1 };

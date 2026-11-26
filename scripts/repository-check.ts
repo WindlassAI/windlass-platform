@@ -14,9 +14,9 @@
 
 import { DatabaseSync } from "node:sqlite";
 import { MAX_REPOSITORY_DEFAULTS, type MachineSummary, type ModelList, type RepositoryDefaults, type SandboxProfile } from "../server/src/contract.js";
-import { ACCOUNT_DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../server/src/account-defaults.js";
+import { readAccountDefaults, saveAccountDefaults } from "../server/src/repository-defaults.js";
 import { resolveStartPlace } from "../server/src/start-place.js";
-import { DEFAULTS_TABLE, type DefaultsChange, type DefaultsDb, DefaultsProblem, cleanDefaults, migrateDefaults, readDefaults, saveDefaults } from "../server/src/repository-defaults.js";
+import { DEFAULTS_TABLE, type DefaultsChange, type DefaultsDb, DefaultsProblem, cleanDefaults, readDefaults, saveDefaults } from "../server/src/repository-defaults.js";
 
 let failed = 0;
 function expect(what: string, ok: boolean, detail = ""): void {
@@ -74,7 +74,7 @@ function database(): { db: DefaultsDb; rows(): Array<Record<string, unknown>> } 
 			return sqlite.prepare(query).all(...(args as Array<string | number | null>)) as Row[];
 		},
 	};
-	return { db, rows: () => sqlite.prepare("SELECT project, label, profile, model, updated_at FROM repository_defaults ORDER BY project").all() as Array<Record<string, unknown>> };
+	return { db, rows: () => sqlite.prepare("SELECT project, label, settings, updated_at FROM repository_defaults ORDER BY project").all() as Array<Record<string, unknown>> };
 }
 
 const HARBOR = "github:7101";
@@ -106,7 +106,6 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 
 {
 	const { db } = database();
-	await db.execute(ACCOUNT_DEFAULTS_TABLE);
 	const nas: MachineSummary = {
 		machineId: "nas", name: "nas", os: "linux", arch: "arm64", status: "offline", runnerVersion: "1", since: 0, agents: 0,
 		sandboxes: [], commandSandbox: null, freeDiskBytes: null, profiles: PROFILES.slice(0, 2), sendSecrets: false, warnings: [],
@@ -123,11 +122,11 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 	}
 	await saveAccountDefaults(db, clean(machine), 1);
 	await saveAccountDefaults(db, { profile: "docker-windlass-sandbox" }, 2);
-	await saveDefaults(db, HARBOR, "", { ...clean({ ...machine, machineId: "laptop" }), item_place: { place: "hosted" } }, 3);
+	await saveDefaults(db, HARBOR, "", clean({ ...machine, machineId: "laptop" }), 3);
 	const account = (await readAccountDefaults(db)).startPlace;
 	const repo = await readDefaults(db, HARBOR);
 	expect("each scope retains its machine and profile independently of hosted sandbox and work items",
-		plain(account) === plain(machine) && plain(repo.startPlace) === plain({ ...machine, machineId: "laptop" }) && repo.place === "hosted");
+		plain(account) === plain(machine) && plain(repo.startPlace) === plain({ ...machine, machineId: "laptop" }) && typeof repo.place === "object" && repo.place?.machine === "laptop");
 	const saved = { machines, account, repository: repo.startPlace };
 	expect("a launch choice precedes even a remembered hosted launch", resolveStartPlace({ ...saved, launch: machine, last: hosted }).source === "launch");
 	expect("the remembered launch precedes saved places", resolveStartPlace({ ...saved, last: hosted }).machine === null && resolveStartPlace({ ...saved, last: hosted }).source === "last launch");
@@ -143,7 +142,7 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 	expect("explicit Hosted overrides an account machine", resolveStartPlace({ ...saved, repository: (await readDefaults(db, HARBOR)).startPlace }).source === "repository default");
 	await saveDefaults(db, HARBOR, "", clean(null), 5);
 	await saveAccountDefaults(db, clean(null), 6);
-	expect("clearing the start place leaves work-item placement and the hosted profile intact", !(await readDefaults(db, HARBOR)).startPlace && (await readDefaults(db, HARBOR)).place === "hosted" &&
+	expect("clearing the start place leaves work-item placement and the hosted profile intact", !(await readDefaults(db, HARBOR)).startPlace && (await readDefaults(db, HARBOR)).place === null &&
 		!(await readAccountDefaults(db)).startPlace && (await readAccountDefaults(db)).profile === "docker-windlass-sandbox");
 }
 
@@ -162,19 +161,7 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 	expect("clearing the model keeps the row for the size", (await readDefaults(db, HARBOR)).hostedSize === "standard" && rows().length === 1);
 	const gone = await saveDefaults(db, HARBOR, "", { hostedSize: null }, 40);
 	expect("clearing the size, the last field, leaves no row", gone.hostedSize === null && rows().length === 0);
-	// A table from before sizes: the column is added, and its rows read as no size.
-	const old = new DatabaseSync(":memory:");
-	old.exec("CREATE TABLE repository_defaults (project TEXT PRIMARY KEY, label TEXT NOT NULL, screenshots INTEGER NOT NULL DEFAULT 0, profile TEXT, model TEXT, updated_at INTEGER NOT NULL)");
-	old.exec("INSERT INTO repository_defaults VALUES ('github:7101', 'acme/harbor', 0, 'docker-hardened', NULL, 5)");
-	const oldDb: DefaultsDb = { async execute<Row extends Record<string, unknown>>(query: string, ...args: unknown[]): Promise<Row[]> { return old.prepare(query).all(...(args as Array<string | number | null>)) as Row[]; } };
-	await migrateDefaults(oldDb);
-	await migrateDefaults(oldDb);
-	const read = await readDefaults(oldDb, HARBOR);
-	expect("existing rows start with autonomy settings off", !read.autoApprovePlans && !read.autoMergeSingles && !read.waitForCiOnEachPart);
-	await saveDefaults(oldDb, HARBOR, "", { autoApprovePlans: true, autoMergeSingles: true, waitForCiOnEachPart: true }, 6);
-	const changed = await saveDefaults(oldDb, HARBOR, "", { autoApprovePlans: false }, 7);
-	expect("turning off plan approval preserves merge opt-in and other settings", !changed.autoApprovePlans && changed.autoMergeSingles === true && changed.waitForCiOnEachPart === true && changed.profile === read.profile);
-	expect("an older table gets the column once, and its rows have no size", read.profile === "docker-hardened" && read.hostedSize === null && (await saveDefaults(oldDb, HARBOR, "", { hostedSize: "large" }, 6)).hostedSize === "large");
+
 }
 
 // ---- two saves at once ---------------------------------------------------------------------------
@@ -200,7 +187,7 @@ async function together(before: DefaultsChange, saves: (db: DefaultsDb, round: n
 async function wholeRowSave(db: DefaultsDb, change: DefaultsChange, now: number): Promise<void> {
 	const row = await readDefaults(db, HARBOR);
 	const next = { profile: change.profile === undefined ? row.profile : change.profile, model: change.model === undefined ? row.model : change.model };
-	await db.execute("INSERT OR REPLACE INTO repository_defaults (project, label, profile, model, updated_at) VALUES (?, 'acme/harbor', ?, ?, ?)", HARBOR, next.profile, next.model, now);
+	await db.execute("INSERT OR REPLACE INTO repository_defaults (project, label, settings, updated_at) VALUES (?, 'acme/harbor', ?, ?)", HARBOR, JSON.stringify(next), now);
 }
 
 {

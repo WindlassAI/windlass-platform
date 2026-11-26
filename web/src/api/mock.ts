@@ -6,6 +6,7 @@
 import { modelRefusal } from "../../../server/src/account-models.js";
 import { cleanDefaults, DefaultsProblem } from "../../../server/src/repository-defaults";
 import { changedPlace, changesPlace, placeProblem, savedPlace } from "../../../server/src/factory/default-place";
+import { machinePayers } from "../lib/run";
 import type { AccountDefaultsPatch, RepositoryDefaultsPatch } from "@contract";
 import { shiftMonths } from "../../../server/src/billing/meter.js";
 import { machineDetails } from "../../../server/src/machines/details.js";
@@ -940,6 +941,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			return { provider: "github", id, owner, name, private: privateRepo, branch: input.branch ?? defaultBranch, url: `https://github.com/${owner}/${name}` };
 		},
 		defaultPlace: (auth, repositoryId) => savedPlace(defaultsOf(worldOf(auth), repositoryId), accountDefaultsOf(worldOf(auth))),
+		runContext: (auth, repositoryId) => ({
+			deployment: { hostedSize: "standard" },
+			account: accountDefaultsOf(worldOf(auth)),
+			repository: defaultsOf(worldOf(auth), repositoryId),
+			machinePayers: machinePayers(machineState === "off" ? [] : machinesView(auth)),
+		}),
 		checks: (auth, repositoryId) => checksOf(worldOf(auth), repositoryId).checks.length,
 		machines: (auth) => (machineState === "off" ? null : { list: machinesView(auth), minRunnerVersion: MOCK_MIN_RUNNER_VERSION }),
 	});
@@ -2834,11 +2841,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const saved = before ?? { profile: null, model: null, updatedAt: 0 };
 		const next = { ...saved };
 		try {
-			const patch = cleanDefaults(change, profiles, models, [], machines);
+			const patch = cleanDefaults(change, profiles, models, MOCK_SIZES.map((size) => size.id), machines);
 			if (patch.profile !== undefined) next.profile = patch.profile;
 			if (patch.model !== undefined) next.model = patch.model;
-			if (patch.start_place === null) delete next.startPlace;
-			else if (patch.start_place) next.startPlace = patch.start_place;
+			if (patch.effort !== undefined) next.effort = patch.effort;
+			if (patch.hostedSize !== undefined) next.hostedSize = patch.hostedSize;
+			if (patch.item_place) Object.assign(next, patch.item_place);
 		} catch (error) {
 			if (error instanceof DefaultsProblem) throw new PlatformError("user", error.message, { reason: error.code });
 			throw error;
@@ -2849,8 +2857,12 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			if (problem) throw new PlatformError("user", problem, { reason: "bad_input" });
 			Object.assign(next, policy);
 		}
-		if (change.startPlace === undefined && !changesPlace(change) && change.profile === undefined && change.model === undefined) return before;
-		return !next.startPlace && !next.place && next.profile === null && next.model === null ? null : { ...next, updatedAt: now() };
+		if (change.startPlace === undefined && !changesPlace(change) && change.profile === undefined && change.model === undefined && change.effort === undefined && change.hostedSize === undefined) return before;
+		// As the server reads it back (repository-defaults.ts): interactive launches start at the saved place.
+		const place = next.place;
+		next.startPlace = place === "hosted" ? { kind: "hosted" } : place && typeof place === "object" && next.machineProfile ? { kind: "machine", machineId: place.machine, profile: next.machineProfile } : undefined;
+		const { updatedAt: _, startPlace: __, ...fields } = next;
+		return Object.values(fields).every((value) => value == null) ? null : { ...next, updatedAt: now() };
 	}
 
 	// ---- the account's settings -------------------------------------------------------------------

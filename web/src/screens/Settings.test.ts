@@ -6,6 +6,7 @@ import { createMockClient } from "../api/mock";
 import { loadAuth, saveAuth } from "../lib/authStore";
 import { lastAppHref, navigate, pageFrom, rememberAppPage } from "../lib/router";
 import { AppProvider, useApp } from "../state/app";
+import { Machines } from "./Machines";
 import { Settings } from "./Settings";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -130,99 +131,61 @@ it("refuses a pending GitHub sign-in and lists only Google after the GitHub App 
 	}
 });
 
-it("says where the last agent started, with its agent and mode, and forgets it", async () => {
+/** Renders a screen signed in as a fresh account, with a way to change its selects and wait. */
+async function screen(name: string, render: () => ReturnType<typeof createElement>) {
 	const client = createMockClient({ pace: 0 });
-	const auth = { token: "mock:user:u_last:ada@example.com", profile: { uid: "u_last", email: "ada@example.com", demo: false } };
-	await client.user(auth).createSession({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", profile: "docker-hardened", mode: "plan" });
+	const auth = { token: `mock:user:u_${name}:ada@example.com`, profile: { uid: `u_${name}`, email: "ada@example.com", demo: false } };
 	saveAuth("mock", auth);
 	const host = document.body.appendChild(document.createElement("div"));
 	const root = createRoot(host);
-	const settle = async () => {
-		for (let step = 0; step < 12; step++) await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 2))));
+	const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => void await new Promise(r => setTimeout(r, 2))); };
+	const field = (label: string) => [...host.querySelectorAll<HTMLSelectElement>(".run-default select")].find(el => el.labels?.[0]?.textContent === label);
+	const select = async (label: string, value: string) => {
+		await act(async () => { const el = field(label)!; el.value = value; el.dispatchEvent(new Event("change", { bubbles: true })); });
+		await settle();
 	};
-	try {
-		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
-		await settle();
-		const line = () => host.querySelector('[data-testid="last-start"]')?.textContent ?? "";
-		expect(line()).toContain("Claude Code");
-		expect(line()).toContain("Plan");
-		expect(line()).toMatch(/nas/i);
-		const forget = Array.from(host.querySelectorAll("button")).find((one) => one.textContent === "Forget");
-		await act(async () => forget!.click());
-		await settle();
-		expect(line()).not.toContain("Claude Code");
-		expect(host.textContent).toContain("Nothing remembered yet");
-		expect((await client.user(auth).account()).lastStart).toBeNull();
-	} finally {
-		act(() => root.unmount());
-		host.remove();
-		client.dispose();
-		localStorage.clear();
-	}
-}, 15_000);
+	await act(async () => root.render(createElement(AppProvider, { client, children: render() })));
+	await settle();
+	return { client, user: client.user(auth), host, field, select, settle, close: () => { act(() => root.unmount()); host.remove(); client.dispose(); localStorage.clear(); } };
+}
 
-it("saves an interactive machine and profile underneath the last launch, then reports its removal", async () => {
-	const client = createMockClient({ pace: 0 });
-	const auth = { token: "mock:user:u_start:ada@example.com", profile: { uid: "u_start", email: "ada@example.com", demo: false } };
-	const user = client.user(auth);
-	await user.createSession({ profile: "docker-hardened" });
-	saveAuth("mock", auth);
-	const host = document.body.appendChild(document.createElement("div"));
-	const root = createRoot(host);
-	const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => void await new Promise(r => setTimeout(r, 2))); };
-	const field = (label: string) => [...host.querySelectorAll<HTMLSelectElement>(".defaults-group:first-child select")].find(s => s.labels?.[0]?.textContent === label)!;
-	const choose = async (label: string, value: string) => {
-		await act(async () => { const s = field(label); s.value = value; s.dispatchEvent(new Event("change", { bubbles: true })); });
-		await settle();
-	};
-	const line = () => host.querySelector('[data-testid="last-start"]')!.textContent;
+it("chooses the default agent in Settings → Models, and says what plans and reviews", async () => {
+	const s = await screen("agent", () => createElement(Settings));
 	try {
-		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
-		await settle();
-		await choose("Where", "m_nas");
-		await choose("Machine profile", "docker-hardened");
-		expect((await user.account()).defaults.startPlace).toEqual({ kind: "machine", machineId: "m_nas", profile: "docker-hardened" });
-		expect(line()).toMatch(/Hosted.*last launch/);
-		await act(async () => host.querySelector<HTMLButtonElement>(".defaults-start-forget")!.click());
-		await settle();
-		expect(line()).toMatch(/nas.*account default/);
-		await act(async () => { await user.removeMachine({ machineId: "m_nas", removeSandboxes: false }); });
-		await settle();
-		expect(line()).toMatch(/Hosted.*deployment default/);
-		expect(host.querySelector(".defaults-start")?.textContent).toContain("no longer paired");
-		await choose("Where", "");
-		expect((await user.account()).defaults.startPlace).toBeUndefined();
+		const note = () => s.host.querySelector(".run-note")?.textContent ?? "";
+		expect(s.field("Agent")?.value).toBe("windlass");
+		expect(note()).toContain("Planning, review and summaries use this model too.");
+		await s.select("Agent", "claude");
+		expect((await s.user.account()).defaults.harness).toBe("claude");
+		expect(note()).toContain("Planning, review and summaries run on Windlass with");
+		// No second line for the planner: its model opens from the note.
+		expect(s.host.textContent).not.toContain("Planning model");
+		await act(async () => [...s.host.querySelectorAll("button")].find(b => b.textContent === "Change")!.click());
+		expect(s.host.textContent).toContain("Planning model");
+		expect(s.host.querySelector("#settings-defaults")).toBeNull();
 	} finally {
-		act(() => root.unmount()); host.remove(); client.dispose(); localStorage.clear();
+		s.close();
 	}
 });
 
-it("saves a machine agent and profile and hides machine choices for Hosted", async () => {
-	const client = createMockClient({ pace: 0 });
-	const auth = { token: "mock:user:u_places:ada@example.com", profile: { uid: "u_places", email: "ada@example.com", demo: false } };
-	saveAuth("mock", auth);
-	const host = document.body.appendChild(document.createElement("div"));
-	const root = createRoot(host);
-	const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => void await new Promise(r => setTimeout(r, 2))); };
-	const field = (name: string) => [...host.querySelectorAll<HTMLSelectElement>("fieldset select")].find(el => el.labels?.[0]?.textContent === name);
-	const select = async (name: string, value: string) => {
-		await act(async () => { const el = field(name)!; el.value = value; el.dispatchEvent(new Event("change", { bubbles: true })); });
-		await settle();
-	};
+it("chooses the default place on Machines, its isolation and what happens when it is offline", async () => {
+	const s = await screen("place", () => createElement(Machines, { adding: false }));
 	try {
-		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
-		await settle();
-		expect(field("Agent")).toBeUndefined();
-		await select("Where", "m_nas");
-		await select("Agent", "claude");
-		await select("Machine profile", "docker-hardened");
-		await select("If unavailable", "hosted");
-		expect((await client.user(auth).account()).defaults).toMatchObject({ place: { machine: "m_nas" }, harness: "claude", machineProfile: "docker-hardened", placeFallback: "hosted" });
-		await select("Where", "hosted");
-		expect(field("Machine profile")).toBeUndefined();
-		expect((await client.user(auth).account()).defaults.place).toBe("hosted");
+		expect(s.field("Runs on")?.value).toBe("hosted");
+		await s.select("Runs on", "m_nas");
+		expect(s.field("Isolation")).toBeDefined();
+		await act(async () => [...s.host.querySelectorAll<HTMLInputElement>(".run-segmented input")][1]!.click());
+		await s.settle();
+		const defaults = (await s.user.account()).defaults;
+		expect(defaults).toMatchObject({ place: { machine: "m_nas" }, placeFallback: "hosted" });
+		// Agents you start yourself start there too: there is one default place.
+		expect(defaults.startPlace).toMatchObject({ kind: "machine", machineId: "m_nas" });
+		expect(s.host.textContent).toContain("the item asks whether to wait or run on Hosted");
+		await s.select("Runs on", "hosted");
+		expect(s.field("Isolation")).toBeUndefined();
+		expect((await s.user.account()).defaults.place).toBe("hosted");
 	} finally {
-		act(() => root.unmount()); host.remove(); client.dispose(); localStorage.clear();
+		s.close();
 	}
 });
 

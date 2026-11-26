@@ -52,7 +52,11 @@ function assert(condition: unknown, message: string): asserts condition {
 	if (!condition) throw new Error(message);
 }
 
+// CI gives the long autonomy case to the machine shard and keeps the other reviewer cases together.
+const skip = process.env.FACTORY_SKIP;
+
 async function check(name: string, body: () => Promise<string | undefined>): Promise<void> {
+	if (skip && name.startsWith(skip)) return void console.log(`SKIP  ${name}  (in FACTORY_SKIP)`);
 	if (only.length > 0 && !only.some((prefix) => name.startsWith(prefix))) return void console.log(`SKIP  ${name}  (not in FACTORY_ONLY)`);
 	try {
 		const detail = await body();
@@ -505,7 +509,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 				const page = await untilItem(user, feature.id, "the plan approval question", v => v.question?.kind === "plan_approval");
 				const q = page.question!;
 				assert(page.plan && q.approvalBlock?.includes("windlass/**") && q.text.includes(q.approvalBlock), "Missing push-branch guidance before approval.");
-				assert(q.choices.some(c => c.id === "run_single" && c.label === "Run as a single item") && !q.choices.some(c => c.id === "approve"), "Wrong choices for a blocked plan.");
+				assert(q.choices.some(c => c.id === "run_single" && c.label.includes("Windlass")) && !q.choices.some(c => c.id === "approve"), "Wrong choices for a blocked plan.");
 				const githubReads = () => standin.requests.length;
 				const before = githubReads();
 				standin.commit(repo, "main", { [workflow]: restricted.replace("[main]", `[main, 'windlass/feature-${feature.id}']`) }, "Enable the feature branch build");
@@ -732,6 +736,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			assert(filing.status === 201 && typeof filing.body.id === "string", "The API refused feature filing.");
 			const feature = await user.item(filing.body.id);
 			const suggestion = await untilItem(user, feature.id, "the single-item suggestion", v => !!v.question);
+			assert(suggestion.ranWith?.planner?.agent === "windlass", "The item is missing its planner run settings.");
 			assert(suggestion.question?.kind === "single_suggested", "Expected a single-item suggestion.");
 			await user.actOnItem({id:feature.id, action:{kind:"answer", question:suggestion.question.id, choice:"orchestrate_anyway"}});
 			const page = await untilItem(user, feature.id, "split plan approval", v => v.question?.kind === "plan_approval");
@@ -1018,13 +1023,14 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			assert(single.plan?.approvedBy === "critic" && single.events.some(e => e.by === "critic" && e.said.startsWith("Approved automatically:")), JSON.stringify(single.events));
 			const { criticSessionId } = await import("../server/src/factory/feature-ids.js");
 			const critic = await client.agentSession.get([auth.profile.uid, criticSessionId(feature.id)], { params: { token: auth.token } }).snapshot();
-			assert(critic.summary.model !== "gpt-6-luna" && critic.summary.turns === 1 && critic.summary.sandbox === "none", "Critic did not use a fresh standard-model turn and release its checkout.");
+			assert(critic.summary.model === "gpt-6-luna" && single.ranWith?.critic?.model === critic.summary.model && critic.summary.turns === 1 && critic.summary.sandbox === "none", "Critic did not use the resolved model or release its checkout.");
 			const pull = await waitFor("the stand-in pull request", () => standin.pulls.find(p => p.repository === id), 60_000);
 			pull.headSha = head;
 			pull.mergeable = true;
 			pull.title = "The final PR title";
 			setCi(repo, head, "success");
 			const done = await untilItem(user, feature.id, "the automatic squash merge", v => v.state === "done" || !!v.question, CI_WAIT_MS);
+			assert(done.ranWith?.reviewer?.model === "gpt-6-luna", "The reviewer did not use the resolved model.");
 			assert(done.state === "done" && done.events.some(e => e.said === "Merged automatically: verdict pass, CI green, review approved."), JSON.stringify(done.events));
 			const writes = standin.requests.filter(r => r.method === "PUT" && r.path.endsWith("/autonomy/pulls/1/merge"));
 			assert(writes.length === 1 && writes[0].auth === "installation" && writes[0].status === 200, JSON.stringify(writes));
@@ -2097,6 +2103,7 @@ async function memoryChecks(): Promise<void> {
 	});
 	await check("memory: a creation tried again under its key with another body is refused, even when the first never reached the index", async () => {
 		const q = await queue({});
+		await q.db.execute((await import("../server/src/repository-defaults.js")).DEFAULTS_TABLE);
 		const { issueUserToken } = await import("../server/src/tokens.js");
 		const profile = { uid: "u", email: null, demo: false };
 		(q.c.conn as { params: unknown }).params = { token: issueUserToken(profile, 0) };
@@ -2123,7 +2130,7 @@ async function memoryChecks(): Promise<void> {
 				}),
 			},
 		});
-		const makeSession = async (_c: unknown, _profile: unknown, _input: unknown, _submission: unknown, ids: { sessionId: string }) => {
+		const makeSession = async (_profile: unknown, _input: unknown, ids: { sessionId: string }) => {
 			const summary = { id: ids.sessionId, place: { kind: "hosted" }, repository: { provider: "github", id: 1, owner: "u", name: "r", branch: "main", private: true, url: "" } };
 			q.c.vars.sessions.set(ids.sessionId, summary as never);
 			return summary;
@@ -2360,12 +2367,18 @@ async function machineChecks(): Promise<void> {
 		const place = { kind: "machine" as const, machineId: runner.id.machineId };
 		const task = { mode: "single" as const, repository: { id: harbor.id }, title: "On my machine", body: "Write a short program.", place };
 		await check("machine: only a paired machine with an available profile can take an item", async () => {
-			await refused(() => user.createItem({ ...task, place: { kind: "machine", machineId: "m_0123456789abcdef" } }), "machine_not_found");
-			await refused(() => user.createItem(task), "machine_not_connected");
+			for (const destination of [{ kind: "machine" as const, machineId: "m_0123456789abcdef" }, place]) {
+				const item = await user.createItem({ ...task, place: destination, start: true });
+				assert((await user.item(item.id)).question?.kind === "run_place", "The machine needs a placement decision");
+				await user.actOnItem({ id: item.id, action: { kind: "cancel" } });
+			}
 			runner.fake.report.docker = { ok: false, reason: "Docker is stopped." };
 			await runner.connectControl();
 			await waitFor("the Docker report", async () => (await user.machines())[0]?.warnings.some(w => w.kind === "docker"), 10_000);
-			return await refused(() => user.createItem(task), "bad_profile");
+			const item = await user.createItem({ ...task, start: true });
+			const question = (await user.item(item.id)).question;
+			assert(question?.kind === "run_place", "Docker is unavailable");
+			return question.text;
 		});
 		runner.fake.report.docker = { ok: true };
 		if (!runner.control) await runner.connectControl();
@@ -2385,10 +2398,11 @@ async function machineChecks(): Promise<void> {
 				const denied = machine.profiles.find(p => p.id === profile);
 				assert(denied?.available === false && denied.unavailableReason?.includes("--allow-profile " + profile), "missing refusal in the launch picker");
 				assert(machine.profiles.some(p => p.id === "docker-hardened" && p.available), "hardened unavailable");
-				for (const launch of [() => user.createSession({ place, profile }), () => user.createItem({ ...task, profile })]) {
-					const message = await refused(launch, "profile_unavailable");
-					assert(message.includes(denied.unavailableReason!), message);
-				}
+				const message = await refused(() => user.createSession({ place, profile }), "profile_unavailable");
+				assert(message.includes(denied.unavailableReason!), message);
+				const blocked = await user.createItem({ ...task, profile, start: true });
+				const question = (await user.item(blocked.id)).question;
+				assert(question?.text.includes(denied.unavailableReason!), JSON.stringify(question));
 				const creates = runner.creates;
 				const session = client.agentSession.get([auth.profile.uid, waiting.id], { params: { token: auth.token } });
 				await session.prompt({ text: "Write the primes" });
@@ -2642,19 +2656,20 @@ async function machineChecks(): Promise<void> {
 		await check("machine: offline at launch waits without spend and resumes to review", async () => {
 			await runner.setOffline(true);
 			await waitFor("offline in the index", async () => (await user.machines())[0]?.status === "offline", 15_000);
-			const item = await user.createItem({ ...task, profile: "e2b", start: true });
-			const waiting = await untilItem(user, item.id, "machine wait", view => view.wait?.reason === "machine");
-			assert(waiting.wait?.sentence === 'Waiting for your machine "Test machine" to come back online.' && Object.values(waiting.spent).every(n => n === 0), JSON.stringify(waiting));
+			const item = await user.createItem({ ...task, profile: "docker-windlass-sandbox", start: true });
+			const waiting = await untilItem(user, item.id, "machine decision", view => view.question?.kind === "run_place");
+			assert(waiting.question?.text.includes("offline") && Object.values(waiting.spent).every(n => n === 0), JSON.stringify(waiting));
+			await user.actOnItem({ id: item.id, action: { kind: "answer", question: waiting.question!.id, choice: "wait" } });
 			await runner.setOffline(false);
 			const pushed = await untilItem(user, item.id, "push after reconnection", view => !!view.pullRequest);
 			setCi(harbor, standin.pulls.find(p => p.repository === harbor.id && p.number === pushed.pullRequest!.number)!.head, "success");
 			const review = await untilItem(user, item.id, "review after reconnection", view => view.state === "review", CI_WAIT_MS);
-			assert([...runner.boxes.values()].some(box => box.sessionId === item.sessionId && box.profile === "docker-windlass-sandbox"), "missing fallback to the machine's first available profile");
+			assert([...runner.boxes.values()].some(box => box.sessionId === item.sessionId && box.profile === "docker-windlass-sandbox"), "the selected machine profile was not used");
 			assert(review.reviewerSessionId, "missing machine reviewer");
 			const reviewer = await client.agentSession.get([auth.profile.uid, review.reviewerSessionId], { params: { token: auth.token } }).snapshot();
 			assert(reviewer.summary.place.kind === "machine" && reviewer.summary.place.machineId === place.machineId, "reviewer left the builder’s machine");
 			assert(review.spent.turns === 1 && review.spent.hostedSeconds === 0, JSON.stringify(review.spent));
-			return waiting.wait.sentence;
+			return waiting.question!.text;
 		});
 
 		await check("machine: an unanswered session attach waits, and removal asks what to hand over", async () => {
@@ -2857,7 +2872,11 @@ try {
 		const logged = main.text.length;
 		const stranger = await api("/api/items/i_0123456789abcdef", { token: `wlp_u_00000000000000000000.${"B".repeat(43)}` });
 		assert(stranger.status === 401 && stranger.body.code === "invalid_token" && !main.text.slice(logged).includes("api.failed"), `a token of no user answered ${stranger.status} ${JSON.stringify(stranger.body)}`);
+		await user.saveAccountDefaults({ place: "hosted", effort: "low" });
 		const one = await api("/api/items", { method: "POST", body: JSON.stringify(body), token, key: "k-1" });
+		const resolved = (one.body as unknown as ItemSummary).resolved;
+		assert(resolved?.sources.place === "account" && resolved.effort === "low" && resolved.sources.effort === "account", JSON.stringify(one.body));
+		await user.saveAccountDefaults({ place: null, effort: null });
 		const two = await api("/api/items", { method: "POST", body: JSON.stringify(body), token, key: "k-1" });
 		assert(one.status === 201 && two.status === 201 && one.body.id === two.body.id, `the two answers were ${one.status} ${String(one.body.id)} and ${two.status} ${String(two.body.id)}`);
 		const other = await api("/api/items", { method: "POST", body: JSON.stringify({ ...body, title: "Another" }), token, key: "k-1" });

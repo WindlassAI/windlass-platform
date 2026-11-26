@@ -6,7 +6,7 @@ Work items need a repository from your GitHub connection. They run with Windlass
 
 The Factory has the same repository rail as **Agents**, with its search, owners and foot. There, a repository's ring counts its work items in progress and the amber count what needs you; choosing one shows only its work items. A repository with no work item is dimmer; choose it to file one on it.
 
-GitHub, Linear and Jira issues and the Factory composer use the repository’s **Work items** default, then the account setting, then Hosted. You can override the selection in the composer. Any of my machines takes the first compatible online machine with a free slot. If none is ready, the timeline explains the wait or hosted fallback. Plan first uses Windlass to plan and passes the placement preference to the planner for parts that fit. A part on the saved agent starts on its saved model and effort unless the planner chose one.
+Every item resolves its place and agent the same way, whether filed from the composer, the API, GitHub, Linear or Jira: the item's own choice, then the repository's override, then your defaults ([Where each choice lives](/docs/settings#where-each-choice-lives)), then the deployment's. The composer shows the result in one line, with where it comes from, and **Change for this item**. If the result can't run (the machine is offline, the payer can't be used), the item waits and asks you instead of running elsewhere. Plan first plans on Windlass; its parts start from the same resolved place and agent unless the planner chose another.
 
 A work item runs in one of two ways:
 
@@ -111,7 +111,7 @@ Where the platform has a Linear OAuth client and signing secret, you can file a 
 
 `windlass-quick` (Linear does not allow a colon in a plain label name) selects **Quick**. The existing `windlass:quick` spelling also selects **Quick**. A plain `windlass` label selects **Plan first** by default. As on GitHub, a `bug` label selects **Quick** on a qualifying issue. An unrelated edit to an issue that already has the label or the assignment does not file anything. Each delivery from Linear is taken once, and one active issue files one item however many events qualify.
 
-**Placement and limits.** The item uses the same intake as GitHub: the repository's **Work items** default, then the account setting, then Hosted. GitHub, Linear and Jira issues share one daily limit, including drafts and filings in progress. If the daily limit is full, a later trigger or redelivery can file the issue once there is room.
+**Placement and limits.** The item resolves its place and agent as any item does. GitHub, Linear and Jira issues share one daily limit, including drafts and filings in progress. If the daily limit is full, a later trigger or redelivery can file the issue once there is room.
 
 **Trust.** Linear identifies the Windlass app as the connected user. Issues arrive as drafts with their authors' text quoted. Review and start the item in Windlass. Its page and list link to the Linear issue by its identifier, for example ENG-123.
 
@@ -299,6 +299,7 @@ Each automatic action appears in the timeline and counts against that run’s al
 | The sandbox runs out of memory | Try the next allowed hosted size once, or retry the same size once. Resizing also starts from GitHub. |
 | Checks cannot run in the environment | Retry the step once. |
 | Local checks did not verify a subtask | Run the saved checks once. By default, the part waits for passing local checks. With per-part CI enabled, the factory can accept passing CI on the exact commit and record the missing local evidence in the verdict. |
+| A CI job fails | Rerun eligible GitHub Actions jobs once on the same commit. A job that then passes is recorded as flaky. If the remaining checks also fail on the base head, choose to wait for a new passing base and update from it, fix here anyway, or give up. |
 | CI is cancelled or times out | Request one eligible infrastructure rerun, update from an ahead base once, then wait once. |
 | A blocked part’s feature is behind its target | Update the feature from the target once, between integrations. |
 | No sandbox or approved place is free, or a machine is away | Show the reason and wait up to six hours. Work resumes when the place becomes available. |
@@ -491,6 +492,8 @@ While the plan is open you can change each subtask's agent, model and effort. Th
 - **A machine of yours** also offers Claude Code and OpenCode where its runner reports them signed in. One that is not signed in is listed but can't be chosen. The models and efforts are the ones the machine reported for that agent.
 - **Codex** is not offered for subtasks. A plan that names it is refused, and so is placing a subtask on it. Codex runs Quick items only.
 
+A subtask with no agent of its own shows the agent it resolves to and where that comes from, for example "— your default". **The default** in its agent menu returns it there; **Windlass** pins it to Windlass.
+
 A subtask on Claude Code or OpenCode runs in the machine's hardened container, on its own model and effort. It never takes the feature's Windlass model: with no model chosen, it runs the agent's default. A choice the place does not offer, for example an agent the machine does not have or a model it does not list, shows **can't place** and the reason, and approval is refused the same way. If the machine changes after approval, for example the agent is signed out, the subtask can't be placed when the feature gets to it, and the feature asks you with the reason.
 
 **Works without asking.** Claude Code and OpenCode work without asking: they run every command and edit in their sandbox without asking you. Wherever such a subtask is shown, it says **works without asking**. The planner reads the item's text, which may come from an issue anyone could file. So its choice of such an agent never runs on approval alone: the approval card lists each such subtask under **Agents that work without asking**, and **Approve version N** stays unavailable until you tick every one. An approval sent any other way that does not name each one is refused. To run one on Windlass instead, choose **Windlass** for it and save.
@@ -531,7 +534,7 @@ After approval, a subtask that has not started yet can still change its agent, m
 
 When you approve a split plan, the platform opens a draft pull request from `windlass/feature-<id>` into the base branch. Each subtask's work lands on that branch. When the feature is handed over, the pull request is marked ready for review. Merging a feature stays yours.
 
-By default, the factory watches CI on the current feature head as parts join. A failure queues one fix part with the failing checks, their logs and the feature diff. The fix passes the local gate and joins through the same integration queue. Each new head supersedes the previous CI result. Handover waits until all parts have finished and CI passes on the current head. If the same failure comes back after a fix, the feature stops and asks you.
+By default, the factory watches CI on the current feature head as parts join. After the rerun and base check, a failure specific to the feature queues one fix part with the failing checks, their logs and the feature diff. The fix passes the local gate and joins through the same integration queue. Each new head supersedes the previous CI result. Handover waits until all parts have finished and CI passes on the current head. If the same failure comes back after a fix, the feature stops and asks you.
 
 With **Wait for CI on each part** enabled, a failure on the assembled feature asks you to check the PR again, hand it over as it is, or give up.
 

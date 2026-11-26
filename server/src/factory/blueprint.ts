@@ -11,27 +11,29 @@
  * The actor stores what `advance` returns in one write, then performs the effects by key. Facts name their attempt
  * key; a stale key changes nothing. No clock is read: every time is a fact's `at`.
  */
+import { SIZE_WEIGHT } from "../billing/meter.js";
 import { defaultPlaceRetryAt } from "./default-place.js";
 import { criticPrompt, mergeCandidate, smallPlanProblem } from "./autonomy.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
 import type { OutOfMemory } from "../sandbox/api.js";
 import { MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
-import { CI_POLLING, type CiReading, ciPollEvery, ciState, workflowOverdue } from "../github/ci.js";
+import { CI_POLLING, type CiReading, rerunnableJobs, ciPollEvery, ciState, workflowOverdue } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
+import { partRun, resolveRun, runPlace } from "./resolve-run.js";
 import { approveRoutes, bindRoute, choosePlacement, freeMachineSlots, machineSlots, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
 import { answeredWords, choice, CHOICES } from "./answered.js";
 import { feedbackWords, fixText, replanText } from "./feedback.js";
 import type { FeedbackDecision, FeedbackInput } from "./types.js";
-import { sharedPaths, singleAfterPlanning, subtaskMinimum, validatePlan, planScope, PlanError, approvalText, unattendedKeys, agentProfileProblem, agentOf } from "./feature-plan.js";
+import { sharedPaths, singleAfterPlanning, subtaskMinimum, validatePlan, planScope, PlanError, approvalText, subtaskHarness, unattendedKeys, agentProfileProblem, agentOf } from "./feature-plan.js";
 import { aliases, beginIntegration, boundRepos, crossFact, crossRepo, featureOpened, handOver as crossHandOver, integrationAnswer, integrationHeads, plannerText, recordIntegrated, recordOpened, recordSeed, repoOf, type Flow } from "./cross-repo.js";
 import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
 import { PLATFORM_TOOLS, refusalMessage } from "../provider-refusal.js";
 import { budgetStop, itemAgent, newAgent, noSpend, noteAgentTurn, retryAt, spellTokens, unmeasuredTurn } from "./budget.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import { environmentFailure, outputExcerpt, type EnvironmentFailure } from "./check-environment.js";
-import type { ChoiceId, CiProgress, EarlierFinding, Fact, StepFact, FeatureJob, HandoffReview, RequestedReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemSpend, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
+import type { ChoiceId, CiProgress, EarlierFinding, Fact, StepFact, FeatureCi, FeatureJob, HandoffReview, RequestedReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemSpend, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { ASK_WHEN_BLOCKED, BUILDER_ASSUMPTIONS, PUBLISH_SERVER, REPORT_TOOL } from "../agent-publish.js";
 import { REVIEW_TOOL, type PersonDecision } from "./reviewer-task.js";
 import { runAnywayWords, sources, thirdParty, untrustedWords } from "./untrusted.js";
@@ -74,7 +76,6 @@ const AUTO_POLICY = {
 	turn_start: [step("again", 30_000), step("again", MINUTE)],
 	summary_missing: [step("again"), step("again")],
 	no_change: [step("again")],
-	out_of_memory: [step("larger_sandbox", 0, "again")],
 	check_environment: [step("again")],
 	subtask_checks: [step("run_checks"), step("ci_alone")],
 	ci_timeout: [step("rerun_ci"), step("update_from_base"), step("wait")],
@@ -192,7 +193,8 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 		const started = !watchingParts(item) && fact.kind !== "ci_read";
 		for (const target of featureBranches(change.item)) {
 			if (target.featureCi && target.head && (target.featureCi.head !== target.head || started)) {
-				target.featureCi = { head: target.head, since: fact.at };
+				const decision = target.featureCi.head === target.head ? target.featureCi : undefined;
+				target.featureCi = { head: target.head, since: fact.at, waitForBase: decision?.waitForBase, fixInherited: decision?.fixInherited };
 				queueFeatureCi(change, "alias" in target ? target.alias : undefined);
 			}
 		}
@@ -264,10 +266,15 @@ class Change {
 	}
 }
 
-function waitForDefaultPlace(c: Change, sentence: string): boolean {
-	const attempt = c.item.placeAttempts ?? 0;
-	const at = defaultPlaceRetryAt(c.at, attempt);
-	c.item.placeAttempts = attempt + 1;
+function askRunPlace(c: Change, reason: string) {
+	const run = c.item.resolved;
+	const hosted = !c.item.awaitingReviewer && run?.place !== "hosted" && run?.fallback === "hosted" && !c.item.useHosted;
+	const alternative = run?.agent && run.agent !== "windlass" ? { id: "use_hosted" as const, label: "Run on Hosted with my Settings key" } : choice("use_hosted");
+	ask(c, "run_place", reason, [choice("wait"), ...(hosted ? [alternative] : []), choice("give_up")], null, null);
+}
+
+function waitForDefaultPlace(c: Change, sentence: string, at = defaultPlaceRetryAt(c.at, c.item.placeAttempts ?? 0)): boolean {
+	c.item.placeAttempts = (c.item.placeAttempts ?? 0) + 1;
 	if (c.item.wait?.sentence !== sentence) c.say(sentence);
 	c.item.awaitingPlace = sentence;
 	c.state("waiting", { reason: "machine", sentence, retryAt: at });
@@ -275,8 +282,23 @@ function waitForDefaultPlace(c: Change, sentence: string): boolean {
 	return true;
 }
 
+function recordRun(item: FactoryItem, fact: Extract<Fact, { kind: "turn_started" }>) {
+	if (!fact.actual) return;
+	const role = fact.role ?? item.runRole ?? "builder";
+	const run = role === item.runRole && item.resolved ? item.resolved : resolveRun(item.context ?? {}, role);
+	const { size, payerSource, ...actual } = fact.actual;
+	const sources = { ...run.sources };
+	if (payerSource) sources.payer = payerSource;
+	if (item.useHosted) sources.place = "item";
+	(item.ranWith ??= {})[role] = { ...run, ...actual, sources, size: size ?? null };
+}
+
 function apply(c: Change, fact: Fact): boolean {
 	const { item } = c;
+	if (fact.kind === "turn_started" && item.requestedReview?.key === fact.key && fact.role === "reviewer") {
+		recordRun(item, fact);
+		return true;
+	}
 	if (fact.kind === "review_ended" && item.requestedReview?.key === fact.key) {
 		const request = item.requestedReview;
 		delete item.requestedReview;
@@ -328,12 +350,15 @@ function apply(c: Change, fact: Fact): boolean {
 			const job = update.child && item.jobs?.find(j => j.id === update.child);
 			if (job) job.featureUpdateReceipt = update.key;
 			if ("head" in fact.result) {
-				item.head = fact.result.head;
-				c.say(`Updated the feature from ${item.task.base} to ${shortSha(item.head)}.`);
+				if (update.repo) recordIntegrated(item, update.repo, fact.result.head);
+				else item.head = fact.result.head;
+				const ci = featureCiBranch(item, update.repo).featureCi;
+				if (ci) delete ci.waitForBase;
+				c.say(`Updated the feature from ${update.repo ? repoOf(item, update.repo).baseRef : item.task.base} to ${shortSha(fact.result.head)}.`);
 			}
 			if (FINAL.has(item.state) || item.state === "failed" || item.machineRemoved) return true;
 			if ("problem" in fact.result) {
-				ask(c, "feature_update", fact.result.problem, [{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], null, null, undefined, { target: update.target });
+				ask(c, "feature_update", fact.result.problem, [{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], null, null, undefined, { target: update.target, updateRepo: update.repo });
 			} else if ("head" in fact.result && c.run.step.kind === "ci") {
 				c.run.ci = ciProgress(fact.result.head, c.at, null, c.run.ci?.webhooks ?? false);
 				readUpdatedCi(c);
@@ -341,7 +366,7 @@ function apply(c: Change, fact: Fact): boolean {
 			} else {
 				if ("conflicts" in fact.result) {
 					if (c.run.step.kind !== "subtasks") c.enter("subtasks");
-					queueConflictFix(c, { target: update.target, child: update.child }, fact.result.conflicts);
+					queueConflictFix(c, { target: update.target, child: update.child }, fact.result.conflicts, update.repo);
 				}
 				c.state("waiting", { reason: "children", sentence: "conflicts" in fact.result ? "Resolving the feature update conflicts." : "Continuing subtasks on the updated feature branch.", retryAt: null });
 				for (const job of item.jobs ?? []) if (activeJob(job) && (!repair(job) || job.dispatchKey)) dispatchJob(c, job);
@@ -406,6 +431,7 @@ function apply(c: Change, fact: Fact): boolean {
 			if (!task || !fact.inventory) return false;
 			const agent = fact.agent === null ? undefined : agentOf(fact.agent);
 			const next = { ...task, agent };
+			if (item.context) next.resolved = partRun(item.context, next, "part", fact.inventory.machines);
 			if (!agent) delete next.agent;
 			const problem = agentProfileProblem(next);
 			if (problem) throw new PlanError(problem);
@@ -413,6 +439,7 @@ function apply(c: Change, fact: Fact): boolean {
 			if (fit.refused !== undefined && fit.permanent) throw new PlanError(fit.refused);
 			for (const p of [plan, item.approvedPlan]) {
 				const kept = p?.subtasks.find(s => s.key === fact.key);
+				if (kept) kept.resolved = next.resolved;
 				if (kept && agent) kept.agent = structuredClone(agent);
 				else if (kept) delete kept.agent;
 			}
@@ -449,20 +476,34 @@ function apply(c: Change, fact: Fact): boolean {
 		case "start":
 			if (item.state !== "draft") return false;
 			c.say("Started.");
-			if (item.awaitingPlace) return waitForDefaultPlace(c, item.awaitingPlace);
+			if (item.awaitingPlace) {
+				askRunPlace(c, item.awaitingPlace);
+				return true;
+			}
 			beginRun(c, firstPlan(item, null));
 			return true;
 		case "default_place_wait":
-			if (!item.awaitingPlace || item.state !== "waiting") return false;
+			if (!item.awaitingPlace || item.question || item.state !== "waiting") return false;
+			if (fact.reviewer) item.awaitingReviewer = true;
+			if (fact.sentence !== item.awaitingPlace) {
+				item.awaitingPlace = fact.sentence;
+				askRunPlace(c, fact.sentence);
+				return true;
+			}
 			return waitForDefaultPlace(c, fact.sentence);
 		case "default_place_ready":
-			if (!item.awaitingPlace || item.state !== "waiting") return false;
+			if (!item.awaitingPlace || item.question || item.state !== "waiting") return false;
 			delete item.awaitingPlace;
+			delete item.awaitingReviewer;
 			delete item.placeAttempts;
 			item.reviewer = fact.reviewer;
 			item.place = fact.place;
 			item.agent = fact.agent;
-			c.say("A compatible machine has a free slot.");
+			if (item.context && item.useHosted) {
+				item.resolved = resolveRun({ ...item.context, item: { ...item.context.item, place: "hosted" } }, item.runRole ?? "builder");
+			}
+			if (item.resolved) item.resolved.model ??= fact.agent.model;
+			c.say("The selected place is ready.");
 			beginRun(c, firstPlan(item, null));
 			return true;
 		case "retry":
@@ -516,7 +557,7 @@ function apply(c: Change, fact: Fact): boolean {
 		case "repo_pr_lost":
 			return item.run !== null && crossRepo(item) && crossFact(flow(c), fact, item.approvedPlan?.finalIntegration);
 		case "ci_rerun_result": {
-			const rerun = item.ciReruns?.[fact.head];
+			const rerun = item.ciReruns?.[rerunKey(fact)];
 			if (!rerun || rerun.reported) return false;
 			rerun.reported = true;
 			for (const job of rerun.jobs) if (job.jobId && !fact.accepted.includes(job.jobId)) job.jobId = null;
@@ -561,10 +602,11 @@ function stepFact(c: Change, fact: StepFact): boolean {
 			if (!job || fact.key !== (job.dispatchKey ?? key) || step.kind !== "subtasks" || c.item.question || job.cancelRequested || job.state !== "draft") return false;
 			if (fact.kind === "placement_wait") {
 				if (job.id !== fact.child) return false;
-				if (fact.refused) return placementRefused(c, job, fact.sentence);
+				if (fact.askMachine || fact.refused) return placementRefused(c, job, fact.sentence, fact);
 				return waitForPlacement(c, job, fact.sentence, fact);
 			}
-			if (!job.route || job.placement) return false;
+			if (job.placement) return false;
+			job.route ??= bindRoute(job.task, c.item.place, false, fact.inventory.machines);
 			const fit = choosePlacement(job.task, job.route, fact.inventory, job.warm, c.at);
 			if (fit.decision) {
 				delete job.placementWaitSince;
@@ -573,8 +615,9 @@ function stepFact(c: Change, fact: StepFact): boolean {
 				dispatchJob(c, job);
 				return true;
 			}
-			if (fit.refused !== undefined && fit.permanent) return placementRefused(c, job, fit.refused);
-			return waitForPlacement(c, job, fit.refused ?? fit.wait, fit);
+			const sentence = fit.refused ?? fit.wait;
+			if (fit.askMachine || fit.permanent) return placementRefused(c, job, sentence, fit);
+			return waitForPlacement(c, job, sentence, fit);
 		}
 		case "child_update": {
 			const job = c.item.jobs?.find(j => j.id === fact.child);
@@ -592,10 +635,10 @@ function stepFact(c: Change, fact: StepFact): boolean {
 			} else {
 				if (job.state === "done" && job.head && !job.join) integratedTip(c.item, job, job.head);
 				if (job.state === "failed" && job.conflictFix && !c.item.stoppedJob) {
-					if (!job.conflictFix.retry) queueConflictFix(c, { ...job.conflictFix, retry: true }, job.task.owns ?? []);
+					if (!job.conflictFix.retry) queueConflictFix(c, { ...job.conflictFix, retry: true }, job.task.owns ?? [], job.task.repo);
 					else {
 						ask(c, "feature_update", "The conflict-resolution part failed twice. Check the feature branch again or give up.",
-							[{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], "repeated", null);
+							[{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], "repeated", null, undefined, { updateRepo: job.task.repo });
 						return true;
 					}
 				} else if (job.state !== "done" && !c.item.stoppedJob) {
@@ -629,6 +672,22 @@ function stepFact(c: Change, fact: StepFact): boolean {
 			else {
 				prRead(c, { mergedByApp: true, kind: "pr_read", key, at: c.at, state: "merged", prHead: fact.head, webhooks: !!run.ci?.webhooks });
 			}
+			return true;
+		case "ci_rerun_started":
+			if (c.item.ciReruns?.[rerunKey(fact)]) return false;
+			if (step.kind === "subtasks") {
+				const ci = featureCiBranch(c.item, fact.repo).featureCi;
+				if (!watchingParts(c.item) || ci?.key !== fact.key || ci.head !== fact.head) return false;
+				(c.item.ciReruns ??= {})[rerunKey(fact)] = { jobs: fact.jobs };
+				queueFeatureCi(c, fact.repo, c.at + ciPollEvery(fact.openItems));
+				return true;
+			}
+			if (c.item.question || step.kind !== "ci" || fact.key !== key || run.ci?.head !== fact.head) return false;
+			// Commit the claim and the next poll before the POST. Replaying the effect cannot request a second run.
+			(c.item.ciReruns ??= {})[rerunKey(fact)] = { jobs: fact.jobs };
+			step.attempt++;
+			run.ci.since = c.at;
+			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the checks.");
 			return true;
 		case "ci_read":
 			if (step.kind === "subtasks") {
@@ -719,6 +778,10 @@ function stepFact(c: Change, fact: StepFact): boolean {
 			return true;
 		case "sandbox_freed":
 			if (c.item.question || step.turn !== null) return false;
+			if (fact.hostedSize && c.item.resolved) {
+				c.item.resolved.size = fact.hostedSize;
+				c.item.resolved.sources.size = "item";
+			}
 			nextTurn(c, fact.plan);
 			return true;
 		case "turn_waiting": {
@@ -742,6 +805,7 @@ function stepFact(c: Change, fact: StepFact): boolean {
 			return true;
 		case "turn_started":
 			if (step.turn !== "delivered") return false;
+			recordRun(c.item, fact);
 			step.turn = "started";
 			if (c.item.question?.kind === "sandboxes" || c.item.question?.kind === "machine_away") c.item.question = null;
 			c.state("working");
@@ -787,14 +851,6 @@ function stepFact(c: Change, fact: StepFact): boolean {
 			if (step.kind !== "publish") return false;
 			if (fact.kind === "published") published(c, fact);
 			else publishFailed(c, fact);
-			return true;
-		case "ci_rerun_started":
-			if (step.kind !== "ci" || run.ci?.head !== fact.head || c.item.ciReruns?.[fact.head]) return false;
-			// Commit the claim and the next poll before the POST. Replaying the effect cannot request a second run.
-			(c.item.ciReruns ??= {})[fact.head] = { jobs: fact.jobs };
-			step.attempt++;
-			run.ci.since = c.at;
-			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the checks.");
 			return true;
 	}
 }
@@ -1148,7 +1204,7 @@ function outOfMemory(c: Change, memory: OutOfMemory, resume: TurnPlan): void {
 		return;
 	}
 	const larger = memory.larger;
-	const text = `${outOfMemoryWords(memory, larger ? [larger] : [])} The agent's turn did not finish. ${larger ? `Go on in a ${larger} sandbox: it starts from the repository on GitHub, and what was not pushed from the old sandbox is lost with it. Or try again in the same one.` : "Try again, or give it up."}`;
+	const text = `${outOfMemoryWords(memory, larger ? [larger] : [])} The agent's turn did not finish. ${larger ? `Go on in a ${larger} sandbox at ${SIZE_WEIGHT[larger]}× the standard hosted rate. It starts from the repository on GitHub, and what was not pushed from the old sandbox is lost with it. Or try again in the same one.` : "Try again, or give it up."}`;
 	ask(c, "out_of_memory", text, [...(larger ? [choice("larger_sandbox")] : []), choice("again"), ...handOverAny(c.item), choice("give_up")], null, resume, undefined, { largerSize: larger });
 }
 
@@ -1491,30 +1547,72 @@ function updateFromBase(c: Change): boolean {
 	const previous = failuresOf(run);
 	// Main can move again while an earlier update runs; follow it a few times.
 	const movedAgain = !item.parent && run.updatedBaseTip && run.ci?.baseTip !== run.updatedBaseTip && run.rounds.conflict < 3;
-	if (previous.includes(fingerprint) && !newerPartBase(item, run.ci!) && !movedAgain) return false;
+	if (previous.includes(fingerprint) && !run.ci?.waitForBase && !newerPartBase(item, run.ci!) && !movedAgain) return false;
 	run.updatedBaseTip = run.ci?.baseTip;
 	if (!previous.includes(fingerprint)) run.failures = [...previous, fingerprint];
 	run.lastFailure = fingerprint;
 	run.rounds.conflict++;
-	run.updateFromBase = { head, at: c.at };
+	run.updateFromBase = { head, at: c.at, ...(run.ci?.waitForBase && { baseTip: run.ci.baseTip }) };
 	c.say(`Updating the item branch from ${item.task.base}.`);
 	publish(c);
 	return true;
+}
+
+type CiReadFact = Extract<Fact, { kind: "ci_read" }>;
+type ReadChecks = Extract<CiReading, { kind: "read" }>;
+export const rerunKey = ({ head, repo }: { head: string; repo?: string }) => repo ? `${repo}/${head}` : head;
+
+function rerunState(c: Change, fact: CiReadFact, reading: CiReading) {
+	const jobs = c.item.ciReruns?.[rerunKey(fact)]?.jobs;
+	let awaiting = false;
+	if (reading.kind === "read") for (const job of jobs ?? []) {
+		if (!job.failed || !job.jobId) continue;
+		const attempt = reading.runs.find(check => check.workflowId === job.retryRunId && check.name === job.name &&
+			check.jobId && BigInt(check.jobId) > BigInt(job.jobId!));
+		if (!attempt || attempt.state === "pending") awaiting = true;
+		else if (attempt.state === "passed" && !job.passedOnRerun) {
+			job.passedOnRerun = true;
+			c.say(`CI job ${job.name} was flaky: it passed on re-run on the same commit ${shortSha(fact.head)}.`);
+		}
+	}
+	let state = ciState(reading);
+	if (awaiting || (reading.kind === "read" && ["passed", "none", "skipped"].includes(state) &&
+		jobs?.some(job => !reading.runs.some(check => check.name === job.name)))) state = "pending";
+	return { state, rerun: jobs, awaitingFlakyJob: awaiting };
+}
+
+function requestCiRerun(c: Change, fact: CiReadFact, reading: ReadChecks, infrastructure: boolean) {
+	if (reading.truncated || !isSha(fact.head) || c.item.ciReruns?.[rerunKey(fact)]) return false;
+	const jobs = rerunnableJobs(reading, infrastructure);
+	if (!jobs.length) return false;
+	const feature = c.run.step.kind === "subtasks" && featureCiBranch(c.item, fact.repo).featureCi;
+	if (feature) feature.key = fact.key;
+	c.effects.push({ kind: "rerun_ci", key: feature ? fact.key : c.key, repo: fact.repo, head: fact.head, openItems: fact.openItems, jobs });
+	return true;
+}
+
+function repairChecks(c: Change, fact: CiReadFact, reading: ReadChecks, ci: FeatureCi | CiProgress) {
+	const failed = reading.runs.filter(check => check.state === "failed" && !check.environment);
+	if (failed.some(check => check.baseResult === "pending")) return null;
+	const actionable = failed.filter(check => !check.baseResult || ci.fixInherited && check.baseResult === "failed");
+	if (!actionable.length) {
+		const base = fact.repo ? repoOf(c.item, fact.repo).baseRef : c.item.task.base;
+		const inherited = failed.filter(check => check.baseResult === "failed");
+		if (inherited.length && fact.baseTip) {
+			ask(c, "ci_timeout", `The same checks fail on ${base}: ${inherited.map(check => check.name).join(", ")}.`,
+				[{ id: "wait", label: `Wait for ${base} to be fixed, then update from it` }, { id: "again", label: "Fix it here anyway" }, choice("give_up")],
+				null, null, undefined, { inherited: { head: fact.head, baseTip: fact.baseTip, repo: fact.repo } });
+		}
+		return null;
+	}
+	return { ...reading, runs: actionable, logs: reading.logs.filter(log => actionable.some(check => check.name === log.name)) };
 }
 
 function recordCiRead(c: Change, ci: CiProgress, fact: Extract<Fact, { kind: "ci_read" }>) {
 	// Evidence for another commit cannot settle this head.
 	const reading: CiReading =
 		fact.reading.kind === "read" && isSha(ci.head) && fact.reading.head !== ci.head ? { kind: "failed", said: `GitHub answered for commit ${shortSha(fact.reading.head)}, not ${shortSha(ci.head)}` } : fact.reading;
-	const rerun = reading.kind === "read" ? c.item.ciReruns?.[reading.head]?.jobs : undefined;
-	let state = ciState(reading);
-	// A webhook can arrive before GitHub lists the replacement attempt.
-	const awaitingFlakyJob = reading.kind === "read" && rerun?.some(job => job.flaky && job.jobId &&
-		!reading.runs.some(check => check.workflowId === job.retryRunId && check.name === job.name && check.jobId && BigInt(check.jobId) > BigInt(job.jobId!)));
-	if (awaitingFlakyJob) state = "pending";
-	// GitHub can briefly omit the old jobs before listing their replacements.
-	if (reading.kind === "read" && (state === "passed" || state === "none" || state === "skipped") &&
-		rerun?.some(job => !reading.runs.some(check => check.name === job.name))) state = "pending";
+	const { state, rerun, awaitingFlakyJob } = rerunState(c, fact, reading);
 	ci.lastReadState = state;
 	ci.webhooks = fact.webhooks;
 	// Consume this poll before scheduling another.
@@ -1606,6 +1704,10 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		return ask(c, "ci_timeout", sentence, [...choices, ...(canUpdate ? [choice("update_from_base")] : []), ...(feature ? [feature] : []), ...handOver(c.item), choice("give_up")], null, plan, undefined,
 			{ policy, target: fact.featureTargetHead, evidence: ciEvidence });
 	};
+	if (ci.waitForBase) {
+		if (fact.baseTip && fact.baseTip !== ci.waitForBase && fact.basePassed && updateFromBase(c)) return;
+		return pollCi(c, fact.openItems, null, `Waiting for passing CI on a new ${c.item.task.base} commit.`);
+	}
 	if (fact.mergeable === false && !canUpdate) {
 		c.say(`GitHub says the pull request conflicts with ${c.item.task.base}.`);
 		return nextTurn(c, conflictPlan(c.item.task.base));
@@ -1615,28 +1717,14 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			return question("GitHub has not reported the re-run of the failed CI jobs.");
 		return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the re-run of the failed CI jobs.");
 	}
-	if (state === "failed" && reading.kind === "read" && !reading.truncated && !rerun && c.item.pr && fact.prHead === ci.head && isSha(ci.head)) {
-		const failed = reading.runs.filter(check => check.state === "failed");
-		const jobs = failed.map(({ name, jobId, workflowId, baseResult, conclusion }) => ({
-			name, jobId, retryRunId: conclusion === "failure" ? workflowId : undefined, flaky: fact.flakyJobs?.includes(name) ? "history" as const : baseResult === "failed" ? "base" as const : undefined,
-		}));
-		if (jobs.length && jobs.every(job => job.flaky && job.jobId && job.retryRunId)) {
-			c.effects.push({ kind: "rerun_ci", key: c.key, head: ci.head, openItems: fact.openItems, jobs });
-			return;
-		}
-		if (failed.some(check => !check.jobId && check.app !== "github-actions" && (fact.flakyJobs?.includes(check.name) || check.baseResult === "failed")))
-			c.say("Only GitHub Actions jobs can be re-run automatically.");
+	const interrupted = reading.kind === "read" && reading.runs.some(check => check.retryRunId && (check.state === "cancelled" || check.environment));
+	if (reading.kind === "read" && (state === "failed" || state === "cancelled") && !rerun && (c.item.parent || fact.prHead === ci.head)) {
+		const allowInfra = interrupted && !!automatic(c, "ci_timeout", ciEvidence, ["rerun_ci"]);
+		if (requestCiRerun(c, fact, reading, allowInfra)) return;
 	}
 	if (reading.kind === "read" && (state === "cancelled" || (state === "failed" && reading.runs.some(check => check.environment)))) {
 		const interrupted = reading.runs.filter(check => check.state === "cancelled" || check.environment);
-		const eligible = interrupted.filter(check => check.retryRunId);
 		const sentence = state === "cancelled" ? ciSentence(verdictCi(ci)) : "CI reported an environment failure in " + interrupted.map(check => check.name).join(", ") + ".";
-		if (eligible.length && !rerun && isSha(reading.head) && automatic(c, "ci_timeout", ciEvidence, ["rerun_ci"])) {
-			c.say(sentence);
-			c.effects.push({ kind: "rerun_ci", key: c.key, head: reading.head, openItems: fact.openItems,
-				jobs: eligible.map(({ name, jobId, retryRunId, environment }) => ({ name, jobId, retryRunId, ...(environment && { environment }) })) });
-			return;
-		}
 		if (rerun?.some(job => !reading.runs.some(check => check.name === job.name) ||
 			(job.jobId && interrupted.some(check => check.jobId === job.jobId)))) {
 			return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the rerun of the interrupted checks.");
@@ -1657,23 +1745,15 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			return afterCi(c, ci);
 		case "failed": {
 			if (reading.kind !== "read") return;
-			const failed = reading.runs.filter(check => check.state === "failed" && !check.environment).map(check =>
-				rerun?.some(job => job.flaky && job.jobId && job.name === check.name && check.workflowId === job.retryRunId)
-					? { ...check, baseResult: undefined } : check);
-			if (failed.some(check => check.baseResult === "pending"))
-				return pollCi(c, fact.openItems, null, `Waiting for the same check to finish on ${c.item.task.base}.`);
-			const inherited = failed.filter(check => check.baseResult === "failed");
-			const actionable = failed.filter(check => !check.baseResult);
-			if (!actionable.length || (canUpdate && inherited.length)) {
-				const sentence = inherited.length ? `This check also fails on ${c.item.task.base}; it is not caused by this change.`
-					: `The platform could not confirm whether this check fails on ${c.item.task.base}.`;
-				return ask(c, "ci_timeout", sentence, [...(canUpdate ? [choice("update_from_base")] : []), ...handOver(c.item), choice("wait"), choice("give_up")],
-					null, null, undefined, canUpdate && inherited.length ? { policy: "ci_timeout", evidence: ciEvidence } : {});
+			const fixes = repairChecks(c, fact, reading, ci);
+			if (!fixes) {
+				if (c.item.question) return;
+				if (reading.runs.some(check => check.baseResult === "pending")) return waitForReading();
+				return question(`The platform could not confirm whether this check fails on ${c.item.task.base}.`);
 			}
-			const fixes = { ...reading, runs: actionable, logs: reading.logs.filter(log => actionable.some(check => check.name === log.name)) };
 			const plan: TurnPlan = { ...IMPLEMENT, kind: "ci_fix", text: ciFixText(ci.head, fixes), charge: "ci", fingerprint: ciFingerprint(fixes), ...marked([untrustedWords.ci(ci.head)]) };
 			const sentence = ciSentence(verdictCi(ci));
-			if (canUpdate || fact.featureTarget) return question(sentence, plan);
+			if (!ci.fixInherited && (canUpdate || fact.featureTarget)) return question(sentence, plan);
 			c.say(sentence);
 			return nextTurn(c, plan);
 		}
@@ -2149,7 +2229,26 @@ function proposePlan(c: Change, fact: Extract<Fact, { kind: "edit_plan" | "file_
 		if (item.feedbackReplans && completed.length && plan.subtasks.every(s => completed.some(j => j.task.key === s.key)))
 			throw new PlanError("Add a fix subtask to the completed feature.");
 		if (plan.singleSuggested) throw new PlanError("Re-plan the remaining work on the existing feature branch.");
-		for (const job of completed) if (!isDeepStrictEqual(plan.subtasks.find(s => s.key === job.task.key), job.task)) throw new PlanError("Completed subtasks cannot be changed.");
+		for (const job of completed) {
+			const { resolved, placementProblem, requestedLargerSize, ...approved } = job.task;
+			const task = plan.subtasks.find(s => s.key === approved.key);
+			if (!task || !isDeepStrictEqual(task, approved)) throw new PlanError("Completed subtasks cannot be changed.");
+			Object.assign(task, job.task);
+		}
+	}
+	for (const task of plan.subtasks) {
+		if (completed.some(job => job.task.key === task.key)) continue;
+		if (item.context) task.resolved = partRun(item.context, task, "part", fact.inventory?.machines);
+		if (!fact.inventory) continue;
+		try {
+			const route = bindRoute(task, item.place, !!plan.overflow, fact.inventory.machines);
+			const fit = choosePlacement(task, route, fact.inventory);
+			if (fit.refused) task.placementProblem = fit.refused;
+			if (fit.larger) task.requestedLargerSize = fit.larger;
+		} catch (error) {
+			if (!(error instanceof PlanError)) throw error;
+			task.placementProblem = error.message;
+		}
 	}
 	const proposed = { ...plan, budget: featureTotal(item, plan), compare: { singleBudget: item.singleBudget }, version: (item.featurePlan?.version ?? 0) + 1, status: "proposed" as const };
 	if (fact.kind === "file_plan" && item.filedTurn === fact.key && item.featurePlan && isDeepStrictEqual({ ...proposed, version: item.featurePlan.version }, item.featurePlan)) return false;
@@ -2166,7 +2265,7 @@ function planQuestion(item: FactoryItem) {
 /** Also accepted on questions filed before the item page offered the single-item fallback. */
 export function singlePlanAlternative(item: FactoryItem) {
 	if (item.mode === "orchestrate" && !item.replans && !crossRepo(item) && item.question?.kind === "plan_approval" && item.featurePlan?.status === "proposed" && item.filedTurn === currentKey(item))
-		return { id: "run_single" as const, label: "Run as a single item" };
+		return { id: "run_single" as const, label: "Use the current Windlass session as one implementer" };
 }
 
 function trustedPlanInputs(item: FactoryItem): boolean {
@@ -2177,6 +2276,14 @@ function considerCritic(c: Change) {
 	const { item } = c, plan = item.featurePlan;
 	if (!trustedPlanInputs(item)) return askPlan(c, "Automatic approval requires a plan based on trusted inputs.");
 	if (!plan || item.filedTurn !== c.key) return askPlan(c, "The planner did not file a plan for this turn.");
+	if (plan.subtasks.some(s => subtaskHarness(s) === "codex")) return askPlan(c);
+	if (plan.singleSuggested && item.context && (resolveRun(item.context, "builder").agent !== "windlass" || item.useHosted))
+		return askPlan(c, "Confirm the current Windlass session before it implements this item.");
+	const context = item.context;
+	if (context && plan.subtasks.some(s => {
+		const defaults = partRun(context, { repo: s.repo });
+		return defaults.place !== "hosted" && (s.place?.prefer === "hosted" || s.place?.allow?.includes("hosted")) || !!s.needs?.hostedSize && s.needs.hostedSize !== defaults.size;
+	})) return askPlan(c, "Confirm the proposed hosted placement or size before these parts run.");
 	if (!item.singleBudget) return askPlan(c, "The item has no budget to check the plan against.");
 	const problem = smallPlanProblem(plan, item.singleBudget, aliases(item));
 	if (problem) return askPlan(c, problem);
@@ -2237,8 +2344,14 @@ function askPlan(c: Change, criticReason?: string, criticFindings?: string[]) {
 	if (p.singleSuggested && !c.item.replans)
 		return askOwner("single_suggested", p.singleSuggested + (crossRepo(c.item) ? ` One implementer works on ${c.item.repos![0].alias} only: ${c.item.repos!.slice(1).map(r => r.alias).join(", ")} would be left out.` : ""),
 			[choice("run_single"), choice("orchestrate_anyway")]);
+	if (p.subtasks.some(s => subtaskHarness(s) === "codex"))
+		return askOwner("plan_approval", `${harnessName("codex")} cannot build Plan-first parts. Choose another agent for those parts, then review the updated plan.`, [choice("use_windlass"), choice("use_claude"), choice("use_opencode"), ...revise]);
+	const larger = p.subtasks.filter(t => t.requestedLargerSize);
+	if (larger.length) return askOwner(c.item.replans ? "replan_approval" : "plan_approval",
+		larger.map(t => `${t.title} needs a ${t.requestedLargerSize} hosted sandbox at ${SIZE_WEIGHT[t.requestedLargerSize!]}× the standard hosted rate.`).join("\n"),
+		[{ id: "larger_sandbox", label: "Use the requested sizes and review the plan" }, ...revise, choice("give_up")]);
 	const unanswered = p.questions.filter(q => !q.answer);
-	askOwner(c.item.replans ? "replan_approval" : "plan_approval", approvalText(p), [...(unanswered.length ? [] : [choice("approve")]), ...revise, choice("give_up")]);
+	askOwner(c.item.replans ? "replan_approval" : "plan_approval", [approvalText(p), ...p.subtasks.filter(t => t.placementProblem).map(t => t.title + ": " + t.placementProblem)].join("\n"), [...(unanswered.length ? [] : [choice("approve")]), ...revise, choice("give_up")]);
 }
 
 function waitForPlacement(c: Change, job: FeatureJob, sentence: string, wait: { providerUntil?: number; dailyCap?: boolean; accountKey?: string }): boolean {
@@ -2260,7 +2373,11 @@ function waitForPlacement(c: Change, job: FeatureJob, sentence: string, wait: { 
 	return true;
 }
 
-function placementRefused(c: Change, job: FeatureJob, reason: string): true {
+function placementRefused(c: Change, job: FeatureJob, reason: string, options: Pick<FeatureJob, "askMachine" | "offerHosted">): true {
+	if (options.askMachine) {
+		job.askMachine = true;
+		job.offerHosted = options.offerHosted ?? false;
+	}
 	job.placementRefusal = reason;
 	// Other children keep their places and may finish integration before the feature asks.
 	if (!c.item.jobs!.some(j => j !== job && activeJob(j) && !j.placementRefusal)) askPlacement(c, c.item.jobs!.find(j => activeJob(j) && j.placementRefusal)!);
@@ -2269,6 +2386,8 @@ function placementRefused(c: Change, job: FeatureJob, reason: string): true {
 
 function askPlacement(c: Change, job: FeatureJob) {
 	const choices: Question["choices"] = [
+		...(job.task.resolved?.agent === "codex" ? [choice("use_windlass"), choice("use_claude"), choice("use_opencode")] : []),
+		...(job.askMachine ? [choice("wait")] : []), ...(job.offerHosted ? [choice("use_hosted")] : []),
 		{ id: "revise" as const, label: "Revise the placement" },
 		{ id: "again", label: "Retry allowed places" },
 		{ id: "give_up", label: "Give up the subtask" },
@@ -2362,32 +2481,32 @@ function stoppedChild(c: Change, job: FeatureJob) {
 }
 
 export function featureCiQuestion(item: FactoryItem): boolean {
-	return item.run?.step.kind === "ci" && (item.question?.kind === "ci_timeout" || item.question?.kind === "rounds");
+	return !item.question?.inherited && item.run?.step.kind === "ci" && (item.question?.kind === "ci_timeout" || item.question?.kind === "rounds");
 }
 
 export const featureUpdateChoice = (target: string) => ({ id: "update_feature" as const, label: `Update the feature from ${target}` });
 
 /** A single feature ref can move during part integration or before whole-feature CI is settled. */
-export function canUpdateFeature(item: FactoryItem): boolean {
-	if (item.mode !== "orchestrate" || crossRepo(item) || !item.pr || !item.head || item.state !== "waiting" || item.featureUpdate || item.jobs?.some(j => j.conflictFix && activeJob(j)) || item.machineRemoved) return false;
+export function canUpdateFeature(item: FactoryItem, repo?: string): boolean {
+	if (item.mode !== "orchestrate" || (crossRepo(item) && !repo) || !item.pr || !item.head || item.state !== "waiting" || item.featureUpdate || item.jobs?.some(j => j.conflictFix && activeJob(j)) || item.machineRemoved) return false;
 	return (item.run?.step.kind === "subtasks" || item.run?.step.kind === "ci") &&
 		(!item.question || item.question.kind === "feature_update" || featureCiQuestion(item));
 }
 
 function grantFeatureUpdate(c: Change) {
-	const { key, target } = c.item.featureUpdate!;
+	const { key, target, repo } = c.item.featureUpdate!;
 	c.item.joining = { child: c.item.id, key };
-	c.effects.push({ kind: "merge_feature_target", key, target });
+	c.effects.push({ kind: "merge_feature_target", key, target, repo });
 }
 
-function requestFeatureUpdate(c: Change, target?: string, request?: string, child?: string): boolean {
+function requestFeatureUpdate(c: Change, target?: string, request?: string, child?: string, repo?: string): boolean {
 	const { item } = c;
-	if (!target || !isSha(target) || !canUpdateFeature(item)) return false;
+	if (!target || !isSha(target) || !canUpdateFeature(item, repo)) return false;
 	if (child && !item.jobs?.some(j => j.id === child && activeJob(j) && !j.cancelRequested)) return false;
 	item.question = null;
 	// A CI read already in flight must not replace a later merge-conflict question.
 	if (c.run.step.kind === "ci") c.run.step.attempt++;
-	item.featureUpdate = { key: request ?? `${item.id}:update:${item.revision + 1}`, target, child };
+	item.featureUpdate = { key: request ?? `${item.id}:update:${item.revision + 1}`, target, child, repo };
 	c.state("waiting", { reason: c.run.step.kind === "ci" ? "ci" : "children", sentence: `Updating the feature from ${item.task.base}.`, retryAt: null });
 	if (!item.joining) grantFeatureUpdate(c);
 	return true;
@@ -2468,14 +2587,14 @@ const repair = (job: FeatureJob) => job.ciFix || job.conflictFix;
 function queueRepair(c: Change, task: Omit<FeatureJob["task"], "dependsOn" | "budget">, fix: Pick<FeatureJob, "ciFix" | "conflictFix">) {
 	const { item } = c, plan = item.featurePlan!;
 	const budget = { tokens: Math.min(...plan.subtasks.map(t => t.budget.tokens)) };
-	(item.jobs ??= []).push({ id: childItemId(item.id, plan.version, task.key), task: { ...task, dependsOn: [], budget },
+	(item.jobs ??= []).push({ id: childItemId(item.id, plan.version, task.key), task: { ...task, resolved: item.context && partRun(item.context, task, "repair"), dependsOn: [], budget },
 		start: featureCiBranch(item, task.repo).head, ...fix, state: "draft", spent: noSpend(), head: null, report: "" });
 }
 
-function queueConflictFix(c: Change, conflictFix: NonNullable<FeatureJob["conflictFix"]>, files: string[]) {
-	const base = c.item.task.base;
+function queueConflictFix(c: Change, conflictFix: NonNullable<FeatureJob["conflictFix"]>, files: string[], repo?: string) {
+	const base = repo ? repoOf(c.item, repo).baseRef : c.item.task.base;
 	const title = "Resolve conflicts with " + base;
-	queueRepair(c, { key: "conflict-fix-" + (c.item.revision + 1), title, brief: conflictPlan(base).text,
+	queueRepair(c, { key: "conflict-fix-" + (c.item.revision + 1), title, repo, brief: conflictPlan(base).text,
 		owns: files, acceptance: ["The feature includes " + conflictFix.target + " and its checks pass."] }, { conflictFix });
 	c.say("Queued a part to resolve conflicts with " + base + ".");
 }
@@ -2484,19 +2603,27 @@ function readFeatureCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>) {
 	const { item } = c, branch = featureCiBranch(item, fact.repo), ci = branch.featureCi!;
 	const reading = fact.reading;
 	const current = reading.kind === "read" && reading.head === fact.head && fact.prHead === fact.head;
-	const state = current ? ciState(reading) : "retry";
-	ci.passed = state === "passed";
+	const state = current ? rerunState(c, fact, reading).state : "retry";
+	ci.passed = state === "passed" && !ci.waitForBase;
 	delete ci.key;
-	if (state === "failed" && current && !item.jobs!.some(j => activeJob(j) && j.ciFix)) {
-		const fingerprint = ciFingerprint(reading);
-		ci.repeated = item.jobs!.some(j => j.state === "done" && j.ciFix?.fingerprint === fingerprint && j.task.repo === fact.repo);
-		if (!ci.repeated) {
-			const key = `ci-fix-${item.revision + 1}`;
-			const brief = `Inspect the feature diff with git diff ${branch.seed ?? item.task.base}...${fact.head}.\n\n` +
-				ciFixText(fact.head, reading).slice(0, 10_000);
-			queueRepair(c, { key, title: "Fix failing feature checks", brief, repo: fact.repo,
-				owns: fact.paths ?? [], acceptance: ["The failing feature checks pass."] }, { ciFix: { head: fact.head, fingerprint } });
-			c.say(`Queued a fix for feature CI on ${shortSha(fact.head)}.`);
+	if (ci.waitForBase) {
+		if (current && fact.baseTip && fact.baseTip !== ci.waitForBase && fact.basePassed &&
+			requestFeatureUpdate(c, fact.baseTip, undefined, undefined, fact.repo)) return;
+	} else if (state === "failed" && current && !item.jobs!.some(j => activeJob(j) && j.ciFix)) {
+		if (requestCiRerun(c, fact, reading, true)) return;
+		const fixes = repairChecks(c, fact, reading, ci);
+		if (c.item.question) return;
+		if (fixes) {
+			const fingerprint = ciFingerprint(fixes);
+			ci.repeated = item.jobs!.some(j => j.state === "done" && j.ciFix?.fingerprint === fingerprint && j.task.repo === fact.repo);
+			if (!ci.repeated) {
+				const key = `ci-fix-${item.revision + 1}`;
+				const brief = `Inspect the feature diff with git diff ${branch.seed ?? item.task.base}...${fact.head}.\n\n` +
+					ciFixText(fact.head, fixes).slice(0, 10_000);
+				queueRepair(c, { key, title: "Fix failing feature checks", brief, repo: fact.repo,
+					owns: fact.paths ?? [], acceptance: ["The failing feature checks pass."] }, { ciFix: { head: fact.head, fingerprint } });
+				c.say(`Queued a fix for feature CI on ${shortSha(fact.head)}.`);
+			}
 		}
 	}
 	nextChild(c);
@@ -2608,8 +2735,13 @@ function approveFeature(c: Change, inventory?: PlacementInventory, agents: reado
 	// Admission checked the reconfirmed base against the live head.
 	for (const [alias, sha] of Object.entries(bases)) if (crossRepo(c.item) && c.item.repos!.some(r => r.alias === alias) && /^[0-9a-f]{40}$/.test(sha)) repoOf(c.item, alias).planningBaseSha = sha;
 	const completed = completedKeys(c.item);
-	const unconfirmed = p.subtasks.filter(s => unattendedKeys(p, completed).includes(s.key) && !agents.includes(s.key));
-	if (unconfirmed.length) throw new PlanError(unconfirmed.map(s => `${s.title}: confirm that it runs ${harnessName(s.agent!.harness)}, which works without asking.`).join(" "));
+	if (p.subtasks.some(s => !completed.has(s.key) && subtaskHarness(s) === "codex")) {
+		askPlan(c);
+		return true;
+	}
+	const unattended = unattendedKeys(p, completed);
+	const unconfirmed = p.subtasks.filter(s => unattended.includes(s.key) && !agents.includes(s.key));
+	if (unconfirmed.length) throw new PlanError(unconfirmed.map(s => `${s.title}: confirm that it runs ${harnessName(subtaskHarness(s))}, which works without asking.`).join(" "));
 	if (inventory) c.item.routes = approveRoutes(p, c.item.place, inventory, completed);
 	p.status = "approved";
 	p.approvedAt = c.at;
@@ -2634,6 +2766,12 @@ function runSingle(c: Change) {
 		c.item.repos = c.item.repos!.slice(0, 1);
 	}
 	c.item.mode = "single";
+	c.item.runRole = "builder";
+	if (c.item.context) {
+		const context = c.item.context;
+		context.item = { ...context.item, harness: "windlass", place: runPlace(c.item.place) };
+		c.item.resolved = resolveRun(context, "builder");
+	}
 	c.item.budget = singleAfterPlanning(c.item.singleBudget!, c.item.spent);
 	if (plan && c.item.filedTurn === c.key) {
 		plan.status = "approved";
@@ -2707,12 +2845,12 @@ function askRemoved(c: Change): void {
 }
 
 type Recovery = { policy?: Policy; evidence?: string; target?: string };
-function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, details: Pick<Question, "asked" | "check" | "secret" | "largerSize" | "child" | "criticReason" | "criticFindings"> & Recovery = {}): void {
+function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, details: Pick<Question, "asked" | "check" | "secret" | "largerSize" | "child" | "updateRepo" | "inherited" | "criticReason" | "criticFindings"> & Recovery = {}): void {
 	const { item } = c;
 	// The revision this change gives the item: no two questions of an item share it.
 	const { policy: explicit, evidence = kind === "integration" && item.integration?.url ? text.replace(item.integration.url, "").trim() : text, target, ...fields } = details;
 	const policy = explicit ?? (kind === "integration" || (kind === "feature_update" && cause !== "repeated") || kind === "sandbox_failed" ||
-		kind === "no_change" || kind === "out_of_memory" || kind === "check_environment" ? kind : undefined);
+		kind === "no_change" || kind === "check_environment" ? kind : undefined);
 	const suggested = policy && AUTO_POLICY[policy].flatMap(step => step.choices).find(id => choices.some(choice => choice.id === id));
 	let recommended = choices[0]!.id;
 	if (suggested && suggested !== "rerun_ci") recommended = suggested;
@@ -2755,11 +2893,69 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	return takeChoice(c, question, fact, note);
 }
 
+const replacementAgents: Partial<Record<ChoiceId, HarnessId>> = { use_windlass: "windlass", use_claude: "claude", use_opencode: "opencode" };
+
 function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "answer" }>, note: string | null, auto = false): boolean {
 	const { item } = c;
+	if (question.kind === "run_place" && (fact.choice === "use_hosted" || fact.choice === "wait")) {
+		if (fact.choice === "use_hosted") {
+			item.useHosted = true;
+			return waitForDefaultPlace(c, item.awaitingPlace!, c.at);
+		}
+		return waitForDefaultPlace(c, item.awaitingPlace!);
+	}
+	if ((question.kind === "plan_approval" || question.kind === "replan_approval") && fact.choice === "larger_sandbox") {
+		const plan = item.featurePlan!;
+		for (const task of plan.subtasks) if (task.requestedLargerSize) {
+			task.needs = { ...task.needs, hostedSize: task.requestedLargerSize };
+			task.resolved = partRun(item.context ?? {}, task);
+			delete task.placementProblem;
+			delete task.requestedLargerSize;
+		}
+		plan.version++;
+		askPlan(c);
+		return true;
+	}
+	const harness = replacementAgents[fact.choice];
+	if (question.kind === "plan_approval" && harness) {
+		const plan = item.featurePlan!;
+		for (const task of plan.subtasks) if (subtaskHarness(task) === "codex") {
+			task.agent = { harness };
+			task.resolved = partRun(item.context ?? {}, task);
+			delete task.placementProblem;
+		}
+		plan.version++;
+		askPlan(c);
+		return true;
+	}
 	const refused = question.kind === "placement_refused"
 		? item.jobs?.find(j => j.id === question.child) ?? item.jobs?.find(j => j.placementRefusal && activeJob(j)) ?? item.jobs?.at(-1)
 		: undefined;
+	if (refused && harness) {
+		refused.task.agent = { harness };
+		refused.task.resolved = partRun(item.context ?? {}, refused.task, repair(refused) ? "repair" : "part");
+		delete refused.placementRefusal;
+		delete refused.placement;
+		c.state("waiting", { reason: "children", sentence: "Checking the selected agent.", retryAt: null });
+		dispatchJob(c, refused);
+		return true;
+	}
+	if (refused?.askMachine && (fact.choice === "wait" || fact.choice === "use_hosted")) {
+		if (!refused.route || (fact.choice === "use_hosted" && !refused.offerHosted)) return false;
+		if (fact.choice === "wait") refused.route.waitForMachine = true;
+		else {
+			refused.route = { preferred: { kind: "hosted" }, alternatives: [] };
+			refused.task = { ...refused.task, place: { prefer: "hosted", reason: "The owner chose Hosted for this part." } };
+			refused.task.resolved = partRun(item.context ?? {}, refused.task);
+		}
+		delete refused.askMachine;
+		delete refused.offerHosted;
+		delete refused.placement;
+		delete refused.placementRefusal;
+		c.state("waiting", { reason: "children", sentence: "Checking the selected place.", retryAt: null });
+		dispatchJob(c, refused);
+		return true;
+	}
 	if (fact.choice === "retry" && item.jobs?.length) {
 		retryFeature(c);
 		return true;
@@ -2781,6 +2977,22 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 		return true;
 	}
 	const run = c.run;
+	if (question.inherited && (fact.choice === "again" || fact.choice === "wait")) {
+		const { repo, head, baseTip } = question.inherited;
+		const feature = run.step.kind === "subtasks";
+		const ci = feature ? featureCiBranch(item, repo).featureCi : run.ci;
+		if (!ci) return false;
+		if (ci.head === head) {
+			if (fact.choice === "wait") ci.waitForBase = baseTip;
+			else ci.fixInherited = true;
+		}
+		c.state("waiting", { reason: "ci", sentence: "Checking CI after your decision.", retryAt: c.at });
+		if (feature) {
+			// Dispatch observations may have expired while the question was open.
+			for (const job of item.jobs ?? []) if (activeJob(job) && job.dispatchKey) dispatchJob(c, job);
+		} else c.effects.push({ kind: "poll_ci", key: c.key, head: ci.head, at: c.at });
+		return true;
+	}
 	const resume = question.resume;
 	const resumeWithNote = resume && { ...resume, text: withNote(resume.text, note) };
 	if (question.kind === "integration") return integrationAnswer(flow(c), fact.choice, question.text);
@@ -2809,7 +3021,7 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 		}
 		case "update_feature":
 			if (!fact.target || !isSha(fact.target)) return false;
-			if (!item.parent) return requestFeatureUpdate(c, fact.target);
+			if (!item.parent) return requestFeatureUpdate(c, fact.target, undefined, undefined, question.updateRepo);
 			if (run.step.kind !== "ci" || !run.ci) return false;
 			c.enter("ci");
 			c.state("waiting", { reason: "ci", sentence: "Waiting for the feature branch to update.", retryAt: null });

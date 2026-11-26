@@ -1,4 +1,4 @@
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type GithubIssueOrigin, type ItemPlaceDefaults, type ItemState, type LinearIssueOrigin, type JiraIssueOrigin, type CreateItemInput, type GithubId } from "../contract.js";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type GithubIssueOrigin, type ItemState, type LinearIssueOrigin, type JiraIssueOrigin, type CreateItemInput, type GithubId } from "../contract.js";
 import { commentText } from "./review.js";
 import type { GithubUser } from "../github/app.js";
 
@@ -84,7 +84,6 @@ export function issueMode(note: string, labels: unknown[], enabled = true, quick
 }
 
 export interface IssueBinding {
-	defaultPlace?: ItemPlaceDefaults;
 	modeReason?: string | null;
 	triggerLabel?: string;
 	reactionTarget?: string;
@@ -110,7 +109,6 @@ export interface LinearBinding {
 	via: "label" | "assignment";
 	triggeredAt: number;
 	senderId: string;
-	defaultPlace?: ItemPlaceDefaults;
 	modeReason?: string | null;
 }
 

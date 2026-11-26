@@ -3,13 +3,16 @@ import { modelWords } from "../lib/models";
 import { MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemBudget, type SubtaskBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
-import { ChevronIcon, InfoIcon, WarnIcon } from "../components/Icons";
+import { ArrowDownIcon, ChevronIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { ItemSpend } from "../components/ItemSpend";
 import { FOLD_WORDS, FoldList, FoldToggle, LongText, PathList } from "../components/Fold";
 import { showsSubtasks } from "./Subtasks";
 import { Menu, type MenuItem, type MenuSpec } from "../components/ui/Menu";
 import { AgentGlyph, Pill } from "../components/ui/Pill";
 import { machineLabel } from "../lib/machines";
+import { HARNESS_NAMES } from "../lib/acp";
+import { SOURCE_WORDS, runModelName, sourceOf } from "../lib/run";
+import type { ResolvedRun } from "../../../server/src/factory/resolve-run";
 import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placementFit, placementProblem, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
 import { compact, plural } from "../lib/format";
 import { subscriptionSpend } from "../lib/item-agent";
@@ -92,6 +95,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 			<p className="item-question-text">
 				{single ? view.question.text : <>{replan ? `${view.replanWhy ? view.replanWhy + ". " : ""}Review the revised plan` : "Review the plan"}: {tasks} subtasks{finished ? " to run" : ""}, {compact(totalTokens)} of {compact(plan.budget.tokens)} tokens.</>}
 			</p>
+			{!single && <PlanJump view={view} plan={plan} replan={replan} />}
 
 			{!single && view.question.criticReason && !view.question.criticFindings && <p className="callout callout-warn">{view.question.criticReason}</p>}
 			{view.question.criticFindings && <div className="callout callout-warn"><div>Critic recommends revision<ul>{view.question.criticFindings.map((finding, i) => <li key={i}>{finding}</li>)}</ul></div></div>}
@@ -195,6 +199,45 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 	);
 }
 
+/** Parts a re-plan adds and drops, against the subtasks already started or finished. */
+export function replanChanges(view: Pick<ItemView, "children" | "completedSubtasks">, plan: Pick<FeaturePlan, "subtasks">): { added: string[]; dropped: string[] } {
+	const started = new Set([...(view.completedSubtasks ?? []), ...(view.children ?? []).flatMap((child) => (child.parent ? [child.parent.key] : []))]);
+	const keys = new Set(plan.subtasks.map((task) => task.key));
+	return {
+		added: plan.subtasks.filter((task) => !started.has(task.key)).map((task) => task.title),
+		dropped: (view.children ?? []).filter((child) => child.parent && !keys.has(child.parent.key) && !["done", "cancelled", "failed"].includes(child.state)).map((child) => child.title),
+	};
+}
+
+function changeWords({ added, dropped }: { added: string[]; dropped: string[] }): string | null {
+	const list = (titles: string[]) => titles.slice(0, 2).join("; ") + (titles.length > 2 ? ` and ${titles.length - 2} more` : "");
+	const words = [added.length ? `Adds ${plural(added.length, "part")}: ${list(added)}` : null, dropped.length ? `Drops ${plural(dropped.length, "part")}: ${list(dropped)}` : null].filter(Boolean);
+	return words.length ? `${words.join(". ")}.` : null;
+}
+
+/** The plan sits below the question: a clear way to it, and for a re-plan what changed. */
+function PlanJump({ view, plan, replan }: { view: ItemView; plan: FeaturePlan; replan: boolean }) {
+	const changed = replan ? changeWords(replanChanges(view, plan)) : null;
+	const show = () => {
+		const target = document.getElementById(`feature-plan-${plan.version}`);
+		if (!target) return;
+		target.scrollIntoView({ behavior: "smooth", block: "start" });
+		target.classList.remove("plan-flash");
+		void target.offsetWidth;
+		target.classList.add("plan-flash");
+		target.querySelector<HTMLElement>("h2")?.focus({ preventScroll: true });
+	};
+	return (
+		<div className="plan-jump">
+			{changed ? <p className="plan-jump-changed">{changed}</p> : null}
+			<button type="button" className="button button-outline plan-jump-button" onClick={show}>
+				{replan ? "Read the revised plan" : "Read the plan"}
+				<ArrowDownIcon size={12} />
+			</button>
+		</div>
+	);
+}
+
 export function questionParts(question: Pick<FeaturePlan["questions"][number], "text" | "why">): { ask: string; why: string | null } {
 	if (question.why) return { ask: question.text, why: question.why };
 	// Without separate background, keep the question sentence visible.
@@ -223,7 +266,9 @@ function PlanAsk({ question, edit }: { question: FeaturePlan["questions"][number
 		return (
 			<div className="plan-ask plan-ask-answered">
 				<p className="plan-ask-text">{ask}</p>
-				<p className="plan-ask-answer">{question.answeredBy === "critic" && "Answered by the reviewer: "}{question.answer}</p>
+				<p className="plan-ask-answer">
+					<span className="plan-ask-by">{question.answeredBy === "critic" ? "The plan reviewer's answer" : "Your answer"}</span> {question.answer}
+				</p>
 				{background}
 			</div>
 		);
@@ -293,7 +338,7 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 	const body = `${heading}-body`;
 	return (
 		<section className="usage-section feature-plan" aria-labelledby={heading}>
-			<h2 className="usage-title" id={heading}>
+			<h2 className="usage-title" id={heading} tabIndex={-1}>
 				The plan
 				<span className="usage-count">
 					v{plan.version} · {plan.status}
@@ -313,6 +358,8 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 							<Inline text={plan.spec.goal} />
 						</p>
 					</div>
+					{/* What was answered stays in sight while the rest of the plan is folded. */}
+					{plan.questions.filter((question) => question.answer).map((question) => <PlanAsk key={question.id} question={question} />)}
 					<p className="plan-folded">
 						<FoldToggle open={false} controls={body} label={FOLD_WORDS.all} onToggle={() => setOpened(true)} />
 						<span className="tone-dim">{[...specParts(plan), plural(plan.subtasks.length, "subtask brief")].join(" · ")}</span>
@@ -370,9 +417,11 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 		const draft = editing && task.key in review.agents ? review.agents[task.key] ?? undefined : task.agent;
 		const later = running && !children.has(task.key);
 		const machine = preferredMachine(editing ? edited : task, parent, machines);
-		const harness = draft?.harness ?? "windlass";
+		// With no agent of its own, a part runs the resolved default: the feature's, the repository's or yours.
+		const inherited = task.agent ? undefined : task.resolved;
+		const harness = draft?.harness ?? inherited?.agent ?? "windlass";
 		return {
-			draft,
+			draft, inherited,
 			changed: editing && agentChanged(task, review.agents[task.key]),
 			editable: (editing && !done.has(task.key)) || later,
 			machine,
@@ -789,6 +838,7 @@ function SubtaskPlace({ task, child, row, editing, disabled }: { task: PlanSubta
 }
 
 interface AgentRow {
+	inherited: ResolvedRun | undefined;
 	hostedKeys: ReturnType<typeof useHostedProviders>;
 	keyProfile: boolean;
 	draft: SubtaskAgent | undefined;
@@ -811,11 +861,16 @@ function UnattendedTag() {
 }
 
 function agentMenu(row: AgentRow, title: string): MenuSpec {
-	const current = row.draft?.harness ?? "windlass";
+	const current = row.draft?.harness ?? null;
+	const inherited = row.inherited;
 	return {
 		label: `Agent for ${title}`,
 		width: 300,
 		groups: [
+			{
+				id: "default",
+				items: [{ id: "default", label: "The default", description: inherited ? `${HARNESS_NAMES[inherited.agent]} · ${runModelName(inherited, inherited.agent === "windlass" ? row.list : null)}, ${SOURCE_WORDS[sourceOf(inherited, ["agent", "model"])]}.` : "What the feature runs with.", wrap: true, checked: current === null, onSelect: () => row.onAgent(null) }],
+			},
 			{
 				id: "agents",
 				items: agentChoices(row.machine, row.hostedKeys, row.keyProfile).map((choice) => ({
@@ -823,11 +878,11 @@ function agentMenu(row: AgentRow, title: string): MenuSpec {
 					label: choice.name,
 					description: choice.problem ?? (worksWithoutAsking(choice.id)
 						? row.machine ? `Runs on ${machineLabel(row.machine)} without asking.` : `Uses your ${choice.id === "claude" ? "Anthropic" : "API"} key.`
-						: choice.id === "windlass" ? "On the feature's model unless you choose one." : undefined),
+						: undefined),
 					disabled: choice.problem !== null,
 					wrap: true,
 					checked: current === choice.id,
-					onSelect: () => row.onAgent(choice.id === "windlass" ? null : { harness: choice.id }),
+					onSelect: () => row.onAgent({ harness: choice.id }),
 				})),
 			},
 		],
@@ -856,8 +911,11 @@ function effortMenu(row: AgentRow, harness: HarnessId, efforts: string[], model:
 }
 
 function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: string; child: ItemSummary | null; row: AgentRow; editing: boolean; disabled: boolean }) {
-	const harness = row.draft?.harness ?? "windlass";
-	const parts = agentParts(row.draft, row.list);
+	const { inherited } = row;
+	const shown = row.draft ?? (inherited && { harness: inherited.agent, ...(inherited.model && { model: inherited.model }), ...(inherited.effort && { effort: inherited.effort }) });
+	const harness = shown?.harness ?? "windlass";
+	const parts = agentParts(shown, row.list);
+	const why = !row.draft && inherited ? <span className="plan-agent-why"> — {SOURCE_WORDS[sourceOf(inherited, ["agent", "model", "effort"])]}</span> : null;
 	if (child?.agent) {
 		const ran = cleanAgent({ harness: child.agent.harness, model: child.agent.model, ...(child.agent.effort && { effort: child.agent.effort }) });
 		const words = agentParts(ran ?? { harness: child.agent.harness, model: child.agent.model }, null);
@@ -887,6 +945,7 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 						<Menu spec={agentMenu(row, title)} trigger={(props) => <Pill {...props} outlined disabled={disabled} dot={row.changed ? "changed" : null} dotLabel={row.changed ? "changed, not saved" : undefined} className="plan-place-pick" icon={<AgentGlyph harness={harness} size={11} />} aria-label={`Agent: ${parts.name}`}>{parts.name}</Pill>} />
 						<Menu spec={modelMenu(row, harness)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Model: ${parts.model}`}>{parts.model}</Pill>} />
 						{efforts.length > 0 || row.draft?.effort ? <Menu spec={effortMenu(row, harness, efforts, parts.model)} trigger={(props) => <Pill {...props} disabled={disabled} className="plan-place-pick plan-place-allow" aria-label={`Effort: ${parts.effort ?? "default"}`}>{parts.effort ? `${parts.effort} effort` : "Default effort"}</Pill>} /> : null}
+						{why}
 						{parts.unattended ? <UnattendedTag /> : null}
 					</span>
 				) : (
@@ -894,6 +953,7 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 						<AgentGlyph harness={harness} size={11} inline />
 						<strong className="plan-agent-name">{parts.name}</strong>
 						<span className="tone-dim"> · {parts.model}{parts.effort ? ` · ${parts.effort} effort` : ""}</span>
+						{why}
 						{parts.unattended ? <UnattendedTag /> : null}
 					</>
 				)}

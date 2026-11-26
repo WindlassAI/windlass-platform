@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Dialog } from "../components/Dialog";
 import { ApiTokens } from "../components/ApiTokens";
 import { SettingsSecrets } from "../components/Secrets";
-import { DefaultsSection } from "../components/Defaults";
+import { DefaultAgent } from "../components/RunSettings";
 import { CopyButton } from "../components/Copy";
 import { GithubSettings } from "../components/GithubSettings";
 import { LinearSettings } from "../components/LinearSettings";
@@ -12,31 +12,30 @@ import { ModelProviders } from "../components/ModelProviders";
 import { PersonalServers } from "../components/PersonalServers";
 import { PlanSection } from "../components/Plan";
 import { machineLabel } from "../lib/machines";
-import { startingChoices } from "../lib/repositories";
+import { runOf } from "../lib/run";
 import { settingsKeyUpgrade, useMachines } from "./Machines";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { useAccount, useModels } from "../state/hooks";
+import { useAccount } from "../state/hooks";
 import { useGithub } from "../state/github";
 import { Check } from "../components/ui/Check";
 import { SettingsGroup, SettingsLayout, SettingsPending, SettingsRefreshError } from "../components/SettingsGroups";
 
 export function Settings() {
-	const { client, platform } = useApp();
+	const { platform } = useApp();
 	const auth = useAuth();
 	const github = useGithub();
 	const account = useAccount();
-	const models = useModels();
 	const { settings } = account;
 	const info = platform.info;
 	const machines = useMachines(!!info?.machines);
-	const choices = startingChoices(settings?.defaults ?? null, info, models.list, "account");
+	const hostedProfile = runOf({ account: settings?.defaults, item: { place: "hosted" }, machines: machines.list }).profile;
+	const secretsProfile = info?.profiles.some((p) => p.id === hostedProfile && p.available) ? hostedProfile : null;
 
 	const upgrades = machines.list?.flatMap(machine => {
 		const note = settingsKeyUpgrade(machine);
 		return note ? [<p className="field-note" key={machine.machineId}>{machineLabel(machine)}: {note}</p>] : [];
 	}) ?? [];
-	const paired = machines.list?.length ?? null;
 
 	return (
 		<main className="home usage repo settings">
@@ -63,38 +62,15 @@ export function Settings() {
 					) : null}
 				</SettingsGroup>
 
-				<SettingsGroup id="settings-defaults" title="Defaults" lede="Used wherever a repository has no default of its own. A choice made at launch always comes first.">
-					{settings === null ? (
-						<SettingsPending subject="Your settings" error={account.error} reload={account.reload} />
-					) : (
-						<DefaultsSection
-							id="settings-defaults-fields"
-							defaults={settings.defaults}
-							whose="account"
-							under={null}
-							account={account}
-							models={models}
-							save={(change) => client.user(auth).saveAccountDefaults(change)}
-							onSaved={(next) => account.replace({ ...settings, defaults: next })}
-
-						/>
-					)}
-					{info?.machines ? (
-						<div className="settings-row">
-							<span className="settings-row-name">My machines</span>
-							{paired !== null ? <span className="settings-row-meta">{paired === 0 ? "none paired" : `${paired} paired`}</span> : null}
-							<a className="link settings-row-end" {...linkProps({ name: "machines" })}>
-								{paired === 0 ? "Add a machine →" : "Manage →"}
-							</a>
-						</div>
-					) : null}
-				</SettingsGroup>
-
 				<SettingsGroup
 					id="settings-models"
 					title="Models"
-					lede={<>Hosted agents use these. Keys stay on Windlass. <a className="link" href="/docs/settings#model-providers">How keys are used →</a></>}
+					lede={<>The agent and model your work uses, unless a repository or an item says otherwise. Keys stay on Windlass. <a className="link" href="/docs/settings#model-providers">How keys are used →</a></>}
 				>
+					<section className="usage-section" aria-label="Default agent">
+						<h3 className="usage-title">Default agent</h3>
+						{settings === null ? <SettingsPending subject="Your settings" error={account.error} reload={account.reload} /> : <DefaultAgent account={account} />}
+					</section>
 					<ModelProviders />
 					{upgrades.length > 0 && <div className="settings-row settings-row-notes">{upgrades}</div>}
 				</SettingsGroup>
@@ -102,7 +78,7 @@ export function Settings() {
 				{settings !== null ? (
 					<SettingsGroup id="settings-tools" title="Tools" lede="MCP servers every agent gets, and the secrets they read.">
 						<PersonalServers settings={settings} onChanged={account.replace} />
-						<SettingsSecrets profile={choices.profile} onChanged={account.reload} />
+						<SettingsSecrets profile={secretsProfile} onChanged={account.reload} />
 					</SettingsGroup>
 				) : null}
 

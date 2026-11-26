@@ -9,6 +9,7 @@ import {
 	applyItem,
 	emptyView,
 	fromSnapshot,
+	openStep,
 	sessionUsage,
 	toolBlocks,
 	type Block,
@@ -787,6 +788,25 @@ describe("subagents (a real turn of Windlass 0.3.0 over ACP: acp-subagents)", ()
 		const [, , , background] = subagents(reduce(feed.slice(0, returned + 1)));
 		expect(background).toMatchObject({ state: "done" });
 		expect(background?.subagent?.state).toBe("running");
+	});
+
+	it("count toward the running turn as their calls end, while the step that waits on them counts when it ends", () => {
+		const at = (type: string, nth = 0) => feed.filter((entry) => "item" in entry && entry.item.kind === "windlass" && entry.item.event.type === type).map((entry) => feed.indexOf(entry))[nth]!;
+		// The first subagent has started and none of its calls has ended: nothing is counted, and step 1 is open.
+		const started = reduce(feed.slice(0, at("spawn.started") + 1));
+		expect(sessionUsage(started)).toMatchObject({ inputTokens: 0, outputTokens: 0 });
+		expect(openStep(started)).toEqual({ turn: 1, step: 1 });
+		// Its total arrives with spawn.ended, before the step that started it ends.
+		const first = reduce(feed.slice(0, at("spawn.ended") + 1));
+		expect(sessionUsage(first)).toMatchObject({ inputTokens: 1840, cachedInputTokens: 1024, outputTokens: 41 });
+		expect(openStep(first)).toEqual({ turn: 1, step: 1 });
+		// A subagent still running counts its calls that ended: the fourth's last call, before its spawn.ended.
+		const childEnded = feed.findLastIndex((entry) => "item" in entry && entry.item.kind === "windlass" && entry.item.event.type === "child.event" && (entry.item.event.event as { type?: string; data?: { usage?: unknown } }).type === "step.ended" && (entry.item.event.event as { data?: { usage?: unknown } }).data?.usage != null);
+		expect(sessionUsage(reduce(feed.slice(0, childEnded + 1))).inputTokens).toBe(1840 + 1210);
+		// Once the turn ends, its own total counts, and no step is open.
+		const done = reduce(feed);
+		expect(openStep(done)).toBeNull();
+		expect(sessionUsage(done).inputTokens).toBe(turn(done).end?.usage?.inputTokens);
 	});
 
 	it("that are still running when their turn ends were cut off, and so is what they had open", () => {

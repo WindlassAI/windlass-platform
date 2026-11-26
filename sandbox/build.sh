@@ -77,7 +77,13 @@ ln "$binary" "$context/windlass" 2>/dev/null || cp "$binary" "$context/windlass"
 [ "$context_only" = false ] || exit 0
 
 echo "build.sh: building $IMAGE with $binary" >&2
-docker build --target "$variant" --progress=plain --label "$LABEL" --tag "$IMAGE" "$context" >&2
+# CI has already warmed the selected Buildx builder with this variant.
+if [ -n "${WLP_CI_BASE_IMAGE:-}" ]; then
+  set -- buildx build --load
+else
+  set -- build
+fi
+docker "$@" --target "$variant" --progress=plain --label "$LABEL" --tag "$IMAGE" "$context" >&2
 
 version=$(docker run --rm --label "$LABEL" --name "wlp-build-$$" --network none "$IMAGE" windlass --version)
 echo "build.sh: installed $version" >&2

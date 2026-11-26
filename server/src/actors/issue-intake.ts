@@ -1,12 +1,10 @@
-/** The owner queue, reservations, cap and saved policy shared by issue intakes. */
+/** The owner queue, reservations and daily cap shared by issue intakes. */
 
 import { serviceParams } from "../auth.js";
 import type { JiraReservation } from "./jira-site.js";
 import { mayUse } from "../access.js";
-import { readAccountDefaults } from "../account-defaults.js";
 import { config } from "../config.js";
 import type { CreateItemInput, GithubId, ItemSummary, UserProfile } from "../contract.js";
-import { savedPlace } from "../factory/default-place.js";
 import { issueMode, linearIdentifier, trackerId, trackerName, refusals, taskOfTracker, type Intake, type JiraFiling, type LinearFiling, type TrackerFiled } from "../factory/intake.js";
 import { untrustedWords } from "../factory/untrusted.js";
 import { githubApp } from "../github/app.js";
@@ -14,7 +12,6 @@ import { isGithubId } from "../github/ids.js";
 import { GithubProblem, resolveRepository } from "../github/repos.js";
 import { QUICK_LABELS } from "../linear/webhook.js";
 import { accountLimits } from "../user-limits.js";
-import { readDefaults } from "../repository-defaults.js";
 import { isActorGone, itemActor } from "./internal.js";
 import type { ItemsCtx, ItemsState } from "./user-items.js";
 
@@ -58,16 +55,8 @@ export async function quotaRefusal(c: ItemsCtx, resuming?: string, from = "GitHu
 	return null;
 }
 
-/** What the saved defaults of a repository and of the account say of an item filed from an issue there. */
-export async function intakePolicy(c: ItemsCtx, repositoryId: GithubId) {
-	const defaults = await readDefaults(c.db, "github:" + repositoryId);
-	const account = await readAccountDefaults(c.db);
-	return { defaultPlace: savedPlace(defaults, account), profile: defaults.profile ?? account.profile ?? undefined, model: defaults.model ?? account.model ?? undefined };
-}
-
-/** The item an issue is filed as: its task and mode, in the repository's base, with the saved profile and model; started at once only when its text is the person's own. */
-export function intakeInput(task: { title: string; body: string; acceptance: string[] }, mode: "single" | "orchestrate", repository: { id: GithubId; branch: string }, policy: Awaited<ReturnType<typeof intakePolicy>>, start: boolean, key: string): CreateItemInput {
-	return { ...task, mode, repository, profile: policy.profile, model: policy.model, start, idempotencyKey: key };
+export function intakeInput(task: { title: string; body: string; acceptance: string[] }, mode: "single" | "orchestrate", repository: { id: GithubId; branch: string }, start: boolean, key: string): CreateItemInput {
+	return { ...task, mode, repository, start, idempotencyKey: key };
 }
 
 export const isEnded = (item: Pick<ItemSummary, "state">) => item.state === "done" || item.state === "failed" || item.state === "cancelled";
@@ -128,14 +117,13 @@ export async function fileTrackerIssue(c: ItemsCtx, f: LinearFiling | SiteJiraFi
 	if (cap) return { kind: "refused", reason: cap, dailyCap: true };
 
 	const key = keyPrefix + generation;
-	const policy = await intakePolicy(c, repository.id);
 	const trusted = "owner" in f && issue.creator?.id === f.owner.linearUserId;
 	const author = trackerName(issue.creator?.name), sender = trackerName(trigger.sender.name);
 	const { task } = taskOfTracker({ ...issue, body: issue.description, author, trusted }, tracker);
 	const source = { id: issue.id, identifier: issue.identifier, url: issue.url, author };
-	const fields = { defaultPlace: policy.defaultPlace, modeReason: bugType ? "This is a Jira bug, so it runs in Quick mode without a plan." : modeReason,
+	const fields = { modeReason: bugType ? "This is a Jira bug, so it runs in Quick mode without a plan." : modeReason,
 		generation, via: trigger.via, triggeredAt: trigger.at, senderId: trigger.sender.id };
-	const input = intakeInput(task, mode, { id: repository.id, branch: repository.defaultBranch }, policy, trusted, key);
+	const input = intakeInput(task, mode, { id: repository.id, branch: repository.defaultBranch }, trusted, key);
 	let intake: Intake;
 	if ("project" in f) {
 		const site = c.client().jiraSite.get([f.project.siteId], { params: serviceParams() });
