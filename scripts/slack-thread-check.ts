@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import type { FactoryItem } from "../server/src/factory/types.js";
-import { slackBinding } from "../server/src/factory/intake.js";
 import { SlackStandin } from "./slack-standin.js";
 
 function store(path: string) {
@@ -26,6 +25,7 @@ const workspace = store(":memory:");
 const origin = "http://127.0.0.1:5173";
 try {
 	Object.assign(process.env, slack.env, { WLP_SECRET: randomBytes(32).toString("hex"), WLP_WEB_ORIGINS: origin });
+	const { slackBinding } = await import("../server/src/factory/intake.js");
 	const { slackEffects, performSlackWrite } = await import("../server/src/slack/thread.js");
 	const { workspaceOps, WORKSPACE_TABLES } = await import("../server/src/actors/slack-workspace.js");
 	const { issueSlackState, slackCallbackResponse } = await import("../server/src/slack/connect.js");
