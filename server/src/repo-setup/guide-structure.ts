@@ -3,7 +3,7 @@ import { isSetupSource } from "./source-path.js";
 
 export const requiredSections = ["## Quick commands", "## Key files"];
 
-export function requireGuideStructure(path: string, lines: string[], files: ReadonlySet<string>) {
+export function requireGuideStructure(path: string, lines: string[], files: ReadonlySet<string>, existing = false) {
 	const root = path === "AGENTS.md";
 	const folder = path.slice(0, path.lastIndexOf("/") + 1);
 	// One verified nonblank line per tracked source file under the guide, clamped to 8–30 at root or 8–12 in folders.
@@ -36,5 +36,6 @@ export function requireGuideStructure(path: string, lines: string[], files: Read
 		}
 	}
 	const count = lines.filter(line => line.trim()).length;
-	if (count < minimum) throw Error(`${path}: only ${count} verified nonblank lines remain. Provide at least ${minimum} with line citations.${root ? "" : " You can omit this folder."}`);
+	// An existing guide only needs what is missing, not padding up to a size.
+	if (!existing && count < minimum) throw Error(`${path}: only ${count} verified nonblank lines remain. Provide at least ${minimum} with line citations.${root ? "" : " You can omit this folder."}`);
 }

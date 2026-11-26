@@ -200,6 +200,8 @@ export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFil
 		let quickCommands = false;
 		const kept: string[] = [];
 		let skillIssue = "";
+		// Guides are refused whole: cutting single lines leaves broken structure the model never sees.
+		const refused: string[] = [];
 		for (const [i, line] of proposed.entries()) {
 			const claims = cited.filter(c => c.ref.line === i + 1);
 			const sources = claims.map(({ ref }) => decisions.find(n => n.noteId === ref.noteId));
@@ -218,7 +220,7 @@ export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFil
 			else if (claims.length && !supportsCommands(line, proofs, ctx, shellLines.has(i + 1), quickCommands)) issue = "The cited evidence does not support the command.";
 			if (issue) {
 				ctx.onRefusedLine?.(path, i + 1, issue === "Contains private or excluded content." ? "[redacted]" : line, issue);
-				if (!skill) continue;
+				if (!skill) { refused.push(`line ${i + 1}: ${issue.replace(/\.$/, "")}`); continue; }
 				skillIssue = `Line ${i + 1}: ${issue}`;
 				break;
 			}
@@ -231,7 +233,10 @@ export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFil
 				continue;
 			}
 			skills.set(path, "static only");
-		} else requireGuideStructure(path, kept, repoFiles);
+		} else {
+			if (refused.length) throw Error(`${path}: fix or remove these lines, then file the whole guide again: ${refused.slice(0, 8).join("; ")}${refused.length > 8 ? `; and ${refused.length - 8} more` : ""}.`);
+			requireGuideStructure(path, kept, repoFiles, old.size > 0);
+		}
 		files.set(path, kept.join("\n").trimEnd() + "\n");
 	}
 	if (allowed.has("AGENTS.md") && !ctx.revision) throw Error("Include the root AGENTS.md guide.");

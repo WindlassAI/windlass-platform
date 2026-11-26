@@ -231,13 +231,16 @@ test("only verified guide lines get citations, and filenames and reasons stay ou
 	file.lines[0].evidence.file = "package.json";
 	file.lines.push(...[4, 5].map(line => ({ line, noteId: "team", evidence: { file: "package.json", line: 1 } })));
 	const validate = (f = file) => validateDraft({ ...base, files: [f] }, ctx);
-	const draft = validate();
+	assert.throws(() => validate(), /fix or remove these lines.*line 4: missing script "nope".*line 5: missing path unsupported\.sh.*line 6: A new instruction needs a repository citation\.$/);
+	const clean = setupGuide("", "# Guide", "Use `npm run lint`.");
+	clean.lines[0].evidence.file = "package.json";
+	const draft = validate(clean);
 	assert.doesNotMatch(draft.files.get("AGENTS.md")!, /nope|unsupported|Missing proof/);
 	assert.deepEqual(draft.decisions[0]?.uses, [{ path: "AGENTS.md", line: 3, evidence: "package.json:1" }]);
-	assert.throws(() => validate({ ...file, path: "../AGENTS.md" }));
-	assert.throws(() => validate({ ...file, content: "x".repeat(13 * 1024) }));
-	assert.throws(() => validate({ ...file, content: file.content + "saved-value" }));
-	assert.throws(() => validateDraft({ ...base, files: [file], notes: [] }, ctx));
+	assert.throws(() => validate({ ...clean, path: "../AGENTS.md" }));
+	assert.throws(() => validate({ ...clean, content: "x".repeat(13 * 1024) }));
+	assert.throws(() => validate({ ...clean, content: clean.content + "saved-value" }));
+	assert.throws(() => validateDraft({ ...base, files: [clean], notes: [] }, ctx));
 	const { body, privateBody } = setupBodies(draft, { ...ctx, repository: { owner: "team", url: "https://github.com/team/project" } as import("../server/src/github/publish.js").StoredRepository });
 	assert.match(body, /1 line from 1 imported note/);
 	assert.doesNotMatch(body, /local-note|package.json|AGENTS.md:3/);
@@ -285,9 +288,7 @@ test("team note uses Bun script definitions, tracked globs and flags at the cite
 	for (const [line, citations] of [[note, [3]], [note.replace("test:e2e", "test:nope"), [3, 4]],
 		["Use `--preload`.", [4]], ["Use `--pre`.", [3]], ["Use `*.missing.test.ts`.", [3]], ["Use `*.missing`.", [3]],
 		[note.replace("test/unit-preload.ts", "test/missing.ts"), [3, 4]]] as const) {
-		const rejected = validate(line, [...citations]);
-		assert.deepEqual(rejected.decisions[0].uses, []);
-		assert.equal(rejected.decisions[0].verdict, "stale", line);
+		assert.throws(() => validate(line, [...citations]), /line 4: (?:The cited evidence does not support the command|missing)/, line);
 	}
 });
 
@@ -339,11 +340,15 @@ test("a five-source library can file an eight-line guide with just commands and 
 	const file = (text: string, paths: string[]) => validateDraft({ score: answers().slice(0, 3), notes: [],
 		files: [{ kind: "guide", path: "AGENTS.md", content: text, lines }] }, { ...ctx, paths });
 	assert.equal(file(content, paths).files.get("AGENTS.md"), content);
-	for (const tail of ["## Leave to CI", "## Leave to CI\nRun the release matrix."])
-		assert.throws(() => file(content + tail, paths), /## Leave to CI is empty.*leave it out/);
+	assert.throws(() => file(content + "## Leave to CI", paths), /## Leave to CI is empty.*leave it out/);
+	assert.throws(() => file(content + "## Leave to CI\nRun the release matrix.", paths), /line 10: A new instruction needs a repository citation/);
 	const many = Array.from({ length: 30 }, (_, i) => `lib/f${i}.js`);
 	assert.equal(file(content, [...paths, ...many.map(p => "vendor/" + p)]).files.get("AGENTS.md"), content);
 	assert.throws(() => file(content, [...paths, ...many]), /only 8 verified nonblank lines remain.*at least 30/);
+	// An existing root guide only adds what is missing: no minimum.
+	const existing = validateDraft({ score: answers().slice(0, 3), notes: [], files: [{ kind: "guide", path: "AGENTS.md", content, lines }] },
+		{ ...ctx, paths: [...paths, ...many, "AGENTS.md"], read: new Map([...read, ["AGENTS.md", "# Lint library"]]) });
+	assert.equal(existing.files.get("AGENTS.md"), content);
 });
 
 // Tracked paths and cited source lines from windlass-evals/wlp-test-c-lint at 91984f7.
@@ -395,8 +400,9 @@ test("command evidence matches the install, saved command, workflow step or scri
 		const dropped: { path: string; line: number; text: string; reason: string }[] = [];
 		const ctx = { request: { areas: [], later: 0, noteIds: [], previous: null }, notes: [], owner: "team", host: "github.com", paths, read, savedCommands,
 			redact: (s: string) => s, onRefusedLine: (path: string, line: number, text: string, reason: string) => dropped.push({ path, line, text, reason }) };
-		const result = validateDraft({ score: answers().slice(0, 3), files: [{ ...guide, lines }] }, ctx);
-		assert.equal(result.files.get(guide.path)!.includes("Run `" + command + "`."), pass, command + " " + JSON.stringify(evidence));
+		const filing = () => validateDraft({ score: answers().slice(0, 3), files: [{ ...guide, lines }] }, ctx);
+		if (pass) assert.ok(filing().files.get(guide.path)!.includes("Run `" + command + "`."), command + " " + JSON.stringify(evidence));
+		else assert.throws(filing, /line 4:/, command + " " + JSON.stringify(evidence));
 		assert.deepEqual(dropped.map(({ path, line, text }) => ({ path, line, text })), pass ? [] : [{ path: guide.path, line: 4, text: "Run `" + command + "`." }]);
 	};
 	for (const [command, file] of [["npm ci", "package-lock.json"], ["npm install", "package.json"], ["pnpm install", "pnpm-lock.yaml"],
@@ -418,7 +424,7 @@ test("command evidence matches the install, saved command, workflow step or scri
 	verify("echo first", { file: workflow, line: 8 }, false);
 });
 
-test("guide minimums and sections are checked after filtering unsupported lines", () => {
+test("guide minimums and sections are checked, and unsupported lines refuse the guide", () => {
 	const ctx = { request: { areas: ["src", "test"], later: 1, noteIds: [], previous: null }, notes: [], owner: "team", host: "github.com",
 		paths: ["README.md", ...Array.from({ length: 30 }, (_, i) => `src/f${i}.ts`)], read: new Map([["README.md", "Working here."]]), redact: (s: string) => s };
 	const args = { score: answers().slice(0, 3), notes: [] };
@@ -428,9 +434,11 @@ test("guide minimums and sections are checked after filtering unsupported lines"
 	const file = (files: typeof root[]) => validateDraft({ ...args, files }, ctx);
 	assert.equal(file([root, area]).files.size, 2);
 	assert.throws(() => file([{ ...root, content: root.content.split("## Handoff")[0] }]), /AGENTS.md: only .*at least 30/);
-	assert.throws(() => file([root, { ...area, lines: area.lines.filter(r => ![4,11].includes(r.line)) }]), /src\/AGENTS.md: only .*at least 12/);
+	assert.throws(() => file([root, { ...area, lines: area.lines.filter(r => ![4,11].includes(r.line)) }]), /src\/AGENTS.md: fix or remove these lines.*line 4.*line 11/);
 	assert.throws(() => file([root, { ...area, content: area.content.replace("## Quick commands", "## Other") }]), /include ## Quick commands/);
-	assert.throws(() => file([root, { ...area, lines: area.lines.filter(r => r.line !== 8) }]), /three to five key files/);
+	assert.throws(() => file([root, { ...area, lines: area.lines.filter(r => r.line !== 8) }]), /fix or remove these lines, then file the whole guide again: line 8:/);
+	const twoKeyFiles = area.content.replace("- `./f2.ts` defines the third fixture.\n", "");
+	assert.throws(() => file([root, { ...area, content: twoKeyFiles, lines: area.lines.filter(r => r.line !== 8).map(r => ({ ...r, line: r.line > 8 ? r.line - 1 : r.line })) }]), /three to five key files/);
 	const smallArea = { ...area, content: area.content.split("## Non-obvious patterns")[0] };
 	const paths = ctx.paths.map((p, i) => i > 3 ? p.replace("src/", "src-other/") : p);
 	assert.equal(validateDraft({ ...args, files: [root, smallArea] }, { ...ctx, paths }).files.size, 2);
