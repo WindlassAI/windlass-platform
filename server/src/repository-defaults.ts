@@ -6,15 +6,14 @@ import { startPlaceProblem } from "./start-place.js";
 const ACCOUNT = "account";
 const AUTONOMY_FIELDS = ["autoApprovePlans", "autoMergeSingles", "waitForCiOnEachPart"] as const;
 
-/** Thrown for defaults that cannot be saved; `message` is fit to show, `code` is the UserError's. */
 /** This module is bundled by the web app too, so it throws a plain error that the server's clientError turns into a `limit` refusal. */
 export class RepositoryLimit extends Error {
 	name = "RepositoryLimit";
 }
 
 /** At the cap, a new repository's settings are refused: older repositories' saved settings are never dropped to make room. */
-export async function refuseAtRepositoryCap(db: { execute(sql: string, ...args: never[]): Promise<unknown[]> }, table: string, project: string, max: number, what: string): Promise<void> {
-	const [row] = await db.execute(`SELECT (SELECT COUNT(*) FROM ${table} WHERE project = ?) AS known, (SELECT COUNT(*) FROM ${table} WHERE project != 'account') AS total`, project as never) as Array<{ known: number; total: number }>;
+export async function refuseAtRepositoryCap(db: DefaultsDb, table: string, project: string, max: number, what: string): Promise<void> {
+	const [row] = await db.execute<{ known: number; total: number }>(`SELECT (SELECT COUNT(*) FROM ${table} WHERE project = ?) AS known, (SELECT COUNT(*) FROM ${table} WHERE project != 'account') AS total`, project);
 	if (row && !Number(row.known) && Number(row.total) >= max)
 		throw new RepositoryLimit(`You have saved ${what} for ${max} repositories, the most this account keeps. Clear them for a repository you no longer use, then save again.`);
 }
@@ -56,7 +55,7 @@ export function repositoryDefaultsLog(uid: string, project: string, change: Defa
  * DefaultsProblem otherwise.
  */
 export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[], models: ModelList, sizes: readonly HostedSize[] = [], machines: readonly MachineSummary[] = []): DefaultsChange {
-	const input = (typeof raw === "object" && raw !== null ? raw : {}) as { startPlace?: StartPlace | null; profile?: unknown; model?: unknown; effort?: unknown; screenshots?: unknown; hostedSize?: unknown };
+	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof RepositoryDefaults, unknown>> & { startPlace?: StartPlace | null };
 	const change: DefaultsChange = {};
 	if (input.startPlace !== undefined) {
 		const place = input.startPlace;
@@ -65,7 +64,7 @@ export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[],
 		change.item_place = place?.kind === "machine" ? { place: { machine: place.machineId }, machineProfile: place.profile } : { place: place ? "hosted" : null, machineProfile: null };
 	}
 	for (const field of AUTONOMY_FIELDS) {
-		const value = (input as Record<string, unknown>)[field];
+		const value = input[field];
 		if (value === undefined) continue;
 		if (typeof value !== "boolean") throw new DefaultsProblem("bad_input", "A repository autonomy setting must be true or false.");
 		change[field] = value;
@@ -83,10 +82,11 @@ export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[],
 			change.profile = chosen.id;
 		}
 	}
-	if (input.effort !== undefined) {
-		if (input.effort !== null && (typeof input.effort !== "string" || !models.models.some(m => m.efforts.includes(input.effort as string))))
+	const effort = input.effort;
+	if (effort !== undefined) {
+		if (effort !== null && (typeof effort !== "string" || !models.models.some(m => m.efforts.includes(effort))))
 			throw new DefaultsProblem("bad_input", "Choose an effort offered by the model.");
-		change.effort = input.effort as string | null;
+		change.effort = effort;
 	}
 	if (input.model !== undefined) {
 		const refusal = input.model === null ? null : modelRefusal(models, input.model);
@@ -117,7 +117,7 @@ export const DEFAULTS_TABLE = `
 	)
 `;
 
-export function personalPlace(settings: ItemPlaceDefaults): StartPlace | undefined {
+function personalPlace(settings: ItemPlaceDefaults): StartPlace | undefined {
 	const place = settings.place;
 	if (place === "hosted") return { kind: "hosted" };
 	if (place && typeof place === "object" && settings.machineProfile)
@@ -149,13 +149,14 @@ export async function saveDefaults(db: DefaultsDb, project: string, label: strin
 	return readDefaults(db, project);
 }
 
-export async function readAccountDefaults(db: DefaultsDb): Promise<AccountDefaults> {
-	const { screenshots, autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, ...settings } = await readDefaults(db, ACCOUNT);
+function accountFields<T extends RepositoryAutonomy & { screenshots?: boolean }>({ screenshots, autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, ...settings }: T) {
 	return settings;
 }
 
+export async function readAccountDefaults(db: DefaultsDb): Promise<AccountDefaults> {
+	return accountFields(await readDefaults(db, ACCOUNT));
+}
+
 export async function saveAccountDefaults(db: DefaultsDb, change: DefaultsChange, now: number): Promise<AccountDefaults> {
-	const { screenshots, autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, ...settings } = change;
-	await saveDefaults(db, ACCOUNT, "", settings, now);
-	return readAccountDefaults(db);
+	return accountFields(await saveDefaults(db, ACCOUNT, "", accountFields(change), now));
 }

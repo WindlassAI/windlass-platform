@@ -871,7 +871,7 @@ export interface RepositoryAutonomy {
 
 export type DefaultPlace = "hosted" | "any-machine" | { machine: string };
 
-/** One placement policy. A repository without a place inherits the account's whole policy. */
+/** Each omitted or null choice inherits from the next settings layer. */
 export interface ItemPlaceDefaults {
 	place?: DefaultPlace | null;
 	placeFallback?: "wait" | "hosted" | null;

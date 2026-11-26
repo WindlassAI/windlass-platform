@@ -821,6 +821,11 @@ interface EnvironmentCtx extends CreateCtx {
 	schedule: { at(at: number, action: string, ...args: unknown[]): Promise<unknown>; list(): Promise<{ action: string; runAt: number }[]> };
 }
 
+async function cleanRunDefaults(c: CreateCtx, input: AccountDefaultsPatch | RepositoryDefaultsPatch, profile: UserProfile) {
+	const layer = await getLayer();
+	return cleanDefaults(input, layer.sandboxes.profiles(), await modelsOf(c, profile.demo), sizesOf(c, layer).map(size => size.id), itemMachines(c.vars.machines));
+}
+
 async function applyPlaceChange(change: DefaultsChange, input: ItemPlaceDefaults, machines: Map<string, MachineSummary>, read: () => Promise<ItemPlaceDefaults>) {
 	if (!changesPlace(input)) return;
 	const policy = changedPlace(await read(), input);
@@ -2221,8 +2226,7 @@ export const user = actor({
 			if (input.offer !== undefined) return (await repoPolicy(c, input.repositoryId, project, false, null, input)).defaults;
 			let change: DefaultsChange;
 			try {
-				const layer = await getLayer();
-				change = cleanDefaults(input, layer.sandboxes.profiles(), await modelsOf(c, profile.demo), sizesOf(c, layer).map(size => size.id), itemMachines(c.vars.machines));
+				change = await cleanRunDefaults(c, input, profile);
 				if (change.screenshots === true && !config.factory.screenshots) throw new DefaultsProblem("bad_input", "Screenshots are turned off for this whole deployment, so they cannot be turned on for a repository.");
 			} catch (error) {
 				if (error instanceof DefaultsProblem) throw new UserError(error.message, { code: error.code });
@@ -2322,8 +2326,7 @@ export const user = actor({
 			const profile = requireUser(c);
 			let change: DefaultsChange;
 			try {
-				const { sandboxes } = await getLayer();
-				change = cleanDefaults(input, sandboxes.profiles(), await modelsOf(c, profile.demo), hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(s => s.id), itemMachines(c.vars.machines));
+				change = await cleanRunDefaults(c, input, profile);
 			} catch (error) {
 				if (error instanceof DefaultsProblem) throw new UserError(error.message, { code: error.code });
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");

@@ -103,16 +103,14 @@ export function checkRunPlace(run: ResolvedRun, machines: readonly MachineSummar
 export const changesPlace = (change: ItemPlaceDefaults) =>
 	[change.place, change.harness, change.machineProfile, change.placeFallback, change.machineModel, change.machineEffort].some(v => v !== undefined);
 
-/** A patch to one setting preserves the others. */
 export function changedPlace(before: ItemPlaceDefaults, change: ItemPlaceDefaults): ItemPlaceDefaults {
 	const place = change.place === undefined ? before.place : change.place;
-	const previous = before;
 	// Another agent starts on its own default model.
-	const agent = change.harness === undefined || change.harness === previous.harness ? previous : {};
+	const agent = change.harness === undefined || change.harness === before.harness ? before : {};
 	return { place: typeof place === "object" && place ? { machine: place.machine } : place ?? null,
-		harness: change.harness === undefined ? previous.harness ?? null : change.harness,
-		machineProfile: change.machineProfile === undefined ? previous.machineProfile ?? null : change.machineProfile,
-		placeFallback: change.placeFallback === undefined ? previous.placeFallback ?? null : change.placeFallback,
+		harness: change.harness === undefined ? before.harness ?? null : change.harness,
+		machineProfile: change.machineProfile === undefined ? before.machineProfile ?? null : change.machineProfile,
+		placeFallback: change.placeFallback === undefined ? before.placeFallback ?? null : change.placeFallback,
 		machineModel: change.machineModel === undefined ? agent.machineModel ?? null : change.machineModel,
 		machineEffort: change.machineEffort === undefined ? agent.machineEffort ?? null : change.machineEffort };
 }
