@@ -20,13 +20,13 @@ import type { OutOfMemory } from "../sandbox/api.js";
 import { MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, isolationName, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
 import { CI_POLLING, type CiReading, rerunnableJobs, ciPollEvery, ciState, workflowOverdue } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
-import { contextAtPlace, partRun, resolveProposedParts, resolveRun, runPlace } from "./resolve-run.js";
-import { approveRoutes, bindRoute, choosePlacement, freeMachineSlots, machineSlots, placeKey, placementRetryAt, reviewPlacement, type PlacementInventory, type PlacementRoute } from "./placement.js";
+import { contextAtPlace, partRun, resolveRun, runPlace } from "./resolve-run.js";
+import { approveRoutes, hostedTerms, reviewPart, bindRoute, choosePlacement, freeMachineSlots, machineSlots, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
 import { answeredWords, choice, CHOICES } from "./answered.js";
 import { feedbackWords, fixText, replanText } from "./feedback.js";
 import type { FeedbackDecision, FeedbackInput } from "./types.js";
-import { sharedPaths, singleAfterPlanning, subtaskMinimum, validatePlan, planScope, PlanError, approvalText, subtaskHarness, unsupportedParts, unattendedKeys, agentProfileProblem, agentOf } from "./feature-plan.js";
+import { sharedPaths, singleAfterPlanning, subtaskMinimum, validatePlan, planScope, PlanError, approvalText, planRecovery, editablePartAgents, subtaskHarness, unsupportedParts, unattendedKeys, agentProfileProblem, agentOf } from "./feature-plan.js";
 import { aliases, beginIntegration, boundRepos, crossFact, crossRepo, featureOpened, handOver as crossHandOver, integrationAnswer, integrationHeads, plannerText, recordIntegrated, recordOpened, recordSeed, repoOf, type Flow } from "./cross-repo.js";
 import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
 import { PLATFORM_TOOLS, refusalMessage } from "../provider-refusal.js";
@@ -38,7 +38,7 @@ import { ASK_WHEN_BLOCKED, BUILDER_ASSUMPTIONS, PUBLISH_SERVER, REPORT_TOOL } fr
 import { REVIEW_TOOL, type PersonDecision } from "./reviewer-task.js";
 import { runAnywayWords, sources, thirdParty, untrustedWords } from "./untrusted.js";
 import { REVIEW_OFF_REASON, openFindings, openFingerprint, reviewAlsoText, reviewFixText } from "./review.js";
-import { harnessName } from "../sandbox/harnesses.js";
+import { harnessName, worksWithoutAsking } from "../sandbox/harnesses.js";
 import { ciFingerprint, ciSentence, failureFingerprint, gateFingerprint, gateResult, verdictCi, verdictOf, verdictWords } from "./verdict.js";
 
 export const RULES = {
@@ -451,28 +451,32 @@ function apply(c: Change, fact: Fact): boolean {
 		case "edit_plan":
 		case "file_plan":
 			return proposePlan(c, fact);
+		case "refresh_plan":
+			if (!planQuestion(item) || item.featurePlan?.version !== fact.version || item.filedTurn !== c.key) return false;
+			return refreshPlan(c, fact.inventory) !== null;
 		case "approve_plan":
 			if (!planQuestion(item) || item.featurePlan?.version !== fact.version) return false;
 			return approveFeature(c, fact.inventory, fact.agents, fact.bases);
 		case "set_subtask_agent": {
 			const plan = item.featurePlan;
-			const task = plan?.status === "approved" && item.run?.step.kind === "subtasks" && !item.jobs?.some(j => j.task.key === fact.key) && plan.subtasks.find(s => s.key === fact.key);
+			if (!plan || !editablePartAgents(plan, item.state, item.run?.step.kind, (item.jobs ?? []).map(j => j.task.key)).includes(fact.key)) return false;
+			const task = plan.subtasks.find(s => s.key === fact.key);
 			if (!task || !fact.inventory) return false;
 			const agent = fact.agent === null ? undefined : agentOf(fact.agent);
 			const next = { ...task, agent };
-			if (item.context) next.resolved = partRun(item.context, next, "part", fact.inventory.machines);
+			reviewPart(next, item.context, item.place, !!plan.overflow, fact.inventory);
 			if (!agent) delete next.agent;
 			const problem = agentProfileProblem(next);
 			if (problem) throw new PlanError(problem);
-			const fit = choosePlacement(next, bindRoute(next, item.place, !!plan.overflow, fact.inventory.machines), fact.inventory);
-			if (fit.refused !== undefined && fit.permanent) throw new PlanError(fit.refused);
+			if (next.placementProblem) throw new PlanError(next.placementProblem);
 			for (const p of [plan, item.approvedPlan]) {
 				const kept = p?.subtasks.find(s => s.key === fact.key);
-				if (kept) kept.resolved = next.resolved;
+				if (kept) Object.assign(kept, next);
 				if (kept && agent) kept.agent = structuredClone(agent);
 				else if (kept) delete kept.agent;
 			}
-			c.say(`‘${task.title}’ will run ${harnessName(agent?.harness ?? "windlass")}${agent?.model ? " on " + agent.model : ""}.`);
+			const model = next.resolved?.model ?? agent?.model;
+			c.say(`‘${task.title}’ will run ${harnessName(subtaskHarness(next))}${model ? " on " + model : ""}.`);
 			return true;
 		}
 		case "run_single":
@@ -646,6 +650,20 @@ function stepFact(c: Change, fact: StepFact): boolean {
 			const fit = choosePlacement(job.task, job.route, { ...fact.inventory, defaults: c.item.context }, job.warm, c.at);
 			if (fit.decision) {
 				delete job.placementWaitSince;
+				const run = job.task.resolved;
+				if (repair(job) && run && worksWithoutAsking(run.agent)) {
+					const place = fit.decision;
+					job.repairOffer = place;
+					const agent = [harnessName(run.agent), run.model, run.effort].filter(Boolean).join(" · ");
+					run.place = runPlace(place.place);
+					run.payer = place.payer ?? run.payer;
+					const payer = run.payer === "key" ? "your Settings key" : "the machine sign-in";
+					const hosted = place.hostedSize && hostedTerms(run.size, place.hostedSize, fact.inventory);
+					job.task.review = { inherited: run, places: [{ place: place.place, name: place.name, sendSecrets: place.sendSecrets, payer: run.payer }], ...(hosted && { hosted }) };
+					const size = hosted ? `, ${hosted.size} at ${hosted.rate}× the standard hosted rate` : "";
+					job.placementRefusal = `Run this repair with ${agent} on ${place.name} using ${payer}${size}? It works without asking and ${place.sendSecrets ? "gets" : "does not get"} repository secrets.`;
+					return askPlacement(c, job);
+				}
 				job.placement = fit.decision;
 				delete job.wait;
 				dispatchJob(c, job);
@@ -2337,7 +2355,7 @@ function proposePlan(c: Change, fact: Extract<Fact, { kind: "edit_plan" | "file_
 			throw new PlanError("Add a fix subtask to the completed feature.");
 		if (plan.singleSuggested) throw new PlanError("Re-plan the remaining work on the existing feature branch.");
 		for (const job of completed) {
-			const { resolved, placementProblem, placementWait, requestedLargerSize, ...approved } = job.task;
+			const { resolved, review, placementProblem, placementWait, requestedLargerSize, ...approved } = job.task;
 			const task = plan.subtasks.find(s => s.key === approved.key);
 			if (!task || !isDeepStrictEqual(task, approved)) throw new PlanError("Completed subtasks cannot be changed.");
 			Object.assign(task, job.task);
@@ -2345,8 +2363,8 @@ function proposePlan(c: Change, fact: Extract<Fact, { kind: "edit_plan" | "file_
 	}
 	for (const task of plan.subtasks) {
 		if (completed.some(job => job.task.key === task.key)) continue;
-		if (item.context) task.resolved = partRun(item.context, task, "part", fact.inventory?.machines);
-		if (fact.inventory) reviewPlacement(task, item.place, !!plan.overflow, { ...fact.inventory, defaults: item.context });
+		if (fact.inventory) reviewPart(task, item.context, item.place, !!plan.overflow, fact.inventory);
+		else if (item.context) task.resolved = partRun(item.context, task);
 	}
 	const proposed = { ...plan, budget: featureTotal(item, plan), compare: { singleBudget: item.singleBudget }, version: (item.featurePlan?.version ?? 0) + 1, status: "proposed" as const };
 	if (fact.kind === "file_plan" && item.filedTurn === fact.key && item.featurePlan && isDeepStrictEqual({ ...proposed, version: item.featurePlan.version }, item.featurePlan)) return false;
@@ -2443,13 +2461,8 @@ function askPlan(c: Change, criticReason?: string, criticFindings?: string[]) {
 	if (p.singleSuggested && !c.item.replans)
 		return askOwner("single_suggested", p.singleSuggested + (crossRepo(c.item) ? ` One implementer works on ${c.item.repos![0].alias} only: ${c.item.repos!.slice(1).map(r => r.alias).join(", ")} would be left out.` : ""),
 			[choice("run_single"), choice("orchestrate_anyway")]);
-	const unsupported = unsupportedParts(p, completedKeys(c.item));
-	if (unsupported.length)
-		return askOwner("plan_approval", `${harnessName(subtaskHarness(unsupported[0]!))} cannot build Plan-first parts. Choose another agent for those parts, then review the updated plan.`, [{ id: "use_windlass", label: "Use Windlass for these parts" }, choice("use_claude"), choice("use_opencode"), ...revise]);
-	const larger = p.subtasks.filter(t => t.requestedLargerSize);
-	if (larger.length) return askOwner(c.item.replans ? "replan_approval" : "plan_approval",
-		larger.map(t => `${t.title} needs a ${t.requestedLargerSize} hosted sandbox at ${SIZE_WEIGHT[t.requestedLargerSize!]}× the standard hosted rate.`).join("\n"),
-		[{ id: "larger_sandbox", label: "Use the requested sizes and review the plan" }, ...revise, choice("give_up")]);
+	const recovery = planRecovery(p, completedKeys(c.item));
+	if (recovery) return askOwner(c.item.replans ? "replan_approval" : "plan_approval", recovery.text, recovery.choices);
 	const unanswered = p.questions.filter(q => !q.answer);
 	askOwner(c.item.replans ? "replan_approval" : "plan_approval", [approvalText(p), ...p.subtasks.filter(t => t.placementProblem).map(t => t.title + ": " + t.placementProblem)].join("\n"), [...(unanswered.length ? [] : [choice("approve")]), ...revise, choice("give_up")]);
 }
@@ -2485,7 +2498,7 @@ function placementRefused(c: Change, job: FeatureJob, reason: string, options: P
 }
 
 function askPlacement(c: Change, job: FeatureJob) {
-	const choices: Question["choices"] = [
+	const choices: Question["choices"] = job.repairOffer ? [{ id: "approve", label: "Run this repair without asking" }, choice("give_up")] : [
 		...(job.task.resolved?.agent === "codex" ? [choice("use_windlass"), choice("use_claude"), choice("use_opencode")] : []),
 		...(job.askMachine ? [choice("wait")] : []), ...(job.offerHosted ? [hostedChoice(job.task.resolved?.agent, job.hostedProfile)] : []),
 		...(job.offerPayer ? [payerChoice(job.offerPayer)] : []),
@@ -2838,6 +2851,26 @@ function featureSettled(item: FactoryItem): boolean {
 		featureBranches(item).every(b => !b.featureCi || (b.featureCi.passed && b.featureCi.head === b.head));
 }
 
+/** A change to the offer needs a new plan version and fresh per-part confirmations. */
+function refreshPlan(c: Change, inventory: PlacementInventory) {
+	const plan = c.item.featurePlan!;
+	const context = { ...c.item.context, ...inventory.defaults };
+	const done = completedKeys(c.item);
+	let changed = false;
+	let waitChanged = false;
+	for (const task of plan.subtasks) {
+		if (done.has(task.key)) continue;
+		const wait = task.placementWait;
+		if (reviewPart(task, context, c.item.place, !!plan.overflow, inventory)) changed = true;
+		if (task.placementWait !== wait) waitChanged = true;
+	}
+	c.item.context = context;
+	if (!changed) return waitChanged ? "wait" : null;
+	plan.version++;
+	askPlan(c, c.item.question?.criticReason, c.item.question?.criticFindings);
+	return "version";
+}
+
 /** Planner input can be untrusted. The owner must confirm each unattended agent by subtask key. */
 function approveFeature(c: Change, inventory?: PlacementInventory, agents: readonly string[] = [], bases: Readonly<Record<string, string>> = {}): boolean {
 	const p = c.item.featurePlan;
@@ -2845,10 +2878,7 @@ function approveFeature(c: Change, inventory?: PlacementInventory, agents: reado
 	// Admission checked the reconfirmed base against the live head.
 	for (const [alias, sha] of Object.entries(bases)) if (crossRepo(c.item) && c.item.repos!.some(r => r.alias === alias) && /^[0-9a-f]{40}$/.test(sha)) repoOf(c.item, alias).planningBaseSha = sha;
 	const completed = completedKeys(c.item);
-	if (inventory?.defaults) {
-		c.item.context = { ...c.item.context, ...inventory.defaults };
-		resolveProposedParts(p.subtasks, c.item.context, completed, inventory.machines);
-	}
+	if (inventory?.defaults && refreshPlan(c, inventory) === "version") return true;
 	if (unsupportedParts(p, completed).length) {
 		askPlan(c);
 		return true;
@@ -3037,7 +3067,7 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 		return true;
 	}
 	const harness = replacementAgents[fact.choice];
-	if (question.kind === "plan_approval" && harness) {
+	if ((question.kind === "plan_approval" || question.kind === "replan_approval") && harness) {
 		const plan = item.featurePlan!;
 		for (const task of unsupportedParts(plan, completedKeys(item))) {
 			task.agent = { harness };
@@ -3051,6 +3081,16 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 	const refused = question.kind === "placement_refused"
 		? item.jobs?.find(j => j.id === question.child) ?? item.jobs?.find(j => j.placementRefusal && activeJob(j)) ?? item.jobs?.at(-1)
 		: undefined;
+	if (refused?.repairOffer && fact.choice === "approve") {
+		const place = refused.repairOffer;
+		refused.route = { preferred: place.place, alternatives: [] };
+		refused.placement = place;
+		delete refused.repairOffer;
+		delete refused.placementRefusal;
+		c.state("waiting", { reason: "children", sentence: "Running the approved repair.", retryAt: null });
+		dispatchJob(c, refused);
+		return true;
+	}
 	if (refused && harness) {
 		refused.task.agent = { harness };
 		refused.task.resolved = partRun(item.context ?? {}, refused.task, repair(refused) ? "repair" : "part");
@@ -3066,7 +3106,9 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 			const offer = refused.offerPayer, run = refused.task.resolved;
 			if (!run || !offer) return false;
 			refused.route = { preferred: offer.place, alternatives: [], names: { [offer.place.machineId]: offer.name } };
+			const reviewed = refused.task.review?.places.find(p => placeKey(p.place) === offer.place.machineId);
 			refused.task = { ...refused.task, place: { prefer: offer.name, reason: "The owner chose this machine and payer." },
+				...(reviewed && { review: { ...refused.task.review!, places: [{ ...reviewed, payer: offer.payer }] } }),
 				resolved: { ...run, place: runPlace(offer.place), payer: offer.payer, profile: offer.profile ?? null,
 					sources: { ...run.sources, place: "item", payer: "item" } } };
 		} else if (fact.choice === "wait") refused.route.waitForMachine = true;

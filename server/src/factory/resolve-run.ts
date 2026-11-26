@@ -61,13 +61,6 @@ export function partRun(context: RunContext, task: Pick<PlanSubtask, "agent" | "
 	return resolveRun(place ? contextAtPlace(layers, place === "hosted" ? "hosted" : { machine: machines?.find(m => m.name === place)?.machineId ?? place }) : layers, role, task);
 }
 
-/** Approved and completed parts keep the settings they ran with. */
-export function resolveProposedParts(tasks: PlanSubtask[], context: RunContext, completed: ReadonlySet<string>, machines?: readonly { name: string; machineId: string }[]) {
-	for (const task of tasks) {
-		if (!completed.has(task.key)) task.resolved = partRun(context, task, "part", machines);
-	}
-}
-
 export function deploymentSize(offered: readonly HostedSize[], preferred = ITEM_HOSTED_SIZE) {
 	return offered.includes(preferred) ? preferred : offered[0];
 }

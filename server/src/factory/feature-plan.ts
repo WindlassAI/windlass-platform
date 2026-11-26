@@ -1,5 +1,7 @@
 /* The ids of a feature's children are in feature-ids.ts: this file is shared with the web mock and stays free of Node modules. */
 import type { EarlyCheck, FeaturePlan, FeaturePlanEdit, FinalIntegration, ItemBudget, MergeStep, PlanSubtask, SubtaskAgent, SubtaskBudget } from "../contract.js";
+import { SIZE_WEIGHT } from "../billing/meter.js";
+import { choice } from "./answered.js";
 import { runAgent } from "./resolve-run.js";
 import { subtaskHarnessProblem, harnessName, hostedProfiles, knownHarness, worksWithoutAsking } from "../sandbox/harnesses.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
@@ -21,6 +23,11 @@ export const crossRepoPlan = (plan: Pick<FeaturePlanEdit, "repos"> | null | unde
 /** The tokens a plan gives its subtasks, together. */
 export const planTokens = (plan: Pick<FeaturePlanEdit, "subtasks">): number => plan.subtasks.reduce((sum, task) => sum + task.budget.tokens, 0);
 
+/** A reserved job already owns its agent, even before its child can report a summary. */
+export function editablePartAgents(plan: FeaturePlan, state: import("../contract.js").ItemState, step: string | undefined, reserved: readonly string[]) {
+	return plan.status === "approved" && !["done", "failed", "cancelled"].includes(state) && step === "subtasks" ? plan.subtasks.filter(t => !reserved.includes(t.key)).map(t => t.key) : [];
+}
+
 export function subtaskHarness(task: Pick<PlanSubtask, "resolved" | "agent">) {
 	return task.resolved?.agent ?? task.agent?.harness ?? "windlass";
 }
@@ -28,6 +35,21 @@ export function subtaskHarness(task: Pick<PlanSubtask, "resolved" | "agent">) {
 // Remove this approval stopgap when every agent can plan and build Plan-first parts.
 export function unsupportedParts(plan: Pick<FeaturePlanEdit, "subtasks">, completed: ReadonlySet<string>) {
 	return plan.subtasks.filter(task => !completed.has(task.key) && subtaskHarnessProblem(subtaskHarness(task)));
+}
+
+/** These answers change the proposal; approval is offered on the resulting version. */
+export function planRecovery(plan: FeaturePlan, completed: ReadonlySet<string>) {
+	const unsupported = unsupportedParts(plan, completed);
+	if (unsupported.length) return {
+		text: `${harnessName(subtaskHarness(unsupported[0]!))} cannot build Plan-first parts. Choose another agent for those parts, then review the updated plan.`,
+		choices: [{ id: "use_windlass" as const, label: "Use Windlass for these parts" }, choice("use_claude"), choice("use_opencode"), choice("revise")],
+	};
+	const larger = plan.subtasks.filter(t => !completed.has(t.key) && t.requestedLargerSize);
+	if (larger.length) return {
+		text: larger.map(t => `${t.title} needs a ${t.requestedLargerSize} hosted sandbox at ${SIZE_WEIGHT[t.requestedLargerSize!]}× the standard hosted rate.`).join("\n"),
+		choices: [{ id: "larger_sandbox" as const, label: "Use the requested sizes and review the plan" }, choice("revise"), choice("give_up")],
+	};
+	return null;
 }
 
 function agentWords(agent: SubtaskAgent | undefined): string {
@@ -62,7 +84,7 @@ export class PlanError extends Error {}
 
 /** A budget-only reallocation keeps the approved scope. */
 export function planScope(plan: FeaturePlanEdit): string {
-	const scope: unknown[] = [plan.overflow ?? false, plan.spec, plan.subtasks.map(({budget, ...scope}) => scope)];
+	const scope: unknown[] = [plan.overflow ?? false, plan.spec, plan.subtasks.map(({budget, review, placementWait, resolved, placementProblem, requestedLargerSize, ...scope}) => scope)];
 	// A one-repository plan keeps the fingerprint it always had; a cross-repo one adds what was approved of its repositories.
 	if (crossRepoPlan(plan)) scope.push({ repos: plan.repos, releaseGate: plan.releaseGate ?? "request", finalIntegration: plan.finalIntegration ?? null, mergeOrder: plan.mergeOrder ?? [], earlyChecks: plan.earlyChecks ?? [] });
 	return JSON.stringify(scope);
@@ -144,9 +166,10 @@ const MAX_AGENT_ID = 200;
 
 /** Check the proposal’s agent and identifiers. Placement checks the agent’s capabilities. */
 export function agentOf(value: unknown): SubtaskAgent | undefined {
+	if (value == null) return undefined;
 	const a = record(value);
 	for (const key of Object.keys(a)) requirePlan(["harness", "model", "effort"].includes(key), "Unknown agent field: " + key);
-	const harness = a.harness === undefined ? "windlass" : knownHarness(a.harness);
+	const harness = knownHarness(a.harness);
 	requirePlan(harness !== null, "Choose a supported agent: windlass, claude or opencode.");
 	const id = (v: unknown, what: string, max: number) => {
 		requirePlan(typeof v === "string" && v.length > 0 && v.length <= max && /^[\w.:/@+\[\]-]+$/.test(v), `Name the ${what} by its id.`);
@@ -154,7 +177,6 @@ export function agentOf(value: unknown): SubtaskAgent | undefined {
 	};
 	const model = a.model === undefined || a.model === null || a.model === "" ? undefined : id(a.model, "model", MAX_AGENT_ID);
 	const effort = a.effort === undefined || a.effort === null || a.effort === "" ? undefined : id(a.effort, "effort", 64);
-	if (value == null) return undefined;
 	return { harness, ...(model !== undefined && { model }), ...(effort !== undefined && { effort }) };
 }
 

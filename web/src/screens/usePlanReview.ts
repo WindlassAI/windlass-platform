@@ -87,14 +87,14 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 			const answer = draft.answers[question.id]?.trim();
 			return answer ? { ...question, answer } : question;
 		});
-		return acting.act({ kind: "edit_plan", version: plan.version, plan: { questions, spec: plan.spec, subtasks: rows.map(row => row.edited), singleSuggested: plan.singleSuggested, overflow: draft.overflow } });
+		return acting.act({ kind: "edit_plan", version: plan.version, plan: { ...plan, questions, subtasks: rows.map(row => row.edited), overflow: draft.overflow } });
 	};
 	const approve = async (single?: Extract<ItemAction, { kind: "run_single" | "answer" }>) => {
 		if (!plan) return false;
-		if (answersOnly && !(await save())) return false;
+		if (single && answersOnly && !(await save())) return false;
 		// Saving answers closes the old question. Start the single run on the new version.
 		if (single) return acting.act(answersOnly ? { kind: "run_single" } : single);
-		return acting.act({ kind: "approve_plan", version: plan.version + (answersOnly ? 1 : 0), ...(unattended.length > 0 && { agents: confirmed }) });
+		return acting.act({ kind: "approve_plan", version: plan.version, ...(unattended.length > 0 && { agents: confirmed }) });
 	};
 
 	const problems: Pick<ReturnType<typeof budgetProblems>, "fields" | "any"> = plan ? budgetProblems(plan.compare.singleBudget, budgets) : { fields: {}, any: false };

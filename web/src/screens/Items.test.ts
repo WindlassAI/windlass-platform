@@ -198,7 +198,7 @@ describe("filing a work item", () => {
 		choose("Effort", "high");
 		typeTitle("Cache the station list");
 		await file();
-		expect(sent[0]).toMatchObject({ harness: "claude", model: "opus", effort: "high", mode: "single" });
+		expect(sent[0]).toMatchObject({ harness: "claude", model: "opus", effort: "high", mode: "orchestrate" });
 	});
 
 	it("says an offline machine makes the item wait", async () => {

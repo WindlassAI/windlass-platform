@@ -493,6 +493,9 @@
 	line-height: 1.5;
 	overflow-wrap: anywhere;
 }
+.plan-question .item-question-text {
+	white-space: pre-line;
+}
 .item-note {
 	min-height: 64px;
 }

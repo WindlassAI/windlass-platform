@@ -1749,6 +1749,8 @@ export interface ItemView extends ItemSummary {
 	plan?: FeaturePlan | null;
 	/** Remaining unattended subtask keys that each require confirmation at approval. */
 	unattended?: string[];
+	/** Approved parts whose agent can still be changed before job reservation. */
+	editableAgents?: string[];
 	/** With a plan: the keys of its subtasks whose work is integrated, which approval neither places nor confirms again. */
 	completedSubtasks?: string[];
 	/** After a re-plan: why the feature was planned again, in a short sentence ("A pull request comment asked for changes"). */
@@ -1756,8 +1758,6 @@ export interface ItemView extends ItemSummary {
 	children?: ItemSummary[];
 	/** Dispatched subtasks including placement waits. The start time is null for older jobs. */
 	subtasks?: { id: string; key: string; state: ItemState; dispatchedAt: number | null; startedAt: number | null; wait: string | null }[];
-	/** Current owner policy for the places named in the proposed plan. */
-	placementReview?: { name: string; sendSecrets: boolean }[];
 	/** A feature's: the screenshots its parts filed, a set for each report or review that has any, the newest set first. */
 	partScreenshots?: PartScreenshots[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
@@ -1790,11 +1790,8 @@ export interface PlacementNeeds {
 }
 
 /**
- * The agent a Plan-first subtask's item runs, as the planner proposed it or the person chose it on the
- * approval card. Absent: Windlass on the feature's model and effort. A machine harness (Claude Code,
- * OpenCode) works without asking and runs only on a machine signed into it, in its hardened container;
- * approving a plan that names one needs the person's confirmation of each such subtask (`approve_plan`'s
- * `agents`). Codex is not offered for work items.
+ * A part inherits its resolved implementation agent unless the plan specifies one.
+ * Claude Code and OpenCode require per-part unattended consent on machines and Hosted.
  */
 export interface SubtaskAgent {
 	harness: HarnessId;
@@ -1819,6 +1816,11 @@ export interface ChildPlacement {
 }
 
 export interface PlanSubtask {
+	review?: {
+		inherited: import("./factory/resolve-run.js").ResolvedRun;
+		places: { place: SandboxPlace; name: string; sendSecrets: boolean | null; payer: import("./factory/resolve-run.js").ResolvedRun["payer"] }[];
+		hosted?: { saved: HostedSize; size: HostedSize; rate: number; usdPerHour: number | null };
+	};
 	placementProblem?: string;
 	placementWait?: string;
 	requestedLargerSize?: HostedSize;
@@ -1826,7 +1828,7 @@ export interface PlanSubtask {
 	/** Older plans inherit the feature's place. */
 	place?: { prefer: string; reason: string; allow?: string[] };
 	needs?: PlacementNeeds;
-	/** Absent: Windlass on the feature's model. */
+	/** Omit to inherit the resolved implementation agent. */
 	agent?: SubtaskAgent;
 	/** A cross-repo feature's subtask: the alias of the filing's repository it builds in (`FeatureRepository.alias`). Absent: the primary. */
 	repo?: string;

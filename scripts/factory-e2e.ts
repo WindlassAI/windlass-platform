@@ -2468,7 +2468,9 @@ async function machineChecks(): Promise<void> {
 
 		await check("machine: a Claude Code item runs in the hardened container without asking, publishes the platform's commit and CI decides", async () => {
 			const hosted = await refused(() => user.createItem({ ...task, place: undefined, harness: "claude" }), "bad_input");
-			const planFirst = await refused(() => user.createItem({ ...task, mode: "orchestrate", harness: "claude" }), "bad_input");
+			const planFirst = await user.createItem({ ...task, mode: "orchestrate", harness: "claude", start: false });
+			assert(planFirst.mode === "orchestrate" && planFirst.agent?.harness === "windlass", "An explicit part agent changed the planner");
+			await user.actOnItem({ id: planFirst.id, action: { kind: "cancel" } });
 			const unknown = await refused(() => user.createItem({ ...task, harness: "nonesuch" as never }), "bad_input");
 			const sent = runner.acpInput.length;
 			// "itemwork": the fake agent asks before an edit and before a test command, then reports its tokens.
@@ -2497,7 +2499,7 @@ async function machineChecks(): Promise<void> {
 			assert(windlass.agent?.harness === "windlass" && windlass.agent.model === "gpt-6-luna" && windlassSession?.model === "gpt-6-luna", JSON.stringify(windlass.agent));
 			await refused(() => user.createItem({ ...task, model: "gpt-nonesuch" }), "bad_model");
 			await user.actOnItem({ id: windlass.id, action: { kind: "cancel" } });
-			return `refused hosted (${hosted}), Plan first (${planFirst}), unknown (${unknown}); bypassPermissions, two allow-once answers, 33,500 tokens reported, CI decides`;
+			return `refused hosted (${hosted}), unknown (${unknown}); bypassPermissions, two allow-once answers, 33,500 tokens reported, CI decides`;
 		});
 
 		await check("machine: a Codex item is filed on each profile it runs on, in that profile's item mode", async () => {

@@ -14,7 +14,7 @@ What a work item may spend before it asks you for more: one figure of cost-weigh
 Commands you set for a repository. Windlass runs them before it calls a turn done, and sends the agent back with what fails.
 
 ### Claude Code
-Anthropic's coding agent. On Windlass it runs only on your own machines, with your Claude subscription.
+Anthropic's coding agent. It runs on your machine with its sign-in or a configured key, or on Hosted with your Anthropic key.
 
 ### Credential relay
 The container on your machine that holds an agent's login and forwards the agent's model requests with it, so the login is never inside the agent's container.
@@ -50,7 +50,7 @@ A program that gives an agent more tools. You can add your own in **Settings**. 
 What the agent may do without asking you: for Windlass, **Ask**, **Auto** or **Full**; for Claude Code, OpenCode and Codex, their own modes.
 
 ### OpenCode
-An open-source coding agent. On Windlass it runs only on your own machines, with the model providers you sign it in with.
+An open-source coding agent. It runs on your machine with its configured providers, or on Hosted with a supported provider key from Settings.
 
 ### Pairing code
 The `XXXX-XXXX` code the runner prints, which you enter on the Machines page to pair the machine. It lasts ten minutes.

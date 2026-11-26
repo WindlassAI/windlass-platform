@@ -1,4 +1,4 @@
-import type { ChildPlacement, FeaturePlan, ItemSummary, ItemView, MachineDetails, MachineSummary, PlacementNeeds, PlanSubtask, SandboxPlace } from "@contract";
+import type { ChildPlacement, FeaturePlan, ItemSummary, MachineDetails, MachineSummary, PlacementNeeds, PlanSubtask, SandboxPlace } from "@contract";
 import { machineLabel } from "./machines";
 
 export type Orchestrator = NonNullable<MachineDetails["orchestrator"]>;
@@ -35,6 +35,7 @@ export function parentPlaceName(place: SandboxPlace, machines: MachineSummary[] 
 export function needsWords(needs: PlacementNeeds | undefined): string[] {
 	if (!needs) return [];
 	const words: string[] = [];
+	if (needs.hostedSize) words.push(`hosted size ${needs.hostedSize}`);
 	if (needs.cpus) words.push(`${needs.cpus} CPU${needs.cpus === 1 ? "" : "s"}`);
 	if (needs.memoryGiB) words.push(`${needs.memoryGiB} GiB memory`);
 	if (needs.screenshots) words.push("screenshots");
@@ -57,7 +58,7 @@ export const OWNER_REASON = "Chosen in plan review.";
 
 /** A subtask with the owner's choice of place applied. */
 export function withPlace(task: PlanSubtask, draft: PlaceDraft): PlanSubtask {
-	const { place: _place, ...rest } = task;
+	const { place: _place, resolved, review, placementProblem, placementWait, requestedLargerSize, ...rest } = task;
 	if (draft.prefer === null) return rest;
 	const same = task.place?.prefer === draft.prefer;
 	const allow = draft.allow.filter((name) => name !== draft.prefer);
@@ -96,16 +97,9 @@ export function placedWords(placement: ChildPlacement): string {
 	return [placeWord(placement.name), ...(placement.units > 1 ? [`${placement.units} slots`] : [])].join(" · ");
 }
 
-/**
- * Whether repository secrets go to a place, as the server decides it when it places a subtask
- * (`ChildPlacement.sendSecrets`): always to this platform; to a machine as its "Send saved secrets"
- * switch says. The page's `placementReview` is the server's word for the places the proposed plan
- * names; the machines list stands in for a place the owner picked since. Null: not known.
- */
-export function secretsFor(name: string, review: ItemView["placementReview"], machines: MachineSummary[] | null): boolean | null {
+/** Secrets policy for a place being picked in the editor. */
+export function secretsFor(name: string, machines: MachineSummary[] | null): boolean | null {
 	if (name === HOSTED) return true;
-	const reviewed = review?.find((place) => place.name === name);
-	if (reviewed) return reviewed.sendSecrets;
 	const machine = machines?.find((one) => machineLabel(one) === name);
 	return machine ? machine.sendSecrets : null;
 }
@@ -122,6 +116,8 @@ export interface RouteWords {
 }
 
 export function routeWords(task: PlanSubtask, parent: string, overflow: boolean): RouteWords {
+	const bound = task.review?.places;
+	if (bound?.length) return { prefer: bound[0]!.name, inherited: !task.place, reason: task.place?.reason ?? null, alternatives: bound.slice(1).map(p => p.name), overflowing: true };
 	const prefer = task.place?.prefer ?? parent;
 	return { prefer, inherited: !task.place, reason: task.place?.reason ?? null, alternatives: (task.place?.allow ?? []).filter((name) => name !== prefer), overflowing: overflow };
 }

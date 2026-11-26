@@ -19,11 +19,11 @@ import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
 import { GithubProblem } from "../github/repos.js";
 import { verdictWords } from "../factory/verdict.js";
 import { mergeCandidate, requiredCiBranches } from "../factory/autonomy.js";
-import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
+import { editablePartAgents, PlanError, unattendedKeys } from "../factory/feature-plan.js";
 import { criticSessionId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
-import { contextAtPlace, partRun, resolveProposedParts, resolveRun, runPlace, type RunSettings } from "../factory/resolve-run.js";
-import { limitApplies, reviewPlacement, type PlacementInventory } from "../factory/placement.js";
+import { contextAtPlace, partRun, resolveRun, runPlace, type RunSettings } from "../factory/resolve-run.js";
+import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf, branchFor } from "../github/publish.js";
 import { featureBranch, subtaskBranch, openFeature, refHead, advanceFeatureRef, compareBranches, mergeIntoFeature, readyFeature, mergeReviewedPull } from "../github/feature.js";
@@ -35,7 +35,7 @@ import { filedFromIssue, filedFromLinear, recentSubject, type IssueBinding, type
 import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine } from "../factory/verified-check.js";
 import type { CheckRunUpdate } from "../github/checks.js";
 import type { GithubUser } from "../github/app.js";
-import { hostedCatalog } from "../sandbox/harnesses.js";
+import { hostedCatalog, worksWithoutAsking } from "../sandbox/harnesses.js";
 import { hostedSizeFor, type ItemReview, type ModelList, type PartScreenshots, type PlanSubtask, type SessionSummary } from "../contract.js";
 import { itemAgent, ledgerSeconds, retryAt } from "../factory/budget.js";
 import type { ReviewDelivery } from "./session-inbox.js";
@@ -215,22 +215,17 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 
 // Read through the write queue so the current question and its log come from the same revision.
 async function viewOf(c: Ctx): Promise<ItemView> {
-	const { stored, view } = await queued(c, async () => {
+	const read = () => queued(c, async () => {
 		const stored = await load(c.db);
 		if (!stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
 		return { stored, view: await pageOf(c, stored) };
 	});
-	const { item } = stored;
-	if (view.plan?.status === "proposed") {
-		const inventory = await placementInventory(c, stored.meta.uid, item.agent?.model);
-		inventory.defaults = { ...item.context, ...inventory.defaults };
-		const completed = completedKeys(item);
-		resolveProposedParts(view.plan.subtasks, inventory.defaults, completed, inventory.machines);
-		for (const task of view.plan.subtasks) {
-			if (!completed.has(task.key)) reviewPlacement(task, view.place, !!view.plan.overflow, inventory);
-		}
-		view.unattended = unattendedKeys(view.plan, completed);
+	let { stored, view } = await read();
+	if (view.plan?.status === "proposed" && ["plan_approval", "replan_approval", "single_suggested"].includes(view.question?.kind ?? "")) {
+		const inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
+		if (await take(c, { kind: "refresh_plan", version: view.plan.version, inventory, at: Date.now() })) ({ stored, view } = await read());
 	}
+	const { item } = stored;
 	const q = view.question;
 	if (q && (q.kind === "plan_approval" || q.kind === "replan_approval") && item.featurePlan?.status === "proposed" && item.filedTurn === currentKey(item) && !crossRepo(item)) {
 		try {
@@ -326,7 +321,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		verifiedCheck: (await c.db.execute<NonNullable<ItemView["verifiedCheck"]>>("SELECT sha, state, conclusion, said FROM checks WHERE sha = ?", run?.ci?.moved ?? stored.item.head ?? ""))[0] ?? null,
 		plan: plan ?? null,
 		...(stored.item.jobs && { subtasks: stored.item.jobs.map(j => ({ id: j.id, key: j.task.key, state: j.state, dispatchedAt: j.dispatchedAt ?? null, startedAt: j.startedAt ?? null, wait: j.wait ?? j.placementRefusal ?? null })) }),
-		...(plan && { unattended: unattendedKeys(plan, completed), completedSubtasks: [...completed] }),
+		...(plan && { editableAgents: editablePartAgents(plan, stored.item.state, run?.step.kind, (stored.item.jobs ?? []).map(j => j.task.key)), unattended: unattendedKeys(plan, completed), completedSubtasks: [...completed] }),
 		...(stored.item.replanWhy && { replanWhy: stored.item.replanWhy }),
 		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
@@ -2474,7 +2469,8 @@ export const workItem = actor({
 			requireService(c);
 			const s = c.vars.stored, job = s?.item.jobs?.find(j => j.id === id);
 			const paused = !!s?.item.featureUpdate || s?.item.question?.kind === "feature_update" || s?.item.question?.kind === "branch_push";
-			if (!s || !job || !activeJob(job) || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || (s.item.question && !paused) || ENDED.has(s.item.state)) return null;
+			if (!s || !job || job.repairOffer || !activeJob(job) || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || (s.item.question && !paused) || ENDED.has(s.item.state)) return null;
+			if (!job.placement && (job.ciFix || job.conflictFix || job.reviewFix) && job.task.resolved && worksWithoutAsking(job.task.resolved.agent)) return null;
 			const completed = s.item.jobs?.filter(j => j.state === "done") ?? [];
 			const previous = completed.at(-1);
 			const reports = completed.filter(j => job.task.dependsOn.includes(j.task.key)).map(j => j.report);
@@ -2591,6 +2587,8 @@ export const workItem = actor({
 					if (advance(stored.item, fact).item.featurePlan?.status === "approved") await checkFeatureCi(c, stored, fact.kind === "approve_plan" ? fact.bases : undefined);
 				}
 				changed = await take(c, fact);
+				if (approving && c.vars.stored?.item.featurePlan?.status === "proposed" && changed)
+					throw new PlanError("The plan settings changed. Review the new version before approving.");
 			} catch (error) {
 				if (error instanceof PlanError) throw new UserError(error.message, { code: "bad_input" });
 				throw clientError(c.log, error, "The item could not be changed. Try again.");

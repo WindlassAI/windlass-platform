@@ -26,7 +26,7 @@ import { agentModelsOf } from "../lib/subtask-agents";
 import { ArrowUpIcon, CheckIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SlidersIcon, WarnIcon } from "./Icons";
 import { modeMenu } from "./Modes";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
-import { hostedAgentProblem, capabilitiesOf } from "../../../server/src/sandbox/harnesses.js";
+import { hostedAgentProblem, capabilitiesOf, subtaskHarnessProblem } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_PROFILE, itemHarnesses, itemProfilesHere, machineUnusable, offeredHarnesses, onPullRequest } from "./PlaceChoice";
 import { repositoryMenu, useBranches, useRepositorySearch, type PickedRepository } from "./RepositoryMenu";
 import { SecretsField } from "./Secrets";
@@ -290,7 +290,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	// A work item runs what the server's resolver gives: its own choices, then the repository's, then yours.
 	const itemLayers = { account: account.settings?.defaults, repository: saved.defaults, machines: machinesReading ? null : mine, sizes: info?.hostedSizes };
 	const itemPlace = placeChoice === undefined ? {} : { place: placeChoice === null ? ("hosted" as const) : { machine: placeChoice } };
-	const itemRole = info?.items?.orchestrate && (harnessChoice === null || harnessChoice === "windlass") && itemMode === "orchestrate" ? "part" : "builder";
+	const partProblem = harnessChoice && subtaskHarnessProblem(harnessChoice);
+	const itemRole = info?.items?.orchestrate && !partProblem && itemMode === "orchestrate" ? "part" : "builder";
 	const defaultRun = runOf(itemLayers);
 	const itemAgent = item ? runOf({ ...itemLayers, item: { ...itemPlace, harness: harnessChoice } }, itemRole).agent : "windlass";
 	const selectedLayers = { ...itemLayers, item: { ...itemPlace, harness: harnessChoice, hostedSize: sizeChoice, profile: profileChoice, machineProfile: profileChoice,
@@ -298,7 +299,6 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		...(effortChoice && effortChoice !== "default" && (itemAgent === "windlass" ? { effort: effortChoice } : { machineEffort: effortChoice })) } };
 	const itemRun = item ? runOf(selectedLayers, itemRole) : null;
 	const planning = item && itemRole === "part" ? runOf(selectedLayers, "planner") : null;
-	const usePolicy = item && harnessChoice === null;
 	const machineCatalogs = useCatalogs(item && !machinesReading ? mine : null);
 	const destination = itemRun ? checkRunPlace(itemRun, mine, agentModelsOf(mine, machineCatalogs, null)) : undefined;
 	const itemMachineId = placeChoice !== undefined ? placeChoice : destination?.place.kind === "machine" ? destination.place.machineId : null;
@@ -431,7 +431,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		if (!canFile || !chosen || !filing) return;
 		setOpen(null);
 		setError(null);
-		const mode = info?.items?.orchestrate && (!other || usePolicy) ? itemMode : "single";
+		const mode = info?.items?.orchestrate && !partProblem ? itemMode : "single";
 		const input: Omit<CreateItemInput, "idempotencyKey"> = {
 			repository: { id: chosen.repository.id, branch: chosen.branch },
 			title,
@@ -912,7 +912,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		groups: modelGroups,
 		footer: (
 			<>
-				{item && other ? <p className="ui-menu-note">{other} works on the item in Open isolation without asking, and runs Quick: Plan first is Windlass's.{capabilitiesOf(harness).checks === "platform" ? " The platform runs this repository's saved checks when it ends a turn." : capabilitiesOf(harness).checks === "none" ? " It does not run this repository's checks, so CI decides." : ""}</p> : null}
+				{item && other ? <p className="ui-menu-note">{subtaskHarnessProblem(harness) ?? `Windlass plans the work. ${other} can build approved parts without asking.`}{capabilitiesOf(harness).checks === "platform" ? " The platform runs this repository's saved checks when it ends a turn." : capabilitiesOf(harness).checks === "none" ? " It does not run this repository's checks, so CI decides." : ""}</p> : null}
 				{other && !chosenMachine ? <p className="ui-menu-note">Hosted agents always use your Settings keys.</p> : null}
 				{other && chosenMachine ? <p className="ui-menu-note">Choose whose sign-in it uses on the <a className="link" {...linkProps({ name: "machines" })}>Machines</a> page.{onPullRequest(harness)}</p> : null}
 				{!other && modelList && modelList.source !== "account" ? <p className="ui-menu-note">{modelsNote(modelList)}</p> : null}
@@ -948,7 +948,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	);
 
 	const orchestrateOffered = item && Boolean(info?.items?.orchestrate);
-	const quickOnly = !!other && !usePolicy;
+	const quickOnly = !!partProblem;
 	const orchestrating = orchestrateOffered && itemMode === "orchestrate" && !quickOnly;
 	const orchestrateWarn = orchestrating ? orchestrateProblem(saved.checks) : null;
 	const shownItemMode: ItemMode = quickOnly ? "single" : itemMode;
@@ -1000,7 +1000,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 								id: one,
 								value: one,
 								label: ITEM_MODE_WORDS[one].name,
-								description: one === "orchestrate" && quickOnly ? `${other} runs Quick: Plan first is Windlass's.` : ITEM_MODE_LINES[one],
+								description: one === "orchestrate" && quickOnly ? partProblem! : ITEM_MODE_LINES[one],
 								wrap: true,
 								checked: shownItemMode === one,
 								disabled: busy !== null || (one === "orchestrate" && quickOnly),

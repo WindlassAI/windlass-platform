@@ -2350,6 +2350,9 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	assert.deepEqual([chosen.featurePlan!.subtasks[2]!.agent, chosen.approvedPlan!.subtasks[2]!.agent], [{ harness: "windlass", model: "m2" }, { harness: "windlass", model: "m2" }]);
 	assert.equal(walk(limited, [{ kind: "set_subtask_agent", key: "first", agent: { harness: "windlass", model: "m2" }, inventory }]).item.featurePlan!.subtasks[0]!.agent, undefined);
 	assert.throws(() => walk(limited, [{ kind: "set_subtask_agent", key: "third", agent: { harness: "windlass", model: "m9" }, inventory }]), /not among/);
+	const restore = walk({ ...chosen, context: { account: { harness: "claude" } } }, [{ kind: "set_subtask_agent", key: "third", agent: null,
+		inventory: { machines: [], hostedProfiles: ["e2b-open"], keyProfiles: ["e2b-open"], hostedKeys: [{ provider: "anthropic", checkedAt: 1 }] } }]);
+	assert.match(restore.last.events.at(-1)!.said, /will run Claude Code/);
 	expect("an approved feature changes the agent of a subtask that has not started only", true);
 
 	const done = update(hosted, "first", "done", 0, seconds / 2);
@@ -2426,6 +2429,19 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	assert.equal(walk(merged, [claim(b.id)]).item.joining?.child, b.id);
 	const updating = walk(start([task("one"), task("two", ["two"], ["one"])]), [{ kind: "update_feature", target: H(3) }]).item;
 	const failedMerge = { kind: "feature_updated", key: updating.joining!.key, result: { conflicts: ["src/setup.ts"] } };
+	// Planned parts use Windlass, but a newly generated repair inherits unattended Claude.
+	const withRepairDefault = { ...updating, context: { account: { harness: "claude" as const } } };
+	const generated = walk(withRepairDefault, [failedMerge]).item;
+	const newFix = generated.jobs!.at(-1)!;
+	const offer = walk(generated, [{ kind: "place_child", child: newFix.id, key: newFix.dispatchKey,
+		inventory: { machines: [], hostedProfiles: ["e2b-open"], keyProfiles: ["e2b-open"], hostedKeys: [{ provider: "anthropic", checkedAt: 1 }] } }]);
+	assert.equal(offer.item.jobs!.at(-1)!.placement, undefined);
+	assert.equal(effect(offer.last, "dispatch"), undefined);
+	assert.match(offer.item.question!.text, /Claude Code on hosted using your Settings key.*works without asking/);
+	assert.deepEqual(offer.item.question!.choices.map(choice => choice.id), ["approve", "give_up"]);
+	const consented = walk(offer.item, [{ kind: "answer", choice: "approve" }]);
+	assert.equal(consented.item.jobs!.at(-1)!.placement?.place.kind, "hosted");
+	assert.equal(effect(consented.last, "dispatch")?.child, newFix.id);
 	const fixing = walk(updating, [failedMerge]).item;
 	const repair = fixing.jobs!.at(-1)!;
 	assert.ok(repair.dispatchKey);

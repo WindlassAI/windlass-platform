@@ -177,6 +177,7 @@ export interface FeatureJob {
 	startedAt?: number;
 	wait?: string;
 	placementRefusal?: string;
+	repairOffer?: ChildPlacement;
 	placementWaitSince?: number;
 	/** Last serialized integration result, retained so a restarted child can receive it again. */
 	join?: JoinResult;
@@ -451,6 +452,7 @@ export type Fact =
 	| { kind: "file_plan"; inventory?: PlacementInventory; at: number; key: string; plan: unknown }
 	| { kind: "edit_plan"; inventory?: PlacementInventory; at: number; by: string; version: number; plan: unknown }
 	/** `agents`: the subtasks whose agent works without asking that the person confirmed (`ItemAction`). */
+	| { kind: "refresh_plan"; version: number; inventory: PlacementInventory; at: number }
 	| { kind: "approve_plan"; inventory?: PlacementInventory; at: number; by: string; version: number; agents?: string[]; bases?: Record<string, string> }
 	| { kind: "run_single"; at: number; by: string }
 	| { kind: "set_subtask_agent"; inventory?: PlacementInventory; at: number; by: string; key: string; agent: unknown }

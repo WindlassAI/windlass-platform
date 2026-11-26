@@ -52,6 +52,8 @@ export function agentChoices(machine: MachineSummary | null, keys: readonly impo
 
 /** The machine a subtask prefers, by its name (or the feature's, which it inherits); null for this platform or a name no machine has. */
 export function preferredMachine(task: PlanSubtask, parent: string, machines: MachineSummary[] | null): MachineSummary | null {
+	const bound = task.review?.places[0]?.place;
+	if (bound) return bound.kind === "hosted" ? null : machines?.find(machine => machine.machineId === bound.machineId) ?? null;
 	const name = task.place?.prefer ?? parent;
 	return machines?.find((machine) => machineLabel(machine) === name) ?? null;
 }
@@ -94,7 +96,7 @@ export function cleanAgent(agent: SubtaskAgent | null | undefined): SubtaskAgent
 
 /** A subtask with the person's choice of agent applied. */
 export function withAgent(task: PlanSubtask, agent: SubtaskAgent | null | undefined): PlanSubtask {
-	const { agent: _agent, ...rest } = task;
+	const { agent: _agent, resolved, review, placementProblem, placementWait, requestedLargerSize, ...rest } = task;
 	const chosen = cleanAgent(agent);
 	return chosen ? { ...rest, agent: chosen } : rest;
 }

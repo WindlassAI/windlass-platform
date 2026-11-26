@@ -24,7 +24,7 @@ import { Dialog } from "../components/Dialog";
 import { PlaceChoice, itemHarnesses, itemProfilesHere, machineUnusable } from "../components/PlaceChoice";
 import { RunLine } from "../components/RunSettings";
 import { runModelName, runOf } from "../lib/run";
-import { hostedAgentProblem } from "../../../server/src/sandbox/harnesses.js";
+import { hostedAgentProblem, subtaskHarnessProblem } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_NAMES } from "../lib/acp";
 import { AskIcon, ChevronIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRequestIcon, RingIcon, StopIcon, WarnIcon } from "../components/Icons";
 import { absoluteTime, count, plural, relativeTime } from "../lib/format";
@@ -742,8 +742,8 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const [effortChoice, setEffort] = useState("");
 	const [modeChoice, setMode] = useState<ItemMode>("orchestrate");
 	const orchestrate = !!platform.info?.items?.orchestrate;
-	// Plan first plans on Windlass: choosing another agent for this item files it as Quick. Its parts may still inherit one.
-	const mode: ItemMode = orchestrate && (agentChoice === null || agentChoice === "windlass") ? modeChoice : "single";
+	const partProblem = agentChoice && subtaskHarnessProblem(agentChoice);
+	const mode: ItemMode = orchestrate && !partProblem ? modeChoice : "single";
 	const layers = { account: account.settings?.defaults, repository: saved.defaults, machines: machines.list, sizes: platform.info?.hostedSizes };
 	const placeLayer = placeChoice === undefined ? {} : { place: placeChoice === null ? ("hosted" as const) : { machine: placeChoice } };
 	const agentRun = runOf({ ...layers, item: { ...placeLayer, harness: agentChoice } }, mode === "orchestrate" ? "part" : "builder");
@@ -891,7 +891,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 									</label>
 								))}
 							</div>
-							{agentChoice && agentChoice !== "windlass" && orchestrate && modeChoice === "orchestrate" ? <p className="field-note">Plan first plans on Windlass, so choosing {HARNESS_NAMES[agentChoice]} here files this as Quick.</p> : null}
+							{partProblem && orchestrate && modeChoice === "orchestrate" ? <p className="field-note">{partProblem}</p> : null}
 						</div>
 						{modelList && modelList.models.length > 0 ? (
 							<div className="item-agent-fields">

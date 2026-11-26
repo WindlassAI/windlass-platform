@@ -896,7 +896,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	// Work items, API tokens and the factory's limits live in mock-items.ts; an item's agent is made here, as `createSession` makes one.
 	// On one of the user's machines, it takes the machines as they are listed now, and is told of every change of them.
 	const items = createMockItems({
-		hosted: auth => ({ hostedKeys: [...worldOf(auth).account.providers.values()], hostedProfiles: profiles.filter(p => p.available).map(p => p.id),
+		hosted: auth => ({ hostedSizes: options.sizes === "one" ? undefined : MOCK_SIZES.map(s => s.id), hostedRates: Object.fromEntries(MOCK_SIZES.map(s => [s.id, s.usdPerHour])),
+			hostedKeys: [...worldOf(auth).account.providers.values()], hostedProfiles: profiles.filter(p => p.available).map(p => p.id),
 			keyProfiles: profiles.filter(p => p.available && p.platformKeys).map(p => p.id) }),
 		state: options.items,
 		long: options.long,

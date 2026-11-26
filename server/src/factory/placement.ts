@@ -4,6 +4,7 @@ import { nextUtcDay, usesPlatformModel } from "../usage.js";
 import { HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, hostedSizeFor, isolationName, sandboxSlots } from "../contract.js";
 import type { ChildPlacement, EgressMode, HostedSize, FeaturePlanEdit, HarnessId, MachineSummary, ModelList, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
 import type { plannerMachines } from "../machines/details.js";
+import { SIZE_WEIGHT } from "../billing/meter.js";
 import { changesMachinePayer, partRun, runAgent, type RunContext } from "./resolve-run.js";
 import { PlanError, subtaskHarness } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
@@ -36,6 +37,7 @@ export interface PlacementInventory {
 	hostedKeys?: readonly CheckedProvider[];
 	/** The hosted sizes the deployment offers (`Sandboxes.sizes`), smallest first. Absent: one size, which takes no `cpus` or `memoryGiB`. */
 	hostedSizes?: HostedSize[];
+	hostedRates?: Partial<Record<HostedSize, number | null>>;
 	/** What hosted sandboxes may reach (`Sandboxes.egress`); `none` takes no repository work. */
 	hostedEgress?: EgressMode;
 	defaultProfile?: SandboxProfileId;
@@ -198,6 +200,12 @@ function capabilityFit(machine: Machine, task: PlanSubtask, inventory: Placement
 	return null;
 }
 
+/** The terms shown for an allowed destination are the terms a child receives there. */
+function destinationTerms(place: SandboxPlace, machine: Machine | undefined, harness: HarnessId) {
+	const payer = harness === "windlass" ? "windlass" : place.kind === "hosted" ? "key" : machine?.harnesses?.find(h => h.id === harness)?.source ?? "machine";
+	return { place, name: machine?.name ?? placeKey(place), payer, sendSecrets: place.kind === "hosted" || (machine?.repositorySecrets ?? null) } as const;
+}
+
 function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementInventory, preferred: boolean, warm: string[], at: number, name?: string): Candidate {
 	const resolved = task.resolved;
 	const needs = task.needs ?? {};
@@ -212,8 +220,14 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	const bonus = (preferred ? 3 : 0) + Number(warm.includes(placeKey(place)));
 	// Usage limits are an account's: only those of the subtask's own agent there hold it back.
 	const m = place.kind === "machine" ? inventory.machines.find(m => m.machineId === place.machineId) : undefined;
+	const terms = destinationTerms(place, m, harness);
+	const destination = { place, name: terms.name, sendSecrets: terms.sendSecrets === true,
+		...(terms.payer !== "windlass" && { harness, payer: terms.payer }) };
 	const offered = m?.harnesses?.find(h => h.id === harness);
 	const keys = offered?.platformKeys ?? [];
+	const reviewed = task.review?.places.find(p => placeKey(p.place) === placeKey(place));
+	if (reviewed && m && reviewed.sendSecrets !== terms.sendSecrets)
+		return { refused: `The repository secrets policy for ‘${m.name}’ changed after approval. Review the placement again.`, permanent: true };
 	const model = task.agent?.model ?? (harness === "windlass" ? inventory.featureModel : inventory.models?.machines?.[placeKey(place)]?.[harness]?.defaultModel);
 	const tokenWait = usesPlatformModel(harness, model) ? inventory.dailyTokenWait : null;
 	const provider = harness === "windlass" ? windlassProvider(model) : place.kind === "hosted" ? hostedProvider(harness, model, inventory.hostedKeys?.map(k => k.provider) ?? []) : selectedKey(harness, model, keys);
@@ -224,7 +238,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 			: providerWait(harness, name, placementRetryAt(at, limit.limitedUntil, dailyCap)).sentence;
 		return { wait, providerUntil: limit.limitedUntil, accountKey: limit.accountKey, dailyCap };
 	};
-	const reason = preferred ? task.place?.reason ?? "Same place as the feature" : `Approved overflow from ‘${task.place?.prefer ?? "the preferred machine"}’`;
+	const reason = preferred ? task.place?.reason ?? (task.resolved ? "Resolved default for this part" : "Same place as the feature") : `Approved overflow from ‘${task.place?.prefer ?? "the preferred machine"}’`;
 	const notForSubtasks = subtaskHarnessProblem(harness);
 	if (notForSubtasks) return { refused: notForSubtasks, permanent: true };
 	if (place.kind === "hosted") {
@@ -251,11 +265,14 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 			return { refused: `This part needs ${HOSTED_SIZE_NAMES[sized]}. Choose that hosted size or reduce the part’s resource request.`, permanent: true,
 				larger: inventory.hostedSizes?.includes(sized) ? sized : undefined };
 		const size = resolved && inventory.hostedSizes?.length ? resolved.size : sized;
+		const quote = task.review?.hosted;
+		if (quote && (quote.size !== size || quote.usdPerHour !== (inventory.hostedRates?.[quote.size] ?? null)))
+			return { refused: "The reviewed hosted size or rate has changed. Review the placement again.", permanent: true };
 		if (size && !(inventory.hostedSizes ?? ["small"]).includes(size)) return { refused: `hosted has no ${HOSTED_SIZE_NAMES[size]} sandbox (${HOSTED_SIZE_SPECS[size].cpus} vCPU, ${HOSTED_SIZE_SPECS[size].memoryMiB / 1024} GiB) on this deployment`, permanent: true };
 		if (limited) return waiting(limited, "hosted");
 		if (tokenWait) return { wait: tokenWait, dailyCap: true };
 		const profile = needs.profile ?? profiles.find(p => p === inventory.defaultProfile) ?? profiles[0];
-		return { decision: { name: "hosted", place, ...(harness !== "windlass" && { harness, payer: "key" as const }), units: 1, reason, sendSecrets: true, profile, ...(size && inventory.hostedSizes && { hostedSize: size }) }, score: bonus };
+		return { decision: { ...destination, units: 1, reason, profile, ...(size && inventory.hostedSizes && { hostedSize: size }) }, score: bonus };
 	}
 	if (!m) return { refused: (name ? "‘" + name + "’" : "The selected machine") + " is no longer one of your machines.", permanent: true };
 	const never = (message: string): Candidate => ({ refused: `‘${m.name}’: ${message}.`, permanent: true });
@@ -289,7 +306,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	if (m.sandboxes.running >= (m.sandboxes.maxRunning ?? Infinity)) return { wait: `‘${m.name}’ is at its running sandbox limit.` };
 	if (m.sandboxes.kept >= (m.sandboxes.maxSandboxes ?? Infinity)) return { wait: `‘${m.name}’ is at its kept sandbox limit.` };
 	if (free < units) return { wait: slotWait(m.name, units, free) };
-	return { decision: { name: m.name, place, reason, units, sendSecrets: m.repositorySecrets, profile, ...(onMachine && { harness: onMachine, payer: offered?.source ?? "machine" }) },
+	return { decision: { ...destination, reason, units, profile },
 		score: bonus + Math.min(free, 3) - slots.queued - m.personalRunning };
 }
 
@@ -316,6 +333,8 @@ export function choosePlacement(task: PlanSubtask, route: PlacementRoute, invent
 	const first = candidates[0]!;
 	const changesPayer = ({ place, payer }: ChildPlacement) => {
 		if (!task.resolved || !payer) return false;
+		const reviewed = task.review?.places.find(p => placeKey(p.place) === placeKey(place));
+		if (reviewed && reviewed.payer !== payer) return true;
 		return place.kind === "machine" ? changesMachinePayer(task.resolved, place.machineId, payer, inventory.defaults?.machinePayers) : payer !== task.resolved.payer;
 	};
 	if ("decision" in first && !changesPayer(first.decision)) return { decision: first.decision } as const;
@@ -342,20 +361,42 @@ export function choosePlacement(task: PlanSubtask, route: PlacementRoute, invent
 	return { refused: refusals.map(c => c.refused).join(" "), larger, permanent: refusals.every(c => c.permanent) } as const;
 }
 
-/** Report the same wait or permanent refusal that approval and dispatch check. */
-export function reviewPlacement(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, inventory: PlacementInventory) {
+export function hostedTerms(saved: HostedSize, size: HostedSize, inventory: PlacementInventory) {
+	return { saved, size, rate: SIZE_WEIGHT[size], usdPerHour: inventory.hostedRates?.[size] ?? null };
+}
+
+// A busy destination can become ready without changing what its owner authorizes.
+const offerOf = (task: PlanSubtask) => JSON.stringify([task.resolved, task.review, task.placementProblem, task.requestedLargerSize]);
+
+/** Resolve the version the owner reviews using the inventory that admits the plan. */
+export function reviewPart(task: PlanSubtask, context: RunContext | undefined, parent: SandboxPlace, overflow: boolean, inventory: PlacementInventory) {
+	const previous = offerOf(task);
+	delete task.review;
+	delete task.requestedLargerSize;
 	delete task.placementProblem;
 	delete task.placementWait;
-	delete task.requestedLargerSize;
+	if (context) task.resolved = partRun(context, task, "part", inventory.machines);
 	try {
-		const fit = choosePlacement(task, bindRoute(task, parent, overflow, inventory.machines), inventory);
-		if (fit.refused && fit.permanent) task.placementProblem = fit.refused;
+		const route = bindRoute(task, parent, overflow, inventory.machines);
+		const fit = choosePlacement(task, route, { ...inventory, defaults: context });
+		if (fit.permanent) task.placementProblem = fit.refused;
 		else if (fit.wait || fit.refused) task.placementWait = fit.wait ?? fit.refused;
 		if (fit.larger) task.requestedLargerSize = fit.larger;
+		const run = task.resolved;
+		const places = [route.preferred, ...route.alternatives].map(place =>
+			destinationTerms(place, place.kind === "machine" ? inventory.machines.find(m => m.machineId === place.machineId) : undefined, subtaskHarness(task)));
+		const inherited = partRun(context ?? {}, { repo: task.repo });
+		task.review = { places, inherited };
+		if (places.some(p => p.place.kind === "hosted") && (inventory.hostedSizes?.length || task.needs?.hostedSize)) {
+			const saved = inherited.size;
+			const size = fit.larger ?? run?.size ?? task.needs?.hostedSize ?? saved;
+			task.review.hosted = hostedTerms(saved, size, inventory);
+		}
 	} catch (error) {
 		if (!(error instanceof PlanError)) throw error;
 		task.placementProblem = error.message;
 	}
+	return previous !== offerOf(task);
 }
 
 export function approveRoutes(plan: FeaturePlanEdit, parent: SandboxPlace, inventory: PlacementInventory, completed: Set<string>) {

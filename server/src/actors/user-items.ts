@@ -30,7 +30,7 @@ import { bindRoute, choosePlacement, machineSlots, placeKey, type AgentModels, t
 import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, HostedSize, ItemFeed, ModelProvider, PlanSubtask } from "../contract.js";
 import { providerStatuses, savedProviders } from "../model-providers.js";
-import { harnessName, itemHarnessProblem, knownHarness } from "../sandbox/harnesses.js";
+import { itemHarnessProblem, knownHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch, subtaskBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
@@ -308,7 +308,8 @@ function cleanItemInput(raw: unknown) {
 	if (typeof repository !== "object" || repository === null || !isGithubId(repository.id)) throw bad("Choose a repository of your GitHub connection for the item.");
 	if (input.start !== undefined && input.start !== null && typeof input.start !== "boolean") throw bad("Say yes or no to starting the item at once.");
 	const mode: ItemMode = input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate");
-	if (mode === "orchestrate" && harness !== "windlass") throw bad(`Plan first runs only with Windlass. Choose Quick for ${harnessName(harness)}.`);
+	const partProblem = mode === "orchestrate" && subtaskHarnessProblem(harness);
+	if (partProblem) throw bad(partProblem);
 	const repositories = cleanRepositories(input.repositories, repository.id, mode, bad);
 	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 	if (input.effort !== undefined && input.effort !== null && (typeof input.effort !== "string" || input.effort.length > 64)) throw new UserError("Choose one of the efforts the item's agent offers.", { code: "bad_effort" });
@@ -597,16 +598,6 @@ async function fileItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 async function attachmentStates(c: ItemsCtx, view: ItemView): Promise<ItemView> {
 	if (view.mode === "orchestrate") {
 		view.children = [...c.vars.items.items.values()].filter(i => i.parent?.itemId === view.id);
-		if (view.plan?.status === "proposed") {
-			const names = new Set(view.plan.subtasks.flatMap(t => t.place ? [t.place.prefer, ...(t.place.allow ?? [])] : []));
-			const parent = view.place;
-			const inheritsPlace = view.plan.subtasks.some(t => !t.place);
-			if (inheritsPlace && parent.kind === "hosted") names.add("hosted");
-			view.placementReview = [...c.vars.machines.values()].filter(m => names.has(machineLabel(m)) ||
-				(parent.kind === "machine" && parent.machineId === m.machineId && inheritsPlace))
-				.map(m => ({ name: machineLabel(m), sendSecrets: m.sendSecrets }));
-			if (names.has("hosted")) view.placementReview.push({ name: "hosted", sendSecrets: true });
-		}
 	}
 	const parts = view.children?.length ? await partScreenshots(c, view.children) : [];
 	if (parts.length) view.partScreenshots = parts;
@@ -1055,9 +1046,10 @@ export async function placementInventory(c: ItemsCtx, models: () => Promise<Agen
 		partDefaults(c, repositories),
 		snapshotRepository === undefined ? [] : snapshotPlaces(c.db, setupProjectKey(snapshotRepository) ?? "", c.vars.github?.connectedAt, config.hosted?.snapshots?.ttlMs).catch(() => []),
 	]);
+	const sizes = hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan);
 	return { defaults, machines, models: catalogs, hostedKeys: hostedKeys.filter(k => k.ok), limited: limitedAccounts(accounts), dailyTokenWait: accountTokenWait(c),
 		snapshotPlaces: fresh, screenshotsEnabled: config.factory.screenshots, screenshotStorage: !!attachmentStore(), repositoryScreenshots: Object.fromEntries(Object.entries(defaults.repositories).map(([alias, r]) => [alias, r.screenshots])),
-		hostedSizes: hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(size => size.id),
+		hostedSizes: sizes.map(size => size.id), hostedRates: Object.fromEntries(sizes.map(size => [size.id, size.usdPerHour])),
 		hostedProfiles: profiles.map(p => p.id), keyProfiles: profiles.filter(p => p.platformKeys).map(p => p.id), hostedEgress: sandboxes.egress?.() };
 }
 
@@ -1126,7 +1118,7 @@ export const itemActions = {
 				const { job, feature, context, untrusted, unsandboxed } = request;
 				// A cross-repo feature's child is on its subtask's repository; any other on the feature's.
 				const target = request.repository ?? { id: feature.repository.id, base: feature.repository.branch };
-				const role = job.ciFix || job.conflictFix ? "repair" : "part";
+				const role = job.ciFix || job.conflictFix || job.reviewFix ? "repair" : "part";
 				const run = job.task.resolved ?? partRun(request.settings, job.task, role);
 				const task = { ...job.task, resolved: run };
 				const route = job.route ?? bindRoute(task, feature.place, false, plannerMachines([...c.vars.machines.values()]));
