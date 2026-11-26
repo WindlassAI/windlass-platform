@@ -714,11 +714,14 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
 		if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
 
+		let title = givenTitle ?? DEFAULT_TITLE;
+		if (repo && build) title = `Prepare environment for ${repo.owner}/${repo.name}`;
+		if (repo && readiness) title = `Check repository setup · ${repo.owner}/${repo.name}`;
 		const now = Date.now();
 		const itemRole = item && { role: item.role, subtaskScreenshots: item.subtaskScreenshots, ...(item.planCritic && { planCritic: true as const }) };
 		summary = {
 			id: readiness?.attempt ?? item?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
-			title: givenTitle ?? DEFAULT_TITLE,
+			title,
 			place,
 			harness,
 			capabilities: sessionCapabilities(harness),
@@ -746,7 +749,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(readiness && { readiness }),
 			...(hostedSize && { hostedSize }),
 			title: summary.title,
-			titleIsTyped: !item && givenTitle !== null,
+			titleIsTyped: !item && (givenTitle !== null || !!readiness || !!build),
 			place: summary.place,
 			harness,
 			...(machine ? { machineName: machine.name } : {}),
@@ -891,7 +894,7 @@ async function assessRepository(c: CreateCtx, profile: UserProfile, id: GithubId
 			const offered = await modelsOf(c, profile.demo);
 			model = [repoDefaults.model, account.model].find((id): id is string => offered.models.some(m => m.id === id));
 		}
-		await makeSession(c, profile, { title: "Repo setup", repository: { id }, place: destination.place, profile: profileId, model }, null, undefined, { readiness });
+		await makeSession(c, profile, { repository: { id }, place: destination.place, profile: profileId, model }, null, undefined, { readiness });
 		await sessionActor(c, profile.uid, session).internalAssessRepository(prompt);
 	} catch (error) {
 		await finishAssessment(c.db, session, error instanceof UserError ? error.message : "The setup check could not start.");
@@ -928,11 +931,10 @@ function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 		createBuild: async (request) => {
 			const profile = c.vars.profile;
 			if (!profile) throw new Error("Sign in again so the platform can build environments.");
-			const [row] = await c.db.execute<{ label: string }>("SELECT label FROM setup_command WHERE project = ?", request.project);
 			const place = request.place === HOSTED ? { kind: "hosted" as const } : { kind: "machine" as const, machineId: request.place };
 			let summary: SessionSummary;
 			try {
-				summary = await makeSession(c, profile, { title: `Environment of ${row?.label ?? "the repository"}`, place, profile: request.profile as SandboxProfileId, ...(request.hostedSize && { hostedSize: request.hostedSize }), repository: { id: githubId(request.repositoryId) ?? request.repositoryId } }, null, undefined,
+				summary = await makeSession(c, profile, { place, profile: request.profile as SandboxProfileId, ...(request.hostedSize && { hostedSize: request.hostedSize }), repository: { id: githubId(request.repositoryId) ?? request.repositoryId } }, null, undefined,
 					{ build: { project: request.project, place: request.place, screenshots: request.screenshots } });
 			} catch (error) {
 				throw new Error(error instanceof UserError ? error.message : "The build's sandbox could not be made.");
