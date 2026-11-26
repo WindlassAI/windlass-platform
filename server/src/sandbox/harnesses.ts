@@ -219,11 +219,22 @@ export function machineSignIns(entry: ReportedSignIn): ModelProvider[] {
 	return (entry.machineProviders ?? []).map(p => p === "chatgpt" ? "openai" : p).filter(isModelProvider);
 }
 
-/** The Settings keys a machine agent may use: the machine's own sign-in comes first for its providers, unless the owner chose keys. */
-export function usableKeys(entry: ReportedSignIn, saved: readonly ModelProvider[], source?: CredentialSource): ModelProvider[] {
-	if (source === "key") return [...saved];
-	const own = machineSignIns(entry);
-	return saved.filter(provider => !own.includes(provider));
+/** A machine payer is exclusive, including when its credentials are unavailable. */
+export function usableKeys(_entry: ReportedSignIn, saved: readonly ModelProvider[], source?: CredentialSource): ModelProvider[] {
+	return source === "key" ? [...saved] : [];
+}
+
+export function machinePayerProblem(entry: ReportedSignIn & { keyRelay?: true }, model: string | undefined, source: CredentialSource, keys: readonly ModelProvider[]) {
+	if (source === "key") {
+		if (!entry.keyRelay) return "The selected Settings key needs a runner with key relay support.";
+		if (!hostedProvider(entry.id, model, keys)) return hostedKeyMessage(entry.id, model);
+	} else {
+		if (entry.signIn !== "token") return `Sign in to ${harnessName(entry.id)} on the machine or choose a Settings key.`;
+		if (entry.id === "opencode" && model && model !== "default" && !(entry.machineProviders ?? []).some(p =>
+			model.startsWith((p === "free" ? "opencode" : p === "chatgpt" ? "openai" : p) + "/")))
+			return `The machine sign-in cannot run ${model}. Sign in to its provider or choose a Settings key.`;
+	}
+	return null;
 }
 
 /** Combine a runner report with the owner's Settings keys its turns may use (`usableKeys`). */
@@ -237,7 +248,9 @@ export function withSettingsKeys<T extends KeyHarness & { signIn: "token" | "non
 export function listedHarness<T extends KeyHarness & ReportedSignIn & { method?: SignInMethod }>(entry: T, saved: readonly ModelProvider[], source?: CredentialSource):
 	T & { platformKeys?: ModelProvider[]; machineSignIns?: ModelProvider[]; machineMethod?: "api-key" | "chatgpt"; source?: CredentialSource } {
 	const own = machineSignIns(entry);
-	return { ...withSettingsKeys(entry, usableKeys(entry, saved, source)),
+	const effective = withSettingsKeys(entry, usableKeys(entry, saved, source));
+	return { ...effective, ...(source === "key" && !("platformKeys" in effective) && { signIn: "none" as const }),
+		...(source === "key" && entry.machineProviders && { machineProviders: [] }),
 		...(entry.machineProviders && entry.signIn !== "token" && { machineProviders: [] }),
 		...(own.length && { machineSignIns: own }),
 		...(entry.id === "codex" && (entry.method === "chatgpt" || entry.method === "api-key") && { machineMethod: entry.method }), ...(source && { source }) };

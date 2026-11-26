@@ -253,7 +253,7 @@ test("machine readiness and the OpenCode model menu use the owner's available pr
 	const models = ["anthropic/claude", "google/gemini", "openai/gpt"].map(id => ({ id, name: id, efforts: [] }));
 	const catalog = availableCatalog({ models, defaultModel: models[0]!.id, modes: [], checkedAt: 1 }, effective);
 	assert.deepEqual(catalog?.models.map(m => m.id), ["default", "google/gemini", "openai/gpt"]);
-	const unchecked = listedHarness({ ...entry, signIn: "unknown" }, saved);
+	const unchecked = listedHarness({ ...entry, signIn: "unknown" }, saved, "key");
 	assert.deepEqual(availableCatalog({ models, defaultModel: "default", modes: [], checkedAt: 1 }, unchecked)?.models.map(m => m.id), ["default", "google/gemini"]);
 	assert.equal(catalog?.defaultModel, "default");
 	assert.equal(withSettingsKeys({keyRelay: true, id: "claude", signIn: "token", method: undefined}, []).method, "subscription");
@@ -263,9 +263,9 @@ test("machine readiness and the OpenCode model menu use the owner's available pr
 	const claude = { keyRelay: true as const, id: "claude" as const, signIn: "token" as const };
 	assert.deepEqual(listedHarness(claude, ["anthropic"]), { ...claude, method: "subscription", machineSignIns: ["anthropic"] });
 	assert.deepEqual(listedHarness(claude, ["anthropic"], "key"), { ...claude, method: "api-key", platformKeys: ["anthropic"], machineSignIns: ["anthropic"], source: "key" });
-	assert.deepEqual(listedHarness({ ...claude, signIn: "none" }, ["anthropic"]), { ...claude, method: "api-key", platformKeys: ["anthropic"] });
+	assert.deepEqual(listedHarness({ ...claude, signIn: "none" }, ["anthropic"]), { ...claude, signIn: "none" });
 	const opencode = { keyRelay: true as const, id: "opencode" as const, signIn: "token" as const, machineProviders: ["chatgpt", "free"] };
-	assert.deepEqual(listedHarness(opencode, ["openai", "google"]).platformKeys, ["google"]);
+	assert.deepEqual(listedHarness(opencode, ["openai", "google"]).platformKeys, undefined);
 	assert.deepEqual(listedHarness(opencode, ["openai", "google"]).machineSignIns, ["openai"]);
 	// An old runner relays no key, whatever the choice.
 	assert.equal(listedHarness({ ...claude, keyRelay: undefined }, ["anthropic"], "key").platformKeys, undefined);
@@ -284,7 +284,7 @@ test("machine credential source lifecycle", async t => {
 	const report = { docker: { ok: true }, commandSandbox: { ok: true }, sandboxes: [], freeDiskBytes: 8e9,
 		harnesses: [{ id: "claude", signIn: "token", keyRelay: true, adapter: "fixture", image: "fixture" }] };
 	sql.prepare("INSERT INTO machines(id,name,os,arch,facts) VALUES ('desk','Desk','linux','x64',?)").run(JSON.stringify({ report, status: "online" }));
-	sql.exec("INSERT INTO model_provider(provider,generation,sealed,last4,added_at) VALUES ('anthropic','first','fixture','1234',1)");
+	sql.exec("INSERT INTO model_provider(provider,generation,sealed,last4,added_at,check_ok) VALUES ('anthropic','first','fixture','1234',1,1)");
 	const until = Date.now() + 60_000;
 	const usage = { backoff: 0, lastRefusal: Date.now(), lastSuccess: -1, account: {
 		key: "settings/anthropic/first", harness: "claude", provider: "anthropic", state: "limited", limitedUntil: until, windows: [] } };
@@ -325,7 +325,7 @@ test("machine credential source lifecycle", async t => {
 		assert.deepEqual(retried, [7]);
 		assert.equal((await place(machine)).accountKey, usage.account.key);
 	});
-	await t.test("deleting the key falls back to the machine and unpairing retires the preference", async () => {
+	await t.test("deleting the selected key stops the agent and unpairing retires the preference", async () => {
 		sql.exec("DELETE FROM model_provider");
 		const [machine] = await listMachines(ctx as never);
 		assert.equal(machine.harnesses?.[0]?.method, "subscription");

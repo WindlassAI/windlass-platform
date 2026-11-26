@@ -131,7 +131,7 @@ import { StartClock, keepStartTimes, startTimesLog } from "../start-times.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason, SANDBOX_ESCAPE_REFUSED } from "../sandbox/codex-modes.js";
-import { windlassProvider, hostedKeyMessage, hostedProvider, selectedKey, usableKeys, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { windlassProvider, hostedKeyMessage, hostedProvider, selectedKey, machinePayerProblem, usableKeys, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { stepLimitNote } from "../sandbox/platform-steps.js";
 import { capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import { privateSessionData } from "../sandbox/session-data.js";
@@ -735,10 +735,15 @@ export async function turnCredential(c: Ctx, meta: SessionMeta, offered: Offered
 		if (!generation) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		return { model, key: { provider, generation } };
 	}
-	if (!hosted && !offered?.keyRelay) return { model };
 	const keyActor = modelKeyActor(c, meta.uid);
 	const [keys, source] = await Promise.all([keyActor.internalModelKeys(), meta.place.kind === "machine" ? keyActor.internalCredentialSource(meta.place.machineId, harness) : null]);
-	// On a machine its own sign-in serves its providers first, unless the owner chose keys (`usableKeys`).
+	const payer = source ?? "machine";
+	if (!hosted && meta.origin?.payer && meta.origin.payer !== payer)
+		throw new UserError("The selected payer changed. Restore the item's payer on Machines or file a new item.", { code: "harness_signed_out" });
+	if (!hosted) {
+		const problem = offered ? machinePayerProblem(offered, model, payer, keys.map(k => k.provider)) : "The selected machine agent is unavailable.";
+		if (problem) throw new UserError(problem, { code: "harness_signed_out" });
+	}
 	const providers = hosted || !offered ? keys.map(k => k.provider) : usableKeys(offered, keys.map(k => k.provider), source ?? undefined);
 	if (harness === "opencode" && model === "default") {
 		if (meta.place.kind === "machine" && providers.length)
@@ -746,13 +751,8 @@ export async function turnCredential(c: Ctx, meta: SessionMeta, offered: Offered
 		else if (hosted) model = meta.harnessModels?.defaultModel ?? model;
 	}
 	const provider = hosted ? hostedProvider(harness, model, providers) : selectedKey(harness, model, providers);
-	if (hosted && !provider) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
+	if ((hosted || payer === "key") && !provider) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 	const key = keys.find(k => k.provider === provider);
-	// An explicit switch to a key, or a fallback from a filed key, uses this turn's billing method.
-	if (offered && meta.origin && (meta.origin.filedWithKey || (key && source === "key"))) {
-		const effective = withSettingsKeys(offered, provider ? [provider] : []);
-		return { model, key, itemSignIn: effective.method };
-	}
 	return { model, key };
 }
 

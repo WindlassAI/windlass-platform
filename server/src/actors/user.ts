@@ -695,7 +695,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		const catalog = offered?.optionsDigest && place.kind === "machine" ? await machineCatalog(c, place.machineId, offered.id, offered.optionsDigest) : undefined;
 		if (offered?.optionsDigest && !catalog) throw new UserError("The machine’s model list changed. Choose the model again.", { code: "bad_input" });
 		const providers = place.kind === "hosted" && harness !== "windlass" ? await providerStatuses(c.db) : undefined;
-		const options = providers ? hostedCatalog(harness, providers) : availableCatalog(catalog ?? undefined, offered);
+		const options = providers ? hostedCatalog(harness, providers.filter(p => p.ok)) : availableCatalog(catalog ?? undefined, offered);
 		if (harness === "codex" && chosen.id === "docker-windlass-sandbox" && !offered?.modes?.includes("workspace-write"))
 			throw new UserError(offered?.modeReason ?? innerModesReason, {code:"bad_input"});
 		const modes = initialSessionModes(chosen.id, harness, !!item, harness === "codex" ? codexModes(chosen.id, machine ? offered?.modes ?? [] : undefined) : options?.modes);
@@ -706,7 +706,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// A build runs no agent, so it asks for no model list (and needs no sign-in): the stand-in names one.
 		const models = harness !== "windlass" ? initialHarnessModels(options ?? undefined) : build ? standInModels("demo") : await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options && machine ? "bad_input" : undefined);
-		if (providers && harness !== "windlass" && !hostedProvider(harness, model, providers.map(p => p.provider)))
+		if (providers && harness !== "windlass" && !hostedProvider(harness, model, providers.filter(p => p.ok).map(p => p.provider)))
 			throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		// An item's effort runs every turn, unwatched: only one its agent reported is taken.
 		if (item?.effort !== undefined) modelInput(() => checkItemEffort(models, model, item.effort, harness !== "windlass"));
@@ -743,7 +743,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(readiness && { readiness: true as const }),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
-			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, ...itemRole, ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(itemSignIn && offered?.platformKeys?.length && { filedWithKey: true as const }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, ...itemRole, ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(offered && { payer: offered.source ?? "machine", payerSource: offered.source ? "account" as const : "deployment" as const }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(!item && size > 1 && { size }),
 			...(build && { environmentBuild: build }),
 			...(readiness && { readiness }),
