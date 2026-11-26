@@ -563,10 +563,9 @@ function serverInput<T>(clean: () => T): T {
 
 export function cleanTitle(title: unknown): string | null {
 	if (typeof title !== "string") return null;
-	const clean = title.replace(/\s+/g, " ").trim();
-	if (clean === "") return null;
-	if (clean.length > MAX_TITLE_CHARS) throw new UserError(`A title can be at most ${MAX_TITLE_CHARS} characters.`, { code: "bad_input" });
-	return clean;
+	if (!title.trim()) return null;
+	if (title.length > MAX_TITLE_CHARS) throw new UserError(`A title can be at most ${MAX_TITLE_CHARS} characters.`, { code: "bad_input" });
+	return title;
 }
 
 /** An https git address with no credentials in it, and nothing a shell or git could read as an option. */
