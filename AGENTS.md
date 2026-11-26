@@ -3,6 +3,17 @@
 Make the smallest change that solves the task. Start with the guide in the area you touch.
 Run each command below from the repository root in a fresh shell.
 
+## Quick commands
+
+```sh
+corepack pnpm install --frozen-lockfile
+corepack pnpm -s typecheck
+```
+
+Use the recursive typecheck after editing `server/src/contract.ts`: the web compiler checks that file too.
+
+<summary>How CI performs the install (reference only)</summary>
+
 ## Set up
 
 Use the pnpm version pinned in `package.json`. CI installs from the lockfile.
@@ -12,7 +23,16 @@ corepack enable pnpm
 pnpm install --frozen-lockfile
 ```
 
+
+## Key files
+
+- `package.json` pins pnpm and defines the recursive typecheck.
+- `pnpm-workspace.yaml` lists the server, runner and web workspaces.
+- `docs/testing.md` explains how CI selects and runs test groups.
+
 ## Typecheck first
+
+For a focused check, use the relevant workspace commands below instead of the recursive typecheck, not after it.
 
 Server typecheck
 
