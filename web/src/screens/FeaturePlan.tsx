@@ -1,3 +1,4 @@
+import { modelWords } from "../lib/models";
 import { MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemBudget, type SubtaskBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
@@ -870,7 +871,7 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 				<dd>
 					<AgentGlyph harness={child.agent.harness} size={11} inline />
 					<strong className="plan-agent-name">{words.name}</strong>
-					<span className="tone-dim"> · {child.agent.model}{child.agent.effort ? ` · ${child.agent.effort} effort` : ""}</span>
+					<span className="tone-dim"> · {modelWords(child.agent.model)}{child.agent.effort ? ` · ${child.agent.effort} effort` : ""}</span>
 					{words.unattended ? <UnattendedTag /> : null}
 				</dd>
 			</div>

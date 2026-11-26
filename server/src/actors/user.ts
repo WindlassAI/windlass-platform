@@ -39,6 +39,7 @@ import {
 	type GithubStatus,
 	type LinearStatus,
 	type LinearTeamList,
+	isolationName,
 	listedSessions,
 	MAX_ACCOUNT_SECRETS,
 	MAX_PERSONAL_SERVERS,
@@ -619,7 +620,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		const notForItems = item ? itemHarnessProblem(harness) : null;
 		if (notForItems) throw new UserError(notForItems, { code: "bad_input" });
 		const agent = place.kind === "hosted" ? hostedHarness(harness) : machineHarnesses[harness];
-		if (!agent.profiles.includes(input.profile)) throw new UserError(`${agent.name} requires ${agent.profiles.join(" or ")} here.`, { code: "bad_input" });
+		if (!agent.profiles.includes(input.profile)) throw new UserError(`${agent.name} requires ${[...new Set(agent.profiles.map(isolationName))].join(" or ")} isolation here.`, { code: "bad_input" });
 		const profileProblem = item ? itemProfileProblem(harness, input.profile) : null;
 		if (profileProblem) throw new UserError(profileProblem, { code: "bad_input" });
 		// Its publish comes over MCP, which any process in the container may reach (platform-tools.ts): it asks every time.

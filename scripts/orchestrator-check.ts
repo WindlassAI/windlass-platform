@@ -1151,7 +1151,7 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 	refused({ harness: "opencode" }, agentMac({ harnesses: [signedIn[0]] }), /‘Mac’: it does not offer OpenCode/);
 	refused({ harness: "claude" }, agentMac({ harnesses: [{ ...signedIn[0], signIn: "none" }] }), /Claude Code is not signed in there/);
 	refused({ harness: "claude" }, agentMac({ harnesses: [{ ...signedIn[0], signIn: "unknown" }] }), /could not say whether Claude Code is signed in/);
-	refused({ harness: "claude" }, agentMac({ allowedProfiles: ["docker-windlass-sandbox"] }), /does not allow the docker-hardened profile, which Claude Code needs/);
+	refused({ harness: "claude" }, agentMac({ allowedProfiles: ["docker-windlass-sandbox"] }), /does not allow the Open profile, which Claude Code needs/);
 	refused({ harness: "claude", model: "opus" }, agentMac(), /Claude Code: That model is not offered/);
 	refused({ harness: "claude", model: "sonnet", effort: "max" }, agentMac(), /effort for sonnet must be one of: low, high/);
 	refused({ harness: "windlass", model: "o9" }, agentMac(), /Windlass: That model is not among the ones your ChatGPT plan offers/);
@@ -1253,7 +1253,7 @@ test("a re-plan can't keep a machine agent on a subtask it moves out of the hard
 	const fit = choosePlacement(task, { preferred: { kind: "machine", machineId: macId }, alternatives: [] }, inventory);
 	assert.equal(fit.decision, undefined);
 	assert.equal(fit.permanent, true);
-	assert.match(String(fit.refused), /‘Mac’: Claude Code runs only in the docker-hardened profile, and the subtask asks for docker-windlass-sandbox/);
+	assert.match(String(fit.refused), /‘Mac’: Claude Code runs only in the Open profile, and the subtask asks for Strict/);
 });
 
 test("a Windlass subtask choosing only an effort is held to the feature's model at approval", () => {

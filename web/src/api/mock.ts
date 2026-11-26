@@ -41,6 +41,7 @@ import {
 	MAX_CHECK_TIMEOUT_SECONDS,
 	MIN_SECRET_VALUE_CHARS,
 	MAX_TITLE_CHARS,
+	isolationName,
 	generatedSessionTitle,
 	promptTitle,
 	MAX_MACHINES,
@@ -3356,7 +3357,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					: machine?.harnesses?.find(entry => entry.id === harness)?.options;
 				if (harness !== "windlass") {
 					if (!machine && !hostedProvider(harness, input.model, [...world().account.providers.keys()])) throw new PlatformError("user", hostedKeyMessage(harness), { reason: "harness_signed_out" });
-					if (machine ? input.profile !== "docker-hardened" : !profile.platformKeys) throw new PlatformError("user", `${HARNESS_NAMES[harness]} requires the docker-hardened profile.`, { reason: "bad_input" });
+					if (machine ? input.profile !== "docker-hardened" : !profile.platformKeys) throw new PlatformError("user", `${HARNESS_NAMES[harness]} requires the ${isolationName("docker-hardened")} profile.`, { reason: "bad_input" });
 					if (input.publishUnasked) throw new PlatformError("user", publishAsksEveryTime(HARNESS_NAMES[harness]), { reason: "bad_input" });
 					if (machine && !machine.harnesses?.some((offered) => offered.id === harness)) throw new PlatformError("user", `This machine does not offer ${HARNESS_NAMES[harness]}.`, { reason: "bad_input" });
 				}

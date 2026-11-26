@@ -5,15 +5,16 @@
  */
 import type { ItemAgent, ItemSpend } from "@contract";
 import { HARNESS_NAMES } from "./acp";
+import { modelWords } from "./models";
 import { plural, sandboxTime } from "./format";
 
 /** What a subscription agent spent, which no token budget holds: "4 turns, 12 min". */
 export const subscriptionSpend = (spent: Pick<ItemSpend, "turns" | "activeSeconds">): string => `${plural(spent.turns, "turn")}, ${sandboxTime(spent.activeSeconds)}`;
 
-/** "Claude Code · sonnet · effort high", "Windlass · gpt-6.2-sol"; the agent's default model is said as such. */
+/** "Claude Code · Sonnet · effort high", "Windlass · GPT-6.2 Sol"; the agent's default model is said as such. */
 export function agentLine(agent: ItemAgent | undefined): string {
 	if (!agent) return "Windlass";
-	return `${HARNESS_NAMES[agent.harness] ?? agent.harness} · ${agent.model === "default" ? "its default model" : agent.model}${agent.effort ? ` · effort ${agent.effort}` : ""}`;
+	return `${HARNESS_NAMES[agent.harness] ?? agent.harness} · ${agent.model === "default" ? "its default model" : modelWords(agent.model)}${agent.effort ? ` · effort ${agent.effort}` : ""}`;
 }
 
 /** The tokens row where it is no meter of the budget: null where the tokens count against it. */

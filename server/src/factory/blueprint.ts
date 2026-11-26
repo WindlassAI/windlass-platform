@@ -1029,7 +1029,8 @@ export function plannerCapacityText(place: FactoryItem["place"], machines: Place
 	}
 	const machine = machines.find(m => m.machineId === place.machineId);
 	const parts = machine?.online ? Math.min(RULES.parallelChildren, freeMachineSlots(machineSlots(machine))) : 0;
-	return `Your machine '${machine?.name ?? place.machineId}' can run ${parts} part${parts === 1 ? "" : "s"} at once. Additional parts wait for a slot.`;
+	const name = machine ? `Your machine '${machine.name}'` : "Your selected machine";
+	return `${name} can run ${parts} part${parts === 1 ? "" : "s"} at once. Additional parts wait for a slot.`;
 }
 
 const backstopTurns = (item: FactoryItem): number => (item.mode === "orchestrate" ? ownSpent(item, item.spent).turns : item.spent.turns) - (item.backstopFrom ?? 0);
@@ -1165,7 +1166,7 @@ function askProviderRefusal(c: Change, refusal: ItemProviderRefusal, plan: TurnP
 	if (usageRefusal(refusal.kind) && reset !== undefined && reset - c.at <= MAX_PROVIDER_WAIT && retries < RULES.providerRetries) {
 		c.run.step.providerRetries = retries + 1;
 		const at = reset + MINUTE;
-		const place = refusal.placeName ?? c.item.placement?.name ?? (c.item.place.kind === "hosted" ? "hosted" : c.item.place.machineId);
+		const place = refusal.placeName ?? c.item.placement?.name ?? (c.item.place.kind === "hosted" ? "hosted" : "your machine");
 		const wait = providerWait(itemAgent(c.item).harness, place, at, reset);
 		c.state("waiting", { ...wait, accountKey: refusal.accountKey });
 		c.say(wait.sentence);

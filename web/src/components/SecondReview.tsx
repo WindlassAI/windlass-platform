@@ -11,6 +11,7 @@
  * builder's does; the only links in its blocks are the places in the code, built by the platform from
  * the repository, the reviewed commit and a path the contract allows (`blobLink`).
  */
+import { modelWords } from "../lib/models";
 import type { ItemAttachment, ItemReview, ItemSummary, ItemView, ReviewBlock, ReviewLocation, ReviewRecommendation, Verdict } from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { linkProps } from "../lib/router";
@@ -146,7 +147,7 @@ function Review({ view, review, links, when, named }: ReviewProps) {
 					<span>at {review.head.slice(0, 7)}</span>
 					{earlierCommit ? <span>of an earlier commit</span> : null}
 					{review.round > 1 ? <span>the {ordinal(review.round)} round</span> : null}
-					<span className="review-model">{review.by.model}</span>
+					<span className="review-model">{modelWords(review.by.model)}</span>
 					<span>filed {when(review.at)}</span>
 				</span>
 			</p>
