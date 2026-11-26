@@ -20,7 +20,7 @@ import type { OutOfMemory } from "../sandbox/api.js";
 import { MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
 import { CI_POLLING, type CiReading, ciPollEvery, ciState, workflowOverdue } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
-import { partRun, resolveRun } from "./resolve-run.js";
+import { partRun, resolveRun, runPlace } from "./resolve-run.js";
 import { approveRoutes, bindRoute, choosePlacement, freeMachineSlots, machineSlots, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
 import { answeredWords, choice, CHOICES } from "./answered.js";
@@ -272,10 +272,8 @@ function askRunPlace(c: Change, reason: string) {
 	ask(c, "run_place", reason, [choice("wait"), ...(hosted ? [alternative] : []), choice("give_up")], null, null);
 }
 
-function waitForDefaultPlace(c: Change, sentence: string): boolean {
-	const attempt = c.item.placeAttempts ?? 0;
-	const at = defaultPlaceRetryAt(c.at, attempt);
-	c.item.placeAttempts = attempt + 1;
+function waitForDefaultPlace(c: Change, sentence: string, at = defaultPlaceRetryAt(c.at, c.item.placeAttempts ?? 0)): boolean {
+	c.item.placeAttempts = (c.item.placeAttempts ?? 0) + 1;
 	if (c.item.wait?.sentence !== sentence) c.say(sentence);
 	c.item.awaitingPlace = sentence;
 	c.state("waiting", { reason: "machine", sentence, retryAt: at });
@@ -286,12 +284,12 @@ function waitForDefaultPlace(c: Change, sentence: string): boolean {
 function recordRun(item: FactoryItem, fact: Extract<Fact, { kind: "turn_started" }>) {
 	if (!fact.actual) return;
 	const role = fact.role ?? item.runRole ?? "builder";
-	const run = role === item.runRole && item.resolved ? structuredClone(item.resolved) : resolveRun(item.context ?? {}, role);
+	const run = role === item.runRole && item.resolved ? item.resolved : resolveRun(item.context ?? {}, role);
 	const { size, payerSource, ...actual } = fact.actual;
-	Object.assign(run, actual);
-	if (payerSource) run.sources.payer = payerSource;
-	if (item.useHosted) run.sources.place = "item";
-	(item.ranWith ??= {})[role] = { ...run, size: size ?? null };
+	const sources = { ...run.sources };
+	if (payerSource) sources.payer = payerSource;
+	if (item.useHosted) sources.place = "item";
+	(item.ranWith ??= {})[role] = { ...run, ...actual, sources, size: size ?? null };
 }
 
 function apply(c: Change, fact: Fact): boolean {
@@ -600,12 +598,7 @@ function stepFact(c: Change, fact: StepFact): boolean {
 			if (!job || fact.key !== (job.dispatchKey ?? key) || step.kind !== "subtasks" || c.item.question || job.cancelRequested || job.state !== "draft") return false;
 			if (fact.kind === "placement_wait") {
 				if (job.id !== fact.child) return false;
-				if (fact.askMachine) {
-					job.offerHosted = fact.offerHosted ?? false;
-					job.askMachine = true;
-					return placementRefused(c, job, fact.sentence);
-				}
-				if (fact.refused) return placementRefused(c, job, fact.sentence);
+				if (fact.askMachine || fact.refused) return placementRefused(c, job, fact.sentence, fact);
 				return waitForPlacement(c, job, fact.sentence, fact);
 			}
 			if (job.placement) return false;
@@ -618,13 +611,9 @@ function stepFact(c: Change, fact: StepFact): boolean {
 				dispatchJob(c, job);
 				return true;
 			}
-			if (fit.askMachine) {
-				job.offerHosted = fit.offerHosted ?? false;
-				job.askMachine = true;
-				return placementRefused(c, job, fit.wait!);
-			}
-			if (fit.refused !== undefined && fit.permanent) return placementRefused(c, job, fit.refused);
-			return waitForPlacement(c, job, fit.refused ?? fit.wait, fit);
+			const sentence = fit.refused ?? fit.wait;
+			if (fit.askMachine || fit.permanent) return placementRefused(c, job, sentence, fit);
+			return waitForPlacement(c, job, sentence, fit);
 		}
 		case "child_update": {
 			const job = c.item.jobs?.find(j => j.id === fact.child);
@@ -2254,8 +2243,9 @@ function considerCritic(c: Change) {
 	if (plan.subtasks.some(s => subtaskHarness(s) === "codex")) return askPlan(c);
 	if (plan.singleSuggested && item.context && (resolveRun(item.context, "builder").agent !== "windlass" || item.useHosted))
 		return askPlan(c, "Confirm the current Windlass session before it implements this item.");
-	if (item.context && plan.subtasks.some(s => {
-		const defaults = partRun(item.context!, { repo: s.repo });
+	const context = item.context;
+	if (context && plan.subtasks.some(s => {
+		const defaults = partRun(context, { repo: s.repo });
 		return defaults.place !== "hosted" && (s.place?.prefer === "hosted" || s.place?.allow?.includes("hosted")) || !!s.needs?.hostedSize && s.needs.hostedSize !== defaults.size;
 	})) return askPlan(c, "Confirm the proposed hosted placement or size before these parts run.");
 	if (!item.singleBudget) return askPlan(c, "The item has no budget to check the plan against.");
@@ -2347,7 +2337,11 @@ function waitForPlacement(c: Change, job: FeatureJob, sentence: string, wait: { 
 	return true;
 }
 
-function placementRefused(c: Change, job: FeatureJob, reason: string): true {
+function placementRefused(c: Change, job: FeatureJob, reason: string, options: Pick<FeatureJob, "askMachine" | "offerHosted">): true {
+	if (options.askMachine) {
+		job.askMachine = true;
+		job.offerHosted = options.offerHosted ?? false;
+	}
 	job.placementRefusal = reason;
 	// Other children keep their places and may finish integration before the feature asks.
 	if (!c.item.jobs!.some(j => j !== job && activeJob(j) && !j.placementRefusal)) askPlacement(c, c.item.jobs!.find(j => activeJob(j) && j.placementRefusal)!);
@@ -2731,7 +2725,7 @@ function runSingle(c: Change) {
 	c.item.runRole = "builder";
 	if (c.item.context) {
 		const context = c.item.context;
-		context.item = { ...context.item, harness: "windlass", place: c.item.place.kind === "hosted" ? "hosted" : { machine: c.item.place.machineId } };
+		context.item = { ...context.item, harness: "windlass", place: runPlace(c.item.place) };
 		c.item.resolved = resolveRun(context, "builder");
 	}
 	c.item.budget = singleAfterPlanning(c.item.singleBudget!, c.item.spent);
@@ -2855,16 +2849,16 @@ function answer(c: Change, fact: Extract<Fact, { kind: "answer" }>): boolean {
 	return takeChoice(c, question, fact, note);
 }
 
+const replacementAgents: Partial<Record<ChoiceId, HarnessId>> = { use_windlass: "windlass", use_claude: "claude", use_opencode: "opencode" };
+
 function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "answer" }>, note: string | null, auto = false): boolean {
 	const { item } = c;
 	if (question.kind === "run_place" && (fact.choice === "use_hosted" || fact.choice === "wait")) {
-		if (fact.choice === "use_hosted") c.item.useHosted = true;
-		waitForDefaultPlace(c, c.item.awaitingPlace!);
 		if (fact.choice === "use_hosted") {
-			c.item.wait!.retryAt = c.at;
-			c.effects.splice(-1, 1, { kind: "resolve_default_place", key: String(c.at), at: c.at });
+			item.useHosted = true;
+			return waitForDefaultPlace(c, item.awaitingPlace!, c.at);
 		}
-		return true;
+		return waitForDefaultPlace(c, item.awaitingPlace!);
 	}
 	if ((question.kind === "plan_approval" || question.kind === "replan_approval") && fact.choice === "larger_sandbox") {
 		const plan = item.featurePlan!;
@@ -2878,10 +2872,11 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 		askPlan(c);
 		return true;
 	}
-	if (question.kind === "plan_approval" && (fact.choice === "use_windlass" || fact.choice === "use_claude" || fact.choice === "use_opencode")) {
+	const harness = replacementAgents[fact.choice];
+	if (question.kind === "plan_approval" && harness) {
 		const plan = item.featurePlan!;
 		for (const task of plan.subtasks) if (subtaskHarness(task) === "codex") {
-			task.agent = { harness: fact.choice === "use_windlass" ? "windlass" : fact.choice === "use_claude" ? "claude" : "opencode" };
+			task.agent = { harness };
 			task.resolved = partRun(item.context ?? {}, task);
 			delete task.placementProblem;
 		}
@@ -2892,8 +2887,8 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 	const refused = question.kind === "placement_refused"
 		? item.jobs?.find(j => j.id === question.child) ?? item.jobs?.find(j => j.placementRefusal && activeJob(j)) ?? item.jobs?.at(-1)
 		: undefined;
-	if (refused && (fact.choice === "use_windlass" || fact.choice === "use_claude" || fact.choice === "use_opencode")) {
-		refused.task.agent = { harness: fact.choice === "use_windlass" ? "windlass" : fact.choice === "use_claude" ? "claude" : "opencode" };
+	if (refused && harness) {
+		refused.task.agent = { harness };
 		refused.task.resolved = partRun(item.context ?? {}, refused.task, repair(refused) ? "repair" : "part");
 		delete refused.placementRefusal;
 		delete refused.placement;
