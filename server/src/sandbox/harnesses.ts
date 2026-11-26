@@ -213,15 +213,10 @@ export function availableCatalog(options: HarnessOptions | undefined, entry?: { 
 type ReportedSignIn = { id: AcpProfile["id"]; signIn: "token" | "none" | "unknown"; machineProviders?: string[] };
 
 /** The providers a machine agent's own sign-in serves: Claude's subscription, Codex's login, OpenCode's provider logins. */
-export function machineSignIns(entry: ReportedSignIn): ModelProvider[] {
+function machineSignIns(entry: ReportedSignIn): ModelProvider[] {
 	if (entry.signIn !== "token") return [];
 	if (entry.id !== "opencode") return [...keyProviders(entry.id)];
 	return (entry.machineProviders ?? []).map(p => p === "chatgpt" ? "openai" : p).filter(isModelProvider);
-}
-
-/** A machine payer is exclusive, including when its credentials are unavailable. */
-export function usableKeys(_entry: ReportedSignIn, saved: readonly ModelProvider[], source?: CredentialSource): ModelProvider[] {
-	return source === "key" ? [...saved] : [];
 }
 
 export function machinePayerProblem(entry: ReportedSignIn & { keyRelay?: true }, model: string | undefined, source: CredentialSource, keys: readonly ModelProvider[]) {
@@ -237,7 +232,7 @@ export function machinePayerProblem(entry: ReportedSignIn & { keyRelay?: true },
 	return null;
 }
 
-/** Combine a runner report with the owner's Settings keys its turns may use (`usableKeys`). */
+/** Combine a runner report with the owner's Settings keys its turns may use. */
 export function withSettingsKeys<T extends KeyHarness & { signIn: "token" | "none" | "unknown"; method?: SignInMethod }>(entry: T, saved: readonly ModelProvider[], model?: string) {
 	const keys = keyProviders(entry.id).filter(provider => entry.keyRelay && saved.includes(provider) && (entry.id !== "opencode" || !model || model === "default" || model.startsWith(provider + "/")));
 	if (keys.length) return { ...entry, signIn: "token" as const, method: "api-key" as const, platformKeys: keys };
@@ -248,7 +243,7 @@ export function withSettingsKeys<T extends KeyHarness & { signIn: "token" | "non
 export function listedHarness<T extends KeyHarness & ReportedSignIn & { method?: SignInMethod }>(entry: T, saved: readonly ModelProvider[], source?: CredentialSource):
 	T & { platformKeys?: ModelProvider[]; machineSignIns?: ModelProvider[]; machineMethod?: "api-key" | "chatgpt"; source?: CredentialSource } {
 	const own = machineSignIns(entry);
-	const effective = withSettingsKeys(entry, usableKeys(entry, saved, source));
+	const effective = withSettingsKeys(entry, source === "key" ? saved : []);
 	return { ...effective, ...(source === "key" && !("platformKeys" in effective) && { signIn: "none" as const }),
 		...(source === "key" && entry.machineProviders && { machineProviders: [] }),
 		...(entry.machineProviders && entry.signIn !== "token" && { machineProviders: [] }),

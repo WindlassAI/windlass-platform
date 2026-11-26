@@ -132,7 +132,7 @@ import { StartClock, keepStartTimes, startTimesLog } from "../start-times.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason, SANDBOX_ESCAPE_REFUSED } from "../sandbox/codex-modes.js";
-import { windlassProvider, hostedKeyMessage, hostedProvider, selectedKey, machinePayerProblem, usableKeys, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
+import { windlassProvider, hostedKeyMessage, hostedProvider, selectedKey, machinePayerProblem, withSettingsKeys, harnessName, itemModeOf, itemSignInChanged, itemSignInMessage, machineHarness, machineHarnesses, initialHarnessModels, machineLoginMessage } from "../sandbox/harnesses.js";
 import { stepLimitNote } from "../sandbox/platform-steps.js";
 import { capabilitiesOf, harnessOf } from "../sandbox/harness.js";
 import { privateSessionData } from "../sandbox/session-data.js";
@@ -739,13 +739,13 @@ export async function turnCredential(c: Ctx, meta: SessionMeta, offered: Offered
 	const keyActor = modelKeyActor(c, meta.uid);
 	const [keys, source] = await Promise.all([keyActor.internalModelKeys(), meta.place.kind === "machine" ? keyActor.internalCredentialSource(meta.place.machineId, harness) : null]);
 	const payer = source ?? "machine";
+	const providers = hosted || payer === "key" ? keys.map(k => k.provider) : [];
 	if (!hosted && meta.origin?.payer && meta.origin.payer !== payer)
 		throw new UserError("The selected payer changed. Restore the item's payer on Machines or file a new item.", { code: "harness_signed_out" });
 	if (!hosted) {
-		const problem = offered ? machinePayerProblem(offered, model, payer, keys.map(k => k.provider)) : "The selected machine agent is unavailable.";
+		const problem = offered ? machinePayerProblem(offered, model, payer, providers) : "The selected machine agent is unavailable.";
 		if (problem) throw new UserError(problem, { code: "harness_signed_out" });
 	}
-	const providers = hosted || !offered ? keys.map(k => k.provider) : usableKeys(offered, keys.map(k => k.provider), source ?? undefined);
 	if (harness === "opencode" && model === "default") {
 		if (meta.place.kind === "machine" && providers.length)
 			model = await runnerLink(c, meta.place.machineId).request("openCodeDefault", { providers }, { signal });
@@ -4119,7 +4119,7 @@ async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<Acti
 		: meta.origin?.role === "reviewer" ? "reviewer" : undefined;
 	const fact: Fact = { kind: "turn_started", at: Date.now(), key: item.row.key, role, actual: {
 		place: runPlace(meta.place), agent: meta.harness ?? "windlass", model: credential.model, effort,
-		profile: meta.profile, size: meta.place.kind === "machine" ? meta.origin?.size ?? 1 : meta.hostedSize ?? null, payer: credential?.key ? "key" : meta.harness && meta.harness !== "windlass" ? "machine" : "windlass",
+		profile: meta.profile, size: meta.place.kind === "machine" ? meta.origin?.size ?? 1 : meta.hostedSize ?? null, payer: credential.key ? "key" : meta.harness && meta.harness !== "windlass" ? "machine" : "windlass",
 		payerSource: meta.origin?.payerSource } };
 	await serial(c, () => queueMessage(c.db, { to: "item", itemId: item.row.itemId, fact }));
 	await flushOutbox(c, meta.uid);
