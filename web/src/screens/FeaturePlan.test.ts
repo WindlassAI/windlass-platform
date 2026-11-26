@@ -390,15 +390,19 @@ describe("a feature's plan on its page", () => {
 		{ state: "failed", canRetry: true, retry: true },
 		{ state: "failed", canRetry: false, retry: false },
 		{ state: "review", canRetry: false, retry: false },
-	] as const)("honours retry eligibility ($canRetry) and hides Send back on a $state feature", async ({ state, canRetry, retry }) => {
-		make({ items: "features" }, item => ({ ...item, state, canRetry }));
+	] as const)("honours retry eligibility ($canRetry) and offers Send back only on a feature in review ($state)", async ({ state, canRetry, retry }) => {
+		make({ items: "features" }, item => ({ ...item, state, canRetry, question: null, review: { state: "filed", recommendation: "changes_requested" } }));
 		const feature = await featureNamed("Export the release manifest as CSV");
 		await show(`/items/${feature.id}`);
 		expect(Boolean(button("Retry"))).toBe(retry);
+		expect(Boolean(button("Send back"))).toBe(state === "review");
+		if (state === "review") {
+			expect(host.querySelector(".item-stage[aria-current=step]")?.textContent).toBe("changes requested");
+			expect(host.querySelector(".item-now-review")?.textContent).toContain("Handed to you with changes requested");
+		}
 		const more = host.querySelector<HTMLButtonElement>('button[aria-label="More item actions"]')!;
 		act(() => more.click());
 		expect(document.querySelector('[role="menuitem"][data-value="cancel"]')).toBeTruthy();
-		expect(document.querySelector('[role="menuitem"][data-value="send_back"]')).toBeNull();
 		expect(host.querySelector(".item-meta")?.textContent).toContain("Plan first");
 	});
 

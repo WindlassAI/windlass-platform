@@ -99,7 +99,9 @@ export function checksSummary(view: ItemView): ChecksSummary {
 	const reviewing = inSecondReview(view);
 	const { current } = shownReview(view);
 	if (reviewing) open.push({ count: 1, words: "the second review" });
-	add(blocking(current).length, "blocking finding");
+	const blockers = blocking(current).length;
+	add(blockers, "blocking finding");
+	if (!blockers && view.review?.recommendation === "changes_requested") open.push({ count: 1, words: "changes requested in code review" });
 	add(questions(current).length, "question from the reviewer", "questions from the reviewer");
 	add(openFeedback(view).length, "comment on GitHub", "comments on GitHub");
 	return { open, ready: open.length === 0 && view.state === "review" && verdict?.result === "pass", reviewing };
@@ -486,7 +488,7 @@ export function ItemChecks({ view, links, when }: { view: ItemView; links: Scree
 					{summary.ready ? <CheckIcon size={15} className="checks-summary-mark tone-good" /> : summary.open.length > 0 ? <span className={`checks-summary-mark checks-dot${verdict?.result === "fail" || summary.open.some((one) => one.words.endsWith("blocking finding") || one.words.endsWith("blocking findings")) ? " checks-dot-bad" : ""}`} aria-hidden="true" /> : null}
 					<span>{summary.ready ? "Ready to merge" : summary.open.length > 0 ? openLine(summary.open) : verdict ? "Nothing open" : "No verdict yet: one is made when the work is handed over."}</span>
 				</span>
-				{summary.ready ? null : summary.reviewing ? <ReviewWord item={view} /> : verdict ? <VerdictWord verdict={{ result: verdict.result, flags: verdict.flags, ci: verdict.ci.state }} /> : null}
+				{summary.ready ? null : summary.reviewing ? <ReviewWord item={view} /> : verdict && view.review?.recommendation !== "changes_requested" ? <VerdictWord verdict={{ result: verdict.result, flags: verdict.flags, ci: verdict.ci.state }} /> : null}
 			</p>
 			<dl className="usage-facts item-facts checks-groups">
 				{verdict ? <Ci verdict={verdict} /> : null}

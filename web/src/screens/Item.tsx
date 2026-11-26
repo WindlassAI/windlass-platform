@@ -224,7 +224,7 @@ function SendBackDialog({ view, acting, onClose }: { view: ItemView; acting: Act
 	return (
 		<Dialog
 			title="Send it back"
-			lede="Its agent gets your note and works on the same branch. The pull request is updated, and the work gets a new verdict."
+			lede={view.mode === "orchestrate" ? "A fix part gets your note. After it joins the feature branch, the feature goes through its checks again." : "Its agent gets your note and works on the same branch. The pull request is updated, and the work gets a new verdict."}
 			onClose={onClose}
 			dismissable={!busy}
 			footer={
@@ -332,7 +332,9 @@ function Now({ view, now }: { view: ItemView; now: number }) {
 			}
 			break;
 		case "review":
-			text = "Handed to you. The pull request waits for your review; the platform never merges it. When it is merged or closed on GitHub, the item says so.";
+			if (view.review?.recommendation === "changes_requested")
+				text = view.review.state === "none" ? "Handed to you before re-review finished after changes were requested." : "Handed to you with changes requested by the code reviewer.";
+			else text = "Handed to you. The pull request waits for your review; the platform never merges it. When it is merged or closed on GitHub, the item says so.";
 			break;
 		default:
 			text = last?.said ?? STATE_WORD[view.state];
@@ -1015,7 +1017,7 @@ export function Item({ page }: { page: ItemPage }) {
 	if (view.canUpdateFeature && !view.question?.choices.some(choice => choice.id === "update_feature")) {
 		moreActions.push({ id: "update_feature", label: `Update the feature from ${view.task.base}`, onSelect: () => acting.act({ kind: "update_feature" }) });
 	}
-	const canSendBack = view.mode !== "orchestrate" && view.state === "review" && machine !== null;
+	const canSendBack = view.state === "review" && machine !== null;
 	if (!ended) moreActions.push({ id: "cancel", label: "Cancel…", onSelect: () => setDialog("cancel") });
 
 	return (
@@ -1134,7 +1136,10 @@ export function Item({ page }: { page: ItemPage }) {
 				) : view.question ? (
 					<Question key={view.question.id} view={view} question={view.question} acting={acting} now={now} />
 				) : showsSubtasks(view) ? (
-					<SubtasksBlock plan={view.plan!} children={view.children ?? []} jobs={view.subtasks} wait={view.wait} now={now} />
+					<>
+						{view.state === "review" && view.review?.recommendation === "changes_requested" && <Now view={view} now={now} />}
+						<SubtasksBlock plan={view.plan!} children={view.children ?? []} jobs={view.subtasks} wait={view.wait} now={now} />
+					</>
 				) : (
 					<Now view={view} now={now} />
 				)}

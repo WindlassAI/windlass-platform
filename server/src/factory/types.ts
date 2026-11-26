@@ -95,6 +95,7 @@ export interface EarlierFinding {
 	text: string;
 	/** Carried by a review that said it is not fixed, without filing it again: that review's "earlier" text. */
 	notFixed?: string | null;
+	paths?: string[];
 }
 
 /** Older reviews default to round one with no earlier findings. */
@@ -162,6 +163,7 @@ export interface FeatureCi extends BaseFailureDecision {
 export interface FeatureJob {
 	askMachine?: boolean;
 	offerHosted?: boolean;
+	reviewFix?: { reviewedHead?: string };
 	ciFix?: { head: string; fingerprint: string };
 	conflictFix?: { target: string; child?: string; retry?: true };
 	/** Immutable tip from which this child branches, after repository setup at the original seed. */

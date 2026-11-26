@@ -6,7 +6,7 @@ import { shotRequest, textOf, type TextRedactor, type ShotRequest } from "./atta
 import { commandSandbox } from "../repo-secrets.js";
 import { config } from "../config.js";
 import { createHash } from "node:crypto";
-import { verdictWords } from "./verdict.js";
+import { verdictHeadline } from "./verdict.js";
 import { data, fence } from "./reviewer-task.js";
 import type { EarlierFinding } from "./types.js";
 
@@ -449,9 +449,9 @@ function agentMarkdown(value: string, max: number): string {
 	}).join("\n");
 }
 
-type CommentReview = { filed: ItemReview | null; reason: string | null; owner: string; name: string };
+type CommentReview = { filed: ItemReview | null; reason: string | null; owner: string; name: string; unfinished?: boolean };
 
-function reviewParagraphs(item: string, review: CommentReview): string[] {
+function reviewParagraphs(item: string, review: CommentReview, roundComment = false): string[] {
 	const r = review.filed;
 	if (!r?.recommendation) return review.reason ? [`No second review: ${commentText(review.reason.replace(/\.$/, ""), 500)}.`] : [];
 	const words = { approve: "approved", changes_requested: "requested changes", needs_person: "needs your input" };
@@ -462,14 +462,18 @@ function reviewParagraphs(item: string, review: CommentReview): string[] {
 	const labels = { blocking: "Blocking", should_fix: "Should fix", note: "Note" };
 	const findings = r.blocks.filter(block => block.kind === "finding").sort((a,b) => rank[a.severity] - rank[b.severity]);
 	const component = (s: string) => encodeURIComponent(s).replace(/[!'()*]/g, c => "%" + c.charCodeAt(0).toString(16).toUpperCase());
-	const lines = (r.requestedPull ? findings : findings.slice(0, 15)).map(f => {
-		const at = f.at[0];
+	const lines = (roundComment || r.requestedPull ? findings : findings.slice(0, 15)).map(f => {
+		const at = f.at.find(l => l.side === "head") ?? f.at[0];
 		let location = "";
 		if (at) {
 			const sha = at.side === "base" ? r.base : r.head;
 			const path = at.path.split("/").map(component).join("/");
 			const anchor = at.lines ? `#L${at.lines.start}-L${at.lines.end}` : "";
 			location = `[${commentText(at.path, 300)}${at.lines ? ":" + at.lines.start : ""}](https://github.com/${component(review.owner)}/${component(review.name)}/blob/${sha}/${path}${anchor}) · `;
+		}
+		if (roundComment) {
+			const literal = (value: string, max: number) => commentText(value.replaceAll("@", "@\u200b"), max);
+			return `- ${labels[f.severity]} · ${location}${literal(f.title, limit.findingTitleChars)} — ${literal(f.text, 240)}`;
 		}
 		const detail = r.requestedPull ? "\n  " + agentMarkdown(f.text, limit.findingChars).replaceAll("\n", "\n  ") : "";
 		return `- ${labels[f.severity]} · ${location}${agentMarkdown(f.title, limit.findingTitleChars).replaceAll("\n", "\n  ")}${detail}`;
@@ -479,6 +483,12 @@ function reviewParagraphs(item: string, review: CommentReview): string[] {
 	const n = r.screenshots.length;
 	paragraphs.push(`[View the full review${n ? ` and ${n} screenshot${n === 1 ? "" : "s"}` : ""}](${config.origins[0]}/items/${item}) (opens for the item's owner only)`);
 	return paragraphs;
+}
+
+export function reviewRoundComment(item: string, filed: ItemReview, repo: { owner: string; name: string }): string {
+	const marker = `<!-- windlass-review:${item}:${filed.run}:${filed.round} -->`;
+	const paragraphs = reviewParagraphs(item, { filed, reason: null, ...repo }, true);
+	return boundedComment([marker, ...paragraphs], "");
 }
 
 /** Requested reviews are comments on the pinned commit. GitHub approval and change-request events
@@ -501,7 +511,7 @@ export function feedbackComment(who: string) {
 export function itemComment(verdict: Verdict, words: string, report: ItemReport | null, review?: CommentReview, feedback?: { who: string; run: number }): string {
 	// The marker is an HTML comment GitHub must find byte for byte. Only a platform id belongs there.
 	if (!/^[\w-]{1,128}$/.test(verdict.item) || verdict.item.includes("--")) throw new Error("Invalid item id for the verdict comment.");
-	const headline = verdictWords(verdict, null).split(".", 1)[0];
+	const headline = verdictHeadline(verdict, review?.filed?.recommendation, review?.unfinished).replace(/\.$/, "");
 	const paragraphs = [`<!-- windlass-item:${verdict.item} -->`];
 	if (feedback) paragraphs.push(feedbackComment(feedback.who));
 	paragraphs.push(`**${headline} · ${commentText(verdict.head.slice(0, 7), 7)}**`, commentText(words, MAX_NOTE_CHARS));
@@ -547,7 +557,7 @@ type Finding = Extract<ReviewBlock, { kind: "finding" }>;
 
 /** The review's blocking findings, as the next round answers them. */
 export function blockingFindings(review: Pick<ItemReview, "blocks">): EarlierFinding[] {
-	return review.blocks.filter((b): b is Finding => b.kind === "finding" && b.severity === "blocking").map(({ id, root, title, text }) => ({ id, root, title, text }));
+	return review.blocks.filter((b): b is Finding => b.kind === "finding" && b.severity === "blocking").map(({ id, root, title, text, at }) => ({ id, root, title, text, ...(at.length && { paths: at.map(l => l.path) }) }));
 }
 
 /**
@@ -562,7 +572,7 @@ export function carriedFindings(review: Pick<ItemReview, "blocks">, earlier: Ear
 		const was = earlier.find(one => one.id === block.finding);
 		if (!was || roots.has(was.root)) continue;
 		roots.add(was.root);
-		carried.push({ id: was.id, root: was.root, title: was.title, text: was.text, notFixed: block.text });
+		carried.push({ ...was, notFixed: block.text });
 	}
 	return carried;
 }

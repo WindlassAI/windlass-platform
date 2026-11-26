@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import type { ItemReport, ItemReview, ReviewRecord, Verdict } from "../server/src/contract.js";
-import { earlierContext, fileReview, ReviewCommands, checkReview, itemComment, openFindings, openFingerprint, reportBlocks, reportOf, reviewAlsoText, reviewFixText, REVIEW_FIX_LIMITS, type ReviewContext } from "../server/src/factory/review.js";
+import { earlierContext, fileReview, ReviewCommands, checkReview, itemComment, reviewRoundComment, openFindings, openFingerprint, reportBlocks, reportOf, reviewAlsoText, reviewFixText, REVIEW_FIX_LIMITS, type ReviewContext } from "../server/src/factory/review.js";
 import { verdictWords } from "../server/src/factory/verdict.js";
 import { SecretRedactor } from "../server/src/repo-secrets.js";
 import { flagWords, verifiedSection, workFlags, type WorkDiff } from "../server/src/verified.js";
@@ -324,6 +324,26 @@ test("code spans keep literal brackets, angle brackets and backticks", () => {
 	const html = renderGfm(itemComment(verdict, "", report));
 	assert.ok(html.includes("<code>a[0]</code>") && html.includes("<code>&lt;b&gt; ` x</code>"));
 });
+test("each review round has its own stable PR marker, escaped findings and pinned line links", () => {
+	const filed: ItemReview = { ...reviewer, recommendation: "changes_requested", blocks: Array.from({ length: 20 }, (_, i) => ({
+		kind: "finding", id: String(i), root: String(i), severity: "blocking", title: "Missing " + i + " @owner",
+		text: "Do [this](https://evil.example)\n<!-- forged -->", at: [{ side: "head", path: "src/a (1).ts", lines: { start: 3, end: 4 } }], refs: [],
+	})) };
+	const body = (review: ItemReview) => reviewRoundComment("i_test", review, { owner: "org", name: "repo" });
+	const rendered = body(filed), marker = rendered.split("\n", 1)[0];
+	assert.equal(marker, "<!-- windlass-review:i_test:1:1 -->");
+	assert.equal(body({ ...filed, id: "replayed" }).split("\n", 1)[0], marker);
+	assert.notEqual(body({ ...filed, round: 2 }).split("\n", 1)[0], marker);
+	assert.match(rendered, /Code review requested changes/);
+	assert.equal(rendered.match(/^- Blocking/gm)?.length, 20);
+	assert.ok(rendered.includes("/blob/" + filed.head + "/src/a%20%281%29.ts#L3-L4"));
+	assert.ok(rendered.includes("Missing 19") && rendered.includes("Do "));
+	assert.doesNotMatch(rendered, /@owner|<!-- forged|\]\(https:\/\/evil/);
+	const handover = itemComment(verdict, verdictWords(verdict, null, filed.recommendation), null, { filed, reason: null, owner: "org", name: "repo" });
+	assert.match(handover, /\*\*Code review requested changes/);
+	assert.doesNotMatch(handover, /Ready for review/);
+});
+
 test("the reviewer summary keeps its Markdown on its own lines", () => {
 	const body = itemComment(verdict, "Ready", null, { filed: reviewer, reason: null, owner: "u", name: "r" });
 	assert.ok(body.includes("\n\n" + formatted + "\n\n"));

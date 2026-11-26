@@ -46,6 +46,7 @@ export const RULES = {
 	maxSteps: 400,
 	parallelChildren: 3,
 	reviewMaxSteps: 40,
+	featureReviewFixes: 2,
 	feedbackRuns: 3,
 	reviewFilings: 4,
 	reviewRefiles: 1,
@@ -958,16 +959,27 @@ function takeBranchOver(c: Change, head: string, repo?: string) {
 
 function sendBack(c: Change, note: string, push?: string): boolean {
 	const { item } = c;
-	if (item.mode === "orchestrate" || item.state !== "review" || item.machineRemoved) return false;
+	if (item.state !== "review" || item.machineRemoved) return false;
 	c.sayOfItem("Sent back: " + note);
-	const text = push ? fromPush(push) + note
-		: "The person sent your work back: " + note;
-	beginRun(c, { ...IMPLEMENT, text, ...(push && marked([untrustedWords.ci(push)])) });
+	if (item.mode === "orchestrate") {
+		resetRun(c, "subtasks");
+		queueReviewFix(c, note, []);
+	} else {
+		const text = push ? fromPush(push) + note
+			: "The person sent your work back: " + note;
+		beginRun(c, { ...IMPLEMENT, text, ...(push && marked([untrustedWords.ci(push)])) });
+	}
 	decided(item, { kind: "send_back", run: c.run.n, text: note });
 	return true;
 }
 
 function beginRun(c: Change, plan: TurnPlan): void {
+	resetRun(c, plan.kind);
+	if (plan.kind === "refine") c.run.planInputsTrusted = !thirdParty(plan.untrusted).length;
+	nextTurn(c, plan);
+}
+
+function resetRun(c: Change, kind: StepKind): void {
 	const { item } = c;
 	const before = item.run;
 	if (before !== null && before.endedAt === null) {
@@ -975,13 +987,12 @@ function beginRun(c: Change, plan: TurnPlan): void {
 		before.stopReason = "retried";
 	}
 	item.run = {
-		...(plan.kind === "refine" && { planInputsTrusted: !thirdParty(plan.untrusted).length }),
 		n: (before?.n ?? 0) + 1,
 		autoSteps: 0,
 		startedAt: c.at,
 		endedAt: null,
 		stopReason: null,
-		step: { n: 0, kind: plan.kind, attempt: 0, startedAt: c.at, turn: null, checks: 0, interruptions: 0 },
+		step: { n: 0, kind, attempt: 0, startedAt: c.at, turn: null, checks: 0, interruptions: 0 },
 		rounds: { plan: 0, gate: 0, ci: 0, conflict: 0, review: 0 },
 		lastFailure: null,
 		gate: null,
@@ -993,7 +1004,6 @@ function beginRun(c: Change, plan: TurnPlan): void {
 	}
 	item.question = null;
 	c.state("queued");
-	nextTurn(c, plan);
 }
 
 function feedbackState(item: FactoryItem): NonNullable<FactoryItem["feedback"]> {
@@ -2043,21 +2053,23 @@ function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): 
 	c.tookReview = filed.id;
 	pending.filed = { id: filed.id, trustedApproval: filed.by.via === "host" && filed.by.commandSandbox === "windlass", ...assessment };
 	pending.open = open;
-	// A feature's review stays advisory: its findings go to the person with the handover.
-	if (filed.recommendation === "approve" || c.item.mode === "orchestrate") return readForHandoff(c, ci, { review: filed.id, reviewNone: null, assessment });
+	const feature = c.item.mode === "orchestrate";
+	if (filed.recommendation === "approve" || (feature && (filed.recommendation !== "changes_requested" || !blocking))) return readForHandoff(c, ci, { review: filed.id, reviewNone: null, assessment });
 	// Someone pushed to the pull request during the review: a fix on the reviewed head could not be pushed over theirs. The handover says it moved.
 	if (ci.moved) return readForHandoff(c, ci, { review: filed.id, reviewNone: null, assessment });
-	if (personFirst(c, ci, filed)) return;
+	if (!feature && personFirst(c, ci, filed)) return;
 	if (filed.recommendation === "needs_person") {
 		pendingCheck(c, pending.head, "Code review needs your input");
 		const text = `The second agent reviewed ${shortSha(pending.head)} and has questions only you can answer. Read them in its review below; then have the agent change the work, with your note, or hand it over as it is.`;
 		return ask(c, "review_question", text, [choice("fix"), ...handOver(c.item), choice("give_up")], null, reviewFixPlan(filed, true, pending.earlier));
 	}
-	// Kept on the review, not on `lastFailure`: a CI round between two reviews must not hide it (§6.1). Out of rounds, the cap is what stops it.
+	const plan = reviewFixPlan(filed, false, pending.earlier);
 	const fingerprint = openFingerprint(open);
-	if (fingerprint === pending.lastOpen) return stop(c, "repeated", REVIEW_REPEATED, reviewFixPlan(filed, false, pending.earlier));
+	if (fingerprint === pending.lastOpen) return stop(c, "repeated", REVIEW_REPEATED, plan);
 	pending.lastOpen = fingerprint;
-	fixAfterReview(c, reviewFixPlan(filed, false, pending.earlier));
+	if (feature && (c.run.rounds.review ?? 0) >= RULES.featureReviewFixes)
+		return stop(c, "review", "The feature still has blocking findings after " + c.run.rounds.review + " review fixes.", plan);
+	fixAfterReview(c, plan);
 }
 
 const REVIEW_REPEATED = "The second agent asks again for the same changes after a round of fixes, so the factory stopped instead of trying them again.";
@@ -2069,7 +2081,11 @@ function reviewFixPlan(filed: ItemReview, person: boolean, earlier: EarlierFindi
 function fixAfterReview(c: Change, plan: TurnPlan): void {
 	const ci = c.run.ci;
 	if (ci?.moved) return readForHandoff(c, ci, keptReview(c.run, ci));
-	nextTurn(c, plan);
+	if (c.item.mode === "orchestrate") {
+		const review = c.run.review!;
+		const paths = [...new Set(review.open?.flatMap(f => f.paths ?? []))];
+		queueReviewFix(c, plan.text, paths, review.head);
+	} else nextTurn(c, plan);
 	if (c.item.question === null) sendBackForReview(c, c.run.review?.round ?? 1);
 }
 
@@ -2125,17 +2141,17 @@ function handoff(c: Change, review: HandoffReview, merging = false): void {
 }
 
 /** Reuse the verdict ID and effect key so a replay cannot post stale evidence. */
-function verdictAt(c: Change, ci: CiProgress) {
+function verdictAt(c: Change, ci: CiProgress, review?: HandoffReview, unfinished = false) {
 	const { item, run } = c;
 	const key = ci.handed ?? c.key;
 	const verdict = verdictOf({ id: key, item: item.id, run: run.n, head: ci.head, at: c.at, place: item.place, gate: ci.gate, ci: verdictCi(ci), acceptance: item.task.acceptance, mergeable: ci.mergeable, moved: ci.moved });
-	const words = verdictWords(verdict, ci.gate);
+	const words = verdictWords(verdict, ci.gate, review?.review ? review.assessment?.recommendation : null, unfinished);
 	return { key, verdict, words };
 }
 
 function handVerdict(c: Change, ci: CiProgress, review: HandoffReview, reviewDone?: true): void {
-	const record = verdictAt(c, ci);
 	const unfinished = unfinishedReview(c.run, review);
+	const record = verdictAt(c, ci, review, unfinished);
 	c.effects.push({ kind: "handoff", ...record, ...review, ...(reviewDone ? { reviewDone } : {}), ...(unfinished ? { unfinished: true as const } : {}) });
 	const { verdict } = record;
 	const key = verdict.moved ?? verdict.head;
@@ -2643,9 +2659,17 @@ function followFeatureHead(c: Change, fact: Extract<Fact, { kind: "ci_read" }>):
 	return true;
 }
 
-const repair = (job: FeatureJob) => job.ciFix || job.conflictFix;
+function queueReviewFix(c: Change, brief: string, owns: string[], reviewedHead?: string) {
+	c.enter("subtasks");
+	c.state("waiting", { reason: "children", sentence: "Addressing review feedback in a fix part.", retryAt: null });
+	queueRepair(c, { key: "review-fix-" + (c.item.revision + 1), title: "Address review feedback", brief,
+		owns, acceptance: ["Address the requested changes and pass the feature checks."] }, { reviewFix: { reviewedHead } });
+	nextChild(c);
+}
 
-function queueRepair(c: Change, task: Omit<FeatureJob["task"], "dependsOn" | "budget">, fix: Pick<FeatureJob, "ciFix" | "conflictFix">) {
+const repair = (job: FeatureJob) => job.ciFix || job.conflictFix || job.reviewFix;
+
+function queueRepair(c: Change, task: Omit<FeatureJob["task"], "dependsOn" | "budget">, fix: Pick<FeatureJob, "ciFix" | "conflictFix" | "reviewFix">) {
 	const { item } = c, plan = item.featurePlan!;
 	const budget = { tokens: Math.min(...plan.subtasks.map(t => t.budget.tokens)) };
 	(item.jobs ??= []).push({ id: childItemId(item.id, plan.version, task.key), task: { ...task, resolved: item.context && partRun(item.context, task, "repair"), dependsOn: [], budget },
@@ -2760,7 +2784,8 @@ function nextChild(c: Change) {
 		Object.assign(job, { budget, route, warm, dispatchedAt: c.at });
 		free.tokens -= budget.tokens;
 		if (hosted) free.hostedSeconds -= budget.hostedSeconds;
-		if (fix) c.run.rounds[fix.conflictFix ? "conflict" : "ci"]++;
+		if (fix?.reviewFix) c.run.rounds.review = (c.run.rounds.review ?? 0) + 1;
+		else if (fix) c.run.rounds[fix.conflictFix ? "conflict" : "ci"]++;
 		else jobs.push(job);
 		running.push(job);
 		dispatchJob(c, job);
@@ -2860,6 +2885,7 @@ export const TRY_AGAIN_LABEL = "Try the fix once more";
 
 const GO_ON: Partial<Record<StopCause, string>> = {
 	repeated: TRY_AGAIN_LABEL,
+	review: TRY_AGAIN_LABEL,
 	interruptions: "Try again",
 	turns: `Let it take ${RULES.turnBackstop} more turns`,
 };

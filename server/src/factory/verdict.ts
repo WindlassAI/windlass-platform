@@ -34,7 +34,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { SandboxPlace, TurnOutcome, Verified } from "../contract.js";
+import type { ReviewRecommendation, SandboxPlace, TurnOutcome, Verified } from "../contract.js";
 import type { CiReading } from "../github/ci.js";
 import { flagWords, verifiedHeadline } from "../verified.js";
 import { environmentFailure } from "./check-environment.js";
@@ -179,7 +179,7 @@ export function ciSentence(ci: Verdict["ci"]): string {
 }
 
 /** The verdict in plain sentences, for the item page and the line on the pull request. */
-export function verdictHeadline(verdict: Verdict): string {
+export function verdictHeadline(verdict: Verdict, review?: ReviewRecommendation | null, unfinished = false): string {
 	switch (verdict.result) {
 		case "fail": return "Failing.";
 		case "incomplete": return "Incomplete: the last turn did not finish.";
@@ -191,13 +191,16 @@ export function verdictHeadline(verdict: Verdict): string {
 				case "not_permitted": return "Your checks passed; CI has not been read.";
 				case "timed_out": return "Your checks passed; CI had not finished.";
 				case "not_run": return "Your checks passed; CI did not start.";
-				default: return "Ready for review.";
+				default:
+					if (review === "changes_requested") return "Code review requested changes.";
+					if (unfinished) return "Code review is incomplete after requesting changes.";
+					return "Ready for review.";
 			}
 	}
 }
 
-export function verdictWords(verdict: Verdict, gate: GateEvidence | null): string {
-	const head = verdictHeadline(verdict);
+export function verdictWords(verdict: Verdict, gate: GateEvidence | null, review?: ReviewRecommendation | null, unfinished = false): string {
+	const head = verdictHeadline(verdict, review, unfinished);
 	// No checks set is no shortcoming: checks are the person's choice, and CI decides without them.
 	const gateSaid =
 		!gate?.verified ? "The turn left no record of its checks; CI decides." : gate.verified.state === "none_set" ? "No checks are set for this repository; CI decides." : verifiedHeadline(gate.verified);

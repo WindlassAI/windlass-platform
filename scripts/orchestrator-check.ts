@@ -479,29 +479,92 @@ test("a withdrawn feature turn settles its late usage receipt exactly once", () 
 	assert.equal(advance(settled.item,ended).item,settled.item);
 });
 
-test("a feature's second review stays advisory: changes requested hands over the feature PR", () => {
+const passedFeatureCi = (item: ReturnType<typeof approved>, key = currentKey(item)!) => {
+	const head = item.head!;
+	return advance(item, { kind: "ci_read", key, at: 9, head, prHead: head, mergeable: true, openItems: 1, webhooks: false,
+		reading: { kind: "read", head, runs: [{ name: "build", app: "status", state: "passed", conclusion: "success", url: "", summary: "", jobId: null }], logs: [], truncated: false } });
+};
+
+function finishFeatureParts(item: ReturnType<typeof approved>, tip: string) {
+	const job = item.jobs!.at(-1)!;
+	return advance(item, { kind: "child_update", key: job.dispatchKey!, child: job.id, state: "done", head: tip, at: 6, report: job.task.title + " evidence", spent: zero }).item;
+}
+
+function reviewFeature(item: ReturnType<typeof approved>) {
+	item = passedFeatureCi(item, item.featureCi!.key!).item;
+	assert.equal(item.run!.step.kind, "summary");
+	item = advance(item, { kind: "turn_ended", key: currentKey(item)!, at: 7, outcome: "succeeded", spend: zero, report: "Summary", changes: false, verified: null, flags: [] }).item;
+	item = advance(item, { kind: "published", key: currentKey(item)!, at: 8, head: item.head!, pr, openItems: 1, webhooks: false }).item;
+	assert.equal(item.run!.step.kind, "ci");
+	return passedFeatureCi(item);
+}
+
+function reviewingFeature() {
 	let item = approved();
-	item = advance(item, {kind:"feature_ready", waitForCiOnEachPart: true, key:currentKey(item)!, head, pr, at:5}).item;
-	for (const jobKey of ["index","page"]) {
-		item = advance(item, {kind:"child_update", key:currentKey(item)!, child:item.jobs!.at(-1)!.id, state:"done", head, report:jobKey+" evidence", spent:zero, at:6}).item;
+	item = advance(item, { kind: "feature_ready", key: currentKey(item)!, head, pr, at: 5 }).item;
+	for (const _task of proposal().subtasks) item = finishFeatureParts(item, head);
+	return reviewFeature(item).item;
+}
+
+function featureFiling(item: ReturnType<typeof approved>, root?: string) {
+	const key = currentKey(item)!, pending = item.run!.review!;
+	return advance(item, { kind: "review_ended", key, at: 10, outcome: "succeeded", said: null, spend: zero,
+		review: { id: key, run: item.run!.n, round: pending.round!, head: item.head!, base: "b".repeat(40), verdictId: pending.verdictId,
+			by: { sessionId: "second", model: "test" }, at: 10, state: "filed", said: null, recommendation: root ? "changes_requested" : "approve", records: [], notes: [], screenshots: [],
+			blocks: root ? [{ kind: "finding", id: root, root, severity: "blocking", title: "Missing index", text: "The page never indexes.",
+				at: [{ path: "src/search.ts", side: "head", lines: { start: 4, end: 6 } }], refs: [] }] : [] } });
+}
+
+test("blocking feature review dispatches a fix part and re-reviews its integrated head after CI", () => {
+	const filing = featureFiling(reviewingFeature(), "r1.f1");
+	const item = filing.item, job = item.jobs!.at(-1)!;
+	assert.equal(filing.effects.find(e => e.kind === "dispatch")?.child, job.id);
+	assert.ok(!filing.effects.some(e => e.kind === "handoff"));
+	assert.deepEqual(job.task.owns, ["src/search.ts"]);
+	assert.match(job.task.brief, /The page never indexes/);
+	assert.equal(job.reviewFix?.reviewedHead, head);
+	assert.equal(item.run!.rounds.review, 1);
+	const tip = "c".repeat(40);
+	const reviewed = reviewFeature(finishFeatureParts(item, tip));
+	const input = reviewed.effects.find(e => e.kind === "deliver")?.reviewerInput;
+	assert.equal(input?.head, tip);
+	assert.equal(input?.previousHead, head);
+	assert.equal(input?.round, 2);
+	assert.equal(input?.earlier[0].id, "r1.f1");
+	assert.equal(passedFeatureCi(featureFiling(reviewed.item).item).item.state, "review");
+});
+
+test("a repeated or capped feature review asks the owner to retry, hand over or stop", () => {
+	let item = featureFiling(reviewingFeature(), "r1.f1").item;
+	item = reviewFeature(finishFeatureParts(item, "c".repeat(40))).item;
+	const repeated = featureFiling(item, "r1.f1").item;
+	assert.equal(repeated.question?.cause, "repeated");
+	item = featureFiling(item, "r2.f1").item;
+	item = reviewFeature(finishFeatureParts(item, "d".repeat(40))).item;
+	const stopped = featureFiling(item, "r3.f1").item;
+	assert.equal(stopped.question?.cause, "review");
+	for (const asked of [repeated, stopped]) {
+		assert.deepEqual(asked.question!.choices.map(c => c.id), ["raise", "hand_over", "give_up"]);
+		const answer = { kind: "answer" as const, at: 11, by: "person", question: asked.question!.id };
+		const retry = advance(asked, { ...answer, choice: "raise", note: "Keep the public API." });
+		assert.match(retry.item.jobs!.at(-1)!.task.brief, /Keep the public API/);
+		assert.equal(retry.item.run!.step.kind, "subtasks");
+		const handed = passedFeatureCi(advance(asked, { ...answer, choice: "hand_over" }).item);
+		assert.match(handed.effects.find(e => e.kind === "handoff")!.words, /^Code review requested changes/);
 	}
-	item = advance(item, {kind:"turn_ended",key:currentKey(item)!,at:7,outcome:"succeeded",spend:{tokens:1,hostedSeconds:0},report:"Summary",changes:false,verified:null,flags:[]}).item;
-	item = advance(item, {kind:"published",key:currentKey(item)!,at:8,head,pr,openItems:1,webhooks:false}).item;
-	const reading = {kind:"read" as const,head,runs:[{name:"build",app:"status",state:"passed" as const,conclusion:"success",url:null,summary:null}],logs:[],truncated:false};
-	const ci = (at: number, at_ = item) => ({kind:"ci_read" as const,key:currentKey(at_)!, at, head, reading, prHead:head, mergeable:true, openItems:1, webhooks:false});
-	item = advance(item, ci(9) as never).item;
-	assert.equal(item.run!.step.kind, "review");
-	const key = currentKey(item)!;
-	const review = { id: key, run: item.run!.n, round: 1, head, base: "b".repeat(40), verdictId: item.run!.review!.verdictId, by: { sessionId: "second", model: "test" }, at: 10, state: "filed" as const, said: null,
-		recommendation: "changes_requested" as const, records: [], notes: [], screenshots: [],
-		blocks: [{ kind: "summary" as const, text: "Reviewed." }, { kind: "finding" as const, id: "r1.f1", root: "r1.f1", severity: "blocking" as const, title: "Missing index", text: "The page never indexes.", at: [], refs: [] }] };
-	const ended = advance(item, { kind: "review_ended", key, at: 10, outcome: "succeeded", review, said: null, spend: { tokens: 1, hostedSeconds: 0 } });
-	assert.equal(ended.item.run!.step.kind, "handoff");
-	assert.ok(!ended.effects.some(e => e.kind === "deliver") && ended.item.question === null && !ended.item.run!.rounds.review);
-	const hand = advance(ended.item, ci(11, ended.item) as never);
-	const handed = hand.effects.find(e => e.kind === "handoff");
-	assert.ok(handed?.kind === "handoff" && handed.review === key && handed.assessment?.recommendation === "changes_requested");
-	assert.equal(hand.item.state, "review");
+});
+
+test("owner Send back on a feature starts a fix part with the note on the same PR", () => {
+	const item = passedFeatureCi(featureFiling(reviewingFeature()).item).item;
+	const send = { kind: "send_back" as const, at: 12, by: "person", note: "Index archived pages too." };
+	const next = advance(item, send), job = next.item.jobs!.at(-1)!;
+	assert.equal(next.item.run!.step.kind, "subtasks");
+	assert.equal(job.task.brief, send.note);
+	assert.equal(next.effects.find(e => e.kind === "dispatch")?.child, job.id);
+	assert.equal(next.item.decisions!.at(-1)?.text, send.note);
+	assert.deepEqual(next.item.pr, pr);
+	assert.deepEqual(next.item.featurePlan, item.featurePlan);
+	assert.equal(advance(next.item, send).item, next.item);
 });
 
 test("a disabled GitHub orchestration request is refused before claiming the issue", () => {

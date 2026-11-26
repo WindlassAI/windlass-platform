@@ -21,14 +21,10 @@ export function checkConclusion(v: Verdict, review: CheckReview | null = null, u
 	return review && review.recommendation !== "approve" ? "action_required" : "success";
 }
 
-export const UNFINISHED_REVIEW = "Code review is incomplete after requesting changes";
-
 export function checkTitle(v: Verdict, review: CheckReview | null = null, unfinished = false): string {
 	if (v.moved) return `New changes have not been verified since ${v.head.slice(0, 7)}`;
-	const title = verdictHeadline(v).replace(/\.$/, "");
-	if (title === "Ready for review" && review?.recommendation === "changes_requested") return "Code review requested changes";
+	const title = verdictHeadline(v, review?.recommendation, unfinished).replace(/\.$/, "");
 	if (title === "Ready for review" && review?.recommendation === "needs_person") return "Code review needs your input";
-	if (title === "Ready for review" && !review && unfinished) return UNFINISHED_REVIEW;
 	return title;
 }
 

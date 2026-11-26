@@ -48,7 +48,7 @@ import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SandboxPlace, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { RULES, activeJob, advance, rerunKey, personAdds, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, plannerCapacityText, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
-import { feedbackComment, itemComment, requestedReviewBody, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
+import { feedbackComment, itemComment, reviewRoundComment, requestedReviewBody, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, RequestedReview, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { checkBaseFailures } from "../github/ci-base.js";
@@ -152,7 +152,7 @@ const ISSUE_CHANGE_WINDOW_MS = 15_000;
 
 type FeedbackEffect = { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string } | { kind: "feedback_comment"; key: string; run: number; who: string };
 /** `register`'s `repo`: a cross-repo feature's other repository, by alias, registered with that repository's directory. */
-type Effect = { kind: "poll_branch"; key: string; at: number; repo?: string } | ({ kind: "linear_write" } & LinearWrite) | BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
+type Effect = { kind: "review_comment"; key: string; pr: number } | { kind: "poll_branch"; key: string; at: number; repo?: string } | ({ kind: "linear_write" } & LinearWrite) | BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
 type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
 
 type EffectRow = { id: string; effect: string; due_at: number; attempts: number };
@@ -171,7 +171,11 @@ function startsRun(key: string): boolean {
 function secondReview(item: FactoryItem, meta: ItemMeta): ItemSummary["review"] {
 	if (item.awaitingPlace) return null;
 	if (!item.reviewer || "off" in item.reviewer) return { state: "off", recommendation: null };
-	if (meta.handoffReview) return { state: meta.handoffReview.reason ? "none" : "filed", recommendation: meta.handoffReview.reason ? null : meta.handoffReview.recommendation };
+	if (meta.handoffReview) {
+		const last = item.run?.review?.filed ?? item.run?.review?.before;
+		if (meta.handoffReview.reason) return { state: "none", recommendation: last?.recommendation === "changes_requested" ? last.recommendation : null };
+		return { state: "filed", recommendation: meta.handoffReview.recommendation ?? last?.recommendation ?? null };
+	}
 	if (item.run?.step.kind !== "review") return null;
 	return { state: item.run.step.turn === "started" ? "running" : "waiting", recommendation: null };
 }
@@ -508,12 +512,16 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 		const { owner, name, pr } = before.requestedReview;
 		filing = { ...filing, requestedPull: { owner, name, pr } };
 	}
-	if (handoff && before.run?.n === outcome.item.run?.n) stored.meta.handoffReview = { recommendation: stored.meta.handoffReview?.recommendation ?? null, reason: handoff.reviewNone };
+	if (handoff && before.run?.n === next.run?.n) {
+		const recommendation = handoff.review !== null ? handoff.assessment?.recommendation : null;
+		stored.meta.handoffReview = { recommendation: recommendation ?? stored.meta.handoffReview?.recommendation ?? null, reason: handoff.reviewNone };
+	}
 	// The item, its revision and its data are taken from this decision now: a later decision, made while this
 	// one waits for its write, changes `stored` and must not be written beside this one's data.
 	const data = JSON.stringify({ item: next, meta: stored.meta });
 	// An `ask` is the question on the item itself, which reaches the index with the summary: nothing is left to perform.
 	const effects: Effect[] = outcome.effects.filter((effect) => effect.kind !== "ask");
+	if (filing && !filing.requestedPull && before.pr) effects.push({ kind: "review_comment", key: filing.id, pr: before.pr.number });
 	// A cut-off review may have left its checkout paused while the item waited for its owner.
 	// Keep cleanup in the outbox, independently of GitHub and of a withdrawal still stopping a turn.
 	if (stored.meta.reviewerSessionId && next.run && before.state !== next.state && (next.state === "review" || ENDED.has(next.state))) {
@@ -1168,7 +1176,7 @@ async function handoffProblem(c: Ctx, effect: Handoff, said: string): Promise<vo
  * Without a kept id (posted before ids were kept, or the reply to the post was lost) the platform looks
  * for its marker, and refuses rather than post again when the list is cut short.
  */
-async function writeMarkedComment(c: Ctx, app: GithubApp, token: string, owner: string, name: string, pr: number, item: string, body: string) {
+async function writeMarkedComment(c: Ctx, app: GithubApp, token: string, owner: string, name: string, pr: number, body: string) {
 	const [kept] = await c.db.execute<{ id: string }>("SELECT id FROM verdict_comment WHERE pr=?", pr);
 	if (kept) {
 		try {
@@ -1183,13 +1191,18 @@ async function writeMarkedComment(c: Ctx, app: GithubApp, token: string, owner: 
 			return;
 		}
 	}
-	const marker = `<!-- windlass-item:${item} -->`;
+	const id = await upsertMarkedComment(app, token, owner, name, pr, body);
+	if (id) await c.db.execute("INSERT OR REPLACE INTO verdict_comment VALUES(?,?)", pr, id);
+}
+
+async function upsertMarkedComment(app: GithubApp, token: string, owner: string, name: string, pr: number, body: string) {
+	const marker = body.split("\n", 1)[0];
 	const comments = await app.issueComments(token, owner, name, pr, true);
 	const own = comments.find(c => c.author.toLowerCase() === app.settings.slug.toLowerCase() + "[bot]" && c.body.split("\n", 1)[0] === marker);
 	if (own && !own.id) throw new Error("GitHub returned an invalid verdict comment id");
 	const id = own?.id ?? await app.createIssueComment(token, owner, name, pr, body);
 	if (own?.id) await app.updateIssueComment(token, owner, name, own.id, body);
-	if (id) await c.db.execute("INSERT OR REPLACE INTO verdict_comment VALUES(?,?)", pr, id);
+	return id;
 }
 
 async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: Handoff, row: EffectRow): Promise<void> {
@@ -1220,8 +1233,8 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 
 			action = "post the verdict comment";
 			const [reviewRow] = effect.review ? await c.db.execute<{ data: string }>("SELECT data FROM reviews WHERE id = ?", effect.review) : [];
-			const body = itemComment(verdict, effect.words, await latestReport(c.db, verdict.run), { filed: reviewRow ? JSON.parse(reviewRow.data) as ItemReview : null, reason: effect.reviewNone, owner, name });
-			await writeMarkedComment(c, app, token, owner, name, number, verdict.item, body);
+			const body = itemComment(verdict, effect.words, await latestReport(c.db, verdict.run), { filed: reviewRow ? JSON.parse(reviewRow.data) as ItemReview : null, reason: effect.reviewNone, unfinished: effect.unfinished, owner, name });
+			await writeMarkedComment(c, app, token, owner, name, number, body);
 		});
 	} catch (error) {
 		const status = error instanceof GithubError && error.status ? ` (GitHub ${error.status})` : "";
@@ -1286,7 +1299,7 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "notify_integrated") return item.state === "done" && (item.integratedHead ?? item.head) === effect.head;
 	if (effect.kind === "cancel_children" || effect.kind === "verified_check") return true;
 	if (effect.kind === "linear_write" && ["start", "review_opened", "review_handover"].includes(effect.key)) return !ENDED.has(item.state);
-	if (effect.kind === "issue_comment" || effect.kind === "linear_write") return true;
+	if (effect.kind === "review_comment" || effect.kind === "issue_comment" || effect.kind === "linear_write") return true;
 	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
 	if (effect.kind === "forget") return ENDED.has(item.state) || !item.run?.ci;
 	if (effect.kind === "register" && effect.repo) {
@@ -1721,6 +1734,14 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "requested_review":
 			await session.internalDeliver(requestedDelivery(item, effect));
 			return true;
+		case "review_comment": {
+			const [filing] = await c.db.execute<{ data: string }>("SELECT data FROM reviews WHERE id=?", effect.key);
+			const hub = await github(c, meta, "write");
+			const body = reviewRoundComment(item.id, JSON.parse(filing.data), hub);
+			await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } },
+				token => upsertMarkedComment(hub.app, token, hub.owner, hub.name, effect.pr, body));
+			return true;
+		}
 		case "post_requested_review": {
 			const { key, head, base, pr, repositoryId, installationId } = effect;
 			const [filed] = await c.db.execute<{ data: string }>("SELECT data FROM reviews WHERE id=?", key);
@@ -1767,7 +1788,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 						body = itemComment(verdict, verdictWords(verdict, null), await latestReport(c.db, verdict.run),
 							{ filed: filed ? JSON.parse(filed.data) : null, reason: null, owner: hub.owner, name: hub.name }, effect);
 					}
-					await writeMarkedComment(c, hub.app, token, hub.owner, hub.name, item.pr!.number, item.id, body);
+					await writeMarkedComment(c, hub.app, token, hub.owner, hub.name, item.pr!.number, body);
 				});
 			});
 			c.vars.handoff = update.catch(() => {});
@@ -2357,7 +2378,7 @@ export const workItem = actor({
 				joinOnGate: !!(repo ?? s.item).featureCi, featureBody: s.item.task.body, context: JSON.stringify({ spec: s.item.featurePlan.spec, answers: s.item.featurePlan.questions.map(({ text, answer }) => ({ text, answer })), reports }),
 				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place },
 				// The subtask's task was planned from the feature's (its sources go with it), and quotes the reports of subtasks before it.
-				untrusted: sources(s.item.untrusted, job.ciFix && [untrustedWords.ci(job.ciFix.head)], reports.length ? [untrustedWords.earlier] : []),
+				untrusted: sources(s.item.untrusted, job.reviewFix?.reviewedHead ? [untrustedWords.review(job.reviewFix.reviewedHead)] : [], job.ciFix && [untrustedWords.ci(job.ciFix.head)], reports.length ? [untrustedWords.earlier] : []),
 				// What the feature's person chose to run anyway on "Docker, hardened": the subtask's task carries the same text.
 				...(s.item.unsandboxed?.length && { unsandboxed: s.item.unsandboxed }) };
 		},

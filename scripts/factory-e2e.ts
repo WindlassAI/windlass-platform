@@ -1116,7 +1116,9 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			assert(r.blocks.some(b => b.kind === "text" && b.refs[0]?.ref === "command/review_step/shell_1") && r.records.some(record => record.kind === "command" && record.command === "pwd" && record.exitCode === 0), "missing reviewer command");
 			assert(shot?.by === "reviewer" && shot.sessionId === view.reviewerSessionId && shot.head === r.head && shot.width === 1 && shot.state === "kept" && r.blocks.some(b => b.kind === "screenshot" && b.attachment === shot.id) && (await user.itemAttachmentLinks(item.id)).some(link => link.id === shot.id), "missing reviewer screenshot");
 			const pull = standin.pulls.find(p => p.repository === harbor.id && p.number === view.pullRequest?.number)!;
-			const comment = await waitFor("review comment", () => pull.comments[0]?.body, 30000);
+			const round = await waitFor("filed review round", () => pull.comments.find(c => c.body.startsWith("<!-- windlass-review:" + item.id + ":1:1 -->"))?.body, 30000);
+			assert(round.includes("Code review approved · aaaaaaa"), "the review round is missing its verdict");
+			const comment = await waitFor("handoff comment", () => pull.comments.find(c => c.body.startsWith("<!-- windlass-item:" + item.id + " -->"))?.body, 30000);
 			assert(comment.includes("Code review approved · aaaaaaa") && comment.indexOf("Builder's report") > comment.indexOf("Code review approved") && comment.includes("1 screenshot"), "comment order or review text incorrect");
 			const own = (await user.listSessions()).filter(s => s.item?.id === item.id);
 			assert(snapshot.summary.item?.id === item.id && snapshot.summary.item.role === "reviewer" && own.some(s => s.id === item.sessionId && s.item?.role === "builder"), "sessions do not belong to the item");

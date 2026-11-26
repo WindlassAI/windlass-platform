@@ -1920,6 +1920,26 @@ export function createMockItems(deps: MockItemsDeps) {
 	const conflict = (why: string) => new PlatformError("user", why, { reason: "item_conflict" });
 	const STATE_WORDS: Record<ItemSummary["state"], string> = { draft: "a draft", queued: "queued", working: "working", waiting: "waiting", review: "in review", done: "done", failed: "failed", cancelled: "cancelled" };
 
+	async function startPart(auth: AuthResult, item: ItemView, sub: PlanSubtask, fit: ReturnType<typeof choosePlacement>, patch: Partial<ItemView>, said: string) {
+		const at = deps.now(), revision = item.revision;
+		// No place can take the first subtask yet: the feature waits for one, and says which and for what.
+		if (fit.wait !== undefined) return change(auth, item, { ...patch, wait: { reason: "machine", sentence: fit.wait, since: at, retryAt: at + 30_000 } }, [said], "person");
+		// Refused for now (low disk, no available profile): approval stands, and the feature asks (blueprint.ts, `askPlacement`).
+		if (fit.refused !== undefined) return change(auth, item, { ...patch, wait: { reason: "person", sentence: fit.refused, since: at, retryAt: null },
+			question: { id: `${item.id}:placement${at}`, kind: "placement_refused", askedAt: at, text: `${sub.title}: ${fit.refused}`, choices: [{ id: "revise", label: "Revise the placement" }, { id: "again", label: "Retry allowed places" }, { id: "give_up", label: "Give up the subtask" }] } }, [said], "person");
+		// The subtask's own agent and model: a machine agent never takes the feature's Windlass model (user-items.ts, `childAgent`).
+		const agentHarness = fit.decision.harness ?? "windlass";
+		const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id }, ...(agentHarness !== "windlass" && { harness: agentHarness, profile: fit.decision.profile }), ...(sub.agent?.model && { model: sub.agent.model }) });
+		if (item.revision !== revision) throw conflict("The plan changed.");
+		const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:FEATURE_REVIEW,
+			pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,rawTokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, startedAt: at, step: { ...item.run!.step, startedAt: at, kind: "implement", turn: "started" } },
+			place: fit.decision.place, placement: fit.decision, agent: newAgent(session.harness ?? "windlass", session.model, sub.agent?.effort ?? (agentHarness === "windlass" && !sub.agent?.model ? item.agent?.effort : undefined)) };
+		delete child.placementReview;
+		keptOf(auth).items.push(child); deps.itemChanged(auth, child);
+		return change(auth, item, { ...patch, children: keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf),
+			wait: { reason: "children", sentence: "Running " + sub.title, since: at, retryAt: null } }, [said], "person");
+	}
+
 	async function act(auth: AuthResult, item: ItemView, action: ItemAction): Promise<void> {
 		const now = STATE_WORDS[item.state];
 		// An item whose machine was removed can only be handed over, given up or cancelled (blueprint.ts, `apply`), in the server's words.
@@ -1973,22 +1993,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				const sub = plan.subtasks.find(s => s.dependsOn.length === 0)!;
 				const fit = choosePlacement(sub, routes[sub.key]!, inventory);
 				const approved = { plan: { ...plan, status: "approved" as const, approvedAt: at, approvedBy: "person:" + auth.profile.uid }, state: "waiting" as const, question: null, run: { ...item.run!, step: { ...item.run!.step, kind: "subtasks" as const } }, pullRequest: { number: 1, url: item.repository.url + "/pull/1" } };
-				// No place can take the first subtask yet: the feature waits for one, and says which and for what.
-				if (fit.wait !== undefined) return change(auth, item, { ...approved, wait: { reason: "machine", sentence: fit.wait, since: at, retryAt: at + 30_000 } }, ["Approved the plan."], "person");
-				// Refused for now (low disk, no available profile): approval stands, and the feature asks (blueprint.ts, `askPlacement`).
-				if (fit.refused !== undefined) return change(auth, item, { ...approved, wait: { reason: "person", sentence: fit.refused, since: at, retryAt: null },
-					question: { id: `${item.id}:placement${at}`, kind: "placement_refused", askedAt: at, text: `${sub.title}: ${fit.refused}`, choices: [{ id: "revise", label: "Revise the placement" }, { id: "again", label: "Retry allowed places" }, { id: "give_up", label: "Give up the subtask" }] } }, ["Approved the plan."], "person");
-				// The subtask's own agent and model: a machine agent never takes the feature's Windlass model (user-items.ts, `childAgent`).
-				const agentHarness = fit.decision.harness ?? "windlass";
-				const session = await deps.session(auth, { title: sub.title, place: fit.decision.place, repository: { id: item.repository.id, branch: "windlass/feature-" + item.id }, ...(agentHarness !== "windlass" && { harness: agentHarness, profile: fit.decision.profile }), ...(sub.agent?.model && { model: sub.agent.model }) });
-				if (item.plan !== plan || !item.question || plan.status !== "proposed") throw conflict("The plan changed.");
-				const child: ItemView = { ...structuredClone(item), mode: "single", parent: { itemId: item.id, key: sub.key, title: item.title }, plan: null, children: [], id: "it_" + fresh(12), sessionId: session.id, reviewerSessionId:null, review:{state:"off",recommendation:null}, reviewNone:FEATURE_REVIEW,
-					pullRequest:null, head:null, verifiedCheck:null, report:null, reviews:[], verdict:null, verdicts:[], spent:{tokens:0,rawTokens:0,turns:0,activeSeconds:0,hostedSeconds:0}, title: sub.title, state: "working", question: null, wait: null, budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, task: { ...item.task, title: sub.title, body: sub.brief, acceptance: sub.acceptance }, events: [], run: { ...item.run!, startedAt: at, step: { ...item.run!.step, startedAt: at, kind: "implement", turn: "started" } },
-					place: fit.decision.place, placement: fit.decision, agent: newAgent(session.harness ?? "windlass", session.model, sub.agent?.effort ?? (agentHarness === "windlass" && !sub.agent?.model ? item.agent?.effort : undefined)) };
-				delete child.placementReview;
-				keptOf(auth).items.push(child); deps.itemChanged(auth, child);
-				return change(auth, item, { ...approved, children: keptOf(auth).items.filter(s => s.parent?.itemId === item.id).map(summaryOf),
-					wait: { reason: "children", sentence: "Running " + sub.title, since: at, retryAt: null } }, ["Approved the plan."], "person");
+				return startPart(auth, item, sub, fit, approved, "Approved the plan.");
 			}
 			case "start":
 				if (item.state !== "draft") throw conflict(`This item is ${now}: only a draft can be started.`);
@@ -1997,9 +2002,18 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (!canRetry(item)) throw conflict(`This item is ${now}: only a failed item can be retried.`);
 				return beginRun(auth, item, "Started again.");
 			case "send_back": {
-				if (item.mode === "orchestrate" || item.state !== "review") throw conflict(`This item is ${now}: only an item in review can be sent back.`);
+				if (item.state !== "review") throw conflict(`This item is ${now}: only an item in review can be sent back.`);
 				const note = action.note.trim();
 				if (note === "") throw new PlatformError("user", "Say what to change: the note is what the agent is given.", { reason: "bad_input" });
+				if (item.mode === "orchestrate" && plan && item.run) {
+					const sub: PlanSubtask = { key: "review-fix-" + (item.revision + 1), title: "Address review feedback", brief: note,
+						owns: [], dependsOn: [], acceptance: ["Address the requested changes and pass the feature checks."],
+						budget: { tokens: Math.min(...plan.subtasks.map(s => s.budget.tokens)) } };
+					const fit = choosePlacement(sub, { preferred: item.place, alternatives: [] }, placementInventory(auth));
+					return startPart(auth, item, sub, fit, { state: "waiting", question: null, review: null, reviewNone: null,
+						run: { ...item.run, n: item.run.n + 1, startedAt: at, endedAt: null, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0, review: 1 },
+							step: { ...item.run.step, n: 1, kind: "subtasks", turn: null, startedAt: at } } }, "Sent back: " + note);
+				}
 				return beginRun(auth, item, `Sent back: ${note}`);
 			}
 			case "note": {

@@ -41,15 +41,17 @@ export interface PlannedSubtask {
 }
 
 /** What a part the factory adds repairs: the feature's failing CI, or its branch's conflicts with the base (blueprint.ts, `queueRepair`). */
-export type RepairKind = "ci" | "conflict";
+export type RepairKind = "ci" | "conflict" | "review";
 
 /** The repair a part's key names ("ci-fix-<n>", "conflict-fix-<n>"); null for a part of the plan. */
 export function repairKind(key: string): RepairKind | null {
+	if (key.startsWith("review-fix-")) return "review";
 	return key.startsWith("ci-fix-") ? "ci" : key.startsWith("conflict-fix-") ? "conflict" : null;
 }
 
 /** Why the factory added a repair part, and what it fixes, in a sentence. */
 export const REPAIR_WHY: Record<RepairKind, string> = {
+	review: "This part addresses changes requested in review before the feature is checked again.",
 	ci: "Added by the factory: the feature's CI failed after its parts were integrated. This part fixes the failing checks.",
 	conflict: "Added by the factory: the feature branch no longer merges cleanly with its base. This part merges the base in and resolves the conflicts.",
 };

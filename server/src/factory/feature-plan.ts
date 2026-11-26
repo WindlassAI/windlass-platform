@@ -306,6 +306,7 @@ export function validatePlan(value: unknown, single: Pick<ItemBudget, "tokens">,
 	const subtasks: PlanSubtask[] = p.subtasks.map(raw => {
 		const s = record(raw), asked = record(s.budget);
 		const key = keyOf(s.key);
+		requirePlan(!key.startsWith("review-fix-"), "Subtask keys starting with review-fix- are reserved for feature review fixes.");
 		requirePlan(!key.startsWith("ci-fix-"), "Subtask keys starting with ci-fix- are reserved for feature CI fixes.");
 		// One cost-weighted token figure. A plan from before names more figures; only its tokens are read.
 		const n = asked.tokens;

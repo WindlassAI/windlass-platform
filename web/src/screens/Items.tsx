@@ -218,7 +218,8 @@ const WAIT_WORD: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = { 
  * reaching you.
  */
 export function itemTrack(item: Pick<ItemSummary, "state" | "wait" | "pullRequest" | "review">, reviewer = true): { stages: string[]; at: number; now: boolean; word: string; tone: "work" | "wait" | "yours" | "done" } | null {
-	const stages = reviewer ? ["built", "pushed", "CI", "review", "yours"] : ["built", "pushed", "CI", "yours"];
+	const handover = item.state === "review" && item.review?.recommendation === "changes_requested" ? "changes requested" : "yours";
+	const stages = reviewer ? ["built", "pushed", "CI", "review", handover] : ["built", "pushed", "CI", handover];
 	const pushed = item.pullRequest !== null;
 	switch (item.state) {
 		case "queued":
@@ -232,7 +233,7 @@ export function itemTrack(item: Pick<ItemSummary, "state" | "wait" | "pullReques
 		}
 		case "review":
 			if (reviewer && inSecondReview(item)) return { stages, at: 4, now: true, word: "review", tone: "work" };
-			return { stages, at: stages.length, now: false, word: "yours", tone: "yours" };
+			return { stages, at: stages.length, now: false, word: handover, tone: "yours" };
 		case "done":
 			return { stages, at: stages.length, now: false, word: "done", tone: "done" };
 		default:
