@@ -1,8 +1,8 @@
 import type { FeaturePlan, ItemAction, ItemView, SubtaskAgent, SubtaskBudget } from "@contract";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { budgetProblems, featureTotal, parseTokenInput, sumBudgets, tokenInput } from "../lib/feature";
 import { placeChanged, placeDraftOf, withPlace, type PlaceDraft } from "../lib/placement";
-import { agentChanged, agentModelsOf, cleanAgent, withAgent } from "../lib/subtask-agents";
+import { agentChanged, cleanAgent, withAgent } from "../lib/subtask-agents";
 import { useApp } from "../state/app";
 import { useCatalogs, useHostedProviders, useModels } from "../state/hooks";
 import { useMachines } from "./Machines";
@@ -56,7 +56,6 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 	const hostedKeys = useHostedProviders();
 	const keyProfile = platform.info?.profiles.some(p => p.available && p.platformKeys) === true;
 	const catalogs = useCatalogs(open || plan?.status === "approved" ? machines : null);
-	const models = useMemo(() => agentModelsOf(machines, catalogs, accountModels), [machines, catalogs, accountModels]);
 
 	// Feed updates to the same version keep edits. A new version needs fresh confirmations.
 	useEffect(() => {
@@ -101,7 +100,7 @@ export function usePlanReview(view: ItemView | null, acting: PlanActing) {
 	const problems: Pick<ReturnType<typeof budgetProblems>, "fields" | "any"> = plan ? budgetProblems(plan.compare.singleBudget, budgets) : { fields: {}, any: false };
 	return {
 		...draft, plan, open, edits, answersOnly, rows, save, approve,
-		machines, models, catalogs, hostedKeys, keyProfile, accountModels, unattended,
+		machines, catalogs, hostedKeys, keyProfile, accountModels, unattended,
 		refusal: acting.failed?.kind === "approve_plan" && acting.failed.reason === "bad_input" ? acting.error : null,
 		unconfirmed: unattended.length - confirmed.length,
 		unansweredLeft: plan?.questions.filter(q => !q.answer && !draft.answers[q.id]?.trim()).length ?? 0,

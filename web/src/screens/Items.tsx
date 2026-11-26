@@ -34,9 +34,9 @@ import { submissionOf, type Submission } from "../lib/submission";
 import { RECOMMENDATION_WORD } from "../components/SecondReview";
 import { StatusBadge } from "../components/Status";
 import { useApp, useAuth } from "../state/app";
-import { useAccount, useCatalogs, useHostedProviders, useModels, useNow } from "../state/hooks";
+import { useCatalogs, useHostedProviders, useModels, useNow } from "../state/hooks";
 import { agentModelsOf } from "../lib/subtask-agents";
-import { useDefaults, useCatalog } from "../components/StartComposer";
+import { DefaultsProblem, useFilingDefaults, useCatalog } from "../components/StartComposer";
 import { effortChoices, effortsOf, harnessOptions } from "../lib/models";
 import { EffortSelect, ModelSelect, agentDefaultLabel, modelDisplay } from "../components/ModelPicker";
 import { useMachines } from "./Machines";
@@ -731,8 +731,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const machines = useMachines(machinesInfo !== null);
 	const now = useNow(30_000);
 	const mine = machinesInfo === null ? [] : (machines.list ?? []);
-	const saved = useDefaults(repositoryId);
-	const account = useAccount();
+	const { saved, account, problem: defaultsProblem, retry } = useFilingDefaults(repositoryId);
 	const keys = useHostedProviders();
 	const accountModels = useModels();
 	// What this item changes for itself; everything else comes from the repository, then your defaults.
@@ -782,7 +781,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const tooLong = acceptance.some((line) => line.length > MAX_NOTE_CHARS);
 	const defaultsLoading = saved.reading || (account.reading && !account.settings);
 	const machinesLoading = machinesInfo && !machines.list && !machines.error;
-	const ready = !defaultsLoading && !machinesLoading && title.trim() !== "" && !tooMany && !tooLong && body.length <= MAX_ITEM_BODY_CHARS;
+	const ready = !defaultsProblem && !defaultsLoading && !machinesLoading && title.trim() !== "" && !tooMany && !tooLong && body.length <= MAX_ITEM_BODY_CHARS;
 
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
@@ -865,11 +864,15 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 				</div>
 				<div className="item-run">
 					<span className="label">Runs with</span>
-					<RunLine run={run} machines={machines.list} list={modelList} lead={mode === "orchestrate" ? "Parts run on" : "Runs on"} onChange={changing ? undefined : () => setChanging(true)} changeLabel="Change for this item">
-						{changed ? <button type="button" className="link run-line-change" onClick={useDefault} disabled={busy}>Use the default</button> : null}
-					</RunLine>
-					{planning ? <p className="field-note">Planning and review run on Windlass with {runModelName(planning, accountModels.list)}.</p> : null}
-					{destination.wait ? <p className="field-note tone-warn">{destination.wait} The item waits and asks before it runs anywhere else.</p> : null}
+					{defaultsProblem ? <DefaultsProblem problem={defaultsProblem} retry={retry} /> : (
+						<>
+							<RunLine run={run} machines={machines.list} list={modelList} lead={mode === "orchestrate" ? "Parts run on" : "Runs on"} onChange={changing ? undefined : () => setChanging(true)} changeLabel="Change for this item">
+								{changed ? <button type="button" className="link run-line-change" onClick={useDefault} disabled={busy}>Use the default</button> : null}
+							</RunLine>
+							{planning ? <p className="field-note">Planning and review run on Windlass with {runModelName(planning, accountModels.list)}.</p> : null}
+							{destination.wait ? <p className="field-note tone-warn">{destination.wait} The item waits and asks before it runs anywhere else.</p> : null}
+						</>
+					)}
 				</div>
 				{changing ? (
 					<div className="item-run-change">

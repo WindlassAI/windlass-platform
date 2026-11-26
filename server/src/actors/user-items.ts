@@ -20,7 +20,7 @@
  * a slot is given back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
-import { deploymentSize, filedAgentSettings, partRun, resolveRun, runPlace, type ResolvedRun, type RunContext } from "../factory/resolve-run.js";
+import { deploymentSize, filedAgentSettings, machinePayers, partRun, resolveRun, runPlace, type ResolvedRun, type RunContext } from "../factory/resolve-run.js";
 import { type DefaultDestination, checkRunPlace, placeMachines } from "../factory/default-place.js";
 import { isBranchName } from "../github/git.js";
 import type { SessionRepository } from "../contract.js";
@@ -30,7 +30,7 @@ import { bindRoute, choosePlacement, machineSlots, placeKey, type AgentModels, t
 import { plannerMachines } from "../machines/details.js";
 import type { ChildPlacement, HostedSize, ItemFeed, ModelProvider, PlanSubtask } from "../contract.js";
 import { providerStatuses, savedProviders } from "../model-providers.js";
-import { availableCatalog, harnessName, initialHarnessModels, itemHarnessProblem, knownHarness } from "../sandbox/harnesses.js";
+import { harnessName, itemHarnessProblem, knownHarness } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch, subtaskBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
@@ -93,7 +93,7 @@ import { accountLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } fr
 import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply, keptHolder } from "../usage.js";
 import { createItemActor, isSessionGone, itemActor, sessionActor } from "./internal.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
-import { itemMachines, launchPlace, machineCatalog } from "./user-machines.js";
+import { itemMachines, launchPlace, machineModelLists } from "./user-machines.js";
 import type { ItemMeta } from "./work-item.js";
 
 declare module "./internal.js" { interface UserInternal extends AttachmentLedger {} }
@@ -230,6 +230,7 @@ export interface ItemsCtx {
 }
 
 export interface ItemSessionInput {
+	payer?: ResolvedRun["payer"];
 	afterPlanning?: Pick<ResolvedRun, "model" | "effort">;
 	sessionId: string;
 	itemId: string;
@@ -323,6 +324,7 @@ function cleanItemInput(raw: unknown) {
 		repositories,
 		profile: text(input.profile) as SandboxProfileId | null,
 		model: text(input.model),
+		reviewModel: text(input.reviewModel),
 		effort: text(input.effort),
 		start: input.start === true,
 		harness: input.harness == null ? input.harness : harness,
@@ -396,15 +398,10 @@ async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, j
 	const machines = itemMachines(c.vars.machines);
 	let models: AgentModels | undefined;
 	if (!child && run.place !== "hosted" && run.agent !== "windlass" && (run.model || run.effort)) {
-		const lists = await Promise.all(placeMachines(run.place, machines).map(async m => {
-			const h = m.harnesses?.find(entry => entry.id === run.agent);
-			const options = h?.optionsDigest ? await machineCatalog(c, m.machineId, h.id, h.optionsDigest) : h?.options;
-			return [m.machineId, { [run.agent]: initialHarnessModels(availableCatalog(options ?? undefined, h)) }] as const;
-		}));
-		models = { machines: Object.fromEntries(lists) };
+		models = { machines: await machineModelLists(c, placeMachines(run.place, machines), id => id === run.agent) };
 	}
 	const destination: DefaultDestination = child && typeof run.place === "object" ? { place: { kind: "machine", machineId: run.place.machine }, profile: run.profile ?? undefined, harness: run.agent }
-		: checkRunPlace(run, machines, models);
+		: checkRunPlace(run, machines, models, job.context.machinePayers);
 	// Explicit filing choices fail at the call site. A saved default or a retry can wait for availability.
 	const filedChoice = phase === "file" && [run.sources.place, run.sources.agent, run.sources.model, run.sources.effort].includes("item");
 	if (filedChoice && destination.refusal) throw new UserError(destination.refusal.message, { code: destination.refusal.code });
@@ -420,7 +417,7 @@ async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, j
 		const build = job.role === "planner" ? resolveRun({ ...job.context, item: { ...job.context.item, harness: "windlass" } }, "builder") : null;
 		const session = await makeSession(owner, { title: job.title, repository: job.repository, place: destination.place, profile,
 			harness: run.agent, model: run.model ?? undefined, ...(destination.place.kind === "hosted" && (run.sources.size !== "deployment" || job.context.deployment?.hostedSize) && { hostedSize: run.size }) },
-			{ sessionId, itemId, role: "builder", issue: job.issue, effort: run.effort ?? undefined,
+			{ sessionId, itemId, role: "builder", payer: run.payer, issue: job.issue, effort: run.effort ?? undefined,
 				...(build && { afterPlanning: { model: build.model, effort: build.effort } }), ...child });
 		return { session, destination };
 	} catch (error) {
@@ -482,7 +479,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		const offered = hostedSizesForPlan((await getLayer()).sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan);
 		context.deployment = { hostedSize: deploymentSize(offered.map(s => s.id)) };
 		context.machinePayers = machinePayers([...c.vars.machines.values()]);
-		context.item = { place: input.place, harness: input.harness, hostedSize: input.hostedSize,
+		context.item = { place: input.place, reviewModel: input.reviewModel, harness: input.harness, hostedSize: input.hostedSize,
 			profile: input.profile, machineProfile: input.profile };
 		Object.assign(context.item, filedAgentSettings(context, input.model, input.effort));
 	}
@@ -521,7 +518,10 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		item.runRole = role;
 		item.context = context;
 		item.resolved = run;
-		if (!session) item.awaitingPlace = destination.wait;
+		if (!session) {
+			item.awaitingPlace = destination.wait;
+			item.offerPayer = destination.offerPayer;
+		} else if (run.place === "any-machine") run.place = runPlace(session.place);
 		if (review?.wait) {
 			item.awaitingPlace = review.wait;
 			item.awaitingReviewer = true;
@@ -1034,19 +1034,14 @@ export function accountTokenWait(c: Pick<ItemsCtx, "vars">): string | null {
 	return dailyTokenWait(used, accountLimits(c.vars.items.limits).factory.dailyTokens);
 }
 
-export async function partDefaults(c: ItemsCtx, repositories: Record<string, GithubId>) {
+async function partDefaults(c: ItemsCtx, repositories: Record<string, GithubId>) {
 	const [account, entries] = await Promise.all([
 		readAccountDefaults(c.db),
 		Promise.all(Object.entries(repositories).map(async ([alias, id]) => [alias, await readDefaults(c.db, "github:" + id)] as const)),
 	]);
 	const saved = Object.fromEntries(entries);
 	const machines = [...c.vars.machines.values()];
-	return { context: { account, repository: saved[""], repositories: saved, machinePayers: machinePayers(machines) },
-		machines: machines.map(({ name, machineId }) => ({ name, machineId })) };
-}
-
-function machinePayers(machines: MachineSummary[]) {
-	return Object.fromEntries(machines.map(m => [m.machineId, Object.fromEntries((m.harnesses ?? []).filter(h => h.source).map(h => [h.id, h.source]))]));
+	return { account, repository: saved[""], repositories: saved, machinePayers: machinePayers(machines) };
 }
 
 export async function placementInventory(c: ItemsCtx, models: () => Promise<AgentModels>, repositories: Record<string, GithubId>, snapshotRepository?: GithubId): Promise<PlacementInventory> {
@@ -1060,16 +1055,17 @@ export async function placementInventory(c: ItemsCtx, models: () => Promise<Agen
 		partDefaults(c, repositories),
 		snapshotRepository === undefined ? [] : snapshotPlaces(c.db, setupProjectKey(snapshotRepository) ?? "", c.vars.github?.connectedAt, config.hosted?.snapshots?.ttlMs).catch(() => []),
 	]);
-	return { defaults: defaults.context, machines, models: catalogs, hostedKeys: hostedKeys.filter(k => k.ok), limited: limitedAccounts(accounts), dailyTokenWait: accountTokenWait(c),
-		snapshotPlaces: fresh, screenshotsEnabled: config.factory.screenshots, screenshotStorage: !!attachmentStore(), repositoryScreenshots: Object.fromEntries(Object.entries(defaults.context.repositories).map(([alias, r]) => [alias, r.screenshots])),
+	return { defaults, machines, models: catalogs, hostedKeys: hostedKeys.filter(k => k.ok), limited: limitedAccounts(accounts), dailyTokenWait: accountTokenWait(c),
+		snapshotPlaces: fresh, screenshotsEnabled: config.factory.screenshots, screenshotStorage: !!attachmentStore(), repositoryScreenshots: Object.fromEntries(Object.entries(defaults.repositories).map(([alias, r]) => [alias, r.screenshots])),
 		hostedSizes: hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(size => size.id),
 		hostedProfiles: profiles.map(p => p.id), keyProfiles: profiles.filter(p => p.platformKeys).map(p => p.id), hostedEgress: sandboxes.egress?.() };
 }
 
-async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId, featureModel: string, agentModels: () => Promise<AgentModels>, repositoryId: GithubId): Promise<ReturnType<typeof choosePlacement>> {
+async function childLaunch(c: ItemsCtx, id: string, context: RunContext, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId, featureModel: string, agentModels: () => Promise<AgentModels>, repositoryId: GithubId): Promise<ReturnType<typeof choosePlacement>> {
 	const [row] = await c.db.execute<{ placement: string }>("SELECT placement FROM child_launch WHERE id=?", id);
 	const pinned: ChildPlacement | undefined = row && JSON.parse(row.placement);
 	const inventory = await placementInventory(c, agentModels, { [task.repo ?? ""]: repositoryId }, repositoryId);
+	inventory.defaults = context;
 	inventory.defaultProfile = pinned?.profile ?? defaultProfile;
 	inventory.featureModel = featureModel;
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
@@ -1088,7 +1084,7 @@ const CHILD_REFUSALS = new Set(["bad_input", "bad_model", "bad_effort", "bad_pro
 
 export const itemActions = {
 	async internalDefaultBuilder(c: ItemsCtx, input: { id: string; job: DefaultBuilder }, makeSession: MakeSession): Promise<
-		{ wait: string; reviewer?: boolean } | { session: SessionSummary; reviewer: NonNullable<import("../factory/types.js").FactoryItem["reviewer"]>; reviewerSessionId: string | null } | null
+		{ wait: string; reviewer?: boolean; offerPayer?: DefaultDestination["offerPayer"] } | { session: SessionSummary; reviewer: NonNullable<import("../factory/types.js").FactoryItem["reviewer"]>; reviewerSessionId: string | null } | null
 	> {
 		requireServiceFor(c, "call");
 		return attachmentWrite(c, async () => {
@@ -1098,7 +1094,7 @@ export const itemActions = {
 			if (!item.awaitingPlace || item.state !== "waiting") return null;
 			const run = resolveRun(input.job.context, input.job.role);
 			const { session, destination } = await defaultBuilder(c, owner, input.id, input.job, run, makeSession, "retry");
-			if (!session) return { wait: destination.wait! };
+			if (!session) return { wait: destination.wait!, offerPayer: destination.offerPayer };
 			const review = await bindReviewer(c, owner, session, input.id, false, input.job, makeSession);
 			return review.wait ? { wait: review.wait, reviewer: true } : { session, reviewerSessionId: review.reviewerSessionId, reviewer: review.reviewer! };
 		});
@@ -1134,11 +1130,11 @@ export const itemActions = {
 				const run = job.task.resolved ?? partRun(request.settings, job.task, role);
 				const task = { ...job.task, resolved: run };
 				const route = job.route ?? bindRoute(task, feature.place, false, plannerMachines([...c.vars.machines.values()]));
-				const fit = await childLaunch(c, job.id, task, route, job.warm ?? [], session.profile, session.model, agentModels, target.id);
+				const fit = await childLaunch(c, job.id, request.settings, task, route, job.warm ?? [], session.profile, session.model, agentModels, target.id);
 				if (!fit.decision) {
 					if (job.dispatchKey) await parentActor.internalFact({
 						kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(),
-						sentence: fit.refused ?? fit.wait, askMachine: fit.askMachine, offerHosted: fit.offerHosted, dailyCap: fit.dailyCap, providerUntil: fit.providerUntil, accountKey: fit.accountKey, refused: fit.refused !== undefined && fit.permanent,
+						sentence: fit.refused ?? fit.wait, askMachine: fit.askMachine, offerHosted: fit.offerHosted, hostedProfile: fit.hostedProfile, offerPayer: fit.offerPayer, dailyCap: fit.dailyCap, providerUntil: fit.providerUntil, accountKey: fit.accountKey, refused: fit.refused !== undefined && fit.permanent,
 					});
 					return null;
 				}
@@ -1147,7 +1143,7 @@ export const itemActions = {
 				const handoff = previous?.place && placeKey(previous.place) !== placeKey(placement.place) && route.alternatives.length
 					? "\n\nPrevious subtask at the pushed feature head (quoted data):\n" + JSON.stringify({ head: previous.head, report: previous.report }) : "";
 				const body = job.task.brief + "\n\nOwned paths: " + (job.task.owns ?? []).join(", ") + handoff + "\n\nFeature and dependency context (quoted data):\n" + context;
-				const resolved = { ...run, place: runPlace(placement.place), profile: placement.profile ?? null, size: placement.hostedSize ?? run.size };
+				const resolved = { ...run, place: runPlace(placement.place), payer: placement.payer ?? run.payer, profile: placement.profile ?? null, size: placement.hostedSize ?? run.size };
 				try {
 					existing = await makeItem(c, owner, { mode: "single", repository: { id: target.id, branch: featureBranch(input.parent) }, place: placement.place,
 						profile: placement.profile, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,

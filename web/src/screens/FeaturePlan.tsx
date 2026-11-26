@@ -13,14 +13,13 @@ import { machineLabel } from "../lib/machines";
 import { HARNESS_NAMES } from "../lib/acp";
 import { SOURCE_WORDS, runModelName, sourceOf } from "../lib/run";
 import { runAgent, type ResolvedRun } from "../../../server/src/factory/resolve-run";
-import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placementFit, placementProblem, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
+import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
 import { compact, plural } from "../lib/format";
 import { subscriptionSpend } from "../lib/item-agent";
 import type { useHostedProviders } from "../state/hooks";
 import { effortsOf, harnessOptions } from "../lib/models";
 import { modelMenu as sharedModelMenu } from "../components/ModelPicker";
 import { effortGroup } from "../components/TrayControls";
-import type { AgentModels } from "../../../server/src/factory/placement.js";
 import { agentChanged, agentChoices, agentParts, cleanAgent, machineModels, preferredMachine, UNATTENDED_MEANS, UNATTENDED_WORDS, worksWithoutAsking, type Catalogs } from "../lib/subtask-agents";
 import { subtaskFloor, sumBudgets } from "../lib/feature";
 import type { PlanActing, PlanReview } from "./usePlanReview";
@@ -30,15 +29,6 @@ import { Check } from "../components/ui/Check";
 import { Tooltip } from "../components/ui/Tooltip";
 import { useDefaults } from "../components/StartComposer";
 import { useApp, useAuth } from "../state/app";
-
-function unplaceableOf(view: ItemView, plan: FeaturePlan, machines: MachineSummary[] | null, models?: AgentModels): { task: PlanSubtask; reason: string }[] {
-	if (!machines) return [];
-	const done = new Set(view.completedSubtasks ?? []);
-	return plan.subtasks.flatMap((task) => {
-		const reason = done.has(task.key) ? null : placementProblem(task, view.place, plan.overflow === true, machines, models);
-		return reason ? [{ task, reason }] : [];
-	});
-}
 
 const SINGLE_INSTEAD = /single item/i;
 
@@ -75,16 +65,13 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 	const ciBlock = view.question.approvalBlock;
 	const fallback = !single && view.question.choices.some(choice => choice.id === "run_single");
 	const singleAnswer = { kind: "answer", question: view.question.id, choice: "run_single" } as const;
-	const finished = view.completedSubtasks?.length ?? 0;
-	const tasks = plan.subtasks.length - finished;
 	const unsupported = single ? [] : unsupportedParts(plan, new Set(view.completedSubtasks));
-	const totalTokens = review.allotted.tokens;
 	const refused = review.refusal;
-	const unplaceable = single ? [] : unplaceableOf(view, plan, review.machines, review.models);
+	const unplaceable = single ? [] : plan.subtasks.filter(t => t.placementProblem && !view.completedSubtasks?.includes(t.key));
 	const unconfirmed = single ? 0 : review.unconfirmed;
 	const blocked = approvalProblem(review, unconfirmed);
 	// Only a permanent placement refusal blocks approval.
-	const placeBlocked = !unsupported.length && blocked === null && unplaceable.length > 0 ? unplaceable[0]! : null;
+	const placeBlocked = !unsupported.length && blocked === null ? unplaceable[0] : null;
 	const revise = view.question.choices.find((choice) => choice.id === "revise");
 	const giveUp = view.question.choices.find((choice) => choice.id === "give_up");
 	return (
@@ -93,15 +80,13 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 				It asks you
 				<span className="item-question-when">{when}</span>
 			</p>
-			<p className="item-question-text">
-				{single ? view.question.text : <>{replan ? `${view.replanWhy ? view.replanWhy + ". " : ""}Review the revised plan` : "Review the plan"}: {tasks} subtasks{finished ? " to run" : ""}, {compact(totalTokens)} of {compact(plan.budget.tokens)} tokens.</>}
-			</p>
+			<p className="item-question-text">{view.question.text}</p>
 			{unsupported.length > 0 && <p className="callout callout-warn">{HARNESS_NAMES[subtaskHarness(unsupported[0]!)]} cannot build Plan-first parts. Choose an agent for {unsupported.map(task => task.title).join(", ")}.</p>}
 			{!single && <PlanJump view={view} plan={plan} replan={replan} />}
 
 			{!single && view.question.criticReason && !view.question.criticFindings && <p className="callout callout-warn">{view.question.criticReason}</p>}
 			{view.question.criticFindings && <div className="callout callout-warn"><div>Critic recommends revision<ul>{view.question.criticFindings.map((finding, i) => <li key={i}>{finding}</li>)}</ul></div></div>}
-			{plan.subtasks.length > 0 ? <PlanRoutes view={view} plan={plan} machines={review.machines} models={review.models} catalogs={review.catalogs} accountModels={review.accountModels} refusal={refused} /> : null}
+			{plan.subtasks.length > 0 ? <PlanRoutes view={view} plan={plan} machines={review.machines} catalogs={review.catalogs} accountModels={review.accountModels} refusal={refused} /> : null}
 
 			{!single && review.unattended.length > 0 ? <UnattendedConfirm plan={plan} review={review} disabled={busy || review.edits} /> : null}
 
@@ -151,7 +136,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 						<button type="button" className="button button-outline" disabled={busy} onClick={() => document.querySelector<HTMLButtonElement>(`.plan-task[data-key="${unsupported[0]!.key}"] .plan-agent button`)?.click()}>Choose another agent</button>
 					</>
 				) : (
-					<button type="button" className="button button-primary" disabled={busy || !!ciBlock || blocked !== null || placeBlocked !== null} onClick={() => void approve(single ? singleAnswer : undefined)} aria-describedby={blocked || placeBlocked ? `${title}-why` : undefined}>
+					<button type="button" className="button button-primary" disabled={busy || !!ciBlock || blocked !== null || !!placeBlocked} onClick={() => void approve(single ? singleAnswer : undefined)} aria-describedby={blocked || placeBlocked ? `${title}-why` : undefined}>
 						{acting.busy === "edit_plan" || acting.busy === "approve_plan" || acting.busy === "run_single" ? "Approving…" : single ? "Approve for one implementer" : review.answersOnly ? "Approve" : `Approve version ${plan.version}`}
 					</button>
 				)}
@@ -192,7 +177,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 				<p className="field-note plan-blocked-place" id={`${title}-why`}>
 					<span className="plan-blocked-dot" aria-hidden="true" />
 					<span>
-						<strong>{placeBlocked.task.title}</strong>{unplaceable.length > 1 ? ` and ${unplaceable.length - 1} more` : ""} can't be placed: {placeBlocked.reason} Choose another place below and save, or ask for a new plan.
+						<strong>{placeBlocked.title}</strong>{unplaceable.length > 1 ? ` and ${unplaceable.length - 1} more` : ""} can't be placed: {placeBlocked.placementProblem} Choose another place below and save, or ask for a new plan.
 					</span>
 				</p>
 			) : null}
@@ -406,15 +391,13 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 	const waitingKey = plan.status === "approved" && view.wait?.reason === "machine" ? (nextSubtask(plan, view.children ?? [])?.key ?? null) : null;
 	const parent = parentPlaceName(view.place, machines);
 	const overflow = editing ? review.overflow : plan.overflow === true;
-	const place = (task: PlanSubtask, edited: PlanSubtask, routeEdited: boolean): PlaceRow => {
-		const fit = plan.status === "proposed" && machines ? placementFit(edited, view.place, overflow, machines, review.models) : null;
-		// A refusal refers to the saved route and agent.
-		const refusalApplies = plan.status === "proposed" && !routeEdited;
+	const place = (task: PlanSubtask, routeEdited: boolean): PlaceRow => {
+		const saved = plan.status === "proposed" && !routeEdited && overflow === !!plan.overflow;
 		return {
 			machines, parent, overflow,
 			draft: review.places[task.key] ?? placeDraftOf(task),
-			problem: (refusalApplies ? refusalFor(task, refusal) : null) ?? (fit && "refused" in fit ? fit.refused : null),
-			ahead: fit && "wait" in fit ? fit.wait : null,
+			problem: saved ? refusalFor(task, refusal) ?? task.placementProblem ?? null : null,
+			ahead: saved ? task.placementWait ?? null : editing ? "Save this version to check placement." : null,
 			wait: task.key === waitingKey ? view.wait : null,
 			secrets: name => secretsFor(name, view.placementReview, machines),
 			onPlace: draft => review.setPlace(task.key, draft),
@@ -468,7 +451,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 					<ol className="plan-tasks" aria-label="Subtasks">
 						{review.rows.map(({ task, edited, routeEdited }, index) => (
 							<SubtaskRow key={task.key} task={task} child={children.get(task.key) ?? null}
-								place={placing || editing ? place(task, edited, routeEdited) : null} agent={agentRow(task, edited)}
+								place={placing || editing ? place(task, routeEdited) : null} agent={agentRow(task, edited)}
 								n={index + 1} titles={titles} setAside={setAside}
 								editing={editing && !done.has(task.key)} finished={editing && done.has(task.key)}
 								draft={review.budgets[task.key]} invalid={!!review.problems.fields[task.key]?.tokens}
@@ -1018,7 +1001,7 @@ function SecretsTag({ sent, done = false }: { sent: boolean | null; done?: boole
 	);
 }
 
-function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, refusal }: { view: ItemView; plan: FeaturePlan; machines: MachineSummary[] | null; models: AgentModels; catalogs: Catalogs; accountModels: ModelList | null; refusal: string | null }) {
+function PlanRoutes({ view, plan, machines, catalogs, accountModels, refusal }: { view: ItemView; plan: FeaturePlan; machines: MachineSummary[] | null; catalogs: Catalogs; accountModels: ModelList | null; refusal: string | null }) {
 	const heading = useId();
 	const parent = parentPlaceName(view.place, machines);
 	const overflow = plan.overflow === true;
@@ -1047,9 +1030,8 @@ function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, ref
 							</li>
 						);
 					const route = routeWords(task, parent, overflow);
-					const fit = machines ? placementFit(task, view.place, overflow, machines, models) : null;
-					const problem = refusalFor(task, refusal) ?? (fit && "refused" in fit ? fit.refused : null);
-					const wait = !problem && fit && "wait" in fit ? fit.wait : null;
+					const problem = refusalFor(task, refusal) ?? task.placementProblem;
+					const wait = !problem && task.placementWait;
 					const harness = subtaskHarness(task);
 					const agent = agentParts(task.resolved ? runAgent(task.resolved) : task.agent, harness === "windlass" ? accountModels : machineModels(preferredMachine(task, parent, machines), harness, catalogs));
 					return (
@@ -1107,10 +1089,7 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 	const route = task ? routeWords(task, parent, overflow) : null;
 	const moved = task !== null && placeChanged(task, draft);
 	const picked = task && moved ? withPlace(task, draft) : null;
-	const check = picked && machines ? placementFit(picked, view.place, overflow, machines) : null;
-	const pickRefused = check && "refused" in check ? check.refused : null;
-	const pickWait = check && "wait" in check ? check.wait : null;
-	const row: PlaceRow = { machines, parent, overflow, draft, problem: pickRefused, wait: null, ahead: pickWait, secrets: (name) => secretsFor(name, view.placementReview, machines), onPlace: setDraft };
+	const row: PlaceRow = { machines, parent, overflow, draft, problem: null, wait: null, ahead: null, secrets: (name) => secretsFor(name, view.placementReview, machines), onPlace: setDraft };
 	const send = (choice: "revise" | "again" | "give_up") => {
 		const words = [
 			...(picked ? [`Run “${picked.title}” on ${placeWord(draft.prefer ?? parent)}${draft.allow.length ? `, or ${draft.allow.map(placeWord).join(", ")}` : ""}.`] : []),
@@ -1160,7 +1139,7 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 						<textarea id={ids.note} className="input textarea item-note" value={note} maxLength={MAX_NOTE_CHARS - 200} onChange={(event) => setNote(event.target.value)} readOnly={busy} />
 					</div>
 					<div className="item-choices">
-						<button type="button" className="button button-primary" disabled={busy || pickRefused !== null} onClick={() => void send("revise")} aria-describedby={`${ids.title}-revise`}>
+						<button type="button" className="button button-primary" disabled={busy} onClick={() => void send("revise")} aria-describedby={`${ids.title}-revise`}>
 							{acting.busy === "revise" ? "Sending…" : "Ask for a revised plan"}
 						</button>
 						<button type="button" className="button button-quiet" disabled={busy} onClick={() => setRevising(false)}>
@@ -1168,9 +1147,7 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 						</button>
 					</div>
 					<p className="field-note" id={`${ids.title}-revise`}>
-						{pickRefused
-							? "Choose a place that can take it."
-							: picked
+						{picked
 								? "The planner files the remaining subtasks again with this place; the new plan comes to you for approval."
 								: "Pick where it should run, or leave the place to the planner. The new plan comes to you for approval."}
 					</p>
@@ -1178,6 +1155,8 @@ export function PlacementQuestion({ view, question, review, acting, when }: { vi
 			) : (
 				<>
 					<div className="item-choices">
+						{question.choices.filter(c => c.id === "use_machine_payer" || c.id === "use_hosted" || c.id === "wait").map(c =>
+							<button key={c.id} type="button" className="button button-outline" disabled={busy} onClick={() => void acting.act({ kind: "answer", question: question.id, choice: c.id })}>{c.label}</button>)}
 						{revise && task ? (
 							<button type="button" className="button button-primary" disabled={busy} onClick={() => setRevising(true)}>
 								{revise.label}…

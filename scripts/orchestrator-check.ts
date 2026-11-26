@@ -2119,6 +2119,85 @@ test("a part asks for Hosted when its machine is offline and the owner allowed H
 	assert.equal(chosen.item.jobs![0].route?.preferred.kind, "hosted");
 });
 
+test("machine overflow asks before changing payer and dispatch keeps the accepted pair", async () => {
+	const { resolveRun } = await import("../server/src/factory/resolve-run.js");
+	const mac = machineReport("Mac", macId, { harnesses: [...signedIn], turns: { max: 1, running: 1, queued: 0 } });
+	const linux = machineReport("Linux", linuxId, { harnesses: [{ ...signedIn[0], source: "key", keyRelay: true, platformKeys: ["anthropic"] }] });
+	const machines = [mac, linux];
+	const feature = placementFeature(machines, {}, ["Linux"], true, "Mac", { harness: "claude" });
+	feature.jobs![0].task.resolved = resolveRun({ account: { harness: "claude", place: { machine: macId } } }, "part");
+	feature.context = { machinePayers: { [macId]: { claude: "machine" }, [linuxId]: { claude: "key" } } };
+	const switched = dispatch(feature, [mac, { ...linux, harnesses: [...signedIn] }]);
+	assert.match(switched.question!.choices.find(c => c.id === "use_machine_payer")!.label, /Linux.*machine’s own sign-in/);
+	const asked = dispatch(feature, machines);
+	assert.equal(asked.jobs![0].placement, undefined);
+	assert.match(asked.question!.choices.find(c => c.id === "use_machine_payer")!.label, /Linux.*Settings key/);
+	const accepted = advance(asked, { kind: "answer", at: 7, by: "owner", question: asked.question!.id, choice: "use_machine_payer" }).item;
+	assert.deepEqual(accepted.jobs![0].task.resolved?.place, { machine: linuxId });
+	assert.equal(accepted.jobs![0].task.resolved?.payer, "key");
+	assert.equal(dispatch(accepted, machines).jobs![0].placement?.payer, "key");
+	assert.equal(dispatch(accepted, [mac, { ...linux, harnesses: [...signedIn] }]).jobs![0].placement, undefined);
+});
+
+test("any-machine filing keeps the resolved payer until the owner accepts a named change", async () => {
+	const { machinePayers, resolveRun } = await import("../server/src/factory/resolve-run.js");
+	const { checkRunPlace } = await import("../server/src/factory/default-place.js");
+	const account = { harness: "claude", place: "any-machine" } as const;
+	const mac = machineReport("Mac", macId, { harnesses: [{ ...signedIn[0], method: "subscription" }], turns: { max: 1, running: 1, queued: 0 } });
+	const linux = machineReport("Linux", linuxId, { harnesses: [{ ...signedIn[0], source: "key", method: "api-key", keyRelay: true, platformKeys: ["anthropic"] }] });
+	const machines = [mac, linux], context = { account, machinePayers: machinePayers(machines) };
+	const run = resolveRun(context, "builder");
+	const result = checkRunPlace(run, machines);
+	assert.ok(result.wait);
+	assert.equal(result.offerPayer?.payer, "key");
+	const item = createItem({ id: "i_payer", task, place: result.place, budget: single, reviewer: { off: "deployment" } });
+	Object.assign(item, { awaitingPlace: result.wait, offerPayer: result.offerPayer, context, resolved: run });
+	const asked = advance(item, { kind: "start", at: 1, by: "owner" }).item;
+	const accepted = advance(asked, { kind: "answer", at: 2, by: "owner", question: asked.question!.id, choice: "use_machine_payer" }).item;
+	assert.deepEqual(accepted.resolved?.place, { machine: linuxId });
+	assert.equal(accepted.resolved?.payer, "key");
+	assert.equal(checkRunPlace(accepted.resolved!, machines).wait, undefined);
+	assert.equal(resolveRun({ account, machinePayers: machinePayers([linux, mac]) }, "builder").payer, "key");
+});
+
+test("a Hosted fallback uses its own isolation while an explicit part profile stays required", async () => {
+	const { partRun } = await import("../server/src/factory/resolve-run.js");
+	const { bindRoute } = await import("../server/src/factory/placement.js");
+	const context = { repository: { place: { machine: macId }, machineProfile: "docker-hardened", profile: "e2b", placeFallback: "hosted" } } as const;
+	const machines = plannerMachines([machineReport("Mac", macId, { status: "offline" })]);
+	const inventory = { machines, defaults: context, hostedProfiles: ["e2b" as const] };
+	const task = { ...proposal().subtasks[0], resolved: partRun(context, {}) };
+	const route = bindRoute(task, { kind: "hosted" }, false, machines);
+	const offered = choosePlacement(task, route, inventory);
+	assert.equal(offered.offerHosted, true);
+	assert.equal(offered.hostedProfile, "e2b");
+	const stored = { ...context, item: { place: { machine: macId }, profile: "docker-hardened", machineProfile: "docker-hardened" } } as const;
+	assert.equal(partRun(stored, { place: { prefer: "hosted", reason: "Owner accepted" } }).profile, "e2b");
+	assert.equal(choosePlacement({ ...task, needs: { profile: "docker-hardened" } }, route, inventory).offerHosted, undefined);
+	assert.equal(choosePlacement(task, route, { ...inventory, hostedProfiles: ["docker-hardened"] }).offerHosted, undefined);
+});
+
+test("filing checks the current catalog and can use a second machine when the first read fails", async () => {
+	const { machineModelLists } = await import("../server/src/actors/user-machines.js");
+	const { resolveRun } = await import("../server/src/factory/resolve-run.js");
+	const { checkRunPlace } = await import("../server/src/factory/default-place.js");
+	const entry = { ...signedIn[0], optionsDigest: "old", method: "subscription" as const };
+	const machines = [machineReport("Mac", macId, { harnesses: [entry] }), machineReport("Linux", linuxId, { harnesses: [entry] })];
+	const catalog = { defaultModel: "opus", models: [{ id: "opus", name: "Opus", efforts: [] }] };
+	const c = { key: ["owner"], client: () => ({ machine: { get: ([, id]: string[]) => ({ internalCatalog: async (_: string, digest?: string) => {
+		if (id === macId) throw new Error("offline");
+		return digest === "old" ? null : catalog;
+	} }) } }) };
+	const models = { machines: await machineModelLists(c, machines, id => id === "claude") };
+	const account = { harness: "claude", machineModel: "opus" } as const;
+	const named = (id: string) => checkRunPlace(resolveRun({ account: { ...account, place: { machine: id } } }, "builder"), machines, models);
+	assert.match(named(macId).wait!, /current model list/);
+	assert.equal(named(macId).refusal, undefined);
+	assert.equal(named(linuxId).wait, undefined);
+	const any = resolveRun({ account: { ...account, place: "any-machine" } }, "builder");
+	assert.deepEqual(checkRunPlace(any, machines, models).place, { kind: "machine", machineId: linuxId });
+});
+
 test("placement identifies screenshot permission, storage, runner flag and hosted size separately", async () => {
 	const { resolveRun } = await import("../server/src/factory/resolve-run.js");
 	const inventory = { hostedSizes: ["small", "standard", "large"] as import("../server/src/contract.js").HostedSize[],

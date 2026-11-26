@@ -22,8 +22,8 @@ import { mergeCandidate, requiredCiBranches } from "../factory/autonomy.js";
 import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
 import { criticSessionId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
-import { partRun, resolveProposedParts, resolveRun, runPlace, type RunSettings } from "../factory/resolve-run.js";
-import { limitApplies, type PlacementInventory } from "../factory/placement.js";
+import { contextAtPlace, partRun, resolveProposedParts, resolveRun, runPlace, type RunSettings } from "../factory/resolve-run.js";
+import { limitApplies, reviewPlacement, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf, branchFor } from "../github/publish.js";
 import { featureBranch, subtaskBranch, openFeature, refHead, advanceFeatureRef, compareBranches, mergeIntoFeature, readyFeature, mergeReviewedPull } from "../github/feature.js";
@@ -222,9 +222,13 @@ async function viewOf(c: Ctx): Promise<ItemView> {
 	});
 	const { item } = stored;
 	if (view.plan?.status === "proposed") {
-		const fresh = await userActor(c, stored.meta.uid).internalPartDefaults(planRepositories(stored));
+		const inventory = await placementInventory(c, stored.meta.uid, item.agent?.model);
+		inventory.defaults = { ...item.context, ...inventory.defaults };
 		const completed = completedKeys(item);
-		resolveProposedParts(view.plan.subtasks, { ...item.context, ...fresh.context }, completed, fresh.machines);
+		resolveProposedParts(view.plan.subtasks, inventory.defaults, completed, inventory.machines);
+		for (const task of view.plan.subtasks) {
+			if (!completed.has(task.key)) reviewPlacement(task, view.place, !!view.plan.overflow, inventory);
+		}
 		view.unattended = unattendedKeys(view.plan, completed);
 	}
 	const q = view.question;
@@ -1805,11 +1809,11 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return true;
 		case "resolve_default_place": {
 			if (!meta.pendingBuilder) return false;
-			const context = item.context!;
-			const job = { ...meta.pendingBuilder, context: item.useHosted ? { ...context, item: { ...context.item, place: "hosted" as const } } : context };
+			const context = item.context ?? meta.pendingBuilder.context;
+			const job = { ...meta.pendingBuilder, context: item.useHosted ? contextAtPlace(context, "hosted") : context };
 			const result = await userActor(c, meta.uid).internalDefaultBuilder({ id: item.id, job });
 			if (!result || !c.vars.stored || !live(c.vars.stored.item, effect)) return false;
-			if (!("session" in result)) await take(c, { kind: "default_place_wait", at: Date.now(), sentence: result.wait, reviewer: result.reviewer });
+			if (!("session" in result)) await take(c, { kind: "default_place_wait", at: Date.now(), sentence: result.wait, reviewer: result.reviewer, offerPayer: result.offerPayer });
 			else {
 				const session = result.session;
 				await take(c, { kind: "default_place_ready", at: Date.now(), place: session.place, reviewer: result.reviewer, reviewerSessionId: result.reviewerSessionId,

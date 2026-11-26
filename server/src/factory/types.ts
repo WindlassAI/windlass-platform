@@ -1,4 +1,5 @@
 import type { ProviderRefusal } from "../provider-refusal.js";
+import type { MachinePayerOffer } from "./default-place.js";
 import type { PlacementRoute, PlacementInventory } from "./placement.js";
 import type { CheckConclusion, ChildPlacement, FeatureRepository, IntegrationView, ReviewRecommendation } from "../contract.js";
 import type { AgentAsk, AgentReport } from "../agent-publish.js";
@@ -163,6 +164,8 @@ export interface FeatureCi extends BaseFailureDecision {
 export interface FeatureJob {
 	askMachine?: boolean;
 	offerHosted?: boolean;
+	hostedProfile?: ChildPlacement["profile"];
+	offerPayer?: MachinePayerOffer;
 	reviewFix?: { reviewedHead?: string };
 	ciFix?: { head: string; fingerprint: string };
 	conflictFix?: { target: string; child?: string; retry?: true };
@@ -219,6 +222,7 @@ export interface FactoryItem {
 	requestedReview?: RequestedReview;
 	/** Waiting for the builder to bind to a machine before its first run. */
 	awaitingPlace?: string;
+	offerPayer?: MachinePayerOffer;
 	awaitingReviewer?: boolean;
 	useHosted?: boolean;
 	placeAttempts?: number;
@@ -427,7 +431,7 @@ export type Fact =
 	| { kind: "sandbox_reclaimed"; at: number; said: string }
 	| { kind: "request_review"; at: number; subject: string; request: RequestedReview }
 	| { kind: "default_place_ready"; reviewer: NonNullable<FactoryItem["reviewer"]>; reviewerSessionId: string | null; at: number; place: SandboxPlace; agent: NonNullable<FactoryItem["agent"]> }
-	| { kind: "default_place_wait"; reviewer?: boolean; at: number; sentence: string }
+	| { kind: "default_place_wait"; offerPayer?: MachinePayerOffer; reviewer?: boolean; at: number; sentence: string }
 	| ({ kind: "github_feedback"; at: number } & FeedbackInput)
 	| { kind: "reverify"; at: number; head: string }
 	/** A cross-repo feature's combined run was asked of GitHub (`runId` once GitHub named it). */
@@ -472,7 +476,7 @@ export type StepFact =
 	| { kind: "feature_seed"; at: number; key: string; sha: string; repo?: string }
 	| { kind: "feature_ready"; waitForCiOnEachPart?: boolean; at: number; key: string; head: string; pr: NonNullable<FactoryItem["pr"]>; repo?: string }
 	| { kind: "place_child"; child?: string; at: number; key: string; inventory: PlacementInventory }
-	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; askMachine?: boolean; offerHosted?: boolean; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
+	| { kind: "placement_wait"; at: number; child: string; key: string; sentence: string; askMachine?: boolean; offerHosted?: boolean; hostedProfile?: ChildPlacement["profile"]; offerPayer?: MachinePayerOffer; refused?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string }
 	| { kind: "child_update"; startedAt?: number; wait?: string; placement?: ChildPlacement; failure?: string | null; at: number; key: string; child: string; state: FactoryItem["state"]; spent: ItemSpend; budget?: ItemBudget; report: string; head: string | null }
 	| { kind: "integrated"; head?: string; at: number; key: string }
 	| { kind: "feature_problem"; at: number; key: string; reason: string; rebase?: boolean; missingTarget?: boolean }

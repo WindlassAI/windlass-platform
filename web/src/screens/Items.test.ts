@@ -27,7 +27,7 @@ async function wait(steps = 6): Promise<void> {
 }
 
 /** Signs in with a connected ChatGPT plan and records the requests to file an item. */
-async function start(machine: MockMachineState): Promise<void> {
+async function start(machine: MockMachineState, failDefaults = false): Promise<void> {
 	client = createMockClient({ origin: "http://localhost:5173", machine });
 	const begun = client.login.start();
 	await vi.advanceTimersByTimeAsync(1000);
@@ -42,7 +42,10 @@ async function start(machine: MockMachineState): Promise<void> {
 	const user = client.user.bind(client);
 	(client as { user: (auth: AuthResult) => UserApi }).user = (who) => {
 		const api = user(who);
-		return { ...api, createItem: (input: CreateItemInput) => (sent.push(input), api.createItem(input)) };
+		return { ...api, repository: async id => {
+			if (failDefaults) { failDefaults = false; throw new Error("offline"); }
+			return api.repository(id);
+		}, createItem: (input: CreateItemInput) => (sent.push(input), api.createItem(input)) };
 	};
 	act(() => root.render(createElement(AppProvider, { client, children: createElement(NewItemDialog, { repositoryId: 7101, name: "acme/harbor", base: "main", onClose: () => undefined }) })));
 	await wait();
@@ -92,6 +95,18 @@ afterEach(() => {
 });
 
 describe("filing a work item", () => {
+	it("requires the repository preview after a failed read and retries it before filing", async () => {
+		await start("full", true);
+		typeTitle("Build the report");
+		await file();
+		expect(sent).toHaveLength(0);
+		expect(text()).toContain("Repository defaults could not be read");
+		act(() => [...host.querySelectorAll("button")].find(b => b.textContent === "Retry")!.click());
+		await wait();
+		expect(runLine()).toContain("GPT-6 Luna");
+		await file();
+		expect(sent).toHaveLength(1);
+	});
 	it("runs on this platform unless a machine is chosen, and then says what that means and sends the machine", async () => {
 		await start("full");
 		expect(runLine()).toContain("Hosted · Windlass");

@@ -125,6 +125,28 @@ describe("the Factory composer's mode choice", () => {
 		await settle();
 	}
 
+	it("holds keyboard filing until account defaults can be read", async () => {
+		make({});
+		const original = client.user.bind(client);
+		let unavailable = true;
+		client.user = who => {
+			const user = original(who);
+			return { ...user, account: async () => {
+				if (unavailable) throw new Error("offline");
+				return user.account();
+			} };
+		};
+		await show("/factory");
+		await file("Search the docs");
+		expect(filed).toHaveLength(0);
+		expect(host.querySelector(".start-run")?.textContent).toContain("Account defaults could not be read");
+		unavailable = false;
+		await act(async () => button("Retry")!.click());
+		await settle();
+		await file("Search the docs");
+		expect(filed).toHaveLength(1);
+	});
+
 	it("files Plan first by default, says it on File, and switches to Quick from File's menu, which this browser remembers", async () => {
 		make({});
 		await api().saveRepositoryDefaults(7102, { model: null });
@@ -531,6 +553,19 @@ describe("placement in a feature's plan", () => {
 	const routePlaces = (n: number) => [...(host.querySelectorAll(".plan-question .plan-route")[n]?.querySelectorAll(".plan-route-places > li") ?? [])].map((place) => place.textContent!.replace(/\s+/g, " ").trim());
 	const menuRow = (name: string) => [...document.querySelectorAll('[role="menuitemradio"]')].find((candidate) => candidate.textContent?.startsWith(name)) as HTMLElement;
 
+	it("shows the server’s Hosted screenshot refusal without a machine route", async () => {
+		const reason = "Enable screenshots for this repository or remove the screenshot requirement.";
+		make({ items: "features" }, view => {
+			const task = view.plan?.subtasks[0];
+			if (task) Object.assign(task, { needs: { screenshots: true }, place: { prefer: "hosted", reason: "Capture" }, placementProblem: reason });
+			return view;
+		});
+		const feature = await featureNamed("Search the docs from the command line");
+		await show(`/items/${feature.id}`);
+		expect(host.querySelector(".plan-route-problem")?.textContent).toContain(reason);
+		expect(host.querySelector<HTMLButtonElement>(".plan-question .button-primary")?.disabled).toBe(true);
+	});
+
 	it("shows each subtask's place, needs and reason, and the server's reason for a place it refuses", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Visual regression checks for the tide chart");
@@ -563,8 +598,8 @@ describe("placement in a feature's plan", () => {
 		await settle(2);
 		expect(fact("compare", "can't place")).toBeNull();
 		expect(why("compare")).toBe("Chosen in plan review.");
-		// "studio" is busy: a wait, which approval allows.
-		expect(fact("compare", "if approved")).toBe("Waiting for 1 free slot on ‘studio’. 0 free now.");
+		// The saved version below carries the server’s placement check.
+		expect(fact("compare", "if approved")).toBe("Save this version to check placement.");
 		await act(async () => button("Save as version 2")?.click());
 		await settle();
 		expect(button("Approve version 2")?.disabled).toBe(false);
@@ -694,7 +729,7 @@ describe("a subtask the feature could not place", () => {
 		expect(after.plan?.version).toBe(2);
 	});
 
-	it("allows a revision to a busy place, and says what it would wait for", async () => {
+	it("allows a revision to a busy place for the server to check", async () => {
 		make({ items: "features" });
 		const feature = await featureNamed("Flood alerts by mail");
 		await show(`/items/${feature.id}`);
@@ -705,7 +740,7 @@ describe("a subtask the feature could not place", () => {
 		act(() => menuRow("studio").click());
 		await settle(2);
 		expect(button("Ask for a revised plan")?.disabled).toBe(false);
-		expect([...card().querySelectorAll(".plan-place-ahead dd")].map((one) => one.textContent)).toEqual(["Waiting for 1 free slot on ‘studio’. 0 free now."]);
+		expect([...card().querySelectorAll(".plan-place-ahead dd")].map((one) => one.textContent)).toEqual([]);
 	});
 
 	it("gives up the subtask", async () => {

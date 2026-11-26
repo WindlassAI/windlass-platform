@@ -19,7 +19,7 @@ import type { MachineUpdate } from "./machine.js";
 import { asPairingError, pairingGone } from "./machine-pairing.js";
 
 import { savedModelKeys } from "../model-providers.js";
-import { listedHarness, machineHarness } from "../sandbox/harnesses.js";
+import { availableCatalog, initialHarnessModels, listedHarness, machineHarness } from "../sandbox/harnesses.js";
 import { PROVIDER_TABLE, accountsAt, providerAccounts } from "./provider-accounts.js";
 
 interface Ctx {
@@ -191,8 +191,18 @@ export async function logoutMachines(c: Ctx) {
 	});
 }
 
-export async function machineCatalog(c: Pick<Ctx, "client" | "key">, machineId: string, id: CatalogId, digest: string): Promise<HarnessOptions | null> {
+export async function machineCatalog(c: Pick<Ctx, "client" | "key">, machineId: string, id: CatalogId, digest?: string): Promise<HarnessOptions | null> {
 	return machine(c, machineId).internalCatalog(id, digest);
+}
+
+/** Read the current report for a launch. Digest-addressed web requests still read exactly their digest. */
+export async function machineModelLists(c: Pick<Ctx, "client" | "key">, machines: readonly MachineSummary[], include: (id: CatalogId) => boolean) {
+	const lists: NonNullable<import("../factory/placement.js").AgentModels["machines"]> = {};
+	await Promise.all(machines.flatMap(m => (m.harnesses ?? []).filter(h => include(h.id)).map(async h => {
+		const options = h.optionsDigest ? await machineCatalog(c, m.machineId, h.id).catch(() => null) : h.options;
+		if (options !== null) (lists[m.machineId] ??= {})[h.id] = initialHarnessModels(availableCatalog(options, h));
+	})));
+	return lists;
 }
 
 export const machineActions = {

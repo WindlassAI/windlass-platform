@@ -72,6 +72,7 @@ export function machineModels(machine: MachineSummary | null, harness: HarnessId
 export function agentModelsOf(machines: MachineSummary[] | null, catalogs: Catalogs, windlass: ModelList | null): AgentModels {
 	const byMachine: NonNullable<AgentModels["machines"]> = {};
 	for (const machine of machines ?? []) for (const reported of machine.harnesses ?? []) {
+		if (reported.optionsDigest && !catalogs[machine.machineId]?.[reported.id]) continue;
 		const list = machineModels(machine, reported.id, catalogs);
 		if (list) (byMachine[machine.machineId] ??= {})[reported.id] = list;
 	}

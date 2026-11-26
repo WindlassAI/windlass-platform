@@ -1330,7 +1330,7 @@ export interface FactoryLimits {
 export type QuestionKind = "branch_push" | "run_place" | "push_ci" | "feature_update" | "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
 
 /** Stored response IDs. Retry starts a new run. Again retries the failed step. */
-export type ChoiceId = "use_hosted" | "use_windlass" | "use_claude" | "use_opencode" | "send_back" | "dismiss" | "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base" | "update_feature";
+export type ChoiceId = "use_machine_payer" | "use_hosted" | "use_windlass" | "use_claude" | "use_opencode" | "send_back" | "dismiss" | "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base" | "update_feature";
 
 /** Render the reason as quoted plain text, separately from the platform's own notice. */
 export interface SecretRequest {
@@ -1805,6 +1805,7 @@ export interface SubtaskAgent {
 }
 
 export interface ChildPlacement {
+	payer?: CredentialSource;
 	place: SandboxPlace;
 	name: string;
 	reason: string;
@@ -1819,6 +1820,7 @@ export interface ChildPlacement {
 
 export interface PlanSubtask {
 	placementProblem?: string;
+	placementWait?: string;
 	requestedLargerSize?: HostedSize;
 	resolved?: import("./factory/resolve-run.js").ResolvedRun;
 	/** Older plans inherit the feature's place. */
@@ -1952,6 +1954,7 @@ export interface CreateItemInput {
 	/** Omitted choices inherit the repository, account and deployment settings in order. */
 	profile?: SandboxProfileId;
 	model?: string;
+	reviewModel?: string;
 	effort?: string;
 	/** Implementation agent. Planning and review use Windlass. */
 	harness?: HarnessId;

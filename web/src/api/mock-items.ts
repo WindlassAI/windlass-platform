@@ -9,7 +9,7 @@ import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/fact
 import { withAgent } from "../lib/subtask-agents";
 import { harnessName, knownHarness } from "../../../server/src/sandbox/harnesses.js";
 import { checkItemEffort } from "../../../server/src/account-models.js";
-import { approveRoutes, bindRoute, choosePlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
+import { approveRoutes, bindRoute, choosePlacement, reviewPlacement, type PlacementInventory } from "../../../server/src/factory/placement.js";
 import { plannerMachines } from "../../../server/src/machines/details.js";
 import { answeredWords, choice } from "../../../server/src/factory/answered.js";
 import {
@@ -95,7 +95,7 @@ export interface MockItemsDeps {
 	session(auth: AuthResult, input: Omit<CreateSessionInput, "profile"> & { profile?: SandboxProfileId }): Promise<SessionSummary>;
 	discardSession(auth: AuthResult, id: string): Promise<void>;
 	/** The models an item's new agent would offer: the account's for Windlass, what the machine reported for another harness. */
-	models(auth: AuthResult, harness: HarnessId, machineId: string | null): Promise<ModelList>;
+	models(auth: AuthResult, harness: HarnessId, machineId: string | null): ModelList;
 	/** Makes a seeded item's own agent session, with its turns so far, and answers its id. */
 	seededSession(auth: AuthResult, item: ItemView): string;
 	/**
@@ -1803,7 +1803,10 @@ export function createMockItems(deps: MockItemsDeps) {
 	/** Where an item on a machine stands with it now: null for a hosted item. */
 	/** The places a feature's subtasks may take, as the server reads them for placement: the user's machines, and the platform's own sandboxes. */
 	function placementInventory(auth: AuthResult): PlacementInventory {
-		return { machines: plannerMachines(deps.machines(auth)?.list ?? []), ...deps.hosted(auth) };
+		const machines = plannerMachines(deps.machines(auth)?.list ?? []);
+		const catalogs = Object.fromEntries(machines.map(m => [m.machineId, Object.fromEntries(
+			(m.harnesses ?? []).map(h => [h.id, deps.models(auth, h.id, m.machineId)]))]));
+		return { machines, models: { machines: catalogs }, ...deps.hosted(auth) };
 	}
 
 	function machineOfItem(auth: AuthResult, item: ItemView): { machine: MachineSummary | null } | null {
@@ -1946,7 +1949,11 @@ export function createMockItems(deps: MockItemsDeps) {
 		if (item.plan?.status === "proposed") {
 			const context = { ...deps.runContext(auth, item.repository.id), item: contexts.get(item)?.item };
 			if (item.repositories) context.repositories = Object.fromEntries(item.repositories.map(r => [r.alias, deps.runContext(auth, r.repositoryId).repository ?? {}]));
-			resolveProposedParts(item.plan.subtasks, context, completed, deps.machines(auth)?.list);
+			const inventory = { ...placementInventory(auth), defaults: context };
+			resolveProposedParts(item.plan.subtasks, context, completed, inventory.machines);
+			for (const task of item.plan.subtasks) {
+				if (!completed.has(task.key)) reviewPlacement(task, item.place, !!item.plan.overflow, inventory);
+			}
 		}
 		return completed;
 	}
@@ -2210,7 +2217,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (acceptance.some((line) => line.length > MAX_NOTE_CHARS)) throw new PlatformError("user", `An acceptance criterion is at most ${MAX_NOTE_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
 				const context = deps.runContext(auth, input.repository.id);
 				context.item = { place: input.place && runPlace(input.place), harness: input.harness, hostedSize: input.hostedSize, profile: input.profile, machineProfile: input.profile };
-				Object.assign(context.item, filedAgentSettings(context, input.model ?? null, input.effort ?? null));
+				Object.assign(context.item, { reviewModel: input.reviewModel }, filedAgentSettings(context, input.model ?? null, input.effort ?? null));
 				const resolved = resolveRun(context, input.mode === "single" ? "builder" : "planner");
 				input.model = resolved.model ?? undefined;
 				input.effort = resolved.effort ?? undefined;
@@ -2243,7 +2250,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				}
 				// The effort every turn runs at: one the agent reported for the item's model, as the server holds it.
 				if (input.effort !== undefined && input.effort !== null) {
-					const list = await deps.models(auth, harness, place.kind === "machine" ? place.machineId : null);
+					const list = deps.models(auth, harness, place.kind === "machine" ? place.machineId : null);
 					const model = input.model || list.defaultModel;
 					try {
 						checkItemEffort(list, model, input.effort, harness !== "windlass");

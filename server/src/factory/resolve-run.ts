@@ -1,4 +1,4 @@
-import type { CredentialSource, DefaultPlace, HarnessId, HostedSize, ItemPlaceDefaults, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
+import type { CredentialSource, DefaultPlace, HarnessId, HostedSize, ItemPlaceDefaults, MachineSummary, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
 import { windlassProvider } from "../sandbox/harnesses.js";
 import { ITEM_HOSTED_SIZE } from "../contract/hosted-sizes.js";
 
@@ -40,11 +40,25 @@ export function runAgent(run: ResolvedRun) {
 	return { harness: run.agent, model: run.model ?? undefined, effort: run.effort ?? undefined };
 }
 
+/** A filed isolation belongs to the destination kind the owner chose. Older filings wrote it in both columns. */
+export function contextAtPlace(context: RunContext, place: DefaultPlace): RunContext {
+	const previous = context.item?.place ?? context.repository?.place ?? context.account?.place ?? context.deployment?.place ?? "hosted";
+	const item = { ...context.item, place };
+	if ((previous === "hosted") !== (place === "hosted")) {
+		if (item.machineProfile === item.profile) {
+			if (place === "hosted") delete item.profile;
+			else delete item.machineProfile;
+		}
+		delete item.payer;
+	}
+	return { ...context, item };
+}
+
 export function partRun(context: RunContext, task: Pick<PlanSubtask, "agent" | "needs" | "repo" | "place">, role: "part" | "repair" = "part", machines?: readonly { name: string; machineId: string }[]) {
 	const repository = task.repo ? context.repositories?.[task.repo] ?? context.repository : context.repository;
 	const place = task.place?.prefer;
-	const item: RunSettings | undefined = place ? { ...context.item, place: place === "hosted" ? "hosted" : { machine: machines?.find(m => m.name === place)?.machineId ?? place } } : context.item;
-	return resolveRun({ ...context, repository, item }, role, task);
+	const layers = { ...context, repository };
+	return resolveRun(place ? contextAtPlace(layers, place === "hosted" ? "hosted" : { machine: machines?.find(m => m.name === place)?.machineId ?? place }) : layers, role, task);
 }
 
 /** Approved and completed parts keep the settings they ran with. */
@@ -59,6 +73,18 @@ export function deploymentSize(offered: readonly HostedSize[], preferred = ITEM_
 }
 
 export const runPlace = (place: SandboxPlace): DefaultPlace => place.kind === "machine" ? { machine: place.machineId } : "hosted";
+
+export function machinePayers(machines: readonly MachineSummary[]) {
+	return Object.fromEntries(machines.map(m => [m.machineId, Object.fromEntries((m.harnesses ?? []).map(h => [h.id, h.source ?? "machine"]))]));
+}
+
+/** An alternative must keep both the approved payer and that machine’s own filed credential source. */
+export function changesMachinePayer(run: ResolvedRun, machineId: string, source: CredentialSource, filed?: RunContext["machinePayers"]) {
+	if (source !== run.payer) return true;
+	if (!filed || (typeof run.place === "object" && run.place.machine === machineId)) return false;
+	const machine = filed[machineId];
+	return !machine || (machine[run.agent] ?? "machine") !== source;
+}
 
 function runLayers(context: RunContext): [Source, RunSettings][] {
 	return [
@@ -77,7 +103,7 @@ export function filedAgentSettings(context: RunContext, model: string | null, ef
 	return agent === "windlass" ? { model, effort } : { machineModel: model, machineEffort: effort };
 }
 
-/** Model IDs belong to their agent. Within each layer, planning can override the Windlass build settings. */
+/** Model IDs belong to their agent. A planning model at any layer takes precedence over the resolved Windlass build model. */
 export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanSubtask, "agent" | "needs">): ResolvedRun {
 	const layers = runLayers(context);
 	if (part) {
@@ -104,7 +130,11 @@ export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanS
 		values[key] = value;
 		sources[key] = source;
 	}
-	if (agent !== "windlass" && typeof place === "object") set("payer", context.machinePayers?.[place.machine]?.[agent], "account");
+	if (agent !== "windlass" && place !== "hosted") {
+		const payers = context.machinePayers ?? {};
+		const payer = place === "any-machine" ? Object.values(payers).find(machine => machine[agent])?.[agent] : payers[place.machine]?.[agent];
+		set("payer", payer, "account");
+	}
 	let layerAgent: HarnessId = "windlass";
 	for (const [source, layer] of layers) {
 		layerAgent = layer.harness ?? layerAgent;
@@ -113,12 +143,16 @@ export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanS
 		set("profile", place === "hosted" ? layer.profile : layer.machineProfile, source);
 		if (agent !== "windlass" && place !== "hosted") set("payer", layer.payer, source);
 		if (agent === "windlass") {
-			set("model", planning ? layer.reviewModel ?? layer.model : layer.model, source);
+			set("model", layer.model, source);
 			set("effort", planning ? layer.reviewEffort ?? layer.effort : layer.effort, source);
 		} else if (agent === layerAgent) {
 			set("model", layer.machineModel, source);
 			set("effort", layer.machineEffort, source);
 		}
+	}
+	if (planning) {
+		const review = priority.find(([, layer]) => layer.reviewModel != null);
+		if (review) set("model", review[1].reviewModel, review[0]);
 	}
 	if (agent === "windlass" && windlassProvider(values.model ?? undefined)) set("payer", "key", sources.model);
 	return { ...values, sources };
