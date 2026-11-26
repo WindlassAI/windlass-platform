@@ -2820,8 +2820,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			const patch = cleanDefaults(change, profiles, models, [], machines);
 			if (patch.profile !== undefined) next.profile = patch.profile;
 			if (patch.model !== undefined) next.model = patch.model;
-			if (patch.start_place === null) delete next.startPlace;
-			else if (patch.start_place) next.startPlace = patch.start_place;
+			if (patch.item_place) {
+				Object.assign(next, patch.item_place);
+				next.startPlace = change.startPlace ?? undefined;
+			}
 		} catch (error) {
 			if (error instanceof DefaultsProblem) throw new PlatformError("user", error.message, { reason: error.code });
 			throw error;

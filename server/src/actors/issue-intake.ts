@@ -9,7 +9,7 @@
  */
 
 import { mayUse } from "../access.js";
-import { readAccountDefaults } from "../account-defaults.js";
+import { readAccountDefaults } from "../repository-defaults.js";
 import { config } from "../config.js";
 import type { CreateItemInput, GithubId, ItemSummary, UserProfile } from "../contract.js";
 import { savedPlace } from "../factory/default-place.js";

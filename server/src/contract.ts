@@ -885,12 +885,13 @@ export interface ItemPlaceDefaults {
 export type StartPlace = { kind: "hosted" } | { kind: "machine"; machineId: string; profile: SandboxProfileId };
 
 export interface RepositoryDefaults extends RepositoryAutonomy, ItemPlaceDefaults {
-	/** The place for interactive launches, independent of work-item placement and the hosted profile. */
+	/** The default place projected into the interactive launch controls. */
 	startPlace?: StartPlace | null;
 	/** Allow item agents to file screenshots for this repository. Defaults to false. */
 	screenshots: boolean;
 	/** The sandbox profile, by its id; null when none is saved. */
 	profile: SandboxProfileId | null;
+	effort?: string | null;
 	/** The model; null when none is saved. */
 	model: string | null;
 	/** The hosted sandbox size of the repository's agents and work items; null when none is saved (agents small, work items standard). */
@@ -937,7 +938,7 @@ export interface SavedRepository {
 // The account's settings
 
 /** Account defaults apply after explicit launch and repository choices. Ignore unavailable profiles and models. */
-export type AccountDefaults = Omit<RepositoryDefaults, keyof RepositoryAutonomy | "screenshots" | "hostedSize">;
+export type AccountDefaults = Omit<RepositoryDefaults, keyof RepositoryAutonomy | "screenshots">;
 
 export type AccountDefaultsPatch = Partial<Omit<AccountDefaults, "updatedAt">>;
 export type RepositoryDefaultsPatch = Partial<Omit<RepositoryDefaults, "updatedAt" | "mergeKinds">> & { offer?: import("./factory/readiness-track.js").Offer };

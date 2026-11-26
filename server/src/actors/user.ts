@@ -74,7 +74,7 @@ import type { StoredRepository } from "../github/publish.js";
 import { GithubProblem, type StoredConnection, listBranches, listRepositories, resolveBoundRepository, resolveRepository } from "../github/repos.js";
 import { MAX_GITHUB_ACCOUNTS, STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
-import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../account-defaults.js";
+import { LAST_START_TABLE, forgetLastStart, readLastStart, recordLastStart } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
 import { hostedCatalog, hostedHarness, hostedKeyMessage, hostedProvider, availableCatalog, harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, sessionCapabilities } from "../sandbox/harnesses.js";
@@ -87,7 +87,7 @@ import { refreshSecretRows } from "../signin/secret-rows.js";
 import { criticAllowed } from "../factory/review.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, unavailableSecretName, validRequestedSecretName, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
 import { criticSessionId } from "../factory/feature-ids.js";
-import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, repositoryDefaultsLog, migrateDefaults, readDefaults, saveDefaults, refuseAtRepositoryCap } from "../repository-defaults.js";
+import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, repositoryDefaultsLog, readAccountDefaults, saveAccountDefaults, readDefaults, saveDefaults, refuseAtRepositoryCap } from "../repository-defaults.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { forgettingWords, personalServerReach } from "../server-question.js";
 import { CHECKS_TABLE, ChecksProblem, cleanChecks, readChecks, saveChecks } from "../repository-checks.js";
@@ -825,7 +825,7 @@ async function applyPlaceChange(change: DefaultsChange, input: ItemPlaceDefaults
 	const policy = changedPlace(await read(), input);
 	const problem = placeProblem(policy, itemMachines(machines));
 	if (problem) throw new UserError(problem, { code: "bad_input" });
-	change.item_place = policy.place ? policy : null;
+	change.item_place = policy;
 }
 
 async function forgetSession(c: UserCtx, id: string): Promise<void> {
@@ -1177,17 +1177,9 @@ export const user = actor({
 				)
 			`);
 			await db.execute(DEFAULTS_TABLE);
-			await migrateDefaults(db);
 			await db.execute(CHECKS_TABLE);
 			await db.execute(NETWORK_TABLE);
 			await db.execute(REQUESTS_TABLE);
-			// What the user keeps for their account: the defaults for new sessions (account-defaults.ts), their own MCP
-			// servers (personal-servers.ts) and the secrets those read (account-secrets.ts), each value sealed.
-			await db.execute(ACCOUNT_DEFAULTS_TABLE);
-			const accountColumns = await db.execute<{ name: string }>("PRAGMA table_info(account_defaults)");
-			for (const column of ["item_place", "start_place"]) {
-				if (!accountColumns.some(col => col.name === column)) await db.execute(`ALTER TABLE account_defaults ADD COLUMN ${column} TEXT`);
-			}
 			// Where the newest agent was started, its agent and its mode (account-defaults.ts): one row, written when an agent is made.
 			await db.execute(LAST_START_TABLE);
 			await db.execute(MODELS_TABLE);
@@ -1206,7 +1198,6 @@ export const user = actor({
 				["token_generation", "disconnected", "INTEGER NOT NULL DEFAULT 0"],
 				["token_generation", "disconnect_job", "TEXT"],
 				["sessions", "disconnect_pending", "INTEGER NOT NULL DEFAULT 0"],
-				["repository_defaults", "screenshots", "INTEGER NOT NULL DEFAULT 0"],
 				["api_token", "window_count", "INTEGER NOT NULL DEFAULT 0"],
 				["sessions", "launch_claim", "INTEGER"],
 				["setup_command", "snapshot_connection", "INTEGER"],
@@ -2340,7 +2331,7 @@ export const user = actor({
 			let change: DefaultsChange;
 			try {
 				const { sandboxes } = await getLayer();
-				change = cleanDefaults(input, sandboxes.profiles(), await modelsOf(c, profile.demo), [], itemMachines(c.vars.machines));
+				change = cleanDefaults(input, sandboxes.profiles(), await modelsOf(c, profile.demo), hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(s => s.id), itemMachines(c.vars.machines));
 			} catch (error) {
 				if (error instanceof DefaultsProblem) throw new UserError(error.message, { code: error.code });
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");

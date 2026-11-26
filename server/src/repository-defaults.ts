@@ -1,29 +1,9 @@
-/**
- * A repository's defaults for new sessions: the sandbox profile and the model a session on it starts
- * with, where its user said so (docs/github-and-repositories.md, "A repository's page").
- *
- * Whose they are. The user's, kept in their `user` actor, one row per repository of their GitHub
- * connection, under the key the setup command and secrets use. Factory screenshots need an explicit
- * opt-in. Agents read that setting when a turn starts. Clearing the last override removes the row.
- *
- * The launch form reads the profile and model. A save checks the sandbox against what this
- * deployment offers then, the model against the user's own models then (account-models.ts). Both can
- * change afterwards, so a saved default may come to name a sandbox or a model that is gone: it is
- * handed out as it was saved, and whoever reads it leaves it out.
- *
- * Saving. A save names the fields it changes, and each save is one statement that writes those
- * columns and no others. The actor's actions interleave wherever one of them waits, so a save that
- * read a row and wrote it back whole could undo what another wrote in between: two saves that change
- * different fields would leave one of them. Here neither reads before it writes, and both stay.
- *
- * This file has no actor in it: the `user` actor hands its database to these functions, and
- * scripts/repository-check.ts runs them against a database of its own.
- */
-
+/** Account and repository run choices share a schema. Saves patch only the settings they name. */
 import { modelRefusal } from "./account-models.js";
-import { type ItemPlaceDefaults, type MachineSummary, type StartPlace, type HostedSize, MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryAutonomy, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, HOSTED_SIZE_NAMES, isHostedSize } from "./contract.js";
+import { type AccountDefaults, type ItemPlaceDefaults, type MachineSummary, type StartPlace, type HostedSize, MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryAutonomy, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, HOSTED_SIZE_NAMES, isHostedSize } from "./contract.js";
 import { startPlaceProblem } from "./start-place.js";
 
+const ACCOUNT = "account";
 const AUTONOMY_FIELDS = ["autoApprovePlans", "autoMergeSingles", "waitForCiOnEachPart"] as const;
 
 /** Thrown for defaults that cannot be saved; `message` is fit to show, `code` is the UserError's. */
@@ -34,7 +14,7 @@ export class RepositoryLimit extends Error {
 
 /** At the cap, a new repository's settings are refused: older repositories' saved settings are never dropped to make room. */
 export async function refuseAtRepositoryCap(db: { execute(sql: string, ...args: never[]): Promise<unknown[]> }, table: string, project: string, max: number, what: string): Promise<void> {
-	const [row] = await db.execute(`SELECT (SELECT COUNT(*) FROM ${table} WHERE project = ?) AS known, (SELECT COUNT(*) FROM ${table}) AS total`, project as never) as Array<{ known: number; total: number }>;
+	const [row] = await db.execute(`SELECT (SELECT COUNT(*) FROM ${table} WHERE project = ?) AS known, (SELECT COUNT(*) FROM ${table} WHERE project != 'account') AS total`, project as never) as Array<{ known: number; total: number }>;
 	if (row && !Number(row.known) && Number(row.total) >= max)
 		throw new RepositoryLimit(`You have saved ${what} for ${max} repositories, the most this account keeps. Clear them for a repository you no longer use, then save again.`);
 }
@@ -51,7 +31,7 @@ export class DefaultsProblem extends Error {
 
 /** What a save changes: a field that is absent stays as it is, and null saves none for it. */
 export interface DefaultsChange extends RepositoryAutonomy {
-	start_place?: StartPlace | null;
+	effort?: string | null;
 	item_place?: ItemPlaceDefaults | null;
 	screenshots?: boolean;
 	profile?: SandboxProfileId | null;
@@ -76,13 +56,13 @@ export function repositoryDefaultsLog(uid: string, project: string, change: Defa
  * DefaultsProblem otherwise.
  */
 export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[], models: ModelList, sizes: readonly HostedSize[] = [], machines: readonly MachineSummary[] = []): DefaultsChange {
-	const input = (typeof raw === "object" && raw !== null ? raw : {}) as { startPlace?: StartPlace | null; profile?: unknown; model?: unknown; screenshots?: unknown; hostedSize?: unknown };
+	const input = (typeof raw === "object" && raw !== null ? raw : {}) as { startPlace?: StartPlace | null; profile?: unknown; model?: unknown; effort?: unknown; screenshots?: unknown; hostedSize?: unknown };
 	const change: DefaultsChange = {};
 	if (input.startPlace !== undefined) {
 		const place = input.startPlace;
 		const problem = place === null ? null : startPlaceProblem(place, machines);
 		if (problem) throw new DefaultsProblem("bad_input", problem);
-		change.start_place = place?.kind === "machine" ? { kind: "machine", machineId: place.machineId, profile: place.profile } : place ? { kind: "hosted" } : null;
+		change.item_place = place?.kind === "machine" ? { place: { machine: place.machineId }, machineProfile: place.profile } : { place: place ? "hosted" : null, machineProfile: null };
 	}
 	for (const field of AUTONOMY_FIELDS) {
 		const value = (input as Record<string, unknown>)[field];
@@ -103,13 +83,18 @@ export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[],
 			change.profile = chosen.id;
 		}
 	}
+	if (input.effort !== undefined) {
+		if (input.effort !== null && (typeof input.effort !== "string" || !models.models.some(m => m.efforts.includes(input.effort as string))))
+			throw new DefaultsProblem("bad_input", "Choose an effort offered by the model.");
+		change.effort = input.effort as string | null;
+	}
 	if (input.model !== undefined) {
 		const refusal = input.model === null ? null : modelRefusal(models, input.model);
 		if (refusal !== null) throw new DefaultsProblem("bad_model", refusal);
 		change.model = input.model as string | null;
 	}
 	if (input.hostedSize !== undefined) {
-		// `sizes`: what the deployment offers now. A size saved earlier that it no longer offers is read as the largest below it.
+		// The saved choice stays explicit if the deployment later withdraws a size.
 		if (input.hostedSize !== null && (!isHostedSize(input.hostedSize) || !sizes.includes(input.hostedSize))) throw new DefaultsProblem("bad_input", sizes.length > 1 ? `Choose one of the hosted sizes: ${sizes.map(size => HOSTED_SIZE_NAMES[size]).join(", ")}.` : "This deployment has one hosted size.");
 		change.hostedSize = input.hostedSize;
 	}
@@ -121,69 +106,56 @@ export interface DefaultsDb {
 	execute<Row extends Record<string, unknown> = Record<string, unknown>>(query: string, ...args: unknown[]): Promise<Row[]>;
 }
 
-/** One row per repository: `project` is "github:<GitHub's id>", `label` the repository in words, for a reader of the table. */
 export const DEFAULTS_TABLE = `
 	CREATE TABLE IF NOT EXISTS repository_defaults (
 		project TEXT PRIMARY KEY,
 		label TEXT NOT NULL,
+		settings TEXT NOT NULL DEFAULT '{}',
 		screenshots INTEGER NOT NULL DEFAULT 0,
-		profile TEXT,
-		model TEXT,
-		updated_at INTEGER NOT NULL,
-		hosted_size TEXT,
-		${AUTONOMY_FIELDS.map(field => `${field} INTEGER NOT NULL DEFAULT 0`).join(",\n\t\t")},
-		item_place TEXT,
-		start_place TEXT
+		${AUTONOMY_FIELDS.map(field => `${field} INTEGER NOT NULL DEFAULT 0`).join(", ")},
+		updated_at INTEGER NOT NULL
 	)
 `;
 
-/** Existing repositories inherit off for autonomy settings. */
-export async function migrateDefaults(db: DefaultsDb): Promise<void> {
-	const columns = await db.execute<{ name: string }>("PRAGMA table_info(repository_defaults)");
-	for (const field of AUTONOMY_FIELDS)
-		if (!columns.some(column => column.name === field)) await db.execute(`ALTER TABLE repository_defaults ADD COLUMN ${field} INTEGER NOT NULL DEFAULT 0`);
-	if (!columns.some(column => column.name === "start_place")) await db.execute("ALTER TABLE repository_defaults ADD COLUMN start_place TEXT");
-	if (!columns.some(column => column.name === "item_place")) await db.execute("ALTER TABLE repository_defaults ADD COLUMN item_place TEXT");
-	if (!columns.some((column) => column.name === "hosted_size")) await db.execute("ALTER TABLE repository_defaults ADD COLUMN hosted_size TEXT");
+export function personalPlace(settings: ItemPlaceDefaults): StartPlace | undefined {
+	const place = settings.place;
+	if (place === "hosted") return { kind: "hosted" };
+	if (place && typeof place === "object" && settings.machineProfile)
+		return { kind: "machine", machineId: place.machine, profile: settings.machineProfile };
 }
 
-/** The defaults saved for a project; none when there is no row. */
 export async function readDefaults(db: DefaultsDb, project: string): Promise<RepositoryDefaults> {
-	const [row] = await db.execute<{ start_place: string | null; item_place: string | null; profile: string | null; model: string | null; screenshots: number; updated_at: number; hosted_size: string | null } & Record<typeof AUTONOMY_FIELDS[number], number>>(`SELECT start_place, item_place, ${AUTONOMY_FIELDS.join(", ")}, profile, model, screenshots, updated_at, hosted_size FROM repository_defaults WHERE project = ?`, project);
-	return {
-		place: null, harness: null, machineProfile: null, placeFallback: null,
-		...(row?.start_place && { startPlace: JSON.parse(row.start_place) as StartPlace }),
-		...(row?.item_place && JSON.parse(row.item_place) as ItemPlaceDefaults),
-		...Object.fromEntries(AUTONOMY_FIELDS.filter(field => row?.[field] === 1).map(field => [field, true])),
-		screenshots: row?.screenshots === 1, profile: (row?.profile ?? null) as SandboxProfileId | null, model: row?.model ?? null,
-		hostedSize: isHostedSize(row?.hosted_size) ? row.hosted_size : null, updatedAt: row?.updated_at ?? null,
-	};
+	const [row] = await db.execute<{ settings: string; screenshots: number; updated_at: number } & Record<typeof AUTONOMY_FIELDS[number], number>>(
+		`SELECT settings, screenshots, updated_at, ${AUTONOMY_FIELDS.join(", ")} FROM repository_defaults WHERE project=?`, project);
+	const settings = JSON.parse(row?.settings ?? "{}") as Partial<RepositoryDefaults>;
+	return { place: null, harness: null, machineProfile: null, placeFallback: null, screenshots: row?.screenshots === 1,
+		profile: null, model: null, hostedSize: null, ...settings, startPlace: personalPlace(settings), updatedAt: row?.updated_at ?? null,
+		...Object.fromEntries(AUTONOMY_FIELDS.filter(field => row?.[field] === 1).map(field => [field, true])) };
 }
 
-/**
- * Makes a change that was cleaned already and answers with what is saved then. The fields the change
- * names are written in one statement, which touches no other column; a row with nothing left in it
- * is removed, and so are the rows beyond what one user may keep.
- */
 export async function saveDefaults(db: DefaultsDb, project: string, label: string, change: DefaultsChange, now: number): Promise<RepositoryDefaults> {
-	const columns = (["start_place", "item_place", "profile", "model", "screenshots", "hostedSize", ...AUTONOMY_FIELDS] as const).filter((column) => change[column] !== undefined).map((field) => (field === "hostedSize" ? "hosted_size" : field));
-	if (columns.length > 0) {
-		await refuseAtRepositoryCap(db, "repository_defaults", project, MAX_REPOSITORY_DEFAULTS, "defaults");
-		await db.execute(
-			`INSERT INTO repository_defaults (project, label, profile, model, screenshots, hosted_size, ${AUTONOMY_FIELDS.join(", ")}, start_place, item_place, updated_at) VALUES (?, ?, ?, ?, ?, ?, ${AUTONOMY_FIELDS.map(() => "?").join(", ")}, ?, ?, ?)
-			ON CONFLICT (project) DO UPDATE SET ${columns.map((column) => `${column} = excluded.${column}`).join(", ")}, label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, updated_at = excluded.updated_at`,
-			project,
-			label,
-			change.profile ?? null,
-			change.model ?? null,
-			change.screenshots === true ? 1 : 0,
-			change.hostedSize ?? null,
-			...AUTONOMY_FIELDS.map(field => Number(change[field] === true)),
-			change.start_place ? JSON.stringify(change.start_place) : null,
-			change.item_place ? JSON.stringify(change.item_place) : null,
-			now,
-		);
-		await db.execute(`DELETE FROM repository_defaults WHERE project = ? AND profile IS NULL AND model IS NULL AND screenshots = 0 AND hosted_size IS NULL AND ${AUTONOMY_FIELDS.map(field => `${field} = 0`).join(" AND ")} AND start_place IS NULL AND item_place IS NULL`, project);
+	const { profile, model, effort, hostedSize } = change;
+	const patch = JSON.stringify({ profile, model, effort, hostedSize, ...change.item_place });
+	const columns = (["screenshots", ...AUTONOMY_FIELDS] as const).filter(key => change[key] !== undefined);
+	if (patch !== "{}" || columns.length) {
+		if (project !== ACCOUNT) await refuseAtRepositoryCap(db, "repository_defaults", project, MAX_REPOSITORY_DEFAULTS, "defaults");
+		await db.execute(`INSERT INTO repository_defaults (project, label, updated_at, settings${columns.map(k => ", " + k).join("")})
+			VALUES (?, ?, ?, json_patch('{}', ?)${columns.map(() => ", ?").join("")})
+			ON CONFLICT(project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END,
+			updated_at = excluded.updated_at, settings = json_patch(settings, ?)${columns.map(k => `, ${k}=excluded.${k}`).join("")}`,
+			project, label, now, patch, ...columns.map(k => Number(change[k])), patch);
+		await db.execute(`DELETE FROM repository_defaults WHERE project=? AND settings='{}' AND screenshots=0 AND ${AUTONOMY_FIELDS.map(k => k + "=0").join(" AND ")}`, project);
 	}
 	return readDefaults(db, project);
+}
+
+export async function readAccountDefaults(db: DefaultsDb): Promise<AccountDefaults> {
+	const { screenshots, autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, ...settings } = await readDefaults(db, ACCOUNT);
+	return settings;
+}
+
+export async function saveAccountDefaults(db: DefaultsDb, change: DefaultsChange, now: number): Promise<AccountDefaults> {
+	const { screenshots, autoApprovePlans, autoMergeSingles, waitForCiOnEachPart, ...settings } = change;
+	await saveDefaults(db, ACCOUNT, "", settings, now);
+	return readAccountDefaults(db);
 }
