@@ -60,7 +60,7 @@ function runLayers(context: RunContext): [Source, RunSettings][] {
 	];
 }
 
-const agentLayerOf = (layers: [Source, RunSettings][]) => layers.findLast(([, settings]) => settings.harness != null);
+const agentLayerOf = (layers: [Source, RunSettings][]) => [...layers].reverse().find(([, settings]) => settings.harness != null);
 
 /** Store a filed model and effort under the agent they belong to, including an inherited agent. */
 export function filedAgentSettings(context: RunContext, model: string | null, effort: string | null): RunSettings {

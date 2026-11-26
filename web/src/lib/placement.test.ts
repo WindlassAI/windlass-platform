@@ -78,7 +78,7 @@ describe("a place the server would refuse", () => {
 	});
 
 	it("says what a machine lacks, and a name that is none of the user's machines", () => {
-		expect(placementProblem(task("a", { place: { prefer: "nas", reason: "r" }, needs: { screenshots: true } }), onNas, false, machines)).toBe("‘nas’: screenshots are unavailable.");
+		expect(placementProblem(task("a", { place: { prefer: "nas", reason: "r" }, needs: { screenshots: true } }), onNas, false, machines)).toBe("‘nas’: start this runner with --screenshots and a pinned screenshot image.");
 		expect(placementProblem(task("a", { place: { prefer: "attic", reason: "r" } }), onNas, false, machines)).toBe("‘attic’ is not one of your machines.");
 	});
 
