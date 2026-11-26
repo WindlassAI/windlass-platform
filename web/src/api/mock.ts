@@ -132,6 +132,7 @@ import {
 	type PlanInfo,
 	type LinearConnection,
 	type LinearStatus,
+	type GitlabStatus,
 	type LinearTeamList,
 } from "@contract";
 import { PlatformError, type PlatformClient, type SessionApi, type SessionFeed, type UserApi, type UserFeed } from "./client";
@@ -159,6 +160,7 @@ export interface MockOptions {
 	questionTimeoutMs?: number;
 	/** False plays a deployment with no GitHub App: nothing of GitHub is offered. */
 	github?: boolean;
+	gitlab?: boolean;
 	/** Whether the deployment has a Linear OAuth client and signing secret. On unless false. */
 	linear?: boolean;
 	/** "e2b" plays a deployment on E2B that offers both of its profiles (`MOCK_E2B_PROFILES`). */
@@ -999,6 +1001,17 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		} catch {
 			// Storage is unavailable: the connection lasts until the page is reloaded.
 		}
+	}
+
+	const gitlabUrl = "https://gitlab.example.com";
+	const gitlabProjects: SessionRepository[] = [
+		{ id: "90071992547409931", owner: "acme/tools", name: "harbor" },
+		{ id: "7202", owner: "acme", name: "website" },
+	].map(project => ({ ...project, provider: "gitlab", branch: "main", private: true, url: `${gitlabUrl}/${project.owner}/${project.name}` }));
+	function gitlabStatus(uid: string): GitlabStatus {
+		if (options.gitlab === false) return { state: "off" };
+		const stored = recall(`wlp.mock.gitlab.${uid}`);
+		return stored ? { state: "connected", baseUrl: gitlabUrl, project: gitlabProjects.find(p => p.id === stored) ?? null } : { state: "disconnected" };
 	}
 
 	// ---- Linear ---------------------------------------------------------------------------------
@@ -3436,6 +3449,41 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				session.feeds.clear();
 				const list = listOf(world());
 				for (const feed of world().feeds) feed.onSessions(list);
+			},
+			async gitlab() { return gitlabStatus(world().profile.uid); },
+			async gitlabConnect({ origin }) {
+				const uid = world().profile.uid;
+				if (options.gitlab === false) throw new PlatformError("user", "GitLab is unavailable.");
+				const ticket = `mock.${now() + 5 * MINUTE}.${crypto.randomUUID()}`;
+				keep(`wlp.mock.gitlab.ticket.${uid}`, ticket);
+				const url = new URL("/settings", origin);
+				url.search = typeof location === "undefined" ? "" : location.search;
+				url.hash = `gitlab=${ticket}`;
+				return { url: url.href };
+			},
+			async gitlabComplete(ticket) {
+				const uid = world().profile.uid;
+				const key = `wlp.mock.gitlab.ticket.${uid}`;
+				if (options.gitlab === false || !ticket || recall(key) !== ticket || !(Number(ticket.split(".")[1]) > now())) throw new PlatformError("user", "This link is no longer valid. Connect GitLab again.");
+				keep(key, "");
+				keep(`wlp.mock.gitlab.${uid}`, "connected");
+				return gitlabStatus(uid);
+			},
+			async gitlabProjects(query) {
+				if (gitlabStatus(world().profile.uid).state !== "connected") throw new PlatformError("user", "Connect GitLab first.");
+				return { projects: gitlabProjects.filter(p => `${p.owner}/${p.name}`.includes(query.trim().toLowerCase())), more: false };
+			},
+			async gitlabPickProject(id) {
+				const uid = world().profile.uid;
+				if (gitlabStatus(uid).state !== "connected" || !gitlabProjects.some(p => p.id === id)) throw new PlatformError("user", "That GitLab project is not available.");
+				keep(`wlp.mock.gitlab.${uid}`, id);
+				return gitlabStatus(uid);
+			},
+			async gitlabDisconnect() {
+				const uid = world().profile.uid;
+				keep(`wlp.mock.gitlab.ticket.${uid}`, "");
+				keep(`wlp.mock.gitlab.${uid}`, "");
+				return gitlabStatus(uid);
 			},
 			async linear(): Promise<LinearStatus> {
 				await latency(200);

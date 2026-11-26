@@ -39,6 +39,7 @@ import {
 	type SessionSummary,
 	type TimelineItem,
 	type UsageNumbers,
+	type GitlabActions,
 	type UserActions,
 	type UserEvents,
 } from "@contract";
@@ -59,7 +60,7 @@ type Handle = ActorHandle<Untyped>;
 type Conn = ActorConn<Untyped>;
 
 /** The actor names, as the server's registry is expected to register them. ASSUMPTION 1. */
-const ACTOR = { user: "user", agentSession: "agentSession" } as const;
+const ACTOR = { user: "user", userGitlab: "userGitlab", agentSession: "agentSession" } as const;
 
 /**
  * How long an action may take. RivetKit retries an endpoint that does not answer for as long as it
@@ -83,7 +84,7 @@ const READS = new Set([
 	"me", "chatgpt", "models", "listSessions", "github", "githubRepositories", "githubBranches", "repositorySetup", "repositoryChecks",
 	"repositoryEnvironments", "repositoryNetwork", "repositorySecrets", "repository", "githubRepository", "savedRepositories", "account",
 	"accountSecrets", "modelProviders", "allowance", "usage", "billing", "machines", "machineCatalog", "listItems", "itemFeed", "item", "factoryLimits",
-	"apiTokens", "linear", "linearTeams", "snapshot", "changes", "diff", "publishState", "servers",
+	"apiTokens", "gitlab", "gitlabProjects", "linear", "linearTeams", "snapshot", "changes", "diff", "publishState", "servers",
 ]);
 
 /** Whether an action may be sent twice: it reads, or it carries the key of its submission. */
@@ -369,6 +370,8 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 
 	function userApi(auth: AuthResult): UserApi {
 		const handle = userHandle(auth);
+		const gitlabHandle = lazy(async () => (await connect()).getOrCreate<Untyped>(ACTOR.userGitlab, [auth.profile.uid], { params: { token: auth.token } }));
+		const gitlab = <K extends keyof GitlabActions>(name: K, ...args: Parameters<GitlabActions[K]>) => call<GitlabActions, K>(gitlabHandle(), name, ...(args as never));
 		const act = <K extends keyof UserActions & string>(name: K, ...args: Parameters<UserActions[K]>) => call<UserActions, K>(handle(), name, ...(args as never));
 		return {
 			me: () => act("me"),
@@ -384,6 +387,12 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			createSession: (input) => act("createSession", input),
 			renameSession: (id, title) => act("renameSession", id, title),
 			deleteSession: (id) => act("deleteSession", id),
+			gitlab: () => gitlab("gitlab"),
+			gitlabConnect: input => gitlab("gitlabConnect", input),
+			gitlabComplete: ticket => gitlab("gitlabComplete", ticket),
+			gitlabProjects: query => gitlab("gitlabProjects", query),
+			gitlabPickProject: id => gitlab("gitlabPickProject", id),
+			gitlabDisconnect: () => gitlab("gitlabDisconnect"),
 			github: () => act("github"),
 			githubConnect: (origin, install) => act("githubConnect", { origin, install }),
 			githubComplete: (ticket) => act("githubComplete", ticket),

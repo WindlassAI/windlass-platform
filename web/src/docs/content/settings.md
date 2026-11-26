@@ -32,6 +32,10 @@ A change holds from each agent's next turn. An account can keep 20 servers. A se
 
 Account secrets go to MCP servers by default: your own, and a repository's once you approve it. You can also give one to the agent's commands. A repository's setup command never gets an account secret. An account can keep 50. See [Secrets](/docs/security#secrets) for where each one goes.
 
+### GitLab
+
+In **Settings → Integrations**, choose **Connect GitLab…** and approve access on the GitLab instance configured for this deployment. When you return, search for a project, choose its namespace and name, then select **Save project**. Saving registers a project webhook and requires Maintainer access or higher. Settings shows the saved project and its default branch. **Disconnect…** forgets the GitLab connection and selected project without changing your GitHub connection.
+
 ### Linear
 
 Where Linear is available, connect your workspace and map each team to a GitHub repository. **Disconnect…** removes its mappings and stops new filings. Existing items stay. Label an issue `windlass` or assign it to the Windlass app. Use `windlass-quick` or `windlass:quick` for Quick mode. See [From a Linear issue](/docs/factory#from-a-linear-issue).

@@ -426,6 +426,27 @@ export interface GithubStatus {
 	connection: GithubConnection | null;
 }
 
+/** Public state of the owner’s GitLab connection. Credentials and hook secrets stay server-side. */
+export type GitlabStatus =
+	| { state: "off" }
+	| { state: "disconnected" }
+	| { state: "connected"; baseUrl: string; project: SessionRepository | null };
+
+export interface GitlabProjectList {
+	projects: SessionRepository[];
+	more: boolean;
+}
+
+/** Settings actions on userGitlab[uid]. */
+export interface GitlabActions {
+	gitlab(): Promise<GitlabStatus>;
+	gitlabConnect(input: { origin: string }): Promise<{ url: string }>;
+	gitlabComplete(ticket: string): Promise<GitlabStatus>;
+	gitlabProjects(query: string): Promise<GitlabProjectList>;
+	gitlabPickProject(projectId: string): Promise<GitlabStatus>;
+	gitlabDisconnect(): Promise<GitlabStatus>;
+}
+
 /** Mapped teams file work on their repository through a qualifying label or app assignment. */
 export type LinearStatus =
 	/** The deployment has no Linear OAuth client or signing secret (server env): Settings shows nothing to connect. */
@@ -492,10 +513,10 @@ export interface GithubBranchList {
 	more: boolean;
 }
 
-/** What a session was launched on, when it was picked from the user's GitHub connection. */
+/** What a session was launched on, when it was picked from the user's code host connection. */
 export interface SessionRepository {
-	provider: "github";
-	/** GitHub's id for the repository. */
+	provider: "github" | "gitlab";
+	/** The provider's id for the repository. */
 	id: GithubId;
 	owner: string;
 	name: string;

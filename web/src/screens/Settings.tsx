@@ -5,6 +5,7 @@ import { SettingsSecrets } from "../components/Secrets";
 import { DefaultAgent } from "../components/RunSettings";
 import { CopyButton } from "../components/Copy";
 import { GithubSettings } from "../components/GithubSettings";
+import { GitlabSettings, useGitlabSettings } from "../components/GitlabSettings";
 import { LinearSettings } from "../components/LinearSettings";
 import { LoginMethods } from "../components/LoginMethods";
 import { ModelProviders } from "../components/ModelProviders";
@@ -24,6 +25,7 @@ export function Settings() {
 	const { platform } = useApp();
 	const auth = useAuth();
 	const github = useGithub();
+	const gitlab = useGitlabSettings();
 	const account = useAccount();
 	const { settings } = account;
 	const info = platform.info;
@@ -80,9 +82,10 @@ export function Settings() {
 					</SettingsGroup>
 				) : null}
 
-				{info?.items || github.enabled ? (
+				{info?.items || github.enabled || gitlab.error || (gitlab.status && gitlab.status.state !== "off") ? (
 					<SettingsGroup id="settings-integrations" title="Integrations" lede={info?.items ? "Your repositories, and work items filed from other places." : "Your repositories."}>
 						<GithubSettings />
+						<GitlabSettings connection={gitlab} />
 						{info?.items ? <LinearSettings /> : null}
 						{info?.items ? <ApiTokens /> : null}
 					</SettingsGroup>
