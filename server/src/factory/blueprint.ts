@@ -18,7 +18,7 @@ import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
 import type { OutOfMemory } from "../sandbox/api.js";
 import { MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
-import { CI_POLLING, type CiReading, rerunnableJobs, ciPollEvery, ciState, workflowOverdue } from "../github/ci.js";
+import { CI_POLLING, type CiReading, rerunnableJobs, ciPollEvery, ciState, workflowOverdue } from "../codehost/ci.js";
 import { spellSeconds } from "../usage.js";
 import { partRun, resolveProposedParts, resolveRun, runPlace } from "./resolve-run.js";
 import { approveRoutes, bindRoute, choosePlacement, freeMachineSlots, machineSlots, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";

@@ -5,7 +5,7 @@ import type { AgentAsk, AgentReport } from "../agent-publish.js";
 import type { OutOfMemory } from "../sandbox/api.js";
 import type { ChoiceId, HostedSize, ItemBudget, ItemSpend, ItemEvent, ItemQuestion, ItemReview, ItemRun, ItemState, ItemStep, ItemTask, SandboxPlace, TurnOutcome, Verdict, VerdictRun, Verified, VerifiedFlag, Wait, Waiting } from "../contract.js";
 import type { PersonDecision, ReviewerTaskInput } from "./reviewer-task.js";
-import type { RerunnableJob, CiReading, CiState } from "../github/ci.js";
+import type { RerunnableJob, CiReading, CiState } from "../codehost/ci.js";
 
 export type { ChoiceId, FactoryLimits, ItemBudget, ItemSpend, ItemEvent, ItemState, QuestionKind, StepKind, Verdict, VerdictRun, Wait, WaitReason, Waiting } from "../contract.js";
 

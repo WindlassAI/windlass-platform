@@ -1,6 +1,8 @@
 /** githubInbox[installationId] and githubHooks["app"]. Only service actions write or read rows.
  * A scheduled action must be fired by the engine. An empty actor has no work and arms no timer.
  */
+import type { GithubCommentHost } from "./github-item.js";
+import { resolveCodeHost } from "../codehost/index.js";
 import { recentSubject } from "../factory/intake.js";
 import { cleanFeedback } from "../factory/feedback.js";
 import type { InstallationChange } from "./user-github.js";
@@ -187,10 +189,10 @@ export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, t
 	}
 	// The item's person needs write access too, as issue intake asks of them: an owner GitHub has since shut out sends nothing back.
 	if (await c.client().githubRepository.get([String(repositoryId)], params).internalIssuePermission(installationId, subject.sender) !== "write") return denied;
-	const app = githubApp();
-	if (!app) throw new Error("GitHub App unavailable.");
+	const app = githubApp(), host = resolveCodeHost("github");
+	if (!app || !host) throw new Error("GitHub App unavailable.");
 	try {
-		return await app.withToken(installationId, { repositoryId, permissions: { metadata: "read", pull_requests: "read" } }, async token => {
+		return await host.withToken({ installationId, repositoryId }, "pull:read", async token => {
 			const repo = await app.repositoryById(token, repositoryId);
 			if (repo.id !== repositoryId) return null;
 			const entry = (kind: FeedbackEntry["kind"], id: string, body: string, at: number, url: string, author: string): FeedbackEntry => ({
@@ -204,7 +206,7 @@ export async function readFeedback(c: Pick<Ctx, "client">, uid: string | null, t
 				if (note === null) return null;
 				const url = app.repositoryUrl(repo.owner, repo.name) + "/pull/" + pr + "#issuecomment-" + subject.id;
 				if (itemPull && /^\/windlass\s+review$/i.test(r.body.trim())) {
-					const pull = await app.pull(token, repo.owner, repo.name, pr);
+					const pull = await host.readPull(token, repo.owner, repo.name, pr);
 					if (!["open", "draft"].includes(pull.state) || ![pull.headSha, pull.baseSha].every(sha => /^[a-f0-9]{40}$/.test(sha))) return null;
 					return { ...target, repo, addressed: true, entries: [], requestedReview: { id: feedbackId(subject), head: pull.headSha, base: pull.baseSha, owner, sender: r.author.login } };
 				}
@@ -277,11 +279,13 @@ async function prFeedback(d: Delivery, c: Ctx): Promise<"no item" | void> {
 			return;
 		}
 		if (!notice.addressed) return "no item";
+		const host: GithubCommentHost = resolveCodeHost("github")!;
+		// This reply needs pull-request write access only; pull:write would also request contents.
 		await app.withToken(target.installationId, { repositoryId: repo.id, permissions: { metadata: "read", pull_requests: "write" } }, async token => {
 			const { items: comments, truncated } = await app.issueCommentPages(token, repo.owner, repo.name, target.pr);
 			if (truncated) return;
 			if (!comments.some(comment => comment.author.toLowerCase() === app.settings.slug.toLowerCase() + "[bot]" && comment.body === UNLINKED))
-				await app.createIssueComment(token, repo.owner, repo.name, target.pr, UNLINKED, "explain the unlinked pull request");
+				await host.createComment(token, repo.owner, repo.name, target.pr, UNLINKED, "explain the unlinked pull request");
 		});
 	} catch (e) { if (missingActor(e)) return "no item"; throw e; }
 }

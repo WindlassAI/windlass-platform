@@ -1,6 +1,5 @@
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type GithubIssueOrigin, type ItemState, type LinearIssueOrigin, type CreateItemInput, type GithubId } from "../contract.js";
 import { commentText } from "./review.js";
-import type { GithubUser } from "../github/app.js";
 
 const plain = (s: string) => s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, "").replace(/<!--[\s\S]*?(?:-->|$)/g, "").trim();
 const cut = (s: string, limit: number, mark = "…") => s.length <= limit ? s : s.slice(0, limit - mark.length).trimEnd() + mark;
@@ -45,7 +44,9 @@ function taskOfText(input: IssueText) {
 	return { task: { title, body: body.trim(), acceptance }, trusted };
 }
 
-export function taskOfIssue(input: { title: string; body: string; number: number; url: string; author: GithubUser; sender: GithubUser; note: string }) {
+type IssuePerson = { id: GithubId; login: string };
+
+export function taskOfIssue(input: { title: string; body: string; number: number; url: string; author: IssuePerson; sender: IssuePerson; note: string }) {
 	const { author, sender, number, url } = input;
 	const repo = new URL(url).pathname.split("/").slice(-4, -2).join("/");
 	return taskOfText({ title: input.title, body: input.body, fallbackTitle: `Issue #${number}`, from: `From issue #${number} of ${repo}. ${url}`,

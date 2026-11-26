@@ -52,7 +52,8 @@ import { feedbackComment, itemComment, reviewRoundComment, requestedReviewBody, 
 import type { Effect as BlueprintEffect, Fact, FactoryItem, RequestedReview, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { checkBaseFailures } from "../github/ci-base.js";
-import { CI_POLLING, ciState, readCi, rerunJobs, rerunnableJobs, workflowOverdue } from "../github/ci.js";
+import { resolveCodeHost } from "../codehost/index.js";
+import { CI_POLLING, ciState, rerunnableJobs, workflowOverdue } from "../codehost/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { type RequestedSecretSave, secretsActor, grantIsValid, isSessionGone, itemActor, sessionActor, userActor } from "./internal.js";
 import type { ItemFacts } from "./user-items.js";
@@ -904,18 +905,25 @@ async function nudge(c: Ctx, input: GithubNudge): Promise<boolean> {
 	return true;
 }
 
+// Use CodeHost for portable operations, but keep the app for exact token scopes and reuse.
+function githubServices() {
+	const app = githubApp();
+	const host = resolveCodeHost("github");
+	if (!app || !host) throw new Error("the deployment has no GitHub App");
+	return { app, host };
+}
+
 /** The repository as the user's connection reaches it now, and the app: what a poll of GitHub needs. */
 async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read", repo?: FeatureRepoState) {
-	const app = githubApp();
-	if (!app) throw new Error("the deployment has no GitHub App");
+	const { app, host } = githubServices();
 	const connection: StoredConnection | null = await userActor(c, meta.uid).internalGithubConnection();
 	if (!connection) throw new GithubProblem("github_gone", "The user’s GitHub connection is gone.");
 	const repositoryId = repo?.repositoryId ?? meta.repository.id;
 	const installationId = repo?.installationId ?? await binding(c) ?? (await resolveRepository(app, connection, repositoryId, "read")).installation.id;
 	const resolved = await resolveBoundRepository(app, connection, repositoryId, installationId, access);
 	const { owner, name } = resolved.repository;
-	const pull = (number: number) => app.withToken(resolved.installation.id, { repositoryId, permissions: { metadata: "read", pull_requests: "read" } }, (token) => app.pull(token, owner, name, number), { reuse: true });
-	return { app, installationId: resolved.installation.id, repository: resolved.repository, owner, name, pull, author: authorOf(connection), login: connection.user.login, connectedUserId: connection.user.id };
+	const pull = (number: number) => app.withToken(resolved.installation.id, { repositoryId, permissions: { metadata: "read", pull_requests: "read" } }, (token) => host.readPull(token, owner, name, number), { reuse: true });
+	return { app, host, installationId: resolved.installation.id, repository: resolved.repository, owner, name, pull, author: authorOf(connection), login: connection.user.login, connectedUserId: connection.user.id };
 }
 
 /**
@@ -923,14 +931,13 @@ async function github(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read",
  * bound to it at filing (never another one it may have moved to), with `perform` given a token scoped to
  * that one repository and `permissions`.
  */
-async function repoHub<T>(c: Ctx, meta: ItemMeta, repo: FeatureRepoState, access: "read" | "write", permissions: Record<string, "read" | "write">, perform: (hub: { app: GithubApp; token: string; owner: string; name: string; private: boolean; author: ReturnType<typeof authorOf> }) => Promise<T>): Promise<T> {
-	const app = githubApp();
-	if (!app) throw new Error("the deployment has no GitHub App");
+async function repoHub<T>(c: Ctx, meta: ItemMeta, repo: FeatureRepoState, access: "read" | "write", permissions: Record<string, "read" | "write">, perform: (hub: ReturnType<typeof githubServices> & { token: string; owner: string; name: string; private: boolean; author: ReturnType<typeof authorOf> }) => Promise<T>): Promise<T> {
+	const { app, host } = githubServices();
 	const connection: StoredConnection | null = await userActor(c, meta.uid).internalGithubConnection();
 	if (!connection) throw new GithubProblem("github_gone", "The user’s GitHub connection is gone.");
 	const resolved = await resolveBoundRepository(app, connection, repo.repositoryId, repo.installationId, access);
 	const { owner, name } = resolved.repository;
-	return app.withToken(repo.installationId, { repositoryId: repo.repositoryId, permissions: { metadata: "read", ...permissions } }, token => perform({ app, token, owner, name, private: resolved.repository.private, author: authorOf(connection) }));
+	return app.withToken(repo.installationId, { repositoryId: repo.repositoryId, permissions: { metadata: "read", ...permissions } }, token => perform({ app, host, token, owner, name, private: resolved.repository.private, author: authorOf(connection) }));
 }
 
 async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType<typeof github>>, pr: number) {
@@ -956,7 +963,7 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 						subjects.push({ kind: "review_comment", sender: line.author, association: line.association, id: line.id });
 			}
 		}
-		for (const r of await app.issueComments(token, repo.owner, repo.name, pr, true, since))
+		for (const r of await hub.host.listComments(token, repo.owner, repo.name, pr, true, since))
 			if (r.id && r.person && isAddressed(r.body, app.settings.slug) !== null) subjects.push({ kind: "issue_comment", sender: r.person, association: r.association, id: r.id });
 	}, { reuse: true });
 	for (const s of subjects) {
@@ -1196,32 +1203,32 @@ async function handoffProblem(c: Ctx, effect: Handoff, said: string): Promise<vo
  * Without a kept id (posted before ids were kept, or the reply to the post was lost) the platform looks
  * for its marker, and refuses rather than post again when the list is cut short.
  */
-async function writeMarkedComment(c: Ctx, app: GithubApp, token: string, owner: string, name: string, pr: number, body: string) {
+async function writeMarkedComment(c: Ctx, hub: ReturnType<typeof githubServices>, token: string, owner: string, name: string, pr: number, body: string) {
 	const [kept] = await c.db.execute<{ id: string }>("SELECT id FROM verdict_comment WHERE pr=?", pr);
 	if (kept) {
 		try {
-			await app.updateIssueComment(token, owner, name, kept.id, body);
+			await hub.host.updateComment(token, owner, name, kept.id, body);
 			return;
 		} catch (error) {
 			// Deleted on GitHub: ours is gone, so posting it again makes no second one.
 			if (!(error instanceof GithubError && error.status === 404)) throw error;
 			await c.db.execute("DELETE FROM verdict_comment WHERE pr=? AND id=?", pr, kept.id);
-			const id = await app.createIssueComment(token, owner, name, pr, body);
+			const id = await hub.host.createComment(token, owner, name, pr, body);
 			if (id) await c.db.execute("INSERT OR REPLACE INTO verdict_comment VALUES(?,?)", pr, id);
 			return;
 		}
 	}
-	const id = await upsertMarkedComment(app, token, owner, name, pr, body);
+	const id = await upsertMarkedComment(hub, token, owner, name, pr, body);
 	if (id) await c.db.execute("INSERT OR REPLACE INTO verdict_comment VALUES(?,?)", pr, id);
 }
 
-async function upsertMarkedComment(app: GithubApp, token: string, owner: string, name: string, pr: number, body: string) {
+async function upsertMarkedComment({ app, host }: ReturnType<typeof githubServices>, token: string, owner: string, name: string, pr: number, body: string) {
 	const marker = body.split("\n", 1)[0];
-	const comments = await app.issueComments(token, owner, name, pr, true);
+	const comments = await host.listComments(token, owner, name, pr, true);
 	const own = comments.find(c => c.author.toLowerCase() === app.settings.slug.toLowerCase() + "[bot]" && c.body.split("\n", 1)[0] === marker);
 	if (own && !own.id) throw new Error("GitHub returned an invalid verdict comment id");
-	const id = own?.id ?? await app.createIssueComment(token, owner, name, pr, body);
-	if (own?.id) await app.updateIssueComment(token, owner, name, own.id, body);
+	const id = own?.id ?? await host.createComment(token, owner, name, pr, body);
+	if (own?.id) await host.updateComment(token, owner, name, own.id, body);
 	return id;
 }
 
@@ -1229,11 +1236,12 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 	const { verdict } = effect;
 	let action = "reach the pull request";
 	try {
-		const { app, installationId, owner, name, login } = await github(c, meta);
+		const hub = await github(c, meta);
+		const { app, host, installationId, owner, name, login } = hub;
 		await app.withToken(installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } }, async (token) => {
 			if (!effect.reviewDone) {
 				action = "request your review";
-				const pull = await app.pull(token, owner, name, number);
+				const pull = await host.readPull(token, owner, name, number);
 				const rows = await c.db.execute<{ login: string }>("SELECT DISTINCT json_extract(data,'$.author') AS login FROM feedback WHERE state='taken' AND run=? AND json_extract(data,'$.kind')='changes_requested'", verdict.run);
 				const wanted = [...new Set([login, ...rows.map(r => r.login)])].filter(name => !pull.requestedReviewers.some(r => r.toLowerCase() === name.toLowerCase()));
 				for (const reviewer of wanted) {
@@ -1254,7 +1262,7 @@ async function handoffOnGithub(c: Ctx, meta: ItemMeta, number: number, effect: H
 			action = "post the verdict comment";
 			const [reviewRow] = effect.review ? await c.db.execute<{ data: string }>("SELECT data FROM reviews WHERE id = ?", effect.review) : [];
 			const body = itemComment(verdict, effect.words, await latestReport(c.db, verdict.run), { filed: reviewRow ? JSON.parse(reviewRow.data) as ItemReview : null, reason: effect.reviewNone, unfinished: effect.unfinished, owner, name });
-			await writeMarkedComment(c, app, token, owner, name, number, body);
+			await writeMarkedComment(c, hub, token, owner, name, number, body);
 		});
 	} catch (error) {
 		const status = error instanceof GithubError && error.status ? ` (GitHub ${error.status})` : "";
@@ -1440,11 +1448,11 @@ async function linkPrs(c: Ctx, meta: ItemMeta, item: FactoryItem): Promise<void>
 		if (!repo.pr) continue;
 		const pr = repo.pr.number;
 		try {
-			await repoHub(c, meta, repo, "write", { pull_requests: "write" }, async ({ app, token, owner, name }) => {
+			await repoHub(c, meta, repo, "write", { pull_requests: "write" }, async ({ host, token, owner, name }) => {
 				const latest = c.vars.stored?.item ?? item;
-				const pull = await app.pull(token, owner, name, pr);
+				const pull = await host.readPull(token, owner, name, pr);
 				const body = withSection(pull.body, linkSection(latest, repo.alias));
-				if (body !== pull.body) await app.updatePull(token, owner, name, pr, { title: pull.title, body });
+				if (body !== pull.body) await host.updatePull(token, owner, name, pr, { title: pull.title, body });
 			});
 		} catch (error) {
 			if (!lostAccess(error)) throw error;
@@ -1478,8 +1486,8 @@ async function crossOpenOrDescribe(c: Ctx, meta: ItemMeta, item: FactoryItem, ef
 		const text = [report?.title, ...report?.blocks.map(b => "text" in b ? b.text : "") ?? [], meta.github && issueReference(item.repos![0], meta.github.origin.issue.number)].filter(Boolean).join("\n\n");
 		for (const repo of item.repos!) {
 			const pr = repo.pr!.number;
-			await repoHub(c, meta, repo, "write", { pull_requests: "write" }, ({ app, token, owner, name }) =>
-				app.updatePull(token, owner, name, pr, { title: item.task.title, body: networkBody(withSection(text, linkSection(item, repo.alias)), itemNetwork(meta), false) }));
+			await repoHub(c, meta, repo, "write", { pull_requests: "write" }, ({ host, token, owner, name }) =>
+				host.updatePull(token, owner, name, pr, { title: item.task.title, body: networkBody(withSection(text, linkSection(item, repo.alias)), itemNetwork(meta), false) }));
 		}
 		await take(c, { kind: "published", key, at: Date.now(), pr: item.pr, head: item.head!, openItems: 1, webhooks: githubConfig().pollFallback });
 	} catch (error) {
@@ -1500,7 +1508,7 @@ async function integrationStep(c: Ctx, meta: ItemMeta, item: FactoryItem, effect
 		if (effect.kind === "integration") {
 			// A PR merged or closed already: the set is not what would be tested.
 			for (const repo of item.repos!) {
-				const state = await repoHub(c, meta, repo, "read", { pull_requests: "read" }, ({ app, token, owner, name }) => app.pull(token, owner, name, repo.pr!.number).then(p => p.state));
+				const state = await repoHub(c, meta, repo, "read", { pull_requests: "read" }, ({ host, token, owner, name }) => host.readPull(token, owner, name, repo.pr!.number).then(p => p.state));
 				if (state === "merged" || state === "closed")
 					return void await take(c, { ...base, kind: "integration_read", state: "unavailable", url: null, said: `${repo.owner}/${repo.name}#${repo.pr!.number} was ${state} before the repositories were tested together` });
 			}
@@ -1562,11 +1570,11 @@ async function dispatchFeature(c: Ctx, { item, meta }: Stored, effect: Extract<E
 		const hub = await github(c, meta, "write");
 		await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { contents: "write", metadata: "read", pull_requests: "write" } }, async token => {
 			if (!live(c.vars.stored!.item, effect)) return;
-			const { app, owner, name } = hub;
+			const { app, host, owner, name } = hub;
 			if (effect.kind === "describe_feature") {
 				const report = await latestReport(c.db, item.run!.n);
 				const body = [report?.title, ...report?.blocks.map(b => "text" in b ? b.text : "") ?? [], meta.github && "Closes #" + meta.github.origin.issue.number + "."].filter(Boolean).join("\n\n");
-				await app.updatePull(token, owner, name, item.pr!.number, { title: item.task.title, body: networkBody(body, itemNetwork(meta), hub.repository.private) });
+				await host.updatePull(token, owner, name, item.pr!.number, { title: item.task.title, body: networkBody(body, itemNetwork(meta), hub.repository.private) });
 				await take(c, { kind: "published", key, at: Date.now(), pr: item.pr, head: item.head!, openItems: 1, webhooks: githubConfig().pollFallback });
 			} else if (!item.seed) {
 				const sha = await refHead(app, token, owner, name, meta.repository.branch);
@@ -1648,7 +1656,7 @@ async function pollCi(c: Ctx, stored: Stored, effect: Extract<Effect, { kind: "p
 		// Some push receipts hold a branch name. Encode it as one path segment.
 		const target = { installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: encodeURIComponent(effect.head) };
 		const ci = item.run?.ci;
-		const reading = await readCi(hub.app, target, { since: branch.featureCi?.since ?? ci?.since, branch: branch.featureCi ? featureBranch(item.id) : undefined });
+		const reading = await hub.host.readCi(target, { since: branch.featureCi?.since ?? ci?.since, branch: branch.featureCi ? featureBranch(item.id) : undefined });
 		// GitHub can still be computing mergeability, or the PR may have moved past the pushed head.
 		const pull = !number || item.parent ? null : await hub.pull(number).catch(() => null);
 		const featureHead = branch.featureCi && pull?.headSha && pull.headSha !== effect.head && !item.joining
@@ -1679,7 +1687,7 @@ async function pollCi(c: Ctx, stored: Stored, effect: Extract<Effect, { kind: "p
 		let basePassed;
 		if (progress?.waitForBase) {
 			if (baseTip && baseTip !== progress.waitForBase) {
-				const base = await readCi(hub.app, { ...target, head: baseTip });
+				const base = await hub.host.readCi({ ...target, head: baseTip });
 				basePassed = base.kind === "read" && base.head === baseTip && ciState(base) === "passed";
 			}
 		} else if ((itemCi || needsPaths) && state === "failed" && reading.kind === "read" && reading.head === head) {
@@ -1770,7 +1778,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			}
 			const body = reviewRoundComment(item.id, review, hub, screenshots);
 			await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } },
-				token => upsertMarkedComment(hub.app, token, hub.owner, hub.name, effect.pr, body));
+				token => upsertMarkedComment(hub, token, hub.owner, hub.name, effect.pr, body));
 			return true;
 		}
 		case "post_requested_review": {
@@ -1819,7 +1827,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 						body = itemComment(verdict, verdictWords(verdict, null), await latestReport(c.db, verdict.run),
 							{ filed: filed ? JSON.parse(filed.data) : null, reason: null, owner: hub.owner, name: hub.name }, effect);
 					}
-					await writeMarkedComment(c, hub.app, token, hub.owner, hub.name, item.pr!.number, body);
+					await writeMarkedComment(c, hub, token, hub.owner, hub.name, item.pr!.number, body);
 				});
 			});
 			c.vars.handoff = update.catch(() => {});
@@ -1856,6 +1864,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return true;
 		case "poll_repo_pr": {
 			const repo = repoOf(item, effect.repo);
+			// The normalized pull omits the merge commit and timestamp needed for this receipt.
 			let pull: Awaited<ReturnType<GithubApp["call"]>>;
 			try {
 				pull = await repoHub(c, meta, repo, "read", { pull_requests: "read" }, ({ app, token, owner, name }) =>
@@ -1943,7 +1952,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const hub = await github(c, meta);
 			const [old] = await c.db.execute<{ id: string }>("SELECT id FROM issue_comment");
 			const latest = c.vars.stored!.item;
-			const id = await writeIssueComment(hub.app, { ...hub, id: meta.repository.id }, binding, item.id, latest.task.title, latest.state, latest.pr?.number, old?.id);
+			const id = await writeIssueComment(hub.host, hub.app.settings.slug, hub.repository, binding, item.id, latest.task.title, latest.state, latest.pr?.number, old?.id);
 			await c.db.execute("INSERT OR REPLACE INTO issue_comment VALUES(1,?)", id);
 			return true;
 		}
@@ -2098,7 +2107,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			let result;
 			try {
 				const hub = await github(c, meta, "write", effect.repo ? repoOf(item, effect.repo) : undefined);
-				result = await rerunJobs(hub.app, { installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: effect.head }, effect.jobs);
+				result = await hub.host.rerunJobs({ installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: effect.head }, effect.jobs);
 			} catch (error) {
 				result = { accepted: [], said: `Could not request a CI rerun: ${describeError(error)}.` };
 			}
@@ -2122,7 +2131,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const pushCi = ci && item.state === "review" && item.mode !== "orchestrate" && !item.machineRemoved &&
 				(pull.state === "open" || pull.state === "draft") && pull.headSha && pull.headSha !== ci.head &&
 				(pull.headSha !== ci.moved || (ci.reviewPush?.head === pull.headSha && !ci.reviewPush.asked))
-				? await readCi(hub.app, { installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: pull.headSha })
+				? await hub.host.readCi({ installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: pull.headSha })
 				: undefined;
 			await take(c, { kind: "pr_read", at: Date.now(), key: effect.key, pushCi, state: pull.state, mergedByApp: pull.mergedByApp, prHead: pull.headSha || null, webhooks: githubConfig().pollFallback });
 			if ((pull.state === "open" || pull.state === "draft") && item.state === "review") await reconcileFeedback(c, meta, hub, effect.pr);
