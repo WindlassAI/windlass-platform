@@ -1588,7 +1588,9 @@ async function observePush(c: Ctx, item: FactoryItem, hub: Awaited<ReturnType<ty
 		return { author: cleanFeedback(read.author).slice(0, 120), message: redact(cleanFeedback(read.message)).split("\n", 1)[0].slice(0, 500),
 			pusher: read.pusher.login, own: owner && read.authorId === hub.connectedUserId && !!previous && read.parent === previous };
 	}, { reuse: true }).catch(() => undefined);
-	if (push === "platform" || (!push && (!standalone || !previous))) return false;
+	if (push === "platform" || (!push && (!standalone || !(previous || item.question?.push)))) return false;
+	// A replay must finish a join that may already have moved the feature ref.
+	if (item.parent && item.run?.step.kind === "subtasks" && await itemActor(c, c.key[0]!, item.parent.itemId).internalJoinStarted(item.id, key)) return false;
 	return take(c, { kind: "branch_push", at: Date.now(), key, previous, head, push, repo });
 }
 
@@ -2286,6 +2288,12 @@ export const workItem = actor({
 			if (job.featureUpdateReceipt === request) return "finished";
 			return await take(c, { kind: "update_feature", at: Date.now(), by: automatic ? "platform" : "person:" + c.key[0], child, request, target, automatic }) ? "pending" : "finished";
 		},
+		internalJoinStarted: async (c, child: string, key: string): Promise<boolean> => {
+			requireServiceFor(c, "call");
+			await c.vars.writing;
+			const item = c.vars.stored!.item;
+			return (item.joining?.child === child && item.joining.key === key) || item.jobs?.find(job => job.id === child)?.join?.key === key;
+		},
 		// The durable grant survives a restart between GitHub’s ref update and its receipt.
 		internalClaimJoin: async (c, child: string, key: string): Promise<"busy" | "claimed" | JoinResult> => {
 			requireServiceFor(c, "call");
@@ -2337,13 +2345,14 @@ export const workItem = actor({
 		internalChildRequest: (c, id: string) => {
 			requireService(c);
 			const s = c.vars.stored, job = s?.item.jobs?.find(j => j.id === id);
-			if (!s || !job || !activeJob(job) || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || (s.item.question && s.item.question.kind !== "feature_update") || ENDED.has(s.item.state)) return null;
+			const paused = !!s?.item.featureUpdate || s?.item.question?.kind === "feature_update" || s?.item.question?.kind === "branch_push";
+			if (!s || !job || !activeJob(job) || s.item.run?.step.kind !== "subtasks" || s.item.featurePlan?.status !== "approved" || (s.item.question && !paused) || ENDED.has(s.item.state)) return null;
 			const completed = s.item.jobs?.filter(j => j.state === "done") ?? [];
 			const previous = completed.at(-1);
 			const reports = completed.filter(j => job.task.dependsOn.includes(j.task.key)).map(j => j.report);
 			// A cross-repo feature's child is made in its subtask's repository, from that repository's feature branch.
 			const repo = crossRepo(s.item) ? repoOf(s.item, job.task.repo) : null;
-			return { settings: s.item.context!, paused: !!s.item.featureUpdate || s.item.question?.kind === "feature_update", job: { ...job, start: repo?.head ?? s.item.head, dispatchKey: job.dispatchKey ?? currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
+			return { settings: s.item.context!, paused, job: { ...job, start: repo?.head ?? s.item.head, dispatchKey: job.dispatchKey ?? currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
 				repository: repo && { id: repo.repositoryId, base: repo.baseRef, alias: repo.alias },
 				joinOnGate: !!(repo ?? s.item).featureCi, featureBody: s.item.task.body, context: JSON.stringify({ spec: s.item.featurePlan.spec, answers: s.item.featurePlan.questions.map(({ text, answer }) => ({ text, answer })), reports }),
 				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place },

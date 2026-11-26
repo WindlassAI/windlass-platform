@@ -2205,6 +2205,9 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		const push = { head: H(5), pusher: "writer", author: "writer", message: "Adjust fixture", own: false };
 		const asked = walk(feature, [{ kind: "branch_push", head: push.head, previous: feature.head, push }]).item;
 		assert.equal(asked.question?.kind, "branch_push");
+		assert.equal(walk(asked, [{ kind: "claim_join", child: feature.jobs![0].id, key: "part:join" }]).item.joining, undefined);
+		const resumingJoin = walk(feature, [{ kind: "claim_join", child: feature.jobs![0].id, key: "part:join" }]).item;
+		assert.equal(walk(resumingJoin, [{ kind: "branch_push", head: push.head, previous: feature.head, push }]).item, resumingJoin);
 		const resumed = walk(asked, [{ kind: "answer", choice: "send_back" }]);
 		assert.equal(resumed.item.head, push.head);
 		assert.equal(effect(resumed.last, "poll_ci"), undefined);
