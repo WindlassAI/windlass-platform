@@ -71,8 +71,8 @@ describe("the agent's question on its item's page", () => {
 		expect(quoted?.textContent).toBe(view.question?.asked?.text);
 		expect(card.querySelector(".item-question-text")?.textContent).not.toContain("SQLite");
 		expect(card.querySelector(".item-asked-who")?.textContent).toMatch(/^The agent wrote this\./);
-		expect([...card.querySelectorAll(".item-asked-option")].map((one) => one.textContent)).toEqual(["SQLite", "Postgres", "One JSON file per station"]);
-		expect(card.querySelector("label")?.textContent).toBe("Your answer");
+		expect([...card.querySelectorAll(".item-asked-options .plan-ask-label")].map((one) => one.textContent)).toEqual(["SQLite", "Postgres", "One JSON file per station"]);
+		expect(card.querySelector("label.label")?.textContent).toBe("Your answer");
 	});
 
 	it("shows Markdown, links and markup in the agent's words as the text they are", async () => {
@@ -82,14 +82,14 @@ describe("the agent's question on its item's page", () => {
 		const quoted = card.querySelector("blockquote.item-asked-text") as HTMLElement;
 		expect(quoted.textContent).toBe(crafted);
 		expect(card.querySelector(".item-asked a, .item-asked img, .item-asked strong")).toBeNull();
-		expect(card.querySelector(".item-asked-option")?.textContent).toBe("[yes](https://evil.invalid)");
+		expect(card.querySelector(".item-asked-options .plan-ask-label")?.textContent).toBe("[yes](https://evil.invalid)");
 	});
 
 	it("sends an answer only with words in it, and an option fills the box without sending", async () => {
 		const card = await show(await seeded("Store the tide readings"));
 		const reply = button(card, "Answer the agent") as HTMLButtonElement;
 		expect(reply.disabled).toBe(true);
-		await act(async () => button(card, "SQLite")?.click());
+		await act(async () => ([...card.querySelectorAll(".item-asked-options input")].find((one) => (one as HTMLInputElement).value === "SQLite") as HTMLInputElement).click());
 		expect(sent).toEqual([]);
 		const box = card.querySelector("textarea") as HTMLTextAreaElement;
 		expect(box.value).toBe("SQLite");

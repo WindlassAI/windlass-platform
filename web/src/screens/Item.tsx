@@ -483,7 +483,7 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 					</a>
 				</p>
 			) : null}
-			{asked ? <AgentAsked id={ids.asked} asked={asked} busy={busy} onPick={setNote} /> : null}
+			{asked ? <AgentAsked id={ids.asked} asked={asked} busy={busy} chosen={note} onPick={setNote} /> : null}
 			{raising ? (
 				<RaiseBudget view={view} busy={acting.busy === "raise"} onRaise={(budget) => answer("raise", budget)} onBack={() => setRaising(false)} />
 			) : (
@@ -585,9 +585,8 @@ function EnvironmentCheck({ check }: { check: NonNullable<ItemQuestion["check"]>
 }
 
 // Third-party input may steer the question. Render it as plain text until the person answers.
-function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullable<ItemQuestion["asked"]>; busy: boolean; onPick: (text: string) => void }) {
-	// Options of a sentence's length stack as full-width rows rather than wrapping as pills.
-	const stacked = asked.options.some((option) => option.length > LONG_OPTION);
+function AgentAsked({ id, asked, busy, chosen, onPick }: { id: string; asked: NonNullable<ItemQuestion["asked"]>; busy: boolean; chosen: string; onPick: (text: string) => void }) {
+	const group = `${id}-options`;
 	return (
 		<figure className="item-asked" id={id}>
 			<figcaption className="item-asked-who">
@@ -597,12 +596,14 @@ function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullabl
 				{asked.text}
 			</LongText>
 			{asked.options.length > 0 ? (
-				<div className={`item-asked-options${stacked ? " item-asked-options-stacked" : ""}`} role="group" aria-label="Answers the agent suggests">
-					<span className="item-asked-options-label">It suggests</span>
+				// The same choice rows as a plan's questions: picking one makes it the answer, which can still be edited below.
+				<div className="plan-ask-options item-asked-options" role="radiogroup" aria-label="Answers the agent suggests">
 					{asked.options.map((option) => (
-						<button key={option} type="button" className="button button-outline button-small item-asked-option" disabled={busy} onClick={() => onPick(option)} title="Put this in your answer">
-							{option}
-						</button>
+						<label key={option} className={`plan-ask-option${chosen === option ? " plan-ask-chosen" : ""}`}>
+							<input className="check-input" type="radio" name={group} value={option} checked={chosen === option} disabled={busy} onChange={() => onPick(option)} />
+							<span className="plan-ask-dot" aria-hidden="true" />
+							<span className="plan-ask-label">{option}</span>
+						</label>
 					))}
 				</div>
 			) : null}
@@ -610,8 +611,6 @@ function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullabl
 	);
 }
 
-/** An option longer than this stacks all of a question's options as rows. */
-const LONG_OPTION = 40;
 
 /** The verdict a report's references are read against: the one at the commit it was filed at, else its run's last, else none. */
 function verdictFor(report: ItemReport, verdicts: Verdict[]): Verdict | null {
