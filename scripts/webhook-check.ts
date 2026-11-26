@@ -229,18 +229,18 @@ async function testNode() {
 	const actions = githubInbox.config.actions!;
 	type Ctx = Parameters<typeof actions.internalReceive>[0];
 	const original = HANDLERS.installation!;
-	const failures = new Map<string, number>();
+	const failures = new Map<string, { attempts: number; at: number }>();
 	HANDLERS.installation = (d, c) => {
 		if (d.installationId !== RETRY_INSTALLATION) return original(d, c);
-		const tried = failures.get(d.guid) ?? 0;
-		failures.set(d.guid, tried + 1);
+		const tried = failures.get(d.guid)?.attempts ?? 0;
+		failures.set(d.guid, { attempts: tried + 1, at: Date.now() });
 		if (d.action === "suspended" || tried < 3) throw new Error("injected failure");
 	};
 	Object.assign(actions, {
 		checkRow: async (c: Ctx, guid: string) => {
 			requireServiceFor(c, "call");
 			const [r] = await c.db.execute("SELECT state, said, attempts, next_at, received_at, data, CAST(repository AS TEXT) AS repository FROM deliveries WHERE guid = ?", guid);
-			return r ?? null;
+			return r ? { ...r, attemptedAt: failures.get(guid)?.at } : null;
 		},
 		checkFixture: async (c: Ctx, kind: string, guid: string) => {
 			requireServiceFor(c, "call");
@@ -306,7 +306,7 @@ async function run() {
 	const client = createClient<import("../server/src/registry.js").Registry>({ endpoint: base(engine) });
 	const service = () => ({ params: serviceParams() });
 	const inbox = (id: number | string) => client.githubInbox.getOrCreate([String(id)], service());
-	type Row = { data: string; repository: string | null; state: string; said: string; attempts: number; next_at: number; received_at: number };
+	type Row = { attemptedAt?: number; data: string; repository: string | null; state: string; said: string; attempts: number; next_at: number; received_at: number };
 	const fixture = (id: number | string) => inbox(id) as unknown as { checkRow(guid: string): Promise<Row | null>; checkFixture(op: string, guid: string): Promise<void> };
 	const shaPayload = { installation: { id: 91234 }, repository: { id: 123 }, sha: HEAD, state: "success", description: bodyMarker };
 	const web = api + "/github/webhook";
@@ -803,34 +803,35 @@ async function run() {
 
 			projectG2.name = "renamed-factory";
 			ci(item.head, "pending");
-			const sent = Date.now();
 			const handled = await delivered("check_suite", suite(item.head));
 			assert.equal(handled.state, "done");
 			const early = await item.poll(); assert.ok(early);
 			assert.deepEqual({ ...early, due_at: first.due_at }, first);
-			assert.ok(early.due_at <= Date.now() + 15_000 && early.due_at < first.due_at);
+			assert.ok(early.due_at >= handled.received_at + 15_000 && early.due_at < first.due_at);
 			assert.equal((await item.view()).revision, initial.revision);
 			await until("one pending live CI read", async () => (await item.view()).wait?.sentence.includes("0 of 1"), 20_000);
 			assert.equal(countReads(item.head), 1);
-			assert.ok(Date.now() - sent < 20_000);
 			assert.ok(standin.requests.some(r => r.path.endsWith("/repositories/" + projectG2.id) && r.status === 200));
 			assert.ok(standin.requests.some(r => r.path.includes("/renamed-factory/commits/" + item.head) && r.status === 200));
-			console.log(`PASS G2 signed suite caused one CI read in ${Date.now() - sent} ms; claimed success, GitHub pending`);
+			console.log("PASS G2 signed suite caused one live CI read; claimed success, GitHub pending");
 
-			const began = Date.now();
+			const beforeBurst = await item.poll(); assert.ok(beforeBurst);
 			const guids = Array.from({ length: 30 }, () => randomUUID());
 			const burst = guids.map(guid => standin.deliver(web, "check_run", { installation: { id: installation.id }, repository: { id: projectG2.id },
 				action: "completed", check_run: { head_sha: item.head, conclusion: "failure" } }, { secret, guid }));
 			for (const res of await Promise.all(burst)) assert.deepEqual(await res.json(), { taken: true });
 			const receipts = await Promise.all(guids.map(guid => fixture(installation.id).checkRow(guid)));
 			const times = receipts.map(row => { assert.ok(row); return row.received_at; });
-			assert.ok(Math.max(...times) - Math.min(...times) <= 2000);
-			const coalesced = await item.poll(); assert.ok(coalesced);
-			assert.ok(coalesced.due_at >= began + 15_000 && coalesced.due_at <= Date.now() + 15_000);
+			const coalesced = await until("burst nudged the pending poll", async () => {
+				const row = await item.poll();
+				return row?.id === beforeBurst.id && row.due_at < beforeBurst.due_at ? row : null;
+			});
+			assert.ok(coalesced.due_at >= Math.min(...times) + 15_000 && coalesced.due_at <= Math.max(...times) + 17_000);
+			await until("all thirty deliveries handled", async () => (await Promise.all(guids.map(guid => fixture(installation.id).checkRow(guid)))).every(r => r?.state === "done"));
 			await until("burst CI read", async () => countReads(item.head) >= 2, 20_000);
-			await until("next CI poll stored", async () => { const row = await item.poll(); return row && row.id !== coalesced.id; });
+			const fallback = await until("next CI poll stored", async () => { const row = await item.poll(); return row && row.id !== coalesced.id ? row : null; });
 			assert.equal(countReads(item.head), 2);
-			assert.ok((await item.poll())!.due_at > Date.now() + 20_000);
+			assert.equal(fallback.due_at, JSON.parse(fallback.effect).at, "no delivery nudged a second poll");
 			assert.equal(logs.split("factory.ci.nudge_found item=" + item.id).length - 1, 1);
 			console.log("PASS G2 thirty signed check runs coalesced into one more read");
 
@@ -845,10 +846,8 @@ async function run() {
 			assert.equal((await item.view()).state, "review");
 			const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === item.pr)!;
 			pull.state = "closed"; pull.merged = true;
-			const mergedAt = Date.now();
 			await delivered("pull_request", closed);
 			await until("fetched merge", async () => (await item.view()).state === "done", 20_000);
-			assert.ok(Date.now() - mergedAt < 20_000);
 			await until("directory removal", async () => !(await directory().internalFind({ pr: item.pr })).length);
 			const rev = (await item.view()).revision;
 			assert.equal(await item.handle().internalGithubNudge(target), false);
@@ -2136,8 +2135,9 @@ async function run() {
 					assert.equal(row.attempts, attempt);
 					if (attempt === total) { assert.equal(row.state, terminal); break; }
 					assert.equal(row.state, "received");
-					const delay = row.next_at - Date.now(), expected = Math.min(1_800_000, 15_000 * 2 ** (attempt - 1));
-					assert.ok(delay <= expected && delay >= expected - 5_000, "retry delay");
+					assert.ok(row.attemptedAt);
+					const delay = row.next_at - row.attemptedAt, expected = Math.min(1_800_000, 15_000 * 2 ** (attempt - 1));
+					assert.ok(delay >= expected && delay <= expected + 1000, "retry delay");
 					if (attempt === 1 && terminal === "done") continue; // Let the real 15 s schedule fire once.
 					await fixture(id).checkFixture("retry", guid);
 					await inbox(id).internalDue();
