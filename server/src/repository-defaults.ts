@@ -117,6 +117,25 @@ export const DEFAULTS_TABLE = `
 	)
 `;
 
+/**
+ * Tables made before the settings column (live until 2026-11-26) keep their saved choices in separate columns, and the
+ * account's in account_defaults: fold both into `settings` once.
+ */
+export async function migrateDefaults(db: DefaultsDb): Promise<void> {
+	const columns = (await db.execute<{ name: string }>("PRAGMA table_info(repository_defaults)")).map(column => column.name);
+	if (columns.includes("settings")) return;
+	await db.execute("ALTER TABLE repository_defaults ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'");
+	const old = ["profile", "model", "hosted_size", "item_place"].filter(name => columns.includes(name));
+	const settingsOf = (row: Record<string, unknown>) => JSON.stringify(Object.fromEntries(Object.entries({
+		...(typeof row.item_place === "string" ? JSON.parse(row.item_place) as object : {}), profile: row.profile, model: row.model, hostedSize: row.hosted_size,
+	}).filter(([, value]) => value != null)));
+	if (old.length) for (const row of await db.execute(`SELECT project, ${old.join(", ")} FROM repository_defaults`))
+		await db.execute("UPDATE repository_defaults SET settings=? WHERE project=?", settingsOf(row), row.project);
+	if (!(await db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_defaults'")).length) return;
+	const [account] = await db.execute("SELECT profile, model, item_place, updated_at FROM account_defaults WHERE id=1");
+	if (account) await db.execute("INSERT OR IGNORE INTO repository_defaults (project, label, updated_at, settings) VALUES (?, '', ?, ?)", ACCOUNT, account.updated_at, settingsOf(account));
+}
+
 function personalPlace(settings: ItemPlaceDefaults): StartPlace | undefined {
 	const place = settings.place;
 	if (place === "hosted") return { kind: "hosted" };

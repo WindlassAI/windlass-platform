@@ -87,7 +87,7 @@ import { refreshSecretRows } from "../signin/secret-rows.js";
 import { criticAllowed } from "../factory/review.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, unavailableSecretName, validRequestedSecretName, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
 import { criticSessionId } from "../factory/feature-ids.js";
-import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, repositoryDefaultsLog, readAccountDefaults, saveAccountDefaults, readDefaults, saveDefaults, refuseAtRepositoryCap } from "../repository-defaults.js";
+import { DEFAULTS_TABLE, migrateDefaults, type DefaultsChange, DefaultsProblem, cleanDefaults, repositoryDefaultsLog, readAccountDefaults, saveAccountDefaults, readDefaults, saveDefaults, refuseAtRepositoryCap } from "../repository-defaults.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { forgettingWords, personalServerReach } from "../server-question.js";
 import { CHECKS_TABLE, ChecksProblem, cleanChecks, readChecks, saveChecks } from "../repository-checks.js";
@@ -1183,6 +1183,7 @@ export const user = actor({
 				)
 			`);
 			await db.execute(DEFAULTS_TABLE);
+			await migrateDefaults(db);
 			await db.execute(CHECKS_TABLE);
 			await db.execute(NETWORK_TABLE);
 			await db.execute(REQUESTS_TABLE);
