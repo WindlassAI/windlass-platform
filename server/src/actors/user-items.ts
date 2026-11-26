@@ -23,6 +23,7 @@
 import { type DefaultDestination, resolveDefaultPlace, savedPlace } from "../factory/default-place.js";
 import { isBranchName } from "../github/git.js";
 import type { ItemPlaceDefaults, SessionRepository } from "../contract.js";
+import { isolationName } from "../contract.js";
 import { windlassProvider, hostedProvider, selectedKey } from "../sandbox/harnesses.js";
 import { accountFor, accountKey, loginGeneration, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
 import { choosePlacement, machineSlots, placeKey, type AgentModels, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
@@ -390,6 +391,9 @@ async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxPr
 		// Honor an explicit owner-denied choice. makeSession returns the same refusal as a personal launch.
 		if (asked === "docker-windlass-sandbox" && machine.allowedProfiles && !machine.allowedProfiles.includes(asked)) return asked;
 		const available = machine.profiles.filter(profile => profile.available);
+		// A chosen profile is never swapped for another: a weaker one would change what the agent's commands can reach.
+		if (asked !== null && !available.some(profile => profile.id === asked))
+			throw new UserError(`Your machine "${machine.name}" cannot run the ${isolationName(asked)} profile chosen for this item right now. Choose another profile, or check the machine on the Machines page.`, { code: "bad_profile" });
 		const chosen = available.find(profile => profile.id === asked) ?? available[0];
 		if (!chosen) throw new UserError(`Your machine "${machine.name}" offers no available sandbox profile for this item.`, { code: "bad_profile" });
 		return chosen.id;
