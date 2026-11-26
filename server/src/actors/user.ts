@@ -37,6 +37,8 @@ import {
 	type GithubRepository,
 	type GithubRepositoryList,
 	type GithubStatus,
+	type JiraProjectList,
+	type JiraStatus,
 	type LinearStatus,
 	type LinearTeamList,
 	listedSessions,
@@ -65,6 +67,9 @@ import {
 	type UsageNumbers,
 	type UserProfile,
 } from "../contract.js";
+import * as jira from "./user-jira.js";
+import type { JiraItemWrite } from "./internal.js";
+import type { JiraDelivery } from "../jira/webhook.js";
 import { LINEAR_TABLES, type LinearItemWrite, linearHoldsTeam, writeLinearItem, beginLinearConnect, claimLinearState, completeLinearConnection, fileLinearDelivery, linearStatus, linearTeams, removeLinearMapping, disconnectLinear, saveLinearMapping } from "./user-linear.js";
 import { GITHUB_SYNC, GITHUB_SYNC_TABLE, retryGithubSync, syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
 import { githubApp, type GithubApp } from "../github/app.js";
@@ -1130,6 +1135,7 @@ export const user = actor({
 					updated_at INTEGER NOT NULL
 				)
 			`);
+			for (const table of jira.JIRA_TABLES) await db.execute(table);
 			for (const table of LINEAR_TABLES) await db.execute(table);
 			await db.execute("DROP TABLE IF EXISTS github_grant");
 			await db.execute(GITHUB_SYNC_TABLE);
@@ -1273,6 +1279,8 @@ export const user = actor({
 	}),
 
 	createVars: loadUserState,
+	// Actions do not receive the handshake request. Retain its origin for OAuth ticket redemption.
+	createConnState: c => ({ origin: c.request?.headers.get("origin") ?? null }),
 
 	events: {
 		machineHost: event<MachineHostUpdate>({ canSubscribe: (c) => maySubscribe(c) }),
@@ -1462,6 +1470,65 @@ export const user = actor({
 			return null;
 		},
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) => itemActions.internalGithubIntake(c, input, itemSession(c)),
+
+		jira: (c): Promise<JiraStatus> => {
+			requireUser(c);
+			return jira.jiraStatus(c);
+		},
+		jiraConnect: (c, input: { origin: string }) => {
+			requireUser(c);
+			const origin = c.conn.state?.origin;
+			if (origin && origin !== input?.origin) throw new UserError("The Jira connection origin does not match.", { code: "origin_not_allowed" });
+			return jira.beginJiraConnect(c, input);
+		},
+		jiraComplete: (c, ticket: string): Promise<JiraStatus> => {
+			requireUser(c);
+			return jira.finishJiraConnect(c, ticket, c.conn.state?.origin);
+		},
+		jiraSelectSite: (c, siteId: string): Promise<JiraStatus> => {
+			requireUser(c);
+			return jira.selectJiraSite(c, siteId);
+		},
+		jiraProjects: (c): Promise<JiraProjectList> => {
+			requireUser(c);
+			return jira.jiraProjects(c);
+		},
+		saveJiraMapping: (c, input: { siteId: string; projectId: string; repositoryId: GithubId }): Promise<JiraProjectList> => {
+			requireUser(c);
+			return jira.saveJiraMapping(c, input);
+		},
+		removeJiraMapping: (c, input: { siteId: string; projectId: string }): Promise<JiraProjectList> => {
+			requireUser(c);
+			return jira.removeJiraMapping(c, input);
+		},
+		disconnectJira: (c): Promise<JiraStatus> => {
+			requireUser(c);
+			return jira.disconnectJira(c);
+		},
+		internalJiraClaim: (c, nonce: string) => {
+			requireServiceFor(c, "call");
+			return jira.claimJiraState(c, nonce);
+		},
+		internalJiraComplete: (c, nonce: string, sealed: string) => {
+			requireServiceFor(c, "call");
+			return jira.completeJiraConnection(c, nonce, sealed);
+		},
+		internalJiraHoldsProject: (c, siteId: string, projectId: string) => {
+			requireServiceFor(c, "call");
+			return jira.jiraHoldsProject(c, siteId, projectId);
+		},
+		internalJiraRenew: (c) => {
+			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
+			return jira.renewJiraWebhooks(c);
+		},
+		internalJiraWrite: (c, input: JiraItemWrite) => {
+			requireServiceFor(c, "call");
+			return jira.writeJiraItem(c, input);
+		},
+		internalJiraDelivery: (c, delivery: JiraDelivery) => {
+			requireServiceFor(c, "call");
+			return jira.fileJiraDelivery(c, delivery, filing => itemActions.internalJiraIntake(c, filing, itemSession(c)));
+		},
 
 		linear: async (c): Promise<LinearStatus> => {
 			requireUser(c);
