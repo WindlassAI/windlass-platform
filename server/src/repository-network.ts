@@ -33,7 +33,7 @@
  */
 
 import { MAX_REPOSITORY_HOSTS, NETWORK_PRESETS, WIDE_HOSTS, type NetworkPreset, type NetworkProposal, type NetworkRequest } from "./contract.js";
-import type { DefaultsDb } from "./repository-defaults.js";
+import { refuseAtRepositoryCap, type DefaultsDb } from "./repository-defaults.js";
 import { MAX_HOSTS, PRESETS, isHostName } from "./sandbox/hosted-network.js";
 
 /** How many repositories one user may have a list for; the ones saved longest ago go first. */
@@ -226,6 +226,7 @@ async function settleRequests(db: DefaultsDb, project: string, hosts: readonly s
 export async function saveNetwork(db: DefaultsDb, project: string, label: string, entries: readonly string[], now: number): Promise<SavedNetwork> {
 	if (entries.length === 0) await db.execute("DELETE FROM repository_network WHERE project = ?", project);
 	else {
+		await refuseAtRepositoryCap(db, "repository_network", project, MAX_NETWORK_REPOSITORIES, "network lists");
 		await db.execute(
 			"INSERT INTO repository_network (project, label, entries, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, entries = excluded.entries, updated_at = MAX(updated_at + 1, excluded.updated_at)",
 			project,
@@ -233,7 +234,6 @@ export async function saveNetwork(db: DefaultsDb, project: string, label: string
 			JSON.stringify(entries),
 			now,
 		);
-		await db.execute("DELETE FROM repository_network WHERE project NOT IN (SELECT project FROM repository_network ORDER BY updated_at DESC, project LIMIT ?)", MAX_NETWORK_REPOSITORIES);
 	}
 	const saved = await readNetwork(db, project);
 	await settleRequests(db, project, saved.hosts);

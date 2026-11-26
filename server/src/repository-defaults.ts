@@ -20,6 +20,7 @@
  * scripts/repository-check.ts runs them against a database of its own.
  */
 
+import { UserError } from "rivetkit";
 import { modelRefusal } from "./account-models.js";
 import { type ItemPlaceDefaults, type MachineSummary, type StartPlace, type HostedSize, MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryAutonomy, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, HOSTED_SIZE_NAMES, isHostedSize } from "./contract.js";
 import { startPlaceProblem } from "./start-place.js";
@@ -27,6 +28,13 @@ import { startPlaceProblem } from "./start-place.js";
 const AUTONOMY_FIELDS = ["autoApprovePlans", "autoMergeSingles", "waitForCiOnEachPart"] as const;
 
 /** Thrown for defaults that cannot be saved; `message` is fit to show, `code` is the UserError's. */
+/** At the cap, a new repository's settings are refused: older repositories' saved settings are never dropped to make room. */
+export async function refuseAtRepositoryCap(db: { execute(sql: string, ...args: never[]): Promise<unknown[]> }, table: string, project: string, max: number, what: string): Promise<void> {
+	const [row] = await db.execute(`SELECT (SELECT COUNT(*) FROM ${table} WHERE project = ?) AS known, (SELECT COUNT(*) FROM ${table}) AS total`, project as never) as Array<{ known: number; total: number }>;
+	if (row && !Number(row.known) && Number(row.total) >= max)
+		throw new UserError(`You have saved ${what} for ${max} repositories, the most this account keeps. Clear them for a repository you no longer use, then save again.`, { code: "limit" });
+}
+
 export class DefaultsProblem extends Error {
 	constructor(
 		readonly code: "bad_input" | "bad_model",
@@ -156,6 +164,7 @@ export async function readDefaults(db: DefaultsDb, project: string): Promise<Rep
 export async function saveDefaults(db: DefaultsDb, project: string, label: string, change: DefaultsChange, now: number): Promise<RepositoryDefaults> {
 	const columns = (["start_place", "item_place", "profile", "model", "screenshots", "hostedSize", ...AUTONOMY_FIELDS] as const).filter((column) => change[column] !== undefined).map((field) => (field === "hostedSize" ? "hosted_size" : field));
 	if (columns.length > 0) {
+		await refuseAtRepositoryCap(db, "repository_defaults", project, MAX_REPOSITORY_DEFAULTS, "defaults");
 		await db.execute(
 			`INSERT INTO repository_defaults (project, label, profile, model, screenshots, hosted_size, ${AUTONOMY_FIELDS.join(", ")}, start_place, item_place, updated_at) VALUES (?, ?, ?, ?, ?, ?, ${AUTONOMY_FIELDS.map(() => "?").join(", ")}, ?, ?, ?)
 			ON CONFLICT (project) DO UPDATE SET ${columns.map((column) => `${column} = excluded.${column}`).join(", ")}, label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, updated_at = excluded.updated_at`,
@@ -171,8 +180,6 @@ export async function saveDefaults(db: DefaultsDb, project: string, label: strin
 			now,
 		);
 		await db.execute(`DELETE FROM repository_defaults WHERE project = ? AND profile IS NULL AND model IS NULL AND screenshots = 0 AND hosted_size IS NULL AND ${AUTONOMY_FIELDS.map(field => `${field} = 0`).join(" AND ")} AND start_place IS NULL AND item_place IS NULL`, project);
-		// Somebody who saves for one repository after another leaves no more than this many rows.
-		await db.execute("DELETE FROM repository_defaults WHERE project NOT IN (SELECT project FROM repository_defaults ORDER BY updated_at DESC, project LIMIT ?)", MAX_REPOSITORY_DEFAULTS);
 	}
 	return readDefaults(db, project);
 }
