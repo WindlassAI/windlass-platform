@@ -208,7 +208,7 @@ The item stops and asks you when the second agent asks again for the same change
 
 Sometimes the commit handed over has no review of its own after a review asked for changes: you chose **Hand it over as it is** on a budget or CI question after the agent pushed its fixes, or the next review was refused or filed nothing the platform could read. Then the pull request comment says there was no second review of that commit, every review of the run stays on the item's page, and the check on GitHub says **Second review did not finish after it asked for changes**, with Action required.
 
-If someone pushes to the pull request while the second agent reviews, its agent is not sent back: a fix of the reviewed commit could not be pushed over theirs. The item is handed over as it is, saying the pull request moved.
+If you or another repository writer pushes while the item is working or waiting, the item shows the commit and asks what to do. Choose **Continue from your push** to resume from that commit and check the resulting work, **Take it over** for the usual handover, or **Give up**. A feature branch push asks on the feature, and a part branch push asks on that part. Other or unidentified pushes follow the usual handover rules.
 
 On a feature, the second review does nothing by itself: the feature is handed to you whatever it recommends.
 

@@ -574,6 +574,25 @@ export class GithubApp {
 		return "none";
 	}
 
+	/** Git author names are self-reported. The branch activity identifies who actually moved this ref. */
+	async branchPush(token: string, owner: string, name: string, branch: string, head: string) {
+		const root = `/repos/${owner}/${name}`, auth = { bearer: token };
+		const ref = "refs/heads/" + branch;
+		const activity = await this.call({ path: root + "/activity", auth, query: { ref, per_page: 1 }, what: "identify the branch push" });
+		const latest = record(Array.isArray(activity.body) && activity.body[0]);
+		if (latest.ref !== ref || latest.after !== head) return null;
+		const actor = record(latest.actor);
+		if (actor.type === "Bot" && text(actor.login).toLowerCase() === this.settings.slug.toLowerCase() + "[bot]") return "platform" as const;
+		const pusher = githubPerson(actor);
+		if (!pusher) return null;
+		const result = await this.call({ path: root + "/commits/" + head, auth, what: "read the pushed commit" });
+		const commit = record(result.body), data = record(commit.commit);
+		const author = text(record(commit.author).login) || text(record(data.author).name);
+		if (commit.sha !== head || !author || typeof data.message !== "string") return null;
+		const parent = Array.isArray(commit.parents) && commit.parents.length === 1 ? record(commit.parents[0]).sha : null;
+		return { pusher, author, parent, authorId: githubId(record(commit.author).id), message: data.message };
+	}
+
 	async findCheckRun(token: string, owner: string, name: string, sha: string, item: string, checkName = VERIFIED_NAME): Promise<string | null> {
 		const { items, truncated } = await this.pages({
 			path: `/repos/${owner}/${name}/commits/${sha}/check-runs`, auth: { bearer: token }, what: "find the item's check run",

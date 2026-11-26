@@ -13,7 +13,7 @@ import type { NetworkReceipt } from "./internal.js";
 import { HIDDEN } from "../agent-publish.js";
 import { readFeedback, feedbackId, type FeedbackNotice, type FeedbackSubject } from "./github-inbox.js";
 import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
-import { batchText, feedbackWords, fingerprint, fits, oversizedFeedback, QUIET_MS, MOST_MS } from "../factory/feedback.js";
+import { batchText, cleanFeedback, feedbackWords, fingerprint, fits, oversizedFeedback, QUIET_MS, MOST_MS } from "../factory/feedback.js";
 import { isAddressed } from "../github/events.js";
 import type { FeedbackBatch, FeedbackEntry } from "../contract.js";
 import { GithubProblem } from "../github/repos.js";
@@ -25,8 +25,8 @@ import { getLayer } from "../layer.js";
 import { resolveRun } from "../factory/resolve-run.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
-import { authorOf } from "../github/publish.js";
-import { featureBranch, openFeature, refHead, advanceFeatureRef, compareBranches, mergeIntoFeature, readyFeature, mergeReviewedPull } from "../github/feature.js";
+import { authorOf, branchFor } from "../github/publish.js";
+import { featureBranch, subtaskBranch, openFeature, refHead, advanceFeatureRef, compareBranches, mergeIntoFeature, readyFeature, mergeReviewedPull } from "../github/feature.js";
 import { crossRepo, integrationView, issueReference, linkSection, nextOpening, readyRefusal, repoOf, repoViews, withSection, INPUTS_DIRECTORY } from "../factory/cross-repo.js";
 import { ForeignRun, dispatchIntegration, findIntegrationRun, integrationWorkflowProblem, readIntegrationRun } from "../github/integration.js";
 import type { FeatureRepoState } from "../factory/types.js";
@@ -43,6 +43,7 @@ import { actor, UserError } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { clientError, describeError, requireService, requireServiceFor, serviceParams } from "../auth.js";
 import { config, githubConfig } from "../config.js";
+import { redact } from "../github/redact.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SandboxPlace, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
@@ -151,7 +152,7 @@ const ISSUE_CHANGE_WINDOW_MS = 15_000;
 
 type FeedbackEffect = { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string } | { kind: "feedback_comment"; key: string; run: number; who: string };
 /** `register`'s `repo`: a cross-repo feature's other repository, by alias, registered with that repository's directory. */
-type Effect = ({ kind: "linear_write" } & LinearWrite) | BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
+type Effect = { kind: "poll_branch"; key: string; at: number; repo?: string } | ({ kind: "linear_write" } & LinearWrite) | BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
 type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
 
 type EffectRow = { id: string; effect: string; due_at: number; attempts: number };
@@ -192,7 +193,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		origin: meta.github?.origin ?? meta.linear?.origin ?? null,
 		state: item.state,
 		wait: item.wait,
-		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, recommended: item.question.recommended ?? item.question.choices[0]?.id, askedAt: item.question.askedAt, ...(item.question.secret && { secret: item.question.secret }), ...(item.question.asked && { asked: item.question.asked }), ...(item.question.criticReason && { criticReason: item.question.criticReason }), ...(item.question.criticFindings && { criticFindings: item.question.criticFindings }), ...(item.question.check && { check: item.question.check }) },
+		question: item.question === null ? null : { id: item.question.id, kind: item.question.kind, text: item.question.text, choices: item.question.choices, recommended: item.question.recommended ?? item.question.choices[0]?.id, askedAt: item.question.askedAt, ...(item.question.push && { push: item.question.push }), ...(item.question.secret && { secret: item.question.secret }), ...(item.question.asked && { asked: item.question.asked }), ...(item.question.criticReason && { criticReason: item.question.criticReason }), ...(item.question.criticFindings && { criticFindings: item.question.criticFindings }), ...(item.question.check && { check: item.question.check }) },
 		pullRequest: item.pr,
 		verdict: meta.verdict,
 		review: secondReview(item, meta),
@@ -470,7 +471,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	stored.item = outcome.item;
 	if (fact.kind === "pr_read" && fact.state === "merged" && fact.prHead && fact.prHead !== before.head) stored.meta.mergedDifferentHead = true;
 	if (fact.kind === "published") delete stored.meta.ciCodeFailure;
-	if (fact.kind === "turn_ended" && fact.changes) stored.meta.taskKind = fact.taskKind;
+	if (fact.kind === "turn_ended" && fact.changes && currentKey(before) === fact.key) stored.meta.taskKind = fact.taskKind;
 	if (fact.kind === "ci_read" && fact.reading.kind === "read" && fact.head === fact.reading.head) {
 		const failed = fact.reading.runs.filter(r => r.state === "failed");
 		const retry = outcome.effects.find(e => e.kind === "rerun_ci") ?? before.ciReruns?.[rerunKey(fact)];
@@ -535,6 +536,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 			effects.push({ kind: "register", key: next.revision + "/" + repo.alias, pr: repo.pr.number, head: repo.head, repo: repo.alias });
 	}
 	if (ENDED.has(next.state) && !ENDED.has(before.state)) effects.push({ kind: "forget", key: String(next.revision) });
+	scheduleBranchPolls(effects, before, next, fact.at);
 	try {
 		await queued(c, () =>
 			c.db.transaction(async (tx) => {
@@ -581,7 +583,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 						await prepareCompletedCheck(tx, next, effect, handoff);
 					await tx.execute(`INSERT OR ${effect.kind === "requested_review" || effect.kind === "linear_write" ? "IGNORE" : "REPLACE"} INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)`, rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 				}
-				if (fact.kind === "turn_ended") await storeReport(tx, before, stored.meta.sessionId, fact);
+				if (fact.kind === "turn_ended" && currentKey(before) === fact.key) await storeReport(tx, before, stored.meta.sessionId, fact);
 				if (fact.kind === "published" && before.run?.gate && !before.run.updateFromBase) await publishReport(tx, before.run.gate.turn, fact.head);
 				if (filing) {
 					const r = filing;
@@ -1273,6 +1275,7 @@ const ENDED: ReadonlySet<FactoryItem["state"]> = new Set(["done", "cancelled", "
  * it. A withdrawal is always wanted: it is what a cancel leaves.
  */
 export function live(item: FactoryItem, effect: Effect): boolean {
+	if (effect.kind === "poll_branch") return watchesBranch(item, effect.repo);
 	if (effect.kind === "discard_placement") return item.state === "cancelled";
 	if (effect.kind === "resolve_default_place") return !!item.awaitingPlace && item.state === "waiting" && item.wait?.retryAt === effect.at;
 	if (effect.kind === "requested_review") return !ENDED.has(item.state) && item.requestedReview?.key === effect.key;
@@ -1329,7 +1332,7 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 				const branch = featureCiBranch(item, effect.repo);
 				return watchingParts(item) && branch.featureCi?.key === effect.key && branch.head === effect.head;
 			}
-			return effect.key === key && (run.step.kind === "ci" || run.step.kind === "handoff") && (item.pr !== null || !!item.parent);
+			return effect.key === key && (run.step.kind === "ci" || run.step.kind === "handoff") && (item.pr !== null || !!item.parent || !!run.takingPush) && item.question?.kind !== "branch_push";
 		case "poll_pr":
 			return effect.key === prPollKey(item) && effect.pr === item.pr?.number;
 		case "handoff":
@@ -1548,6 +1551,55 @@ async function dispatchFeature(c: Ctx, { item, meta }: Stored, effect: Extract<E
 	return true;
 }
 
+function itemBranch(item: FactoryItem, meta: ItemMeta) {
+	if (item.parent) return subtaskBranch(item.parent.itemId, item.parent.key, item.id);
+	return item.mode === "orchestrate" ? featureBranch(item.id) : branchFor(item.task.title, meta.sessionId);
+}
+
+// CI and review already observe branch moves. Cover the gaps, including a push while a builder works.
+function watchesBranch(item: FactoryItem, repo?: string) {
+	if (!item.run || (item.state !== "working" && item.state !== "waiting") || item.machineRemoved ||
+		item.run.ci?.handed || item.run.takingPush || item.awaitingPlace || item.feedback?.awaiting) return false;
+	if (item.mode === "orchestrate" && (!item.approvedPlan || !featureCiBranch(item, repo).pr)) return false;
+	if (item.question) return !item.question.push || item.question.repo === repo;
+	return !prPollKey(item) && !(item.parent && item.run.step.kind === "subtasks") &&
+		!["ci", "handoff", "publish"].includes(item.run.step.kind) &&
+		!(watchingParts(item) && featureCiBranch(item, repo).featureCi?.key);
+}
+
+function scheduleBranchPolls(effects: Effect[], before: FactoryItem, next: FactoryItem, at: number) {
+	for (const repo of next.repos?.map(r => r.alias) ?? [undefined]) {
+		if (watchesBranch(next, repo) && !watchesBranch(before, repo))
+			effects.push({ kind: "poll_branch", key: repo ?? next.id, repo, at: at + CI_POLLING.everyMs });
+	}
+}
+
+async function observePush(c: Ctx, item: FactoryItem, hub: Awaited<ReturnType<typeof github>>, branch: string, head: string, repo?: string, standalone = false) {
+	const previous = featureCiBranch(item, repo).head ?? null;
+	const key = currentKey(item);
+	if (!key || (item.state !== "working" && item.state !== "waiting") || !/^[a-f0-9]{40}$/.test(head) ||
+		head === (item.question?.push?.head ?? previous) || item.run?.takingPush || item.run?.ci?.handed) return false;
+	const push = await hub.app.withToken(hub.installationId, { repositoryId: hub.repository.id, permissions: { metadata: "read", contents: "read" } }, async token => {
+		const read = await hub.app.branchPush(token, hub.owner, hub.name, branch, head);
+		if (read === "platform") return read;
+		if (!read) return;
+		const owner = read.pusher.id === hub.connectedUserId;
+		if (!owner && await hub.app.issuePermission(hub.installationId, hub.repository.id, read.pusher) !== "write") return;
+		return { author: cleanFeedback(read.author).slice(0, 120), message: redact(cleanFeedback(read.message)).split("\n", 1)[0].slice(0, 500),
+			pusher: read.pusher.login, own: owner && read.authorId === hub.connectedUserId && !!previous && read.parent === previous };
+	}, { reuse: true }).catch(() => undefined);
+	if (push === "platform" || (!push && (!standalone || !previous))) return false;
+	return take(c, { kind: "branch_push", at: Date.now(), key, previous, head, push, repo });
+}
+
+async function readBranchPush(c: Ctx, item: FactoryItem, meta: ItemMeta, repo?: string) {
+	const hub = await github(c, meta, "read", repo ? repoOf(item, repo) : undefined);
+	const branch = itemBranch(item, meta);
+	const head = await hub.app.withToken(hub.installationId, { repositoryId: hub.repository.id, permissions: { metadata: "read", contents: "read" } },
+		token => refHead(hub.app, token, hub.owner, hub.name, branch), { reuse: true }).catch(() => null);
+	return !!head && observePush(c, item, hub, branch, head, repo, true);
+}
+
 async function pollCi(c: Ctx, stored: Stored, effect: Extract<Effect, { kind: "poll_ci" }>, row: EffectRow, session: ReturnType<typeof sessionActor>) {
 	const { item, meta } = stored;
 	const repo = effect.repo ? repoOf(item, effect.repo) : undefined;
@@ -1563,10 +1615,15 @@ async function pollCi(c: Ctx, stored: Stored, effect: Extract<Effect, { kind: "p
 		const ci = item.run?.ci;
 		const reading = await readCi(hub.app, target, { since: branch.featureCi?.since ?? ci?.since, branch: branch.featureCi ? featureBranch(item.id) : undefined });
 		// GitHub can still be computing mergeability, or the PR may have moved past the pushed head.
-		const pull = item.parent ? null : await hub.pull(number).catch(() => null);
+		const pull = !number || item.parent ? null : await hub.pull(number).catch(() => null);
 		const featureHead = branch.featureCi && pull?.headSha && pull.headSha !== effect.head && !item.joining
 			? await hub.app.withToken(hub.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", contents: "read" } },
 				token => refHead(hub.app, token, hub.owner, hub.name, featureBranch(item.id)), { reuse: true }) : undefined;
+		const partBranch = !number || item.parent ? itemBranch(item, meta) : null;
+		const liveHead = partBranch ? await hub.app.withToken(hub.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", contents: "read" } },
+			token => refHead(hub.app, token, hub.owner, hub.name, partBranch), { reuse: true }).catch(() => null) : pull?.headSha;
+		if (liveHead && (!pull || pull.state === "open" || pull.state === "draft") &&
+			await observePush(c, item, hub, partBranch ?? pull!.head, featureHead ?? liveHead, effect.repo)) return null;
 		const state = ciState(reading);
 		const elapsed = ci ? Date.now() - ci.since : 0;
 		const timedOut = workflowOverdue(reading, Date.now());
@@ -1597,9 +1654,11 @@ async function pollCi(c: Ctx, stored: Stored, effect: Extract<Effect, { kind: "p
 			else if (!baseTip) for (const check of reading.runs) if (check.state === "failed" && !check.environment) check.baseResult = "pending";
 		}
 		const paths = needsPaths ? comparison?.files?.map(f => f.filename) : undefined;
-		return { reading, featureHead, paths, baseAhead: comparison?.behind, baseTip: baseTip ?? undefined, basePassed, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
+		return { reading, featureHead, paths, baseAhead: comparison?.behind, baseTip: baseTip ?? undefined, basePassed, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: liveHead || null };
 	};
-	const { reading, featureHead, paths, baseAhead, baseTip, basePassed, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, featureHead: undefined, paths: undefined, baseAhead: 0, baseTip: undefined, basePassed: undefined, mergeable: null, prHead: null, baseSha: null }));
+	const result = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, featureHead: undefined, paths: undefined, baseAhead: 0, baseTip: undefined, basePassed: undefined, mergeable: null, prHead: null, baseSha: null }));
+	if (!result) return true;
+	const { reading, featureHead, paths, baseAhead, baseTip, basePassed, mergeable, prHead, baseSha } = result;
 	const target = item.run?.step.kind === "ci" && (item.parent || item.mode === "orchestrate") && (ciState(reading) !== "passed" || mergeable === false)
 		? await targetStatus(c, stored).catch(() => null) : null;
 	const featureTarget = target?.available && target.value > 0 ? target.branch : undefined;
@@ -1791,6 +1850,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return true;
 		}
 		case "integrate": {
+			if (await readBranchPush(c, item, meta)) return true;
 			const parent = itemActor(c, meta.uid, item.parent!.itemId);
 			const claim = await parent.internalClaimJoin(item.id, effect.key);
 			if (claim === "busy") {
@@ -1941,6 +2001,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const body = meta.github ? `${item.task.body}\n\nCloses #${meta.github.origin.issue.number}.` : item.task.body;
 			const answer = await session.internalPublish({ key: effect.key, title: item.task.title, body, blockedNetwork: itemNetwork(meta), branchOnly: !!item.parent, updateFromBase: item.run?.updateFromBase }).catch(onGone);
 			if (answer === gone) return true;
+			if (answer.kind === "publish_failed" && !answer.transient && await readBranchPush(c, item, meta).catch(() => false)) return true;
 			const receipt = { at: Date.now(), key: effect.key };
 			await take(c, answer.kind === "published" ? { ...answer, ...receipt, openItems, webhooks: githubConfig().pollFallback } : { ...answer, ...receipt });
 			return true;
@@ -1992,12 +2053,18 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		}
 		case "poll_ci":
 			return pollCi(c, stored, effect, row, session);
+		case "poll_branch": {
+			await readBranchPush(c, item, meta, effect.repo);
+			await queued(c, () => c.db.execute("UPDATE effects SET due_at=? WHERE id=? AND effect=?", Date.now() + CI_POLLING.prEveryMs, row.id, row.effect));
+			return "deferred";
+		}
 		case "poll_pr": {
 			// In review, too: the last turn's sandbox time is settled while the person reviews.
 			await factsOf(c, meta);
 			const hub = await github(c, meta);
 			const pull = await hub.pull(effect.pr);
 			const ci = item.run?.ci;
+			if ((pull.state === "open" || pull.state === "draft") && await observePush(c, item, hub, pull.head, pull.headSha)) return true;
 			const pushCi = ci && item.state === "review" && item.mode !== "orchestrate" && !item.machineRemoved &&
 				(pull.state === "open" || pull.state === "draft") && pull.headSha && pull.headSha !== ci.head &&
 				(pull.headSha !== ci.moved || (ci.reviewPush?.head === pull.headSha && !ci.reviewPush.asked))
@@ -2157,6 +2224,7 @@ export const workItem = actor({
 				({ item } = started);
 				events.push(...started.events);
 				effects = started.effects;
+				scheduleBranchPolls(effects, input.item, item, input.meta.createdAt);
 				if (input.meta.linear) effects.push(...linearEffects(input.item, item, false));
 			}
 			await c.db.transaction(async (tx) => {
@@ -2226,7 +2294,7 @@ export const workItem = actor({
 			const item = c.vars.stored!.item, job = item.jobs?.find(j => j.id === child);
 			if (job?.join?.key === key) return job.join;
 			if (item.joining?.child === child && item.joining.key === key) return "claimed";
-			if (job && activeJob(job) && !job.cancelRequested && (item.joining || item.question?.kind === "feature_update")) return "busy";
+			if (job && activeJob(job) && !job.cancelRequested && (item.joining || item.question?.kind === "feature_update" || item.question?.kind === "branch_push")) return "busy";
 			return { key, reason: "The feature stopped before this subtask integrated.", conflict: false };
 		},
 		internalFinishJoin: async (c, child: string, result: JoinResult) => {
@@ -2373,6 +2441,10 @@ export const workItem = actor({
 						fact.target = await hub.app.withToken(hub.installationId, { repositoryId: hub.repository.id, permissions: { metadata: "read", contents: "read" } },
 							token => refHead(hub.app, token, hub.owner, hub.name, branch), { reuse: true });
 					}
+				}
+				if (fact.kind === "answer" && fact.choice === "send_back" && stored.item.question?.id === fact.question && stored.item.question.push) {
+					if (await readBranchPush(c, stored.item, stored.meta, stored.item.question.repo))
+						return viewOf(c);
 				}
 				if (fact.kind === "note") fact.steered = await steerNote(c, stored, fact.note);
 				if (fact.kind === "set_subtask_agent" || fact.kind === "edit_plan") fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
