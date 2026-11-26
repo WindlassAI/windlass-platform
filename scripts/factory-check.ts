@@ -1454,6 +1454,13 @@ drive("GitHub's sentence that starts with because reads as one", newItem(), [
 	{ fact: (k) => ({ kind: "publish_failed", key: k.key, said: "GitHub refused the push because it changes a workflow file.", transient: false }), state: "waiting", wait: "person", effects: ["ask"],
 		also: (o) => holds(o.item.question?.text === "GitHub refused the push because it changes a workflow file.", o.item.question?.text ?? "no question") },
 ]);
+drive("a refused push can be handed back: the agent gets a turn with GitHub's reason and the person's note", newItem(), [
+	...begun,
+	{ fact: (k) => ({ kind: "publish_failed", key: k.key, said: "GitHub refused the push because it changes a workflow file.", transient: false }), state: "waiting", wait: "person", effects: ["ask"],
+		also: (o) => holds(o.item.question?.choices.map(c => c.id).join() === "send_back,again,give_up", JSON.stringify(o.item.question?.choices)) },
+	{ fact: answer("send_back", { note: "Register the check in scripts/ci-groups.json instead." }), state: "working", effects: ["deliver", "check_turn"],
+		also: (o) => holds(/changes a workflow file/.test(effect(o, "deliver")?.text ?? "") && /ci-groups\.json/.test(effect(o, "deliver")?.text ?? ""), effect(o, "deliver")?.text ?? "no turn") },
+]);
 
 drive("cancelling a running turn withdraws it", newItem(), [
 	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },

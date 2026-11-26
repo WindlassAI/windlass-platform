@@ -20,7 +20,6 @@
  * scripts/repository-check.ts runs them against a database of its own.
  */
 
-import { UserError } from "rivetkit";
 import { modelRefusal } from "./account-models.js";
 import { type ItemPlaceDefaults, type MachineSummary, type StartPlace, type HostedSize, MAX_REPOSITORY_DEFAULTS, type ModelList, type RepositoryAutonomy, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, HOSTED_SIZE_NAMES, isHostedSize } from "./contract.js";
 import { startPlaceProblem } from "./start-place.js";
@@ -28,11 +27,16 @@ import { startPlaceProblem } from "./start-place.js";
 const AUTONOMY_FIELDS = ["autoApprovePlans", "autoMergeSingles", "waitForCiOnEachPart"] as const;
 
 /** Thrown for defaults that cannot be saved; `message` is fit to show, `code` is the UserError's. */
+/** This module is bundled by the web app too, so it throws a plain error that the server's clientError turns into a `limit` refusal. */
+export class RepositoryLimit extends Error {
+	name = "RepositoryLimit";
+}
+
 /** At the cap, a new repository's settings are refused: older repositories' saved settings are never dropped to make room. */
 export async function refuseAtRepositoryCap(db: { execute(sql: string, ...args: never[]): Promise<unknown[]> }, table: string, project: string, max: number, what: string): Promise<void> {
 	const [row] = await db.execute(`SELECT (SELECT COUNT(*) FROM ${table} WHERE project = ?) AS known, (SELECT COUNT(*) FROM ${table}) AS total`, project as never) as Array<{ known: number; total: number }>;
 	if (row && !Number(row.known) && Number(row.total) >= max)
-		throw new UserError(`You have saved ${what} for ${max} repositories, the most this account keeps. Clear them for a repository you no longer use, then save again.`, { code: "limit" });
+		throw new RepositoryLimit(`You have saved ${what} for ${max} repositories, the most this account keeps. Clear them for a repository you no longer use, then save again.`);
 }
 
 export class DefaultsProblem extends Error {
