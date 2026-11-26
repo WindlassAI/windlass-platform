@@ -504,7 +504,7 @@ a.agent-group-name:hover .agent-group-owner {
 	margin-top: 0;
 }
 /* Fields inside a card sit on the page's ground, a step below the card, rather than the sunk well. */
-:is(.repo-form, .defaults) :is(.input, .select) {
+:is(.repo-form, .run-fields) :is(.input, .select) {
 	background-color: var(--bg);
 }
 
@@ -708,108 +708,14 @@ a.agent-group-name:hover .agent-group-owner {
 }
 
 
-/*
- * Defaults: two groups in one card, "Agents you start here" and "Work items", parted by a hairline.
- * Each group's fields flow three to a row on a wide screen and stack on a phone; a field that is not
- * chosen says what it comes to in quiet ink (`is-inherited`).
- */
-.defaults {
-	display: grid;
-	gap: 0;
-}
-.defaults-group + .defaults-group {
-	margin: 18px calc(-1 * var(--card-gutter)) 0;
-	padding: 16px var(--card-gutter) 0;
-	border-top: 1px solid var(--line);
-}
-.defaults-title {
-	margin: 0 0 12px;
-	font-size: var(--text-14);
-	font-weight: var(--weight-strong);
-	color: var(--ink);
-}
-.defaults-fields {
-	display: grid;
-	grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr));
-	align-items: start;
-	gap: 14px 16px;
-	min-width: 0;
-	margin: 0;
-	padding: 0;
-	border: 0;
-}
-/* The agents' two or three fields share the row between them. */
-.defaults-fields-fill {
-	grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
-}
-.defaults-fields .field {
-	min-width: 0;
-}
-.defaults-fields .field-note {
-	margin-top: 5px;
-}
-/* Where a new agent starts now: one line read like a value, the way to forget it at its end. */
-.defaults-start {
-	margin-bottom: 14px;
-}
-.defaults-start-line {
-	display: flex;
-	flex-wrap: wrap;
-	align-items: center;
-	gap: 4px 8px;
-	margin: 0;
-	min-height: 26px;
-	font-size: var(--text-13);
-	color: var(--ink);
-}
-.defaults-start-key {
-	margin-right: 4px;
-	color: var(--ink-dim);
-}
-.defaults-start-value {
-	display: inline-flex;
-	align-items: center;
-	gap: 6px;
-	font-weight: var(--weight-medium);
-}
-.defaults-start-value > svg {
-	color: var(--ink-dim);
-}
-.defaults-start-value .ui-glyph-inline {
-	margin-right: 0;
-}
-.defaults-start-sep {
-	color: var(--ink-faint);
-}
-.defaults-start-forget {
-	margin-left: auto;
-	font-size: var(--size-small);
-}
-.defaults-start .field-note {
-	margin-top: 2px;
-}
 /* An unset choice: what it comes to, quietly; its open list in the ordinary ink. */
-.select.is-inherited {
+.select.is-inherited,
+.picker-select.is-inherited {
 	color: var(--ink-dim);
 }
 .select.is-inherited option,
 .select.is-inherited optgroup {
 	color: var(--ink);
-}
-@media (max-width: 760px) {
-	.defaults-fields {
-		grid-template-columns: minmax(0, 1fr);
-	}
-}
-@media (max-width: 520px) {
-	/* The note under the line says it is the last launch: the tag would wrap onto a line of its own. */
-	.defaults-start-tag {
-		display: none;
-	}
-}
-
-.defaults .field-note.tone-warn {
-	color: var(--ink-dim);
 }
 
 .repo-setup {

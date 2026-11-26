@@ -1,7 +1,7 @@
 import type { RepositoryAutonomy, RepositoryView } from "@contract";
 import { useEffect, useState } from "react";
 import { ChecksEditor } from "../components/Checks";
-import { DefaultsSection } from "../components/Defaults";
+import { RepositoryOverrides } from "../components/RunSettings";
 import { SettingsGroup, SettingsLayout, SettingsPending, SettingsRefreshError, SettingsSection } from "../components/SettingsGroups";
 import { EnvironmentSection } from "../components/Environments";
 import { Dialog } from "../components/Dialog";
@@ -10,10 +10,11 @@ import { NetworkSection } from "../components/Network";
 import { SettingsSecrets } from "../components/Secrets";
 import { RepositoryApprovals } from "../components/Servers";
 import { SetupEditor } from "../components/SetupCommand";
-import { layerChoices, ownAgents, startingChoices } from "../lib/repositories";
+import { ownAgents } from "../lib/repositories";
+import { runOf } from "../lib/run";
 import { sectionOf, useHash } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { useAccount, useModels, useNow } from "../state/hooks";
+import { useAccount, useNow } from "../state/hooks";
 import type { RepositoryPage } from "./Repository";
 import { Check } from "../components/ui/Check";
 
@@ -96,6 +97,8 @@ function AutonomySettings({ page, view }: { page: RepositoryPage; view: Reposito
 	</SettingsSection>;
 }
 
+const hasOverrides = (view: RepositoryView) => [view.defaults.place, view.defaults.placeFallback, view.defaults.harness, view.defaults.model, view.defaults.effort, view.defaults.machineModel, view.defaults.machineEffort, view.defaults.profile, view.defaults.hostedSize].some((value) => value != null);
+
 /** `agents`: the user's own agents on it; `items`: the sessions of its work items, which stay with their items. */
 function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { page: RepositoryPage; view: RepositoryView; name: string; agents: number; items: number; onClose(): void; onDone(): void }) {
 	const { client, explain } = useApp();
@@ -107,8 +110,7 @@ function ForgetDialog({ page, view, name, agents, items, onClose, onDone }: { pa
 		view.saved.checks > 0 ? (view.saved.checks === 1 ? "its one check" : `its ${view.saved.checks} checks`) : null,
 		view.saved.secrets > 0 ? (view.saved.secrets === 1 ? "its one secret" : `its ${view.saved.secrets} secrets`) : null,
 		view.saved.network > 0 ? "its network list" : null,
-		view.defaults.profile !== null || view.defaults.model !== null ? "the defaults for new agents" : null,
-		view.defaults.place ? "where new work items run" : null,
+		hasOverrides(view) ? "its overrides of your defaults" : null,
 		view.defaults.autoApprovePlans || view.defaults.autoMergeSingles || view.defaults.waitForCiOnEachPart ? "work item approval settings" : null,
 		view.defaults.screenshots ? "permission to take screenshots" : null,
 		view.approvals.length > 0 ? (view.approvals.length === 1 ? "the remembered approval of one MCP server" : `the remembered approvals of ${view.approvals.length} MCP servers`) : null,
@@ -171,7 +173,6 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 	const { client, platform } = useApp();
 	const auth = useAuth();
 	const account = useAccount();
-	const models = useModels();
 	const now = useNow(15_000);
 	const [forgetting, setForgetting] = useState(false);
 	// Remount the editors after a reset so they discard their old values.
@@ -179,9 +180,9 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 	const { view, sessions } = page;
 	const name = page.name ?? `Repository ${page.id}`;
 	const info = platform.info;
-	const accountChoices = startingChoices(account.settings?.defaults ?? null, info, models.list, "account");
-	const choices = layerChoices(startingChoices(view?.defaults ?? null, info, models.list), accountChoices);
-	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.saved.network > 0 || view.defaults.profile !== null || view.defaults.model !== null || view.defaults.place || view.defaults.screenshots || view.defaults.autoApprovePlans || view.defaults.autoMergeSingles || view.defaults.waitForCiOnEachPart || view.approvals.length > 0);
+	const hostedProfile = runOf({ account: account.settings?.defaults, repository: view?.defaults, item: { place: "hosted" }, machines: null }).profile;
+	const secretsProfile = info?.profiles.some((p) => p.id === hostedProfile && p.available) ? hostedProfile : null;
+	const anything = view !== null && (view.saved.setup || view.saved.checks > 0 || view.saved.secrets > 0 || view.saved.network > 0 || hasOverrides(view) || view.defaults.screenshots || view.defaults.autoApprovePlans || view.defaults.autoMergeSingles || view.defaults.waitForCiOnEachPart || view.approvals.length > 0);
 
 	// Opened at a section: it is gone to once the sections stand, which is when what is saved was read. The sections
 	// above it read their own lists after that and grow: it is kept in view while they do, until its person scrolls.
@@ -213,21 +214,6 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 		<>
 			{page.error && <SettingsRefreshError error={page.error} reload={page.reload} />}
 			<SettingsLayout label="Repository settings sections">
-				<SettingsGroup id="repo-group-defaults" title="Defaults" lede={`New agents and work items on ${name} start from these. A choice made at launch comes first.`}>
-					<DefaultsSection
-						key={generation}
-						id="repo-defaults"
-						defaults={view.defaults}
-						whose="repository"
-						under={accountChoices}
-						account={account}
-						models={models}
-						save={(change) => client.user(auth).saveRepositoryDefaults(page.id, change)}
-						onSaved={(next) => page.replace({ ...view, defaults: next })}
-
-					/>
-				</SettingsGroup>
-
 				<SettingsGroup id="repo-group-items" title="Work items" lede="What builders and reviewers may do by themselves.">
 					<ScreenshotsSetting page={page} view={view} />
 					<AutonomySettings page={page} view={view} />
@@ -257,11 +243,20 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						<NetworkSection key={generation} repositoryId={page.id} name={name} labelledBy="repo-network" onSaved={page.reload} />
 					</SettingsSection>
 
-					<SettingsSecrets key={generation} repository={{ id: page.id, name, count: view.saved.secrets }} profile={choices.profile} onChanged={page.reload} />
+					<SettingsSecrets key={generation} repository={{ id: page.id, name, count: view.saved.secrets }} profile={secretsProfile} onChanged={page.reload} />
 
 					<SettingsSection id="repo-servers" title="MCP server approvals" count={view.approvals.length}>
 						<RepositoryApprovals repositoryId={page.id} name={name} approvals={view.approvals} forgetting={view.forgetting} now={now} onChanged={page.replace} />
 					</SettingsSection>
+				</SettingsGroup>
+
+				<SettingsGroup id="repo-group-runs" title="Overrides" lede={`${name} runs where your defaults say, with your default agent. Override either here for this repository only.`}>
+					<RepositoryOverrides
+						account={account}
+						defaults={view.defaults}
+						save={(change) => client.user(auth).saveRepositoryDefaults(page.id, change)}
+						onSaved={(next) => page.replace({ ...view, defaults: next })}
+					/>
 				</SettingsGroup>
 
 				<SettingsGroup id="repo-group-reset" title="Reset">
@@ -271,7 +266,7 @@ export function RepositorySettings({ page }: { page: RepositoryPage }) {
 						</h3>
 						<p className="usage-lede">
 							{anything
-								? `Deletes everything saved for ${name} at once: setup, checks, network, secrets, defaults and approvals. Its agents stay.`
+								? `Deletes everything saved for ${name} at once: setup, checks, network, secrets, overrides and approvals. Its agents stay.`
 								: `Nothing is saved for ${name}.`}
 						</p>
 						{anything ? (
