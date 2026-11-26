@@ -3,6 +3,9 @@
 // Creation requires the user actor’s grant for this item.
 
 import { randomUUID } from "node:crypto";
+import { performSlackWrite, slackEffects, SLACK_RECEIPTS, type SlackEffect } from "../slack/thread.js";
+import type { SlackBinding } from "../factory/intake.js";
+import type { workspaceOps } from "./slack-workspace.js";
 import type { LinearWrite } from "../linear/app.js";
 import { finishedItem, type TaskKind } from "../factory/readiness-track.js";
 import { environmentFailure } from "../factory/check-environment.js";
@@ -71,6 +74,8 @@ export interface ItemMeta {
 	github?: IssueBinding;
 	/** The Linear issue it was filed from: the destination for its progress updates. */
 	linear?: LinearBinding;
+	/** Only a generation captured at admission authorizes posting; never resolve a new mapping on retry. */
+	slack?: SlackBinding;
 	criticSessionId?: string;
 	reviewerSessionId: string | null;
 	reviewBase: { head: string; sha: string } | null;
@@ -151,7 +156,7 @@ const ISSUE_CHANGE_WINDOW_MS = 15_000;
 
 type FeedbackEffect = { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string } | { kind: "feedback_comment"; key: string; run: number; who: string };
 /** `register`'s `repo`: a cross-repo feature's other repository, by alias, registered with that repository's directory. */
-type Effect = ({ kind: "linear_write" } & LinearWrite) | BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
+type Effect = SlackEffect | ({ kind: "linear_write" } & LinearWrite) | BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
 type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
 
 type EffectRow = { id: string; effect: string; due_at: number; attempts: number };
@@ -519,6 +524,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 		if (before.state === "failed" && !ENDED.has(next.state)) effects.push({ kind: "register_issue", key: String(next.revision) });
 	}
 	if (stored.meta.linear) effects.push(...linearEffects(before, next, !!handoff));
+	effects.push(...slackEffects(stored.meta, before, next));
 	const sibling = fact.kind === "feature_ready" && fact.repo && crossRepo(next) && repoOf(next, fact.repo) !== next.repos![0] ? fact.repo : null;
 	if (sibling && fact.kind === "feature_ready") effects.push({ kind: "register", key: fact.key + "/" + sibling, pr: fact.pr.number, head: fact.head, repo: sibling });
 	else if (fact.kind === "feature_ready" || (fact.kind === "published" && fact.pr)) effects.push({ kind: "register", key: fact.key, pr: fact.pr!.number, head: fact.head });
@@ -573,7 +579,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 					)).length) continue;
 					if (effect.kind === "verified_check" && effect.state === "completed" && handoff && effect.verdictId)
 						await prepareCompletedCheck(tx, next, effect, handoff);
-					await tx.execute(`INSERT OR ${effect.kind === "requested_review" || effect.kind === "linear_write" ? "IGNORE" : "REPLACE"} INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)`, rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
+					await tx.execute(`INSERT OR ${effect.kind === "requested_review" || effect.kind === "linear_write" || effect.kind === "slack_write" ? "IGNORE" : "REPLACE"} INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)`, rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 				}
 				if (fact.kind === "turn_ended") await storeReport(tx, before, stored.meta.sessionId, fact);
 				if (fact.kind === "published" && before.run?.gate && !before.run.updateFromBase) await publishReport(tx, before.run.gate.turn, fact.head);
@@ -652,6 +658,10 @@ async function load(db: RawAccess): Promise<Stored | null> {
 	return stored;
 }
 
+// Only the oldest Slack write competes for the timer. A rate-limited acknowledgement
+// holds later replies in commit order, without holding up any non-Slack effect.
+const RUNNABLE_EFFECT = `(id NOT GLOB 'slack_write:*' OR rowid = (SELECT MIN(rowid) FROM effects WHERE id GLOB 'slack_write:*'))`;
+
 /**
  * Performs every effect that is due and not being performed, in the order they were stored, then sets
  * the schedule for the next one. An effect is removed once performed; one that failed is tried again
@@ -660,7 +670,7 @@ async function load(db: RawAccess): Promise<Stored | null> {
 async function performDue(c: Ctx): Promise<void> {
 	try {
 		const now = Date.now();
-		const rows = (await c.db.execute<EffectRow>("SELECT id, effect, due_at, attempts FROM effects WHERE due_at <= ? ORDER BY rowid", now)).filter((row) => !c.vars.performing.has(row.id));
+		const rows = (await c.db.execute<EffectRow>(`SELECT id, effect, due_at, attempts FROM effects WHERE due_at <= ? AND ${RUNNABLE_EFFECT} ORDER BY rowid`, now)).filter((row) => !c.vars.performing.has(row.id));
 		for (const row of rows) c.vars.performing.add(row.id);
 		// Armed before they are performed: a server that stops under a slow push leaves a schedule that wakes the item for it.
 		if (rows.length > 0) await armDue(c);
@@ -688,7 +698,7 @@ async function performRow(c: Ctx, row: EffectRow): Promise<void> {
 		});
 	} catch (error) {
 		const wait = Math.min(EFFECT_RETRY_MOST_MS, EFFECT_RETRY_FIRST_MS * 2 ** Math.min(row.attempts, 10));
-		c.log.warn({ msg: "an effect of the item could not be performed; it is tried again", effect: row.id, inSeconds: wait / 1000, error: row.id.startsWith("linear_write:") ? "linear_write_retry" : describeError(error) });
+		c.log.warn({ msg: "an effect of the item could not be performed; it is tried again", effect: row.id, inSeconds: wait / 1000, error: row.id.startsWith("slack_write:") ? "slack_write_retry" : row.id.startsWith("linear_write:") ? "linear_write_retry" : describeError(error) });
 		await queued(c, () => c.db.execute("UPDATE effects SET due_at = ?, attempts = attempts + 1 WHERE id = ? AND effect = ?", Date.now() + wait, row.id, row.effect)).catch(() => undefined);
 	} finally {
 		c.vars.performing.delete(row.id);
@@ -707,7 +717,7 @@ async function armDueInQueue(c: Ctx): Promise<void> {
 	// An effect being performed now counts as due EFFECT_RETRY_FIRST_MS from now, not at its own time: armed "now" for it, the
 	// schedule would fire again and again while a slow push goes on; left out, a server that stops under the push would
 	// leave nothing to wake the item.
-	const rows = await c.db.execute<{ id: string; due_at: number }>("SELECT id, due_at FROM effects");
+	const rows = await c.db.execute<{ id: string; due_at: number }>(`SELECT id, due_at FROM effects WHERE ${RUNNABLE_EFFECT}`);
 	const now = Date.now();
 	const times = rows.map((row) => (c.vars.performing.has(row.id) ? now + EFFECT_RETRY_FIRST_MS : row.due_at));
 	const at = times.length === 0 ? null : Math.min(...times);
@@ -1282,7 +1292,7 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 	if (effect.kind === "notify_integrated") return item.state === "done" && (item.integratedHead ?? item.head) === effect.head;
 	if (effect.kind === "cancel_children" || effect.kind === "verified_check") return true;
 	if (effect.kind === "linear_write" && ["start", "review_opened", "review_handover"].includes(effect.key)) return !ENDED.has(item.state);
-	if (effect.kind === "issue_comment" || effect.kind === "linear_write") return true;
+	if (effect.kind === "issue_comment" || effect.kind === "linear_write" || effect.kind === "slack_write") return true;
 	if (effect.kind === "check_issue" || effect.kind === "register_issue") return !ENDED.has(item.state);
 	if (effect.kind === "forget") return ENDED.has(item.state) || !item.run?.ci;
 	if (effect.kind === "register" && effect.repo) {
@@ -1602,6 +1612,17 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	// Checked in the step that sends it: a cancel stored since the row was read leaves it undone.
 	if (!stored || !live(stored.item, effect)) return false;
 	const { item, meta } = stored;
+	if (effect.kind === "slack_write") {
+		const binding = meta.slack;
+		if (meta.source !== "slack" || !binding?.generation) return true;
+		const { teamId, channelId, generation, threadTs } = binding;
+		const destination = { teamId, channelId, generation, threadTs, repositoryId: meta.repository.id };
+		await performSlackWrite(c.db, destination, item.id, effect, input => {
+			const workspace: ReturnType<typeof workspaceOps> = c.client().slackWorkspace.get([teamId], { params: serviceParams() });
+			return workspace.internalPost(input);
+		});
+		return true;
+	}
 	if (effect.kind === "linear_write") {
 		const { workspaceId, teamId, origin } = meta.linear!;
 		if ((await c.db.execute("SELECT 1 FROM issue_actions WHERE subject=?", row.id)).length) return true;
@@ -2105,6 +2126,7 @@ export const workItem = actor({
 			await db.execute("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, data TEXT NOT NULL)");
 			await db.execute(FEATURE_CI_CACHE);
 			await db.execute(CHECKS_TABLE);
+			await db.execute(SLACK_RECEIPTS);
 			await db.execute(REPORTS_TABLE);
 			await db.execute(REVIEWS_TABLE);
 			await db.execute(FEEDBACK_TABLE);
@@ -2148,6 +2170,7 @@ export const workItem = actor({
 				effects = started.effects;
 				if (input.meta.linear) effects.push(...linearEffects(input.item, item, false));
 			}
+			effects.push(...slackEffects(input.meta, null, item));
 			await c.db.transaction(async (tx) => {
 				if (input.meta.github) {
 					await tx.execute("INSERT INTO github_binding VALUES(1,?)", String(input.meta.github.installationId));
@@ -2155,7 +2178,7 @@ export const workItem = actor({
 					effects.push({ kind: "issue_comment", key: "link", revision: item.revision });
 				}
 				await tx.execute("INSERT INTO item (id, revision, data) VALUES (1, ?, ?)", item.revision, JSON.stringify({ item, meta: input.meta }));
-				await tx.execute("INSERT INTO events (at, data) VALUES (?, ?)", input.meta.createdAt, JSON.stringify({ at: input.meta.createdAt, by: input.startedBy ?? "platform", step: null, said: input.meta.github ? filedFromIssue(input.meta.github.origin) : input.meta.linear ? filedFromLinear(input.meta.linear.origin) : `Filed from ${input.meta.source === "api" ? "the API" : "the web app"}.` } satisfies ItemEvent));
+				await tx.execute("INSERT INTO events (at, data) VALUES (?, ?)", input.meta.createdAt, JSON.stringify({ at: input.meta.createdAt, by: input.startedBy ?? "platform", step: null, said: input.meta.github ? filedFromIssue(input.meta.github.origin) : input.meta.linear ? filedFromLinear(input.meta.linear.origin) : input.meta.slack ? "Filed from Slack." : `Filed from ${input.meta.source === "api" ? "the API" : "the web app"}.` } satisfies ItemEvent));
 				for (const event of events) await tx.execute("INSERT INTO events (at, data) VALUES (?, ?)", event.at, JSON.stringify(event));
 				for (const effect of effects) await tx.execute("INSERT INTO effects (id, effect, due_at, attempts) VALUES (?, ?, ?, 0)", rowId(effect), JSON.stringify(effect), "at" in effect && effect.at !== undefined ? effect.at : 0);
 			}, { name: "item.create" });

@@ -121,13 +121,22 @@ export interface LinearBinding {
 export interface SlackFiling {
 	requesterUid: string;
 	repository: { id: GithubId };
+	/** From the workspace lookup, not the Slack payload. Without it filing cannot authorize replies. */
+	generation?: string;
 	delivery: SlackDelivery;
 }
 
 /** Only routing identifiers, never message text, OAuth tokens or response URLs. */
 export interface SlackBinding extends Pick<SlackDelivery, "kind" | "deliveryId" | "teamId" | "channelId" | "userId" | "threadTs"> {
+	generation?: string;
 	defaultPlace?: ItemPlaceDefaults;
 	modeReason?: string | null;
+}
+
+/** Keep the verified mapping handle and thread, never the signed request body. */
+export function slackBinding({ delivery, generation }: SlackFiling): SlackBinding {
+	const { kind, deliveryId, teamId, channelId, userId, threadTs } = delivery;
+	return { kind, deliveryId, teamId, channelId, userId, threadTs, generation };
 }
 
 export function taskOfSlack(raw: string) {

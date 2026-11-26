@@ -9,7 +9,7 @@ import { readAccountDefaults } from "../account-defaults.js";
 import { config } from "../config.js";
 import type { CreateItemInput, GithubId, ItemSummary, UserProfile } from "../contract.js";
 import { savedPlace } from "../factory/default-place.js";
-import { issueMode, linearIdentifier, linearId, linearName, refusals, taskOfLinear, taskOfSlack, type SlackFiling, type SlackBinding, type IntakeFiled, type LinearBinding, type LinearFiled, type LinearFiling } from "../factory/intake.js";
+import { issueMode, linearIdentifier, linearId, linearName, refusals, slackBinding, taskOfLinear, taskOfSlack, type SlackFiling, type SlackBinding, type IntakeFiled, type LinearBinding, type LinearFiled, type LinearFiling } from "../factory/intake.js";
 import { untrustedWords } from "../factory/untrusted.js";
 import { githubApp } from "../github/app.js";
 import { isGithubId } from "../github/ids.js";
@@ -189,8 +189,7 @@ export async function fileSlackRequest(c: ItemsCtx, f: SlackFiling,
 	const policy = await intakePolicy(c, repository.id);
 	const mode = issueMode(parsed.quick ? "quick" : "", [], process.env.WLP_FACTORY_ORCHESTRATE !== "0");
 	const input = intakeInput(parsed.task, mode.mode, { id: repository.id, branch: repository.defaultBranch }, policy, true, key);
-	const binding: SlackBinding = { kind: d.kind, deliveryId: d.deliveryId, teamId: d.teamId, channelId: d.channelId,
-		userId: d.userId, threadTs: d.threadTs, defaultPlace: policy.defaultPlace, modeReason: mode.reason };
+	const binding = { ...slackBinding(f), defaultPlace: policy.defaultPlace, modeReason: mode.reason };
 	const item = await file(profile, { input, binding });
 	return { kind: "filed", itemId: item.id, state: item.state };
 }
