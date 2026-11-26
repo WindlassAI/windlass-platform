@@ -2202,6 +2202,19 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 				{ kind: "child_update", child: job.id, key: job.dispatchKey, state: "done", spent: zero, head, report: "Joined" }]).item;
 		}
 		assert.deepEqual(keys(feature), ["one"]);
+		const push = { head: H(5), pusher: "writer", author: "writer", message: "Adjust fixture", own: false };
+		const asked = walk(feature, [{ kind: "branch_push", head: push.head, previous: feature.head, push }]).item;
+		assert.equal(asked.question?.kind, "branch_push");
+		assert.equal(walk(asked, [{ kind: "claim_join", child: feature.jobs![0].id, key: "part:join" }]).item.joining, undefined);
+		const resumingJoin = walk(feature, [{ kind: "claim_join", child: feature.jobs![0].id, key: "part:join" }]).item;
+		assert.equal(walk(resumingJoin, [{ kind: "branch_push", head: push.head, previous: feature.head, push }]).item, resumingJoin);
+		const resumed = walk(asked, [{ kind: "answer", choice: "send_back" }]);
+		assert.equal(resumed.item.head, push.head);
+		assert.equal(effect(resumed.last, "poll_ci"), undefined);
+		assert.equal(effect(resumed.last, "dispatch")?.child, feature.jobs![0].id);
+		const takeover = walk(asked, [{ kind: "answer", choice: "hand_over" }]);
+		assert.ok(effect(takeover.last, "cancel_children"));
+		assert.equal(walk(takeover.item, [ciFact(passedCi, H(1), push.head)]).item.state, "review");
 		const stale = read(feature, failed);
 		feature = join(feature, "one", H(2));
 		assert.deepEqual(keys(feature), ["one", "two"]);
@@ -2749,6 +2762,46 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		kept.last.events[0]?.said === "Note for the next turn: Keep the API." && text.includes("The person adds: Use the helper.\n\nKeep the API.") && next.item.ownerNote === undefined && !effect(next.last, "deliver")?.untrusted?.length,
 		text.slice(-120));
 	expect("a feature's planner takes no note", walk({ ...running, mode: "orchestrate" }, [{ kind: "note", note: "x" }]).last.events.length === 0);
+}
+
+{
+	const head = H(2);
+	const push = { head, author: "owner", message: "Fix the fixture", pusher: "owner", own: true };
+	const working = walk(newItem(), [...pushedRun(H(1)), ciFact(failingCi("expected 3")), { kind: "turn_started" }]).item;
+	assert.equal(working.state, "working");
+	const notice = { kind: "branch_push", head, previous: H(1), push };
+	const asked = walk(working, [notice]);
+	assert.deepEqual(asked.item.question?.choices.map(c => c.label), ["Continue from your push", "Take it over", "Give up"]);
+	assert.deepEqual(asked.item.question?.push, { head, author: push.author, message: push.message });
+	assert.equal(effect(asked.last, "withdraw")?.key, currentKey(working));
+	assert.equal(walk(asked.item, [notice]).item, asked.item);
+	const continued = walk(asked.item, [{ kind: "answer", choice: "send_back" }]);
+	assert.ok(effect(continued.last, "deliver")?.text.includes("fetch_base to fetch the updated PR branch and start from " + head));
+	assert.equal(effect(continued.last, "poll_ci"), undefined);
+	assert.equal(continued.item.run?.ci, null);
+	assert.equal(continued.item.foreignPush, true);
+	const published = walk(continued.item, [...pushedRun(H(3)).slice(1)]);
+	assert.equal(effect(published.last, "poll_ci")?.head, H(3));
+	const taken = walk(asked.item, [{ kind: "answer", choice: "hand_over" }]);
+	assert.equal(effect(taken.last, "poll_ci")?.head, H(1));
+	const handed = walk(taken.item, [ciFact(passedCi, H(1), head)]);
+	assert.equal(handed.item.state, "review");
+	assert.equal(effect(handed.last, "handoff")?.verdict.moved, head);
+	assert.equal(walk(asked.item, [{ kind: "answer", choice: "give_up" }]).item.state, "failed");
+	const writer = walk(working, [{ ...notice, push: { ...push, pusher: "writer", own: false } }, { kind: "answer", choice: "send_back" }]);
+	const { thirdParty, untrustedWords } = await import("../server/src/factory/untrusted.js");
+	assert.deepEqual(thirdParty(effect(writer.last, "deliver")?.untrusted), [untrustedWords.push(head, "writer")]);
+	const part = { ...working, pr: null, parent: { itemId: "i_123", key: "part", title: "Feature" } };
+	const askedPart = walk(part, [notice]).item;
+	assert.equal(askedPart.question?.kind, "branch_push");
+	const partHandoff = walk(askedPart, [{ kind: "answer", choice: "hand_over" }, ciFact(passedCi, H(1), head)]);
+	assert.equal(partHandoff.item.state, "review");
+	assert.equal(partHandoff.last.storeVerdict?.verdict.moved, head);
+	assert.equal(effect(partHandoff.last, "integrate"), undefined);
+	const stranger = walk(working, [{ ...notice, push: undefined }, ciFact(passedCi, H(1), head)]);
+	assert.equal(stranger.item.question, null);
+	assert.equal(effect(stranger.last, "handoff")?.verdict.moved, head);
+	expect("an owner or writer push asks on the active item; continue verifies the next push and takeover keeps the moved verdict", true);
 }
 
 {

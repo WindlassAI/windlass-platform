@@ -300,12 +300,12 @@ export function integrationAnswer(f: Flow, choice: ChoiceId, question: string): 
 }
 
 /** The PR descriptions are written: the feature is the person's to review and merge, in order. */
-export function handOver(f: Flow): void {
+export function handOver(f: Flow, reason?: string): void {
 	const order = f.item.approvedPlan?.mergeOrder?.map(m => m.repo).join(", then ") ?? aliases(f.item).join(", then ");
 	f.enter("merged");
 	f.run.endedAt = null;
 	f.state("review");
-	f.say(`Handed over: both pull requests stay drafts, tested together. Merge ${order}.`);
+	f.say(reason ?? `Handed over: both pull requests stay drafts, tested together. Merge ${order}.`);
 	f.effects.push({ kind: "link_prs", key: f.key });
 	pollPrs(f);
 }

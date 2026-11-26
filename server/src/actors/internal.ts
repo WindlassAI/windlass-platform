@@ -266,6 +266,7 @@ export interface ItemInternal {
 	internalSetupSeed(source: "child" | "feature", repositoryId?: GithubId): Promise<string | null>;
 	internalFeatureTarget(): Promise<{ head: string; value: number; branch: string; available: boolean } | null>;
 	internalUpdateForChild(child: string, request: string, target: string, automatic?: true): Promise<"pending" | "finished">;
+	internalJoinStarted(child: string, key: string): Promise<boolean>;
 	internalClaimJoin(child: string, key: string): Promise<"busy" | "claimed" | import("../factory/types.js").JoinResult>;
 	internalFinishJoin(child: string, result: import("../factory/types.js").JoinResult): Promise<void>;
 	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { budget?: ItemSummary["budget"]; integratedHead?: string }): Promise<void>;
