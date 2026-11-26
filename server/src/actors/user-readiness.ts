@@ -76,8 +76,8 @@ export async function repositoryReadiness(db: Db, project: string, inputs: Await
 		const result: Judgment | undefined = last && JSON.parse(last.judgment);
 		const findings = inputs.findings.map(f => {
 			const answer = result?.findings.find(r => r.id === f.id);
-			if (f.pass !== null || !answer) return f;
-			if (f.id === "setup" || f.id === "checks") {
+			// Setup and checks come from the recorded builds, so a later push to main or a refused guide filing keeps them.
+			if (f.pass === null && (f.id === "setup" || f.id === "checks") && (answer || inputs.evidence.buildCommit)) {
 				const setup = f.id === "setup";
 				const pass = setup ? inputs.evidence.setupPassed : inputs.evidence.checksPassed;
 				const subject = setup ? "Setup" : "All saved checks";
@@ -85,6 +85,7 @@ export async function repositoryReadiness(db: Db, project: string, inputs: Await
 					: setup ? "No matching build shows that setup completed." : "No matching build passed all saved checks within five minutes.";
 				return { ...f, pass, reason };
 			}
+			if (f.pass !== null || !answer) return f;
 			return answer;
 		});
 		latest = setupReport(findings, last?.at ?? inputs.at, inputs.ci, items);

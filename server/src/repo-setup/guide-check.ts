@@ -35,7 +35,8 @@ export function checkGuide(guide: string, contents: string, { files, dirs, paths
 	function checkPath(target: string, cwd: string) {
 		const path = relative(root, resolve(cwd, target));
 		const found = glob.test(target) ? files.some(f => matchesGlob(f, path)) : paths.has(path);
-		if (!found) fail(`missing path ${path}`);
+		const fromRoot = path.split("/").slice(1).join("/");
+		if (!found) fail(fromRoot && paths.has(fromRoot) ? `missing path ${path}: write paths from the repository root, such as ${fromRoot}` : `missing path ${path}`);
 	}
 
 	function command(source: string, cwd: string) {

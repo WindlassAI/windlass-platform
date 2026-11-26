@@ -254,6 +254,8 @@ test("skills and folder guides resolve root paths and explicit file-relative ref
 		assert.deepEqual(checkGuide(guide, "Read `local.ts` and `./root.ts`.", tree).map(e => e.message),
 			["missing path local.ts", "missing path " + folder + "/root.ts"]);
 	}
+	assert.deepEqual(checkGuide("AGENTS.md", "Read `repo/root.ts`.", guideTree(["root.ts"], () => undefined)).map(e => e.message),
+		["missing path repo/root.ts: write paths from the repository root, such as root.ts"]);
 });
 
 test("team note uses Bun script definitions, tracked globs and flags at the cited lines", () => {
@@ -453,6 +455,9 @@ test("older passing build proves setup and checks only for matching inputs", asy
 			if (pass) assert.match(f.reason, /passed on abcdef0, setup unchanged since/);
 		}
 	}
+	// A new commit on main, or a refused guide filing, leaves no judgment for these inputs: the build still proves setup.
+	const moved = await setupInputs(db, "repo", { ...scan, commit: "7654321" }, command, checks);
+	for (const f of (await repositoryReadiness(db, "repo", moved, false)).latest!.findings) assert.equal(f.pass, true);
 	sqlite.close();
 });
 
