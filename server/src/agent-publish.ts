@@ -140,7 +140,7 @@ const ASK_SCHEMA = {
 const REPORT_SCHEMA = {
 	type: "object",
 	properties: {
-		title: { type: "string", description: `The pull request's title, at most ${MAX_PUBLISH_TITLE_CHARS} characters. Match the style of recent commits on the base branch (`git log --oneline -10`), such as a `feat:` or `fix:` prefix.` },
+		title: { type: "string", description: `The pull request's title, at most ${MAX_PUBLISH_TITLE_CHARS} characters. Match the style of recent commits on the base branch (\`git log --oneline -10\`), such as a \`feat:\` or \`fix:\` prefix.` },
 		description: { type: "string", description: `The pull request's description, in Markdown, at most ${MAX_PUBLISH_BODY_CHARS} characters: what changed and why, and how it was checked.` },
 		screenshots: { type: "array", maxItems: 4, items: { type: "object", additionalProperties: false, required: ["file", "caption"], properties: {
 			file: { type: "string", description: "The .wlp-shots/<name>.png file saved with wlp-shot." },
@@ -156,7 +156,7 @@ const REPORT_SCHEMA = {
 const INPUT_SCHEMA = {
 	type: "object",
 	properties: {
-		title: { type: "string", description: `The pull request's title, at most ${MAX_PUBLISH_TITLE_CHARS} characters. Match the style of recent commits on the base branch (`git log --oneline -10`), such as a `feat:` or `fix:` prefix.` },
+		title: { type: "string", description: `The pull request's title, at most ${MAX_PUBLISH_TITLE_CHARS} characters. Match the style of recent commits on the base branch (\`git log --oneline -10\`), such as a \`feat:\` or \`fix:\` prefix.` },
 		description: { type: "string", description: `The pull request's description, in Markdown, at most ${MAX_PUBLISH_BODY_CHARS} characters: what changed and why, and how it was checked.` },
 		commit_message: { type: "string", description: `The message of the commit the platform makes of what is uncommitted, at most ${MAX_PUBLISH_COMMIT_CHARS} characters. Left out, it is the title.` },
 		branch: { type: "string", description: "Leave it out. The work goes to the session's own branch, and a request that names any other branch is refused." },
