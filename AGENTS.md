@@ -3,8 +3,18 @@
 Make the smallest change that solves the task. Start with the guide in the area you touch.
 Run each command below from the repository root in a fresh shell.
 
+## Quick commands
+
+Follow [Set up](#set-up) once, then typecheck all workspaces with `corepack pnpm -s typecheck`.
+
+## Key files
+
+- `package.json` defines the recursive typecheck script.
+- `pnpm-workspace.yaml` lists the workspace packages.
+
 ## Set up
 
+Use Node 22.22.2 or a newer 22.x patch.
 Use the pnpm version pinned in `package.json`. CI installs from the lockfile.
 
 ```sh
@@ -13,6 +23,8 @@ pnpm install --frozen-lockfile
 ```
 
 ## Typecheck first
+
+The workspace commands below are alternatives to the recursive typecheck in Quick commands.
 
 Server typecheck
 
