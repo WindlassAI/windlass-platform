@@ -29,7 +29,11 @@ test("an orchestrated filing starts with a planner and one item's budget as its 
 	assert.equal(item.ownTokens, single.tokens);
 	const start = advance(item, { kind: "start", at: 1, by: "person" });
 	assert.equal(start.item.run!.step.kind, "refine");
-	assert.match(start.effects.find(e => e.kind === "deliver")!.text, /file_plan/);
+	const text = start.effects.find(e => e.kind === "deliver")!.text;
+	assert.match(text, /file_plan/);
+	assert.match(text, /same unresolved design decision with one builder/);
+	assert.match(text, /clear inputs and outputs.*a check for the combined behavior/);
+	assert.doesNotMatch(text, /split work by file/i);
 });
 
 test("every planning turn's prompt gives the planner its budget figures", () => {
@@ -47,9 +51,11 @@ test("every planning turn's prompt gives the planner its budget figures", () => 
 	const asked = advance(spent, { kind: "answer", choice: "revise", question: spent.question!.id, by: "owner", at: 3 }).item;
 	const more = advance(asked, { kind: "answer", choice: "raise", question: asked.question!.id, by: "owner", at: 4 });
 	assert.match(more.effects.find(e => e.kind === "deliver")!.text, /allowance for planning, the summary and the review: 20,000 tokens, of which 10,000 are spent\./);
-	// A builder's turn is not given them.
+	// A builder gets reuse guidance instead of the planning budget.
 	const quick = advance(createItem({ id: "i_quick", task, place: { kind: "hosted" }, budget: single, reviewer: { on: true } }), { kind: "start", at: 1, by: "person" });
-	assert.doesNotMatch(quick.effects.find(e => e.kind === "deliver")!.text, /One item's budget/);
+	const brief = quick.effects.find(e => e.kind === "deliver")!.text;
+	assert.doesNotMatch(brief, /One item's budget/);
+	assert.match(brief, /look for an existing implementation you can extend.*explain why in your report/);
 });
 test("issues plan first unless the bug label, quick label or leading quick command opts out", () => {
 	const label = edge("issues", { action: "labeled", installation: { id: 1 }, repository: { id: 2 }, issue: { number: 3 }, sender: { login: "sam", id: 4 }, label: { name: "windlass:orchestrate" } }, { slug: "windlass" });
