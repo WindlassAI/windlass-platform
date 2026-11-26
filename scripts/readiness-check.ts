@@ -319,19 +319,45 @@ test("reconcile each reviewed guide with the filing its published lines came fro
 	assert.equal(allOmitted.leftOut.length, original.files.size);
 });
 
+test("a five-source library can file an eight-line guide with just commands and key files", () => {
+	const read = new Map([
+		["README.md", "Run tests from the repository root."], ["package.json", '{"scripts":{"test":"node --test"}}'],
+		["index.js", "export { lint } from './src/lint.js';"], ["src/lint.js", "export function lint() { return []; }"],
+		["test/lint.js", "import { test } from 'node:test';"],
+	]);
+	const paths = [...read.keys(), "src/rules.js", "test/rules.js", ".github/workflows/ci.yml"];
+	const ctx = { request: { areas: [], later: 0, noteIds: [], previous: null }, notes: [], owner: "team", host: "github.com",
+		paths, read, redact: (s: string) => s };
+	const content = ["# Lint library", "## Quick commands", "Run tests from the repository root.", "Run `npm test`.",
+		"## Key files", "- `index.js` exports the lint function.", "- `src/lint.js` implements lint.", "- `test/lint.js` imports the test runner."].join("\n") + "\n";
+	const cite = (line: number, file: string) => ({ line, evidence: { file, line: 1 } });
+	const lines = [cite(3, "README.md"), cite(4, "package.json"), cite(6, "index.js"), cite(7, "src/lint.js"), cite(8, "test/lint.js")];
+	const file = (text: string, paths: string[]) => validateDraft({ score: answers().slice(0, 3), notes: [],
+		files: [{ kind: "guide", path: "AGENTS.md", content: text, lines }] }, { ...ctx, paths });
+	assert.equal(file(content, paths).files.get("AGENTS.md"), content);
+	for (const tail of ["## Leave to CI", "## Leave to CI\nRun the release matrix."])
+		assert.throws(() => file(content + tail, paths), /## Leave to CI is empty.*leave it out/);
+	const many = Array.from({ length: 30 }, (_, i) => `lib/f${i}.js`);
+	assert.equal(file(content, [...paths, ...many.map(p => "vendor/" + p)]).files.get("AGENTS.md"), content);
+	assert.throws(() => file(content, [...paths, ...many]), /only 8 verified nonblank lines remain.*at least 30/);
+});
+
 test("guide minimums and sections are checked after filtering unsupported lines", () => {
 	const ctx = { request: { areas: ["src", "test"], later: 1, noteIds: [], previous: null }, notes: [], owner: "team", host: "github.com",
-		paths: ["README.md", "src/f0.ts", "src/f1.ts", "src/f2.ts"], read: new Map([["README.md", "Working here."]]), redact: (s: string) => s };
+		paths: ["README.md", ...Array.from({ length: 30 }, (_, i) => `src/f${i}.ts`)], read: new Map([["README.md", "Working here."]]), redact: (s: string) => s };
 	const args = { score: answers().slice(0, 3), notes: [] };
 	const root = setupGuide("", "# Guide", "A fixture is a test input.");
 	const area = setupGuide("src", "# Source", "Run the targeted check.");
 	for (const f of [root, area]) for (const r of f.lines) r.noteId = undefined;
 	const file = (files: typeof root[]) => validateDraft({ ...args, files }, ctx);
 	assert.equal(file([root, area]).files.size, 2);
-	assert.throws(() => file([{ ...root, lines: root.lines.filter((_, i) => i % 2 === 0) }]), /AGENTS.md: only .*at least 30/);
+	assert.throws(() => file([{ ...root, content: root.content.split("## Handoff")[0] }]), /AGENTS.md: only .*at least 30/);
 	assert.throws(() => file([root, { ...area, lines: area.lines.filter(r => ![4,11].includes(r.line)) }]), /src\/AGENTS.md: only .*at least 12/);
-	assert.throws(() => file([root, { ...area, content: area.content.replace("## See also", "## Other") }]), /include ## See also/);
+	assert.throws(() => file([root, { ...area, content: area.content.replace("## Quick commands", "## Other") }]), /include ## Quick commands/);
 	assert.throws(() => file([root, { ...area, lines: area.lines.filter(r => r.line !== 8) }]), /three to five key files/);
+	const smallArea = { ...area, content: area.content.split("## Non-obvious patterns")[0] };
+	const paths = ctx.paths.map((p, i) => i > 3 ? p.replace("src/", "src-other/") : p);
+	assert.equal(validateDraft({ ...args, files: [root, smallArea] }, { ...ctx, paths }).files.size, 2);
 	const turn = { ...ctx, repository: { owner: "team", url: "https://github.com/team/project" } as import("../server/src/github/publish.js").StoredRepository };
 	assert.match(setupBodies(file([root, area]), turn).body, /1 folder covered. 2 more/);
 });
