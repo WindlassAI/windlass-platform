@@ -28,7 +28,7 @@ duplicate jobs because the push already ran them.
 each group (or each shard of one) is one job. `scripts/ci-heavy.mjs select` reads the changed files
 against the merge base (the pull request's base, or `main` for a branch) and picks the groups:
 
-In the Actions UI each job shows a readable title (for example "Factory 1 of 3" for `factory/1`, "Runner: full check" for `runner-docker/runner`); the titles live in `TITLES` in `scripts/ci-heavy.mjs`. Use the group/shard id with `node scripts/ci-heavy.mjs run <group>[/<shard>]`.
+In the Actions UI each job shows a readable title (for example "Factory 1 of 4" for `factory/1`, "Runner: full check" for `runner-docker/runner`); the titles live in `TITLES` in `scripts/ci-heavy.mjs`. Use the group/shard id with `node scripts/ci-heavy.mjs run <group>[/<shard>]`.
 
 - a file that a group lists runs that group;
 - a core file (the package files, the lockfile, `server/src/contract.ts`, the CI files) runs every group;
@@ -55,7 +55,7 @@ node scripts/ci-heavy.mjs select --files server/src/usage.ts    # what a change 
 
 | Class | Checks | Where |
 | --- | --- | --- |
-| (a) Fake sandbox, no Docker | access, account, attachments, backup, connection, harness, models, model-providers, network, repository, review, reviewer-task, runner-control, runner-protocol, runner-signin, secrets, setup, environment, git-config, untrusted, usage, billing, verified, web-files, github, shot, sizing, start-times, model-relay-route, install-script, runner-wizard, e2b-provider-test, workflow-lint; idempotency, signin, connection-e2e, http-limits; frame-auth, machine, runner-e2e, runner-socket-probe; factory-e2e (all sections), webhook-check (all sections), linear-protocol, linear-check and e2b-snapshot | CI heavy: `rules`, `actors`, `machines`, `factory/*`, `webhook`, `linear` |
+| (a) Fake sandbox, no Docker | access, account, attachments, backup, connection, harness, models, model-providers, network, repository, review, reviewer-task, runner-control, runner-protocol, runner-signin, secrets, setup, environment, git-config, untrusted, usage, billing, verified, web-files, github, shot, sizing, start-times, model-relay-route, install-script, runner-wizard, e2b-provider-test, workflow-lint; idempotency, signin, connection-e2e, http-limits; frame-auth, machine, runner-e2e, runner-socket-probe; factory-e2e (all sections), webhook-check (all sections), linear-protocol, linear-check and e2b-snapshot | CI heavy: `rules`, `actors`, `machines/*`, `factory/*`, `webhook`, `linear` |
 | (a) Already in `pnpm test` | e2e.ts (fake), factory-check, orchestrator-check, fairness, machine-fairness (through `runner-e2e.ts fairness`), timeline-write, web-stage, item-feed, keyring, login-handover, revocation, snapshot, container-logs, the relay and setup `.mjs` checks, release-images (which drives release-check.ts), the web vitest suite | CI `test` |
 | (b) Docker, base image (`windlass-platform-sandbox:latest`) | sandbox, mcp, model-relay-docker, github `--docker`, verified `--docker`, e2b-provider-test `--docker`, e2b-snapshot `--docker`, sizing `docker`; e2e.ts with `WLP_SANDBOX=docker`, and with `--snapshots-only` | CI heavy: `sandbox-docker/*` (sandbox-check in two shards by `WLP_CHECK_SECTIONS`), `e2e-docker/*` |
 | (b) Docker, screenshots image (`:shots`) | shot `--docker`, attachments `--docker`, browser-hello `--docker` | CI heavy: `shots-docker` |
