@@ -170,7 +170,7 @@ function PanelToggle() {
  * the item. `summary`, once known, adds the repository, the turn's time, the facts and the actions.
  */
 /** `itemView`: a work item's agent's item, once read: the crumb names it, and its feature first for a subtask. */
-export function SessionCrumb({ title, status, place, machine, item, harness, summary = null, itemView = null }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: { id: string }; harness?: SessionSummary["harness"]; summary?: SessionSummary | null; itemView?: ItemView | null }) {
+export function SessionCrumb({ title, status, place, machine, item, harness, summary = null, itemView = null }: { title: string | null; status: Parameters<typeof StatusBadge>[0]["status"] | null; place?: SandboxPlace; machine?: MachineSummary | null; item?: SessionSummary["item"]; harness?: SessionSummary["harness"]; summary?: SessionSummary | null; itemView?: ItemView | null }) {
 	const harnessName = acpHarnessName({ harness });
 	const machineName = machine ? machineLabel(machine) : null;
 	const repository = summary?.repository ?? null;

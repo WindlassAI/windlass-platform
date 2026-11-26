@@ -21,19 +21,19 @@ export function checkConclusion(v: Verdict, review: CheckReview | null = null, u
 	return review && review.recommendation !== "approve" ? "action_required" : "success";
 }
 
-export const UNFINISHED_REVIEW = "Second review did not finish after it asked for changes";
+export const UNFINISHED_REVIEW = "Code review is incomplete after requesting changes";
 
 export function checkTitle(v: Verdict, review: CheckReview | null = null, unfinished = false): string {
-	if (v.moved) return `Pushed after the agent's ${v.head.slice(0, 7)}; nothing verified it`;
+	if (v.moved) return `New changes have not been verified since ${v.head.slice(0, 7)}`;
 	const title = verdictHeadline(v).replace(/\.$/, "");
-	if (title === "Ready for review" && review?.recommendation === "changes_requested") return "Second review requests changes";
-	if (title === "Ready for review" && review?.recommendation === "needs_person") return "Second review needs a person";
+	if (title === "Ready for review" && review?.recommendation === "changes_requested") return "Code review requested changes";
+	if (title === "Ready for review" && review?.recommendation === "needs_person") return "Code review needs your input";
 	if (title === "Ready for review" && !review && unfinished) return UNFINISHED_REVIEW;
 	return title;
 }
 
 export function evidenceLine(itemUrl: string): string {
-	return itemUrl.length <= 2000 ? `Evidence: <${itemUrl}> (opens for the item's owner only).` : "Evidence: open Details (opens for the item's owner only).";
+	return itemUrl.length <= 2000 ? `[View evidence](${itemUrl}) (opens for the item's owner only).` : "Evidence: open Details (opens for the item's owner only).";
 }
 
 /** The public output accepts only platform observations. Never interpolate a filing, diagnostic or acceptance criterion. */

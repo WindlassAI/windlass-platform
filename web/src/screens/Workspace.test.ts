@@ -214,7 +214,7 @@ describe("a repository's old addresses", () => {
 		const setup = host.querySelector("#repo-setup")!;
 		for (const words of ["Setup 3 of 8", "Level: Not ready", "CI history (30 days): 94% green on main", "1 flaky job: e2e (macos)", "0 reverts", "1 red commit after a merge",
 			"Track record:", "sent back", "Finish setup to reach Ask first."]) expect(setup.textContent).toContain(words);
-		const file = [...setup.querySelectorAll("button")].find(b => b.textContent === "File as work item: make e2e (macos) reliable")!;
+		const file = [...setup.querySelectorAll("button")].find(b => b.textContent === "File as work item: fix intermittent failures in e2e (macos)")!;
 		act(() => file.click());
 		await settle();
 		expect(setup.querySelector(".setup-summary a")?.textContent).toBe("Open work item");

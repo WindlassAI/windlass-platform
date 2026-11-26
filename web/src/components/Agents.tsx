@@ -44,11 +44,10 @@ function AgentRow({ session, profileName, now, grouped, onDelete }: { session: S
 
 	const save = async (event: FormEvent) => {
 		event.preventDefault();
-		const next = title.trim();
-		if (next === "" || next === session.title) return closeRename();
+		if (!title.trim() || title === session.title) return closeRename();
 		setSaving(true);
 		try {
-			await client.user(auth).renameSession(session.id, next);
+			await client.user(auth).renameSession(session.id, title);
 			closeRename();
 		} catch (failure) {
 			setError(explain(failure));

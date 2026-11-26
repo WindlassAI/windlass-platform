@@ -7,9 +7,9 @@ const agent = (patch: Partial<ItemAgent>): ItemAgent => ({ harness: "claude", mo
 describe("an item's agent on its page", () => {
 	it("names the agent and its model", () => {
 		expect(agentLine(undefined)).toBe("Windlass");
-		expect(agentLine(agent({}))).toBe("Claude Code · sonnet");
+		expect(agentLine(agent({}))).toBe("Claude Code · Sonnet");
 		expect(agentLine(agent({ harness: "opencode", model: "default" }))).toBe("OpenCode · its default model");
-		expect(agentLine(agent({ effort: "high" }))).toBe("Claude Code · sonnet · effort high");
+		expect(agentLine(agent({ effort: "high" }))).toBe("Claude Code · Sonnet · effort high");
 	});
 	it("never shows tokens that were not measured as 0, and draws a meter only for counted ones", () => {
 		expect(agentTokens(undefined)).toBeNull();

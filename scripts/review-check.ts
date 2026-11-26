@@ -269,16 +269,16 @@ const verdict: Verdict = { id: "v1", item: "i_test", run: 1, head: "abc123456789
 for (const recommendation of ["approve", "changes_requested", "needs_person"] as const) test(`comment for ${recommendation} keeps the platform verdict`, () => {
 	const checked = take({ ...review(...(recommendation === "changes_requested" ? [blocking] : recommendation === "needs_person" ? [question] : [])), recommendation });
 	assert.equal(checked.recommendation, recommendation);
-	assert.equal(itemComment(verdict, "Ready for review. CI passed.", null), "<!-- windlass-item:i_test -->\n\n**Windlass at abc1234: Ready for review**\n\nReady for review\\. CI passed\\.\n\nAcceptance criteria left to you:\n\n- a criterion");
+	assert.equal(itemComment(verdict, "Ready for review. CI passed.", null), "<!-- windlass-item:i_test -->\n\n**Ready for review · abc1234**\n\nReady for review\\. CI passed\\.\n\nAcceptance criteria left to you:\n\n- a criterion");
 });
 for (const [result, head] of [["pass", "Ready for review"], ["fail", "Failing"], ["incomplete", "Incomplete: the last turn did not finish"], ["unverified", "Not verified"]] as const) test(`comment headline from ${result}`, () => {
 	const body = itemComment({ ...verdict, result, acceptance: [] }, "untrusted headline. more words", null);
-	assert.equal(body.split("\n")[2], `**Windlass at abc1234: ${head}**`);
+	assert.equal(body.split("\n")[2], `**${head} · abc1234**`);
 	assert.ok(!body.includes("Acceptance criteria"));
 });
 test("comment headline follows a moved pull request", () => {
 	const moved = { ...verdict, result: "unverified" as const, moved: "def98765" };
-	assert.equal(itemComment(moved, verdictWords(moved, null), itemReport).split("\n")[2], "**Windlass at abc1234: Not verified: the pull request has a newer commit**");
+	assert.equal(itemComment(moved, verdictWords(moved, null), itemReport).split("\n")[2], "**Not verified: the pull request has a newer commit · abc1234**");
 });
 test("comment escapes mentions, links, images, HTML and headings in words and criteria", () => {
 	const body = itemComment({ ...verdict, acceptance: [markup] }, `\u0001${markup}\r\nend`, itemReport);
@@ -363,7 +363,7 @@ test("the flag appears in a person's verified section and turns a pass into Need
 	assert.ok(verifiedSection({ verified: null, flags, during: null, login: "person" }).includes(words));
 	const flagged = { ...verdict, flags };
 	assert.ok(verdictWords(flagged, null).startsWith("Needs a look."));
-	assert.equal(itemComment(flagged, verdictWords(flagged, null), itemReport).split("\n")[2], "**Windlass at abc1234: Needs a look**");
+	assert.equal(itemComment(flagged, verdictWords(flagged, null), itemReport).split("\n")[2], "**Needs a look · abc1234**");
 });
 test("command refs require this turn's settled shell event pair and retain redacted evidence", () => {
 	const commands = new ReviewCommands(redactor);

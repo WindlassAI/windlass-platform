@@ -786,7 +786,7 @@ if (!only.length || only.some(name => name.startsWith("orchestrator"))) {
 			const parent = standin.branchHead(harbor, subtaskBranch(secondChild.parent!.itemId, secondChild.parent!.key, secondChild.id))!;
 			const log = (format: string, sha: string) => execFileSync("git", ["show","-s","--format="+format,sha], {cwd:harbor.path,encoding:"utf8"}).trim();
 			assert(log("%P", parent) === firstHead, "The second child did not build directly on the first child's commit");
-			assert(log("%s", firstHead + "^") === "Start feature " + feature.id && log("%P", firstHead + "^") === base, "The first child missed the feature marker");
+			assert(log("%s", firstHead + "^") === "Start " + feature.title && log("%P", firstHead + "^") === base, "The first child missed the feature marker");
 			assert(done.head === parent && done.reviews.length === 1 && done.report && done.pullRequest, "Missing final head, summary, review or PR.");
 			const ready = await waitFor("the single ready PR", () => standin.pulls.find(p=>p.repository===harbor.id && p.number===done.pullRequest!.number && !p.draft && p.comments.length), 30_000);
 			assert(standin.branchHead(harbor, ready.head) === parent && standin.branchHead(harbor,"main") === base, "Incorrect ref after handoff.");
@@ -1111,7 +1111,7 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			assert(shot?.by === "reviewer" && shot.sessionId === view.reviewerSessionId && shot.head === r.head && shot.width === 1 && shot.state === "kept" && r.blocks.some(b => b.kind === "screenshot" && b.attachment === shot.id) && (await user.itemAttachmentLinks(item.id)).some(link => link.id === shot.id), "missing reviewer screenshot");
 			const pull = standin.pulls.find(p => p.repository === harbor.id && p.number === view.pullRequest?.number)!;
 			const comment = await waitFor("review comment", () => pull.comments[0]?.body, 30000);
-			assert(comment.includes("Second review at aaaaaaa: approves.") && comment.indexOf("Builder's report") > comment.indexOf("Second review at") && comment.includes("1 screenshot"), "comment order or review text incorrect");
+			assert(comment.includes("Code review approved · aaaaaaa") && comment.indexOf("Builder's report") > comment.indexOf("Code review approved") && comment.includes("1 screenshot"), "comment order or review text incorrect");
 			const own = (await user.listSessions()).filter(s => s.item?.id === item.id);
 			assert(snapshot.summary.item?.id === item.id && snapshot.summary.item.role === "reviewer" && own.some(s => s.id === item.sessionId && s.item?.role === "builder"), "sessions do not belong to the item");
 			assert(!own.some(s => s.id === view.reviewerSessionId), "reviewer was listed as an agent");
@@ -2338,7 +2338,7 @@ function checkHandoff(pull: StandinPull, view: ItemView) {
 	const own = pull.comments.filter((one) => one.user.login === `${standin.slug}[bot]`);
 	assert(own.length === 1, `expected one platform comment, got ${own.length}`);
 	const comment = own[0]!;
-	assert(comment.body.startsWith(`<!-- windlass-item:${view.id} -->\n\n**Windlass at ${verdict.head.slice(0, 7)}: ${verdictWords(verdict, null).split(".", 1)[0]}**`), "the comment is missing the marker or the current verdict");
+	assert(comment.body.startsWith(`<!-- windlass-item:${view.id} -->\n\n**${verdictWords(verdict, null).split(".", 1)[0]} · ${verdict.head.slice(0, 7)}**`), "the comment is missing the marker or the current verdict");
 	return comment;
 }
 
@@ -3303,7 +3303,7 @@ try {
 		setCi(harbor, publishedHead, "success");
 		await waitFor("the screenshot comment", () => pull.comments.length > 0, CI_WAIT_MS);
 		const body = pull.comments[0].body;
-		assert(body.includes(`1 screenshot on the item's page: ${ORIGIN}/items/${item.id} (opens for the item's owner only)`) && !/!\[|X-Amz-|wlp-stand-in/.test(body), "GitHub did not receive just the item page link");
+		assert(body.includes(`[View 1 screenshot on the work item](${ORIGIN}/items/${item.id}) (opens for the item's owner only)`) && !/!\[|X-Amz-|wlp-stand-in/.test(body), "GitHub did not receive just the item page link");
 		const snapshot = await client.agentSession.get([auth.profile.uid, item.sessionId], { params: { token: auth.token } }).snapshot();
 		assert(!/wlp-stand-in:\/\/|X-Amz-/i.test(JSON.stringify([view, snapshot.timeline]) + narrow.text), "a signed link appeared in stored output or the server log");
 		return "PNG, signed-in action, scoped redirect, and page-only GitHub comment";

@@ -3,7 +3,7 @@
 import { accountLimits } from "../../user-limits.js";
 import { makeSandboxRoom } from "./kept-sandboxes.js";
 import { type ItemsCtx, queueChanged } from "../user-items.js";
-import { USAGE_HISTORY_DAYS, isHostedSize, type HostedSize, type HostedSizeOption } from "../../contract.js";
+import { USAGE_HISTORY_DAYS, sessionTitle, isHostedSize, type HostedSize, type HostedSizeOption } from "../../contract.js";
 import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { clientError, requireService, requireServiceFor, requireUser } from "../../auth.js";
@@ -262,7 +262,7 @@ async function usageView(c: UsageCtx): Promise<UsageView> {
 			const session = c.vars.sessions.get(claim.session);
 			return {
 				sessionId: claim.session,
-				title: session ? (session.item?.role === "reviewer" ? `Reviewer of “${session.title}”` : session.title) : null,
+				title: session ? sessionTitle(session) : null,
 				...(session?.item && { item: { id: session.item.id, role: session.item.role ?? "builder" } }),
 				...(book.shares(claim.session) && { sharesPlace: true as const }),
 				state: listed.get(claim.session)?.state ?? (session && session.sandbox !== "none" ? session.sandbox : ("starting" as const)),
@@ -281,7 +281,7 @@ async function usageView(c: UsageCtx): Promise<UsageView> {
 		factoryLimits: accountLimits(c.vars.items.limits).factory,
 		today: book.today(now).map((row) => {
 			const session = c.vars.sessions.get(row.sessionId);
-			return { ...row, title: session?.title ?? null, ...(session?.hostedSize && { hostedSize: session.hostedSize }) };
+			return { ...row, title: session ? sessionTitle(session) : null, ...(session?.hostedSize && { hostedSize: session.hostedSize }) };
 		}),
 		days: book.days(now),
 		kept,

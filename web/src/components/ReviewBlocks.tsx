@@ -291,6 +291,8 @@ function Tail({ record }: { record: ReviewRecord }) {
 	);
 }
 
+const findingLabel = (id: string) => id.replace(/^r(\d+)\.f(\d+)$/, "Round $1, finding $2");
+
 /** What a block names of the platform's records, each beside the author's claim; a claim the record does not bear out is said so plainly. */
 function Refs({ refs, records, verdict, author }: { refs: ReviewRef[]; records: ReviewRecord[]; verdict: Verdict | null; author: string }) {
 	if (refs.length === 0) return null;
@@ -301,7 +303,7 @@ function Refs({ refs, records, verdict, author }: { refs: ReviewRef[]; records: 
 				if (!record)
 					return (
 						<li key={index} className="tone-warn" data-disagrees="">
-							{author} names <code className="item-paths">{ref.ref}</code>
+							{author} names <code className="item-paths">{findingLabel(ref.ref)}</code>
 							{ref.says ? ` and says ${SAYS[ref.says]}` : ""}; the platform has no such record.
 						</li>
 					);
@@ -383,7 +385,7 @@ export function Block({ block, records, verdict, author, linkTo, named }: { bloc
 					<p className="review-title">{block.title}</p>
 					{block.root !== block.id ? (
 						<p className="review-continues tone-dim">
-							Raised in an earlier round as <code className="item-paths">{block.root}</code>
+							First raised in {findingLabel(block.root)}
 							{named?.(block.root) ? <>: {named(block.root)}</> : null}
 						</p>
 					) : null}
@@ -398,7 +400,7 @@ export function Block({ block, records, verdict, author, linkTo, named }: { bloc
 			body = (
 				<>
 					<p className="review-title">
-						<code className="item-paths">{block.finding}</code> <span className="review-severity">{EARLIER[block.status]}</span>
+						{findingLabel(block.finding)} <span className="review-severity">{EARLIER[block.status]}</span>
 					</p>
 					{named?.(block.finding) ? <p className="review-continues tone-dim">{named(block.finding)}</p> : null}
 					{block.text ? <ReviewText text={block.text} /> : null}

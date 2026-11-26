@@ -115,13 +115,13 @@ describe("sessionModelWords", () => {
 	it("names a Claude Code session's model as Claude Code does, not by its id", () => {
 		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "fable" })).toBe("Fable 5.2");
 		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "default" })).toBe("Default (recommended)");
-		// A model the list does not know, or no list yet: its id.
-		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "opus" })).toBe("opus");
-		expect(sessionModelWords({ harness: "claude", harnessModels: null, model: "fable" })).toBe("fable");
+		// A model the list does not know, or no list yet: format the id.
+		expect(sessionModelWords({ harness: "claude", harnessModels: claudeModels, model: "opus" })).toBe("Opus");
+		expect(sessionModelWords({ harness: "claude", harnessModels: null, model: "fable" })).toBe("Fable");
 	});
 
-	it("keeps a Windlass session's model id", () => {
-		expect(sessionModelWords({ harness: "windlass", harnessModels: null, model: "gpt-6.1-sol" })).toBe("gpt-6.1-sol");
+	it("formats a Windlass session’s model name", () => {
+		expect(sessionModelWords({ harness: "windlass", harnessModels: null, model: "gpt-6.1-sol" })).toBe("GPT-6.1 Sol");
 	});
 });
 

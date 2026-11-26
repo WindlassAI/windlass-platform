@@ -22,6 +22,7 @@ import { FeedSection } from "../components/Feed";
 import { Mark, WarnIcon } from "../components/Icons";
 import { StartComposer } from "../components/StartComposer";
 import { FilterBar } from "../components/WorkspaceFilters";
+import { useIdentity } from "../lib/identity";
 import { feedOf } from "../lib/feed";
 import { count, localTime, plural, sandboxTime } from "../lib/format";
 import { ownAgents, workingCounts, workingWords } from "../lib/repositories";
@@ -58,6 +59,7 @@ export function useSavedRepositories(sessions: readonly SessionSummary[] | null)
 function AccountLine() {
 	const auth = useAuth();
 	const { status } = useChatgpt();
+	const identity = useIdentity();
 	if (auth.profile.demo) {
 		return (
 			<p className="home-account">
@@ -68,7 +70,7 @@ function AccountLine() {
 	}
 	return (
 		<p className="home-account">
-			<span className="home-account-who">{auth.profile.email ?? auth.profile.uid}</span>
+			<span className="home-account-who">{identity.name}</span>
 			{status === null ? <span className="tone-faint">checking ChatGPT…</span> : status.connected ? <span className="home-account-ok">ChatGPT connected</span> : <span className="tone-faint">ChatGPT not connected · <a className="link" href="/settings#settings-models">Connect</a></span>}
 		</p>
 	);

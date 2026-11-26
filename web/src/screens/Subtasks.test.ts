@@ -53,16 +53,16 @@ describe("the subtasks of a running feature", () => {
 
 	it("says what each one is doing from its step, not a sentence", () => {
 		const subtasks = plannedSubtasks(feature.plan!, feature.children ?? []);
-		const numbers = new Map(subtasks.map((entry) => [entry.task.key, entry.n]));
+		const titles = new Map(subtasks.map((entry) => [entry.task.key, entry.task.title]));
 		const done = doneKeys(subtasks);
-		const doing = subtasks.map((entry) => doingNow(entry, numbers, done, NOW()));
+		const doing = subtasks.map((entry) => doingNow(entry, titles, done, NOW()));
 		expect(doing[0]!.word).toBe("merged");
 		expect(doing[1]!.word).toBe("implementing");
 		expect(doing[1]!.fact).toBe("turn 2");
 		expect(doing[2]).toMatchObject({ word: "fixing", fact: "your checks failed, fix 1", code: "pnpm test src/golden" });
 		expect(doing[3]!.word).toBe("asks you");
-		expect(doing[4]).toEqual({ word: "waits", fact: "after 2" });
-		expect(doing[5]).toEqual({ word: "waits", fact: "after 3 and 4" });
+		expect(doing[4]).toEqual({ word: "waits", fact: `After “${subtasks[1]!.task.title}”` });
+		expect(doing[5]).toEqual({ word: "waits", fact: `After “${subtasks[2]!.task.title}” and “${subtasks[3]!.task.title}”` });
 	});
 
 	it("draws a row for each, with its place, session and the question it asks, the done ones folded", () => {

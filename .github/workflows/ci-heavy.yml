@@ -4,7 +4,9 @@ name: CI heavy
 # docs/testing.md). Main, the nightly run and a dispatch with `full` run every group.
 on:
   push:
-    branches: [main, 'wip/**', 'windlass/**']
+    # A feature's part branches (windlass/feature-<item>-<part>-<child>) get the light CI only: the heavy
+    # groups run once on the feature branch, with every part merged, and again on main.
+    branches: [main, 'wip/**', 'windlass/**', '!windlass/feature-i_*-*-i_*']
   pull_request:
   schedule:
     - cron: '23 3 * * *'

@@ -414,7 +414,7 @@ async function cases() {
 			assert.deepEqual(blocks[1], { kind: "screenshot", attachment: screenshots[0].id });
 			const comment = itemComment(verdict, "Ready", { by: "builder", key, run: 1, sessionId, head: verdict.head, at: 0, title: "Report", screenshots, blocks, records: [] });
 			assert.ok(
-				comment.endsWith(`1 screenshot on the item's page: ${config.origins[0]}/items/${itemId} (opens for the item's owner only)`) &&
+				comment.endsWith(`[View 1 screenshot on the work item](${config.origins[0]}/items/${itemId}) (opens for the item's owner only)`) &&
 					!/!\[|wlp-stand-in|X-Amz-/.test(comment),
 			);
 		} finally {

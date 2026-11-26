@@ -2131,9 +2131,9 @@ export function createMockItems(deps: MockItemsDeps) {
 					if (made) return summaryOf(made);
 				}
 				if (input.mode !== undefined && input.mode !== "single" && input.mode !== "orchestrate") throw new PlatformError("user", "Choose single or orchestrate.", { reason: "bad_input" });
-				const title = input.title.trim();
+				const title = input.title;
 				const acceptance = (input.acceptance ?? []).map((line) => line.trim()).filter((line) => line !== "");
-				if (title === "") throw new PlatformError("user", "A work item needs a title.", { reason: "bad_input" });
+				if (!title.trim()) throw new PlatformError("user", "A work item needs a title.", { reason: "bad_input" });
 				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title is at most ${MAX_TITLE_CHARS} characters.`, { reason: "bad_input" });
 				if (input.body.length > MAX_ITEM_BODY_CHARS) throw new PlatformError("user", `What to do is at most ${MAX_ITEM_BODY_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
 				if (acceptance.length > MAX_ACCEPTANCE_CRITERIA) throw new PlatformError("user", `An item takes at most ${MAX_ACCEPTANCE_CRITERIA} acceptance criteria.`, { reason: "bad_input" });

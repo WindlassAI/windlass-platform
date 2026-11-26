@@ -43,7 +43,7 @@ export function PageTrail({ trail, heading = false, children }: { trail: readonl
 							<span className="trail-link">{crumb.label}</span>
 						)}
 						<span className="trail-sep" aria-hidden="true">
-							›
+							{heading && crumb.route?.name === "item" && at === trail.length - 2 ? "·" : "›"}
 						</span>
 					</li>
 				))}

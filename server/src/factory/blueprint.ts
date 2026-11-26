@@ -58,6 +58,8 @@ export const RULES = {
 	/** Check for a lost turn receipt. */
 	turnCheckMs: 5 * 60_000,
 	personDecisions: 12,
+	/** How far over its token budget one fix turn for failed checks may start without asking. */
+	checkFixGrace: 0.25,
 } as const;
 
 type AutoChoice = ChoiceId | "rerun_ci";
@@ -1029,7 +1031,8 @@ export function plannerCapacityText(place: FactoryItem["place"], machines: Place
 	}
 	const machine = machines.find(m => m.machineId === place.machineId);
 	const parts = machine?.online ? Math.min(RULES.parallelChildren, freeMachineSlots(machineSlots(machine))) : 0;
-	return `Your machine '${machine?.name ?? place.machineId}' can run ${parts} part${parts === 1 ? "" : "s"} at once. Additional parts wait for a slot.`;
+	const name = machine ? `Your machine '${machine.name}'` : "Your selected machine";
+	return `${name} can run ${parts} part${parts === 1 ? "" : "s"} at once. Additional parts wait for a slot.`;
 }
 
 const backstopTurns = (item: FactoryItem): number => (item.mode === "orchestrate" ? ownSpent(item, item.spent).turns : item.spent.turns) - (item.backstopFrom ?? 0);
@@ -1057,7 +1060,14 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	if (backstopTurns(item) >= RULES.turnBackstop) return stop(c, "turns", `This item has taken ${RULES.turnBackstop} turns without finishing. Look at its log before it goes on.`, plan);
 
 	const over = turnBudgetStop(c);
-	if (over !== null) return askBudget(c, over.cause, over.sentence, plan);
+	const fix = plan.charge === "gate" || plan.charge === "ci";
+	// A turn that ran past its tokens and left only failed checks gets one fix turn within the grace, instead of a question.
+	const grace = over?.cause === "tokens" && fix && !run.budgetGrace && item.spent.tokens <= item.budget.tokens * (1 + RULES.checkFixGrace);
+	if (over !== null && !grace) return askBudget(c, over.cause, fix ? "Its checks failed, and it " + over.sentence[0].toLowerCase() + over.sentence.slice(1) : over.sentence, plan);
+	if (grace) {
+		run.budgetGrace = true;
+		c.say(`Its checks failed after it used its token budget: one fix turn, up to ${Math.round(RULES.checkFixGrace * 100)}% over.`);
+	}
 
 	if (plan.fingerprint !== null) {
 		run.lastFailure = plan.fingerprint;
@@ -1165,7 +1175,7 @@ function askProviderRefusal(c: Change, refusal: ItemProviderRefusal, plan: TurnP
 	if (usageRefusal(refusal.kind) && reset !== undefined && reset - c.at <= MAX_PROVIDER_WAIT && retries < RULES.providerRetries) {
 		c.run.step.providerRetries = retries + 1;
 		const at = reset + MINUTE;
-		const place = refusal.placeName ?? c.item.placement?.name ?? (c.item.place.kind === "hosted" ? "hosted" : c.item.place.machineId);
+		const place = refusal.placeName ?? c.item.placement?.name ?? (c.item.place.kind === "hosted" ? "hosted" : "your machine");
 		const wait = providerWait(itemAgent(c.item).harness, place, at, reset);
 		c.state("waiting", { ...wait, accountKey: refusal.accountKey });
 		c.say(wait.sentence);
@@ -1815,7 +1825,7 @@ function startReview(c: Change, ci: CiProgress): void {
 	run.review = { verdictId: c.key, head: ci.head, refiles: 0, prReads: 0, round, previousHead: before?.head ?? null, earlier: before?.open ?? [], lastOpen: before?.lastOpen ?? null, ...(last && { before: last }) };
 	const { verdict, words } = verdictAt(c, ci);
 	c.storeVerdict = { kind: "verdict", verdict, words };
-	if (!item.parent) pendingCheck(c, ci.head, `Second review of ${shortSha(ci.head)}, round ${round}`);
+	if (!item.parent) pendingCheck(c, ci.head, `Code review in progress · round ${round} · ${shortSha(ci.head)}`);
 	nextTurn(c, reviewPlan(c));
 	c.effects.push(nextPrPoll(item, c.at));
 }
@@ -1895,7 +1905,7 @@ function reviewEnded(c: Change, fact: Extract<Fact, { kind: "review_ended" }>): 
 	if (ci.moved) return readForHandoff(c, ci, { review: filed.id, reviewNone: null, assessment });
 	if (personFirst(c, ci, filed)) return;
 	if (filed.recommendation === "needs_person") {
-		pendingCheck(c, pending.head, "Second review needs you");
+		pendingCheck(c, pending.head, "Code review needs your input");
 		const text = `The second agent reviewed ${shortSha(pending.head)} and has questions only you can answer. Read them in its review below; then have the agent change the work, with your note, or hand it over as it is.`;
 		return ask(c, "review_question", text, [choice("fix"), ...handOver(c.item), choice("give_up")], null, reviewFixPlan(filed, true, pending.earlier));
 	}
@@ -1922,7 +1932,7 @@ function fixAfterReview(c: Change, plan: TurnPlan): void {
 function sendBackForReview(c: Change, round: number): void {
 	const head = c.run.review?.head;
 	if (!head || c.item.parent) return;
-	pendingCheck(c, head, `Second review asked for changes; round ${round + 1} is being worked on`);
+	pendingCheck(c, head, `Addressing code review feedback · round ${round + 1}`);
 	const check = c.item.pendingChecks?.find(one => one.sha === head);
 	if (check) check.reviewRound = round;
 }
@@ -2481,7 +2491,7 @@ function readFeatureCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>) {
 			const key = `ci-fix-${item.revision + 1}`;
 			const brief = `Inspect the feature diff with git diff ${branch.seed ?? item.task.base}...${fact.head}.\n\n` +
 				ciFixText(fact.head, reading).slice(0, 10_000);
-			queueRepair(c, { key, title: "Fix feature CI on " + shortSha(fact.head), brief, repo: fact.repo,
+			queueRepair(c, { key, title: "Fix failing feature checks", brief, repo: fact.repo,
 				owns: fact.paths ?? [], acceptance: ["The failing feature checks pass."] }, { ciFix: { head: fact.head, fingerprint } });
 			c.say(`Queued a fix for feature CI on ${shortSha(fact.head)}.`);
 		}

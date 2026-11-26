@@ -39,9 +39,9 @@ export async function observeIssue(binding: IssueBinding, repositoryId: GithubId
 }
 
 export async function writeIssueComment(app: GithubApp, repo: { id: GithubId; owner: string; name: string }, binding: IssueBinding,
-	itemId: string, state: ItemState, pr: number | undefined, commentId?: string) {
+	itemId: string, title: string, state: ItemState, pr: number | undefined, commentId?: string) {
 	const number = binding.origin.issue.number;
-	const body = issueComment(itemId, binding.origin, state, pr, `${config.origins[0]}/items/${itemId}`) + (binding.modeReason ? " " + binding.modeReason : "");
+	const body = issueComment(itemId, title, binding.origin, state, pr, `${config.origins[0]}/items/${itemId}`) + (binding.modeReason ? " " + binding.modeReason : "");
 	const marker = body.split("\n", 1)[0];
 	return app.withToken(binding.installationId, { repositoryId: repo.id, permissions: { metadata: "read", issues: "write" } }, async token => {
 		if (!commentId) {

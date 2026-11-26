@@ -454,9 +454,9 @@ type CommentReview = { filed: ItemReview | null; reason: string | null; owner: s
 function reviewParagraphs(item: string, review: CommentReview): string[] {
 	const r = review.filed;
 	if (!r?.recommendation) return review.reason ? [`No second review: ${commentText(review.reason.replace(/\.$/, ""), 500)}.`] : [];
-	const words = { approve: "approves", changes_requested: "asks for changes", needs_person: "needs you" };
+	const words = { approve: "approved", changes_requested: "requested changes", needs_person: "needs your input" };
 	const summary = r.blocks.find(block => block.kind === "summary");
-	const paragraphs = [`${r.requestedPull ? "Requested review" : "Second review"} at ${r.head.slice(0, 7)}: ${words[r.recommendation]}.`];
+	const paragraphs = [`Code review ${words[r.recommendation]} · ${r.head.slice(0, 7)}`];
 	if (summary?.text) paragraphs.push(agentMarkdown(summary.text, limit.summaryChars));
 	const rank = { blocking: 0, should_fix: 1, note: 2 };
 	const labels = { blocking: "Blocking", should_fix: "Should fix", note: "Note" };
@@ -477,7 +477,7 @@ function reviewParagraphs(item: string, review: CommentReview): string[] {
 	if (findings.length > lines.length) lines.push(`and ${findings.length - lines.length} more on the item's page`);
 	if (lines.length) paragraphs.push(lines.join("\n"));
 	const n = r.screenshots.length;
-	paragraphs.push(`The whole review${n ? ` and ${n} screenshot${n === 1 ? "" : "s"}` : ""}: ${config.origins[0]}/items/${item} (opens for the item's owner only)`);
+	paragraphs.push(`[View the full review${n ? ` and ${n} screenshot${n === 1 ? "" : "s"}` : ""}](${config.origins[0]}/items/${item}) (opens for the item's owner only)`);
 	return paragraphs;
 }
 
@@ -494,16 +494,17 @@ export function requestedReviewBody(item: string, review: ItemReview, repo: { ow
 	return { body, comments };
 }
 
-export function feedbackComment(who: string, run: number) {
-	return commentText(feedbackWords.working(who, run), 2000);
+export function feedbackComment(who: string) {
+	return commentText(feedbackWords.working(who), 2000);
 }
 
 export function itemComment(verdict: Verdict, words: string, report: ItemReport | null, review?: CommentReview, feedback?: { who: string; run: number }): string {
 	// The marker is an HTML comment GitHub must find byte for byte. Only a platform id belongs there.
 	if (!/^[\w-]{1,128}$/.test(verdict.item) || verdict.item.includes("--")) throw new Error("Invalid item id for the verdict comment.");
 	const headline = verdictWords(verdict, null).split(".", 1)[0];
-	const paragraphs = [`<!-- windlass-item:${verdict.item} -->`, `**Windlass at ${commentText(verdict.head.slice(0, 7), 7)}: ${headline}**`, commentText(words, MAX_NOTE_CHARS)];
-	if (feedback) paragraphs.push(feedbackComment(feedback.who, feedback.run));
+	const paragraphs = [`<!-- windlass-item:${verdict.item} -->`];
+	if (feedback) paragraphs.push(feedbackComment(feedback.who));
+	paragraphs.push(`**${headline} · ${commentText(verdict.head.slice(0, 7), 7)}**`, commentText(words, MAX_NOTE_CHARS));
 	const criteria = verdict.acceptance.slice(0, MAX_ACCEPTANCE_CRITERIA).map((one) => `- ${commentText(one, 1000)}`);
 	if (criteria.length) paragraphs.push(`Acceptance criteria left to you:\n\n${criteria.join("\n")}`);
 	if (review) paragraphs.push(...reviewParagraphs(verdict.item, review));
@@ -518,7 +519,7 @@ export function itemComment(verdict: Verdict, words: string, report: ItemReport 
 		}
 	}
 	const count = report?.blocks.filter(block => block.kind === "screenshot").length ?? 0;
-	const link = count ? `\n\n${count} screenshot${count === 1 ? "" : "s"} on the item's page: ${config.origins[0]}/items/${verdict.item} (opens for the item's owner only)` : "";
+	const link = count ? `\n\n[View ${count} screenshot${count === 1 ? "" : "s"} on the work item](${config.origins[0]}/items/${verdict.item}) (opens for the item's owner only)` : "";
 	return boundedComment(paragraphs, link);
 }
 

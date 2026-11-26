@@ -3,7 +3,7 @@
  * The start composer against the mock: what pressing Enter sends, what each picker changes, what it
  * starts on, and what it keeps across the visit to GitHub.
  */
-import type { AuthResult, CreateSessionInput, GithubId, MachineSummary, PromptInput } from "@contract";
+import { promptTitle, type AuthResult, type CreateSessionInput, type GithubId, type MachineSummary, type PromptInput } from "@contract";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -40,7 +40,7 @@ beforeEach(() => {
 afterEach(() => {
 	if (root) act(() => root?.unmount());
 	host.remove();
-	client.dispose();
+	client?.dispose();
 	saveAuth("mock", null);
 });
 
@@ -152,6 +152,12 @@ async function launchMenu(words: string): Promise<void> {
 	act(() => (host.querySelector(".ui-split-more") as HTMLButtonElement).click());
 	await act(async () => ([...pop().querySelectorAll('[role="menuitem"]')].find((row) => row.querySelector(".ui-item-label")?.textContent === words) as HTMLElement).click());
 }
+
+it("names a personal agent with its complete opening request", () => {
+	const task = "Run the whole test suite and fix the missing CSV writer";
+	expect(promptTitle(task + ". Report what changed.")).toBe(task + ".");
+	expect(promptTitle("Add the CSV writer so that the export command can save one record for every reading in the archive")).toBe("Add the CSV writer");
+});
 
 describe("the start composer", () => {
 	it("starts an agent with the defaults when a task is typed and Enter pressed, and opens it", async () => {
@@ -769,8 +775,11 @@ it("opens an item's repository placement in the composer and honors an explicit 
 	pick("platform");
 	expect(value("on")).toBe("Hosted");
 	write("Run this one on the platform");
+	const title = host.querySelector<HTMLInputElement>('.start-item input[maxlength]')!;
+	expect(title.value).toBe("Run this one on the platform");
+	write("Check  hosted placement", title);
 	await launchMenu("File as a draft");
 	await settle();
-	const filed = (await user.listItems()).find(i => i.title === "Run this one on the platform");
+	const filed = (await user.listItems()).find(i => i.title === "Check  hosted placement");
 	expect(filed?.place).toEqual({ kind: "hosted" });
 });

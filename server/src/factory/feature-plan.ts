@@ -34,10 +34,10 @@ export function unattendedKeys(plan: Pick<FeaturePlanEdit, "subtasks">, complete
 
 export function approvalText(plan: FeaturePlan): string {
 	const words = (b: SubtaskBudget) => b.tokens.toLocaleString("en-US") + " tokens";
-	const unattended = unattendedKeys(plan);
+	const unattended = plan.subtasks.filter(s => worksWithoutAsking(s.agent?.harness)).map(s => `“${s.title}”`);
 	const cross = crossRepoPlan(plan);
 	const final = plan.finalIntegration;
-	return [plan.spec.goal, ...plan.subtasks.map(s => s.key + ". " + (cross ? `[${s.repo}] ` : "") + s.title + " — " + words(s.budget) + (s.place ? ` on ‘${s.place.prefer}’: ${s.place.reason}` : "") + " — " + agentWords(s.agent)),
+	return [plan.spec.goal, ...plan.subtasks.map(s => (cross ? `[${s.repo}] ` : "") + s.title + " — " + words(s.budget) + (s.place ? ` on ‘${s.place.prefer}’: ${s.place.reason}` : "") + " — " + agentWords(s.agent)),
 		...(unattended.length ? [`${unattended.join(", ")} would run an agent that works without asking: it runs every command and edit in its sandbox without asking you. The planner proposed it from the item's text; approve only after confirming each one.`] : []),
 		...(cross && final ? [
 			"Merge order — " + (plan.mergeOrder ?? []).map(m => m.repo + (m.prerequisite.length ? ` after ${m.prerequisite.join(", ")}` : "")).join(", then ") + ".",
