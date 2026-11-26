@@ -787,11 +787,12 @@ function stepFact(c: Change, fact: StepFact): boolean {
 			else publishFailed(c, fact);
 			return true;
 		case "ci_rerun_started":
-			if (step.kind !== "ci" || !run.ci || c.item.ciReruns?.[fact.head]) return false;
+			if (step.kind !== "ci" || run.ci?.head !== fact.head || c.item.ciReruns?.[fact.head]) return false;
 			// Commit the claim and the next poll before the POST. Replaying the effect cannot request a second run.
 			(c.item.ciReruns ??= {})[fact.head] = { jobs: fact.jobs };
 			step.attempt++;
-			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the interrupted checks.");
+			run.ci.since = c.at;
+			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the checks.");
 			return true;
 	}
 }
@@ -1490,6 +1491,10 @@ function recordCiRead(c: Change, ci: CiProgress, fact: Extract<Fact, { kind: "ci
 		fact.reading.kind === "read" && isSha(ci.head) && fact.reading.head !== ci.head ? { kind: "failed", said: `GitHub answered for commit ${shortSha(fact.reading.head)}, not ${shortSha(ci.head)}` } : fact.reading;
 	const rerun = reading.kind === "read" ? c.item.ciReruns?.[reading.head]?.jobs : undefined;
 	let state = ciState(reading);
+	// A webhook can arrive before GitHub lists the replacement attempt.
+	const awaitingFlakyJob = reading.kind === "read" && rerun?.some(job => job.flaky && job.jobId &&
+		!reading.runs.some(check => check.workflowId === job.retryRunId && check.name === job.name && check.jobId && BigInt(check.jobId) > BigInt(job.jobId!)));
+	if (awaitingFlakyJob) state = "pending";
 	// GitHub can briefly omit the old jobs before listing their replacements.
 	if (reading.kind === "read" && (state === "passed" || state === "none" || state === "skipped") &&
 		rerun?.some(job => !reading.runs.some(check => check.name === job.name))) state = "pending";
@@ -1517,14 +1522,14 @@ function recordCiRead(c: Change, ci: CiProgress, fact: Extract<Fact, { kind: "ci
 			ci.reviewPush = moved ? { head: moved } : undefined;
 		ci.moved = moved;
 	}
-	return { reading, state, since, rerun };
+	return { reading, state, since, rerun, awaitingFlakyJob };
 }
 
 function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	const { run } = c;
 	const ci = run.ci;
 	if (ci === null) return;
-	const { reading, state, since, rerun } = recordCiRead(c, ci, fact);
+	const { reading, state, since, rerun, awaitingFlakyJob } = recordCiRead(c, ci, fact);
 	const waitForReading = () => pollCi(c, fact.openItems, reading.kind === "rate_limited" ? reading.retryAt : null, ciWaitSentence(ci.head, reading));
 	if (c.item.featureCi && c.item.state !== "review") {
 		if (fact.prHead === ci.head && state === "failed" && reading.kind === "read") {
@@ -1582,6 +1587,23 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		c.say(`GitHub says the pull request conflicts with ${c.item.task.base}.`);
 		return nextTurn(c, conflictPlan(c.item.task.base));
 	}
+	if (awaitingFlakyJob && !workflowOverdue(reading, c.at)) {
+		if (since >= CI_POLLING.unreachableMs && reading.kind === "read" && reading.state !== "pending")
+			return question("GitHub has not reported the re-run of the failed CI jobs.");
+		return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the re-run of the failed CI jobs.");
+	}
+	if (state === "failed" && reading.kind === "read" && !reading.truncated && !rerun && c.item.pr && fact.prHead === ci.head && isSha(ci.head)) {
+		const failed = reading.runs.filter(check => check.state === "failed");
+		const jobs = failed.map(({ name, jobId, workflowId, baseResult, conclusion }) => ({
+			name, jobId, retryRunId: conclusion === "failure" ? workflowId : undefined, flaky: fact.flakyJobs?.includes(name) ? "history" as const : baseResult === "failed" ? "base" as const : undefined,
+		}));
+		if (jobs.length && jobs.every(job => job.flaky && job.jobId && job.retryRunId)) {
+			c.effects.push({ kind: "rerun_ci", key: c.key, head: ci.head, openItems: fact.openItems, jobs });
+			return;
+		}
+		if (failed.some(check => !check.jobId && check.app !== "github-actions" && (fact.flakyJobs?.includes(check.name) || check.baseResult === "failed")))
+			c.say("Only GitHub Actions jobs can be re-run automatically.");
+	}
 	if (reading.kind === "read" && (state === "cancelled" || (state === "failed" && reading.runs.some(check => check.environment)))) {
 		const interrupted = reading.runs.filter(check => check.state === "cancelled" || check.environment);
 		const eligible = interrupted.filter(check => check.retryRunId);
@@ -1612,7 +1634,9 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			return afterCi(c, ci);
 		case "failed": {
 			if (reading.kind !== "read") return;
-			const failed = reading.runs.filter(check => check.state === "failed" && !check.environment);
+			const failed = reading.runs.filter(check => check.state === "failed" && !check.environment).map(check =>
+				rerun?.some(job => job.flaky && job.jobId && job.name === check.name && check.workflowId === job.retryRunId)
+					? { ...check, baseResult: undefined } : check);
 			if (failed.some(check => check.baseResult === "pending"))
 				return pollCi(c, fact.openItems, null, `Waiting for the same check to finish on ${c.item.task.base}.`);
 			const inherited = failed.filter(check => check.baseResult === "failed");

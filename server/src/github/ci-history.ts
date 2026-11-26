@@ -71,7 +71,8 @@ export async function scanCiHistory(app: GithubApp, token: string, repo: Reposit
 	const { body } = await app.call({ path: runsPath, auth, query: { per_page: 100, created: ">=" + since }, what: "read workflow runs" });
 	const counts = new Map<string, number>();
 	for (const run of (body as { workflow_runs: Run[] }).workflow_runs) {
-		if (run.head_branch !== branch && !["pull_request", "pull_request_target"].includes(run.event)) continue;
+		const itemPush = run.event === "push" && run.head_branch.startsWith("windlass/");
+		if (run.head_branch !== branch && !itemPush && !["pull_request", "pull_request_target"].includes(run.event)) continue;
 		history.hasCi = true;
 		if (run.run_attempt < 2) continue;
 		const jobs = await app.pages({ path: `${runsPath}/${run.id}/jobs`, auth, query: { filter: "all" }, what: "read workflow attempts" },

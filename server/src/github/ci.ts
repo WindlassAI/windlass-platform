@@ -53,6 +53,8 @@ export interface CiRun {
 	environment?: true;
 	/** Comparison with the same check or named tests on the item’s pinned base. */
 	baseResult?: "failed" | "pending" | "unknown";
+	/** Distinguishes Actions jobs with the same display name in different workflows. */
+	workflowId?: string;
 	/** The workflow for a confirmed infrastructure job on this head. */
 	retryRunId?: string;
 }
@@ -122,7 +124,7 @@ const notStarted = (message: string) => /^The job was not started because\b/i.te
 
 type Candidate = { run: CiRun; jobId: string; diagnostic: string; annotationId: string };
 
-function checkRunOf(fields: Record<string, unknown>, candidates: Candidate[]): CiRun | null {
+function checkRunOf(fields: Record<string, unknown>, candidates: Candidate[], workflowBySuite: Map<string, string>): CiRun | null {
 	const name = text(fields.name);
 	if (name === "") return null;
 	const app = text(record(fields.app).slug) || "unknown";
@@ -132,6 +134,7 @@ function checkRunOf(fields: Record<string, unknown>, candidates: Candidate[]): C
 	const output = record(fields.output);
 	const summary = plain([text(output.title), text(output.summary)].filter((part) => part !== "").join(": "));
 	const run: CiRun = { name, app, state, conclusion: status === "completed" ? conclusion : status, url: text(fields.html_url) || text(fields.details_url), summary: short(summary, 500), jobId: app === "github-actions" ? decimalId(fields.id) : null };
+	if (run.jobId) run.workflowId = workflowBySuite.get(decimalId(record(fields.check_suite).id) ?? "");
 	if (run.jobId !== null && state === "failed" && conclusion === "failure") {
 		const diagnostic = [text(output.title), text(output.summary)].find(notStarted) ?? "";
 		if (diagnostic || output.annotations_count === 1) {
@@ -156,19 +159,20 @@ const priority: Record<CiRun["state"], number> = { neutral: 0, passed: 1, cancel
 function latestAttempts(checks: Record<string, unknown>[]) {
 	const latest = new Map<string, Record<string, unknown>>();
 	for (const check of checks) {
-		const key = JSON.stringify([record(check.app).slug, check.name]);
+		const key = JSON.stringify([record(check.app).slug, check.name, record(check.check_suite).id]);
 		const prior = latest.get(key);
 		if (!prior || BigInt(decimalId(check.id) ?? 0) > BigInt(decimalId(prior.id) ?? 0)) latest.set(key, check);
 	}
 	return [...latest.values()];
 }
 
-/** If different reporters share a name, retain the most consequential current result. */
+/** Keep separate Actions workflows, even when they give their jobs the same name. */
 function distinctChecks(runs: CiRun[]): CiRun[] {
 	const byName = new Map<string, CiRun>();
 	for (const run of runs) {
-		const prior = byName.get(run.name);
-		if (!prior || priority[run.state] > priority[prior.state]) byName.set(run.name, run);
+		const key = JSON.stringify([run.name, run.workflowId]);
+		const prior = byName.get(key);
+		if (!prior || priority[run.state] > priority[prior.state]) byName.set(key, run);
 	}
 	return [...byName.values()];
 }
@@ -245,7 +249,7 @@ export interface CiTarget {
 	head: string;
 }
 
-export type RerunnableJob = Pick<CiRun, "name" | "jobId" | "retryRunId" | "environment">;
+export type RerunnableJob = Pick<CiRun, "name" | "jobId" | "retryRunId" | "environment"> & { flaky?: "history" | "base" };
 
 async function readWorkflowJobs(app: GithubApp, token: string, target: CiTarget, runId: string, head: string) {
 	const { owner, name } = target;
@@ -304,11 +308,11 @@ export async function rerunJobs(app: GithubApp, target: CiTarget, jobs: Rerunnab
 	const accepted: string[] = [];
 	const problems = new Set<string>();
 	const workflows = new Map<string, Map<string, boolean>>();
-	for (const { jobId, retryRunId, environment } of jobs) {
+	for (const { jobId, retryRunId, environment, flaky } of jobs) {
 		// Effects stored by older versions did not record why the job was cancelled.
 		if (!retryRunId || !jobId) continue;
 		if (!workflows.has(retryRunId)) workflows.set(retryRunId, new Map());
-		workflows.get(retryRunId)!.set(jobId, !!environment);
+		workflows.get(retryRunId)!.set(jobId, !!environment || !!flaky);
 	}
 	const problem = (error: GithubError) => error.status === 403 && !error.rateLimited
 		? "GitHub refused Actions: write for this installation" : error.message;
@@ -335,7 +339,7 @@ export async function rerunJobs(app: GithubApp, target: CiTarget, jobs: Rerunnab
 							problems.add("the workflow includes other jobs or its attempts changed");
 							continue;
 						}
-						await app.call({ method: "POST", path: path + "/rerun-failed-jobs", auth, what: "rerun the infrastructure jobs" });
+						await app.call({ method: "POST", path: path + "/rerun-failed-jobs", auth, what: "rerun failed workflow jobs" });
 						accepted.push(...ids.keys());
 					} catch (error) {
 						if (!(error instanceof GithubError)) throw error;
@@ -348,7 +352,13 @@ export async function rerunJobs(app: GithubApp, target: CiTarget, jobs: Rerunnab
 			problems.add(error.status === 422 ? "the installation did not grant Actions: write" : problem(error));
 		}
 	}
-	const said = [accepted.length ? "Requested a GitHub Actions rerun for the interrupted checks." : "",
+	const notes = [];
+	for (const job of jobs) {
+		if (!job.flaky || !job.jobId || !accepted.includes(job.jobId)) continue;
+		const reason = job.flaky === "history" ? "it's known to be flaky here" : "it also failed on the base";
+		notes.push(`CI job ${job.name} failed; ${reason}, so it was re-run once.`);
+	}
+	const said = [notes.join(" ") || (accepted.length ? "Requested a GitHub Actions rerun for the interrupted checks." : ""),
 		problems.size ? `Could not request ${accepted.length ? "every" : "a"} rerun: ${[...problems].join(". ")}.` : ""].filter(Boolean).join(" ");
 	return { accepted, said: said || "No interrupted checks were confirmed eligible for a rerun." };
 }
@@ -405,7 +415,12 @@ async function readRuns(app: GithubApp, token: string, target: CiTarget, listing
 	let { truncated } = listing;
 	const candidates: Candidate[] = [];
 	let remainingJobReads = JOB_READS_PER_READING;
-	let runs = [...latestAttempts(checks).map(fields => checkRunOf(fields, candidates)), ...statuses.map(statusOf)].filter((run): run is CiRun => run !== null);
+	const workflowBySuite = new Map<string, string>();
+	for (const workflow of workflows) {
+		const suite = decimalId(workflow.check_suite_id), id = decimalId(workflow.id);
+		if (suite && id && workflow.head_sha === head) workflowBySuite.set(suite, id);
+	}
+	let runs = [...latestAttempts(checks).map(fields => checkRunOf(fields, candidates, workflowBySuite)), ...statuses.map(statusOf)].filter((run): run is CiRun => run !== null);
 	if (!baseResultsOnly && workflows.some(run => activeWorkflowStates.has(text(run.status)))) {
 		// GitHub can set run_started_at while queued. The current status has held at least since updated_at.
 		const starts = workflows.filter(run => run.status === "in_progress").map(run => Date.parse(text(run.updated_at))).filter(Number.isFinite);
