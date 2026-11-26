@@ -39,7 +39,8 @@ While a PR changes a core file, each update runs every heavy group.
 
 The Docker groups load the sandbox images from the Actions cache. The `images` job builds each image
 once per run, with `docker buildx` and the GHA cache, so an unchanged Dockerfile builds nothing. The
-runners are `ubuntu-24.04` (x86-64): every image, the Windlass release and the engine have an x86-64
+sandbox image checks use the same Buildx builder to exercise `sandbox/build.sh` with its cached base
+and screenshots layers. The runners are `ubuntu-24.04` (x86-64): every image, the Windlass release and the engine have an x86-64
 build. Those jobs set `kernel.apparmor_restrict_unprivileged_userns=0` first: Ubuntu 24.04 keeps
 unconfined processes out of user namespaces, so bubblewrap cannot start in a container of the Windlass
 profile (`bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`) until it is off.

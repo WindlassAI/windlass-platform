@@ -49,7 +49,7 @@ const TITLES = {
 	"factory/orchestration": "Factory orchestration",
 	"sandbox-docker/1": "Docker sandbox 1 of 2",
 	"sandbox-docker/2": "Docker sandbox 2 of 2",
-	"sandbox-docker/mcp": "Docker sandbox: MCP servers",
+	"sandbox-docker/mcp": "Docker sandbox: GitHub, MCP and relays",
 	"shots-docker": "Docker screenshots",
 	"e2e-docker/actors": "Docker end to end: sessions",
 	"e2e-docker/snapshots": "Docker end to end: snapshots",
