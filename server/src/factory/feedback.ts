@@ -109,5 +109,5 @@ export const feedbackWords = {
 	afterCi: (head: string, who: string) => `CI has finished on ${head}. The feedback from ${who} goes first, so this commit is not handed over.`,
 	afterReview: (head: string, who: string) => `The second review of ${head} asks for more work, and feedback from ${who} arrived while it ran. The feedback goes first, with the reviewer's points beside it.`,
 	approved: (who: string) => `Approved by @${who} on GitHub.`,
-	working: (who: string, run: number) => `Changes asked for by ${who} are being worked on in run ${run}.`,
+	working: (who: string) => `The agent is addressing ${who}'s feedback.`,
 };

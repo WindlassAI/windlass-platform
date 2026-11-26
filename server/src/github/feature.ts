@@ -56,7 +56,7 @@ export async function compareBranches(app: GithubApp, token: string, owner: stri
 	return { behind, base: sha(obj(obj(body).base_commit).sha), files: obj(body).files as { filename: string; previous_filename?: string }[] | undefined };
 }
 
-export async function advanceFeatureRef(app: GithubApp, token: string, owner: string, repo: string, id: string, base: string, head: string) {
+export async function advanceFeatureRef(app: GithubApp, token: string, owner: string, repo: string, id: string, base: string, head: string, title: string) {
 	const branch = featureBranch(id);
 	if (branch === base) throw new Error("The feature branch must differ from the destination.");
 	const path = "/repos/" + owner + "/" + repo + "/git/refs/heads/" + branch;
@@ -68,7 +68,7 @@ export async function advanceFeatureRef(app: GithubApp, token: string, owner: st
 	} catch (error) {
 		if (!(error instanceof GithubError && [409, 422].includes(error.status) && /fast.forward/i.test(error.said))) throw error;
 	}
-	return mergeIntoFeature(app, token, owner, repo, id, head, "Integrate subtask " + head.slice(0, 10));
+	return mergeIntoFeature(app, token, owner, repo, id, head, "Integrate " + title);
 }
 
 /** Both writers hold the feature actor’s join grant until this exact commit has a receipt. */
@@ -90,7 +90,7 @@ export async function openFeature(app: GithubApp, token: string, owner: string, 
 	const commit = await app.call({ path: root + "/git/commits/" + sha(input.seed), auth, what: "read the feature base tree" });
 	const tree = sha(obj(obj(commit.body).tree).sha);
 	const author = { ...input.author, date: new Date(input.created).toISOString() };
-	const marker = await app.call({ method: "POST", path: root + "/git/commits", auth, body: { tree, parents: [input.seed], author, committer: author, message: "Start feature " + input.id }, what: "create the feature start commit" });
+	const marker = await app.call({ method: "POST", path: root + "/git/commits", auth, body: { tree, parents: [input.seed], author, committer: author, message: "Start " + input.title }, what: "create the feature start commit" });
 	const head = sha(obj(marker.body).sha);
 	try {
 		await app.call({ method: "POST", path: root + "/git/refs", auth, body: { ref: "refs/heads/" + branch, sha: head }, what: "create the feature branch" });

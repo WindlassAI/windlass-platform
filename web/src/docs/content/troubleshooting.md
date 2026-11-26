@@ -190,10 +190,10 @@ Reconnect your ChatGPT plan in Settings → Model providers, then send the promp
 
 ## Work items
 
-**"Not taken: Windlass needs write access to this repository for you, and GitHub says you have read access."**\
+**"Windlass couldn't start this issue because Windlass needs write access to this repository for you, and GitHub says you have read access."**\
 The App's comment on your issue. Only people with write access can file a work item from GitHub.
 
-**"Not taken: you have filed … work items from GitHub today, this deployment's limit. It starts again at 00:00 UTC."**\
+**"Windlass couldn't start this issue because you have filed … work items from GitHub today, this deployment's limit. It starts again at 00:00 UTC."**\
 GitHub and Linear filings share the daily issue limit. Wait for the next UTC day, or file the item on the Factory page.
 
 **"Waiting for one of your … hosted sandboxes that run at once: … running now. Your machines don't count toward this."**\
@@ -231,7 +231,7 @@ Read the subtasks' pages. Choose **Revise the plan** to have the planner try ano
 **"No passing CI reported on the complete feature. Wait for a check or hand over the PR."**\
 The assembled feature had no CI or only skipped or neutral checks. A queued workflow keeps waiting. Check CI on the pull request at GitHub.
 
-**"Not taken: orchestrated work items are disabled on this deployment."**\
+**"Windlass couldn't start this issue because orchestrated work items are disabled on this deployment."**\
 The App's comment on your issue. This platform does not offer orchestration. File the issue as a single item.
 
 ## Still stuck

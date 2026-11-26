@@ -264,11 +264,11 @@ test("finished children unlock their dependents, and the final summary uses a re
 test("feature ref updates are fast-forward only and confined to the platform feature branch", async () => {
 	const { advanceFeatureRef } = await import("../server/src/github/feature.js");
 	const calls: any[] = []; const app = { call: async (req: any) => { calls.push(req); return { body: { object: { sha: head } } }; } };
-	await advanceFeatureRef(app as never, "token", "owner", "repo", "i_feature", "main", head);
+	await advanceFeatureRef(app as never, "token", "owner", "repo", "i_feature", "main", head, "Add the index");
 	assert.equal(calls[0].method, "PATCH"); assert.equal(calls[0].body.force, false);
 	assert.match(calls[0].path, /git\/refs\/heads\/windlass\/feature-i_feature$/);
 	assert.doesNotMatch(calls[0].path, /\/main$/);
-	await assert.rejects(advanceFeatureRef(app as never, "token", "owner", "repo", "i_feature", "windlass/feature-i_feature", head));
+	await assert.rejects(advanceFeatureRef(app as never, "token", "owner", "repo", "i_feature", "windlass/feature-i_feature", head, "Add the index"));
 });
 
 test("a planner cannot answer its own questions or introduce a scope change without a question", () => {
@@ -1931,6 +1931,7 @@ test("cross-repo: the managed PR section links the counterpart by full URL, keep
 	const { linkSection, withSection, issueReference } = await import("../server/src/factory/cross-repo.js");
 	const { item } = crossOpened();
 	const section = linkSection(item, "cli");
+	assert.ok(section.includes(item.task.title) && !section.includes(item.id));
 	assert.match(section, /this pull request: sibling, cli, ada\/cli/);
 	assert.match(section, /primary platform: https:\/\/github.com\/ada\/platform\/pull\/1/);
 	assert.match(section, /Merge order: 1\. cli 2\. platform after cli/);
