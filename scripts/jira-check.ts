@@ -102,6 +102,9 @@ async function run() {
 		assert.ok(stale.kind === "file");
 		await a.actOnItem({ id: failed.id, action: { kind: "retry" } });
 		await assert.rejects(site.internalReserveIssue(uid, assigned.id, "replacement", stale));
+		// Interrupt a separate filing after its reservation, before the work-item actor exists.
+		const interrupted = jira.issue("acme", "103", ["windlass"]);
+		await site.internalReserveIssue(uid, interrupted.id, "i_0000000000000103", { generation: 1, activations: 0 });
 		await a.removeJiraMapping(map); await b.saveJiraMapping(map);
 		assert.equal(await jira.post(url, assignment), false);
 		[hook, url] = [...jira.hooks][0];
@@ -113,6 +116,9 @@ async function run() {
 		await Promise.all([jira.post(url, fresh), jira.post(url, fresh)]);
 		assert.equal((await b.listItems()).length, 1);
 		await assert.rejects(a.actOnItem({ id: failed.id, action: { kind: "retry" } }), { code: "item_conflict" });
+		assert.equal(await jira.post(url, jira.event(interrupted, hook)), true);
+		assert.equal(await site.internalActivateIssue(interrupted.id, uid, "i_0000000000000103", 1), false);
+		assert.equal((await b.listItems()).filter(i => i.origin?.jira?.id === interrupted.id && i.state === "draft").length, 1);
 		const page = { ended: true, source: "jira" as const, limit: 1 };
 		const [first] = await a.listItems(page), [second] = await a.listItems({ ...page, before: { id: first.id, createdAt: first.createdAt } });
 		assert.deepEqual([first.id, second.id], [failed.id, quick.id]);

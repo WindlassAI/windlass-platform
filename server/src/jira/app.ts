@@ -101,7 +101,11 @@ export class JiraApp {
 		const comments = await this.pages<{ author?: Person; body: Node }>(token, site, path, "comments");
 		if (comments.some(c => c.author?.accountId === author && visible(c.body).split("\n").includes(marker))) return;
 		const wording = { filed: "Filed as a Windlass draft.", opened: "Windlass opened a pull request.", done: "The Windlass work item is done.", failed: "The Windlass work item failed.", cancelled: "The Windlass work item was cancelled." };
-		const paragraph = (text: string, href?: string) => ({ type: "paragraph", content: [{ type: "text", text, ...(href && { marks: [{ type: "link", attrs: { href } }] }) }] });
+		const paragraph = (text: string, href?: string) => {
+			const url = href === undefined ? null : URL.parse(href);
+			if (href !== undefined && (!url || !["http:", "https:"].includes(url.protocol) || url.username || url.password)) throw new Error("Invalid Jira comment link");
+			return { type: "paragraph", content: [{ type: "text", text, ...(url && { marks: [{ type: "link", attrs: { href: url.href } }] }) }] };
+		};
 		const content = [paragraph(wording[action.key]), paragraph(marker), paragraph("Work item", action.itemUrl)];
 		if (action.pr) content.push(paragraph("Pull request", action.pr));
 		await this.rest(token, site, path, "POST", { body: { type: "doc", version: 1, content } });

@@ -4,11 +4,11 @@ import { useHash } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useRepositorySearch } from "./RepositoryMenu";
 
-const callbackErrors: Record<string, string> = {
-	denied: "Jira was not given access. Connect again when you’re ready.",
-	scope: "Jira did not grant the required permissions. Connect again.",
-	sites: "No Jira sites granted all the required permissions. Check your site access and connect again.",
-};
+const callbackErrors = new Map([
+	["denied", "Jira was not given access. Connect again when you’re ready."],
+	["scope", "Jira did not grant the required permissions. Connect again."],
+	["sites", "No Jira sites granted all the required permissions. Check your site access and connect again."],
+]);
 
 export function JiraSettings() {
 	const { client, explain } = useApp();
@@ -28,7 +28,7 @@ export function JiraSettings() {
 		if (back) {
 			history.replaceState(history.state, "", location.pathname + location.search);
 			document.getElementById("settings-jira")?.scrollIntoView?.({ block: "center" });
-			if (back[1] === "jira-error") setError(callbackErrors[back[2]!] ?? "Jira could not be connected. Try again.");
+			if (back[1] === "jira-error") setError(callbackErrors.get(back[2]!) ?? "Jira could not be connected. Try again.");
 			else redemption.current = { auth, client, result: api.jiraComplete(back[2]!) };
 		}
 		const pending = redemption.current;
