@@ -1,12 +1,12 @@
 import { machineLabel, type HarnessId, type ItemMode, type ItemPlaceDefaults, type MachineSummary, type SandboxPlace, type SandboxProfileId } from "../contract.js";
-import { harnessName, itemModeOf, itemProfiles, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarness } from "../sandbox/harnesses.js";
-import { machineSlots } from "./placement.js";
+import { harnessName, itemModeOf, itemProfiles, initialHarnessModels, machinePayerProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarness } from "../sandbox/harnesses.js";
+import { resolveRun, type ResolvedRun } from "./resolve-run.js";
+import { agentModelProblem, machineSlots, runnerProblem, type AgentModels } from "./placement.js";
 
 export function savedPlace(repo?: ItemPlaceDefaults | null, account?: ItemPlaceDefaults | null): ItemPlaceDefaults | undefined {
-	const source = repo?.place ? repo : account;
-	if (!source?.place) return;
-	const { place, harness, machineProfile, placeFallback, machineModel, machineEffort } = source;
-	return { place, harness, machineProfile, placeFallback, machineModel, machineEffort };
+	if (!repo?.place && !account?.place && !repo?.harness && !account?.harness) return;
+	const run = resolveRun({ repository: repo ?? undefined, account: account ?? undefined }, "builder");
+	return { place: run.place, harness: run.agent, machineProfile: run.profile, placeFallback: run.fallback, machineModel: run.model, machineEffort: run.effort };
 }
 
 export function placeMachines(place: ItemPlaceDefaults["place"], machines: readonly MachineSummary[]) {
@@ -36,11 +36,11 @@ function compatible(defaults: ItemPlaceDefaults, machines: readonly MachineSumma
 export function placeProblem(policy: ItemPlaceDefaults, machines: readonly MachineSummary[]): string | null {
 	const { place, harness, machineProfile, placeFallback, machineModel, machineEffort } = policy;
 	if ([machineModel, machineEffort].some(id => id != null && (typeof id !== "string" || !/^[\w.:/@+\[\]-]{1,200}$/.test(id)))) return "Choose a model and effort from the list.";
-	if ((machineModel || machineEffort) && !machineHarness(harness ?? "windlass")) return "Choose a machine agent for this model.";
+	if ((machineModel || machineEffort) && harness === "windlass") return "Choose a machine agent for this model.";
 	if (placeFallback != null && placeFallback !== "wait" && placeFallback !== "hosted") return "Choose whether to wait or run hosted.";
 	if (machineProfile != null && machineProfile !== "docker-windlass-sandbox" && machineProfile !== "docker-hardened") return "Choose a reported machine profile.";
 	if (harness != null && !knownHarness(harness)) return "Choose an agent from the list.";
-	if (place == null || place === "hosted") return harness || machineProfile || placeFallback ? "Choose a machine place for these settings." : null;
+	if (place == null || place === "hosted") return null;
 	if (place !== "any-machine" && (typeof place !== "object" || typeof place.machine !== "string")) return "Choose where items run.";
 	if (!placeMachines(place, machines).length) return place === "any-machine" ? "There are no paired machines." : "The selected machine is no longer in your account.";
 	if (!compatible(policy, machines).length) return `No selected machine currently supports ${harnessName(harness ?? "windlass")}${machineProfile ? " with " + machineProfile : ""} for work items. Check its profiles and agent sign-in.`;
@@ -68,31 +68,50 @@ export interface DefaultDestination {
 }
 
 export function resolveDefaultPlace(defaults: ItemPlaceDefaults, machines: readonly MachineSummary[], mode: ItemMode): DefaultDestination {
-	// Plan first uses the owner’s machine selection. The saved agent and profile are for its subtasks.
-	const policy: ItemPlaceDefaults = mode === "orchestrate" ? { ...defaults, harness: "windlass", machineProfile: null } : defaults;
-	const hosted: DefaultDestination = { place: { kind: "hosted" }, harness: "windlass" };
-	if (!policy.place || policy.place === "hosted") return hosted;
-	const candidates = compatible(policy, machines);
-	const ready = candidates.find(c => hasRoom(c.machine));
-	const harness = policy.harness ?? "windlass";
-	if (ready) return { place: { kind: "machine", machineId: ready.machine.machineId }, harness, profile: ready.profile };
-	const first = candidates[0]?.machine;
-	const reason = first ? policy.place === "any-machine" ? "No compatible machine is online with a free slot." :
-		`“${machineLabel(first)}” is ${first.status === "online" ? "full" : "offline"}.` : placeProblem(policy, machines)!;
-	if (policy.placeFallback === "hosted") return { ...hosted, note: reason + " Using the hosted fallback with Windlass." };
-	const wait = reason + " Waiting for a compatible machine with a free slot.";
-	const machineId = typeof policy.place === "object" ? policy.place.machine : candidates[0]?.machine.machineId;
-	return { place: machineId ? { kind: "machine", machineId } : hosted.place, harness, profile: policy.machineProfile ?? candidates[0]?.profile, wait, note: wait };
+	return checkRunPlace(resolveRun({ account: defaults }, mode === "orchestrate" ? "planner" : "builder"), machines);
 }
+
+export function checkRunPlace(run: ResolvedRun, machines: readonly MachineSummary[], models?: AgentModels): DefaultDestination {
+	const harness = run.agent;
+	if (run.place === "hosted") return { place: { kind: "hosted" }, harness, profile: run.profile ?? undefined };
+	const candidates = placeMachines(run.place, machines);
+	const reasons: string[] = [];
+	for (const machine of candidates) {
+		const label = machineLabel(machine);
+		const profiles = profilesForItems(machine, harness);
+		const profile = run.profile ?? profiles[0]?.id;
+		const offered = machine.harnesses?.find(h => h.id === harness);
+		const options = offered?.options;
+		const runner = runnerProblem(machine.warnings);
+		const payer = offered && machinePayerProblem(offered, run.model ?? undefined, offered.source ?? "machine", offered.platformKeys ?? []);
+		const list = harness === "windlass" ? models?.windlass : models?.machines?.[machine.machineId]?.[harness] ?? initialHarnessModels(options);
+		const model = agentModelProblem({ agent: { harness, model: run.model ?? undefined, effort: run.effort ?? undefined } }, list);
+		if (machine.status !== "online") reasons.push(`“${label}” is offline.`);
+		else if (runner) reasons.push(`“${label}”: ${runner}`);
+		else if (offered && typeof run.place === "object" && run.payer !== (offered.source ?? "machine")) reasons.push(`“${label}”: restore the payer selected for this run before retrying.`);
+		else if (payer) reasons.push(`“${label}”: ${payer}`);
+		else if (model) reasons.push(`“${label}”: ${model}.`);
+		else if (run.profile && !machine.profiles.some(p => p.id === run.profile && p.available)) reasons.push(
+			`“${label}” cannot run ${run.profile}. ${machine.profiles.find(p => p.id === run.profile)?.unavailableReason ?? "Choose another profile or enable it on the runner."}`);
+		else if (!profiles.some(p => p.id === profile)) reasons.push(`“${label}” cannot run ${harnessName(harness)} with ${profile ?? "an available profile"}. Check its allowed profiles and payer.`);
+		else if (machine.sandboxes.filter(b => b.state === "running").length >= (machine.maxRunning ?? Infinity)) reasons.push(`“${label}” is at its running sandbox limit.`);
+		else if (machine.sandboxes.length >= (machine.maxSandboxes ?? Infinity)) reasons.push(`“${label}” is at its kept sandbox limit.`);
+		else if (!hasRoom(machine)) reasons.push(`“${label}” has no free slot.`);
+		else return { place: { kind: "machine", machineId: machine.machineId }, harness, profile };
+	}
+	const wait = reasons.join(" ") || "No paired machine matches this choice.";
+	const machineId = typeof run.place === "object" ? run.place.machine : candidates[0]?.machineId;
+	return { place: { kind: "machine", machineId: machineId ?? "any-machine" }, harness, profile: run.profile ?? undefined, wait, note: wait };
+}
+
 
 export const changesPlace = (change: ItemPlaceDefaults) =>
 	[change.place, change.harness, change.machineProfile, change.placeFallback, change.machineModel, change.machineEffort].some(v => v !== undefined);
 
-/** A new place starts with its own agent/profile; a patch to the current place keeps the other choices. */
+/** A patch to one setting preserves the others. */
 export function changedPlace(before: ItemPlaceDefaults, change: ItemPlaceDefaults): ItemPlaceDefaults {
 	const place = change.place === undefined ? before.place : change.place;
-	const same = place === before.place || (typeof place === "object" && place && typeof before.place === "object" && before.place?.machine === place.machine);
-	const previous = same ? before : {};
+	const previous = before;
 	// Another agent starts on its own default model.
 	const agent = change.harness === undefined || change.harness === previous.harness ? previous : {};
 	return { place: typeof place === "object" && place ? { machine: place.machine } : place ?? null,

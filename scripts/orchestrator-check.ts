@@ -111,7 +111,7 @@ test("single suggestion waits for either explicit choice, and planning spend car
 	const p = { ...proposal(), subtasks: [], singleSuggested: "Only one file." };
 	const item = proposed(p);
 	assert.equal(item.question!.kind, "single_suggested");
-	assert.deepEqual(item.question!.choices, [{ id: "run_single", label: "Approve for one implementer" }, { id: "orchestrate_anyway", label: "Ask for subtasks" }]);
+	assert.deepEqual(item.question!.choices, [{ id: "run_single", label: "Approve the current Windlass session as one implementer" }, { id: "orchestrate_anyway", label: "Ask for subtasks" }]);
 	for (const choice of ["run_single", "orchestrate_anyway"] as const) {
 		const next = advance(item, { kind: "answer", choice, question: item.question!.id, by: "person", at: 4 }).item;
 		assert.equal(next.run!.step.kind, choice === "run_single" ? "implement" : "refine");
@@ -398,15 +398,6 @@ test("an explicit orchestration choice cannot lead to another single suggestion"
 	const forced = advance(item, {kind:"answer", question:item.question!.id, choice:"orchestrate_anyway", by:"person", at:7}).item;
 	assert.throws(() => advance(forced, {kind:"file_plan", key:currentKey(forced)!, at:8, plan:p}), /subtasks/);
 });
-
-test("the planner uses high effort when its model offers it, never ultra or max", async () => {
-	const {plannerEffort} = await import("../server/src/account-models.js");
-	assert.equal(plannerEffort([{id:"requested",name:null,efforts:["medium","max","high"]}], "requested"),"high");
-	assert.equal(plannerEffort([{id:"requested",name:null,efforts:["low","medium","high","xhigh","max","ultra"]}], "requested"),"high");
-	assert.equal(plannerEffort([{id:"requested",name:null,efforts:["ultra","max"]}], "requested"),null);
-	assert.equal(plannerEffort([{id:"other",name:null,efforts:["high"]}], "requested"),null);
-});
-
 
 test("the whole-feature review uses child evidence and needs the pinned head and an available reviewer", () => {
 	let item = approved();
@@ -789,7 +780,7 @@ test("placement 3 measures requested CPU and memory in sandbox units", () => {
 	assert.doesNotMatch(proposed(proposal()).question!.text, /cpus and memoryGiB choose/i);
 	const sizedPlan = proposal();
 	sizedPlan.subtasks[0]!.needs = { cpus: 8 };
-	assert.match(proposed(sizedPlan).question!.text, /On hosted, cpus and memoryGiB choose the least sandbox size/i);
+	assert.match(proposed(sizedPlan).question!.text, /On hosted, cpus and memoryGiB must fit the chosen size/i);
 });
 test("placement 4 waits for slots unless both overflow and that alternative are approved", () => {
 	const full = machineReport("Mac", macId, { turns: { running: 4, max: 4, queued: 1 } });
@@ -814,8 +805,11 @@ test("approval refuses only a permanent placement problem: busy, offline or shor
 		const approved = placementFeature(machines, {}, machines.length > 1 ? ["Linux box"] : [], true);
 		assert.equal(approved.featurePlan?.status, "approved");
 		const item = dispatch(approved, machines);
-		assert.equal(item.wait?.reason, "machine");
-		assert.equal(item.question, null);
+		if (machines[0].status === "offline") {
+			assert.equal(item.question?.kind, "placement_refused");
+			assert.ok(item.question.choices.some(c => c.id === "wait"));
+			assert.ok(!item.question.choices.some(c => c.id === "use_hosted"));
+		} else assert.equal(item.wait?.reason, "machine");
 	}
 	// An offline machine keeps its last report: a capability it lacks still refuses, as does an owner policy.
 	assert.throws(() => placementFeature([{ ...offline, screenshots: false }], { screenshots: true }), /Mac.*screenshots/);
@@ -883,7 +877,7 @@ test("placement 6 keeps the running child pinned and waits for an offline machin
 	assert.match(waiting.wait!.sentence, /Mac.*online/);
 	assert.deepEqual(waiting.jobs![0].placement?.place, { kind: "machine", machineId: macId });
 });
-test("placement 7 scores available slots, queue, personal turns and direct dependencies", () => {
+test("a preferred machine with room wins before approved overflow", () => {
 	const mac = machineReport("Mac", macId, { turns: { max: 4, running: 4, queued: 0 } });
 	const linux = machineReport("Linux box", linuxId, { host: { ...mac.host!, cpus: 2 } });
 	const machines = [mac, linux];
@@ -891,7 +885,7 @@ test("placement 7 scores available slots, queue, personal turns and direct depen
 	assert.deepEqual(chosen.jobs![0].placement?.place, { kind: "machine", machineId: linuxId });
 	const next = advance(chosen, { kind: "child_update", key: currentKey(chosen)!, child: chosen.jobs![0].id, state: "done", head, report: "", spent: zero, at: 7 }).item;
 	const busy = { ...mac, turns: { max: 4, running: 3, queued: 1 } }; // 3 preferred + 1 free - 1 queued = 3
-	assert.deepEqual(dispatch(next, [busy, linux]).jobs![1].placement?.place, { kind: "machine", machineId: linuxId }); // 3 free + 1 warm
+	assert.deepEqual(dispatch(next, [busy, linux]).jobs![1].placement?.place, { kind: "machine", machineId: macId });
 	assert.deepEqual(dispatch(next, [busy, { ...linux, personalRunning: 2 }]).jobs![1].placement?.place, { kind: "machine", machineId: macId });
 });
 
@@ -928,8 +922,10 @@ async function childCreation(t: import("node:test").TestContext, overflow = fals
 	const raw = new DatabaseSync(":memory:");
 	t.after(() => raw.close());
 	for (const sql of [...ITEM_TABLES, ...MODEL_PROVIDER_TABLES]) raw.exec(sql);
+	raw.exec((await import("../server/src/repository-defaults.js")).DEFAULTS_TABLE);
+	raw.exec("INSERT INTO repository_defaults (project,label,updated_at,screenshots) VALUES ('github:42','fixture',1,1)");
 	const owner = "u_fixture", sessionId = "s_feature", repository = { id: 42, branch: "main" };
-	const request = { job: { ...job, dispatchKey: currentKey(selected)! }, sessionId, feature: { ...feature, title: "Feature", repository, source: "web" }, featureBody: feature.task.body, context: "{}", previous: { place: { kind: "machine", machineId: macId }, head, report: "Prior subtask report" } };
+	const request = { settings: { account: { model: options.featureModel, effort: options.featureEffort } }, job: { ...job, dispatchKey: currentKey(selected)! }, sessionId, feature: { ...feature, title: "Feature", repository, source: "web" }, featureBody: feature.task.body, context: "{}", previous: { place: { kind: "machine", machineId: macId }, head, report: "Prior subtask report" } };
 	const machines = new Map([[macId, mac], ...(overflow ? [[linuxId, linux] as const] : [])]);
 	const itemIndex = new Map();
 	let child: typeof feature | undefined;
@@ -963,7 +959,7 @@ test("approved subtasks get the screenshots image only when marked and permitted
 		const fixture = await childCreation(t, false, marked ? { screenshots: true } : {});
 		await fixture.create();
 		const item = fixture.sessionOrigin();
-		assert.ok(item);
+		assert.ok(item, JSON.stringify(fixture.facts));
 		assert.equal(item.subtaskScreenshots, marked);
 		const session = { ...sandbox, origin: { ...item, kind: "item" as const } };
 		assert.equal(sessionSandboxInput(session, true).screenshots, marked);
@@ -1099,7 +1095,7 @@ function mixedPlan() {
 	return p;
 }
 
-test("a subtask's agent: the planner may propose Claude Code or OpenCode, never Codex, and a Windlass choice of nothing is no choice", () => {
+test("plan proposals preserve an explicit agent for the approval check", () => {
 	for (const harness of ["claude", "opencode"] as const) {
 		const p = proposal();
 		p.subtasks[0].agent = { harness, model: "m-1", effort: "high" };
@@ -1107,10 +1103,10 @@ test("a subtask's agent: the planner may propose Claude Code or OpenCode, never 
 	}
 	const codex = proposal();
 	codex.subtasks[0].agent = { harness: "codex" };
-	assert.throws(() => proposed(codex), /Plan-first subtasks run Windlass, Claude Code or OpenCode for now\. Codex runs Quick items only\./);
+	assert.equal(proposed(codex).featurePlan?.subtasks[0].agent?.harness, "codex");
 	const windlass = proposal();
 	windlass.subtasks[0].agent = { harness: "windlass" };
-	assert.equal(proposed(windlass).featurePlan?.subtasks[0].agent, undefined);
+	assert.deepEqual(proposed(windlass).featurePlan?.subtasks[0].agent, { harness: "windlass" });
 	// A plan filed before subtasks named their agent: its harness need is read as the agent.
 	const older = proposal();
 	Object.assign(older.subtasks[0], { needs: { harness: "opencode" } });
@@ -1130,7 +1126,7 @@ test("approval names each agent that works without asking, and needs the person'
 	plan.subtasks[0].title = "Build the search index";
 	const item = proposed(plan);
 	assert.match(item.question!.text, /Build the search index .* Claude Code \(sonnet, high effort\), works without asking/);
-	assert.match(item.question!.text, /page .* Windlass on the feature's model/);
+	assert.match(item.question!.text, /page .* the resolved default agent/);
 	assert.match(item.question!.text, /“Build the search index” would run an agent that works without asking/);
 	const inventory = { machines: plannerMachines([agentMac()]), hostedProfiles: [] };
 	const approve = { kind: "approve_plan" as const, version: 1, at: 4, by: "person:owner", inventory };
@@ -1171,7 +1167,7 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 	const withModel = task({ harness: "claude", model: "sonnet" });
 	assert.match(String(choosePlacement(withModel, hostedRoute, inventory).refused), /model is not offered/);
 	const withScreenshots = { ...task({ harness: "claude" }), needs: { screenshots: true } };
-	assert.match(String(choosePlacement(withScreenshots, hostedRoute, inventory).refused), /cannot take screenshots/);
+	assert.match(String(choosePlacement(withScreenshots, hostedRoute, inventory).refused), /cannot file screenshots/);
 	assert.ok(choosePlacement(withScreenshots, { ...hostedRoute, alternatives: [route.preferred] }, {
 		...inventory, machines: plannerMachines([agentMac({ screenshots: true })]),
 	}).refused);
@@ -1340,24 +1336,27 @@ test("a plan with mixed agents is approved, and every child starts on its own ag
 	await openCode.create();
 	assert.deepEqual(openCode.sessions, [{ harness: "opencode", model: undefined, effort: undefined }]);
 	assert.equal(openCode.child()?.agent?.model, "default");
-	// The Windlass subtask with no choice inherits the feature's model and effort.
+	// The fixture’s saved Windlass model and effort apply to a part with no override.
 	const windlass = await childCreation(t, false, feature);
 	await windlass.create();
-	assert.deepEqual(windlass.sessions, [{ harness: undefined, model: "gpt-5.5", effort: "medium" }]);
+	assert.deepEqual(windlass.sessions, [{ harness: "windlass", model: "gpt-5.5", effort: "medium" }]);
 	assert.equal(windlass.child()?.agent?.harness, "windlass");
 	// A Windlass subtask with its own model takes only the effort chosen with it.
 	const mini = await childCreation(t, false, { ...feature, agent: { harness: "windlass", model: "gpt-5.5-mini" } });
 	await mini.create();
-	assert.deepEqual(mini.sessions, [{ harness: undefined, model: "gpt-5.5-mini", effort: undefined }]);
+	assert.deepEqual(mini.sessions, [{ harness: "windlass", model: "gpt-5.5-mini", effort: "medium" }]);
 	// Through the blueprint: both subtasks of one mixed plan are approved and placed on their own agents.
 	const inventory = { machines: plannerMachines([agentMac()]), hostedProfiles: [], models: { machines: { [macId]: { claude: claudeModels } }, windlass: windlassModels } };
 	let item = advance(proposed(mixedPlan()), { kind: "approve_plan", version: 1, at: 4, by: "person", agents: ["index"], inventory }).item;
 	item = advance(item, { kind: "feature_ready", key: currentKey(item)!, at: 5, head, pr }).item;
 	item = advance(item, { kind: "place_child", key: currentKey(item)!, at: 6, inventory }).item;
 	assert.equal(item.jobs![0].placement?.harness, "claude");
-	const { childAgent } = await import("../server/src/actors/user-items.js");
-	assert.deepEqual(childAgent(item.jobs![0].task, item.jobs![0].placement!, "gpt-5.5", "medium"), { model: "sonnet", effort: "high" });
-	assert.deepEqual(childAgent(item.featurePlan!.subtasks[1], {}, "gpt-5.5", "medium"), { model: "gpt-5.5", effort: "medium" });
+	const { resolveRun } = await import("../server/src/factory/resolve-run.js");
+	const context = { account: { model: "gpt-5.5", effort: "medium" } };
+	const run = resolveRun(context, "part", item.jobs![0].task);
+	assert.equal(run.model, "sonnet");
+	assert.equal(run.effort, "high");
+	assert.equal(resolveRun(context, "part", item.featurePlan!.subtasks[1]).model, "gpt-5.5");
 });
 
 test("a child its place refuses at creation can't be placed: the feature asks with the reason, and nothing stays pinned", async t => {
@@ -2011,5 +2010,70 @@ test("cross-repo: the planner's copy of the sibling holds its files read-only wi
 	} finally {
 		await standin.stop();
 		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Codex parts require an owner choice before plan approval", () => {
+	const item = started();
+	item.context = { account: { harness: "codex" } };
+	const key = currentKey(item)!;
+	const filed = advance(item, { kind: "file_plan", key, at: 2, plan: proposal() });
+	const done = advance(filed.item, { kind: "turn_ended", key, at: 3, outcome: "succeeded", changes: false, report: null, verified: null, flags: [], spend: { tokens: 10, hostedSeconds: 1 } });
+	assert.match(done.item.question!.text, /Codex cannot build Plan-first parts/);
+	const choices = done.item.question!.choices.map(c => c.id);
+	assert.deepEqual(choices, ["use_windlass", "use_claude", "use_opencode", "revise"]);
+	const chosen = advance(done.item, { kind: "answer", at: 4, by: "owner", question: done.item.question!.id, choice: "use_opencode" });
+	assert.ok(chosen.item.featurePlan!.subtasks.every(t => t.resolved?.agent === "opencode" && t.resolved.sources.agent === "item"));
+	assert.ok(chosen.item.question!.choices.some(c => c.id === "approve"));
+});
+
+test("a part asks for Hosted when its machine is offline and the owner allowed Hosted", () => {
+	const offline = machineReport("Mac", macId, { status: "offline" });
+	const item = dispatch(placementFeature([offline], {}, ["hosted"], true), [offline]);
+	assert.match(item.question!.text, /come back online/i);
+	assert.ok(item.question!.choices.some(c => c.id === "use_hosted"));
+	assert.equal(item.jobs![0].placement, undefined);
+	const chosen = advance(item, { kind: "answer", at: 7, by: "owner", question: item.question!.id, choice: "use_hosted" });
+	assert.equal(chosen.item.jobs![0].route?.preferred.kind, "hosted");
+});
+
+test("placement identifies screenshot permission, storage, runner flag and hosted size separately", async () => {
+	const { resolveRun } = await import("../server/src/factory/resolve-run.js");
+	const inventory = { hostedSizes: ["small", "standard", "large"] as import("../server/src/contract.js").HostedSize[],
+		hostedProfiles: ["docker-hardened" as const], machines: plannerMachines([machineReport("Mac", macId, { screenshots: false })]) };
+	const task = { ...proposal().subtasks[0], resolved: resolveRun({ item: { hostedSize: "small" } }, "part"), needs: { screenshots: true } };
+	const route = { preferred: { kind: "hosted" as const }, alternatives: [] };
+	assert.match(choosePlacement(task, route, { ...inventory, repositoryScreenshots: { "": false } }).refused!, /for this repository/);
+	assert.match(choosePlacement(task, route, { ...inventory, screenshotStorage: false }).refused!, /storage/);
+	assert.match(choosePlacement(task, route, { ...inventory, screenshotsEnabled: false }).refused!, /deployment/);
+	assert.match(choosePlacement(task, { ...route, preferred: { kind: "machine", machineId: macId } }, inventory).refused!, /--screenshots/);
+	assert.match(choosePlacement({ ...task, needs: { cpus: 4 } }, route, inventory).refused!, /needs Large/);
+	assert.equal(choosePlacement(task, route, inventory).decision?.hostedSize, "small");
+});
+
+test("an increase above a part’s hosted size needs a separate owner answer", () => {
+	const item = started();
+	item.context = { item: { hostedSize: "small" } };
+	const key = currentKey(item)!;
+	const plan = proposal();
+	plan.subtasks[0].needs = { cpus: 4 };
+	const filed = advance(item, { kind: "file_plan", key, at: 2, plan, inventory: { machines: [], hostedProfiles: ["docker-hardened"], hostedSizes: ["small", "standard", "large"] } });
+	const done = advance(filed.item, { kind: "turn_ended", key, at: 3, outcome: "succeeded", changes: false, report: null, verified: null, flags: [], spend: { tokens: 10, hostedSeconds: 1 } });
+	assert.match(done.item.question!.text, /large hosted sandbox at 2×/);
+	assert.ok(!done.item.question!.choices.some(c => c.id === "approve"));
+	const chosen = advance(done.item, { kind: "answer", at: 4, by: "owner", question: done.item.question!.id, choice: "larger_sandbox" });
+	assert.equal(chosen.item.featurePlan!.subtasks[0].resolved?.size, "large");
+	assert.equal(chosen.item.featurePlan!.status, "proposed");
+});
+
+test("both sandbox caps exclude a machine with free slots", () => {
+	const box = { sessionId: "s_busy", title: null, usedAt: 0, state: "running" as const };
+	for (const limits of [{ maxRunning: 1 }, { maxSandboxes: 1 }]) {
+		const mac = machineReport("Mac", macId, { ...limits, sandboxes: [box] });
+		const linux = machineReport("Linux box", linuxId);
+		const blocked = dispatch(placementFeature([mac]), [mac]);
+		assert.match(blocked.wait!.sentence, /sandbox limit/);
+		const moved = dispatch(placementFeature([mac, linux], {}, ["Linux box"], true), [mac, linux]);
+		assert.deepEqual(moved.jobs![0].placement?.place, { kind: "machine", machineId: linuxId });
 	}
 });

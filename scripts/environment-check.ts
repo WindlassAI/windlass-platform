@@ -141,14 +141,14 @@ function stand(): Stand {
 		{ id: "s_a", place: { kind: "hosted" }, hostedSize: "small", profile: "docker-hardened", harness: "windlass", repository: { id: 7101 }, updatedAt: clock.now - HOUR } as unknown as SessionSummary,
 		{ id: "s_b", place: { kind: "machine", machineId: "m_box" }, profile: "docker-hardened", harness: "windlass", repository: { id: 7101 }, updatedAt: clock.now - 2 * HOUR, item: { id: "i_1" } } as unknown as SessionSummary,
 	];
-	const s: Stand = { started, removed, clock, saved, refuse: null, watched, machines: [{ machineId: "m_box", name: "box", status: "online", orchestrator: "yes" } as unknown as MachineSummary], host: null as unknown as EnvironmentHost };
+	const s: Stand = { started, removed, clock, saved, refuse: null, watched, machines: [{ machineId: "m_box", name: "box", status: "online", orchestrator: "yes", profiles: [{ id: "docker-hardened", available: true }] } as unknown as MachineSummary], host: null as unknown as EnvironmentHost };
 	let n = 0;
 	s.host = {
 		db, uid: "u_1", now: () => clock.now,
 		sessions: () => sessions,
 		machines: async () => s.machines,
 		dependenciesChanged: async () => false,
-		saved: async () => ({ ...saved, defaults: { screenshots: true, profile: null, model: null, updatedAt: null }, label: "acme/harbor" }),
+		saved: async () => ({ ...saved, deployment: { profile: "docker-hardened" }, defaults: { screenshots: true, profile: null, model: null, updatedAt: null }, label: "acme/harbor" }),
 		snapshots: { hosted: true, machines: true },
 		hostedUserMax: null,
 		createBuild: async (request) => {
@@ -327,10 +327,10 @@ async function run(): Promise<void> {
 	// Hosted sizes: an image starts only sandboxes of its own size, so the record keeps the size its build was made in.
 	{
 		const s = stand();
-		const sessions = s.host.sessions();
-		(sessions[0] as { hostedSize?: string }).hostedSize = "large";
+		const saved = s.host.saved;
+		s.host.saved = async project => ({ ...await saved(project), account: { hostedSize: "large" } });
 		await rebuild(s.host, PROJECT, HOSTED);
-		expect("a hosted build asks for the size of the repository's latest session there", s.started[0]?.hostedSize === "large", s.started);
+		expect("a hosted build honours the account size despite the previous session’s size", s.started[0]?.hostedSize === "large", s.started);
 		await buildResult(s.host, "s_env_1", passed());
 		const ready = (await readEnvironments(s.host.db, PROJECT)).find(r => r.place === HOSTED)?.ready;
 		expect("the record keeps the size the build was made in", ready?.hostedSize === "large", ready);

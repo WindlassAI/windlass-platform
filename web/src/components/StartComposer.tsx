@@ -413,12 +413,12 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			body: title === filing.title && filing.body ? filing.body : task,
 			acceptance,
 			start: now,
-			...(usePolicy ? { useDefaultPlace: true } : { place: chosenMachine ? { kind: "machine", machineId: chosenMachine.machineId } : { kind: "hosted" } }),
-			...(!usePolicy && other ? { harness } : {}),
-			...(!usePolicy && profile && (chosenMachine || profileChoice || other) ? { profile } : {}),
-			...(model && (other || modelChoice !== "") ? { model } : {}),
-			...(effort && effort !== "default" ? { effort } : {}),
-			...(hostedSize ? { hostedSize } : {}),
+			...(placeChoice !== undefined && { place: placeChoice === null ? { kind: "hosted" } : { kind: "machine", machineId: placeChoice } }),
+			...(harnessChoice && { harness: harnessChoice }),
+			...(profileChoice && { profile: profileChoice }),
+			...(modelChoice && { model: modelChoice }),
+			...(effortChoice && effortChoice !== "default" && { effort: effortChoice }),
+			...(sizeChoice && { hostedSize: sizeChoice }),
 		};
 		asked.current = submissionOf(JSON.stringify(input), asked.current);
 		setBusy("filing");

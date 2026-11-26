@@ -148,6 +148,8 @@ function newItem(more: { reviewer?: FactoryItem["reviewer"]; mode?: FactoryItem[
 	item.awaitingPlace = "Waiting for a machine.";
 	let at = T0;
 	let outcome = advance(item, { kind: "start", by: "person", at });
+	assert.equal(outcome.item.question?.kind, "run_place");
+	outcome = advance(outcome.item, { kind: "answer", by: "person", question: outcome.item.question!.id, choice: "wait", at });
 	for (const minutes of [1, 2, 5, 10, 10]) {
 		at += minutes * MINUTE;
 		assert.equal(outcome.item.wait?.retryAt, at);
@@ -203,6 +205,34 @@ function drive(name: string, start: FactoryItem, rows: Row[]): void {
 /** Picks one effect of an outcome. */
 const effect = <K extends Effect["kind"]>(outcome: Outcome, kind: K) => outcome.effects.find((candidate): candidate is Extract<Effect, { kind: K }> => candidate.kind === kind);
 const holds = (ok: boolean, otherwise: string) => (ok ? null : otherwise);
+
+// The dogfood case: a typecheck ran a 1 GiB hosted sandbox out of memory and the turn did not finish. The item asks with the
+// figures, and "Go on in a larger sandbox" frees the sandbox and names the next size for the new one.
+const outOfMemory: Row["fact"] = (k) => ({ kind: "turn_ended", key: k.key, outcome: "error", verified: null, flags: [], changes: false, report: null, outOfMemory: { usedMiB: 942, totalMiB: 977, size: "small", larger: "standard" }, spend: { tokens: 0, hostedSeconds: 0 } });
+let largerPlan: TurnPlan | undefined;
+drive("a sandbox that ran out of memory asks, and goes on in a larger one", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: outOfMemory, state: "waiting", wait: "person", effects: ["ask"] },
+	{ fact: k => ({ kind: "answer", question: k.question, choice: "larger_sandbox", by: "person" }), state: "working", effects: ["fresh_sandbox"], also: (o) => {
+		const freed = effect(o, "fresh_sandbox");
+		largerPlan = freed?.plan;
+		return holds(freed?.hostedSize === "standard" && !!largerPlan, JSON.stringify(freed));
+	} },
+	{ fact: (k) => ({ kind: "sandbox_freed", key: k.key, plan: largerPlan! }), state: "working", effects: ["deliver", "check_turn"] },
+]);
+drive("a turn that succeeded after a program was killed for memory is not asked about", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: (k) => ({ ...(ended("succeeded", PASSED)(k) as Extract<Fact, { kind: "turn_ended" }>), outOfMemory: { usedMiB: 942, totalMiB: 977, size: "small", larger: "standard" } }), state: "working", effects: ["publish"] },
+]);
+drive("the largest size offers no larger sandbox", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: (k) => ({ ...(outOfMemory(k) as Extract<Fact, { kind: "turn_ended" }>), outOfMemory: { usedMiB: 8000, totalMiB: 8100, size: "large" } }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "out_of_memory" && !o.item.question.choices.some(c => c.id === "larger_sandbox") && o.item.question.largerSize === undefined, o.item.question?.text ?? "") },
+]);
+
+if (process.env.FACTORY_ONLY === "hosted-size") process.exit(failures ? 1 : 0);
 
 // ---------------------------------------------------------------------------------------------
 // Runs of the blueprint
@@ -1240,32 +1270,6 @@ drive("manually retrying does not reset the automatic allowance", newItem(), [
 	]);
 }
 
-// The dogfood case: a typecheck ran a 1 GiB hosted sandbox out of memory and the turn did not finish. The item asks with the
-// figures, and "Go on in a larger sandbox" frees the sandbox and names the next size for the new one.
-const outOfMemory: Row["fact"] = (k) => ({ kind: "turn_ended", key: k.key, outcome: "error", verified: null, flags: [], changes: false, report: null, outOfMemory: { usedMiB: 942, totalMiB: 977, size: "small", larger: "standard" }, spend: { tokens: 0, hostedSeconds: 0 } });
-let largerPlan: TurnPlan | undefined;
-drive("a sandbox that ran out of memory asks, and goes on in a larger one", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
-	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: outOfMemory, state: "working", effects: ["fresh_sandbox"], also: (o) => {
-		const freed = effect(o, "fresh_sandbox");
-		largerPlan = freed?.plan;
-		return holds(freed?.hostedSize === "standard" && /out of memory/.test(largerPlan?.text ?? ""), JSON.stringify(freed));
-	} },
-	{ fact: (k) => ({ kind: "sandbox_freed", key: k.key, plan: largerPlan! }), state: "working", effects: ["deliver", "check_turn"] },
-]);
-drive("a turn that succeeded after a program was killed for memory is not asked about", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
-	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: (k) => ({ ...(ended("succeeded", PASSED)(k) as Extract<Fact, { kind: "turn_ended" }>), outOfMemory: { usedMiB: 942, totalMiB: 977, size: "small", larger: "standard" } }), state: "working", effects: ["publish"] },
-]);
-drive("the largest size offers no larger sandbox", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
-	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: k => ({ ...outOfMemory(k), outOfMemory: { usedMiB: 7999, totalMiB: 8100, size: "large" } } as FactBody), state: "working", effects: ["deliver", "check_turn"] },
-	{ fact: (k) => ({ ...(outOfMemory(k) as Extract<Fact, { kind: "turn_ended" }>), outOfMemory: { usedMiB: 8000, totalMiB: 8100, size: "large" } }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "out_of_memory" && !o.item.question.choices.some(c => c.id === "larger_sandbox") && o.item.question.largerSize === undefined, o.item.question?.text ?? "") },
-]);
-
 // Found on the live item after the fix above: the person freed the broken sandbox and chose Try again; the step ran in a
 // new sandbox whose agent had no memory of it, was told only "Continue from where you were", and changed nothing. Every
 // delivery that goes on with a builder's step carries the step's whole task, which the session gives an agent without
@@ -1506,7 +1510,6 @@ const machineItem = { ...newItem(), place: { kind: "machine" as const, machineId
 drive("a machine out of memory asks how to continue in its slot", machineItem, [
 	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: k => ({ ...outOfMemory(k), outOfMemory: { usedMiB: 1536, totalMiB: 1536 } } as FactBody), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: k => ({ ...(outOfMemory(k) as Extract<Fact, { kind: "turn_ended" }>), outOfMemory: { usedMiB: 1536, totalMiB: 1536 } }),
 		state: "waiting", wait: "person", effects: ["ask"], also: o => {
 			const q = o.item.question;
@@ -2162,7 +2165,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const proposed = walk(newItem({ mode: "orchestrate", budget: { tokens: 10_000 } }), [{ kind: "start" }, { kind: "file_plan", plan: split }, turnEnded("succeeded", null)]).item;
 	const alternative = singlePlanAlternative(proposed);
 	const single = walk(proposed, [{ kind: "answer", choice: alternative?.id }]);
-	expect("a split plan's CI fallback starts one implementer from the approval question", alternative?.label === "Run as a single item"
+	expect("a split plan's CI fallback starts one implementer from the approval question", alternative?.label === "Use the current Windlass session as one implementer"
 		&& single.item.mode === "single" && !single.item.jobs?.length && single.item.run?.step.kind === "implement" && !!effect(single.last, "deliver"));
 	function start(subtasks: ReturnType<typeof task>[], available?: number, hostedSpent = 0) {
 		const plan = { subtasks, questions: [], spec: { goal: "Build", acceptance: ["Run npm test"], requirements: [], outOfScope: [] } };

@@ -759,7 +759,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title, body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(usePolicy ? { useDefaultPlace: true } : chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}), ...(!usePolicy && agent !== "windlass" ? { harness: agent } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title, body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(placeChoice !== undefined && { place: placeChoice === null ? { kind: "hosted" as const } : { kind: "machine" as const, machineId: placeChoice } }), ...(agentChoice && { harness: agentChoice }), ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;

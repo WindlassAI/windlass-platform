@@ -89,7 +89,8 @@ import { OFFLINE_REPOSITORY } from "../runner/egress.js";
 import { HOSTED_OFFLINE_REPOSITORY, isHostName } from "../sandbox/hosted-network.js";
 import { type PublishEvidence, BaseMergeConflict, updateBranchFromBase, PullProblem, type Published, type StoredRepository, branchFor, cloneRepository, describePull, hasUnpushedWork, openFromPushed, publishWork, pushWork, putOnWork, refreshPull } from "../github/publish.js";
 import { GithubProblem, problemOf, resolveBoundRepository, type StoredConnection } from "../github/repos.js";
-import { ModelProblem, checkEffort, chosenModel, plannerEffort, standInModels } from "../account-models.js";
+import { runPlace } from "../factory/resolve-run.js";
+import { ModelProblem, checkEffort, chosenModel, standInModels } from "../account-models.js";
 import type { OutOfMemory, RunTurnInput, RunTurnResult, SandboxHandle, SandboxLayer, TurnCheckpoint, TurnPublishRequest } from "../sandbox/api.js";
 import { MachineUnreachable, machineActor } from "../sandbox/runner-layer.js";
 import { forgetConversation, migrateJournal, readCheckpoint, readConversation } from "../runner/journal.js";
@@ -2522,7 +2523,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		}
 		if (meta.readiness && (!caps.restrictedReview || !platformTool(meta.readiness.draft ? "file_repo_setup" : "report") || (meta.readiness.draft && !platformTool("file_repo_setup_review")))) throw new TurnProblem("The read-only setup tools are unavailable.");
 		if (meta.demo && !caps.demo) throw new TurnProblem("This agent's harness has no demo mode.");
-		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn);
+		if (active.item) await itemTurnStarted(c, meta, active.item, sandbox, turn, credential, effort);
 		// Windlass freezes tools at the first prompt. Start summaries fresh, but resume a paused segment's conversation.
 		const summary = active.item?.row.agent === "summary";
 		if (summary !== !!meta.summaryConversation || (summary && !active.resume)) {
@@ -2602,6 +2603,9 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 		// A builder can reconnect to a sandbox created before a setting changed.
 		const browser = !!item && !requested && caps.reportScreenshots && usesScreenshotImage(meta, sandbox, held.screenshots)
 			&& (await sandbox.run("test -x /usr/local/bin/wlp-shot", { signal, timeoutMs: 5000 })).exitCode === 0;
+		if (meta.origin?.subtaskScreenshots && (!browser || !store))
+			refuseItemPolicy(item, !held.screenshots ? "Enable screenshots for this repository and deployment, then retry." :
+				!store ? "Configure screenshot storage, then retry." : "The sandbox lacks a working screenshot tool. Check the pinned image and the runner’s --screenshots flag.");
 		const unavailable = held.screenshots ? "Screenshots are unavailable in this sandbox. File without screenshots." : NO_REPO_SHOTS;
 		let filings = Promise.resolve("");
 		const setup = meta.readiness;
@@ -2618,6 +2622,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 				const owner = { by: "builder" as const, uid: meta.uid, sessionId: meta.sessionId, itemId: item.row.itemId, key: item.row.key };
 				return fileReport(request.arguments, held.redactor, (filed, answer) => {
 					if (!open || withdrawn.aborted) throw new Error("The report call ended.");
+					if (meta.origin?.subtaskScreenshots && !filed.screenshots.length) throw new Error("This part requires screenshot evidence.");
 					item.report = filed;
 					meta.report = { ...filed, run: Number(item.row.key.split(":")[1]) };
 					note(c, turn, "info", `The agent filed its report: “${filed.title}”.${answer === REPORT_TAKEN ? "" : " " + answer}`);
@@ -3994,9 +3999,7 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 			meta.reviewRun = run;
 			meta.reviewBase = row.checkout.baseSha;
 		}
-		const planning = row.agent === "planner" || row.agent === "summary";
-		// The item's own effort (`CreateItemInput.effort`) for every turn of it; otherwise a planner's is high where its model offers it, a builder's the agent's default.
-		const effort = meta.origin?.effort ?? (planning ? plannerEffort((await userActor(c, meta.uid).internalModels()).models, meta.model) : null);
+		const effort = meta.origin?.effort ?? null;
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		// The row is claimed before anything of the turn is: a withdrawal that came while the sandbox was being had leaves no
@@ -4098,7 +4101,7 @@ async function planningInputs(c: Ctx, meta: SessionMeta, item: NonNullable<Activ
 }
 
 /** The item's turn has its sandbox: the base is fetched for a turn that merges it, and the item is told the turn started. */
-async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, sandbox: SandboxHandle, turn: number): Promise<void> {
+async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, sandbox: SandboxHandle, turn: number, credential: TurnCredential, effort: string | null): Promise<void> {
 	if (item.started) return;
 	item.started = true;
 	const app = githubApp();
@@ -4112,7 +4115,12 @@ async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<Acti
 		}
 	}
 	await planningInputs(c, meta, item, sandbox, turn);
-	const fact: Fact = { kind: "turn_started", at: Date.now(), key: item.row.key };
+	const role = item.row.agent === "summary" || item.row.agent === "critic" || item.row.agent === "planner" ? item.row.agent
+		: meta.origin?.role === "reviewer" ? "reviewer" : undefined;
+	const fact: Fact = { kind: "turn_started", at: Date.now(), key: item.row.key, role, actual: {
+		place: runPlace(meta.place), agent: meta.harness ?? "windlass", model: credential.model, effort,
+		profile: meta.profile, size: meta.place.kind === "machine" ? meta.origin?.size ?? 1 : meta.hostedSize ?? null, payer: credential?.key ? "key" : meta.harness && meta.harness !== "windlass" ? "machine" : "windlass",
+		payerSource: meta.origin?.payerSource } };
 	await serial(c, () => queueMessage(c.db, { to: "item", itemId: item.row.itemId, fact }));
 	await flushOutbox(c, meta.uid);
 }
@@ -4143,6 +4151,10 @@ async function itemTurnEnded(c: Ctx, meta: SessionMeta, item: NonNullable<Active
 		// Until publication, only a confirmed push of this turn's complete work identifies its report.
 		const pushedHead = ended.unpushed === false && meta.pushedHead !== item.pushedAtStart && meta.pushedHead === meta.platformPushed ? meta.pushedHead : null;
 		fact = { ...endedFactOf(row.key, Date.now(), ended.outcome, ended.verified, changes.flags, changed, item.report, ended.usage, agent, item.asked), ...changes, ...(meta.secretRequest && { secret: { name: meta.secretRequest.name, why: meta.secretRequest.why, notice: meta.secretRequest.notice } }), pushedHead, ...(row.agent === "summary" && item.said && { reportProblem: item.said }), ...(item.refused ? { refused: item.refused, policyRefusal: item.policyRefusal } : {}), ...(item.refused && item.untrustedRefusal && { untrustedRefusal: item.untrustedRefusal }), ...(item.escaped && { escaped: item.escaped }) };
+	}
+	if (fact.kind === "turn_ended" && meta.origin?.subtaskScreenshots && ended.outcome === "succeeded" && !item.asked && !meta.secretRequest && !item.report?.screenshots.length) {
+		fact.refused = "This part requires a report with screenshot evidence. Retry the part to capture it.";
+		fact.policyRefusal = true;
 	}
 	if (ended.stepLimit !== undefined) fact.stepLimit = ended.stepLimit;
 	if (item.providerRefusal) fact.providerRefusal = item.providerRefusal;
@@ -5245,8 +5257,8 @@ export const agentSession = actor({
 				if (meta.readiness.attempt === continuation.attempt) return;
 				meta.readiness = continuation;
 				meta.windlassSessionId = null;
-				await startPrompt(c, meta, { text }, text, null);
-			} else if (!meta.turns && !c.vars.turn && !c.vars.accepting) await startPrompt(c, meta, { text }, text, null);
+				await startPrompt(c, meta, { text, model: meta.readiness.model, effort: meta.readiness.effort }, text, null);
+			} else if (!meta.turns && !c.vars.turn && !c.vars.accepting) await startPrompt(c, meta, { text, model: meta.readiness.model, effort: meta.readiness.effort }, text, null);
 		},
 		internalBuildEnvironment: async (c): Promise<void> => {
 			requireService(c);

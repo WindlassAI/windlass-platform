@@ -41,6 +41,10 @@ export function partRun(context: RunContext, task: Pick<PlanSubtask, "agent" | "
 	return resolveRun({ ...context, repository, item }, role, task);
 }
 
+export function deploymentSize(offered: readonly HostedSize[], preferred = ITEM_HOSTED_SIZE) {
+	return offered.includes(preferred) ? preferred : offered[0];
+}
+
 export const runPlace = (place: SandboxPlace): DefaultPlace => place.kind === "machine" ? { machine: place.machineId } : "hosted";
 
 /** Model ids belong to their agent. The Windlass model also serves the planning and review roles. */

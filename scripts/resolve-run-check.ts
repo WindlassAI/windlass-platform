@@ -37,3 +37,20 @@ test("parts and repairs inherit their repository and keep agent-specific models 
 		assert.deepEqual([explicit.agent, explicit.model, explicit.effort, explicit.sources.model], ["claude", "opus", "max", "item"]);
 	}
 });
+
+test("out of memory keeps the workspace until the owner approves the size and rate", async () => {
+	const { createItem, currentKey, advance } = await import("../server/src/factory/blueprint.js");
+	const item = createItem({ id: "i_oom", mode: "single", reviewer: { off: "deployment" }, place: { kind: "hosted" }, budget: { tokens: 10000, hostedSeconds: 600 },
+		task: { title: "Build", body: "Build the project", base: "main", acceptance: [] } });
+	item.resolved = resolveRun({ repository: { hostedSize: "small" } }, "builder");
+	const started = advance(item, { kind: "start", at: 1, by: "owner" }).item;
+	const key = currentKey(started)!;
+	const working = advance(started, { kind: "turn_started", at: 2, key }).item;
+	const stopped = advance(working, { kind: "turn_ended", at: 3, key, changes: false, flags: [], report: null, verified: null,
+		outcome: "error", spend: { tokens: 0, hostedSeconds: 1 }, outOfMemory: { usedMiB: 1023, totalMiB: 1024, size: "small", larger: "standard" } });
+	assert.match(stopped.item.question!.text, /1×.*not pushed/);
+	assert.equal(stopped.item.resolved?.size, "small");
+	assert.ok(!stopped.effects.some(e => e.kind === "fresh_sandbox"));
+	const answer = advance(stopped.item, { kind: "answer", at: 4, by: "owner", choice: "larger_sandbox", question: stopped.item.question!.id });
+	assert.equal(answer.effects.find(e => e.kind === "fresh_sandbox")?.hostedSize, "standard");
+});

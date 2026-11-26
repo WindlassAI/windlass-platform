@@ -6,7 +6,7 @@ import type { ChildPlacement, EgressMode, HostedSize, FeaturePlanEdit, HarnessId
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
-import { type CheckedProvider, windlassProvider, hostedCatalog, hostedProvider, hostedKeyMessage, initialHarnessModels, selectedKey, harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
+import { type CheckedProvider, windlassProvider, hostedCatalog, hostedProvider, hostedKeyMessage, initialHarnessModels, selectedKey, machinePayerProblem, harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
 import { checkItemEffort, chosenModel, ModelProblem } from "../account-models.js";
 
 /** A machine harness (Claude Code, OpenCode) runs only in the hardened container. */
@@ -27,6 +27,9 @@ export interface AgentModels {
 
 type Machine = ReturnType<typeof plannerMachines>[number];
 export interface PlacementInventory {
+	screenshotsEnabled?: boolean;
+	screenshotStorage?: boolean;
+	repositoryScreenshots?: Record<string, boolean>;
 	dailyTokenWait?: string | null;
 	machines: Machine[];
 	hostedProfiles: SandboxProfileId[];
@@ -57,6 +60,7 @@ export interface PlacementInventory {
  */
 export const SNAPSHOT_BONUS = 2;
 export interface PlacementRoute {
+	waitForMachine?: boolean;
 	preferred: SandboxPlace;
 	alternatives: SandboxPlace[];
 	/** Display names at approval, for a destination later removed from inventory. */
@@ -76,9 +80,14 @@ function resolve(name: string, machines: Machine[]): SandboxPlace {
 }
 
 export function bindRoute(task: PlanSubtask, parent: SandboxPlace, overflow: boolean, machines: Machine[]): PlacementRoute {
-	const preferred = task.place ? resolve(task.place.prefer, machines) : parent;
+	const inherited = task.resolved?.place;
+	const first = inherited === "any-machine" ? machines[0]?.machineId : undefined;
+	const preferred: SandboxPlace = task.place ? resolve(task.place.prefer, machines) : inherited === "hosted" ? { kind: "hosted" }
+		: typeof inherited === "object" ? { kind: "machine", machineId: inherited.machine }
+		: inherited === "any-machine" ? { kind: "machine", machineId: first ?? "any-machine" } : parent;
 	const allowed = task.place?.allow?.map(name => resolve(name, machines)) ?? [];
-	const alternatives = overflow ? allowed.filter(p => placeKey(p) !== placeKey(preferred)) : [];
+	const alternatives: SandboxPlace[] = !task.place && inherited === "any-machine" ? machines.slice(1).map(m => ({ kind: "machine" as const, machineId: m.machineId })) : overflow ? allowed.filter(p => placeKey(p) !== placeKey(preferred)) : [];
+	if (!task.place && preferred.kind === "machine" && task.resolved?.fallback === "hosted") alternatives.push({ kind: "hosted" });
 	const names: Record<string, string> = {};
 	for (const place of [preferred, ...alternatives]) {
 		if (place.kind !== "machine") continue;
@@ -94,9 +103,18 @@ export function bindRoute(task: PlanSubtask, parent: SandboxPlace, overflow: boo
  * profile). Approval refuses only a subtask whose every allowed place is permanently refused. A busy or
  * offline machine is a wait, never a refusal.
  */
-type Candidate = { refused: string; permanent: boolean } | { wait: string; dailyCap?: boolean; providerUntil?: number; accountKey?: string } | { decision: ChildPlacement; score: number; snapshot?: boolean };
+type Candidate = { refused: string; permanent: boolean; larger?: HostedSize } | { wait: string; offline?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string } | { decision: ChildPlacement; score: number; snapshot?: boolean };
 export function placementRetryAt(at: number, providerUntil?: number, dailyCap?: boolean) {
 	return Math.min(providerUntil ?? retryAt(at, 0), dailyCap ? nextUtcDay(at) : Infinity, at + MAX_PROVIDER_WAIT);
+}
+
+export function runnerProblem(warnings: MachineSummary["warnings"] = []) {
+	for (const warning of warnings) {
+		if (warning.kind === "outdated") return "Update the runner to the supported version.";
+		if (warning.kind === "signing-disabled") return "Runner signing is disabled on this deployment.";
+		if (warning.kind === "docker") return warning.reason;
+	}
+	return null;
 }
 
 export function machineSlots(machine: Pick<MachineSummary, "slots" | "turns" | "host">) {
@@ -142,8 +160,17 @@ function agentFit(machine: Machine, task: PlanSubtask, inventory: PlacementInven
 	if (profile) {
 		const offered = machine.harnesses?.find(h => h.id === harness);
 		if (!offered) return `it does not offer ${profile.name}`;
+		if (offered.source === "key") {
+			const problem = machinePayerProblem(offered, task.agent?.model, "key", offered.platformKeys ?? []);
+			if (problem) return problem;
+		}
 		if (offered.signIn === "none") return `${profile.name} is not signed in there (run windlass-runner login ${profile.id} on it)`;
 		if (offered.signIn !== "token") return `it could not say whether ${profile.name} is signed in there, and a subtask runs only where it is`;
+		const chosen = task.resolved;
+		if (chosen && typeof chosen.place === "object" && chosen.place.machine === machine.machineId && chosen.payer !== (offered.source ?? "machine"))
+			return "The payer selected for this part has changed. Restore its original payer before retrying.";
+		const payer = machinePayerProblem(offered, task.agent?.model, offered.source ?? "machine", offered.platformKeys ?? []);
+		if (payer) return payer;
 		if (machine.allowedProfiles && !machine.allowedProfiles.includes(HARNESS_PROFILE)) return `the owner does not allow the ${isolationName(HARNESS_PROFILE)} profile, which ${profile.name} needs`;
 	}
 	const list = harness === "windlass" ? inventory.models?.windlass : inventory.models?.machines?.[machine.machineId]?.[harness];
@@ -153,23 +180,35 @@ function agentFit(machine: Machine, task: PlanSubtask, inventory: PlacementInven
 /** What the machine cannot do at all, from its last report. Kept while it is offline. */
 function capabilityFit(machine: Machine, task: PlanSubtask, inventory: PlacementInventory): string | null {
 	const needs = task.needs ?? {};
+	const runner = runnerProblem(machine.warnings);
+	if (runner) return runner;
 	const screenshots = machine.screenshots && subtaskHarness(task) === "windlass";
 	const tags = new Set([...machine.tags, machine.os, machine.arch, "os:" + machine.os, "arch:" + machine.arch, "harness:windlass",
 		...(screenshots ? ["screenshots"] : []), ...(machine.harnesses?.map(h => "harness:" + h.id) ?? [])]);
 	const missing = needs.tags?.find(t => !tags.has(t));
 	if (missing) return `missing tag ‘${missing}’`;
-	if (needs.screenshots && !screenshots) return "screenshots are unavailable";
+	if (needs.screenshots && !screenshots) return "start this runner with --screenshots and a pinned screenshot image";
 	if (machine.egress === "none" || (needs.egress && needs.egress !== machine.egress)) return "the egress policy does not support this repository task";
 	const agent = agentFit(machine, task, inventory);
 	if (agent) return agent;
-	if (needs.profile === "e2b-open" || needs.profile === "daytona") return "this profile runs only on hosted sandboxes";
-	if (needs.profile && machine.allowedProfiles && !machine.allowedProfiles.includes(needs.profile)) return `the owner does not allow the ${isolationName(needs.profile)} profile`;
+	if (needs.profile && needs.profile !== "docker-hardened" && needs.profile !== "docker-windlass-sandbox") return "this profile runs only on hosted sandboxes";
+	if (needs.profile && machine.allowedProfiles && !machine.allowedProfiles.some(p => p === needs.profile)) return `the owner does not allow the ${isolationName(needs.profile)} profile`;
 	return null;
 }
 
 function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementInventory, preferred: boolean, warm: string[], at: number, name?: string): Candidate {
+	const resolved = task.resolved;
+	if (resolved) task = { ...task, agent: { harness: resolved.agent, model: resolved.model ?? undefined, effort: resolved.effort ?? undefined },
+		needs: { ...task.needs, profile: task.needs?.profile ?? resolved.profile ?? undefined } };
 	const needs = task.needs ?? {};
 	const harness = subtaskHarness(task);
+	if (needs.screenshots) {
+		const problem = inventory.screenshotsEnabled === false ? "Screenshots are disabled on this deployment."
+			: inventory.repositoryScreenshots && !inventory.repositoryScreenshots[task.repo ?? ""] ? "Enable screenshots for this repository or remove the screenshot requirement."
+			: inventory.screenshotStorage === false ? "Screenshot storage is unavailable on this deployment."
+			: harness !== "windlass" ? `${harnessName(harness)} cannot file screenshots. Choose Windlass.` : null;
+		if (problem) return { refused: problem, permanent: true };
+	}
 	const bonus = (preferred ? 3 : 0) + Number(warm.includes(placeKey(place)));
 	// Usage limits are an account's: only those of the subtask's own agent there hold it back.
 	const machine = place.kind === "machine" ? inventory.machines.find(m => m.machineId === place.machineId) : undefined;
@@ -184,7 +223,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 			: providerWait(harness, name, placementRetryAt(at, limit.limitedUntil, dailyCap)).sentence;
 		return { wait, providerUntil: limit.limitedUntil, accountKey: limit.accountKey, dailyCap };
 	};
-	const reason = preferred ? task.place?.reason ?? "Same place as the feature" : `Approved overflow from ‘${task.place!.prefer}’`;
+	const reason = preferred ? task.place?.reason ?? "Same place as the feature" : `Approved overflow from ‘${task.place?.prefer ?? "the preferred machine"}’`;
 	const notForSubtasks = subtaskHarnessProblem(harness);
 	if (notForSubtasks) return { refused: notForSubtasks, permanent: true };
 	if (place.kind === "hosted") {
@@ -205,12 +244,18 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 			return { refused: `This part needs the machine tag “${needs.tags[0]}”. Hosted sandboxes do not provide machine tags.`, permanent: true };
 		// `cpus` and `memoryGiB` choose a hosted size: the least that has them. Absent: the item's own size (standard by default).
 		const sized = hostedSizeFor(needs);
+		if (resolved && resolved.sources.size !== "deployment" && !inventory.hostedSizes?.includes(resolved.size))
+			return { refused: `${HOSTED_SIZE_NAMES[resolved.size]} is unavailable. Choose an offered hosted size for this part.`, permanent: true };
 		if ((needs.cpus || needs.memoryGiB) && !sized) return { refused: `hosted sandboxes have at most ${HOSTED_SIZE_SPECS.large.cpus} vCPU and ${HOSTED_SIZE_SPECS.large.memoryMiB / 1024} GiB`, permanent: true };
-		if (sized && !(inventory.hostedSizes ?? ["small"]).includes(sized)) return { refused: `hosted has no ${HOSTED_SIZE_NAMES[sized]} sandbox (${HOSTED_SIZE_SPECS[sized].cpus} vCPU, ${HOSTED_SIZE_SPECS[sized].memoryMiB / 1024} GiB) on this deployment`, permanent: true };
+		if (sized && resolved && HOSTED_SIZE_SPECS[sized].cpus > HOSTED_SIZE_SPECS[resolved.size].cpus)
+			return { refused: `This part needs ${HOSTED_SIZE_NAMES[sized]}. Choose that hosted size or reduce the part’s resource request.`, permanent: true,
+				larger: inventory.hostedSizes?.includes(sized) ? sized : undefined };
+		const size = resolved && inventory.hostedSizes?.length ? resolved.size : sized;
+		if (size && !(inventory.hostedSizes ?? ["small"]).includes(size)) return { refused: `hosted has no ${HOSTED_SIZE_NAMES[size]} sandbox (${HOSTED_SIZE_SPECS[size].cpus} vCPU, ${HOSTED_SIZE_SPECS[size].memoryMiB / 1024} GiB) on this deployment`, permanent: true };
 		if (limited) return waiting(limited, "hosted");
 		if (tokenWait) return { wait: tokenWait, dailyCap: true };
 		const profile = needs.profile ?? profiles.find(p => p === inventory.defaultProfile) ?? (harness === "windlass" ? undefined : profiles[0]);
-		return { decision: { name: "hosted", place, ...(harness !== "windlass" && { harness }), units: 1, reason, sendSecrets: true, profile, ...(sized && inventory.hostedSizes && { hostedSize: sized }) }, score: bonus };
+		return { decision: { name: "hosted", place, ...(harness !== "windlass" && { harness }), units: 1, reason, sendSecrets: true, profile, ...(size && inventory.hostedSizes && { hostedSize: size }) }, score: bonus };
 	}
 	const m = inventory.machines.find(m => m.machineId === place.machineId);
 	if (!m) return { refused: (name ? "‘" + name + "’" : "The selected machine") + " is no longer one of your machines.", permanent: true };
@@ -232,14 +277,16 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	if (incapable) return never(incapable);
 	if (limited) return waiting(limited, m.name);
 	if (tokenWait) return { wait: tokenWait, dailyCap: true };
-	if (!m.online) return { wait: `Waiting for ‘${m.name}’ to come back online.` };
+	if (!m.online) return { wait: `Waiting for ‘${m.name}’ to come back online.`, offline: true };
 	if (needs.cpus && slots.unit.cpus <= 0) return notNow("per-slot CPU capacity is unknown");
 	if ((m.freeDiskBytes ?? 0) < 5 * GiB) return notNow("at least 5 GiB of reported free disk is required");
-	const allowed = m.availableProfiles.filter(p => m.allowedProfiles?.some(id => id === p));
+	const allowed = m.availableProfiles.filter(p => !m.allowedProfiles || m.allowedProfiles.some(id => id === p));
 	const wanted: SandboxProfileId | undefined = needs.profile ?? (onMachine ? HARNESS_PROFILE : undefined);
 	const profile = wanted ? allowed.find(p => p === wanted) : allowed.find(p => p === inventory.defaultProfile) ?? allowed[0];
-	if (!profile) return notNow("no available owner-allowed profile matches");
+	if (!profile) return wanted ? never(`the selected profile ${wanted} is unavailable. Choose an available profile`) : notNow("no available owner-allowed profile matches");
 	const free = freeMachineSlots(slots);
+	if (m.sandboxes.running >= (m.sandboxes.maxRunning ?? Infinity)) return { wait: `‘${m.name}’ is at its running sandbox limit.` };
+	if (m.sandboxes.kept >= (m.sandboxes.maxSandboxes ?? Infinity)) return { wait: `‘${m.name}’ is at its kept sandbox limit.` };
 	if (free < units) return { wait: slotWait(m.name, units, free) };
 	return { decision: { name: m.name, place, reason, units, sendSecrets: m.repositorySecrets, profile, ...(onMachine && { harness: onMachine }) },
 		score: bonus + Math.min(free, 3) - slots.queued - m.personalRunning };
@@ -252,18 +299,22 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 export function choosePlacement(task: PlanSubtask, route: PlacementRoute, inventory: PlacementInventory, warm: string[] = [], at = Date.now()) {
 	const candidates = [route.preferred, ...route.alternatives].map((p, i) => candidate(task, p, inventory, i === 0, warm, at, route.names?.[placeKey(p)] ?? (i === 0 ? task.place?.prefer : undefined)));
 	const decided = candidates.flatMap(c => "decision" in c ? [{ ...c, snapshot: !!inventory.snapshotPlaces?.includes(placeKey(c.decision.place)) }] : []);
-	// The preferred place keeps every alternative that does not outrank it on its own behind it; the bonus then orders what is left.
-	const preferred = "decision" in candidates[0]! ? decided[0] : undefined;
-	const ranked = decided.filter(c => !preferred || c === preferred || c.score > preferred.score);
-	const ready = ranked.sort((a, b) => (b.score + (b.snapshot ? SNAPSHOT_BONUS : 0)) - (a.score + (a.snapshot ? SNAPSHOT_BONUS : 0)))[0];
-	if (ready) return { decision: ready.decision } as const;
+	const ready = "decision" in candidates[0]! ? candidates[0] : decided.sort((a, b) =>
+		(route.preferred.kind === "machine" ? Number(a.decision.place.kind === "hosted") - Number(b.decision.place.kind === "hosted") : 0) ||
+		(b.score + (b.snapshot ? SNAPSHOT_BONUS : 0)) - (a.score + (a.snapshot ? SNAPSHOT_BONUS : 0)))[0];
+	if (ready && ready.decision.place.kind === "hosted" && route.preferred.kind === "machine") {
+		const first = candidates[0]!;
+		const reason = "wait" in first ? first.wait : "refused" in first ? first.refused : "The preferred machine is unavailable.";
+		if (!route.waitForMachine) return { wait: reason, askMachine: true, offerHosted: true };
+	} else if (ready) return { decision: ready.decision } as const;
 	const waits = candidates.filter(c => "wait" in c);
 	const deadline = (wait: typeof waits[number]) => placementRetryAt(at, wait.providerUntil, wait.dailyCap);
 	const waiting = waits.sort((a, b) => deadline(a) - deadline(b))[0];
-	if (waiting) return { wait: waiting.wait, retryAt: deadline(waiting), providerUntil: waiting.providerUntil,
+	if (waiting) return { wait: waiting.wait, askMachine: waiting.offline && !route.waitForMachine, retryAt: deadline(waiting), providerUntil: waiting.providerUntil,
 		dailyCap: waiting.dailyCap, accountKey: waiting.accountKey } as const;
 	const refusals = candidates.flatMap(c => "refused" in c ? [c] : []);
-	return { refused: refusals.map(c => c.refused).join(" "), permanent: refusals.every(c => c.permanent) } as const;
+	const larger = refusals.find(c => c.larger)?.larger;
+	return { refused: refusals.map(c => c.refused).join(" "), larger, permanent: refusals.every(c => c.permanent) } as const;
 }
 
 export function approveRoutes(plan: FeaturePlanEdit, parent: SandboxPlace, inventory: PlacementInventory, completed: Set<string>) {

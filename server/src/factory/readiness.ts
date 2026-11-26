@@ -42,13 +42,13 @@ export function readinessItem(id: GithubId, report: SetupReport, criterion: Crit
 		if (!ci || !job) throw new Error("Choose a flaky job.");
 		const title = `Fix intermittent failures in ${job.name}`;
 		return { repository: { id }, title: title.slice(0, MAX_TITLE_CHARS), body: `${job.name} failed and then passed on the same commit ${job.count} ${job.count === 1 ? "time" : "times"} in 30 days.`,
-			useDefaultPlace: true, idempotencyKey: `setup-${id}-${ci.at}-job-${criterion}` };
+			idempotencyKey: `setup-${id}-${ci.at}-job-${criterion}` };
 	}
 	const finding = report.findings.find(row => row.id === criterion && row.pass === false);
 	const rule = readinessCriteria.find(row => row.id === criterion);
 	if (!finding || !rule) throw new Error("Choose a failed check.");
 	return { repository: { id }, title: rule.repair, body: rule.title + "\n\n" + finding.reason,
-		useDefaultPlace: true, idempotencyKey: `setup-${id}-${report.at}-${criterion}` };
+		idempotencyKey: `setup-${id}-${report.at}-${criterion}` };
 }
 
 export function plannerReadiness(level: ReadinessLevel | null): string {

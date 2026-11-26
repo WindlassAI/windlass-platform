@@ -1,9 +1,10 @@
 import type { ChoiceId } from "../contract.js";
 
 export const CHOICES: Record<ChoiceId, string> = {
+	use_hosted: "Run on Hosted", use_windlass: "Windlass", use_claude: "Claude Code", use_opencode: "OpenCode",
 	send_back: "Hand it back", dismiss: "Dismiss",
 	send: "Send it to the agent", leave: "Leave it",
-	run_single: "Approve for one implementer", orchestrate_anyway: "Ask for subtasks",
+	run_single: "Approve the current Windlass session as one implementer", orchestrate_anyway: "Ask for subtasks",
 	approve: "Approve the plan",
 	revise: "Revise the plan",
 	raise: "Go on",

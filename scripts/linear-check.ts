@@ -104,7 +104,7 @@ async function run() {
 
 	const failed: string[] = [];
 	const check = async (name: string, fn: () => Promise<void> | void) => {
-		if (process.env.LINEAR_ONLY && !name.startsWith(process.env.LINEAR_ONLY)) return;
+		if (process.env.LINEAR_ONLY && !process.env.LINEAR_ONLY.split(",").some(prefix => name.startsWith(prefix))) return;
 		try { await fn(); console.log("PASS " + name); }
 		catch (error) {
 			failed.push(name);
@@ -394,19 +394,19 @@ async function run() {
 			const [plain] = await itemsOf(unplaced.issue);
 			assert.equal(plain.mode, "single");
 			assert.match(String((await probe(plain.id).checkProvenance()).linear?.modeReason), /Quick was requested/);
-			assert.equal((await probe(plain.id).checkProvenance()).linear?.defaultPlace, undefined);
+			assert.equal((await owner.item(plain.id)).resolved?.sources.place, "deployment");
 			assert.deepEqual((await owner.item(plain.id)).place, { kind: "hosted" });
 			// A paired machine, and the account's saved placement on it.
 			await (client.user.get([uid], service()) as unknown as { checkPlaceMachine(id: string): Promise<void> }).checkPlaceMachine(mac);
 			await owner.saveAccountDefaults({ place: { machine: mac }, harness: "claude", machineProfile: "docker-hardened" });
-			const saved = { place: { machine: mac }, harness: "claude", machineProfile: "docker-hardened", placeFallback: null };
+
 			const quick = created(eng, { labels: ["windlass:quick"] });
 			assert.equal((await qualifying(quick.payload)).kind, "filed");
 			const [fast] = await itemsOf(quick.issue);
 			assert.equal(fast.mode, "single");
 			const quickKept = (await probe(fast.id).checkProvenance()).linear!;
 			assert.match(String(quickKept.modeReason), /Quick was requested/);
-			assert.deepEqual(quickKept.defaultPlace, { ...saved, machineModel: null, machineEffort: null });
+
 			const quickView = await owner.item(fast.id);
 			assert.deepEqual(quickView.place, { kind: "machine", machineId: mac });
 			assert.equal(quickView.agent?.harness, "claude");
@@ -421,10 +421,10 @@ async function run() {
 				assert.equal(plan.mode, "orchestrate");
 				const kept = (await probe(plan.id).checkProvenance()).linear!;
 				assert.match(String(kept.modeReason), /Plan first/);
-				assert.deepEqual(kept.defaultPlace, { ...saved, machineModel: null, machineEffort: null });
+
 				assert.equal((await owner.item(plan.id)).agent?.harness ?? "windlass", "windlass");
 			}
-			await owner.saveAccountDefaults({ place: "hosted" });
+			await owner.saveAccountDefaults({ place: "hosted", harness: "windlass" });
 		});
 
 		await check("author: an issue written by somebody else, or by nobody Linear names, is quoted third-party text in a draft, whoever filed it", async () => {

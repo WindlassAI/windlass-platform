@@ -2132,7 +2132,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (input.body.length > MAX_ITEM_BODY_CHARS) throw new PlatformError("user", `What to do is at most ${MAX_ITEM_BODY_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
 				if (acceptance.length > MAX_ACCEPTANCE_CRITERIA) throw new PlatformError("user", `An item takes at most ${MAX_ACCEPTANCE_CRITERIA} acceptance criteria.`, { reason: "bad_input" });
 				if (acceptance.some((line) => line.length > MAX_NOTE_CHARS)) throw new PlatformError("user", `An acceptance criterion is at most ${MAX_NOTE_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
-				const policy = input.useDefaultPlace && !input.place ? deps.defaultPlace(auth, input.repository.id) : undefined;
+				const policy = !input.place ? deps.defaultPlace(auth, input.repository.id) : undefined;
 				const destination = policy && resolveDefaultPlace(policy, deps.machines(auth)?.list ?? [], input.mode ?? "orchestrate");
 				if (destination) {
 					input.place = destination.place;

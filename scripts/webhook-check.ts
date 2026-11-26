@@ -1276,7 +1276,7 @@ async function run() {
 				assert.equal((await item.view()).run?.n,2);
 			} finally { await stop(item.id); }
 		});
-		await check("G3 feature placement defaults bind GitHub filings, wait and fall back", async () => {
+		await check("G3 feature placement defaults bind GitHub filings and ask before changing place", async () => {
 			const writer = standin.addUser("default-places"); projectG2.access.set(writer.login, "write");
 			const { user: account, uid, token } = await connectUser(writer.login);
 			const machine = client.user.get([uid], service()) as unknown as { checkPlaceMachine(id: string, state: string): Promise<void>; checkCancelDuringPlacement(id: string): Promise<void> };
@@ -1304,23 +1304,25 @@ async function run() {
 			await machine.checkPlaceMachine(mac, "offline");
 			const waiting = await file(true);
 			assert.equal(waiting.state, "waiting");
-			assert.match(waiting.wait!.sentence, /offline.*Waiting/);
+			assert.match(waiting.question!.text, /offline/);
+			assert.deepEqual(waiting.question!.choices.map(c => c.id), ["wait", "give_up"]);
 			await account.actOnItem({ id: waiting.id, action: { kind: "cancel" } });
 			await repo({ ...policy, placeFallback: "hosted" });
-			const fallback = await file();
-			assert.equal(fallback.place.kind, "hosted");
-			assert.equal(fallback.agent?.harness, "windlass");
-			assert.ok(fallback.events.some(e => /offline.*hosted fallback/.test(e.said)));
+			const fallback = await file(true);
+			assert.equal(fallback.place.kind, "machine");
+			assert.deepEqual(fallback.question!.choices.map(c => c.id), ["wait", "use_hosted", "give_up"]);
+			await account.actOnItem({ id: fallback.id, action: { kind: "cancel" } });
 			await machine.checkPlaceMachine(mac, "full");
 			await repo({ ...policy, place: "any-machine" });
 			assert.deepEqual((await file()).place, { kind: "machine", machineId: next });
 			await machine.checkPlaceMachine(next, "offline");
 			const queued = await file(true);
-			assert.match(queued.wait!.sentence, /free slot/);
+			assert.match(queued.question!.text, /free slot/);
+			await account.actOnItem({ id: queued.id, action: { kind: "answer", question: queued.question!.id, choice: "wait" } });
 			assert.equal(queued.reviewNone, null);
 			assert.equal(queued.review, null);
 			await machine.checkPlaceMachine(next, "online");
-			await until("waiting item bound to the newly free machine", async () => (await account.item(queued.id)).events.some(e => e.said.includes("has a free slot")));
+			await until("waiting item bound to the newly free machine", async () => !(await account.item(queued.id)).awaitingPlace);
 			const bound = await account.item(queued.id);
 			assert.deepEqual(bound.place, { kind: "machine", machineId: next });
 			assert.equal(bound.reviewNone, quick.reviewNone);
@@ -1329,6 +1331,7 @@ async function run() {
 			await account.actOnItem({ id: queued.id, action: { kind: "cancel" } });
 			await machine.checkPlaceMachine(next, "full");
 			const racing = await file(true);
+			await account.actOnItem({ id: racing.id, action: { kind: "answer", question: racing.question!.id, choice: "wait" } });
 			await machine.checkCancelDuringPlacement(racing.id);
 			await machine.checkPlaceMachine(next, "online");
 			await until("free slot starts placement and cancellation removes its session", async () => {
@@ -1339,7 +1342,7 @@ async function run() {
 
 			await repo({ ...policy, placeFallback: "hosted" });
 			await machine.checkPlaceMachine(mac, "signed-out");
-			assert.ok((await file()).events.some(e => /sign-in.*hosted fallback/.test(e.said)));
+			assert.match((await file(true)).question!.text, /sign.in|sign in/i);
 			await assert.rejects(repo(policy), /sign-in|supports/i);
 			const draftFeature = make(++number, reader);
 			await applyLabel(draftFeature, "windlass:orchestrate", writer);
@@ -1347,15 +1350,18 @@ async function run() {
 			assert.deepEqual(draftPlan.place, { kind: "machine", machineId: mac });
 			const draftPlanner = await client.agentSession.get([uid, draftPlan.sessionId], { params: { token } }).snapshot();
 			assert.equal(draftPlanner.summary.harness ?? "windlass", "windlass");
-			assert.equal(draftPlanner.summary.profile, "docker-windlass-sandbox");
+			assert.equal(draftPlanner.summary.profile, "docker-hardened");
 			await machine.checkPlaceMachine(mac, "removed");
-			assert.ok((await file()).events.some(e => /no longer.*hosted fallback/.test(e.said)));
+			assert.match((await file(true)).question!.text, /paired machine|no longer/i);
 			await machine.checkPlaceMachine(next, "full");
 			await repo({ ...policy, place: "any-machine", placeFallback: "hosted" });
 			const feature = make(++number, writer);
 			await applyLabel(feature, "windlass:orchestrate", writer);
 			const [plan] = await items(feature, account);
-			assert.equal(plan.place.kind, "hosted");
+			const away = await account.item(plan.id);
+			assert.equal(away.place.kind, "machine");
+			await account.actOnItem({ id: plan.id, action: { kind: "answer", question: away.question!.id, choice: "use_hosted" } });
+			await until("owner-approved hosted planner", async () => (await account.item(plan.id)).place.kind === "hosted");
 			const planner = client.agentSession.get([uid, plan.sessionId], { params: { token } });
 			const prompt = await until("planner received the preferred place for parts", async () =>
 				(await planner.snapshot()).timeline.find(e => e.kind === "user" && e.text.includes("place.prefer")));
