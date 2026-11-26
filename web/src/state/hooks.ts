@@ -250,7 +250,7 @@ export function useCatalogs(machines: readonly MachineSummary[] | null): Catalog
 	const { client } = useApp();
 	const auth = useAuth();
 	const [catalogs, setCatalogs] = useState<Record<string, HarnessOptions>>({});
-	const wanted = (machines ?? []).flatMap((machine) => (machine.harnesses ?? []).filter((entry) => entry.optionsDigest && entry.id !== "codex").map((entry) => ({ machineId: machine.machineId, id: entry.id as "claude" | "opencode", digest: entry.optionsDigest! })));
+	const wanted = (machines ?? []).flatMap((machine) => (machine.harnesses ?? []).filter((entry) => entry.optionsDigest).map((entry) => ({ machineId: machine.machineId, id: entry.id as "claude" | "opencode" | "codex", digest: entry.optionsDigest! })));
 	const keys = wanted.map((one) => `${one.machineId}/${one.id}/${one.digest}`).join(" ");
 	useEffect(() => {
 		let current = true;
