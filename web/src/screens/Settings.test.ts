@@ -350,7 +350,11 @@ describe("Issue trackers in Settings", () => {
 		let redemptions = 0;
 		vi.spyOn(reopened, "user").mockImplementation(auth => {
 			const api = user(auth);
-			return { ...api, jiraComplete: ticket => { redemptions++; return api.jiraComplete(ticket); } };
+			return { ...api, jiraComplete: ticket => { redemptions++; return api.jiraComplete(ticket); },
+				githubRepositories: async query => {
+					const list = await api.githubRepositories(query);
+					return query ? list : { ...list, repositories: list.repositories.filter(repo => !repo.canPush), more: true };
+				} };
 		});
 		const returned = await open(reopened, landing.search + landing.hash);
 		try {
@@ -369,6 +373,16 @@ describe("Issue trackers in Settings", () => {
 			expect(repo!.querySelector('option[value="7105"]')).toBeNull(); // acme/quay is read-only
 			await expect(reopened.user(returned.auth).saveJiraMapping({ siteId: "site-acme", projectId: "10001", repositoryId: 7105 })).rejects.toMatchObject({ reason: "bad_input" });
 			await choose(project!, "10001");
+			expect(repo!.querySelector('option[value="7101"]')).toBeNull();
+			const search = scope.querySelector<HTMLInputElement>('input[type="search"]')!;
+			await act(async () => {
+				Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(search, "harbor");
+				search.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			await vi.waitFor(async () => {
+				await returned.settle();
+				expect(repo!.querySelector('option[value="7101"]')).not.toBeNull();
+			});
 			await choose(repo!, "7101");
 			await press(scope, "Map project");
 			expect(scope.querySelector("li")?.textContent).toContain("acme/harbor");

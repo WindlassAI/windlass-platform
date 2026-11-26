@@ -1,7 +1,8 @@
-import type { GithubRepository, JiraProject, JiraSite, JiraStatus } from "@contract";
+import type { JiraProject, JiraSite, JiraStatus } from "@contract";
 import { useEffect, useRef, useState } from "react";
 import { useHash } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
+import { useRepositorySearch } from "./RepositoryMenu";
 
 function callbackError(reason: string | undefined) {
 	switch (reason) {
@@ -101,21 +102,20 @@ function JiraProjects({ site, busy, run }: { site: JiraSite; busy: boolean; run:
 	const { client, explain, platform } = useApp();
 	const auth = useAuth();
 	const [projects, setProjects] = useState<JiraProject[] | null>(null);
-	const [repositories, setRepositories] = useState<GithubRepository[] | null>(null);
 	const [projectError, setProjectError] = useState<string | null>(null);
-	const [repoError, setRepoError] = useState<string | null>(null);
 	const [projectId, setProjectId] = useState("");
 	const [repositoryId, setRepositoryId] = useState("");
 	useEffect(() => {
 		let live = true;
 		const api = client.user(auth);
 		void api.jiraProjects().then(list => { if (live) setProjects(list.projects); }, failure => { if (live) setProjectError(explain(failure)); });
-		if (!platform.info?.github) setRepositories([]);
-		else void api.githubRepositories("").then(list => { if (live) setRepositories(list.repositories.filter(repo => repo.canPush)); }, failure => { if (live) setRepoError(explain(failure)); });
 		return () => { live = false; };
-	}, [client, auth, explain, platform.info?.github]);
+	}, [client, auth, explain]);
 	const unmapped = projects?.filter(project => !project.mapping) ?? [];
-	const repository = repositories?.find(repo => String(repo.id) === repositoryId);
+	const { query, setQuery, found } = useRepositorySearch(!!platform.info?.github && unmapped.length > 0);
+	const searching = found.loading || found.query !== query.trim() || !found.list;
+	const repositories = searching ? [] : found.list!.repositories.filter(repo => repo.canPush);
+	const repository = repositories.find(repo => String(repo.id) === repositoryId);
 	const api = client.user(auth);
 	return <>
 		<details className="field-note"><summary>How filing works</summary>In a mapped project, add <code>windlass</code> or assign the issue to the Jira account shown above to file a draft. Use <code>windlass-quick</code> to file in Quick mode. A qualifying issue with the Bug type or a <code>bug</code> label also uses Quick. Review and start drafts in Windlass.</details>
@@ -128,14 +128,16 @@ function JiraProjects({ site, busy, run }: { site: JiraSite; busy: boolean; run:
 					setProjects((await api.removeJiraMapping({ siteId: site.id, projectId: project.id })).projects);
 				})}>Remove</button>}
 			</li>)}</ul>}
-		{repoError && <p className="callout callout-warn" role="alert">{repoError}</p>}
-		{unmapped.length > 0 && repositories !== null && (repositories.length ? <div className="linear-map">
+		{found.error && <p className="callout callout-warn" role="alert">{found.error}</p>}
+		{unmapped.length > 0 && (platform.info?.github ? <div className="linear-map">
 			<select aria-label="Jira project" className="select" disabled={busy} value={projectId} onChange={event => setProjectId(event.target.value)}>
 				<option value="">Choose a project</option>
 				{unmapped.map(project => <option key={project.id} value={project.id}>{project.name} ({project.key})</option>)}
 			</select>
+			<input type="search" className="input" aria-label="Search GitHub repositories" placeholder="Search repositories" value={query} disabled={busy}
+				onChange={event => { setQuery(event.target.value); setRepositoryId(""); }} />
 			<select aria-label="GitHub repository" className="select" disabled={busy} value={repositoryId} onChange={event => setRepositoryId(event.target.value)}>
-				<option value="">Choose a repository</option>
+				<option value="">{searching ? (found.error ? "Repositories unavailable" : "Searching repositories…") : repositories.length ? "Choose a repository" : "No writable matches"}</option>
 				{repositories.map(repo => <option key={repo.id} value={repo.id}>{repo.owner}/{repo.name}</option>)}
 			</select>
 			<button className="button button-outline" disabled={busy || !projectId || !repository} onClick={() => void run(async () => {
@@ -143,7 +145,10 @@ function JiraProjects({ site, busy, run }: { site: JiraSite; busy: boolean; run:
 				setProjects((await api.saveJiraMapping({ siteId: site.id, projectId, repositoryId: repository.id })).projects);
 				setProjectId("");
 				setRepositoryId("");
+				setQuery("");
 			})}>Map project</button>
+			{found.list?.more && <p className="field-note">Search by name to see more repositories.</p>}
+			{found.list?.incomplete && <p className="field-note">GitHub returned a partial list.</p>}
 		</div> : <p className="field-note">Connect a GitHub repository you can write to before mapping a Jira project.</p>)}
 	</>;
 }
