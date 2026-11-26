@@ -12,7 +12,7 @@ import { githubInbox, githubHooks } from "./actors/github-inbox.js";
 import { githubRepository } from "./actors/github-repository.js";
 import { billingCustomers } from "./billing/customer-index.js";
 import { accountIdentities } from "./actors/account-identities.js";
-import { slackDispatchWorkspace as slackWorkspace } from "./slack/dispatch.js";
+import { slackWorkspace } from "./actors/slack-workspace.js";
 import { linearWorkspace } from "./actors/linear-workspace.js";
 import { login } from "./actors/login.js";
 import { user } from "./actors/user.js";

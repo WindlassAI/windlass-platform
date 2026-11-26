@@ -9,7 +9,7 @@ import { readAccountDefaults } from "../account-defaults.js";
 import { config } from "../config.js";
 import type { CreateItemInput, GithubId, ItemSummary, UserProfile } from "../contract.js";
 import { savedPlace } from "../factory/default-place.js";
-import { issueMode, linearIdentifier, linearId, linearName, refusals, slackBinding, taskOfLinear, taskOfSlack, type SlackFiling, type SlackBinding, type IntakeFiled, type LinearBinding, type LinearFiled, type LinearFiling } from "../factory/intake.js";
+import { issueMode, linearIdentifier, linearId, linearName, refusals, taskOfLinear, taskOfSlack, type SlackFiling, type SlackBinding, type IntakeFiled, type LinearBinding, type LinearFiled, type LinearFiling } from "../factory/intake.js";
 import { untrustedWords } from "../factory/untrusted.js";
 import { githubApp } from "../github/app.js";
 import { isGithubId } from "../github/ids.js";
@@ -156,31 +156,25 @@ export const linearSources = (origin: { linear: { identifier: string; author: st
 export async function fileSlackRequest(c: ItemsCtx, f: SlackFiling,
 	file: (profile: UserProfile, filing: { input: CreateItemInput; binding: SlackBinding }) => Promise<ItemSummary>): Promise<IntakeFiled> {
 	const { profile, github: connection } = c.vars;
-	if (!profile || profile.uid !== f.requesterUid || profile.uid !== c.key[0] || !mayUse(profile, config.access))
+	if (!profile || !mayUse(profile, config.access))
 		return { kind: "refused", reason: "This account cannot file work items here." };
 	if (!config.items) return { kind: "refused", reason: refusals.off };
 	const d = f.delivery;
-	const id = (v: unknown) => typeof v === "string" && /^[a-z0-9]{2,128}$/i.test(v);
-	if (!d || !id(d.teamId) || !id(d.userId) || !id(d.channelId) || !/^[CG]/.test(d.channelId) || !isGithubId(f.repository?.id)
-		|| typeof d.text !== "string" || typeof d.deliveryId !== "string"
-		|| !(d.kind === "app_mention" ? id(d.deliveryId) : d.kind === "command" && /^command:[a-f0-9]{64}$/.test(d.deliveryId))
-		|| !(d.threadTs === null ? d.kind === "command" : typeof d.threadTs === "string" && /^\d{1,16}\.\d{1,6}$/.test(d.threadTs)))
-		return { kind: "refused", reason: "Malformed Slack request." };
 	const parsed = taskOfSlack(d.text);
 	if (!parsed) return { kind: "refused", reason: "Include a description of the work to file." };
 	const app = githubApp();
 	if (!app || !connection) return { kind: "refused", reason: "Connect GitHub in Windlass Settings to file here." };
 	let repository;
 	try {
-		// Discovery may use a cached installation list. Confirm the repository still belongs to it.
-		const found = await resolveRepository(app, connection, f.repository.id, "read");
-		repository = (await resolveBoundRepository(app, connection, f.repository.id, found.installation.id, "write")).repository;
+		const { installation } = await resolveRepository(app, connection, f.repository.id, "read");
+		// Discovery may be cached. Verify current access to the mapped repository before starting work.
+		repository = (await resolveBoundRepository(app, connection, f.repository.id, installation.id, "write")).repository;
 	} catch (error) {
-		const problem = problemOf(error, connection.user.login, String(f.repository.id));
-		if (problem.code === "github_failed" || problem.code === "github_unreachable") throw problem;
+		const failure = problemOf(error, connection.user.login);
+		if (failure.code === "github_failed" || failure.code === "github_unreachable") throw failure;
 		return { kind: "refused", reason: "Your GitHub account needs write access to the mapped repository." };
 	}
-	const key = slackKey(d.teamId, d.deliveryId);
+	const key = "slack:" + createHash("sha256").update(`${d.teamId}:${d.deliveryId}`).digest("hex");
 	const held = c.vars.items.created.get(intakeScope(key));
 	if (held && c.vars.items.items.has(held.id)) return { kind: "exists", itemId: held.id };
 	const resumed = held && await existingItem(c, profile.uid, held.id);
@@ -189,10 +183,7 @@ export async function fileSlackRequest(c: ItemsCtx, f: SlackFiling,
 	const policy = await intakePolicy(c, repository.id);
 	const mode = issueMode(parsed.quick ? "quick" : "", [], process.env.WLP_FACTORY_ORCHESTRATE !== "0");
 	const input = intakeInput(parsed.task, mode.mode, { id: repository.id, branch: repository.defaultBranch }, policy, true, key);
-	const binding = { ...slackBinding(f), defaultPlace: policy.defaultPlace, modeReason: mode.reason };
+	const binding = { teamId: d.teamId, channelId: d.channelId, threadTs: d.threadTs, generation: f.generation, defaultPlace: policy.defaultPlace };
 	const item = await file(profile, { input, binding });
 	return { kind: "filed", itemId: item.id, state: item.state };
 }
-
-/** Hash the two verified IDs to stay inside the submission key length limit. */
-export const slackKey = (teamId: string, deliveryId: string) => "slack:" + createHash("sha256").update(`${teamId}:${deliveryId}`).digest("hex");

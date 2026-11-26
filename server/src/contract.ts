@@ -1605,7 +1605,7 @@ export interface ItemAgent {
 	fiveHour: { first: number; latest: number } | null;
 }
 
-/** How a work item was filed. "github" and "linear" are the two intakes that file from an issue (factory/intake.ts). */
+/** How a work item was filed. */
 export type ItemSource = "web" | "api" | "github" | "linear" | "slack";
 
 /** The PR closes this issue in the item's repository. The sender added the label or wrote the command. */

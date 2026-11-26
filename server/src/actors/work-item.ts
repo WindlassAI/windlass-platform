@@ -5,7 +5,6 @@
 import { randomUUID } from "node:crypto";
 import { performSlackWrite, slackEffects, SLACK_RECEIPTS, type SlackEffect } from "../slack/thread.js";
 import type { SlackBinding } from "../factory/intake.js";
-import type { workspaceOps } from "./slack-workspace.js";
 import type { LinearWrite } from "../linear/app.js";
 import { finishedItem, type TaskKind } from "../factory/readiness-track.js";
 import { environmentFailure } from "../factory/check-environment.js";
@@ -529,7 +528,7 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 		if (before.state === "failed" && !ENDED.has(next.state)) effects.push({ kind: "register_issue", key: String(next.revision) });
 	}
 	if (stored.meta.linear) effects.push(...linearEffects(before, next, !!handoff));
-	effects.push(...slackEffects(stored.meta, before, next));
+	if (stored.meta.slack) effects.push(...slackEffects(before, next));
 	const sibling = fact.kind === "feature_ready" && fact.repo && crossRepo(next) && repoOf(next, fact.repo) !== next.repos![0] ? fact.repo : null;
 	if (sibling && fact.kind === "feature_ready") effects.push({ kind: "register", key: fact.key + "/" + sibling, pr: fact.pr.number, head: fact.head, repo: sibling });
 	else if (fact.kind === "feature_ready" || (fact.kind === "published" && fact.pr)) effects.push({ kind: "register", key: fact.key, pr: fact.pr!.number, head: fact.head });
@@ -1620,14 +1619,10 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 	if (!stored || !live(stored.item, effect)) return false;
 	const { item, meta } = stored;
 	if (effect.kind === "slack_write") {
-		const binding = meta.slack;
-		if (meta.source !== "slack" || !binding?.generation) return true;
-		const { teamId, channelId, generation, threadTs } = binding;
-		const destination = { teamId, channelId, generation, threadTs, repositoryId: meta.repository.id };
-		await performSlackWrite(c.db, destination, item.id, effect, input => {
-			const workspace: ReturnType<typeof workspaceOps> = c.client().slackWorkspace.get([teamId], { params: serviceParams() });
-			return workspace.internalPost(input);
-		});
+		const binding = meta.slack!;
+		const workspace = c.client().slackWorkspace.get([binding.teamId], { params: serviceParams() });
+		await performSlackWrite(c.db, binding, item.id, effect, (message, thread) =>
+			workspace.internalPost(binding.channelId, binding.generation, message, thread));
 		return true;
 	}
 	if (effect.kind === "linear_write") {
@@ -2177,7 +2172,7 @@ export const workItem = actor({
 				effects = started.effects;
 				if (input.meta.linear) effects.push(...linearEffects(input.item, item, false));
 			}
-			effects.push(...slackEffects(input.meta, null, item));
+			if (input.meta.slack) effects.push(...slackEffects(null, item));
 			await c.db.transaction(async (tx) => {
 				if (input.meta.github) {
 					await tx.execute("INSERT INTO github_binding VALUES(1,?)", String(input.meta.github.installationId));

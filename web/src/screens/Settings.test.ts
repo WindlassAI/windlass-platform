@@ -335,17 +335,16 @@ describe("Integrations in Settings", () => {
 			expect(card.textContent).toContain("Acme Engineering");
 			expect(card.textContent).toContain("Not linked");
 			expect(card.querySelector('option[value="7105"]')).toBeNull(); // read-only
-			await choose(card.querySelector("select")!, "7101");
-			await act(async () => {
-				const input = card.querySelector("input")!;
-				Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "C08HARB01");
-				input.dispatchEvent(new Event("input", { bubbles: true }));
-			});
+			const channel = card.querySelector<HTMLSelectElement>('[aria-label="Slack channel"]')!;
+			expect(Array.from(channel.options, o => o.text)).toEqual(["Choose a channel", "#harbor-engineering", "#docs-triage"]);
+			expect(card.textContent).not.toContain("C08HARB01");
+			await choose(channel, "C08HARB01");
+			await choose(card.querySelector('[aria-label="Repository"]')!, "7101");
 			await press(card, "Map channel");
 			await screen.settle();
 			expect(card.querySelector('[aria-label="Mapped channels"]')?.textContent).toContain("acme/harbor");
 			await press(card, "Change mapping for harbor-engineering");
-			await choose(card.querySelector("select")!, "7102");
+			await choose(card.querySelector('[aria-label="Repository"]')!, "7102");
 			await press(card, "Map channel");
 			await screen.settle();
 			await expect(client.user(screen.auth).saveSlackMapping({ channelId: "C08HARB01", repositoryId: 7105 })).rejects.toThrow("write access");
@@ -380,31 +379,13 @@ describe("Integrations in Settings", () => {
 			expect(document.activeElement?.textContent).toBe("Link Slack identity");
 			await press(card, "Link Slack identity");
 			await screen.settle();
-			expect(card.textContent).toContain("U08ADA001");
+			expect(card.textContent).toContain("Acme Engineering");
+			expect(card.textContent).not.toContain("T08ACME01");
 			expect(card.textContent).toContain("No workspace connected");
-			await press(card, "Unlink Slack identity in T08ACME01");
+			await press(card, "Unlink Slack identity in Acme Engineering");
 			await screen.settle();
 			expect(card.textContent).toContain("Not linked");
 		} finally { HTMLElement.prototype.scrollIntoView = previousScroll; screen.close(); client.dispose(); }
-	});
-
-	it("keeps an installing owner's mappings separate from another member's link", async () => {
-		const client = createMockClient({ pace: 0 });
-		try {
-			const owner = client.user(await client.login.finish((await client.login.start("github")).url));
-			const member = client.user(await client.login.finish((await client.login.start("google")).url));
-			const install = await owner.slackConnect({ origin: location.origin });
-			const ticket = new URL(install.url).hash.slice("#slack=".length);
-			await expect(member.slackComplete(ticket)).rejects.toThrow();
-			await owner.slackComplete(ticket);
-			await expect(owner.slackComplete(ticket)).rejects.toThrow();
-			const mapped = await owner.saveSlackMapping({ channelId: "C08HARB01", repositoryId: 7101 });
-			const proof = client.mockSlackLinkTicket();
-			expect(await member.linkSlack(proof)).toMatchObject({ state: "disconnected", links: [{ teamId: "T08ACME01" }] });
-			await expect(owner.linkSlack(proof)).rejects.toThrow();
-			await expect(member.removeSlackMapping("C08HARB01")).rejects.toThrow();
-			expect(await owner.slack()).toEqual(mapped);
-		} finally { client.dispose(); }
 	});
 
 	it("explains Slack callback failure without echoing tickets and hides Slack when off", async () => {

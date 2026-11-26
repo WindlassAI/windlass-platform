@@ -118,36 +118,27 @@ export interface LinearBinding {
 	modeReason?: string | null;
 }
 
-/** Signed delivery routed to the linked requester's user actor by the channel mapping. */
 export interface SlackFiling {
-	requesterUid: string;
-	repository: { id: GithubId };
-	/** From the workspace lookup, not the Slack payload. Without it filing cannot authorize replies. */
-	generation?: string;
 	delivery: SlackDelivery;
+	repository: { id: GithubId };
+	generation: string;
 }
 
-/** Only routing identifiers, never message text, OAuth tokens or response URLs. */
-export interface SlackBinding extends Pick<SlackDelivery, "kind" | "deliveryId" | "teamId" | "channelId" | "userId" | "threadTs"> {
-	generation?: string;
+export interface SlackBinding {
+	teamId: string;
+	channelId: string;
+	threadTs: string | null;
+	generation: string;
 	defaultPlace?: ItemPlaceDefaults;
-	modeReason?: string | null;
-}
-
-/** Keep the verified mapping handle and thread, never the signed request body. */
-export function slackBinding({ delivery, generation }: SlackFiling): SlackBinding {
-	const { kind, deliveryId, teamId, channelId, userId, threadTs } = delivery;
-	return { kind, deliveryId, teamId, channelId, userId, threadTs, generation };
 }
 
 export function taskOfSlack(raw: string) {
-	const text = plain(raw.slice(0, 4_000)).replace(/\r\n?|[\u2028\u2029]/g, "\n");
-	const quick = quickToken.test(text);
+	const text = plain(raw).replace(/\r\n?|[\u2028\u2029]/g, "\n");
 	const description = text.replace(quickToken, "").trim();
 	if (!description) return null;
-	const quoted = description.split("\n").map(line => "> " + line).join("\n");
-	return { quick, task: { title: cut("> " + description.split("\n")[0], MAX_TITLE_CHARS),
-		body: "The following Slack message is quoted data describing the requested work:\n" + quoted, acceptance: [] } };
+	const { task } = taskOfText({ title: description.split("\n")[0], fallbackTitle: "Slack request", body: description,
+		from: "Filed from a Slack message.", by: "a Slack member", tracker: "Slack", trusted: false, note: "" });
+	return { quick: quickToken.test(text), task };
 }
 
 export type Intake =

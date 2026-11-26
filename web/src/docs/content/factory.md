@@ -123,16 +123,9 @@ Removing a label, unassigning, editing or closing the Linear issue leaves the it
 
 ### From Slack
 
-In a channel [mapped to a repository](/docs/settings#slack), mention the bot or use the slash command. For example:
+In a [mapped channel](/docs/settings#slack), send `@Windlass Fix the setup guide` or `/windlass quick Fix the setup guide`. Put `quick` first to skip planning. The first time, follow the bot’s private link, confirm your Windlass account in Settings, then send the request again. You need write access to the mapped repository.
 
-- `@Windlass Add installation steps to the setup guide` uses **Plan first** where planning is enabled.
-- `/windlass quick Fix the broken link in the setup guide` skips planning. Put `quick` first in a mention or command to select **Quick**.
-
-**File as yourself.** If you haven’t linked yet, no item is filed. Sign in to your own Windlass account, open the private, single-use link from the bot, confirm the link in Settings, then send your request again. You need current write access to the channel’s mapped repository; the installer’s permissions don’t count. DMs and unmapped channels don’t file items.
-
-An accepted request starts an item, not a tracker issue or a draft. The Slack text is quoted as untrusted input. Normal saved defaults, queueing and the daily intake limit apply. Slack retrying the same delivery won’t create a second item.
-
-**Follow the thread.** For a mention, the acknowledgement and updates stay in the request’s thread. When a slash command has no parent message, the bot’s channel acknowledgement starts the thread. Look there for short links when a plan needs approval, a question needs an answer, a pull request opens, or the item finishes or fails. Open the item in Windlass to approve or answer; repository content isn’t copied into Slack beyond titles and links.
+The item uses your saved defaults and shares the GitHub and Linear daily limit. Windlass posts item links in the mention’s thread when a plan or question needs you, a pull request opens, or work ends. For a slash command, follow the thread under the bot’s acknowledgement.
 
 ### From the API
 

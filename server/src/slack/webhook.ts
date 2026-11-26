@@ -1,142 +1,78 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { config, slackConfig } from "../config.js";
+import { createClient } from "rivetkit/client";
+import { serviceParams } from "../auth.js";
+import { isActorGone } from "../actors/internal.js";
+import { config, ownEngineEndpoint, slackConfig } from "../config.js";
 import { AddressBudget, clientAddress, rateLimited } from "../http-limits.js";
+import type { Registry } from "../registry.js";
 
-export const SLACK_EVENTS_PATH = "/slack/events";
-export const SLACK_COMMANDS_PATH = "/slack/commands";
-
-/** Authenticated third-party input. Never forward Slack tokens, response URLs or the whole envelope. */
+export const SLACK_EVENTS_PATH = "/slack/events", SLACK_COMMANDS_PATH = "/slack/commands";
 export interface SlackDelivery {
-	kind: "app_mention" | "command";
-	/** Idempotency key within teamId: Slack event ID, or a digest of the private slash trigger. */
-	deliveryId: string;
-	teamId: string;
-	channelId: string;
-	userId: string;
-	text: string;
-	messageTs: string | null;
-	threadTs: string | null;
-	sentAt: number;
+	deliveryId: string; teamId: string; channelId: string; userId: string; threadTs: string | null; text: string;
 }
 
-/** Only slash commands may receive private text in their synchronous HTTP response. */
-export type SlackDispatch = "taken" | "duplicate" | "ignored" | { ephemeral: string };
-export interface SlackWebhookDeps {
-	dispatch(delivery: SlackDelivery): Promise<SlackDispatch>;
-	/** Read per request; null disables both routes. */
-	settings?: () => { signingSecret: string } | null;
-	now?: () => number;
-	dispatchTimeoutMs?: number;
+function parseEvent(raw: string): SlackDelivery | Response | null {
+	const body = JSON.parse(raw);
+	if (body?.type === "url_verification" && typeof body.challenge === "string") return Response.json({ challenge: body.challenge });
+	const e = body?.event;
+	if (body?.type !== "event_callback" || e?.type !== "app_mention" || e.bot_id || e.subtype || typeof e.text !== "string") return null;
+	const bot = body.authorizations?.find((a: { is_bot: boolean }) => a.is_bot)?.user_id;
+	if (e.user === bot || !/^[A-Za-z0-9]{1,128}$/.test(body.event_id ?? "") || !/^\d+\.\d+$/.test(e.thread_ts ?? e.ts ?? "")) return null;
+	const mention = /^<@([A-Z0-9]+)(?:\|[^>]+)?>\s*/.exec(e.text);
+	const text = mention && mention[1] === bot ? e.text.slice(mention[0].length) : e.text;
+	return { deliveryId: body.event_id, teamId: body.team_id, channelId: e.channel, userId: e.user, threadTs: e.thread_ts ?? e.ts, text };
 }
 
-export const MAX_WEBHOOK_BYTES = 1024 * 1024;
-export const MAX_TIMESTAMP_SKEW_MS = 5 * 60_000;
-const json = (status: number, body: unknown) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
-const ack = () => new Response(null, { status: 200, headers: { "cache-control": "no-store" } });
-const record = (v: unknown): Record<string, unknown> => v && typeof v === "object" && !Array.isArray(v) ? v as Record<string, unknown> : {};
-const id = (v: unknown): v is string => typeof v === "string" && /^[A-Za-z0-9]{2,128}$/.test(v);
-const channel = (v: unknown): v is string => id(v) && /^[CG]/.test(v);
-const MAX_TEXT = 4_000;
-const timestamp = (v: unknown): v is string => typeof v === "string" && /^\d{1,16}\.\d{1,6}$/.test(v);
-
-/** Hash the original bytes, not a decoded/re-encoded form or JSON document. */
-export function signBody(bytes: Uint8Array | string, timestampSeconds: string, secret: string): string {
-	return "v0=" + createHmac("sha256", secret).update(`v0:${timestampSeconds}:`).update(bytes).digest("hex");
+function parseCommand(raw: string): SlackDelivery | null {
+	if (!/^[a-z_]+=/.test(raw)) return null;
+	const form = new URLSearchParams(raw), trigger = form.get("trigger_id");
+	if (form.get("command") !== "/windlass" || !trigger) return null;
+	return { deliveryId: "command:" + createHash("sha256").update(trigger).digest("hex"), teamId: form.get("team_id") ?? "",
+		channelId: form.get("channel_id") ?? "", userId: form.get("user_id") ?? "", threadTs: form.get("thread_ts"), text: form.get("text") ?? "" };
 }
 
-function eventDelivery(body: Record<string, unknown>, sentAt: number): SlackDelivery | null {
-	const e = record(body.event);
-	if (body.type !== "event_callback" || e.type !== "app_mention" || e.bot_id || e.bot_profile || e.subtype || e.hidden) return null;
-	if (!id(body.team_id) || !id(body.event_id) || !channel(e.channel) || e.channel_type === "im" || e.channel_type === "mpim" || !id(e.user) || !timestamp(e.ts) || typeof e.text !== "string") return null;
-	if (e.thread_ts != null && !timestamp(e.thread_ts)) return null;
-	const bots = new Set((Array.isArray(body.authorizations) ? body.authorizations : []).map(record)
-		.filter(a => a.is_bot === true && id(a.user_id)).map(a => a.user_id));
-	if (bots.has(e.user)) return null;
-	let text = e.text.trim();
-	const recipient = /^<@([A-Z0-9]+)(?:\|[^>]+)?>\s*/.exec(text);
-	if (recipient && bots.has(recipient[1])) text = text.slice(recipient[0].length);
-	return { kind: "app_mention", deliveryId: body.event_id, teamId: body.team_id, channelId: e.channel, userId: e.user,
-		text: text.slice(0, MAX_TEXT), messageTs: e.ts, threadTs: e.thread_ts ?? e.ts, sentAt };
-}
-
-function commandDelivery(form: URLSearchParams, sentAt: number): SlackDelivery | null {
-	// Never persist the trigger capability itself. Hash it to recognize retries independently of signature time.
-	const single = (k: string) => form.getAll(k).length === 1 ? form.get(k) : null;
-	const teamId = single("team_id"), channelId = single("channel_id"), userId = single("user_id");
-	const trigger = single("trigger_id"), text = single("text");
-	if (single("command") !== "/windlass" || !id(teamId) || !channel(channelId) || single("channel_name") === "directmessage" || !id(userId) || text === null || !trigger || trigger.length > 512) return null;
-	const thread = single("thread_ts");
-	if (form.has("thread_ts") && !timestamp(thread)) return null;
-	const deliveryId = "command:" + createHash("sha256").update(trigger).digest("hex");
-	return { kind: "command", teamId, channelId, userId, deliveryId, text: text.trim().slice(0, MAX_TEXT), messageTs: null, threadTs: thread, sentAt };
-}
-
-export function slackWebhookRoute(deps: SlackWebhookDeps): (request: Request) => Promise<Response | null> {
-	const refusals = new AddressBudget(config.httpLimits.webhookRefusals);
-	return async request => {
-		const path = new URL(request.url).pathname;
-		if (path !== SLACK_EVENTS_PATH && path !== SLACK_COMMANDS_PATH) return null;
-		const settings = (deps.settings ?? slackConfig)();
-		if (!settings?.signingSecret) return json(404, { code: "not_found" });
-		const refuse = (status: number, code: string) => {
-			const seconds = refusals.refusal(clientAddress(request));
-			return seconds ? rateLimited(seconds, "Too many refused webhook requests.") : json(status, { code });
-		};
-		if (request.method !== "POST") return refuse(405, "method_not_allowed");
-		const stamp = request.headers.get("x-slack-request-timestamp") ?? "", signature = request.headers.get("x-slack-signature") ?? "";
-		if (!/^\d{1,12}$/.test(stamp) || !/^v0=[0-9a-f]{64}$/.test(signature)) return refuse(401, "bad_headers");
-		if (Number(request.headers.get("content-length")) > MAX_WEBHOOK_BYTES) return refuse(413, "body_too_large");
-
-		const chunks: Uint8Array[] = [];
-		let size = 0;
-		const reader = request.body?.getReader();
-		try {
-			while (reader) {
-				const { done, value } = await reader.read();
-				if (done) break;
-				size += value.byteLength;
-				if (size > MAX_WEBHOOK_BYTES) {
-					void reader.cancel().catch(() => undefined);
-					return refuse(413, "body_too_large");
-				}
-				chunks.push(value);
-			}
-		} catch { return refuse(400, "bad_body"); }
-		finally { reader?.releaseLock(); }
-		const bytes = Buffer.concat(chunks, size);
-		const expected = signBody(bytes, stamp, settings.signingSecret);
-		if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return refuse(401, "bad_signature");
-		const sentAt = Number(stamp) * 1000;
-		if (Math.abs((deps.now ?? Date.now)() - sentAt) > MAX_TIMESTAMP_SKEW_MS) return refuse(401, "stale_timestamp");
-
-		const events = path === SLACK_EVENTS_PATH;
-		const mediaType = request.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
-		if (mediaType !== (events ? "application/json" : "application/x-www-form-urlencoded")) return refuse(415, "bad_content_type");
-		let delivery: SlackDelivery | null;
-		try {
-			const raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-			if (events) {
-				const body = record(JSON.parse(raw));
-				if (body.type === "url_verification") {
-					return typeof body.challenge === "string" && body.challenge.length > 0 && body.challenge.length <= 4096
-						? json(200, { challenge: body.challenge }) : refuse(400, "bad_challenge");
-				}
-				delivery = eventDelivery(body, sentAt);
-			} else {
-				delivery = commandDelivery(new URLSearchParams(raw), sentAt);
-				if (!delivery) return refuse(400, "bad_command");
-			}
-		} catch { return refuse(400, "bad_body"); }
-		if (!delivery) return ack();
-		// A timed-out dispatch may still finish; the consumer must deduplicate by team and delivery id.
+let client: ReturnType<typeof createClient<Registry>> | undefined;
+const refusals = new AddressBudget(config.httpLimits.webhookRefusals);
+export async function slackWebhookRoute(request: Request): Promise<Response> {
+	if (!slackConfig()) return new Response(null, { status: 404 });
+	if (request.method !== "POST") return new Response(null, { status: 405 });
+	const refuse = () => {
+		const wait = refusals.refusal(clientAddress(request));
+		return wait ? rateLimited(wait, "Too many refused requests.") : new Response(null, { status: 401 });
+	};
+	const stamp = request.headers.get("x-slack-request-timestamp") ?? "", signature = request.headers.get("x-slack-signature") ?? "";
+	if (!/^\d{1,12}$/.test(stamp) || Math.abs(Date.now() - Number(stamp) * 1000) > 300_000 || !/^v0=[a-f0-9]{64}$/.test(signature)) return refuse();
+	const chunks: Uint8Array[] = [];
+	let length = 0;
+	const reader = request.body?.getReader();
+	try {
+		while (reader) {
+			const { value, done } = await reader.read();
+			if (done) break;
+			length += value.byteLength;
+			if (length > 1024 * 1024) { void reader.cancel().catch(() => {}); return new Response(null, { status: 413 }); }
+			chunks.push(value);
+		}
+	} finally { reader?.releaseLock(); }
+	const bytes = Buffer.concat(chunks, length);
+	const mac = createHmac("sha256", process.env.WLP_SLACK_SIGNING_SECRET!).update(`v0:${stamp}:`).update(bytes).digest();
+	if (!timingSafeEqual(Buffer.from(signature.slice(3), "hex"), mac)) return refuse();
+	let delivery;
+	try {
+		const raw = bytes.toString("utf8");
+		delivery = new URL(request.url).pathname === SLACK_EVENTS_PATH ? parseEvent(raw) : parseCommand(raw);
+	} catch { return new Response(null, { status: 400 }); }
+	if (delivery instanceof Response) return delivery;
+	if (delivery && /^T[A-Z0-9]+$/.test(delivery.teamId) && /^[CG][A-Z0-9]+$/.test(delivery.channelId) && /^[UW][A-Z0-9]+$/.test(delivery.userId)) {
+		delivery.text = delivery.text.slice(0, 4000);
+		client ??= createClient<Registry>({ endpoint: ownEngineEndpoint() });
+		const workspace = client.slackWorkspace.get([delivery.teamId], { params: serviceParams() });
+		// Only wait for durable admission. Slack can resend the same event if the engine is slow.
 		let timer: NodeJS.Timeout | undefined;
 		try {
-			const outcome = await Promise.race([deps.dispatch(delivery), new Promise<never>((_, reject) => {
-				timer = setTimeout(() => reject(new Error("dispatch timeout")), deps.dispatchTimeoutMs ?? 2500).unref();
-			})]);
-			if (!events && typeof outcome === "object") return json(200, { response_type: "ephemeral", text: outcome.ephemeral });
-			return ack();
-		} catch { return json(503, { code: "unavailable" }); }
+			await Promise.race([workspace.internalReceive(delivery), new Promise<never>((_, reject) => { timer = setTimeout(reject, 2400); })]);
+		} catch (error) { if (!isActorGone(error)) return new Response(null, { status: 503 }); }
 		finally { clearTimeout(timer); }
-	};
+	}
+	return new Response(null, { status: 200 });
 }

@@ -40,21 +40,9 @@ Where Linear is available, connect your workspace and map each team to a GitHub 
 
 ### Slack
 
-Where Slack is available, open **Settings → Slack** to connect a workspace. Approve the app in Slack, then return to Settings in the Windlass account that started the connection. In the channel, use `/invite @Windlass`. Copy its ID from the channel details (for example, `C0123456789`) and map that ID to a repository you can write to. The installing owner manages the mappings. The channel can be public or private, but not archived or a direct message. Remove a mapping to stop filing from that channel.
+Choose **Connect Slack…**, approve the workspace, and invite Windlass to a public or private channel. In Settings, choose **#channel** and a repository you can push to, then **Map channel**. Disconnecting removes the bot token, member links and mappings. Existing items stay. See [From Slack](/docs/factory#from-slack).
 
-Installing the bot and linking a member are separate steps. Each person who wants to file work follows their own private, single-use link from Slack while signed in to Windlass. Unlink your identity to stop filing as that member; disconnect the workspace to stop using its bot connection.
-
-To check the mapping, try `@Windlass quick Fix the setup guide typo` in the channel. Windlass checks **your** write access, not the installer’s. The first word `quick` skips planning. Follow the item link in the request’s thread for questions, a plan to approve, the PR and the outcome. For `/windlass` without a parent message, follow the thread under the bot’s acknowledgement instead. See [From Slack](/docs/factory#from-slack).
-
-**For deployment operators.** Set `WLP_SLACK_CLIENT_ID`, `WLP_SLACK_CLIENT_SECRET` and `WLP_SLACK_SIGNING_SECRET` on the server. For example, with `WLP_PUBLIC_URL=https://windlass.example.com`, the default OAuth v2 redirect URL is `https://windlass.example.com/slack/callback`. Register the URLs on that same server in your Slack app:
-
-| Slack app setting | Path on the Windlass server |
-| --- | --- |
-| OAuth redirect URL | `/slack/callback` (or the exact URL set in `WLP_SLACK_REDIRECT_URL`) |
-| Event Subscriptions → Request URL | `/slack/events`; subscribe to the `app_mention` bot event |
-| Slash Commands → `/windlass` → Request URL | `/slack/commands` |
-
-Request these **bot token scopes**: `app_mentions:read` for mentions, `commands` for the slash command, `chat:write` for replies, and `channels:read` and `groups:read` to check public and private channels. No user token scopes are required.
+For deployment operators, set `WLP_SLACK_CLIENT_ID`, `WLP_SLACK_CLIENT_SECRET` and `WLP_SLACK_SIGNING_SECRET`. Under `WLP_PUBLIC_URL`, register `/slack/callback` for OAuth, `/slack/events` for the `app_mention` bot event, and `/slack/commands` for the `/windlass` command. The bot scopes are `app_mentions:read`, `commands`, `chat:write`, `channels:read` and `groups:read`.
 
 ### API tokens
 

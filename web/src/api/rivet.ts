@@ -450,6 +450,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			actOnItem: (id, action) => act("actOnItem", { id, action }),
 			factoryLimits: () => act("factoryLimits"),
 			slack: () => act("slack"),
+			slackChannels: () => act("slackChannels"),
 			slackConnect: (input) => act("slackConnect", input),
 			slackComplete: (ticket) => act("slackComplete", ticket),
 			saveSlackMapping: (input) => act("saveSlackMapping", input),

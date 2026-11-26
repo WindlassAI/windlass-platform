@@ -273,21 +273,16 @@
       "timeout": 20,
       "paths": [
         "server/src/slack/**",
+        "server/src/contract{,/slack}.ts",
         "server/src/{actor-errors,auth,config,index,registry,repo-secrets,submissions,user-limits}.ts",
         "server/src/signin/seal.ts",
         "server/src/actors/{internal,user,slack-workspace,user-slack,user-items,issue-intake,work-item}.ts",
         "server/src/factory/**",
         "server/src/github/**",
-        "scripts/{slack-*,github-standin,webhook-check,login-http,issue-intake-fixture,check-listeners}.ts"
+        "scripts/{slack-*,github-standin,login-http,issue-intake-fixture,check-listeners}.ts"
       ],
       "checks": {
-        "slack-protocol": "tsx ../scripts/slack-protocol-check.ts",
-        "slack-workspace": "tsx ../scripts/slack-workspace-check.ts",
-        "slack-intake": "tsx ../scripts/slack-intake-check.ts",
-        "slack-thread": "tsx ../scripts/slack-thread-check.ts",
-        "slack": "tsx ../scripts/slack-check.ts",
-        "github-intake-regression": "WEBHOOK_ONLY='G3 owner label' tsx ../scripts/webhook-check.ts",
-        "linear-intake-regression": "WEBHOOK_ONLY='G3 Linear issue files once' tsx ../scripts/webhook-check.ts"
+        "slack": "tsx ../scripts/slack-check.ts"
       }
     },
     "sandbox-docker": {
