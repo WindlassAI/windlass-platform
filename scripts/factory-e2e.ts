@@ -334,7 +334,8 @@ await check("repo-setup: keep the failed phase on the owner's run", async () => 
 		const repos = ["setup-no-filing", "setup-refused", "setup-startup"].map(name =>
 			standin.addRepository({ owner: "ada", name, installation, private: false, files: { "README.md": "# Example" } }));
 		const { user } = await world(server, standin, { WLP_FEATURE_TEST_GIT: join(server.storage, "git"), WLP_TEST_SETUP_MODEL: "1", WLP_ALLOWED_EMAILS: "ada@example.invalid" }, "routing");
-		const guideRefusal = "AGENTS.md: include ## Quick commands with cited content that survives the evidence checks.";
+		// A guide with unsupported lines is refused whole, naming the lines; the stored error is shortened, so match its start.
+		const guideRefusal = "AGENTS.md: fix or remove these lines, then file the whole guide again: line 3: The cited evidence does not support the command; line 4: Contains private or excluded content;";
 		for (const [name, error, rejections] of [
 			["setup-no-filing", "The drafting agent stopped without proposing any guides. Run setup again.", []],
 			["setup-refused", "The proposed guides were refused. " + guideRefusal, ["Check the number of entries in each list.", "File the three requested checks.", guideRefusal]],
@@ -347,7 +348,7 @@ await check("repo-setup: keep the failed phase on the owner's run", async () => 
 				const { readiness } = await user.repository(repo.id);
 				return readiness.run === "finished" && readiness;
 			}, 35_000);
-			assert(run.error === error, "Wrong owner error: " + run.error);
+			assert(run.error?.startsWith(error), "Wrong owner error: " + run.error);
 			const d = run.diagnosis;
 			const opened = name !== "setup-startup";
 			assert(d?.phase === "draft" && d.toolOffered === opened && d.attempts === rejections.length, "Missing filing diagnostics");
@@ -362,7 +363,7 @@ await check("repo-setup: keep the failed phase on the owner's run", async () => 
 				assert(lines[1].text === "[redacted]" && !server.text.includes("make invented"), "A private excerpt escaped the diagnosis.");
 				assert(!server.text.includes("Owner preview"), "Owner preview appeared in a server log.");
 			}
-			assert(JSON.stringify(d.rejections) === JSON.stringify(rejections), "Lost rejection reasons");
+			assert(d.rejections.length === rejections.length && rejections.every((r, i) => d.rejections[i]?.startsWith(r)), "Lost rejection reasons");
 			assert(d.model === (opened ? "account-default" : "saved-choice"), "Wrong setup model");
 			assert(d.outcome === (opened ? "succeeded" : "failed") && d.stopReason === (opened ? "end_turn" : "unknown_model"), "Lost stop reason");
 			assert(opened ? d.lastMessage?.startsWith("Stopped [redacted]") && d.lastMessage.length === 300 : d.lastMessage === null, "Wrong last message");

@@ -106,7 +106,7 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 			lines: [8, 11, 12].map(line => ({ line, evidence: line === 12 ? { file: "src/f0.ts", line: 1 } : ref })) });
 		const call = { messageId: "draft", callId: "file", arguments: {
 			score: ["setup", "checks", "guide"].map(id => ({ id, pass: false, reason: "Missing proof." })),
-			files: [...[setupGuide("", revise ? "# Read the repository guide" : "# Working here", "See `README.md`.", "Run `missing.sh`.\nRun `echo hello`.\npassword=fixture-only"),
+			files: [...[setupGuide("", revise ? "# Read the repository guide" : "# Working here", "See `README.md`."),
 				setupGuide("src", "# Source files", "Run the check from the root.")].map(f => ({ ...f, lines: f.lines.map(r => ({ ...r, noteId: f.kind === "guide" && r.noteId ? noteId : undefined })) })),
 				skill("read-source", "README.md"), ...(notes.some(n => n.verdict === "question") ? [skill("first-draft", "README.md")] : []), skill("bad-read", "src"), skill("bad-reference", "missing"),
 				...(revise && notes.some(n => n.verdict === "question") ? [skill("unreviewed", "README.md")] : [])],
