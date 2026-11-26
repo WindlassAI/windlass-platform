@@ -3,7 +3,7 @@ import { modelWords } from "../lib/models";
 import { MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemBudget, type SubtaskBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
-import { ChevronIcon, InfoIcon, WarnIcon } from "../components/Icons";
+import { ArrowDownIcon, ChevronIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { ItemSpend } from "../components/ItemSpend";
 import { FOLD_WORDS, FoldList, FoldToggle, LongText, PathList } from "../components/Fold";
 import { showsSubtasks } from "./Subtasks";
@@ -92,6 +92,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 			<p className="item-question-text">
 				{single ? view.question.text : <>{replan ? `${view.replanWhy ? view.replanWhy + ". " : ""}Review the revised plan` : "Review the plan"}: {tasks} subtasks{finished ? " to run" : ""}, {compact(totalTokens)} of {compact(plan.budget.tokens)} tokens.</>}
 			</p>
+			{!single && <PlanJump view={view} plan={plan} replan={replan} />}
 
 			{!single && view.question.criticReason && !view.question.criticFindings && <p className="callout callout-warn">{view.question.criticReason}</p>}
 			{view.question.criticFindings && <div className="callout callout-warn"><div>Critic recommends revision<ul>{view.question.criticFindings.map((finding, i) => <li key={i}>{finding}</li>)}</ul></div></div>}
@@ -195,6 +196,45 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 	);
 }
 
+/** Parts a re-plan adds and drops, against the subtasks already started or finished. */
+export function replanChanges(view: Pick<ItemView, "children" | "completedSubtasks">, plan: Pick<FeaturePlan, "subtasks">): { added: string[]; dropped: string[] } {
+	const started = new Set([...(view.completedSubtasks ?? []), ...(view.children ?? []).flatMap((child) => (child.parent ? [child.parent.key] : []))]);
+	const keys = new Set(plan.subtasks.map((task) => task.key));
+	return {
+		added: plan.subtasks.filter((task) => !started.has(task.key)).map((task) => task.title),
+		dropped: (view.children ?? []).filter((child) => child.parent && !keys.has(child.parent.key) && !["done", "cancelled", "failed"].includes(child.state)).map((child) => child.title),
+	};
+}
+
+function changeWords({ added, dropped }: { added: string[]; dropped: string[] }): string | null {
+	const list = (titles: string[]) => titles.slice(0, 2).join("; ") + (titles.length > 2 ? ` and ${titles.length - 2} more` : "");
+	const words = [added.length ? `Adds ${plural(added.length, "part")}: ${list(added)}` : null, dropped.length ? `Drops ${plural(dropped.length, "part")}: ${list(dropped)}` : null].filter(Boolean);
+	return words.length ? `${words.join(". ")}.` : null;
+}
+
+/** The plan sits below the question: a clear way to it, and for a re-plan what changed. */
+function PlanJump({ view, plan, replan }: { view: ItemView; plan: FeaturePlan; replan: boolean }) {
+	const changed = replan ? changeWords(replanChanges(view, plan)) : null;
+	const show = () => {
+		const target = document.getElementById(`feature-plan-${plan.version}`);
+		if (!target) return;
+		target.scrollIntoView({ behavior: "smooth", block: "start" });
+		target.classList.remove("plan-flash");
+		void target.offsetWidth;
+		target.classList.add("plan-flash");
+		target.querySelector<HTMLElement>("h2")?.focus({ preventScroll: true });
+	};
+	return (
+		<div className="plan-jump">
+			{changed ? <p className="plan-jump-changed">{changed}</p> : null}
+			<button type="button" className="button button-outline plan-jump-button" onClick={show}>
+				{replan ? "Read the revised plan" : "Read the plan"}
+				<ArrowDownIcon size={12} />
+			</button>
+		</div>
+	);
+}
+
 export function questionParts(question: Pick<FeaturePlan["questions"][number], "text" | "why">): { ask: string; why: string | null } {
 	if (question.why) return { ask: question.text, why: question.why };
 	// Without separate background, keep the question sentence visible.
@@ -293,7 +333,7 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 	const body = `${heading}-body`;
 	return (
 		<section className="usage-section feature-plan" aria-labelledby={heading}>
-			<h2 className="usage-title" id={heading}>
+			<h2 className="usage-title" id={heading} tabIndex={-1}>
 				The plan
 				<span className="usage-count">
 					v{plan.version} · {plan.status}

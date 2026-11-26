@@ -5,7 +5,7 @@
  * version shown and a version that moved on meanwhile, the server's refusal on a repository without
  * checks, and the subtasks under a running feature.
  */
-import type { AuthResult, CreateItemInput, ItemAction, ItemView } from "@contract";
+import type { AuthResult, CreateItemInput, ItemAction, ItemView, PlanSubtask } from "@contract";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,7 +18,7 @@ import { budgetProblems, subtaskFloor } from "../lib/feature";
 import { machineDetailsProblem, tagsOf } from "../lib/machines";
 import { AppProvider } from "../state/app";
 import { PLAN_QUESTION_WHY_CHARS, validatePlan } from "../../../server/src/factory/feature-plan";
-import { questionParts } from "./FeaturePlan";
+import { replanChanges, questionParts } from "./FeaturePlan";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 vi.setConfig({ testTimeout: 30_000 });
@@ -876,5 +876,15 @@ describe("a plan question's background", () => {
 		expect(questionParts({ text })).toEqual({ ask: "Is this exception to automatic next-prompt execution acceptable?", why: "Work-item feedback on Docker, hardened stops until its owner chooses Run it anyway. Personal sessions have no equivalent question. Recommended: hold it and ask the owner." });
 		expect(questionParts({ text: "Round half up?" })).toEqual({ ask: "Round half up?", why: null });
 		expect(questionParts({ text: "Round half up?", why: "Money is rounded so." })).toEqual({ ask: "Round half up?", why: "Money is rounded so." });
+	});
+});
+
+describe("replanChanges", () => {
+	it("names the parts a re-plan adds and the running ones it drops", () => {
+		const task = (key: string, title: string) => ({ key, title }) as PlanSubtask;
+		const child = (key: string, title: string, state: ItemView["state"]) => ({ title, state, parent: { itemId: "f", key, title } }) as NonNullable<ItemView["children"]>[number];
+		const view = { completedSubtasks: ["a"], children: [child("a", "A", "done"), child("b", "B", "working"), child("c", "C", "failed")] };
+		expect(replanChanges(view, { subtasks: [task("a", "A"), task("d", "Fix the connection")] })).toEqual({ added: ["Fix the connection"], dropped: ["B"] });
+		expect(replanChanges(view, { subtasks: [task("a", "A"), task("b", "B")] })).toEqual({ added: [], dropped: [] });
 	});
 });

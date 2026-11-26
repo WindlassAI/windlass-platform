@@ -3342,3 +3342,36 @@ a.subtask-chip:hover {
 		border-top: 1px solid var(--line);
 	}
 }
+/* A plan question's way to the plan below it, and what a re-plan changed. */
+.plan-jump {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: var(--space-2) var(--space-3);
+}
+.plan-jump-changed {
+	flex: 1 1 32ch;
+	max-width: 74ch;
+	color: var(--ink-dim);
+	overflow-wrap: anywhere;
+}
+.plan-jump-button {
+	gap: 6px;
+}
+[id^="feature-plan-"] {
+	scroll-margin-top: 72px;
+}
+.feature-plan .usage-title:focus {
+	outline: none;
+}
+.plan-flash > .feature-plan {
+	border-radius: 10px;
+	animation: plan-flash 1.6s ease-out;
+}
+@keyframes plan-flash {
+	0%, 30% { box-shadow: 0 0 0 12px var(--accent-wash); }
+	100% { box-shadow: 0 0 0 12px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.plan-flash > .feature-plan { animation: none; }
+}
