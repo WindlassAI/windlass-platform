@@ -52,7 +52,11 @@ function assert(condition: unknown, message: string): asserts condition {
 	if (!condition) throw new Error(message);
 }
 
+// CI gives the long autonomy case to the machine shard and keeps the other reviewer cases together.
+const skip = process.env.FACTORY_SKIP;
+
 async function check(name: string, body: () => Promise<string | undefined>): Promise<void> {
+	if (skip && name.startsWith(skip)) return void console.log(`SKIP  ${name}  (in FACTORY_SKIP)`);
 	if (only.length > 0 && !only.some((prefix) => name.startsWith(prefix))) return void console.log(`SKIP  ${name}  (not in FACTORY_ONLY)`);
 	try {
 		const detail = await body();

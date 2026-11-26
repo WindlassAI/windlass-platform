@@ -1,5 +1,5 @@
 {
-  "about": "Which heavy checks a change runs (.github/workflows/ci-heavy.yml, scripts/ci-heavy.mjs, docs/testing.md). A changed file runs every group whose paths match it. A change to a core path runs every group, a docs path runs nothing, and a path no group lists runs nothing heavy. Commands run in server/ with its tsx on PATH. images: the local sandbox images a group needs (base, shots, and harness for the Claude and OpenCode images built on base, codex for the Codex image built on base). A group with shards runs as one job per shard; a shard can narrow the checks (only), add environment (env) or arguments (args), name its own images, and ask for the full git history (history), which runner-check needs to build an older runner from its commit.",
+  "about": "Which heavy checks a change runs (.github/workflows/ci-heavy.yml, scripts/ci-heavy.mjs, docs/testing.md). A changed file runs every group whose paths match it. A change to a core path runs every group, a docs path runs nothing, and a path no group lists runs nothing heavy. Commands run in server/ with its tsx on PATH. images: the local sandbox images a group needs (base, shots, or a claude, opencode or codex harness built on base). A group with shards runs as one job per shard; a shard can narrow the checks (only), add environment (env) or arguments (args), name its own images, and ask for the full git history (history), which runner-check needs to build an older runner from its commit.",
   "core": [
     "package.json",
     "pnpm-lock.yaml",
@@ -177,6 +177,10 @@
         "scripts/runner-e2e.ts",
         "scripts/runner-socket-probe.ts"
       ],
+      "shards": {
+        "protocol": { "only": ["runner-e2e"], "env": { "RUNNER_E2E_ONLY": "^(?!paused item turn resumes|a restored item process)" } },
+        "machines": { "only": ["frame-auth", "machine", "runner-e2e", "runner-socket-probe"], "env": { "RUNNER_E2E_ONLY": "^(paused item turn resumes|a restored item process)" } }
+      },
       "checks": {
         "frame-auth": "tsx ../scripts/frame-auth-check.ts",
         "machine": "tsx ../scripts/machine-check.ts",
@@ -215,9 +219,10 @@
         "scripts/factory-e2e.ts"
       ],
       "shards": {
-        "1": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "user-limits,reviewer,schedules,memory,machine" } },
-        "2": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "api,on,ci,untrusted,ask,person,gate,handoff,sleep,deploy,creation" } },
-        "3": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "capacity,screenshots,allowance,off,cross-repo,repo-setup" } },
+        "1": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "reviewer", "FACTORY_SKIP": "reviewer: autonomy" } },
+        "2": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "api,on,ci,untrusted,ask,person,gate,handoff,creation" } },
+        "3": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "capacity,screenshots,allowance,off,cross-repo,repo-setup,sleep,deploy" } },
+        "4": { "only": ["factory-e2e"], "env": { "FACTORY_ONLY": "user-limits,schedules,memory,machine,reviewer: autonomy" } },
         "orchestration": { "env": { "FACTORY_ONLY": "orchestrator" } }
       },
       "checks": {
@@ -303,9 +308,9 @@
         "scripts/e2b-snapshot-check.ts"
       ],
       "shards": {
-        "1": { "only": ["sandbox-1", "github-docker", "verified-docker"] },
+        "1": { "only": ["sandbox-1", "verified-docker"], "images": ["base", "shots"] },
         "2": { "only": ["sandbox-2", "e2b-provider-docker", "e2b-snapshot-docker", "sizing-docker"] },
-        "mcp": { "only": ["mcp", "model-relay-docker", "hosted-key-docker", "windlass-key-docker"] }
+        "mcp": { "only": ["github-docker", "mcp", "model-relay-docker", "hosted-key-docker", "windlass-key-docker"] }
       },
       "checks": {
         "sandbox-1": "WLP_CHECK_SECTIONS='image,screenshot images,profiles,provider,session data volumes,protocol client,seccomp,reviewer commands,profile docker-' tsx ../scripts/sandbox-check.ts",
@@ -424,12 +429,14 @@
         "scripts/opencode-provider-registry.mjs"
       ],
       "shards": {
-        "runner": { "only": ["runner"], "images": ["base"], "history": true },
-        "suites": { "only": ["runner-profiles", "runner-harness", "runner-sizing", "runner-snapshots", "runner-screenshots"], "images": ["base", "shots"], "history": true },
-        "harness": { "only": ["claude-relay-docker", "opencode-docker", "runner-egress-live", "runner-session-egress"], "images": ["base", "harness"] }
+        "runner": { "only": ["runner"], "images": ["base"] },
+        "outages": { "only": ["runner-outages"], "images": ["base"] },
+        "suites": { "only": ["runner-profiles", "runner-harness", "runner-sizing", "runner-snapshots", "runner-screenshots", "opencode-docker"], "images": ["base", "shots", "opencode"], "history": true },
+        "harness": { "only": ["claude-relay-docker", "runner-egress-live", "runner-session-egress"], "images": ["base", "claude"] }
       },
       "checks": {
-        "runner": "tsx ../scripts/runner-check.ts --main-only",
+        "runner": "tsx ../scripts/runner-check.ts --service-only",
+        "runner-outages": "tsx ../scripts/runner-check.ts --outages-only",
         "runner-profiles": "tsx ../scripts/runner-check.ts --profiles-only",
         "runner-harness": "tsx ../scripts/runner-check.ts --harness-only",
         "runner-sizing": "tsx ../scripts/runner-check.ts --sizing-only",
