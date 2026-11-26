@@ -71,8 +71,6 @@ Copy the prefix from the script. A typo can leave every matching case unexecuted
 
 ## Leave suites to CI
 
-The advice below is for focused development, not maintainer PR validation. For platform changes, maintainers run `WLP_SANDBOX=fake pnpm test`; for real sandbox behavior changes, follow the [Docker checks](./CONTRIBUTING.md#running-the-checks).
-
 Never run whole suites locally. Root `pnpm test` takes about 30 minutes.
 CI splits it into `pnpm test:factory`, `pnpm test:core`, `pnpm test:usage` and `pnpm test:resume`.
 Leave image-backed checks to CI. Heavy checks use changed paths to select jobs. To see which jobs a branch selects, run the selector.
