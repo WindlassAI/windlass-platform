@@ -10,14 +10,22 @@ export const PUBLISH_MS = 60_000;
 type Decision = { path: string; verdict: "ok" | "fix" | "drop"; findings: string[] };
 
 function reviewFiles(rows: unknown, draft: AcceptedDraft): Decision[] {
-	const missing = new Set(draft.files.keys());
-	if (!Array.isArray(rows) || rows.length !== missing.size) throw Error("Review each proposed file once.");
+	if (!Array.isArray(rows)) throw Error("File one verdict per proposed file: " + [...draft.files.keys()].join(", ") + ".");
+	const decisions = new Map<string, Decision>();
 	for (const r of rows) {
-		if (!r || !missing.delete(r.path) || !["ok", "fix", "drop"].includes(r.verdict) ||
-			!Array.isArray(r.findings) || r.findings.length > 3 || (r.verdict !== "ok" && !r.findings.length) ||
-			r.findings.some((s: unknown) => typeof s !== "string" || !s.trim() || s.length > 200)) throw Error("Give each file a verdict and up to three short findings.");
+		const path = r && typeof r.path === "string" ? r.path : "";
+		if (!draft.files.has(path)) throw Error(`${path || "A row"} is not one of the proposed files: ${[...draft.files.keys()].join(", ")}.`);
+		if (decisions.has(path)) throw Error(`${path} has more than one verdict.`);
+		if (!["ok", "fix", "drop"].includes(r.verdict)) throw Error(`${path}: the verdict must be ok, fix or drop.`);
+		// Long or extra findings are trimmed rather than refused: the first three, each cut to 200 characters.
+		const findings = (Array.isArray(r.findings) ? r.findings : []).filter((s: unknown): s is string => typeof s === "string" && !!s.trim())
+			.slice(0, 3).map((s: string) => s.trim().slice(0, 200));
+		if (r.verdict !== "ok" && !findings.length) throw Error(`${path}: a ${r.verdict} verdict needs at least one finding.`);
+		decisions.set(path, { path, verdict: r.verdict, findings });
 	}
-	return rows;
+	const missing = [...draft.files.keys()].filter(path => !decisions.has(path));
+	if (missing.length) throw Error("Also give a verdict for " + missing.join(", ") + ".");
+	return [...decisions.values()];
 }
 
 export function reconcileReview(original: AcceptedDraft, revision: AcceptedDraft, review: Decision[]) {
