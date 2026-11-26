@@ -2194,10 +2194,6 @@ export const user = actor({
 			if (!keep) await removeSession(c, c.key[0], session);
 			await retireDrafters(c, c.key[0], setupKeyOf(current.repository.id));
 		},
-		internalFlakyJobs: async (c, id: GithubId) => {
-			requireServiceFor(c, "call");
-			return (await cachedScan(c.db, setupKeyOf(id)))?.ci?.flaky.map(job => job.name) ?? [];
-		},
 		internalReadinessLevel: async (c, id: GithubId) => {
 			requireServiceFor(c, "call");
 			return (await repoPolicy(c, id, setupKeyOf(id))).readiness.latest?.level ?? null;

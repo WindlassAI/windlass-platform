@@ -2205,6 +2205,41 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		assert.equal(walk(feature, [stale]).item, feature);
 		feature = update(feature, "two", "working");
 		const red = read(feature, failed);
+		for (const initial of [feature, walk(newItem(), pushedRun(H(2))).item]) {
+			const isFeature = initial === feature;
+			const poll = (item: FactoryItem, jobId: string, state: "passed" | "failed", inherited = false, baseTip = H(7), basePassed = false) => {
+				const checks = ciRead([{ name: "build", state }]);
+				Object.assign(checks.runs[0]!, { workflowId: "42", jobId, baseResult: inherited ? "failed" : undefined });
+				return walk(item, [{ ...ciFact(checks, H(2)), key: isFeature ? item.featureCi!.key : currentKey(item), paths: ["one"], baseTip, basePassed }]);
+			};
+			const first = poll(initial, "101", "failed");
+			const rerun = effect(first.last, "rerun_ci");
+			assert.ok(rerun);
+			const claimed = walk(first.item, [{ ...rerun, kind: "ci_rerun_started" },
+				{ kind: "ci_rerun_result", head: H(2), accepted: ["101"], said: "Requested a re-run." }]).item;
+			const stale = poll(claimed, "101", "failed");
+			assert.ok(effect(stale.last, "poll_ci"));
+			const green = poll(stale.item, "102", "passed");
+			assert.equal(green.item.run!.rounds.ci, 0);
+			assert.ok(green.last.events.some(e => e.said.includes("build was flaky")));
+			assert.ok(!green.item.jobs?.some(j => j.ciFix));
+			const real = poll(stale.item, "102", "failed");
+			assert.ok(isFeature ? real.item.jobs!.some(j => j.ciFix) : real.item.run!.step.kind === "ci_fix");
+			const shared = poll(stale.item, "102", "failed", true);
+			assert.match(shared.item.question!.text, /same checks fail on main: build/);
+			assert.deepEqual(shared.item.question!.choices.map(c => c.id), ["wait", "again", "give_up"]);
+			assert.equal(shared.item.run!.rounds.ci, 0);
+			const override = walk(shared.item, [{ kind: "answer", choice: "again" }]);
+			assert.equal(poll(override.item, "102", "failed", true).item.run!.rounds.ci, 1);
+			const wait = walk(shared.item, [{ kind: "answer", choice: "wait" }]);
+			const unchangedBase = poll(wait.item, "102", "failed", true, H(7), true);
+			const redBase = poll(unchangedBase.item, "102", "failed", true, H(8));
+			assert.ok(effect(unchangedBase.last, "poll_ci") && effect(redBase.last, "poll_ci"));
+			assert.equal(redBase.item.run!.rounds.ci, 0);
+			const updated = poll(redBase.item, "102", "failed", false, H(8), true);
+			assert.ok(isFeature ? effect(updated.last, "merge_feature_target")?.target === H(8) : effect(updated.last, "publish") && updated.item.run?.updateFromBase?.baseTip === H(8));
+			expect(`${isFeature ? "feature" : "single"} CI retries once, records flakes, asks about inherited failures and repairs independent failures`, true);
+		}
 		const queued = walk(feature, [{ ...red, paths: ["two"] }]).item;
 		assert.equal(queued.jobs!.at(-1)?.task.key, `ci-fix-${feature.revision + 1}`);
 		assert.equal(queued.jobs!.at(-1)?.dispatchKey, undefined, "overlapping work keeps the fix queued");
@@ -3289,10 +3324,9 @@ try {
 		const baseCi = { runs: [checkRun(5361, "unit", "failure")], statuses: [] };
 		repo.ci.set(base, baseCi);
 		const inherited = await check();
-		expect("matching failed check on the current base asks with the cause and offers handover", inherited.item.question?.text === "This check also fails on main; it is not caused by this change." &&
-			!!inherited.item.question.choices.some(c => c.id === "hand_over") && !inherited.item.question.resume && !effect(inherited.last, "deliver"));
-		const update = await check(2);
-		expect("an inherited check automatically updates from a newer base", !!effect(update.last, "publish") && update.item.run?.updatedBaseTip === base && update.item.run.rounds.ci === 0);
+		expect("matching failed check on the current base asks before a fix", inherited.item.question?.text === "The same checks fail on main: unit." &&
+			isDeepStrictEqual(inherited.item.question.choices.map(c => c.id), ["wait", "again", "give_up"]) && !effect(inherited.last, "deliver"));
+		expect("a newer failing base still needs an owner choice", (await check(2)).item.question?.text === inherited.item.question?.text);
 		baseCi.runs = [checkRun(5361, "unit", "failure"), checkRun(5362, "unit", "success")];
 		expect("a successful latest base attempt leaves the item failure eligible for a fix", (await check()).item.run?.step.kind === "ci_fix");
 		baseCi.runs = [checkRun(5363, "unit", null)];
@@ -3324,7 +3358,7 @@ try {
 
 		ciData.runs = [job, checkRun(5364, "lint", "failure")];
 		baseCi.runs = [checkRun(5365, "unit", "failure"), checkRun(5366, "lint", "success")];
-		expect("a mixed failure takes a newer base before fixing independent checks", !!effect((await check(1)).last, "publish"));
+		expect("a mixed failure offers to update from an ahead base", !!(await check(1)).item.question?.choices.some(c => c.id === "update_from_base"));
 		const mixed = effect((await check()).last, "deliver")?.text ?? "";
 		expect("a mixed CI fix receives only the independent failing check and its log", mixed.includes("lint") && !mixed.includes("adds two numbers") && !mixed.includes("- unit"));
 	}

@@ -1392,7 +1392,7 @@ async function testSessionBase(c: Ctx, meta: SessionMeta, repo: StoredRepository
 const verifiedLine = (pull: PullRequestInfo) => ` Its description reports: ${pull.verified}.`;
 
 // The caller owns the publishing lock so a second push cannot race this one.
-async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false, branchOnly = false, blockedNetwork?: BlockedNetwork, updateFromBase?: { head: string; at: number }): Promise<PublishResult> {
+async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false, branchOnly = false, blockedNetwork?: BlockedNetwork, updateFromBase?: { head: string; at: number; baseTip?: string }): Promise<PublishResult> {
 	const app = githubApp();
 	if (!app || !meta.sandboxId) throw new UserError(publishBlocked(c, meta) ?? "There is nothing to push yet.", { code: "publish_blocked" });
 	// A suspend or removal of the idle sandbox finishes first, as before a prompt.
@@ -5187,7 +5187,7 @@ export const agentSession = actor({
 			return "pending";
 		},
 
-		internalPublish: async (c, input: { key: string; title: string; body: string; blockedNetwork?: BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number } }): Promise<ItemPublishAnswer> => {
+		internalPublish: async (c, input: { key: string; title: string; body: string; blockedNetwork?: BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number; baseTip?: string } }): Promise<ItemPublishAnswer> => {
 			requireService(c);
 			const meta = liveMeta(c);
 			if (meta.origin?.role === "reviewer") throw new UserError("The reviewer cannot publish.", { code: "reviewer" });
