@@ -9,7 +9,7 @@ duplicate jobs because the push already ran them.
   shards in parallel. The `test` check combines their results. A newer branch run cancels a
   superseded run of the same event and ref; CI on `main` keeps its runs.
 - **CI heavy** (`.github/workflows/ci-heavy.yml`) selects groups by changed paths on agent
-  branch pushes and other PRs, and skips Dependabot. It runs all groups on `main` and nightly.
+  branch pushes and other PRs, and skips Dependabot. It runs all groups nightly on `main` and on a dispatch with `full` (run one before a deploy); a push to `main` gets the light CI only.
   A newer heavy run cancels a superseded run for the same event and ref. A feature's part branches
   (`windlass/feature-i_…-<part>-i_…`) get the light CI only; the heavy groups run on the feature branch.
 

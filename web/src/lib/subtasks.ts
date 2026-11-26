@@ -282,8 +282,23 @@ const placeOf = (child: ItemSummary | null): string | null => child?.placement?.
  * integrated, then a running subtask whose owned paths overlap its own (`sharesPaths`), then a full set
  * of slots.
  */
+/** The parts the factory adds on its own (a conflict or failing-CI repair): not in the plan, newest of each key. */
+export function repairSubtasks(plan: Pick<FeaturePlan, "subtasks">, children: readonly ItemSummary[], from: number): PlannedSubtask[] {
+	const planned = new Set(plan.subtasks.map((task) => task.key));
+	const byKey = new Map<string, ItemSummary>();
+	for (const child of [...children].sort((a, b) => a.createdAt - b.createdAt)) if (child.parent && !planned.has(child.parent.key)) byKey.set(child.parent.key, child);
+	return [...byKey.values()].map((child, index) => ({
+		n: from + index,
+		task: { key: child.parent!.key, title: child.title, brief: "", acceptance: [], owns: [], dependsOn: [], budget: child.budget } as PlanSubtask,
+		child,
+		state: subtaskState(child),
+	}));
+}
+
 export function groupSubtasks(plan: Pick<FeaturePlan, "subtasks">, children: readonly ItemSummary[], jobs: readonly DispatchedSubtask[] | undefined): SubtaskGroups {
-	const entries = plannedSubtasks(plan, children);
+	const planned = plannedSubtasks(plan, children);
+	// Repairs run and end like any part, so they are listed with them; the "of N integrated" count stays the plan's.
+	const entries = [...planned, ...repairSubtasks(plan, children, planned.length + 1)];
 	// The newest job of a key is the one that counts, as for its item.
 	const jobOf = new Map<string, DispatchedSubtask>();
 	for (const job of [...(jobs ?? [])].sort((a, b) => (a.dispatchedAt ?? 0) - (b.dispatchedAt ?? 0))) jobOf.set(job.key, job);

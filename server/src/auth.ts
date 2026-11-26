@@ -143,6 +143,7 @@ export function clientError(log: { debug?: (entry: unknown) => void; error: (ent
 		return new UserError(session ? "This agent was deleted." : "The requested resource no longer exists.", { code: session ? "session_not_found" : "not_found" });
 	}
 	if (isSandboxUserError(error)) return new UserError(error.message, { code: "sandbox_error" });
+	if (error instanceof Error && error.name === "RepositoryLimit") return new UserError(error.message, { code: "limit" });
 	log.error({ msg: fallback, error: error instanceof Error ? (error.stack ?? error.message) : String(error) });
 	return new UserError(fallback, { code });
 }

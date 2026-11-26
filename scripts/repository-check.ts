@@ -222,13 +222,14 @@ async function wholeRowSave(db: DefaultsDb, change: DefaultsChange, now: number)
 
 {
 	const { db, rows } = database();
-	const extra = 5;
-	for (let index = 0; index < MAX_REPOSITORY_DEFAULTS + extra; index += 1) await saveDefaults(db, `github:${index + 1}`, "", { model: "gpt-6-luna" }, 1_000 + index);
+	for (let index = 0; index < MAX_REPOSITORY_DEFAULTS; index += 1) await saveDefaults(db, `github:${index + 1}`, "", { model: "gpt-6-luna" }, 1_000 + index);
+	const refused = await saveDefaults(db, `github:${MAX_REPOSITORY_DEFAULTS + 1}`, "", { model: "gpt-6-luna" }, 9_000).then(() => null, (error: Error) => error.name);
+	const resaved = await saveDefaults(db, "github:1", "", { model: "gpt-6-sol" }, 9_001).then(() => true, () => false);
 	const kept = rows().map((row) => String(row.project));
 	expect(
-		`a user keeps defaults for ${MAX_REPOSITORY_DEFAULTS} repositories at most, and the ones saved longest ago go`,
-		kept.length === MAX_REPOSITORY_DEFAULTS && !kept.includes("github:1") && !kept.includes(`github:${extra}`) && kept.includes(`github:${extra + 1}`) && kept.includes(`github:${MAX_REPOSITORY_DEFAULTS + extra}`),
-		`${kept.length} rows`,
+		`at ${MAX_REPOSITORY_DEFAULTS} repositories a new one is refused, and no other repository's defaults are dropped`,
+		refused === "RepositoryLimit" && resaved && kept.length === MAX_REPOSITORY_DEFAULTS && kept.includes("github:1") && !kept.includes(`github:${MAX_REPOSITORY_DEFAULTS + 1}`),
+		`${kept.length} rows, refused ${refused}, resaved ${resaved}`,
 	);
 }
 

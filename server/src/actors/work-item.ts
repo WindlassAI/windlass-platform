@@ -375,6 +375,11 @@ async function repositoryAutonomy(c: Ctx, meta: ItemMeta, repositoryId = meta.re
 	catch { return { autoApprovePlans: false, autoMergeSingles: false, waitForCiOnEachPart: false, mergeKinds: undefined }; }
 }
 
+/** Whether a feature's parts wait for their own CI: fixed when the feature PR opens, so an unreadable setting fails the effect (it is tried again) rather than dropping the wait. */
+async function waitsForPartCi(c: Ctx, meta: ItemMeta, repositoryId = meta.repository.id): Promise<boolean> {
+	return (await userActor(c, meta.uid).internalRepositoryAutonomy(repositoryId)).waitForCiOnEachPart === true;
+}
+
 async function autoApprovePlans(c: Ctx, { item, meta }: Stored) {
 	const repositories = item.repos?.map(r => r.repositoryId) ?? [meta.repository.id];
 	try {
@@ -1455,8 +1460,9 @@ async function crossOpenOrDescribe(c: Ctx, meta: ItemMeta, item: FactoryItem, ef
 					await take(c, { kind: "feature_seed", key, sha, repo: repo.alias, at: Date.now() });
 					return;
 				}
+				const waitForCiOnEachPart = await waitsForPartCi(c, meta, repo.repositoryId);
 				const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: repo.baseRef, seed: repo.seed!, author, created: meta.createdAt, body: networkBody(withSection(item.featurePlan!.spec.goal, linkSection(item, repo.alias)), itemNetwork(meta), false), draftOnly: true });
-				await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart: (await repositoryAutonomy(c, meta, repo.repositoryId)).waitForCiOnEachPart, repo: repo.alias, at: Date.now() });
+				await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart, repo: repo.alias, at: Date.now() });
 			});
 			return;
 		}
@@ -1558,8 +1564,9 @@ async function dispatchFeature(c: Ctx, { item, meta }: Stored, effect: Extract<E
 				const sha = await refHead(app, token, owner, name, meta.repository.branch);
 				await take(c, { kind: "feature_seed", key, sha, at: Date.now() });
 			} else {
+				const waitForCiOnEachPart = await waitsForPartCi(c, meta);
 				const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: meta.repository.branch, seed: item.seed, author: hub.author, created: meta.createdAt, body: networkBody(item.featurePlan!.spec.goal, itemNetwork(meta), hub.repository.private) });
-				await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart: (await repositoryAutonomy(c, meta)).waitForCiOnEachPart, at: Date.now() });
+				await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart, at: Date.now() });
 			}
 		});
 	} catch (error) {

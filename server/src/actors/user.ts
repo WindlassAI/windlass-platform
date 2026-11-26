@@ -92,7 +92,7 @@ import { refreshSecretRows } from "../signin/secret-rows.js";
 import { criticAllowed } from "../factory/review.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, unavailableSecretName, validRequestedSecretName, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
 import { criticSessionId } from "../factory/feature-ids.js";
-import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, repositoryDefaultsLog, migrateDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
+import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, repositoryDefaultsLog, migrateDefaults, readDefaults, saveDefaults, refuseAtRepositoryCap } from "../repository-defaults.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { forgettingWords, personalServerReach } from "../server-question.js";
 import { CHECKS_TABLE, ChecksProblem, cleanChecks, readChecks, saveChecks } from "../repository-checks.js";
@@ -283,6 +283,7 @@ async function saveSetup(c: UserCtx, uid: string, project: string, label: string
 	if (command === "") {
 		await c.db.execute("DELETE FROM setup_command WHERE project = ?", project);
 	} else {
+		await refuseAtRepositoryCap(c.db, "setup_command", project, MAX_SETUP_COMMANDS, "setup commands");
 		await c.db.execute(
 			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, command = excluded.command, snapshot_connection = NULL, updated_at = MAX(updated_at + 1, excluded.updated_at)",
 			project,
@@ -290,7 +291,6 @@ async function saveSetup(c: UserCtx, uid: string, project: string, label: string
 			command,
 			Date.now(),
 		);
-		await c.db.execute("DELETE FROM setup_command WHERE project NOT IN (SELECT project FROM setup_command ORDER BY updated_at DESC LIMIT ?)", MAX_SETUP_COMMANDS);
 	}
 	await dropHostedSnapshots(uid, project.slice("github:".length));
 	console.log(`[wlp] setup.saved uid=${uid} project=${project} chars=${command.length}`);

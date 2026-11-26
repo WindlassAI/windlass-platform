@@ -177,7 +177,8 @@ export function SubtasksBlock({ plan, children, jobs, now }: { plan: FeaturePlan
 	const groups = groupSubtasks(plan, children, jobs);
 	const [showDone, setShowDone] = useState(false);
 	const doneId = useId();
-	const integrated = groups.done.filter((line) => line.phase === "integrated").length;
+	const planKeys = new Set(plan.subtasks.map((task) => task.key));
+	const integrated = groups.done.filter((line) => line.phase === "integrated" && planKeys.has(line.entry.task.key)).length;
 	const made = subtasks.map((entry) => entry.child).filter((child): child is ItemSummary => child !== null);
 	const spent = made.reduce((sum, child) => sum + child.spent.tokens, 0);
 	const budget = subtasks.reduce((sum, entry) => sum + (entry.child?.budget.tokens ?? entry.task.budget.tokens), 0);
