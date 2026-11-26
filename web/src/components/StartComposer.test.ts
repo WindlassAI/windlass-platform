@@ -769,8 +769,12 @@ it("opens an item's repository placement in the composer and honors an explicit 
 	act(() => root!.render(createElement(AppProvider, { client, children: createElement(StartComposer, { kind: "item", sessions: [], items: [], repositoryId: 7101 }) })));
 	await settle();
 	expect(value("on")).toContain("nas");
-	// Plan first: the planner is Windlass; the saved agent runs the parts.
-	expect(value("agent")).toContain("Windlass");
+	// Plan first: the parts start from the repository's agent, and the line says where that comes from.
+	expect(value("agent")).toContain("Claude Code");
+	const line = host.querySelector(".run-line")!.textContent!;
+	expect(line).toContain("Parts run on");
+	expect(line).toContain("nas · Claude Code");
+	expect(line).toContain("set for this repository");
 	open("where");
 	pick("platform");
 	expect(value("on")).toBe("Hosted");

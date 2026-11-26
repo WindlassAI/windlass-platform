@@ -205,3 +205,171 @@
 .settings-card .verify-option-wide {
 	flex-basis: 100%;
 }
+
+/*
+ * Where work runs and which agent does it (components/RunSettings.tsx): fields three to a row on a
+ * wide screen, a repository's overrides as folded rows that say the value and where it comes from,
+ * and the one line the composer and the new-item form show.
+ */
+.run-default {
+	display: grid;
+	gap: 10px;
+}
+.run-fields {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+	align-items: start;
+	gap: 12px 16px;
+	min-width: 0;
+}
+.run-fields .field {
+	min-width: 0;
+}
+.run-fields .field-note,
+.run-default > .field-note {
+	margin: 0;
+}
+.run-segmented {
+	display: flex;
+	width: 100%;
+}
+.run-segmented .segment {
+	flex: 1;
+	text-align: center;
+	padding-inline: 8px;
+}
+.run-said {
+	min-height: 1.2em;
+	margin: 0;
+	font-size: var(--text-12);
+	color: var(--ink-dim);
+}
+.run-said:empty {
+	display: none;
+}
+
+.run-overrides {
+	display: grid;
+}
+.run-row {
+	padding-block: 12px;
+}
+.run-row + .run-row {
+	border-top: 1px solid var(--line);
+}
+.run-row-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 4px 10px;
+	font-size: var(--text-13);
+}
+.run-row-title {
+	flex: 0 0 120px;
+	font-weight: var(--weight-strong);
+	color: var(--ink);
+}
+.run-row-value {
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.run-row-source {
+	color: var(--ink-faint);
+}
+.run-row-own {
+	color: var(--accent-text, var(--accent));
+}
+.run-row-action {
+	margin-left: auto;
+	font-size: var(--text-13);
+	text-decoration: none;
+}
+.run-row-body {
+	margin-top: 12px;
+	padding-left: 130px;
+}
+.run-row-body .run-fields + .field-note {
+	margin-top: 6px;
+}
+@media (max-width: 640px) {
+	.run-row-title {
+		flex-basis: 100%;
+	}
+	.run-row-action {
+		margin-left: 0;
+	}
+	.run-row-body {
+		padding-left: 0;
+	}
+}
+
+.run-line {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 4px 6px;
+	margin: 0;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+}
+.run-line-icon {
+	display: inline-flex;
+	color: var(--ink-faint);
+}
+.run-line-value {
+	font-weight: var(--weight-medium);
+	color: var(--ink);
+}
+.run-line .ui-glyph-inline {
+	margin-right: 0;
+}
+.run-line-why {
+	color: var(--ink-faint);
+}
+.run-line-change {
+	margin-left: 6px;
+	font-size: var(--text-13);
+	text-decoration: none;
+}
+.item-run {
+	display: grid;
+	gap: 6px;
+}
+.item-run .field-note {
+	margin: 0;
+}
+.item-run-change {
+	display: grid;
+	gap: 14px;
+	padding: 14px;
+	border: 1px solid var(--line);
+	border-radius: var(--r-control);
+	background: var(--bg-sunk);
+}
+.start-run {
+	display: grid;
+	gap: 4px;
+	margin-top: 8px;
+	padding-inline: 4px;
+}
+.start-run .field-note {
+	margin: 0;
+}
+.plan-agent-why {
+	color: var(--ink-faint);
+}
+.run-card {
+	margin-top: 12px;
+	padding: 16px 18px;
+}
+.run-segmented {
+	min-height: var(--h-lg);
+}
+.run-segmented .segment {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+}
+.run-said.tone-bad {
+	color: var(--bad);
+}

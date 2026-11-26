@@ -20,6 +20,15 @@ If you have no spare computer, you can [run agents on a cheap cloud VM](/docs/ch
 
 An account can connect up to 3 machines by default, or 10 on Pro where plans are offered.
 
+## Where work runs
+
+At the top of the Machines page, **Runs on** chooses your default place: **Hosted** or one of your machines. Work items and the agents you start use it unless a repository overrides it or you choose another for one item. For a machine, choose its **Isolation** and what happens **When it's offline**:
+
+- **Wait for it**: the item waits until the machine is back.
+- **Offer Hosted**: the item asks whether to wait or run on Hosted.
+
+Where Hosted can be used, choose its size and isolation here too. The agent and model are in [Settings → Models](/docs/settings#where-each-choice-lives).
+
 ## Add a machine
 
 Open the account menu and choose **Machines**, then **Add a machine**.
@@ -302,7 +311,7 @@ None of these agents has a tool to publish: open the pull request from the sessi
 
 ## Sign agents in
 
-An agent signed in on the machine uses that sign-in first: a Claude subscription, Codex's ChatGPT or API-key login, or OpenCode's provider logins. A key in **Settings → Model providers** serves the providers the machine is not signed in to. To use your key even where the machine is signed in, choose **Use your … key** under the agent on its card on the Machines page. Hosted agents always use your keys. With a key, the machine receives a temporary relay credential. The saved key stays on the platform, and the provider bills the key owner. Claude Code and Codex work items count API-key tokens toward their budget. Subscription turns show token usage separately.
+An agent signed in on the machine uses that sign-in first: a Claude subscription, Codex's ChatGPT or API-key login, or OpenCode's provider logins. A key in **Settings → Model providers** serves the providers the machine is not signed in to. To use your key even where the machine is signed in, choose **Use your … key** under **Paid by**, beside the agent on its card. Only the payer you choose is used: if it can't be, the item stops and asks you. Hosted agents always use your keys. With a key, the machine receives a temporary relay credential. The saved key stays on the platform, and the provider bills the key owner. Claude Code and Codex work items count API-key tokens toward their budget. Subscription turns show token usage separately.
 
 With a matching key, the Machines page shows **Settings key**. For a machine login it shows **signed in**, **sign in needed** or **couldn't check the sign-in**, with the runner's reason when it gives one. The last is the runner's check failing, not a sign-out: turns still run if the agent is signed in, and the runner checks again after 10 s, 30 s and 60 s, then every minute. Beside it is the command that signs it in, with a copy button:
 

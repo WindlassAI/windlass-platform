@@ -151,6 +151,6 @@ For the hosted sandbox and Windlass model, the platform takes the first availabl
 
 For **where it runs**, a choice in the composer wins. Otherwise Windlass uses the place of your last personal launch, then the repository default, then the account default, then Hosted. A saved machine includes its sandbox profile. If that machine is unpaired or its profile becomes unavailable, the composer explains which choice it skipped.
 
-The last launch also remembers its agent and mode across browsers, even if you delete the agent. Choose **Forget** in Defaults to clear it. Starting a work item leaves that memory intact.
+The last launch also remembers its agent and mode across browsers, even if you delete the agent. Starting a work item leaves that memory intact.
 
-See [Settings, usage and limits](/docs/settings) to save defaults.
+See [Where each choice lives](/docs/settings#where-each-choice-lives) to save defaults.

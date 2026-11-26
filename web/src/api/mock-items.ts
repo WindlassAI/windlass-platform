@@ -3,6 +3,7 @@ import { sandboxTime } from "../lib/format";
 import { flagWords } from "../../../server/src/verified";
 import type { ItemPlaceDefaults } from "@contract";
 import { type DefaultDestination, defaultPlaceRetryAt, resolveDefaultPlace } from "../../../server/src/factory/default-place";
+import { filedAgentSettings, partRun, resolveRun, runPlace, type RunContext } from "../../../server/src/factory/resolve-run";
 import { approvalText, planTokens, singleAfterPlanning, unattendedKeys, validatePlan } from "../../../server/src/factory/feature-plan.js";
 import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
 import { withAgent } from "../lib/subtask-agents";
@@ -74,6 +75,8 @@ export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 export interface MockItemsDeps {
 	hosted(auth: AuthResult): Pick<PlacementInventory, "hostedProfiles" | "keyProfiles" | "hostedKeys">;
 	defaultPlace(auth: AuthResult, repo: GithubId): ItemPlaceDefaults | undefined;
+	/** The settings layers a new item resolves over, as the server reads them (user-items.ts, `makeItem`). */
+	runContext(auth: AuthResult, repo: GithubId): RunContext;
 	waitingRepository(auth: AuthResult, input: CreateItemInput["repository"]): Promise<SessionRepository>;
 	state?: MockItemsState;
 	/** True writes the seeded features' texts at length (`?long=1`, `longFeatures`). */
@@ -1721,6 +1724,8 @@ export function createMockItems(deps: MockItemsDeps) {
 	const state: MockItemsState = deps.state ?? "all";
 	const kept = new Map<string, Kept>();
 
+	/** Each item's settings layers: its plan's parts resolve over them. */
+	const contexts = new WeakMap<ItemView, RunContext>();
 	const pendingPlaces = new WeakMap<ItemView, { policy: ItemPlaceDefaults; input: CreateItemInput; attempts: number; resolving?: boolean }>();
 	let linksAsked = 0;
 
@@ -1736,8 +1741,10 @@ export function createMockItems(deps: MockItemsDeps) {
 				.sort((a, b) => b.createdAt - a.createdAt);
 			found = { items, tokens: seedTokens(state, at), made: new Map() };
 			kept.set(auth.profile.uid, found);
+			const machines = (deps.machines(auth)?.list ?? []).map((m) => ({ name: m.name, machineId: m.machineId }));
 			for (const item of items) {
 				item.sessionId = deps.seededSession(auth, item);
+				for (const task of item.plan?.subtasks ?? []) task.resolved ??= partRun(deps.runContext(auth, item.repository.id), task, "part", machines);
 				if (item.report) {
 					item.report.sessionId = item.sessionId;
 					for (const shot of item.report.screenshots) shot.sessionId = item.sessionId;
@@ -1892,9 +1899,12 @@ export function createMockItems(deps: MockItemsDeps) {
 				version, status: "proposed", questions: [], singleSuggested: null,
 				spec: { goal: item.title, requirements: [item.task.body], outOfScope: [], acceptance: item.task.acceptance.length ? item.task.acceptance : ["Complete the requested feature."] },
 				budget: item.budget, compare: { singleBudget: MOCK_FACTORY_LIMITS.item },
-				subtasks: ["implementation", "verification"].map((key, i) => ({ key, title: i ? "Verify the feature" : item.title, brief: i ? "Add regression coverage." : item.task.body,
+				subtasks: ["implementation", "verification"].map((key, i): PlanSubtask => ({ key, title: i ? "Verify the feature" : item.title, brief: i ? "Add regression coverage." : item.task.body,
 					acceptance: ["Run pnpm test"], dependsOn: i ? ["implementation"] : [], owns: [i ? "tests/**" : "src/**"], budget: { tokens: MOCK_FACTORY_LIMITS.item.tokens } })),
 			};
+			const context = contexts.get(item) ?? deps.runContext(auth, item.repository.id);
+			const machines = (deps.machines(auth)?.list ?? []).map((m) => ({ name: m.name, machineId: m.machineId }));
+			for (const task of plan.subtasks) task.resolved = partRun(context, task, "part", machines);
 			const text = approvalText(plan);
 			return change(auth, item, { run, state: "waiting", wait: { reason: "person", since: at, retryAt: null, sentence: text }, question: { id: item.id + ":plan" + version, kind: "plan_approval", text, askedAt: at, choices: choices("approve","revise","give_up") } }, [said,"The planner filed a proposal."], "platform");
 		}
@@ -2163,6 +2173,10 @@ export function createMockItems(deps: MockItemsDeps) {
 				if (input.body.length > MAX_ITEM_BODY_CHARS) throw new PlatformError("user", `What to do is at most ${MAX_ITEM_BODY_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
 				if (acceptance.length > MAX_ACCEPTANCE_CRITERIA) throw new PlatformError("user", `An item takes at most ${MAX_ACCEPTANCE_CRITERIA} acceptance criteria.`, { reason: "bad_input" });
 				if (acceptance.some((line) => line.length > MAX_NOTE_CHARS)) throw new PlatformError("user", `An acceptance criterion is at most ${MAX_NOTE_CHARS.toLocaleString("en-US")} characters.`, { reason: "bad_input" });
+				const context = deps.runContext(auth, input.repository.id);
+				context.item = { place: input.place && runPlace(input.place), harness: input.harness, hostedSize: input.hostedSize, profile: input.profile, machineProfile: input.profile };
+				Object.assign(context.item, filedAgentSettings(context, input.model ?? null, input.effort ?? null));
+				const resolved = resolveRun(context, input.mode === "single" ? "builder" : "planner");
 				const policy = !input.place ? deps.defaultPlace(auth, input.repository.id) : undefined;
 				const destination = policy && resolveDefaultPlace(policy, deps.machines(auth)?.list ?? [], input.mode ?? "orchestrate");
 				if (destination) {
@@ -2237,6 +2251,8 @@ export function createMockItems(deps: MockItemsDeps) {
 					reviews: [],
 					reviewerSessionId: null,
 				};
+				item.resolved = resolved;
+				contexts.set(item, context);
 				if (policy && destination?.wait) pendingPlaces.set(item, { policy, input, attempts: 0 });
 				if (destination?.wait) item.events.push({ at, by: "platform", step: null, said: destination.wait });
 				mine.items.unshift(item);
