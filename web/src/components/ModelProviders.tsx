@@ -243,6 +243,7 @@ export function ModelProviders() {
 											{saved.checkedAt !== null ? <span title={absoluteTime(saved.checkedAt)}>checked {relativeTime(saved.checkedAt, now)}</span> : null}
 										</p>
 									) : null}
+									{saved?.needsWindlassCheck && <p className="field-note">Recheck this key to find its Windlass-compatible models.</p>}
 									{failed ? <p className="field-note tone-bad" role="status">{failed}</p> : null}
 								</div>
 								<span className={`machine-used${saved ? (saved.ok ? " tone-good" : " tone-bad") : ""}`}>{saved ? (saved.ok ? "connected" : "check failed") : "no key"}</span>
@@ -251,7 +252,7 @@ export function ModelProviders() {
 										<>
 											<button type="button" className="button button-outline button-small" onClick={() => void check(provider)} disabled={last.busy}>
 												<span>
-													{last.busy ? "Checking…" : "Check"}
+													{last.busy ? "Checking…" : saved.needsWindlassCheck ? "Recheck" : "Check"}
 													<span className="visually-hidden"> {name}</span>
 												</span>
 											</button>

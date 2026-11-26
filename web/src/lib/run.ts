@@ -60,6 +60,7 @@ export function runWords(run: ResolvedRun, machines: readonly MachineSummary[] |
 
 /** Who pays for a machine agent's turns, in a few words; null for Windlass's own models. */
 export function payerWords(run: Pick<ResolvedRun, "agent" | "payer" | "place">): string | null {
+	if (run.payer === "unconfirmed") return "payer needs confirmation";
 	if (run.agent === "windlass" && run.payer === "windlass") return null;
 	return run.payer === "machine" ? "its own sign-in" : "your key";
 }

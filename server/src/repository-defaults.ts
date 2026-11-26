@@ -34,6 +34,7 @@ export interface DefaultsChange extends RepositoryAutonomy {
 	reviewEffort?: string | null;
 	effort?: string | null;
 	item_place?: ItemPlaceDefaults | null;
+	previousStartPlace?: null;
 	screenshots?: boolean;
 	profile?: SandboxProfileId | null;
 	model?: string | null;
@@ -59,6 +60,7 @@ export function repositoryDefaultsLog(uid: string, project: string, change: Defa
 export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[], models: ModelList, sizes: readonly HostedSize[] = [], machines: readonly MachineSummary[] = []): DefaultsChange {
 	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof RepositoryDefaults, unknown>> & { startPlace?: StartPlace | null };
 	const change: DefaultsChange = {};
+	if (input.place !== undefined || input.startPlace !== undefined) change.previousStartPlace = null;
 	if (input.startPlace !== undefined) {
 		const place = input.startPlace;
 		const problem = place === null ? null : startPlaceProblem(place, machines);
@@ -122,23 +124,56 @@ export const DEFAULTS_TABLE = `
 	)
 `;
 
-/**
- * Tables made before the settings column (live until 2026-11-26) keep their saved choices in separate columns, and the
- * account's in account_defaults: fold both into `settings` once.
- */
+/** Fold separate defaults columns into settings. The caller runs the whole upgrade in one transaction. */
 export async function migrateDefaults(db: DefaultsDb): Promise<void> {
-	const columns = (await db.execute<{ name: string }>("PRAGMA table_info(repository_defaults)")).map(column => column.name);
-	if (columns.includes("settings")) return;
-	await db.execute("ALTER TABLE repository_defaults ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'");
-	const old = ["profile", "model", "hosted_size", "item_place"].filter(name => columns.includes(name));
-	const settingsOf = (row: Record<string, unknown>) => JSON.stringify(Object.fromEntries(Object.entries({
-		...(typeof row.item_place === "string" ? JSON.parse(row.item_place) as object : {}), profile: row.profile, model: row.model, hostedSize: row.hosted_size,
-	}).filter(([, value]) => value != null)));
-	if (old.length) for (const row of await db.execute(`SELECT project, ${old.join(", ")} FROM repository_defaults`))
-		await db.execute("UPDATE repository_defaults SET settings=? WHERE project=?", settingsOf(row), row.project);
-	if (!(await db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='account_defaults'")).length) return;
-	const [account] = await db.execute("SELECT profile, model, item_place, updated_at FROM account_defaults WHERE id=1");
-	if (account) await db.execute("INSERT OR IGNORE INTO repository_defaults (project, label, updated_at, settings) VALUES (?, '', ?, ?)", ACCOUNT, account.updated_at, settingsOf(account));
+	const columns = (await db.execute<{ name: string }>("PRAGMA table_info(repository_defaults)")).map(c => c.name);
+	const accountColumns = await db.execute<{ name: string }>("PRAGMA table_info(account_defaults)");
+	const hadSettings = columns.includes("settings");
+	const oldColumns = ["profile", "model", "hosted_size", "item_place", "start_place"].filter(c => columns.includes(c));
+	for (const field of ["screenshots", ...AUTONOMY_FIELDS]) {
+		if (!columns.includes(field)) await db.execute(`ALTER TABLE repository_defaults ADD COLUMN ${field} INTEGER NOT NULL DEFAULT 0`);
+	}
+	if (!hadSettings) await db.execute("ALTER TABLE repository_defaults ADD COLUMN settings TEXT NOT NULL DEFAULT '{}'");
+	if (oldColumns.length) {
+		for (const row of await db.execute(`SELECT project, settings, ${oldColumns.join(", ")} FROM repository_defaults`)) {
+			await db.execute("UPDATE repository_defaults SET settings=? WHERE project=?", migratedSettings(row, hadSettings), row.project);
+		}
+		for (const name of oldColumns) await db.execute(`ALTER TABLE repository_defaults DROP COLUMN ${name}`);
+	}
+	if (!accountColumns.length) return;
+	const [old] = await db.execute("SELECT * FROM account_defaults WHERE id=1");
+	if (old) {
+		const [current] = await db.execute("SELECT settings, updated_at FROM repository_defaults WHERE project=?", ACCOUNT);
+		// A later save or deletion supersedes the old account row. Without item_place the previous import failed.
+		if (!current && (!hadSettings || !oldColumns.length || !accountColumns.some(c => c.name === "item_place"))) {
+			await db.execute("INSERT INTO repository_defaults (project, label, updated_at, settings) VALUES (?, '', ?, ?)", ACCOUNT, old.updated_at, migratedSettings(old, false));
+		} else if (current) {
+			await db.execute("UPDATE repository_defaults SET settings=? WHERE project=?", migratedSettings({ ...old, ...current }, true, current.updated_at === old.updated_at), ACCOUNT);
+		}
+	}
+	await db.execute("DROP TABLE account_defaults");
+}
+
+function migratedSettings(row: Record<string, unknown>, hadSettings: boolean, adoptStart = true): string {
+	const item = JSON.parse(String(row.item_place ?? "{}")) as ItemPlaceDefaults;
+	const settings: Partial<RepositoryDefaults> = hadSettings ? JSON.parse(String(row.settings)) : Object.fromEntries(Object.entries({
+		...item, profile: row.profile, model: row.model, hostedSize: row.hosted_size,
+	}).filter(([, value]) => value != null));
+	const start: StartPlace | null = JSON.parse(String(row.start_place ?? "null"));
+	if (start) {
+		const place = start.kind === "hosted" ? "hosted" : { machine: start.machineId };
+		const profile = start.kind === "machine" ? start.profile : null;
+		const samePlace = (a: ItemPlaceDefaults["place"], b: ItemPlaceDefaults["place"]) =>
+			a && b && typeof a === "object" && typeof b === "object" ? a.machine === b.machine : (a ?? null) === (b ?? null);
+		const unchanged = !hadSettings || (samePlace(settings.place, item.place) && (settings.machineProfile ?? null) === (item.machineProfile ?? null));
+		if (samePlace(settings.place, place) && (!profile || settings.machineProfile === profile)) return JSON.stringify(settings);
+		if (adoptStart && unchanged && (!settings.place || samePlace(settings.place, place)) &&
+			(!profile || !settings.machineProfile || settings.machineProfile === profile)) {
+			settings.place = place;
+			if (profile) settings.machineProfile = profile;
+		} else settings.previousStartPlace = start;
+	}
+	return JSON.stringify(settings);
 }
 
 function personalPlace(settings: ItemPlaceDefaults): StartPlace | undefined {
@@ -159,7 +194,7 @@ export async function readDefaults(db: DefaultsDb, project: string): Promise<Rep
 
 export async function saveDefaults(db: DefaultsDb, project: string, label: string, change: DefaultsChange, now: number): Promise<RepositoryDefaults> {
 	const { profile, model, effort, reviewModel, reviewEffort, hostedSize } = change;
-	const patch = JSON.stringify({ profile, model, effort, reviewModel, reviewEffort, hostedSize, ...change.item_place });
+	const patch = JSON.stringify({ profile, model, effort, reviewModel, reviewEffort, hostedSize, previousStartPlace: change.previousStartPlace, ...change.item_place });
 	const columns = (["screenshots", ...AUTONOMY_FIELDS] as const).filter(key => change[key] !== undefined);
 	if (patch !== "{}" || columns.length) {
 		if (project !== ACCOUNT) await refuseAtRepositoryCap(db, "repository_defaults", project, MAX_REPOSITORY_DEFAULTS, "defaults");

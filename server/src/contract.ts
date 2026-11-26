@@ -887,6 +887,8 @@ export type StartPlace = { kind: "hosted" } | { kind: "machine"; machineId: stri
 export interface RepositoryDefaults extends RepositoryAutonomy, ItemPlaceDefaults {
 	/** The default place projected into the interactive launch controls. */
 	startPlace?: StartPlace | null;
+	/** A conflicting personal default from before personal and work-item places were unified. */
+	previousStartPlace?: StartPlace;
 	/** Allow item agents to file screenshots for this repository. Defaults to false. */
 	screenshots: boolean;
 	/** The sandbox profile, by its id; null when none is saved. */
@@ -942,8 +944,8 @@ export interface SavedRepository {
 /** Account defaults apply after explicit launch and repository choices. Ignore unavailable profiles and models. */
 export type AccountDefaults = Omit<RepositoryDefaults, keyof RepositoryAutonomy | "screenshots">;
 
-export type AccountDefaultsPatch = Partial<Omit<AccountDefaults, "updatedAt">>;
-export type RepositoryDefaultsPatch = Partial<Omit<RepositoryDefaults, "updatedAt" | "mergeKinds">> & { offer?: import("./factory/readiness-track.js").Offer };
+export type AccountDefaultsPatch = Partial<Omit<AccountDefaults, "updatedAt" | "previousStartPlace">>;
+export type RepositoryDefaultsPatch = Partial<Omit<RepositoryDefaults, "updatedAt" | "mergeKinds" | "previousStartPlace">> & { offer?: import("./factory/readiness-track.js").Offer };
 
 /** User-owned MCP definition supplied to every session independent of repository configuration. */
 export interface PersonalServer {
@@ -1027,6 +1029,7 @@ export interface ModelProviderStatus {
 	ok: boolean;
 	models?: string[];
 	windlassModels?: string[];
+	needsWindlassCheck?: boolean;
 }
 
 /** A failed check leaves the key saved and returns a message safe to display. */

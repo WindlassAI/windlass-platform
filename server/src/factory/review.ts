@@ -16,6 +16,8 @@ export function criticAllowed(place: SandboxPlace, profile: SandboxProfile): boo
 }
 
 export const REVIEW_OFF_REASON = {
+	machine: "at the time, second reviews ran only on hosted sandboxes",
+	profile: "in this sandbox the reviewer's commands would have run with the network",
 	deployment: "turned off for this deployment",
 	feature: "the feature’s combined change is reviewed once its parts are done",
 };

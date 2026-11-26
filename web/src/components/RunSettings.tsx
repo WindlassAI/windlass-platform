@@ -213,6 +213,19 @@ export function RunLine({ run, machines, list, lead = "Runs on", why, onChange, 
 	);
 }
 
+function PreviousStartPlace({ defaults, inputs, disabled, onChange }: {
+	defaults: Pick<RepositoryDefaults, "previousStartPlace" | "place">; inputs: RunInputs; disabled: boolean; onChange(patch: AccountDefaultsPatch): void;
+}) {
+	const start = defaults.previousStartPlace;
+	if (!start) return null;
+	const place = start.kind === "hosted" ? "hosted" : { machine: start.machineId };
+	const label = start.kind === "machine" ? `${placeName(place, inputs.list)} (${machineProfileName(start.profile)})` : "Hosted";
+	return <p className="field-note">Your previous default for new agents was {label}.{" "}
+		<button type="button" className="link" disabled={disabled} onClick={() => onChange({ place, machineProfile: start.kind === "machine" ? start.profile : null })}>Use it for all runs</button>{" · "}
+		<button type="button" className="link" disabled={disabled} onClick={() => onChange({ place: defaults.place ?? null })}>Keep the current place</button>
+	</p>;
+}
+
 // ---- Machines: the default place ------------------------------------------------------------------
 
 export function DefaultPlace({ account }: { account: AccountState }) {
@@ -231,6 +244,7 @@ export function DefaultPlace({ account }: { account: AccountState }) {
 	const usesHosted = run.place === "hosted" || run.fallback === "hosted";
 	return (
 		<div className="run-default">
+			<PreviousStartPlace defaults={defaults} inputs={inputs} disabled={saving} onChange={change} />
 			<PlaceFields run={run} inputs={inputs} disabled={saving} onChange={change} />
 			{usesHosted ? <HostedFields hosted={hosted} inputs={inputs} disabled={saving} onChange={change} /> : null}
 			<p className="field-note run-note">
@@ -321,6 +335,7 @@ export function RepositoryOverrides({ account, defaults, save, onSaved }: { acco
 	const hostedValue = [inputs.sizes.length > 1 ? sizeName(hosted.size) : null, inputs.info.profiles.find((p) => p.id === hosted.profile)?.name ?? inputs.info.profiles.find((p) => p.available)?.name].filter(Boolean).join(" · ");
 	return (
 		<div className="run-overrides">
+			<PreviousStartPlace defaults={defaults} inputs={inputs} disabled={saving} onChange={change} />
 			<OverrideRow title="Place" value={placeValue} source={sourceOf(run, ["place", "fallback"])} open={open === "place"} disabled={saving}
 				onOpen={() => setOpen("place")} onReset={() => reset({ place: null, machineProfile: null, placeFallback: null })}>
 				<PlaceFields run={run} inputs={inputs} disabled={saving} onChange={change} />

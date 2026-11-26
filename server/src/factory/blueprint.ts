@@ -276,7 +276,8 @@ function askRunPlace(c: Change, reason: string) {
 	const run = c.item.resolved;
 	const hosted = !c.item.awaitingReviewer && run?.place !== "hosted" && run?.fallback === "hosted" && !c.item.useHosted;
 	const alternative = run?.agent && run.agent !== "windlass" ? { id: "use_hosted" as const, label: "Run on Hosted with my Settings key" } : choice("use_hosted");
-	ask(c, "run_place", reason, [choice("wait"), ...(hosted ? [alternative] : []), choice("give_up")], null, null);
+	const wait = run?.payer === "unconfirmed" ? { id: "wait" as const, label: "Use the machine’s own sign-in" } : choice("wait");
+	ask(c, "run_place", reason, [wait, ...(hosted ? [alternative] : []), choice("give_up")], null, null);
 }
 
 function waitForDefaultPlace(c: Change, sentence: string, at = defaultPlaceRetryAt(c.at, c.item.placeAttempts ?? 0)): boolean {
@@ -2995,6 +2996,10 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 		if (fact.choice === "use_hosted") {
 			item.useHosted = true;
 			return waitForDefaultPlace(c, item.awaitingPlace!, c.at);
+		}
+		if (item.resolved?.payer === "unconfirmed" && item.context?.item) {
+			item.context.item.payer = "machine";
+			item.resolved = resolveRun(item.context, item.runRole ?? "builder");
 		}
 		return waitForDefaultPlace(c, item.awaitingPlace!);
 	}

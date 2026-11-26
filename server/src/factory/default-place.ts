@@ -71,6 +71,10 @@ export function resolveDefaultPlace(defaults: ItemPlaceDefaults, machines: reado
 export function checkRunPlace(run: ResolvedRun, machines: readonly MachineSummary[], models?: AgentModels): DefaultDestination {
 	const harness = run.agent;
 	if (run.place === "hosted") return { place: { kind: "hosted" }, harness, profile: run.profile ?? undefined };
+	if (run.payer === "unconfirmed") return {
+		place: { kind: "machine", machineId: typeof run.place === "object" ? run.place.machine : "any-machine" }, harness,
+		wait: "This item did not record its payer. Choose whether to use the machine’s own sign-in.",
+	};
 	const candidates = placeMachines(run.place, machines);
 	const reasons: string[] = [];
 	let refusal: DefaultDestination["refusal"];
@@ -87,7 +91,7 @@ export function checkRunPlace(run: ResolvedRun, machines: readonly MachineSummar
 		const model = agentModelRefusal(runAgent(run), list);
 		if (machine.status !== "online") reasons.push(`“${label}” is offline.`);
 		else if (runner) reasons.push(`“${label}”: ${runner}`);
-		else if (offered && typeof run.place === "object" && run.payer !== source) reasons.push(`“${label}”: restore the payer selected for this run before retrying.`);
+		else if (offered && (typeof run.place === "object" || run.sources.payer === "item") && run.payer !== source) reasons.push(`“${label}”: restore the payer selected for this run before retrying.`);
 		else if (payer) {
 			if (source === "machine" && offered.signIn !== "token") {
 				refusal = { code: "harness_signed_out", message: payer };

@@ -11,7 +11,7 @@ export interface RunSettings extends ItemPlaceDefaults {
 	effort?: string | null;
 	profile?: SandboxProfileId | null;
 	hostedSize?: HostedSize | null;
-	payer?: CredentialSource | null;
+	payer?: CredentialSource | "unconfirmed" | null;
 }
 export interface RunContext {
 	deployment?: RunSettings;
@@ -29,7 +29,7 @@ interface RunValues {
 	effort: string | null;
 	profile: SandboxProfileId | null;
 	size: HostedSize;
-	payer: CredentialSource | "windlass";
+	payer: CredentialSource | "windlass" | "unconfirmed";
 }
 export type ActualRun = Omit<ResolvedRun, "size"> & { size: HostedSize | number | null };
 
@@ -111,7 +111,7 @@ export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanS
 		set("fallback", layer.placeFallback, source);
 		set("size", layer.hostedSize, source);
 		set("profile", place === "hosted" ? layer.profile : layer.machineProfile, source);
-		if (agent !== "windlass") set("payer", layer.payer, source);
+		if (agent !== "windlass" && place !== "hosted") set("payer", layer.payer, source);
 		if (agent === "windlass") {
 			set("model", planning ? layer.reviewModel ?? layer.model : layer.model, source);
 			set("effort", planning ? layer.reviewEffort ?? layer.effort : layer.effort, source);

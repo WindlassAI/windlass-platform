@@ -295,6 +295,8 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
  * place is refused for good: approval refuses then, and nothing the owner waits for would help.
  */
 export function choosePlacement(task: PlanSubtask, route: PlacementRoute, inventory: PlacementInventory, warm: string[] = [], at = Date.now()) {
+	if (task.resolved?.payer === "unconfirmed")
+		return { refused: "This plan did not record the machine agent’s payer. Revise the placement and approve it with the intended payer.", permanent: true } as const;
 	if (task.resolved) {
 		if (task.resolved.agent === "windlass") inventory = { ...inventory, featureModel: inventory.models?.windlass?.defaultModel };
 		task = { ...task, agent: runAgent(task.resolved), needs: { ...task.needs, profile: task.needs?.profile ?? task.resolved.profile ?? undefined } };
