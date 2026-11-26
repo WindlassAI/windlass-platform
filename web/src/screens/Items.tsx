@@ -415,7 +415,7 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 							</a>
 						</span>
 					) : null}
-					{ci && origin && !origin.trusted ? <span>from an outside author</span> : null}
+					{origin && !origin.trusted ? <span>from an outside author</span> : null}
 					{item.source === "api" ? <span>from the API</span> : null}
 					{item.agent && item.agent.harness !== "windlass" ? (
 						<span>

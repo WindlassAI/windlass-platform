@@ -1007,7 +1007,7 @@ export function Item({ page }: { page: ItemPage }) {
 				<p className="item-meta">
 					<span><a {...linkProps({ name: "repository", id: repository.id })}>{repository.owner}/{repository.name}</a> → {view.task.base}</span>
 					{view.origin ? <IssueOrigin origin={view.origin} /> : (
-						<span>from {view.source === "api" ? "the API" : view.source === "github" ? "GitHub" : view.source === "linear" ? "Linear" : "the web"}</span>
+						<span>from {{ api: "the API", github: "GitHub", linear: "Linear", jira: "Jira", web: "the web" }[view.source]}</span>
 					)}
 					<time dateTime={new Date(view.createdAt).toISOString()} title={absoluteTime(view.createdAt)}>filed {relativeTime(view.createdAt, now)}</time>
 					{view.endedAt !== undefined ? <time dateTime={new Date(view.endedAt).toISOString()} title={absoluteTime(view.endedAt)}>ended {relativeTime(view.endedAt, now)}</time> : null}

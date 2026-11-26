@@ -165,6 +165,18 @@ Linear intake requires work items, a GitHub repository connection and a configur
 | `WLP_LINEAR_REDIRECT_URL` | Registered OAuth callback. Defaults to `/linear/callback` on the platform’s public origin, or the local server when no public origin is set. |
 | `WLP_LINEAR_API_URL`, `WLP_LINEAR_URL` | Override Linear’s API and authorization origins, for example for a test stand-in. |
 
+## Jira Cloud
+
+Create an OAuth 2.0 (3LO) app in the Atlassian developer console. Enable the Jira API scopes `read:jira-user`, `read:jira-work`, `write:jira-work` and `manage:jira-webhook`. Windlass also requests `offline_access` to renew access without asking the user to sign in again. Register the exact callback URL below and allow the intended users to authorize the app.
+
+| Variable | Effect |
+|---|---|
+| `WLP_JIRA_CLIENT_ID`, `WLP_JIRA_CLIENT_SECRET` | Both are required. The server uses the secret for OAuth and to verify Jira’s signed webhook tokens. There is no separate webhook secret. |
+| `WLP_JIRA_REDIRECT_URL` | OAuth callback. Defaults to `/jira/callback` on `WLP_PUBLIC_URL`, or `http://localhost:<WLP_HTTP_PORT>/jira/callback` when no public URL is set. |
+| `WLP_JIRA_AUTH_URL`, `WLP_JIRA_API_URL` | Authorization and API origins. Default to `https://auth.atlassian.com` and `https://api.atlassian.com`; override for a local stand-in. |
+
+Use a public HTTPS origin for Jira Cloud. Route the callback and `/jira/webhook/<key>` to the server and keep webhook keys out of access logs. The app registers and renews dynamic webhooks for issue creation and updates; do not create a static webhook in Jira. Each user authorizes Jira in Settings, selects an accessible site, and maps a project to a connected GitHub repository. Work items must be enabled for filing.
+
 ## Machines
 
 | Variable | Effect |
@@ -188,7 +200,7 @@ Operators can set [per-user limits](#per-user-limits), including a daily token c
 | `WLP_ITEMS` | `1`: every user of the deployment may file work items ([work-items.md](work-items.md#turning-work-items-on)); default off. The `WLP_FACTORY_HOSTED_RUNNING` ceiling holds either way |
 | `WLP_FACTORY_HOSTED_RUNNING` | how many hosted sandboxes a user may have at work at once, their own agents and their work items' together (default 3, from 1 to 100). A work item's turn past it waits; a prompt of the user's own is refused with the reason. Sandboxes on the user's machines never count |
 | `WLP_FACTORY_ITEM_TOKENS`, `WLP_FACTORY_ITEM_HOSTED_SECONDS` | a new work item's budget: cost-weighted tokens, cached input counted at a tenth (default 2,000,000), and seconds of hosted sandbox time (default 7200). A feature's budget is its approved subtasks' and one item's for its own turns |
-| `WLP_FACTORY_GITHUB_ITEMS_PER_DAY` | how many items a user may file from GitHub and Linear issues together in a UTC day, drafts among them (default 20) |
+| `WLP_FACTORY_GITHUB_ITEMS_PER_DAY` | how many items a user may file from GitHub, Linear and Jira issues together in a UTC day, drafts among them (default 20) |
 | `WLP_FACTORY_ORCHESTRATE` | `0`: hide the Orchestrate control and refuse new orchestrated filings (default on) |
 | `WLP_FACTORY_REVIEWER` | `on`: give new top-level items a second review on their builder’s place, agent and profile. A feature is reviewed as a whole. Default off. |
 | `WLP_FACTORY_CROSS_REPO` | `1` enables Plan-first features spanning two connected repositories, subject to the account’s plan. Default off. |

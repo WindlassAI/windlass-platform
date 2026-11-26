@@ -289,6 +289,15 @@ export interface UserApi extends Pick<UserActions, "signOutEverywhere" | "modelP
 	actOnItem(id: string, action: ItemAction): Promise<ItemView>;
 	/** The factory's limits for this user, which the deployment's owner sets. */
 	factoryLimits(): Promise<FactoryLimits>;
+	/** The OAuth callback stores the grant and returns to Settings with `#jira=select-site`. */
+	jira: UserActions["jira"];
+	jiraConnect: UserActions["jiraConnect"];
+	jiraComplete: UserActions["jiraComplete"];
+	jiraSelectSite: UserActions["jiraSelectSite"];
+	jiraProjects: UserActions["jiraProjects"];
+	saveJiraMapping: UserActions["saveJiraMapping"];
+	removeJiraMapping: UserActions["removeJiraMapping"];
+	disconnectJira: UserActions["disconnectJira"];
 	/** The Linear connection (`LinearStatus`): `off` where the deployment has no Linear client. */
 	linear(): Promise<LinearStatus>;
 	/** Begins connecting a workspace: the address at Linear to send the browser to. The page comes back with `#linear=<ticket>` or `#linear-error=<code>`. */

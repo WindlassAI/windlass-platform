@@ -127,6 +127,9 @@ import {
 	type HostedMonth,
 	type PlanId,
 	type PlanInfo,
+	type JiraConnection,
+	type JiraMapping,
+	type JiraProjectList,
 	type LinearConnection,
 	type LinearStatus,
 	type LinearTeamList,
@@ -158,6 +161,8 @@ export interface MockOptions {
 	github?: boolean;
 	/** Whether the deployment has a Linear OAuth client and signing secret. On unless false. */
 	linear?: boolean;
+	/** False plays a deployment with Jira disabled. */
+	jira?: boolean;
 	/** "e2b" plays a deployment on E2B that offers both of its profiles (`MOCK_E2B_PROFILES`). */
 	sandbox?: "docker" | "e2b";
 	/** How the user's day stands when the page loads (`MockUsageState`). Default "plenty". */
@@ -1038,6 +1043,44 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				return { ...team, mapping: mapped && repository ? { teamId: team.id, repository: { id: repository.id, owner: repository.owner, name: repository.name }, savedAt: mapped.savedAt } : null };
 			}),
 		};
+	}
+
+	// ---- Jira -----------------------------------------------------------------------------------
+
+	const jiraSites = [
+		{ id: "site-acme", name: "Acme", url: "https://acme.atlassian.net" },
+		{ id: "site-harbor", name: "Harbor", url: "https://harbor.atlassian.net" },
+	];
+	const projectsBySite: Record<string, { id: string; key: string; name: string }[]> = {
+		"site-acme": [{ id: "10001", key: "ENG", name: "Engineering" }, { id: "10002", key: "OPS", name: "Operations" }],
+		"site-harbor": [{ id: "10001", key: "DOC", name: "Documentation" }],
+	};
+	interface JiraKept { connection: JiraConnection; mappings: Record<string, JiraMapping> }
+	const jiraMemory = new Map<string, JiraKept>();
+	function jiraKept(uid: string): JiraKept | null {
+		const held = jiraMemory.get(uid);
+		if (held) return held;
+		try { return JSON.parse(recall(`wlp.mock.jira.${uid}`) || "null") as JiraKept | null; }
+		catch { return null; }
+	}
+	function keepJira(uid: string, value: JiraKept | null) {
+		if (value) jiraMemory.set(uid, value);
+		else jiraMemory.delete(uid);
+		keep(`wlp.mock.jira.${uid}`, JSON.stringify(value));
+	}
+	function requireJiraOn() {
+		if (options.jira === false) throw new PlatformError("user", "This deployment has no Jira client.", { reason: "jira_off" });
+	}
+	function requireJira(uid: string) {
+		requireJiraOn();
+		const kept = jiraKept(uid);
+		if (!kept) throw new PlatformError("user", "Connect Jira first.", { reason: "jira_not_connected" });
+		return kept;
+	}
+	function jiraProjects(kept: JiraKept, expectedSite?: string): JiraProjectList {
+		const site = kept.connection.site;
+		if (!site || (expectedSite !== undefined && expectedSite !== site.id)) throw new PlatformError("user", "Choose the Jira site first.", { reason: "jira_site" });
+		return { projects: (projectsBySite[site.id] ?? []).map(project => ({ ...project, mapping: kept.mappings[project.id] ?? null })) };
 	}
 
 	function connectionFor(profile: UserProfile): GithubConnection {
@@ -3423,6 +3466,60 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				session.feeds.clear();
 				const list = listOf(world());
 				for (const feed of world().feeds) feed.onSessions(list);
+			},
+			async jira() {
+				const uid = world().profile.uid;
+				if (options.jira === false) return { state: "off" };
+				const kept = jiraKept(uid);
+				return kept ? { state: "connected", connection: kept.connection } : { state: "disconnected" };
+			},
+			async jiraConnect({ origin }) {
+				requireJiraOn();
+				// Simulate the approved callback, which stores the grant before redirecting to Settings.
+				keepJira(world().profile.uid, { connection: { user: { id: "jira-ada", name: "Ada Lovelace" }, sites: jiraSites, site: null, connectedAt: now() }, mappings: {} });
+				const search = typeof location === "undefined" ? "" : location.search;
+				return { url: `${origin.replace(/\/$/, "")}/settings${search}#jira=select-site` };
+			},
+			async jiraComplete(ticket) {
+				const kept = requireJira(world().profile.uid);
+				if (ticket !== "select-site") throw new PlatformError("user", "Invalid Jira return. Connect Jira again.", { reason: "jira_ticket" });
+				return { state: "connected", connection: kept.connection };
+			},
+			async jiraSelectSite(siteId) {
+				const uid = world().profile.uid;
+				const kept = requireJira(uid);
+				const site = kept.connection.sites.find(candidate => candidate.id === siteId);
+				if (!site) throw new PlatformError("user", "That site is not authorized.", { reason: "jira_site" });
+				const connection = { ...kept.connection, site };
+				keepJira(uid, { connection, mappings: kept.connection.site?.id === siteId ? kept.mappings : {} });
+				return { state: "connected", connection };
+			},
+			async jiraProjects() { return jiraProjects(requireJira(world().profile.uid)); },
+			async saveJiraMapping({ siteId, projectId, repositoryId }) {
+				const uid = world().profile.uid;
+				const kept = requireJira(uid);
+				if (!jiraProjects(kept, siteId).projects.some(project => project.id === projectId)) throw new PlatformError("user", "That project is not on the selected site.", { reason: "jira_project" });
+				requireGithub(world());
+				const repository = GITHUB_REPOSITORIES.find(candidate => candidate.id === repositoryId);
+				if (!repository?.canPush) throw new PlatformError("user", "Choose a connected repository you can write to.", { reason: "bad_input" });
+				const mapping = { siteId, projectId, repository: { id: repository.id, owner: repository.owner, name: repository.name }, savedAt: now() };
+				const next = { ...kept, mappings: { ...kept.mappings, [projectId]: mapping } };
+				keepJira(uid, next);
+				return jiraProjects(next);
+			},
+			async removeJiraMapping({ siteId, projectId }) {
+				const uid = world().profile.uid;
+				const kept = requireJira(uid);
+				jiraProjects(kept, siteId);
+				const { [projectId]: _removed, ...mappings } = kept.mappings;
+				const next = { ...kept, mappings };
+				keepJira(uid, next);
+				return jiraProjects(next);
+			},
+			async disconnectJira() {
+				requireJiraOn();
+				keepJira(world().profile.uid, null);
+				return { state: "disconnected" };
 			},
 			async linear(): Promise<LinearStatus> {
 				await latency(200);

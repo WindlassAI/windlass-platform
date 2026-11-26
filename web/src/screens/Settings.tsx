@@ -6,6 +6,7 @@ import { DefaultsSection } from "../components/Defaults";
 import { CopyButton } from "../components/Copy";
 import { GithubSettings } from "../components/GithubSettings";
 import { LinearSettings } from "../components/LinearSettings";
+import { JiraSettings } from "../components/JiraSettings";
 import { LoginMethods } from "../components/LoginMethods";
 import { ModelProviders } from "../components/ModelProviders";
 import { PersonalServers } from "../components/PersonalServers";
@@ -109,6 +110,7 @@ export function Settings() {
 					<SettingsGroup id="settings-integrations" title="Integrations" lede={info?.items ? "Your repositories, and work items filed from other places." : "Your repositories."}>
 						<GithubSettings />
 						{info?.items ? <LinearSettings /> : null}
+						{info?.items ? <JiraSettings /> : null}
 						{info?.items ? <ApiTokens /> : null}
 					</SettingsGroup>
 				) : null}
