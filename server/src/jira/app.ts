@@ -79,13 +79,15 @@ export function adfText(value: unknown): string {
 
 export interface JiraCommentLink { text: string; href: string }
 
-export function textAdf(value: string, link?: JiraCommentLink) {
+export function textAdf(value: string, ...links: JiraCommentLink[]) {
 	const content = value.split(/\r?\n/).map(line => ({ type: "paragraph", content: line ? [{ type: "text", text: line }] : [] }));
-	if (!link) return { type: "doc", version: 1, content };
-	const url = URL.parse(link.href);
-	if (!link.text.trim() || !url || !["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Invalid Jira comment link");
-	const linked = { type: "text", text: link.text, marks: [{ type: "link", attrs: { href: url.href } }] };
-	return { type: "doc", version: 1, content: [...content, { type: "paragraph", content: [linked] }] };
+	for (const link of links) {
+		const url = URL.parse(link.href);
+		if (!link.text.trim() || !url || !["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Invalid Jira comment link");
+		const linked = { type: "text", text: link.text, marks: [{ type: "link", attrs: { href: url.href } }] };
+		content.push({ type: "paragraph", content: [linked] });
+	}
+	return { type: "doc", version: 1, content };
 }
 
 async function answer(response: Response): Promise<unknown> {
@@ -203,8 +205,8 @@ export class JiraApp {
 		return rows.map(row => ({ id: text(row.id), body: adfText(row.body), author: person(row.author) }));
 	}
 
-	async comment(token: string, cloudId: string, issueId: string, message: string, link?: JiraCommentLink): Promise<string> {
-		const row = record(await this.rest(token, cloudId, `issue/${segment(issueId)}/comment`, "post a comment", "POST", { body: textAdf(message, link) }));
+	async comment(token: string, cloudId: string, issueId: string, message: string, ...links: JiraCommentLink[]): Promise<string> {
+		const row = record(await this.rest(token, cloudId, `issue/${segment(issueId)}/comment`, "post a comment", "POST", { body: textAdf(message, ...links) }));
 		if (!text(row.id)) throw malformed("the comment id");
 		return text(row.id);
 	}

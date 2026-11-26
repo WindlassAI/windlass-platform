@@ -33,8 +33,8 @@ import { harnessName, itemHarnessProblem, itemProfiles, knownHarness } from "../
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch, subtaskBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
-import { fileJiraIssue, fileLinearIssue, inIntakeQueue, INTAKE_SOURCES, intakeScope, linearSources } from "./issue-intake.js";
-import type { Intake, IntakeTrigger, JiraFiled, JiraFiling, LinearFiled, LinearFiling } from "../factory/intake.js";
+import { fileJiraIssue, fileLinearIssue, inIntakeQueue, INTAKE_SOURCES, intakeScope, linearSources, type SiteJiraFiling } from "./issue-intake.js";
+import type { Intake, IntakeTrigger, JiraFiled, LinearFiled, LinearFiling } from "../factory/intake.js";
 import { GithubProblem, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { githubApp } from "../github/app.js";
 import { refHead } from "../github/feature.js";
@@ -1173,10 +1173,10 @@ export const itemActions = {
 		return inIntakeQueue(c, () => fileLinearIssue(c, filing,
 			(profile, made) => fileItem(c, profile, made.input, "linear", makeSession, { linear: made.binding })));
 	},
-	internalJiraIntake(c: ItemsCtx, filing: JiraFiling, makeSession: MakeSession): Promise<JiraFiled> {
+	internalJiraIntake(c: ItemsCtx, filing: SiteJiraFiling, makeSession: MakeSession): Promise<JiraFiled> {
 		requireServiceFor(c, "call");
 		return inIntakeQueue(c, () => fileJiraIssue(c, filing,
-			(profile, made) => fileItem(c, profile, made.input, "jira", makeSession, { jira: made.binding })));
+			(profile, made) => fileItem(c, profile, made.input, "jira", makeSession, { jira: made.binding }), githubItemId));
 	},
 	internalReserveAttachment(c: ItemsCtx, input: Reservation) {
 		requireService(c);

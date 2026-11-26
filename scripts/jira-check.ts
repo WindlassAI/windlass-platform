@@ -97,15 +97,20 @@ async function run() {
 		const installation = github.addInstallation(login, "User");
 		const repo = github.addRepository({ owner: login, name: "factory", installation });
 		Object.assign(github.appPermissions, { checks: "read", statuses: "read", actions: "read", issues: "write" });
-		const gh = await fetch(github.authorize(login, (await owner.githubConnect({ origin })).url), { redirect: "manual" });
-		await owner.githubComplete(new URL(gh.headers.get("location")!).hash.slice("#github=".length));
-		const callback = await jira.authorize((await owner.jiraConnect({ origin })).url);
-		const landing = await fetch(callback, { redirect: "manual" });
-		await owner.jiraComplete(new URL(landing.headers.get("location")!).hash.slice("#jira=".length));
+		const connect = async (account: typeof owner) => {
+			const gh = await fetch(github.authorize(login, (await account.githubConnect({ origin })).url), { redirect: "manual" });
+			await account.githubComplete(new URL(gh.headers.get("location")!).hash.slice("#github=".length));
+			const callback = await jira.authorize((await account.jiraConnect({ origin })).url);
+			const landing = await fetch(callback, { redirect: "manual" });
+			await account.jiraComplete(new URL(landing.headers.get("location")!).hash.slice("#jira=".length));
+		};
+		const secondSite = { ...jira.site, id: randomUUID(), name: "Second", url: "https://second.atlassian.net" };
+		jira.sites.push(secondSite);
+		await connect(owner);
 		const eng = jira.addProject("ENG"), ops = jira.addProject("OPS");
 		await owner.jiraSelectSite(jira.site.id);
 		await owner.saveJiraMapping({ siteId: jira.site.id, projectId: eng.id, repositoryId: repo.id });
-		const [hook] = jira.hooks.values(); assert.ok(hook);
+		let [hook] = jira.hooks.values(); assert.ok(hook);
 		type Issue = ReturnType<typeof jira.createIssue>;
 		const created = (issue: Issue) => ({ webhookEvent: "jira:issue_created", timestamp: Date.now(), matchedWebhookIds: [hook.id], issue: structuredClone(issue), user: jira.myself });
 		const updated = (issue: Issue, change: object) => ({ ...created(issue), webhookEvent: "jira:issue_updated", changelog: { items: [change] } });
@@ -179,10 +184,11 @@ async function run() {
 		const milestone = async (issue: Issue, id: string, key: string, wording: string, pr?: string) => {
 			const marker = `[windlass:${id}:${key}]`;
 			const comment = await until(`Jira ${key} comment for ${id}`, async () => posted(issue).find(c => JSON.stringify(c.body).includes(marker)));
-			const lines = [wording, ...(pr ? [`Pull request: ${pr}`] : []), marker];
+			const lines = [wording, marker];
 			assert.deepEqual(comment.body, { type: "doc", version: 1, content: [
 				...lines.map(text => ({ type: "paragraph", content: [{ type: "text", text }] })),
 				{ type: "paragraph", content: [{ type: "text", text: "Work item", marks: [{ type: "link", attrs: { href: `${origin}/items/${id}` } }] }] },
+				...(pr ? [{ type: "paragraph", content: [{ type: "text", text: "Pull request", marks: [{ type: "link", attrs: { href: pr } }] }] }] : []),
 			] });
 		};
 		const id = quickItem.id;
@@ -221,6 +227,46 @@ async function run() {
 		assert.equal(failed.state, "failed"); assert.equal(failed.pullRequest, null);
 		assert.equal(posted(bugIssue).length, 2); assert.deepEqual(bugIssue.fields.status, bugStatus);
 		console.log("PASS Jira PR, merge, fresh generation, and failure before a PR");
+
+		// ENG's claim changes hands, but the issue still belongs to A's original filing.
+		const otherAuth = await loginHttp(api).demo();
+		const other = client.user.getOrCreate([otherAuth.profile.uid], { params: { token: otherAuth.token } });
+		await connect(other);
+		const mapping = { siteId: jira.site.id, projectId: eng.id };
+		await owner.removeJiraMapping(mapping);
+		await other.jiraSelectSite(jira.site.id);
+		await other.saveJiraMapping({ ...mapping, repositoryId: repo.id });
+		[hook] = jira.hooks.values(); assert.ok(hook);
+		const beforeEnd = updated(labelled, labelChange);
+		assert.equal(await post(beforeEnd), true);
+		const forIssue = async (account: typeof owner) => (await account.listItems()).filter(i => i.origin?.jira?.id === labelled.id);
+		assert.deepEqual((await forIssue(owner)).map(i => i.id), [first.id]);
+		assert.deepEqual(await forIssue(other), []);
+		await owner.actOnItem({ id: first.id, action: { kind: "cancel" } });
+		await until("first owner's Jira draft ended", async () => (await owner.item(first.id)).state === "cancelled");
+		assert.equal(await post(beforeEnd), true); assert.deepEqual(await forIssue(other), []);
+		const fresh = updated(labelled, labelChange);
+		await Promise.all([post(fresh), post(fresh)]);
+		const [replacement] = await forIssue(other);
+		assert.equal((await forIssue(other)).length, 1); assert.equal(replacement.state, "draft");
+		assert.notEqual(replacement.id, first.id);
+		const otherBinding = async (id: string) => {
+			const p = client.workItem.get([otherAuth.profile.uid, id], { params: serviceParams() }) as unknown as ItemProbe;
+			return (await p.checkProvenance()).jira;
+		};
+		assert.equal((await otherBinding(replacement.id))?.generation, 2);
+		const parallelProject = jira.addProject("ALT", "Alternate project", secondSite);
+		const twin = jira.createIssue(parallelProject, "Independent issue on another site", "", labelled.id);
+		twin.fields.labels = ["windlass"];
+		await other.jiraSelectSite(secondSite.id);
+		await other.saveJiraMapping({ siteId: secondSite.id, projectId: parallelProject.id, repositoryId: repo.id });
+		[hook] = jira.hooks.values(); assert.ok(hook && hook.siteId === secondSite.id);
+		assert.equal(await post(created(twin)), true);
+		const sameId = await forIssue(other); assert.equal(sameId.length, 2);
+		const independent = sameId.find(i => i.id !== replacement.id)!;
+		const binding = await otherBinding(independent.id);
+		assert.equal(binding?.siteId, secondSite.id); assert.equal(binding?.generation, 1);
+		console.log("PASS Jira owner handoff preserves the open draft, generation and site boundaries");
 	} finally {
 		await stop(); await jira.close(); await github.stop(); rmSync(storage, { recursive: true, force: true });
 	}

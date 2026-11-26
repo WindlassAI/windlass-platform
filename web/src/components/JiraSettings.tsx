@@ -1,7 +1,7 @@
 import type { GithubRepository, JiraProject, JiraSite, JiraStatus } from "@contract";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useHash } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { SettingsSection } from "./SettingsGroups";
 
 function callbackError(reason: string | undefined) {
 	switch (reason) {
@@ -15,25 +15,45 @@ function callbackError(reason: string | undefined) {
 export function JiraSettings() {
 	const { client, explain } = useApp();
 	const auth = useAuth();
+	const hash = useHash();
 	const [status, setStatus] = useState<JiraStatus | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [siteId, setSiteId] = useState("");
 
+	// StrictMode can restart the effect after the single-use fragment has been stripped.
+	const redemption = useRef<{ auth: typeof auth; client: typeof client; result: Promise<JiraStatus> } | null>(null);
 	useEffect(() => {
-		// The grant stays on the server. The return fragment is a hint, never a credential.
+		let live = true;
+		const api = client.user(auth);
 		const back = /^#(jira|jira-error)=(.*)$/.exec(location.hash);
 		if (back) {
 			history.replaceState(history.state, "", location.pathname + location.search);
 			document.getElementById("settings-jira")?.scrollIntoView?.({ block: "center" });
-			if (back[1] === "jira-error" || back[2] !== "select-site") {
-				setError(callbackError(back[1] === "jira-error" ? back[2] : undefined));
-			}
+			if (back[1] === "jira-error") setError(callbackError(back[2]));
+			else redemption.current = { auth, client, result: api.jiraComplete(back[2]!) };
 		}
-		let live = true;
-		void client.user(auth).jira().then(value => { if (live) setStatus(value); }, failure => { if (live) setError(explain(failure)); });
+		const pending = redemption.current;
+		void (async () => {
+			try {
+				if (pending?.auth === auth && pending.client === client) {
+					try {
+						const next = await pending.result;
+						if (live) setStatus(next);
+						return;
+					} catch (failure) {
+						if (!live) return;
+						setError(explain(failure));
+					} finally {
+						if (live) redemption.current = null;
+					}
+				}
+				const next = await api.jira();
+				if (live) setStatus(next);
+			} catch (failure) { if (live) setError(explain(failure)); }
+		})();
 		return () => { live = false; };
-	}, [client, auth, explain]);
+	}, [client, auth, explain, hash]);
 
 	async function run(work: () => Promise<void>) {
 		setBusy(true);
@@ -43,7 +63,18 @@ export function JiraSettings() {
 	if (status?.state === "off") return null;
 	const api = client.user(auth);
 	const connection = status?.state === "connected" ? status.connection : null;
-	return <SettingsSection id="settings-jira" title="Jira Cloud">
+	function disconnect() {
+		if (!confirm("Disconnect Jira and remove its project mappings? Items already filed stay.")) return;
+		void run(async () => {
+			setStatus(await api.disconnectJira());
+			setSiteId("");
+		});
+	}
+	return <section className="usage-section repo-saved" aria-labelledby="settings-jira">
+		<h3 className="usage-title" id="settings-jira">
+			Jira Cloud
+			{connection && <button type="button" className="link secret-add" disabled={busy} onClick={disconnect}>Disconnect Jira…</button>}
+		</h3>
 		<p className="usage-lede">File drafts from Jira issues in projects you map to GitHub repositories.</p>
 		{!status && !error && <p className="field-note" aria-busy="true">Loading Jira…</p>}
 		{status?.state === "disconnected" && <button className="button button-outline" disabled={busy} onClick={() => void run(async () => {
@@ -61,15 +92,9 @@ export function JiraSettings() {
 				</select>
 				<button className="button button-outline" disabled={busy || !siteId} onClick={() => void run(async () => setStatus(await api.jiraSelectSite(siteId)))}>Connect site</button>
 			</div>}
-			<button className="link" disabled={busy} onClick={() => {
-				if (confirm("Disconnect Jira and remove its project mappings? Items already filed stay.")) void run(async () => {
-					setStatus(await api.disconnectJira());
-					setSiteId("");
-				});
-			}}>Disconnect Jira…</button>
 		</>}
 		{error && <p className="callout callout-bad" role="alert">{error}</p>}
-	</SettingsSection>;
+	</section>;
 }
 
 function JiraProjects({ site, busy, run }: { site: JiraSite; busy: boolean; run: (work: () => Promise<void>) => Promise<void> }) {

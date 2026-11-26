@@ -78,8 +78,11 @@ const question = { id: "q1", kind: "budget", text: "Go on?", askedAt: T0 } as un
 const parent = { itemId: "i_0001", key: "a", title: "Item 1" };
 /** 3 open items, 60 ended ones over two repositories (filed among them), a feature child that asks and one that does not. */
 function seed(): ItemSummary[] {
-	const open = [item(1, "working"), item(30, "review"), item(75, "draft")];
-	const ended = Array.from({ length: 60 }, (_, index) => item(index < 28 ? index + 2 : index + 12, ENDED_STATES[index % 3]!));
+	const open = [item(1, "working"), item(30, "review"), item(75, "draft", TIDES, { source: "jira" })];
+	const ended = Array.from({ length: 60 }, (_, index) => {
+		const n = index < 28 ? index + 2 : index + 12;
+		return item(n, ENDED_STATES[index % 3]!, undefined, [6, 29, 55].includes(n) ? { source: "jira" } : {});
+	});
 	const asking = item(80, "waiting", HARBOR, { id: "i_child_asks", parent, question });
 	const quiet = item(81, "working", HARBOR, { id: "i_child_quiet", parent });
 	return [...open, ...ended, asking, quiet];
@@ -174,6 +177,15 @@ await check("listItems without a page still answers with every listed item", () 
 	assert.deepEqual(open.map((one) => one.id).sort(), list.filter((one) => !["done", "failed", "cancelled"].includes(one.state)).map((one) => one.id).sort());
 	assert.equal(open.length, 4);
 	assert.equal(itemActions.listItems(c, { limit: 100 }).length, 64, "left out, both");
+});
+
+await check("ended Jira pages skip open Jira items and other sources across the cursor", () => {
+	const page = { ended: true, source: "jira", limit: 2 };
+	const first = itemActions.listItems(c, page);
+	assert.deepEqual(ids(first), ["i_0055", "i_0029"]);
+	const { createdAt, id } = first[1]!;
+	assert.deepEqual(ids(itemActions.listItems(c, { ...page, before: { createdAt, id } })), ["i_0006"]);
+	assert.throws(() => itemActions.listItems(c, { ...page, source: "other" }), /Filed from/);
 });
 
 await check("an item that ends: the next broadcast counts it, and carries it where it is among the newest filed", async () => {

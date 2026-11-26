@@ -6,7 +6,7 @@ import type { RawAccess } from "rivetkit/db";
 import { serviceParams } from "../auth.js";
 import { config, ownEngineEndpoint } from "../config.js";
 import type { GithubId, ItemSummary, JiraConnection, JiraMapping, JiraProjectList, JiraStatus } from "../contract.js";
-import type { JiraFiling, JiraFiled } from "../factory/intake.js";
+import type { JiraFiled } from "../factory/intake.js";
 import { githubApp } from "../github/app.js";
 import { isGithubId } from "../github/ids.js";
 import { GithubProblem, resolveRepository, type StoredConnection } from "../github/repos.js";
@@ -17,7 +17,8 @@ import { readSignedPayload, signedPayload } from "../signatures.js";
 import { openSecret, sealSecret } from "../repo-secrets.js";
 import { serverSealer } from "../signin/seal.js";
 import { isActorGone, type JiraItemWrite } from "./internal.js";
-import { jiraCallbackHash } from "./jira-site.js";
+import type { SiteJiraFiling } from "./issue-intake.js";
+import { jiraCallbackHash, type JiraGeneration } from "./jira-site.js";
 
 export const JIRA_TABLES = [
 	`CREATE TABLE IF NOT EXISTS jira_state (nonce TEXT PRIMARY KEY, origin TEXT NOT NULL, expires INTEGER NOT NULL, claimed INTEGER NOT NULL DEFAULT 0, ticket TEXT UNIQUE, sealed TEXT)`,
@@ -310,7 +311,7 @@ export function renewJiraWebhooks(c: JiraCtx): Promise<void> {
 
 // Keep the mapping stable through intake. Work-item creation only enqueues its comment: the
 // onWake outbox is detached, so the owner does not wait on a Jira write while holding this queue.
-export function fileJiraDelivery(c: JiraCtx, d: JiraDelivery, file: (filing: JiraFiling) => Promise<JiraFiled>): Promise<JiraDispatch> {
+export function fileJiraDelivery(c: JiraCtx, d: JiraDelivery, file: (filing: SiteJiraFiling) => Promise<JiraFiled>): Promise<JiraDispatch> {
 	return serial(c, async () => {
 		const meta = (await stored(c))?.meta, site = meta?.site;
 		if (!meta || !site || site.id !== d.cloudId || !jiraApp()) return "ignored";
@@ -323,17 +324,22 @@ export function fileJiraDelivery(c: JiraCtx, d: JiraDelivery, file: (filing: Jir
 		const { app, token } = await access(c);
 		const issue = await app.issue(token.accessToken, site.id, d.issueId);
 		let result: JiraDispatch = "ignored";
-		if (issue && issue.id === d.issueId && issue.projectId === d.projectId) {
+		if (issue && issue.id === d.issueId && issue.projectId === d.projectId && issue.statusCategory !== "done") {
 			const byAssignment = assignment && issue.assignee?.accountId === meta.user.id;
 			const byLabel = d.label && issue.labels.some(isTriggerLabel);
 			const author = issue.creator ?? issue.reporter;
 			const sender = [author, issue.assignee, issue.reporter].find(p => p && p.accountId === d.actorId);
 			const mapping: JiraMapping = JSON.parse(row.mapping);
-			const decision = await file({ project: { id: issue.projectId, siteId: site.id }, repository: { id: mapping.repository.id },
+			const ref = { uid: c.key[0]!, projectId: d.projectId, issue: d.issueId, delivery: d.deliveryId };
+			const directory = siteDirectory(c, site.id);
+			const plan: JiraGeneration = await directory.internalGeneration(ref, d.sentAt);
+			const decision = plan.kind === "exists" ? plan : await file({ reservation: { ref, generation: plan.generation }, project: { id: issue.projectId, siteId: site.id }, repository: { id: mapping.repository.id },
 				issue: { id: issue.id, identifier: issue.key, url: `${site.url}/browse/${encodeURIComponent(issue.key)}`, title: issue.summary, description: issue.description,
-					issueType: issue.issueType, labels: issue.labels, closed: issue.statusCategory === "done", creator: author && { id: author.accountId, name: author.displayName } },
+					issueType: issue.issueType, labels: issue.labels, creator: author && { id: author.accountId, name: author.displayName } },
 				trigger: { via: byAssignment ? "assignment" : byLabel || d.label ? "label" : "assignment", at: d.sentAt,
 					sender: { id: d.actorId ?? "unknown", name: sender?.displayName ?? (d.actorId === meta.user.id ? meta.user.name : "a Jira user") }, ...(!byAssignment && !byLabel && { lapsed: true }) } });
+			if (plan.kind === "file" && (decision.kind === "filed" || decision.kind === "exists"))
+				await directory.internalFinishIssue(ref, plan.generation, decision.itemId);
 			if (decision.kind === "refused" && decision.dailyCap) throw new Error("jira_daily_cap");
 			result = decision.kind === "ignored" ? "ignored" : "taken";
 		}
@@ -364,7 +370,8 @@ export function writeJiraItem(c: JiraCtx, write: JiraItemWrite): Promise<boolean
 			if (comments.some(comment => comment.author?.accountId === meta.user.id && comment.body.split("\n").includes(marker))) return true;
 			const wording = { filed: "Filed as a Windlass draft.", opened: "Windlass opened a pull request.", done: "The Windlass work item is done.", failed: "The Windlass work item failed.", cancelled: "The Windlass work item was cancelled." };
 			const pr = "pr" in action && action.pr;
-			await app.comment(accessToken, write.siteId, issue.id, `${wording[action.key]}${pr ? `\nPull request: ${pr}` : ""}\n${marker}`, { text: "Work item", href: action.itemUrl });
+			await app.comment(accessToken, write.siteId, issue.id, `${wording[action.key]}\n${marker}`,
+				{ text: "Work item", href: action.itemUrl }, ...(pr ? [{ text: "Pull request", href: pr }] : []));
 			return true;
 		} catch (error) {
 			if (error instanceof JiraError && error.rateLimited) { retry.set(c.vars, Math.max(Date.now() + 15_000, error.retryAt)); throw new Error("jira_rate_limited"); }

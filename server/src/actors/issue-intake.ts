@@ -1,5 +1,7 @@
 /** The owner queue, reservations, cap and saved policy shared by issue intakes. */
 
+import { serviceParams } from "../auth.js";
+import type { JiraClaimRef } from "./jira-site.js";
 import { mayUse } from "../access.js";
 import { readAccountDefaults } from "../account-defaults.js";
 import { config } from "../config.js";
@@ -88,6 +90,7 @@ function wellFormed(f: TrackerFiling, accountId: (id: unknown) => boolean) {
 interface TrackerPolicy<B> {
 	tracker: "Linear" | "Jira";
 	keyPrefix: string;
+	generation?: number;
 	trusted: boolean;
 	bugType?: boolean;
 	quickLabels: readonly string[];
@@ -105,16 +108,23 @@ export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling, file: Tracke
 		bind: fields => ({ ...fields, teamId: team.id, workspaceId: team.workspaceId, origin }) }, file);
 }
 
-export async function fileJiraIssue(c: ItemsCtx, f: JiraFiling, file: TrackerFile<JiraBinding>): Promise<JiraFiled> {
+export type SiteJiraFiling = JiraFiling & { reservation?: { ref: JiraClaimRef; generation: number } };
+export async function fileJiraIssue(c: ItemsCtx, f: SiteJiraFiling, file: TrackerFile<JiraBinding>, itemId: (uid: string, key: string) => string): Promise<JiraFiled> {
 	if (!wellFormed(f, jiraAccount) || !trackerId(f.project?.id) || !trackerId(f.project.siteId)
 		|| typeof f.issue.identifier !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,31}-\d{1,16}$/.test(f.issue.identifier)
 		|| typeof f.issue.issueType !== "string" || f.issue.url.length > 2048 || /[^\x21-\x7e]/.test(f.issue.url) || !URL.canParse(f.issue.url))
 		return { kind: "refused", reason: "The Jira issue was not well formed." };
 	const { issue, project } = f;
 	const origin = { jira: { id: issue.id, identifier: issue.identifier, url: issue.url, author: trackerName(issue.creator?.name), trusted: false as const }, sender: trackerName(f.trigger.sender.name) };
-	return fileTrackerIssue(c, f, { tracker: "Jira", keyPrefix: `jira:${project.siteId}:${issue.id}:`, trusted: false, quickLabels: ["windlass:quick", "windlass-quick"],
+	return fileTrackerIssue(c, f, { tracker: "Jira", keyPrefix: `jira:${project.siteId}:${issue.id}:`, generation: f.reservation?.generation, trusted: false, quickLabels: ["windlass:quick", "windlass-quick"],
 		bugType: issue.issueType.trim().toLowerCase() === "bug",
-		bind: fields => ({ ...fields, projectId: project.id, siteId: project.siteId, origin }) }, file);
+		bind: fields => ({ ...fields, projectId: project.id, siteId: project.siteId, origin }) }, async (owner, made) => {
+		if (f.reservation) {
+			const site = c.client().jiraSite.get([project.siteId], { params: serviceParams() });
+			await site.internalReserveIssue(f.reservation.ref, made.binding.generation, itemId(owner.uid, made.input.idempotencyKey!));
+		}
+		return file(owner, made);
+	});
 }
 
 /** Finish an interrupted filing, reuse its active item, or reserve the next generation. */
@@ -131,12 +141,13 @@ async function fileTrackerIssue<B>(c: ItemsCtx, f: TrackerFiling, rules: Tracker
 	const made = [...c.vars.items.created].flatMap(([key, entry]) => key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length)) ? [{ generation: Number(key.slice(prefix.length)), id: entry.id }] : []);
 	const last = made.sort((a, b) => a.generation - b.generation).at(-1);
 	const held = last && c.vars.items.items.get(last.id);
-	if (last && held && !isEnded(held)) return { kind: "exists", itemId: last.id };
+	if (rules.generation !== undefined && last && (last.generation > rules.generation || (!held && last.generation !== rules.generation))) throw new Error("Jira intake generation mismatch");
+	if (last && held && (last.generation === rules.generation || !isEnded(held))) return { kind: "exists", itemId: last.id };
 	// An older Jira trigger delivered out of order belongs to the finished generation.
 	if (tracker === "Jira" && held?.endedAt !== undefined && trigger.at <= held.endedAt) return { kind: "exists", itemId: held.id };
 	const resuming = last && !held ? last : undefined;
 	if (trigger.lapsed && !resuming) return { kind: "ignored", why: "The issue no longer has what qualified it." };
-	const generation = resuming?.generation ?? (last?.generation ?? 0) + 1;
+	const generation = rules.generation ?? resuming?.generation ?? (last?.generation ?? 0) + 1;
 
 	if (!config.items) return { kind: "refused", reason: refusals.off };
 	const app = githubApp(), connection = c.vars.github;

@@ -3480,15 +3480,21 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			},
 			async jiraConnect({ origin }) {
 				requireJiraOn();
-				// Simulate the approved callback, which stores the grant before redirecting to Settings.
-				keepJira(world().profile.uid, { connection: { user: { id: "jira-ada", name: "Ada Lovelace" }, sites: jiraSites, site: null, connectedAt: now() }, mappings: {} });
+				const ticket = crypto.randomUUID();
+				keep(`wlp.mock.jira.ticket.${world().profile.uid}`, JSON.stringify({ ticket, expires: now() + 5 * 60_000 }));
 				const search = typeof location === "undefined" ? "" : location.search;
-				return { url: `${origin.replace(/\/$/, "")}/settings${search}#jira=select-site` };
+				return { url: `${origin.replace(/\/$/, "")}/settings${search}#jira=${ticket}` };
 			},
 			async jiraComplete(ticket) {
-				const kept = requireJira(world().profile.uid);
-				if (ticket !== "select-site") throw new PlatformError("user", "Invalid Jira return. Connect Jira again.", { reason: "jira_ticket" });
-				return { state: "connected", connection: kept.connection };
+				requireJiraOn();
+				const uid = world().profile.uid;
+				const key = `wlp.mock.jira.ticket.${uid}`;
+				const pending = JSON.parse(recall(key) || "null");
+				if (!pending || pending.ticket !== ticket || !(pending.expires > now())) throw new PlatformError("user", "Invalid Jira return. Connect Jira again.", { reason: "jira_ticket" });
+				keep(key, "");
+				const connection = { user: { id: "jira-ada", name: "Ada Lovelace" }, sites: jiraSites, site: null, connectedAt: now() };
+				keepJira(uid, { connection, mappings: {} });
+				return { state: "connected", connection };
 			},
 			async jiraSelectSite(siteId) {
 				const uid = world().profile.uid;
@@ -3523,6 +3529,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			},
 			async disconnectJira() {
 				requireJiraOn();
+				keep(`wlp.mock.jira.ticket.${world().profile.uid}`, "");
 				keepJira(world().profile.uid, null);
 				return { state: "disconnected" };
 			},

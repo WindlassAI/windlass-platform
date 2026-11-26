@@ -7,6 +7,7 @@ import { internalConnection, requireServiceFor, serviceParams } from "../auth.js
 import { ownEngineEndpoint } from "../config.js";
 import type { JiraDelivery, JiraDispatch, JiraWebhookBinding } from "../jira/webhook.js";
 import { isActorGone } from "../actor-errors.js";
+import { itemActor } from "./internal.js";
 
 export const jiraCallbackHash = (key: string): string => createHash("sha256").update(key).digest("hex");
 const digest = /^[0-9a-f]{64}$/;
@@ -55,10 +56,20 @@ async function holder(db: RawAccess, projectId: string) {
 	return row;
 }
 
+export type JiraClaimRef = Claim & { issue: string; delivery: string };
+type IssueRow = { uid: string; generation: number; item: string; pending: number };
+export type JiraGeneration = { kind: "exists"; itemId: string } | { kind: "file"; generation: number };
+async function requireDelivery(db: RawAccess, ref: JiraClaimRef) {
+	const rows = await db.execute(`SELECT 1 FROM delivery d JOIN project_owner p ON d.project=p.project AND d.epoch=p.epoch
+		WHERE p.uid=? AND p.project=? AND d.id=? AND d.issue=? AND d.done=0`, ref.uid, ref.projectId, ref.delivery, ref.issue);
+	if (!rows.length) throw new Error("Jira delivery claim changed");
+}
+
 export async function jiraSiteTables(db: RawAccess) {
 	await db.execute("CREATE TABLE IF NOT EXISTS project_owner (project TEXT PRIMARY KEY, uid TEXT NOT NULL, epoch TEXT NOT NULL, revision TEXT NOT NULL)");
 	await db.execute("CREATE TABLE IF NOT EXISTS delivery (id TEXT PRIMARY KEY, epoch TEXT, project TEXT NOT NULL, issue TEXT NOT NULL, done INTEGER NOT NULL, received INTEGER NOT NULL)");
 	await db.execute("CREATE INDEX IF NOT EXISTS delivery_received ON delivery(received)");
+	await db.execute("CREATE TABLE IF NOT EXISTS issue_filing (issue TEXT PRIMARY KEY, uid TEXT NOT NULL, generation INTEGER NOT NULL, item TEXT NOT NULL, pending INTEGER NOT NULL)");
 }
 const WEEK = 7 * 86_400_000;
 export const jiraSite = actor({
@@ -91,6 +102,37 @@ export const jiraSite = actor({
 		internalRelease: async (c, { projectId, uid }: Claim): Promise<void> => {
 			requireServiceFor(c, "call");
 			await c.db.execute("DELETE FROM project_owner WHERE project=? AND uid=?", projectId, uid);
+		},
+		// Dispatch holds the site queue while the owner plans, reserves, and files.
+		// The reservation outlives its project claim; only its original item can release it.
+		internalGeneration: async (c, ref: JiraClaimRef, sentAt: number): Promise<JiraGeneration> => {
+			requireServiceFor(c, "call");
+			await requireDelivery(c.db, ref);
+			const [prior] = await c.db.execute<IssueRow>("SELECT * FROM issue_filing WHERE issue=?", ref.issue);
+			if (!prior) return { kind: "file", generation: 1 };
+			// Only the same owner can resume an interrupted filing under its reserved key.
+			if (prior.pending && prior.uid === ref.uid) return { kind: "file", generation: prior.generation };
+			const item = await itemActor(c, prior.uid, prior.item).internalSummary().catch(() => { throw new Error("Jira filing could not be verified"); });
+			if (item.id !== prior.item || item.source !== "jira" || item.origin?.jira?.id !== ref.issue) throw new Error("Jira filing mismatch");
+			if (!["done", "failed", "cancelled"].includes(item.state)) return { kind: "exists", itemId: prior.item };
+			if (item.endedAt === undefined || !Number.isFinite(item.endedAt)) throw new Error("Jira filing has no terminal timestamp");
+			if (sentAt <= item.endedAt) return { kind: "exists", itemId: prior.item };
+			return { kind: "file", generation: prior.generation + 1 };
+		},
+		internalReserveIssue: async (c, ref: JiraClaimRef, generation: number, item: string) => {
+			requireServiceFor(c, "call");
+			await c.db.transaction(async tx => {
+				await requireDelivery(tx, ref);
+				const [prior] = await tx.execute<IssueRow>("SELECT * FROM issue_filing WHERE issue=?", ref.issue);
+				if (prior?.generation === generation && prior.uid === ref.uid && prior.item === item) return;
+				if (generation !== (prior?.generation ?? 0) + 1) throw new Error("Jira issue generation changed");
+				await tx.execute("INSERT OR REPLACE INTO issue_filing VALUES (?,?,?,?,1)", ref.issue, ref.uid, generation, item);
+			});
+		},
+		internalFinishIssue: async (c, ref: JiraClaimRef, generation: number, item: string) => {
+			requireServiceFor(c, "call");
+			const rows = await c.db.execute("UPDATE issue_filing SET pending=0 WHERE issue=? AND uid=? AND generation=? AND item=? RETURNING item", ref.issue, ref.uid, generation, item);
+			if (!rows.length) throw new Error("Jira filing receipt mismatch");
 		},
 		internalDispatch: async (c, delivery: JiraDelivery, callbackHash: string): Promise<JiraDispatch> => {
 			requireServiceFor(c, "call");

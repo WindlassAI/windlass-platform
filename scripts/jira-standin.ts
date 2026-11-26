@@ -36,11 +36,20 @@ function reply(res: ServerResponse, status: number, value?: unknown) {
 	res.end(JSON.stringify(value));
 }
 export const jiraAdf = (text: string) => ({ type: "doc", version: 1, content: text.split("\n").map((line) => ({ type: "paragraph", content: line ? [{ type: "text", text: line }] : [] })) });
-// The check writes plain text as paragraphs and hard breaks; rich issue descriptions can be seeded directly.
+// Comments use plain paragraphs, hard breaks and HTTP(S) link marks.
+function commentText(node: Obj): boolean {
+	if (node.type !== "text" || typeof node.text !== "string" || !node.text.length) return false;
+	if (node.marks === undefined) return true;
+	if (!Array.isArray(node.marks) || node.marks.length !== 1) return false;
+	const [mark] = node.marks;
+	if (!record(mark) || mark.type !== "link" || !record(mark.attrs) || typeof mark.attrs.href !== "string") return false;
+	const url = URL.parse(mark.attrs.href);
+	return !!url && ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
+}
 function commentDoc(body: unknown): body is Obj {
 	return record(body) && body.type === "doc" && body.version === 1 && Array.isArray(body.content) && body.content.length > 0 && body.content.every((p) =>
 		record(p) && p.type === "paragraph" && (p.content === undefined || (Array.isArray(p.content) && p.content.every((n) =>
-			record(n) && (n.type === "hardBreak" || (n.type === "text" && typeof n.text === "string" && n.text.length > 0))))));
+			record(n) && (n.type === "hardBreak" || commentText(n))))));
 }
 const scopes = ["read:jira-work", "write:jira-work", "read:jira-user", "manage:jira-webhook", "offline_access"];
 const hookEvents = ["jira:issue_created", "jira:issue_updated", "jira:issue_deleted", "comment_created", "comment_updated", "comment_deleted", "issue_property_set", "issue_property_deleted"];
@@ -76,7 +85,7 @@ export class JiraStandin {
 	readonly projects: Project[] = [];
 	private readonly projectSites = new Map<string, string>();
 	readonly issues = new Map<string, Issue>();
-	readonly comments = new Map<string, { issueId: string; id: string; body: Obj; author: Person }>();
+	readonly comments = new Map<string, { siteId: string; issueId: string; id: string; body: Obj; author: Person }>();
 	readonly hooks = new Map<number, Hook>();
 	consent = { approve: true };
 	private readonly codes = new Map<string, string[]>();
@@ -112,13 +121,12 @@ export class JiraStandin {
 		this.projectSites.set(p.id, site.id);
 		return p;
 	}
-	createIssue(project: Project, summary: string, description: string | Obj | null = "") {
-		const id = String(++this.nextId);
+	createIssue(project: Project, summary: string, description: string | Obj | null = "", id = String(++this.nextId)) {
 		const issue: Issue = { id, key: `${project.key}-${this.issues.size + 1}`, fields: {
 			project, summary, description: typeof description === "string" ? jiraAdf(description) : description, labels: [],
 			assignee: null, creator: this.myself, reporter: this.myself, issuetype: { name: "Task" }, status: { name: "Open", statusCategory: { key: "new" } },
 		} };
-		this.issues.set(id, issue);
+		this.issues.set(`${this.projectSites.get(project.id)}:${id}`, issue);
 		return issue;
 	}
 	private authorizeRequest(q: URLSearchParams, res: ServerResponse) {
@@ -207,20 +215,20 @@ export class JiraStandin {
 				return reply(res, 200, { ...issue, fields: fields ? Object.fromEntries(Object.entries(issue.fields).filter(([k]) => fields.includes(k))) : issue.fields });
 			}
 			if (comment && method === "GET" && !commentId) {
-				const { values, startAt, maxResults, total } = this.page([...this.comments.values()].filter((c) => c.issueId === issue.id), q);
-				return reply(res, 200, { comments: values.map(({ issueId, ...c }) => c), startAt, maxResults, total });
+				const { values, startAt, maxResults, total } = this.page([...this.comments.values()].filter((c) => c.siteId === site.id && c.issueId === issue.id), q);
+				return reply(res, 200, { comments: values.map(({ siteId, issueId, ...c }) => c), startAt, maxResults, total });
 			}
 			query(q, []);
 			if (commentId && method === "GET") {
 				const c = this.comments.get(commentId);
-				check(c?.issueId === issue.id, "unknown comment", 404);
+				check(c?.siteId === site.id && c.issueId === issue.id, "unknown comment", 404);
 				return reply(res, 200, { id: c.id, author: c.author, body: c.body });
 			}
 			if (comment && !commentId && method === "POST") {
 				const b = await json(req);
 				only(b, ["body"]); check(commentDoc(b.body), "expected ADF comment");
 				const c = { id: String(++this.nextId), body: b.body, author: this.myself };
-				this.comments.set(c.id, { ...c, issueId: issue.id });
+				this.comments.set(c.id, { ...c, siteId: site.id, issueId: issue.id });
 				return reply(res, 201, c);
 			}
 		}
