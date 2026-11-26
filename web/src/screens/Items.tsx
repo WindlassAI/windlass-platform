@@ -293,7 +293,9 @@ export function ItemStages({ item, reviewer = true, step = null }: { item: Pick<
 	const summary = itemTrack(item, reviewer);
 	if (summary === null) return null;
 	// The page knows the step the run is at, which the summary does not: a working or waiting item stands at that step's stage.
-	const at = step !== null && (item.state === "working" || item.state === "waiting") ? stageOfStep(step, summary.stages.length, reviewer) : null;
+	// A feature waits for its whole-feature CI while still in its subtasks step: that wait is the CI stage.
+	const featureCi = step === "subtasks" && item.wait?.reason === "ci";
+	const at = step !== null && (item.state === "working" || item.state === "waiting") ? (featureCi ? 3 : stageOfStep(step, summary.stages.length, reviewer)) : null;
 	const track = at === null ? summary : { ...summary, at };
 	return (
 		<ol className={`item-stages item-stages-${track.tone}`} aria-label="Where it is on its way to you">
