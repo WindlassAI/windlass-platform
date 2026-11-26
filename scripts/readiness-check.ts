@@ -110,16 +110,16 @@ test("CI history reads default-branch checks and statuses, merge results and rer
 		} else if (call.path.endsWith("/actions/runs")) {
 			assert.deepEqual(call.query, { per_page: 100, created: ">=" + since });
 			if (limited) throw new GithubError(429, "rate limit", "read runs");
-			body = { workflow_runs: [run, { ...run, id: "13", head_branch: "trunk", event: "push" }, { ...run, id: "14", event: "push" }] };
+			body = { workflow_runs: [run, { ...run, id: "13", head_branch: "trunk", event: "push" }, { ...run, id: "14", event: "push" }, { ...run, id: "15", head_branch: "windlass/item", event: "push" }] };
 		} else {
-			assert.match(call.path, /runs\/(12|13)\/jobs$/);
+			assert.match(call.path, /runs\/(12|13|15)\/jobs$/);
 			assert.equal(call.query?.filter, "all");
 			body = { jobs: [job("e2e", 2, "success"), job("e2e", 1, "failure"), job("lint", 1, "failure"), job("lint", 2, "success", "other"), job("build", 1, "success"), job("build", 2, "failure")] };
 		}
 		return { status: 200, next: false, link: "", body };
 	};
 	const actual = await scanCiHistory(app, "install", repo, "head", now);
-	assert.deepEqual(actual, { ...history, revertedPulls: { 2: now }, green: 1, checked: 3, reverts: 2, redMerges: 2, flaky: [{ name: "e2e", count: 2 }] });
+	assert.deepEqual(actual, { ...history, revertedPulls: { 2: now }, green: 1, checked: 3, reverts: 2, redMerges: 2, flaky: [{ name: "e2e", count: 3 }] });
 	assert.equal((await scanCiHistory(app, "install", repo, null, now)).hasCi, false);
 	limited = true;
 	await assert.rejects(scanCiHistory(app, "install", repo, "head", now), GithubError);

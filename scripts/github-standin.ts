@@ -61,8 +61,8 @@ export interface StandinRepository {
 	access: Map<string, Level>;
 	/** Branch name patterns (`*` matches anything) a push to which is refused. */
 	protectedBranches: string[];
-	ci: Map<string, { runs: unknown[]; statuses: unknown[]; workflows?: { status: string; updated_at?: string; run_started_at?: string }[] }>;
-	jobs: Map<string, { steps: unknown[]; runner_id: number | null; runner_name: string }>;
+	ci: Map<string, { runs: unknown[]; statuses: unknown[]; workflows?: { id?: number; check_suite_id?: number; status: string; updated_at?: string; run_started_at?: string }[] }>;
+	jobs: Map<string, { run_id?: number | bigint; head_sha?: string; status?: string; conclusion?: string; steps: unknown[]; runner_id: number | null; runner_name: string }>;
 	jobLogs: Map<string, string>;
 }
 
@@ -849,6 +849,13 @@ export class GithubStandin {
 				const head = url.searchParams.get("head_sha") ?? "";
 				return pageOf("workflow_runs", repository.ci.get(head)?.workflows ?? [], run => ({ ...run, head_sha: head }));
 			}
+			const workflowJobs = /^\/actions\/runs\/(\d+)\/(jobs|rerun-failed-jobs)$/.exec(rest);
+			if (workflowJobs && workflowJobs[2] === "jobs" && method === "GET") {
+				if (!this.allows(token, repository, "actions", "read")) return denied();
+				return pageOf("jobs", [...repository.jobs].filter(([, job]) => String(job.run_id) === workflowJobs[1]), ([id, job]) => ({ id, ...job }));
+			}
+			if (workflowJobs && workflowJobs[2] === "rerun-failed-jobs" && method === "POST")
+				return this.allows(token, repository, "actions", "write") ? answer(201, null) : denied();
 			const revision = /^\/commits\/([^/]+)$/.exec(rest);
 			const tree = /^\/git\/trees\/([a-f0-9]{40})$/.exec(rest);
 			if (method === "GET" && (revision || tree)) {

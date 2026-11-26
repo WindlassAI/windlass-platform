@@ -467,7 +467,8 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	if (fact.kind === "turn_ended" && fact.changes) stored.meta.taskKind = fact.taskKind;
 	if (fact.kind === "ci_read" && fact.reading.kind === "read" && fact.head === fact.reading.head) {
 		const failed = fact.reading.runs.filter(r => r.state === "failed");
-		if (failed.some(r => r.baseResult === "failed")) stored.meta.flaky = true;
+		const retry = outcome.effects.find(e => e.kind === "rerun_ci") ?? before.ciReruns?.[fact.head];
+		if (failed.some(r => r.baseResult === "failed" && !retry?.jobs.some(j => j.flaky && j.jobId === r.jobId))) stored.meta.flaky = true;
 		if (failed.length && before.run?.step.kind === "ci") stored.meta.ciCodeFailure = failed.some(r => !r.environment && !r.baseResult);
 	}
 	if (outcome.item.run?.step.kind === "plan_review") stored.meta.criticSessionId = criticSessionId(outcome.item.id);
@@ -1583,11 +1584,14 @@ async function pollCi(c: Ctx, stored: Stored, effect: Extract<Effect, { kind: "p
 		return { reading, featureHead, paths, baseAhead: comparison?.behind, baseTip: comparison?.base, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
 	};
 	const { reading, featureHead, paths, baseAhead, baseTip, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, featureHead: undefined, paths: undefined, baseAhead: 0, baseTip: undefined, mergeable: null, prHead: null, baseSha: null }));
+	const flakyJobs = item.pr && item.run?.step.kind === "ci" && item.mode !== "orchestrate" && prHead === effect.head &&
+		!item.ciReruns?.[effect.head] && ciState(reading) === "failed"
+		? await userActor(c, meta.uid).internalFlakyJobs(meta.repository.id) : undefined;
 	const target = item.run?.step.kind === "ci" && (item.parent || item.mode === "orchestrate") && (ciState(reading) !== "passed" || mergeable === false)
 		? await targetStatus(c, stored).catch(() => null) : null;
 	const featureTarget = target?.available && target.value > 0 ? target.branch : undefined;
 	const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
-	await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, repo: effect.repo, featureHead, paths, reading, autoMergeSingles, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
+	await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, repo: effect.repo, featureHead, paths, reading, flakyJobs, autoMergeSingles, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
 	return true;
 }
 
