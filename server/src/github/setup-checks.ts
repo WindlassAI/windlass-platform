@@ -2,12 +2,11 @@ import { minimatch } from "minimatch";
 import { parse } from "yaml";
 import type { ScanEntry } from "../repository-network.js";
 import type { Finding } from "../factory/readiness.js";
+import { isSetupSource } from "../repo-setup/source-path.js";
 import { GithubError, type GithubApp, type Repository } from "./app.js";
 
 export interface SetupScan { commit: string | null; findings: Finding[]; areas: string[]; later: number }
 const workflow = /^\.github\/workflows\/[^/]+\.ya?ml$/i;
-const source = /\.(?:[cm]?[jt]sx?|py|go|rs|java|kt|kts|swift|c|cc|cpp|h|hpp|cs|rb|php|scala|sh|vue|svelte|dart|exs?|hs|lua)$/i;
-const generated = /(?:^|\/)(?:node_modules|vendor|third_party|generated|__generated__|dist|build|target|coverage)\/|(?:\.min|\.generated|\.g|\.pb)\.[^/]+$/i;
 function folders(path: string) {
 	const parts = path.split("/").slice(0, -1);
 	if (parts.some(p => !/^[\w.-]+$/.test(p) || [".", "..", ".git"].includes(p.toLowerCase()))) return [];
@@ -37,7 +36,7 @@ export async function scanRepoSetup(app: GithubApp, token: string, repo: Reposit
 		truncated = short;
 		const config = entries.filter(f => workflow.test(f.path) || f.path === ".gitignore");
 		// Fewer than 1,501 bytes cannot contain more than 1,500 lines. Read the largest candidates first.
-		sources = entries.filter(f => source.test(f.path) && f.mode !== "120000" && !generated.test(f.path));
+		sources = entries.filter(f => f.mode !== "120000" && isSetupSource(f.path));
 		const large = sources.filter(f => (f.size ?? Infinity) > 1500).sort((a, b) => (b.size ?? 0) - (a.size ?? 0));
 		// Small files can collectively meet the line threshold. Skip folders already qualified by count.
 		for (const file of sources) for (const dir of folders(file.path)) {

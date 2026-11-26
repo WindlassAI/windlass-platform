@@ -77,7 +77,7 @@ function supportsCommands(line: string, proofs: (Proof | null)[], ctx: DraftCont
 		if (!proof?.source || !proof.file) return false;
 		const { source, file } = proof;
 		if (!/(^|\/)package\.json$/.test(file)) return containsLiteral(source, command);
-		const script = /^(?:(?:npm run|bun run|pnpm(?: run)?|yarn(?: run)?) )?([\w:-]+)$/.exec(command)?.[1];
+		const script = command === "npm test" ? "test" : /^(?:(?:npm run|bun run|pnpm(?: run)?|yarn(?: run)?) )?([\w:-]+)$/.exec(command)?.[1];
 		try {
 			const scripts = JSON.parse(ctx.read.get(file) ?? "{}").scripts ?? {};
 			return Object.entries(scripts).some(([name, value]) => {

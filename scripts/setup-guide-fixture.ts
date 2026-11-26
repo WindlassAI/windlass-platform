@@ -7,7 +7,8 @@ export function setupGuide(area: string, title: string, note: string, extra = ""
 		"## See also", "Read the [repository readme](../README.md).",
 	] : [
 		title, "## Terms", note, ...extra.split("\n").filter(Boolean),
-		"## Setup", "Start from the repository root.", "Read the setup instructions first.", "Check the required runtime.",
+		"## Key files", "- `README.md` describes the project.",
+		"## Quick commands", "Start from the repository root.", "Read the setup instructions first.", "Check the required runtime.",
 		"Install the listed dependencies.", "Use the pinned tool versions.", "Keep the lockfile in sync.",
 		"## Checks by change", "Run the checks for the affected area.", "Select the test for the changed behavior.",
 		"Check source changes with their fixtures.", "Include a regression case for fixes.", "Check references when moving a guide.",
