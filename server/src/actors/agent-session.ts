@@ -82,6 +82,9 @@ import { emptyNetwork, limitNetwork, unionNetwork, watchNetwork } from "../block
 import { billing } from "../billing/config.js";
 import type { ModelKeySpend, BlockedNetwork, NetworkBlockedItem } from "../contract.js";
 import { blockedHostNote, hostsForTurn } from "../repository-network.js";
+import { cloneGitlab, fetchGitlab, pushGitlab } from "../gitlab/workspace.js";
+import { gitlabApp } from "../gitlab/connect.js";
+import { gitlabItemHost } from "./gitlab-item.js";
 import { GithubError, githubApp, type InstallationToken } from "../github/app.js";
 import { cloneCommand, WORKSPACE_GIT_START, actuallyPushed, changedReviewPaths, checkoutPreparedReviewBase, checkoutReview, readOnlyReview, materializeInput, removeInputs } from "../github/git.js";
 import { INPUTS_DIRECTORY } from "../factory/cross-repo.js";
@@ -110,7 +113,7 @@ import { judgeChecks } from "../environments.js";
 import { outputExcerpt } from "../factory/check-environment.js";
 import { runBaseTests, type BaseTestResult, type NamedTests } from "../factory/base-tests.js";
 import { PlatformChecks } from "../sandbox/platform-checks.js";
-import { itemActor, modelKeyActor, grantIsValid, type EnvironmentBuildReport, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
+import { gitlabAccess, itemActor, modelKeyActor, grantIsValid, type EnvironmentBuildReport, type EnvironmentBuildResult, type ReserveAnswer, type SealedSecrets, secretsActor, sessionSandboxInput, type SessionCreateInput, userActor } from "./internal.js";
 import { attachmentStore, uploadShots } from "../sandbox/attach.js";
 import { REPORT_TAKEN, askPerson, requestSecret, secretRequestNotice } from "../agent-publish.js";
 import { RULES } from "../factory/blueprint.js";
@@ -358,7 +361,7 @@ async function restorePrepared(c: Ctx, meta: SessionMeta, turn: number, sandbox:
 	if (work && fetchedWork) meta.workDue = { branch: work, directory: "." };
 	else if (work) {
 		meta.pushedHead = null;
-		note(c, turn, "warn", `${work} is no longer at GitHub, so the workspace starts from ${repo.branch} again. Work that was only on that branch is not in it.`);
+		note(c, turn, "warn", `${work} is no longer on the remote, so the workspace starts from ${repo.branch} again. Work that was only on that branch is not in it.`);
 	}
 	c.vars.unpushed = null;
 	meta.cloneDirectory = ".";
@@ -612,7 +615,7 @@ async function openSandbox(c: Ctx, meta: SessionMeta, turn: number, signal: Abor
 				if (ready > 0) recipe = candidate;
 				return candidate;
 			} }),
-			mirrorRepo: !meta.readiness && meta.repo ? String(meta.repo.id) : undefined, ...connectOptions(meta) });
+			mirrorRepo: !meta.readiness && meta.repo?.provider === "github" ? String(meta.repo.id) : undefined, ...connectOptions(meta) });
 		console.log(`[wlp] sandbox.created id=${id} session=${meta.sessionId}`);
 		if (vars.destroying) {
 			await layer.sandboxes.destroy(id);
@@ -1016,7 +1019,7 @@ async function sessionRedactor(c: Ctx, meta: SessionMeta): Promise<Redactor> {
 
 /** The user's GitHub connection as their actor has it now: asked each time, so a connection that was removed stops working at once. */
 function githubConnection(c: Ctx, meta: SessionMeta): Promise<StoredConnection | null> {
-	return userActor(c, meta.uid).internalGithubConnection();
+	return meta.repo?.provider === "gitlab" ? Promise.resolve(null) : userActor(c, meta.uid).internalGithubConnection();
 }
 
 /** The work item owns its parent link, including for older sessions without owned-path metadata. */
@@ -1030,7 +1033,7 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 	const repo = meta.repo;
 	if (!repo) return true;
 	const app = githubApp();
-	if (!app) throw new ReviewRefused(`This agent was launched on ${repo.owner}/${repo.name} through your GitHub connection, and this deployment has no GitHub App any more to clone it with.`);
+	if (repo.provider !== "gitlab" && !app) throw new ReviewRefused(`This agent was launched on ${repo.owner}/${repo.name} through your GitHub connection, and this deployment has no GitHub App any more to clone it with.`);
 	// Child sessions keep the feature branch as their publishing base. Setup uses its immutable seed,
 	// even after siblings have integrated or this child needs to recover its own published branch.
 	const childSeed = await childSetupSeed(c, meta);
@@ -1038,7 +1041,9 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 	const work = meta.origin?.role === "reviewer" ? undefined : (meta.pushedHead && meta.publishBranch) || (childSeed ? repo.branch : undefined);
 	note(c, turn, "info", `Cloning ${repo.owner}/${repo.name} at ${pinnedBase ?? repo.branch}`);
 	try {
-		const cloned = await cloneRepository(app, await githubConnection(c, meta), repo, sandbox, signal, work, pinnedBase, meta.uid);
+		const cloned = repo.provider === "gitlab"
+			? await cloneGitlab(await gitlabAccess(c, meta.uid, String(repo.id)), repo, sandbox, signal, work, pinnedBase)
+			: await cloneRepository(app!, await githubConnection(c, meta), repo, sandbox, signal, work, pinnedBase, meta.uid);
 		if (!cloned || signal.aborted) return false;
 		const directory = /^(?!\.\.$)[A-Za-z0-9._-]+$/.test(cloned.directory) ? cloned.directory : ".";
 		if (cloned.workAt && work) {
@@ -1046,11 +1051,11 @@ async function cloneConnected(c: Ctx, meta: SessionMeta, turn: number, sandbox: 
 		}
 		if (cloned.workGone) {
 			meta.pushedHead = null;
-			note(c, turn, "warn", `${work} is no longer at GitHub, so the workspace starts from ${repo.branch} again. Work that was only on that branch is not in it.`);
+			note(c, turn, "warn", `${work} is no longer on the remote, so the workspace starts from ${repo.branch} again. Work that was only on that branch is not in it.`);
 		}
 		c.vars.unpushed = null;
 		// The new clone has not been set up: the repository's setup command is due, where the clone is.
-		meta.setupDue = directory;
+		meta.setupDue = repo.provider === "gitlab" ? null : directory;
 		meta.cloneDirectory = directory;
 	} catch (error) {
 		if (error instanceof GithubProblem) {
@@ -1291,7 +1296,8 @@ async function draftMessage(c: Ctx, meta: SessionMeta, files: WorkspaceFile[] | 
 /** Why nothing can be pushed right now, or null. */
 function publishBlocked(c: Ctx, meta: SessionMeta): string | null {
 	if (meta.origin?.role === "reviewer") return "The reviewer cannot publish.";
-	if (!githubApp()) return "This deployment has no GitHub App any more, so the platform cannot push.";
+	if (meta.repo?.provider === "gitlab" && !gitlabApp()) return "This deployment no longer has GitLab configured.";
+	if (meta.repo?.provider !== "gitlab" && !githubApp()) return "This deployment has no GitHub App any more, so the platform cannot push.";
 	if (c.vars.turn || c.vars.accepting || meta.status !== "idle") return "Wait for the turn to end: the platform does not push while the agent is working.";
 	if (c.vars.publishing) return "A push is under way.";
 	if (!meta.sandboxId) return "The sandbox is created on the first prompt. Until then there is nothing to push.";
@@ -1341,7 +1347,7 @@ async function publishStateOf(c: Ctx, meta: SessionMeta): Promise<PublishState> 
 async function checkPull(c: Ctx, meta: SessionMeta): Promise<void> {
 	const app = githubApp();
 	const { repo, pull } = meta;
-	if (!app || !repo || !pull || Date.now() - c.vars.pullCheckedAt < PULL_FRESH_MS) return;
+	if (!app || !repo || repo.provider === "gitlab" || !pull || Date.now() - c.vars.pullCheckedAt < PULL_FRESH_MS) return;
 	c.vars.pullCheckedAt = Date.now();
 	const current = await refreshPull(app, await githubConnection(c, meta), repo, pull);
 	if (meta.pull !== pull || (current.state === pull.state && current.title === pull.title)) return;
@@ -1378,9 +1384,7 @@ async function testSessionBase(c: Ctx, meta: SessionMeta, repo: StoredRepository
 		markUsed(c, meta);
 		const cwd = meta.cloneDirectory && meta.cloneDirectory !== "." ? sandbox.cwd + "/" + meta.cloneDirectory : sandbox.cwd;
 		if ((await sandbox.run(`GIT_NO_REPLACE_OBJECTS=1 git cat-file -e ${input.base}^{commit}`, { cwd, timeoutMs: 10_000 })).exitCode !== 0) {
-			const app = githubApp();
-			if (!app) return "unknown";
-			await fetchBase(app, await githubConnection(c, meta), { ...repo }, sandbox);
+			await fetchSessionBase(c, meta, { ...repo }, sandbox);
 		}
 		const isolated = sandboxes.profile(meta.profile).approval !== "full" || !!meta.tainted || !!machineHarness(meta.harness)?.sandboxedOn.includes(meta.profile);
 		return await runBaseTests(sandbox, cwd, input.base, input.tests, isolated);
@@ -1393,10 +1397,26 @@ async function testSessionBase(c: Ctx, meta: SessionMeta, repo: StoredRepository
 /** After a push's line in the timeline: what the pull request's description now says was verified, in its few words. */
 const verifiedLine = (pull: PullRequestInfo) => ` Its description reports: ${pull.verified}.`;
 
+async function openGitlabItemPull(c: Ctx, meta: SessionMeta, input: { head: string; title: string; body: string }): Promise<PullRequestInfo> {
+	const repo = meta.repo, app = gitlabApp();
+	if (!app || repo?.provider !== "gitlab" || meta.origin?.role !== "builder" || !meta.publishBranch || !meta.pushedHead || meta.pushedHead !== input.head)
+		throw new UserError("No confirmed GitLab branch for this item.", { code: "publish_blocked" });
+	const branch = meta.publishBranch;
+	const hub = await gitlabItemHost(c, meta.uid, repo);
+	if (await hub.baseTip(branch) !== input.head) throw new UserError("The item branch changed before its merge request could be opened.", { code: "publish_blocked" });
+	const evidence = await evidenceOf(c, meta, null);
+	const connection = { id: hub.viewer, accessToken: async () => hub.token, project: hub.project };
+	const pull = await hub.host.openFromPushed({ connection, repository: repo, branch, message: cleanMessage({ message: { title: evidence.redact(input.title), body: evidence.redact(input.body) } }), evidence });
+	meta.pull = pull;
+	publish(c);
+	await persist(c);
+	return pull;
+}
+
 // The caller owns the publishing lock so a second push cannot race this one.
 async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository, message: PublishMessage, itemPublish = false, branchOnly = false, blockedNetwork?: BlockedNetwork, updateFromBase?: { head: string; at: number; baseTip?: string }): Promise<PublishResult> {
 	const app = githubApp();
-	if (!app || !meta.sandboxId) throw new UserError(publishBlocked(c, meta) ?? "There is nothing to push yet.", { code: "publish_blocked" });
+	if ((!app && repo.provider !== "gitlab") || !meta.sandboxId) throw new UserError(publishBlocked(c, meta) ?? "There is nothing to push yet.", { code: "publish_blocked" });
 	// A suspend or removal of the idle sandbox finishes first, as before a prompt.
 	if (c.vars.idling) await c.vars.idling.catch(() => undefined);
 	const { sandboxes } = await layerOf(c, meta);
@@ -1415,15 +1435,15 @@ async function publishSession(c: Ctx, meta: SessionMeta, repo: StoredRepository,
 	meta.publishBranch = branch;
 	try {
 		// An item's step pushes over the platform's own last push where its agent rebased and did not push; the panel's never forces.
-		if (branchOnly || updateFromBase) {
+		if (repo.provider === "gitlab" || branchOnly || updateFromBase) {
 			const evidence = await evidenceOf(c, meta, null);
-			const input = { app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pushed: meta.pushedHead ?? null, lease: meta.platformPushed ?? null, redact: evidence.redact };
-			const pushed = updateFromBase ? await updateBranchFromBase(input, updateFromBase) : await pushWork(input, message.title);
+			const input = { app: app!, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pushed: meta.pushedHead ?? null, lease: itemPublish ? meta.platformPushed ?? null : null, redact: evidence.redact };
+			const pushed = repo.provider === "gitlab" ? await pushGitlab(await gitlabAccess(c, meta.uid, String(repo.id)), input, message.title, updateFromBase) : updateFromBase ? await updateBranchFromBase(input, updateFromBase) : await pushWork(input, message.title);
 			if (pushed.workspaceChanged || !pushed.head) throw new UserError("Git did not confirm the checked item commit.", { code: "publish_failed" });
 			recordPushHead(meta, sandbox, pushed.head);
 			return { state: await afterPublish(c, meta, sandbox), opened: false };
 		}
-		const published = await publishWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: itemPublish ? (meta.platformPushed ?? null) : null, message, blockedNetwork, shownIsEnough: itemPublish, retitle: itemPublish, keepTitle: itemPublish, evidence: await evidenceOf(c, meta, null) });
+		const published = await publishWork({ app: app!, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pull: meta.pull ?? null, pushed: meta.pushedHead ?? null, lease: itemPublish ? (meta.platformPushed ?? null) : null, message, blockedNetwork, shownIsEnough: itemPublish, retitle: itemPublish, keepTitle: itemPublish, evidence: await evidenceOf(c, meta, null) });
 		if (published.head) published.pushed = recordPushHead(meta, sandbox, published.head);
 		meta.pull = published.pull;
 		meta.updatedAt = Date.now();
@@ -1564,6 +1584,7 @@ async function agentPublish(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandb
 	const said = (line: string) => callLine(request.via, line);
 	const repo = meta.repo;
 	const app = githubApp();
+	if (repo?.provider === "gitlab") return "Use push for this repository. The work item opens its GitLab merge request.";
 	if (!repo || !app) return "Not published. This session has no repository of the user's GitHub connection to publish to.";
 	const branch = meta.publishBranch ?? branchFor(meta.title, meta.sessionId);
 	const checked = publishRequest(request.arguments, { branch, base: repo.branch }, active.secrets?.redactor ?? NO_REDACTION);
@@ -1642,7 +1663,7 @@ async function agentPush(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox:
 	const said = (line: string) => callLine(request.via, line);
 	const repo = meta.repo;
 	const app = githubApp();
-	if (!repo || !app) return "Not pushed. This session has no repository of the user's GitHub connection to push to.";
+	if (!repo || (!app && repo.provider !== "gitlab")) return "Not pushed. This session has no repository of the user's GitHub connection to push to.";
 	if (active.closed || c.vars.turn !== active) return "Not pushed. The turn this call was made in has ended.";
 	const branch = meta.publishBranch ?? branchFor(meta.title, meta.sessionId);
 	const checked = pushRequest(request.arguments, { branch, title: meta.title }, active.secrets?.redactor ?? NO_REDACTION);
@@ -1660,7 +1681,9 @@ async function agentPush(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox:
 	// What the platform itself pushed last is all the push may replace: the agent's rebase of its own branch, nothing anyone else pushed.
 	const lease = meta.platformPushed ?? null;
 	try {
-		const pushed = await pushWork({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, sessionId: meta.sessionId, branch, pushed: meta.pushedHead ?? null, lease, redact: (text) => (active.secrets?.redactor ?? NO_REDACTION).text(text) }, checked.commit);
+		const input = { repository: repo, sandbox, sessionId: meta.sessionId, branch, pushed: meta.pushedHead ?? null, lease, redact: (text: string) => (active.secrets?.redactor ?? NO_REDACTION).text(text) };
+		const pushed = repo.provider === "gitlab" ? await pushGitlab(await gitlabAccess(c, meta.uid, String(repo.id)), input, checked.commit)
+			: await pushWork({ ...input, app: app!, connection: await githubConnection(c, meta) }, checked.commit);
 		if (pushed.pushed && pushed.head) pushed.pushed = recordPushHead(meta, sandbox, pushed.head);
 		if (pushed.workspaceChanged) {
 			const line = `GitHub has ${pushed.head} on ${branch}. The workspace Git state could not be synchronized after the push. Use fetch_base and reconcile the branch before pushing again.`;
@@ -1676,7 +1699,7 @@ async function agentPush(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox:
 		// What went out had not been through this turn's checks: an open pull request's section is written again when the turn has ended.
 		active.published = true;
 		const open = meta.pull && (meta.pull.state === "open" || meta.pull.state === "draft") ? meta.pull : null;
-		const described = open ? await describePull({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, pull: open, evidence: await evidenceOf(c, meta, turn) }) : null;
+		const described = open && app && repo.provider !== "gitlab" ? await describePull({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, pull: open, evidence: await evidenceOf(c, meta, turn) }) : null;
 		if (described && meta.pull === open) meta.pull = described;
 		c.vars.pullCheckedAt = Date.now();
 		const shown = described ?? open;
@@ -1700,21 +1723,28 @@ async function agentPush(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox:
 }
 
 // Fetch the session's configured base using a repository-scoped read token.
+async function fetchSessionBase(c: Ctx, meta: SessionMeta, repo: StoredRepository, sandbox: SandboxHandle, work: string | null = null) {
+	if (repo.provider === "gitlab") return fetchGitlab(await gitlabAccess(c, meta.uid, String(repo.id)), repo, sandbox, work);
+	const app = githubApp();
+	if (!app) throw new Error("GitHub is not configured.");
+	return fetchBase(app, await githubConnection(c, meta), repo, sandbox, work);
+}
+
 async function agentFetchBase(c: Ctx, meta: SessionMeta, active: ActiveTurn, sandbox: SandboxHandle, request: TurnPublishRequest): Promise<string> {
 	const said = (line: string) => callLine(request.via, line);
 	const repo = meta.repo;
 	const app = githubApp();
-	if (!repo || !app) return "Not fetched. This session has no repository of the user's GitHub connection.";
+	if (!repo || (!app && repo.provider !== "gitlab")) return "Not fetched. This session has no repository of the user's GitHub connection.";
 	if (active.closed || c.vars.turn !== active) return "Not fetched. The turn this call was made in has ended.";
 	const release = takeSandbox(c);
 	try {
 		// The session's own branch too, once the platform has pushed it: what others pushed there, for the agent to merge.
-		await fetchBase(app, await githubConnection(c, meta), repo, sandbox, meta.publishBranch ?? null);
-		note(c, active.number, "info", said(`Fetched ${repo.branch} from GitHub into the workspace as origin/${repo.branch}, as the agent asked.`));
+		await fetchSessionBase(c, meta, repo, sandbox, meta.publishBranch ?? null);
+		note(c, active.number, "info", said(`Fetched ${repo.branch} from the remote into the workspace as origin/${repo.branch}, as the agent asked.`));
 		return fetchedForAgent(repo.branch, meta.publishBranch ?? null);
 	} catch (error) {
 		const why = error instanceof GithubProblem ? error.message : describeError(error);
-		note(c, active.number, "warn", said(`${repo.branch} could not be fetched from GitHub for the agent: ${why}`));
+		note(c, active.number, "warn", said(`${repo.branch} could not be fetched from the remote for the agent: ${why}`));
 		return `Not fetched. ${error instanceof GithubProblem ? why : "The platform could not fetch it. Try again."}`;
 	} finally {
 		release();
@@ -2649,7 +2679,7 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 			return taken.told;
 		} : undefined;
 		// Repository tools remain bound to this session. MCP calls can originate anywhere in the container.
-		const repoTools = !planner && !reviewer && !!meta.repo && githubApp() !== null;
+		const repoTools = !planner && !reviewer && !!meta.repo && (meta.repo.provider === "gitlab" ? gitlabApp() : githubApp()) !== null;
 		const onPush: RunTurnInput["onPush"] = repoTools && platformTool("push") ? (request) => tracked(agentPush(c, meta, active, sandbox, request)) : undefined;
 		const onFetchBase: RunTurnInput["onFetchBase"] = repoTools && platformTool("fetch_base") ? (request) => agentFetchBase(c, meta, active, sandbox, request) : undefined;
 		lossesAtStart ??= c.vars.runner?.channel.losses ?? null;
@@ -3253,7 +3283,7 @@ fi`, { signal, timeoutMs: 5000 });
 async function describeAfterTurn(c: Ctx, meta: SessionMeta, sandbox: SandboxHandle, turn: number): Promise<void> {
 	const app = githubApp();
 	const { repo, pull } = meta;
-	if (!app || !repo || !pull) return;
+	if (!app || !repo || repo.provider === "gitlab" || !pull) return;
 	try {
 		const described = await describePull({ app, connection: await githubConnection(c, meta), repository: repo, sandbox, pull, evidence: await evidenceOf(c, meta, null) });
 		if (described === null || meta.pull !== pull) return;
@@ -4113,14 +4143,13 @@ async function planningInputs(c: Ctx, meta: SessionMeta, item: NonNullable<Activ
 async function itemTurnStarted(c: Ctx, meta: SessionMeta, item: NonNullable<ActiveTurn["item"]>, sandbox: SandboxHandle, turn: number, credential: TurnCredential, effort: string | null): Promise<void> {
 	if (item.started) return;
 	item.started = true;
-	const app = githubApp();
-	if (item.row.fetchBase !== null && meta.repo && app) {
+	if (item.row.fetchBase !== null && meta.repo) {
 		const base = item.row.fetchBase;
 		try {
-			await fetchBase(app, await githubConnection(c, meta), base === meta.repo.branch ? meta.repo : { ...meta.repo, branch: base }, sandbox);
-			note(c, turn, "info", `Fetched ${base} from GitHub into the workspace as origin/${base}, for the agent to merge.`);
+			await fetchSessionBase(c, meta, base === meta.repo.branch ? meta.repo : { ...meta.repo, branch: base }, sandbox);
+			note(c, turn, "info", `Fetched ${base} from the remote into the workspace as origin/${base}, for the agent to merge.`);
 		} catch (error) {
-			note(c, turn, "warn", `${base} could not be fetched from GitHub for the agent to merge: ${error instanceof GithubProblem ? error.message : describeError(error)}`);
+			note(c, turn, "warn", `${base} could not be fetched from the remote for the agent to merge: ${error instanceof GithubProblem ? error.message : describeError(error)}`);
 		}
 	}
 	await planningInputs(c, meta, item, sandbox, turn);
@@ -4680,7 +4709,7 @@ export const agentSession = actor({
 		internalGithubFeedback: async (c, notice: FeedbackNotice): Promise<boolean> => {
 			requireServiceFor(c, "call");
 			const meta = liveMeta(c);
-			if (meta.origin || meta.environmentBuild || meta.repo?.id !== notice.repositoryId || meta.pull?.number !== notice.pr) return false;
+			if (meta.origin || meta.environmentBuild || meta.repo?.provider === "gitlab" || meta.repo?.id !== notice.repositoryId || meta.pull?.number !== notice.pr) return false;
 			const feedback = meta.githubFeedback ??= { seen: [] };
 			feedback.seen = feedback.seen.filter(e => recentSubject(e.at));
 			const seen = new Set(feedback.seen.map(e => e.id));
@@ -4868,7 +4897,7 @@ export const agentSession = actor({
 			const app = githubApp();
 			const busyTurn = c.vars.turn !== null || c.vars.accepting || meta.status !== "idle";
 			const openPull = meta.pull && (meta.pull.state === "open" || meta.pull.state === "draft");
-			if (busyTurn && app && meta.pushedHead && meta.publishBranch && !openPull && !c.vars.publishing) {
+			if (busyTurn && repo.provider !== "gitlab" && app && meta.pushedHead && meta.publishBranch && !openPull && !c.vars.publishing) {
 				c.vars.publishing = true;
 				try {
 					const pull = await c.keepAwake(openFromPushed({ app, connection: await githubConnection(c, meta), repository: repo, branch: meta.publishBranch, message, evidence: await evidenceOf(c, meta, c.vars.turn?.number ?? null) }));
@@ -5206,6 +5235,11 @@ export const agentSession = actor({
 			};
 			void c.keepAwake(check().catch(() => { /* A lost attempt keeps its inconclusive receipt. */ }).finally(() => { delete c.vars.baseTest; }));
 			return "pending";
+		},
+
+		internalOpenFromPushed: async (c, input: { title: string; body: string; head: string }): Promise<PullRequestInfo> => {
+			requireServiceFor(c, "call");
+			return openGitlabItemPull(c, liveMeta(c), input);
 		},
 
 		internalPublish: async (c, input: { key: string; title: string; body: string; blockedNetwork?: BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number; baseTip?: string } }): Promise<ItemPublishAnswer> => {

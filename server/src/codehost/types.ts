@@ -13,6 +13,7 @@ export interface Pull {
 	headSha: string;
 	base: string;
 	baseSha: string;
+	mergeBaseSha?: string;
 	requestedReviewers: string[];
 }
 

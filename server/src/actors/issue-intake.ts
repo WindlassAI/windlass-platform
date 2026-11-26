@@ -8,21 +8,26 @@
  * its provenance is kept apart in `LinearBinding`.
  */
 
+import { gitlabApp } from "../gitlab/connect.js";
+import { GitlabError, record, text } from "../gitlab/app.js";
+import { gitlabCodeHost } from "../gitlab/host.js";
+import { decimalId } from "../gitlab/ids.js";
+import type { GitlabDelivery } from "../gitlab/webhook.js";
 import { mayUse } from "../access.js";
 import { config } from "../config.js";
 import type { CreateItemInput, GithubId, ItemSummary, UserProfile } from "../contract.js";
-import { issueMode, linearIdentifier, linearId, linearName, refusals, taskOfLinear, type LinearBinding, type LinearFiled, type LinearFiling } from "../factory/intake.js";
+import { issueMode, linearIdentifier, linearId, linearName, refusals, taskOfLinear, taskOfText, type GitlabBinding, type LinearBinding, type LinearFiled, type LinearFiling } from "../factory/intake.js";
 import { untrustedWords } from "../factory/untrusted.js";
 import { githubApp } from "../github/app.js";
 import { isGithubId } from "../github/ids.js";
 import { GithubProblem, resolveRepository } from "../github/repos.js";
 import { QUICK_LABELS } from "../linear/webhook.js";
 import { accountLimits } from "../user-limits.js";
-import { isActorGone, itemActor } from "./internal.js";
+import { gitlabAccess, isActorGone, itemActor } from "./internal.js";
 import type { ItemsCtx, ItemsState } from "./user-items.js";
 
 /** The sources of an item filed from an issue: the ones that share the queue, the cap and the reservations. */
-export const INTAKE_SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["github", "linear"]);
+export const INTAKE_SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["github", "gitlab", "linear"]);
 
 /** The in-memory scope of an issue-filed creation's key (`ItemsState.created`): apart from the web's and the API's, with one namespace for both trackers (their keys differ in form). */
 export const intakeScope = (key: string) => "intake:" + key;
@@ -143,3 +148,47 @@ export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling,
 /** The sources of a turn's text that a Linear item carries when its issue is someone else's. */
 export const linearSources = (origin: { linear: { identifier: string; author: string; trusted: boolean } }) =>
 	origin.linear.trusted ? [] : [untrustedWords.linear(origin.linear.identifier, origin.linear.author)];
+
+export type GitlabTrigger = Extract<GitlabDelivery, { event: "issue" | "note" }>;
+
+/** A hook identifies the subject; only the selected project's current issue and note supply task text. */
+export async function fileGitlabIssue(c: ItemsCtx, delivery: GitlabTrigger,
+	file: (profile: UserProfile, input: CreateItemInput, binding: GitlabBinding) => Promise<ItemSummary>): Promise<string | null> {
+	const profile = c.vars.profile, app = gitlabApp();
+	if (!profile || !mayUse(profile, config.access) || !config.items || !app) return null;
+	const projectId = decimalId(delivery.projectId), iid = decimalId(delivery.iid);
+	if (!projectId || !iid) return null;
+	const { project, token, viewer } = await gitlabAccess(c, profile.uid, projectId);
+	if (viewer !== delivery.senderId) return null;
+	const path = `/projects/${projectId}/issues/${iid}`;
+	const get = async (path: string) => {
+		try { return record((await app.call({ path, token })).body); }
+		catch (e) { if (e instanceof GitlabError && e.status === 404) return null; throw e; }
+	};
+	const issue = await get(path);
+	if (!issue || issue.state !== "opened" || decimalId(issue.iid) !== iid || decimalId(issue.project_id) !== projectId) return null;
+	const key = `gitlab:${projectId}:${iid}`;
+	const previous = c.vars.items.created.get(intakeScope(key));
+	if (previous && c.vars.items.items.has(previous.id)) return previous.id;
+	const sources = [untrustedWords.gitlabIssue(iid)];
+	let body = text(issue.description);
+	if (delivery.event === "note") {
+		const noteId = decimalId(delivery.noteId);
+		if (!noteId) return null;
+		const note = await get(`${path}/notes/${noteId}`);
+		if (!note || decimalId(note.id) !== noteId || note.system || decimalId(record(note.author).id) !== viewer || !/^\/windlass(?:\s|$)/.test(text(note.body))) return null;
+		const words = text(note.body).slice("/windlass".length).trim();
+		if (/^feature(?:\s|$)/i.test(words)) return null;
+		if (words) { body += `\n\nGitLab note:\n${words}`; sources.push(untrustedWords.gitlabNote(noteId)); }
+	} else if (!Array.isArray(issue.labels) || !issue.labels.includes("windlass")) return null;
+	if (await quotaRefusal(c, previous?.id, "GitLab")) return null;
+	const author = record(issue.author);
+	const { task } = taskOfText({ title: text(issue.title), body, fallbackTitle: `Issue #${iid}`, from: `From GitLab issue #${iid}. ${project.url}/-/issues/${iid}`,
+		by: linearName(author.username), tracker: "GitLab", trusted: false, note: "" });
+	const input = intakeInput(task, "single", project, decimalId(author.id) === viewer, key);
+	const item = await file(profile, input, { project, iid, sources });
+	// Acknowledgement is best effort: failure to react must never undo a successful filing.
+	const host = gitlabCodeHost(app, { id: viewer, project, accessToken: async () => token });
+	await host.react(token, project, delivery.event === "note" ? { kind: "issue_comment", id: `${iid}:${delivery.noteId}` } : { kind: "issue", id: iid }, "eyes").catch(() => undefined);
+	return item.id;
+}

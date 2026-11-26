@@ -27,7 +27,7 @@ export class ItemPageProblem extends Error {
 }
 
 const ENDED: ReadonlySet<ItemSummary["state"]> = new Set(["done", "failed", "cancelled"]);
-const SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["web", "api", "github", "linear"]);
+const SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["web", "api", "github", "gitlab", "linear"]);
 
 /** A page as asked for, checked: the cursor, the limit, and what it keeps. */
 export interface CleanPage {

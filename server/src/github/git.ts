@@ -43,13 +43,15 @@ const PROXY_ENV = 'http_proxy="$wlp_proxy" https_proxy="$wlp_proxy"';
 /**
  * Use stdin and fd 3 so the token never reaches argv, the exported environment or disk.
  */
-function tokenGit(host: string): string {
+type GitUsername = "oauth2" | "x-access-token";
+
+function tokenGit(host: string, username: GitUsername = "x-access-token"): string {
 	const transportFlags = [
 		'-c http.proxy="$wlp_proxy"', "-c http.sslVerify=true", "-c http.sslCAInfo=/etc/ssl/certs/ca-certificates.crt",
 		"-c http.followRedirects=false", "-c core.sshCommand=/bin/false", "-c core.askPass=/bin/false",
 		"-c push.followTags=false", "-c push.recurseSubmodules=no",
 	].join(" ");
-	const helper = `!f() { test "$1" = get || exit 0; echo username=x-access-token; printf password=; cat <&3; echo; }; f`;
+	const helper = `!f() { test "$1" = get || exit 0; echo username=${username}; printf password=; cat <&3; echo; }; f`;
 	return [
 		GIT_PROXY,
 		"wlp_git() {",
@@ -250,7 +252,7 @@ export async function hasMirror(sandbox: SandboxHandle, owner: string, signal?: 
  * the network and every secret saved for the repository). `workCheckoutScript` puts it on the branch
  * afterwards. Neither step needs a token, and neither gets one.
  */
-export function cloneScript(url: string, branch: string, id: string, work?: string, pinnedBase?: string, mirror?: MirrorAttempt): string {
+export function cloneScript(url: string, branch: string, id: string, work?: string, pinnedBase?: string, mirror?: MirrorAttempt, username?: GitUsername): string {
 	if (pinnedBase !== undefined && !/^[0-9a-f]{40}$/.test(pinnedBase)) throw new Error("Invalid setup base SHA.");
 	// Review clones need only the base ref. A pinned subtask also restores its feature or published branch.
 	const cloneFlags = pinnedBase ? (work ? "--no-checkout " : "--single-branch --no-checkout ") : "";
@@ -258,7 +260,7 @@ export function cloneScript(url: string, branch: string, id: string, work?: stri
 	const lines = [
 		startTransport(id),
 		READ_TOKEN,
-		tokenGit(hostOf(url)),
+		tokenGit(hostOf(url), username),
 		"target=repo",
 		...(mirror ? [
 			`mirror=${mirrorPath(mirror.owner)}`,
@@ -386,7 +388,7 @@ export function checkoutPreparedReviewBase(sandbox: SandboxHandle, base: string,
 
 /** Record the original workspace refs before fetching. Only the transport uid opens the token. */
 async function fetchRefs(sandbox: SandboxHandle, token: string, url: string, directory: string,
-	refs: Array<{ source: string; destination: string; optional?: boolean }>, signal?: AbortSignal): Promise<GitOutcome> {
+	refs: Array<{ source: string; destination: string; optional?: boolean }>, signal?: AbortSignal, username?: GitUsername): Promise<GitOutcome> {
 	const id = randomBytes(16).toString("hex");
 	const stage = shellQuote(handoverDirectory(id));
 	const transport = shellQuote(transportDirectory(id));
@@ -396,7 +398,7 @@ async function fetchRefs(sandbox: SandboxHandle, token: string, url: string, dir
 		`mv -T "$private" ${stage}`].join("\n"), local);
 	if (!prepare.ok) return prepare;
 	try {
-		const commands = [startTransport(id), READ_TOKEN, PLAIN_GIT, tokenGit(hostOf(url)),
+		const commands = [startTransport(id), READ_TOKEN, PLAIN_GIT, tokenGit(hostOf(url), username),
 			'plain_git init --bare --quiet --template= repo'];
 		for (const ref of refs) {
 			const fetch = `wlp_git --git-dir="$private/repo" fetch --quiet --no-tags -- ${shellQuote(url)} ${shellQuote("+" + ref.source + ":" + ref.destination)}`;
@@ -498,9 +500,9 @@ export async function changedReviewPaths(sandbox: SandboxHandle, directory: stri
 }
 
 /** Fetches the base branch with `token`, which is given to the command on its standard input and to nothing else. */
-export function fetchWithToken(sandbox: SandboxHandle, token: string, input: { url: string; base: string; work?: string | null }): Promise<GitOutcome> {
+export function fetchWithToken(sandbox: SandboxHandle, token: string, input: { url: string; base: string; work?: string | null; username?: GitUsername }): Promise<GitOutcome> {
 	const ref = (name: string, optional = false) => ({ source: "refs/heads/" + name, destination: "refs/remotes/origin/" + name, optional });
-	return fetchRefs(sandbox, token, input.url, ".", [ref(input.base), ...(input.work ? [ref(input.work, true)] : [])]);
+	return fetchRefs(sandbox, token, input.url, ".", [ref(input.base), ...(input.work ? [ref(input.work, true)] : [])], undefined, input.username);
 }
 
 /** Workspace-side staging and the exchange pack, separate from the protected scan. */
@@ -630,14 +632,14 @@ const rangeDigest = 'git rev-list --objects --no-object-names "$sha" --not "$@" 
  * since makes GitHub refuse it (`wlp:stale`). The plain push comes first, so that a fast-forward over
  * someone else's commit (one the agent merged) is never taken for a rebase.
  */
-function pushScript(range: PushAttempt, url: string, branch: string, lease: string | null): string {
+function pushScript(range: PushAttempt, url: string, branch: string, lease: string | null, username?: GitUsername): string {
 	if (!range.objects || !/^[0-9a-f]{64}$/.test(range.objects)) throw new Error("Invalid scanned object digest.");
 	if (lease !== null) commitId(lease);
 	const target = shellQuote(`refs/heads/${branch}`);
 	return [
 		"set -eu -o pipefail",
 		READ_TOKEN,
-		tokenGit(hostOf(url)),
+		tokenGit(hostOf(url), username),
 		PLAIN_GIT,
 		`private=${shellQuote(transportDirectory(range.id))}`,
 		'cd -- "$private" || { echo wlp:nohandover; exit 4; }',
@@ -915,11 +917,11 @@ export function refreshReadyClone(url: string, branch?: string, commit?: string)
 }
 
 /** Clones with `token`, which is given to the command on its standard input and to nothing else. */
-export async function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; pinnedBase?: string; signal?: AbortSignal; mirror?: MirrorAttempt }): Promise<GitOutcome> {
+export async function cloneWithToken(sandbox: SandboxHandle, token: string, input: { url: string; branch: string; directory: string; work?: string; pinnedBase?: string; signal?: AbortSignal; mirror?: MirrorAttempt; username?: GitUsername }): Promise<GitOutcome> {
 	const stage = randomBytes(16).toString("hex");
 	let saved = false;
 	try {
-		const cloned = await run(sandbox, cloneScript(input.url, input.branch, stage, input.work, input.pinnedBase, input.mirror),
+		const cloned = await run(sandbox, cloneScript(input.url, input.branch, stage, input.work, input.pinnedBase, input.mirror, input.username),
 			{ gitUser: true, stdin: token + "\n", timeoutMs: CLONE_TIMEOUT_MS, signal: input.signal, secrets: [token] });
 		if (!cloned.ok) {
 			if (input.mirror?.reference && cloned.failure !== "aborted" && cloned.marks.has("mirrorfail")) return { ...cloned, failure: "mirror" };
@@ -1079,14 +1081,14 @@ export function actuallyPushed(sandbox: SandboxHandle, head: string): boolean {
 }
 
 /** Pushes what `commitWork` left, with `token` on the command's standard input; `lease` as `pushScript` takes it. */
-export async function pushWithToken(sandbox: SandboxHandle, token: string, input: { attempt?: PushAttempt; url: string; branch: string; lease?: string | null }): Promise<GitOutcome> {
+export async function pushWithToken(sandbox: SandboxHandle, token: string, input: { attempt?: PushAttempt; url: string; branch: string; lease?: string | null; username?: GitUsername }): Promise<GitOutcome> {
 	const { attempt } = input;
 	// The in-memory sandbox interpreter has no shell or Git and simulates a push with empty output.
 	// A real shell with no scanned range exits before it receives a credential.
 	if (!attempt?.objects) return run(sandbox, 'echo wlp:nohandover; exit 4', { stdin: "", timeoutMs: PROBE_TIMEOUT_MS });
 	let result: GitOutcome;
 	try {
-		result = await run(sandbox, pushScript(attempt, input.url, input.branch, input.lease ?? null),
+		result = await run(sandbox, pushScript(attempt, input.url, input.branch, input.lease ?? null, input.username),
 			{ gitUser: true, stdin: token + "\n", timeoutMs: PUSH_TIMEOUT_MS, secrets: [token] });
 	} finally {
 		await removeTransport(sandbox, attempt.id);

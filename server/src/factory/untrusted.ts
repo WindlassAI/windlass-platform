@@ -36,6 +36,8 @@ const short = (head: string) => (/^[0-9a-f]{40}$/.test(head) ? head.slice(0, 7) 
 
 /** Each source as the person reads it on the timeline and in Windlass's approval wording. */
 export const untrustedWords = {
+	gitlabIssue: (iid: string) => `GitLab issue #${iid}`,
+	gitlabNote: (id: string) => `GitLab note ${id}`,
 	issue: (number: number, author: string) => `issue #${number} by @${author}`,
 	/** A Linear issue of someone else's: `identifier` is its own ("ENG-12"), `author` the creator's name as `linearName` made it. */
 	linear: (identifier: string, author: string) => `Linear issue ${identifier} by ${author}`,
@@ -62,7 +64,7 @@ export function thirdParty(list: readonly string[] | undefined | null): string[]
 }
 
 /** `untrustedWords.issue`, `untrustedWords.linear` and `untrustedWords.feedback`, as they begin: every source is made by those words. */
-const THIRD_PARTY = [/^issue #\d+ by @/, /^Linear issue [A-Za-z0-9]+-\d+ by /, /^GitHub feedback from /, /^commit [a-f0-9]+ pushed by @/];
+const THIRD_PARTY = [/^GitLab (?:issue #|note )\d+$/, /^issue #\d+ by @/, /^Linear issue [A-Za-z0-9]+-\d+ by /, /^GitHub feedback from /, /^commit [a-f0-9]+ pushed by @/];
 
 /** The sources of several pieces of text, each once, in order. */
 export function sources(...lists: Array<readonly string[] | undefined | null>): string[] {

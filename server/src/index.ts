@@ -31,6 +31,8 @@ import { webhookRoute } from "./github/webhook.js";
 import { githubApp } from "./github/app.js";
 import { GITHUB_CALLBACK_PATH, githubCallbackResponse } from "./github/connect.js";
 import { actorLinearConnectStore, dispatchLinearDelivery } from "./actors/user-linear.js";
+import { GITLAB_WEBHOOK_PATH } from "./gitlab/webhook.js";
+import { receiveGitlabWebhook } from "./actors/gitlab-inbox.js";
 import { actorGitlabConnectStore } from "./actors/user-gitlab.js";
 import { GITLAB_CALLBACK_PATH, gitlabCallbackResponse } from "./gitlab/connect.js";
 import { LINEAR_CALLBACK_PATH, linearCallbackResponse } from "./linear/connect.js";
@@ -196,6 +198,7 @@ async function route(request: Request): Promise<Response> {
 	// Where GitHub sends a user's browser back to when they connect: the GitHub App's callback URL.
 	if (pathname === GITHUB_CALLBACK_PATH) return githubCallbackResponse(request);
 	if (pathname === "/github/webhook") return (await webhookRoute(request))!;
+	if (pathname === GITLAB_WEBHOOK_PATH) return receiveGitlabWebhook(request);
 	if (pathname === GITLAB_CALLBACK_PATH) return gitlabCallbackResponse(request, { store: actorGitlabConnectStore });
 	// Linear's: where its authorization sends the owner's browser back to, and its signed webhook deliveries (docs: factory.md). Not found where Linear is off.
 	if (pathname === LINEAR_CALLBACK_PATH) return linearCallbackResponse(request, { store: actorLinearConnectStore });

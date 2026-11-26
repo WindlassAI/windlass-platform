@@ -102,6 +102,12 @@ function project(app: GitlabApp, value: unknown): SessionRepository | null {
 }
 const badProject = () => new UserError("Choose a writable GitLab project.", { code: "gitlab_project" });
 
+function hookBinding(saved: Grant | undefined) {
+	if (!saved?.project || !saved.hook_sealed || !saved.hook_id) return null;
+	const projectId = decimalId(JSON.parse(saved.project).id);
+	return projectId && { projectId, bindingId: JSON.stringify([saved.issuer, saved.hook_id]) };
+}
+
 type Claimed = { origin: string; verifier: string };
 export const userGitlab = actor({
 	onBeforeConnect: async (c, params: { token: string } | undefined) => {
@@ -117,6 +123,28 @@ export const userGitlab = actor({
 	} }),
 	createVars: () => ({ queue: Promise.resolve() }),
 	actions: {
+		internalGitlabAccess: async (c, projectId: string): Promise<{ project: SessionRepository; viewer: string; token: string }> => {
+			requireServiceFor(c, "call");
+			const app = configured();
+			return serialized(c, async () => {
+				const saved = await grant(c, app);
+				const project: SessionRepository | null = saved?.project ? JSON.parse(saved.project) : null;
+				if (!saved || !project || String(project.id) !== projectId) throw badProject();
+				return { project, viewer: saved.viewer, token: await tokenInQueue(c, app) };
+			});
+		},
+		internalGitlabHook: async c => {
+			requireServiceFor(c, "call");
+			const app = gitlabApp(), saved = app ? await grant(c, app) : undefined;
+			const binding = hookBinding(saved);
+			if (!binding || !saved?.hook_sealed) return null;
+			return { ...binding, secret: openSecret(serverSealer(), c.key[0]!, JSON.stringify(["gitlab-project", saved.issuer, binding.projectId]), "webhook-token", saved.hook_sealed) };
+		},
+		internalGitlabHookCurrent: async (c, projectId: string, bindingId: string) => {
+			requireServiceFor(c, "call");
+			const app = gitlabApp(), binding = app && hookBinding(await grant(c, app));
+			return !!binding && binding.projectId === projectId && binding.bindingId === bindingId;
+		},
 		gitlab: async c => { await owner(c); return status(c); },
 		gitlabConnect: async (c, input: { origin: string }) => {
 			const { generation } = await owner(c), app = configured(), origin = input?.origin;
@@ -182,7 +210,8 @@ export const userGitlab = actor({
 				if (saved.hook_id && saved.project && String(JSON.parse(saved.project).id) === id) {
 					await c.db.execute("UPDATE grant_record SET project=? WHERE id=1", JSON.stringify(picked));
 				} else {
-					const secret = newVerifier();
+					// The suffix locates an existing owner. It is not proof of the binding.
+					const secret = `${newVerifier()}_${Buffer.from(c.key[0]!).toString("base64url")}`;
 					const hookSealed = sealSecret(serverSealer(), c.key[0]!, JSON.stringify(["gitlab-project", issuerOf(app), id]), "webhook-token", secret);
 					const url = new URL(GITLAB_WEBHOOK_PATH, app.settings.redirectUrl);
 					const hookId = await app.projectHook(token, id, url.href, secret).catch(error => {

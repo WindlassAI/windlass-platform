@@ -81,7 +81,7 @@ export function redact(text: string, secrets: Array<string | null | undefined> =
 	let out = text;
 	for (const secret of secrets) {
 		if (typeof secret !== "string" || secret.length < 6) continue;
-		const forms = [secret, Buffer.from(secret, "utf8").toString("base64"), Buffer.from(`x-access-token:${secret}`, "utf8").toString("base64"), encodeURIComponent(secret)];
+		const forms = [secret, Buffer.from(secret, "utf8").toString("base64"), Buffer.from(`x-access-token:${secret}`, "utf8").toString("base64"), Buffer.from(`oauth2:${secret}`, "utf8").toString("base64"), encodeURIComponent(secret)];
 		for (const form of forms) out = out.split(form).join("[redacted]");
 	}
 	return out.replace(TOKEN_SHAPE, "[redacted]").replace(URL_CREDENTIAL, "$1[redacted]@").replace(HEADER_CREDENTIAL, "$1[redacted]");

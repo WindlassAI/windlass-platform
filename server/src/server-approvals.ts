@@ -55,11 +55,11 @@ export interface ApprovalProject {
 }
 
 /** The project of a session: its repository, or the session itself when it has none. */
-export function projectOf(session: { sessionId: string; repoUrl: string | null; repo?: { id: GithubId; owner: string; name: string } | null }): ApprovalProject {
+export function projectOf(session: { sessionId: string; repoUrl: string | null; repo?: { provider?: "github" | "gitlab"; id: GithubId; owner: string; name: string } | null }): ApprovalProject {
 	// A repository of the GitHub connection is known by GitHub's id: its owner and name can change.
-	if (session.repo) return { key: `github:${session.repo.id}`, kind: "github", label: `${session.repo.owner}/${session.repo.name}` };
+	if (session.repo && session.repo.provider !== "gitlab") return { key: `github:${session.repo.id}`, kind: "github", label: `${session.repo.owner}/${session.repo.name}` };
 	// A pasted address is taken as it is stored. Two spellings of one repository are two projects: the second asks once more.
-	if (session.repoUrl) return { key: `address:${session.repoUrl}`, kind: "address", label: session.repoUrl.replace(/^https:\/\//, "").replace(/\/$/, "") };
+	if (!session.repo && session.repoUrl) return { key: `address:${session.repoUrl}`, kind: "address", label: session.repoUrl.replace(/^https:\/\//, "").replace(/\/$/, "") };
 	return { key: sessionProjectKey(session.sessionId), kind: "session", label: "this session" };
 }
 

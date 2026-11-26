@@ -17,6 +17,10 @@ const wire = (value: unknown) => JSON.stringify(value, (_key, v) => typeof v ===
 interface DeliveryOptions { guid?: string; secret?: string; omitToken?: boolean }
 interface User { id: Id; username: string; name: string }
 interface Note { id: Id; body: string; author: User; created_at: string; updated_at: string; system: boolean }
+interface Issue {
+	id: Id; iid: number; project_id: Id; title: string; description: string; author: User;
+	state: string; labels: string[]; web_url: string; notes: Note[]; created_at: string; updated_at: string;
+}
 interface MergeRequest {
 	id: Id; iid: number; project_id: Id; source_project_id: Id; target_project_id: Id; title: string; description: string;
 	source_branch: string; target_branch: string; state: string; draft: boolean; merge_status: string; detailed_merge_status: string;
@@ -26,7 +30,7 @@ interface Pipeline { id: Id; sha: string; ref: string; status: string; web_url: 
 interface Job { id: Id; name: string; status: string; stage: string; allow_failure: boolean; failure_reason?: string; ref: string; commit: { id: string }; pipeline: Pipeline; web_url: string; created_at: string; retried: boolean }
 export interface StandinProject {
 	id: Id; owner: string; name: string; path: string; defaultBranch: string; visibility: string; archived: boolean; accessible: boolean;
-	mergeRequests: MergeRequest[]; pipelines: Pipeline[]; jobs: Job[]; traces: Map<string, string>;
+	issues: Issue[]; mergeRequests: MergeRequest[]; pipelines: Pipeline[]; jobs: Job[]; traces: Map<string, string>;
 }
 interface Session { access: string; refresh: string; expiresAt: number; scope: string }
 export interface StandinOptions { callbackUrl?: string; pageSize?: number }
@@ -83,7 +87,7 @@ export class GitlabStandin {
 		git(["init", "--quiet", "--bare", `--initial-branch=${defaultBranch}`, path]);
 		git(["config", "http.receivepack", "true"], path);
 		const p: StandinProject = { id: input.id ?? ++this.nextId, owner: input.owner, name: input.name, path, defaultBranch,
-			accessible: input.accessible ?? true, visibility: input.visibility ?? "private", archived: false, mergeRequests: [], pipelines: [], jobs: [], traces: new Map() };
+			accessible: input.accessible ?? true, visibility: input.visibility ?? "private", archived: false, issues: [], mergeRequests: [], pipelines: [], jobs: [], traces: new Map() };
 		this.commit(p, defaultBranch, input.files ?? { "README.md": `# ${p.name}\n` }, "Initial commit");
 		this.projects.push(p);
 		return p;
@@ -113,6 +117,30 @@ export class GitlabStandin {
 		} finally { rmSync(work, { recursive: true, force: true }); }
 	}
 	private web(p: StandinProject) { return `${this.baseUrl}/${p.owner}/${p.name}`; }
+	addIssue(p: StandinProject, input: { title: string; description?: string; author?: User; labels?: string[] }) {
+		const iid = p.issues.length + 1;
+		const issue: Issue = { id: ++this.nextId, iid, project_id: p.id, title: input.title, description: input.description ?? "",
+			author: input.author ?? this.user, state: "opened", labels: input.labels ?? [], web_url: `${this.web(p)}/-/issues/${iid}`,
+			notes: [], created_at: now(), updated_at: now() };
+		p.issues.push(issue);
+		return issue;
+	}
+	addIssueNote(issue: Issue, body: string, author = this.user): Note {
+		const note = { id: ++this.nextId, body, author, system: false, created_at: now(), updated_at: now() };
+		issue.notes.push(note);
+		return note;
+	}
+	issueEvent(issue: Issue, sender = this.user) {
+		const { notes: _, ...attributes } = issue;
+		const labels = issue.labels.map(title => ({ title }));
+		return { object_kind: "issue", project: { id: issue.project_id }, user: sender, labels,
+			object_attributes: { ...attributes, author_id: issue.author.id, action: "update" }, changes: { labels: { previous: [], current: labels } } };
+	}
+	noteEvent(issue: Issue, note: Note) {
+		const { notes: _, ...attributes } = issue;
+		return { object_kind: "note", project: { id: issue.project_id }, user: note.author, issue: { ...attributes, author_id: issue.author.id },
+			object_attributes: { id: note.id, action: "create", author_id: note.author.id, noteable_type: "Issue", noteable_id: issue.id, note: note.body, system: note.system } };
+	}
 	addPipeline(p: StandinProject, sha: string, ref: string, status: string) {
 		const id = ++this.nextId;
 		const pipe: Pipeline = { id, sha, ref, status, web_url: `${this.web(p)}/-/pipelines/${id}`, created_at: now(), updated_at: now() };
@@ -252,6 +280,17 @@ export class GitlabStandin {
 		if (root !== "projects" || !p?.accessible) return missing();
 		const [resource, key, action, subId, more] = rest;
 		if (!resource && method === "GET") return json(200, projectData(p));
+		if (resource === "issues" && action !== "award_emoji" && more !== "award_emoji") {
+			const issue = p.issues.find(i => String(i.iid) === key);
+			if (!issue) return missing();
+			const { notes, ...data } = issue;
+			if (!action && method === "GET") return json(200, data);
+			if (action === "notes" && !subId && method === "GET") return page(notes);
+			if (action === "notes" && !subId && method === "POST" && fields.body) return json(201, this.addIssueNote(issue, fields.body));
+			const note = notes.find(n => String(n.id) === subId);
+			if (action === "notes" && method === "GET" && note) return json(200, note);
+			return missing();
+		}
 		if (resource === "hooks" && method === "POST" && !key) {
 			if (!fields.url || !fields.token) return fail(400, "Invalid hook");
 			const id = ++this.nextId;

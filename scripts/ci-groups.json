@@ -259,6 +259,23 @@
         "webhook": "tsx ../scripts/webhook-check.ts"
       }
     },
+    "gitlab": {
+      "timeout": 15,
+      "paths": [
+        "scripts/gitlab-{check,protocol-check,standin,workspace-fixture}.ts",
+        "scripts/{check-listeners,check-sections,issue-intake-fixture,login-http}.ts",
+        "server/src/gitlab/**",
+        "server/src/codehost/**",
+        "server/src/factory/{intake,untrusted}.ts",
+        "server/src/actors/{gitlab-*,user-gitlab,issue-intake,internal,user,user-items,work-item,agent-session}.ts",
+        "server/src/actors/agent-session/**",
+        "server/src/github/{git,publish}.ts",
+        "server/src/{index,registry,config,item-pages}.ts"
+      ],
+      "checks": {
+        "gitlab-intake": "tsx ../scripts/gitlab-check.ts intake refuse untrusted"
+      }
+    },
     "linear": {
       "timeout": 20,
       "paths": [

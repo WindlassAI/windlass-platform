@@ -8,7 +8,7 @@ import { decimalId, gitlabId } from "./ids.js";
 import { gitlabWebhookRoute, parseGitlabWebhook, type GitlabDelivery, type GitlabWebhookBinding } from "./webhook.js";
 
 /** The owner supplies a current OAuth token, refreshing and persisting it outside the adapter. */
-export interface GitlabConnection { id: GithubId; accessToken(): Promise<string> }
+export interface GitlabConnection { id: GithubId; project?: Pick<GithubRepository, "id" | "owner" | "name">; accessToken(): Promise<string> }
 export interface GitlabRepository { id: GithubId; branch: string; closesIssue?: number }
 export interface GitlabHook extends GitlabWebhookBinding { dispatch?(delivery: GitlabDelivery): Promise<void> }
 type Host = CodeHost<GitlabConnection, GitlabRepository, GitlabDelivery>;
@@ -18,14 +18,14 @@ function id(v: unknown): string {
 	if (!value) throw new Error("Invalid GitLab identifier.");
 	return value;
 }
-function pull(body: unknown): Pull {
+function parsePull(body: unknown): Pull {
 	const mr = obj(body), refs = obj(mr.diff_refs), number = Number(id(mr.iid));
 	if (!Number.isSafeInteger(number) || !["opened", "closed", "merged", "locked"].includes(text(mr.state))) throw new Error("Invalid GitLab merge request.");
 	return {
 		number, url: text(mr.web_url), title: text(mr.title), body: text(mr.description),
 		state: mr.state === "merged" ? "merged" : mr.state === "closed" ? "closed" : mr.draft ? "draft" : "open",
 		mergeable: mr.detailed_merge_status === "mergeable" ? true : mr.has_conflicts === true || mr.detailed_merge_status === "conflict" ? false : null,
-		head: text(mr.source_branch), headSha: text(mr.sha) || text(refs.head_sha), base: text(mr.target_branch), baseSha: text(refs.start_sha),
+		head: text(mr.source_branch), headSha: text(mr.sha) || text(refs.head_sha), base: text(mr.target_branch), baseSha: text(refs.start_sha), mergeBaseSha: text(refs.base_sha),
 		requestedReviewers: Array.isArray(mr.reviewers) ? mr.reviewers.map(r => text(obj(r).username)).filter(Boolean) : [],
 	};
 }
@@ -103,37 +103,49 @@ function noteIds(key: string): [string, string] {
 }
 
 export function gitlabCodeHost(app: GitlabApp, connection: GitlabConnection, hook?: GitlabHook): Host {
+	function projectKey(owner: string, name: string) {
+		const project = connection.project;
+		if (!project) return `${owner}/${name}`;
+		if (project.owner !== owner || project.name !== name) throw new Error("GitLab project does not match.");
+		return id(project.id);
+	}
 	function checkConnection(key: GithubId) {
 		if (id(key) !== id(connection.id)) throw new Error("GitLab connection does not match.");
 	}
 	const withToken: Host["withToken"] = async (target, _access, step) => {
 		checkConnection(target.installationId);
+		if (connection.project && id(target.repositoryId) !== id(connection.project.id)) throw new Error("GitLab project does not match.");
 		if (hook && id(target.repositoryId) !== id(hook.projectId)) throw new Error("GitLab project does not match.");
 		return step(await connection.accessToken());
 	};
-	const open = async (token: string, project: string, input: Parameters<Host["openPull"]>[3]) => pull(await app.openMr(token, project, {
+	const open = async (token: string, project: string, input: Parameters<Host["openPull"]>[3]) => parsePull(await app.openMr(token, project, {
 		title: input.draft ? `Draft: ${input.title}` : input.title, description: input.body, source_branch: input.head, target_branch: input.base,
 	}));
 	return {
 		cloneUrl: app.cloneUrl.bind(app), pushUrl: app.cloneUrl.bind(app), withToken,
-		openPull: (token, owner, name, input) => open(token, `${owner}/${name}`, input),
+		openPull: (token, owner, name, input) => open(token, projectKey(owner, name), input),
 		async openFromPushed(input) {
 			if (!input.connection) throw new Error("GitLab is not connected.");
 			const repo = input.repository, footer = repo.closesIssue ? `\n\nCloses #${id(repo.closesIssue)}` : "";
-			const pull = await withToken({ installationId: input.connection.id, repositoryId: repo.id }, "pull:write", token => open(token, id(repo.id), {
-				title: input.message.title, body: input.message.body + footer, head: input.branch, base: repo.branch,
-			}));
+			const pull = await withToken({ installationId: input.connection.id, repositoryId: repo.id }, "pull:write", async token => {
+				// Recover both a previous run's MR and a POST whose reply was lost. Forks may reuse branch names.
+				const query = new URLSearchParams({ state: "opened", source_branch: input.branch, target_branch: repo.branch });
+				const response = await app.call({ token, path: `/projects/${id(repo.id)}/merge_requests?${query}` });
+				if (!Array.isArray(response.body)) throw new Error("Invalid GitLab merge request list.");
+				const prior = response.body.map(obj).find(mr => decimalId(mr.source_project_id) === id(repo.id) && decimalId(mr.target_project_id) === id(repo.id) && mr.source_branch === input.branch && mr.target_branch === repo.branch);
+				return prior ? parsePull(prior) : open(token, id(repo.id), { title: input.message.title, body: input.message.body + footer, head: input.branch, base: repo.branch });
+			});
 			return { number: pull.number, url: pull.url, state: pull.state, title: pull.title, branch: pull.head, base: pull.base, pushedAt: Date.now(), verified: verifiedWords(input.evidence.verified, [], input.evidence.during) };
 		},
-		async readPull(token, owner, name, n) { return pull(await app.readMr(token, `${owner}/${name}`, n)); },
+		async readPull(token, owner, name, n) { return parsePull(await app.readMr(token, projectKey(owner, name), n)); },
 		async updatePull(token, owner, name, n, input) {
-			return pull(await app.updateMr(token, `${owner}/${name}`, n, { title: input.title, description: input.body }));
+			return parsePull(await app.updateMr(token, projectKey(owner, name), n, { title: input.title, description: input.body }));
 		},
 		async mergePull(token, owner, name, n, head, title) {
 			if (!/^[0-9a-f]{40,64}$/i.test(head)) throw new Error("Invalid GitLab merge head.");
-			await app.mergeMr(token, `${owner}/${name}`, n, head, title);
+			await app.mergeMr(token, projectKey(owner, name), n, head, title);
 		},
-		async closePull(token, owner, name, n) { await app.updateMr(token, `${owner}/${name}`, n, { state_event: "close" }); },
+		async closePull(token, owner, name, n) { await app.updateMr(token, projectKey(owner, name), n, { state_event: "close" }); },
 		async readCi(target, options) {
 			try { return await withToken(target, "log:read", token => readPipeline(app, token, target, options?.branch, options?.baseResultsOnly)); }
 			catch (error) {
@@ -142,7 +154,7 @@ export function gitlabCodeHost(app: GitlabApp, connection: GitlabConnection, hoo
 				return { kind: "failed", said: "GitLab CI could not be read." };
 			}
 		},
-		jobLog: (token, owner, name, jobId) => app.jobTrace(token, `${owner}/${name}`, jobId),
+		jobLog: (token, owner, name, jobId) => app.jobTrace(token, projectKey(owner, name), jobId),
 		async rerunJobs(target, jobs) {
 			const accepted: string[] = [];
 			try {
@@ -164,7 +176,7 @@ export function gitlabCodeHost(app: GitlabApp, connection: GitlabConnection, hoo
 			return { repositories: list.items.map(repository), more: list.truncated, incomplete: false };
 		},
 		async listComments(token, owner, name, n, requireComplete, since) {
-			const list = await app.notes(token, `${owner}/${name}`, "merge_requests", n);
+			const list = await app.notes(token, projectKey(owner, name), "merge_requests", n);
 			if (requireComplete && list.truncated) throw new Error("Incomplete GitLab note listing.");
 			return list.items.map(obj).filter(note => !note.system && (!since || Date.parse(text(note.updated_at)) >= since)).map(note => {
 				const author = obj(note.author), personId = gitlabId(author.id), login = text(author.username);
@@ -172,14 +184,14 @@ export function gitlabCodeHost(app: GitlabApp, connection: GitlabConnection, hoo
 			});
 		},
 		async createComment(token, owner, name, n, body) {
-			const note = await app.createNote(token, `${owner}/${name}`, "merge_requests", n, body);
+			const note = await app.createNote(token, projectKey(owner, name), "merge_requests", n, body);
 			return `${n}:${id(obj(note).id)}`;
 		},
 		async updateComment(token, owner, name, key, body) {
-			await app.updateNote(token, `${owner}/${name}`, "merge_requests", ...noteIds(key), body);
+			await app.updateNote(token, projectKey(owner, name), "merge_requests", ...noteIds(key), body);
 		},
 		async react(token, repo, target) {
-			const project = `${repo.owner}/${repo.name}`;
+			const project = projectKey(repo.owner, repo.name);
 			if (target.kind === "issue") await app.eyes(token, project, "issues", id(target.id));
 			else await app.eyes(token, project, target.kind === "review_comment" ? "merge_requests" : "issues", ...noteIds(target.id));
 		},

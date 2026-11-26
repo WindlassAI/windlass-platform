@@ -45,7 +45,7 @@ export type Route =
 
 /** How a work item was filed, as the Factory page filters by it. */
 export type ItemSource = ItemSummary["source"];
-export const ITEM_SOURCES: readonly ItemSource[] = ["web", "api", "github", "linear"];
+export const ITEM_SOURCES: readonly ItemSource[] = ["web", "api", "github", "gitlab", "linear"];
 
 /** The views of a chosen repository beside its overview, each at its own address. */
 export const REPOSITORY_VIEWS = ["agents", "items", "pulls", "settings"] as const;

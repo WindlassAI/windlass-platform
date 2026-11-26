@@ -2,43 +2,41 @@
  * Run: cd server && npx tsx ../scripts/gitlab-protocol-check.ts
  */
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import { ciState } from "../server/src/codehost/ci.js";
 import { GITLAB_WEBHOOK_PATH, MAX_WEBHOOK_BYTES, type GitlabDelivery } from "../server/src/gitlab/webhook.js";
 
 import { GitlabStandin } from "./gitlab-standin.js";
 import { GitlabApp, GitlabError, challengeOf, newVerifier } from "../server/src/gitlab/app.js";
+import { gitlabCi, gitlabEyes, gitlabItemHost, gitlabMerge } from "../server/src/actors/gitlab-item.js";
 import { gitlabCodeHost } from "../server/src/gitlab/host.js";
 
-const run = promisify(execFile);
-
-/** Exercise upload-pack and receive-pack without putting credentials in argv or the remote URL. */
-async function pushBranch(cloneUrl: string, pushUrl: string, token: string, branch: string) {
+/** Exercise the same clone, fetch, scanned push and actor-held receipt as a live session. */
+async function pushBranch(access: import("../server/src/gitlab/workspace.js").GitlabAccess, branch: string) {
+	const { cloneGitlab, fetchGitlab, pushGitlab } = await import("../server/src/gitlab/workspace.js");
+	const { createFakeSandboxLayer } = await import("../server/src/sandbox-fake.js");
+	const { installGitlabWorkspaceFixture } = await import("./gitlab-workspace-fixture.js");
 	const home = await mkdtemp(join(tmpdir(), "gitlab-protocol-"));
 	try {
-		const askpass = join(home, "askpass");
-		await writeFile(askpass, '#!/bin/sh\ncase "$1" in *Username*) echo oauth2;; *) printf "%s\\n" "$TEST_GIT_TOKEN";; esac\n', { mode: 0o700 });
-		const env = { PATH: process.env.PATH, LC_ALL: "C", HOME: home, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: askpass, TEST_GIT_TOKEN: token };
-		const work = join(home, "work");
-		const git = async (cwd: string, ...args: string[]) => (await run("git", args, { cwd, env, timeout: 30_000 })).stdout.trim();
-		for (const url of [cloneUrl, pushUrl]) {
-			assert.equal(new URL(url).hostname, "127.0.0.1");
-			assert.ok(!new URL(url).username && !new URL(url).password && !url.includes(token));
-		}
-		await git(home, "clone", cloneUrl, work);
-		await git(work, "checkout", "-b", branch);
-		await git(work, "-c", "user.name=Protocol Check", "-c", "user.email=check@example.invalid", "commit", "--allow-empty", "-m", "Protocol check");
-		const head = await git(work, "rev-parse", "HEAD");
-		await git(work, "push", pushUrl, `HEAD:refs/heads/${branch}`);
-		assert.equal(await git(work, "ls-remote", cloneUrl, `refs/heads/${branch}`), `${head}\trefs/heads/${branch}`);
-		return head;
+		installGitlabWorkspaceFixture(home);
+		const { sandboxes } = createFakeSandboxLayer({ signIns: "memory" });
+		const id = await sandboxes.create({ uid: "tester", sessionId: "workspace", profile: "docker-hardened" });
+		const sandbox = await sandboxes.connect(id);
+		assert.ok(sandbox);
+		const repo = { ...access.project, installationId: access.project.id, baseSha: null as string | null };
+		assert.deepEqual(await cloneGitlab(access, repo, sandbox, new AbortController().signal), { workGone: false, workAt: null, directory: "." });
+		assert.match(repo.baseSha!, /^[0-9a-f]{40}$/);
+		const input = { repository: repo, branch, pushed: null, sandbox, sessionId: "workspace" };
+		await assert.rejects(pushGitlab(access, { ...input, redact: text => text.replaceAll("Built by the fixture model", "[redacted]") }, "Not safe"), /Nothing was pushed/);
+		const result = await pushGitlab(access, input, "Protocol check");
+		assert.ok(result.pushed && result.head && !result.workspaceChanged);
+		assert.equal(await fetchGitlab(access, repo, sandbox, branch), true);
+		return result.head;
 	} finally { await rm(home, { recursive: true, force: true }); }
 }
 
@@ -106,7 +104,8 @@ try {
 	await assert.rejects(host.withToken({ ...target, repositoryId: String(other.id) }, "push", async () => { entered = true; }));
 	await assert.rejects(host.withToken({ ...target, installationId: "999" }, "clone", async () => { entered = true; }));
 	assert.equal(entered, false);
-	const head = await host.withToken(target, "push", t => pushBranch(host.cloneUrl(owner, name), host.pushUrl(owner, name), t, branch));
+	Object.assign(process.env, { WLP_GITLAB_CLIENT_ID: app.settings.clientId, WLP_GITLAB_CLIENT_SECRET: fixture.clientSecret, WLP_GITLAB_BASE_URL: fixture.url });
+	const head = await host.withToken(target, "push", t => pushBranch({ project: { provider: "gitlab", id: projectId, owner, name, branch: project.defaultBranch, private: true, url: host.cloneUrl(owner, name).slice(0, -4) }, viewer: String(fixture.user.id), token: t }, branch));
 	assert.equal(fixture.branchHead(project, branch), head);
 	console.log("ok  paged project discovery, large project ID, project access and authenticated smart HTTP clone/push");
 
@@ -162,7 +161,29 @@ try {
 	console.log("ok  CI results for the pushed SHA, job trace and retry to a green pipeline");
 
 	await assert.rejects(host.mergePull(token, owner, name, mr.number, "1".repeat(40), mr.title));
-	await host.mergePull(token, owner, name, mr.number, head, mr.title);
+	// Exercise the work item's connection lookup, pinned CI/merge guards, and project-local note IDs.
+	Object.assign(process.env, { WLP_SECRET: randomUUID(), WLP_GITLAB_BASE_URL: fixture.url, WLP_GITLAB_CLIENT_ID: fixture.clientId,
+		WLP_GITLAB_CLIENT_SECRET: fixture.clientSecret, WLP_GITLAB_REDIRECT_URL: fixture.redirectUrl });
+	const selected = { ...repo, provider: "gitlab" as const, url: app.cloneUrl(owner, name).slice(0, -4), branch: project.defaultBranch };
+	const ctx = { client: () => ({ userGitlab: { get(keys: string[]) {
+		assert.deepEqual(keys, ["owner"]);
+		return { async internalGitlabAccess(id: string) { assert.equal(id, projectId); return { project: selected, viewer: String(fixture.user.id), token }; } };
+	} } }) };
+	const hub = await gitlabItemHost(ctx, "owner", selected);
+	await assert.rejects(hub.host.readPull(token, other.owner, other.name, mr.number));
+	await gitlabEyes(hub, "issue_comment:1:42");
+	const observed = await gitlabCi(hub, head, mr.number, mr.base, true);
+	assert.equal(observed.prHead, head);
+	assert.equal(observed.baseAhead, 0);
+	assert.equal(ciState(observed.reading), "passed");
+	const merge = (expected: string) => gitlabMerge(hub, mr.number, expected, mr.base, observed.baseTip, "i_protocol");
+	await assert.rejects(merge("1".repeat(40)), /reviewed head and base/);
+	await assert.rejects(merge(head), /feedback/); // The earlier unhandled human note.
+	await host.updateComment(token, owner, name, note, "<!-- windlass-item:i_protocol -->\nVerdict");
+	pipe.status = "failed";
+	await assert.rejects(merge(head), /CI no longer passes/);
+	pipe.status = "success";
+	await merge(head);
 	assert.equal((await host.readPull(token, owner, name, mr.number)).state, "merged");
 	const nextBranch = "docs/follow-up";
 	fixture.commit(project, nextBranch, { "follow-up": "x" }, "Follow up", project.defaultBranch);

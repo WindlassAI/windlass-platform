@@ -1630,8 +1630,8 @@ export interface ItemAgent {
 	fiveHour: { first: number; latest: number } | null;
 }
 
-/** How a work item was filed. "github" and "linear" are the two intakes that file from an issue (factory/intake.ts). */
-export type ItemSource = "web" | "api" | "github" | "linear";
+/** How a work item was filed. The tracker sources file from an issue (factory/intake.ts). */
+export type ItemSource = "web" | "api" | "github" | "gitlab" | "linear";
 
 /** The PR closes this issue in the item's repository. The sender added the label or wrote the command. */
 export interface GithubIssueOrigin {
@@ -2224,6 +2224,7 @@ export interface UserActions {
 	 */
 	createItem(input: CreateItemInput): Promise<ItemSummary>;
 	/** Throws a UserError with code `item_not_found`, or `item_conflict` when the item's state does not allow the action (it says why). */
+	mergeGitlabItem(itemId: string, reviewedHead: string): Promise<ItemView>;
 	actOnItem(input: { id: string; action: ItemAction }): Promise<ItemView>;
 	/** The factory's limits for this user. */
 	factoryLimits(): Promise<FactoryLimits>;

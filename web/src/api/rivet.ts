@@ -455,6 +455,7 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			item: (id) => act("item", id),
 			itemAttachmentLinks: (itemId) => act("itemAttachmentLinks", itemId),
 			createItem: (input) => act("createItem", input),
+			mergeGitlabItem: (id, head) => act("mergeGitlabItem", id, head),
 			actOnItem: (id, action) => act("actOnItem", { id, action }),
 			factoryLimits: () => act("factoryLimits"),
 			linear: () => act("linear"),

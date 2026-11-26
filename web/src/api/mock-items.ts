@@ -2152,7 +2152,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		return view;
 	}
 
-	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "itemFeed" | "item" | "itemAttachmentLinks" | "createItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
+	function calls(auth: AuthResult): Pick<UserApi, "listItems" | "itemFeed" | "item" | "itemAttachmentLinks" | "createItem" | "mergeGitlabItem" | "actOnItem" | "factoryLimits" | "apiTokens" | "createApiToken" | "revokeApiToken"> {
 		return {
 			async listItems(page) {
 				await answer(240);
@@ -2300,6 +2300,9 @@ export function createMockItems(deps: MockItemsDeps) {
 					changed(auth);
 				}
 				return summaryOf(item);
+			},
+			async mergeGitlabItem() {
+				throw new PlatformError("user", "There is no GitLab merge request in this demo.", { reason: "item_conflict" });
 			},
 			async actOnItem(id, action) {
 				await answer(360);

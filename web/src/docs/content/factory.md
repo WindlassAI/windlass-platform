@@ -98,6 +98,12 @@ The App comments on the issue to say it took the item, and links to it. It also 
 
 On GitHub, removing the label cancels a draft. Closing the issue cancels an item that has not reached review. Editing the issue later does not change the item: it keeps the text it was filed with.
 
+### From a GitLab issue
+
+After [connecting GitLab in Settings](/docs/settings#gitlab), add `windlass` to an open issue in the selected project, or write an issue note beginning with `/windlass`. Use the GitLab account you connected. Windlass re-reads the issue and note, files a **Quick** item and reacts 👀. Redelivering the event does not file another item.
+
+Your own issue starts immediately; an issue someone else wrote starts as a draft. In both cases the issue and note are quoted as untrusted input. The item opens a merge request against the project’s default branch and reads GitLab pipelines and jobs. Once it hands over a passing result, review the MR and select **Merge…** on the item. Windlass rechecks the reviewed commit, target branch and pipeline before merging. Plan-first features, cross-repository work and the `windlass/verified` check are GitHub-only.
+
 ### From a Linear issue
 
 Where the platform has a Linear OAuth client and signing secret, you can file a work item from a Linear issue.
@@ -594,7 +600,7 @@ The Factory page lists your items by what you must do:
 
 A repository's **Work items** tab in **Agents** shows that repository's open items the same way, with its ended ones folded under **Show N ended items**. The **Work items** table on **Usage** shows the cost of your open items and your 25 newest ended ones, and says how many older ended items the Factory page lists.
 
-Filter it with **repo** and **from**: filed from the web, the API, a GitHub issue or a Linear issue. The filters are kept in the address, as `?repository=` and `?from=`.
+Filter it with **repo** and **from**: filed from the web, the API, a GitHub, GitLab or Linear issue. The filters are kept in the address, as `?repository=` and `?from=`.
 
 ## Limits
 

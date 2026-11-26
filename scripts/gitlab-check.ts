@@ -1,22 +1,25 @@
-/** cd server && WLP_CHECK_SECTIONS=connect npx tsx ../scripts/gitlab-check.ts */
+/** cd server && npx tsx ../scripts/gitlab-check.ts intake refuse untrusted */
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createClient, type Registry } from "../server/src/client.js";
+import type { AuthResult, GitlabActions } from "../server/src/contract.js";
 import { matchesSection } from "./check-sections.js";
 import { localListeners } from "./check-listeners.js";
 import { GitlabStandin } from "./gitlab-standin.js";
-import { pollUntil } from "./issue-intake-fixture.js";
+import { pollUntil, readProvenance } from "./issue-intake-fixture.js";
 import { loginHttp } from "./login-http.js";
 
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 
 /** Test-only inspection: open the persisted grant with the user/instance binding; return no credentials. */
 async function startCheckNode() {
+	const { installGitlabWorkspaceFixture } = await import("./gitlab-workspace-fixture.js");
+	installGitlabWorkspaceFixture(process.env.RIVETKIT_STORAGE_PATH!);
 	const { userGitlab } = await import("../server/src/actors/user-gitlab.js");
 	const { openSecret, sealSecret } = await import("../server/src/repo-secrets.js");
 	const { serverSealer } = await import("../server/src/signin/seal.js");
@@ -36,18 +39,157 @@ async function startCheckNode() {
 			return [digest(grant.accessToken), digest(grant.refreshToken)];
 		},
 	});
+	const { gitlabInbox } = await import("../server/src/actors/gitlab-inbox.js");
+	const { requireServiceFor } = await import("../server/src/auth.js");
+	const inboxActions = gitlabInbox.config.actions!;
+	Object.assign(inboxActions, { checkSettled: async (c: Parameters<typeof inboxActions.internalReceive>[0], guid: string) => {
+		requireServiceFor(c, "call");
+		return (await c.db.execute("SELECT 1 FROM inbox WHERE guid=? AND data IS NULL", guid)).length === 1;
+	} });
+	const { workItem } = await import("../server/src/actors/work-item.js");
+	const itemActions = workItem.config.actions!;
+	Object.assign(itemActions, { checkProvenance: async (c: Parameters<typeof itemActions.internalView>[0]) => {
+		await itemActions.internalView(c);
+		return readProvenance(c);
+	} });
 	await import("../server/src/index.js");
 }
 
-async function connect() {
+/** Exercise public delivery after a real OAuth connect and project selection. The inbox probe only waits for dispatch. */
+async function intakeChecks(sections: string[], fixture: GitlabStandin, client: ReturnType<typeof createClient<Registry>>, ownerAuth: AuthResult, owner: Pick<GitlabActions, "gitlabPickProject" | "gitlabDisconnect">) {
+	const p = fixture.addProject({ id: 9007199254740993n, owner: "group/sub", name: "intake" });
+	await owner.gitlabPickProject(String(p.id));
+	const [hook] = fixture.hooks;
+	assert.ok(hook);
+	const uid = ownerAuth.profile.uid;
+	const user = client.user.get([uid], { params: { token: ownerAuth.token } });
+	const outsider = { id: 9007199254740995n, username: "other", name: "Other Author" };
+	const issue = (title: string, author = fixture.user) => fixture.addIssue(p, { title, author, description: "Verify the repository task. (report)", labels: ["windlass"] });
+	const send = (event: string, body: unknown, options?: Parameters<typeof fixture.deliverHook>[3]) => fixture.deliverHook(hook.id, event, body, options);
+	const { serviceParams } = await import("../server/src/auth.js");
+	const inbox = client.gitlabInbox.get([uid, String(p.id)], { params: serviceParams() }) as unknown as { checkSettled(guid: string): Promise<boolean> };
+	const dispatch = async (event: string, payload: unknown, guid = randomUUID()) => {
+		const response = await send(event, payload, { guid });
+		assert.equal(response.status, 202);
+		assert.deepEqual(await response.json(), { taken: true });
+		await pollUntil(30_000)("completed dispatch", () => inbox.checkSettled(guid));
+	};
+	if (sections.includes("refuse")) {
+		const target = issue("Must not file"), label = fixture.issueEvent(target);
+		const wrongSecret = (hook.token[0] === "A" ? "B" : "A") + hook.token.slice(1); // Same owner suffix, wrong token.
+		for (const options of [{ omitToken: true }, { secret: wrongSecret }]) assert.equal((await send("Issue Hook", label, options)).status, 401);
+		assert.equal((await send("Issue Hook", { ...label, project: { id: 42 } })).status, 403);
+		const note = fixture.addIssueNote(target, "/windlass please", outsider);
+		await dispatch("Issue Hook", fixture.issueEvent(target, outsider));
+		await dispatch("Note Hook", { ...fixture.noteEvent(target, note), user: fixture.user });
+		const ignored = async (event: string, payload: unknown) => {
+			const response = await send(event, payload);
+			assert.equal(response.status, 202);
+			assert.deepEqual(await response.json(), { taken: false });
+		};
+		await ignored("Issue Hook", { ...label, changes: {} });
+		const feature = fixture.noteEvent(target, fixture.addIssueNote(target, "/windlass feature build everything"));
+		await ignored("Note Hook", feature);
+		await ignored("Note Hook", { ...feature, object_attributes: { ...feature.object_attributes, note: "/windlass", noteable_type: "MergeRequest" } });
+		target.labels = []; // The label in this delivery has since been removed.
+		await dispatch("Issue Hook", label);
+		assert.equal((await user.listItems()).length, 0);
+		console.log("PASS refuse: wrong credentials, project, sender, stale label and forged note author file nothing");
+	}
+	if (sections.includes("intake") || sections.includes("untrusted")) {
+		const { untrustedTurn } = await import("../server/src/factory/untrusted.js");
+		for (const via of ["label", "note"] as const) {
+			const target = issue(`Canonical ${via} issue`, via === "label" ? outsider : fixture.user);
+			const label = fixture.issueEvent(target), note = fixture.addIssueNote(target, "/windlass fix the build");
+			const event = via === "label" ? "Issue Hook" : "Note Hook";
+			const noteHook = fixture.noteEvent(target, note);
+			const body = via === "label"
+				? { ...label, object_attributes: { ...label.object_attributes, title: "stale title" } }
+				: { ...noteHook, object_attributes: { ...noteHook.object_attributes, note: "/windlass outdated request" } };
+			const guid = randomUUID();
+			await dispatch(event, body, guid);
+			const row = await pollUntil(20_000)(`item filed by ${via}`, async () => (await user.listItems()).find(i => i.title === target.title));
+			assert.equal(row.source, "gitlab"); assert.equal(row.repository.provider, "gitlab"); assert.equal(String(row.repository.id), String(p.id));
+			if (via === "label") assert.equal(row.state, "draft");
+			else assert.notEqual(row.state, "draft");
+			const view = await user.item(row.id);
+			assert.ok(view.task.body.includes("> " + target.description));
+			if (via === "note") assert.ok(view.task.body.includes("fix the build"));
+			const duplicate = await send(event, body, { guid });
+			assert.equal(duplicate.status, 202);
+			assert.deepEqual(await duplicate.json(), { taken: "duplicate" });
+			await dispatch(event, body);
+			assert.deepEqual((await user.listItems()).filter(i => i.title === target.title).map(i => i.id), [row.id]);
+			const probe = client.workItem.get([uid, row.id], { params: serviceParams() }) as unknown as { checkProvenance(): ReturnType<typeof readProvenance> };
+			const kept = await probe.checkProvenance();
+			assert.equal(kept.bindingRows, 0);
+			assert.deepEqual(kept.untrusted, [`GitLab issue #${target.iid}`, ...(via === "note" ? [`GitLab note ${note.id}`] : [])]);
+			assert.ok(fixture.reactions.has(`/projects/${p.id}/issues/${target.iid}${via === "note" ? `/notes/${note.id}` : ""}/award_emoji:eyes`));
+			if (sections.includes("untrusted") && via === "note") {
+				const session = client.agentSession.get([uid, row.sessionId], { params: { token: ownerAuth.token } });
+				const mark = await pollUntil(30_000)("GitLab issue and note markers on Windlass's prompt", async () => {
+					const { timeline } = await session.snapshot();
+					return timeline.flatMap(e => e.kind === "windlass" && e.event.type === "fake.prompt_untrusted" ? [e.event.data?.source] : [])[0];
+				});
+				assert.equal(mark, kept.untrusted.join("; "));
+			}
+			if (sections.includes("intake") && via === "label") {
+				await user.actOnItem({ id: row.id, action: { kind: "start" } });
+				const until = pollUntil(60_000);
+				const mr = await until("the builder's pushed branch and MR", async () => {
+					const current = await user.item(row.id);
+					assert.ok(!current.question && current.state !== "failed", `builder stopped: ${current.question?.kind ?? current.state}; ${current.events.at(-1)?.said}`);
+					return current.pullRequest && p.mergeRequests.find(m => m.iid === current.pullRequest!.number);
+				});
+				const head = fixture.branchHead(p, mr.source_branch)!;
+				assert.match(head, /^[0-9a-f]{40}$/);
+				assert.notEqual(head, fixture.branchHead(p, p.defaultBranch));
+				assert.equal(mr.target_branch, p.defaultBranch);
+				const pipeline = fixture.addPipeline(p, head, mr.source_branch, "success");
+				fixture.addJob(p, pipeline, "guide/test", "success");
+				await dispatch("Pipeline Hook", { object_kind: "pipeline", project: { id: p.id }, object_attributes: pipeline });
+				let progress = "";
+				const review = await until("green CI on the work item", async () => {
+					const item = await user.item(row.id);
+					const next = [item.state, item.run?.step.kind, item.question?.kind, item.verdict?.ci].join("/");
+					if (next !== progress) { progress = next; console.log("GitLab item: " + next); }
+					return item.state === "review" && item.verdict?.ci === "passed" && item;
+				});
+				assert.equal(review.pullRequest?.number, mr.iid);
+				assert.equal(mr.state, "opened", "intake must not auto-merge untrusted text");
+				await assert.rejects(user.mergeGitlabItem(row.id, "f".repeat(40)));
+				await user.mergeGitlabItem(row.id, head);
+				assert.equal(mr.state, "merged");
+				await dispatch("Merge Request Hook", { object_kind: "merge_request", project: { id: p.id }, object_attributes: { iid: mr.iid, action: "merge", last_commit: { id: head } } });
+				await until("merged item", async () => (await user.item(row.id)).state === "done");
+				console.log("PASS intake: pushed branch, merge request, green CI and owner-authorized merge");
+			}
+			const turn = { agent: "windlass" as const, untrusted: kept.untrusted, unsandboxed: false };
+			assert.equal(untrustedTurn({ ...turn, profile: "docker-windlass-sandbox" }).kind, "marked");
+			assert.equal(untrustedTurn({ ...turn, profile: "docker-hardened" }).kind, "stop");
+		}
+		console.log("PASS intake/untrusted: canonical label and note tasks file once with GitLab sources");
+	}
+	if (sections.includes("refuse")) {
+		const prior = await user.listItems();
+		await owner.gitlabDisconnect();
+		const stale = fixture.issueEvent(issue("Delivery after disconnect"));
+		assert.equal((await fixture.deliver(hook.url, "Issue Hook", stale, { secret: hook.token })).status, 401);
+		assert.deepEqual((await user.listItems()).map(i => i.id).sort(), prior.map(i => i.id).sort());
+	}
+}
+
+async function checkGitlab(sections: string[]) {
 	const { engine, http: [port] } = await localListeners();
 	const api = `http://127.0.0.1:${port}`, origin = "http://localhost:5173";
 	const fixture = await GitlabStandin.start({ callbackUrl: api + "/gitlab/callback", pageSize: 1 });
 	const storage = await mkdtemp(join(tmpdir(), "gitlab-connect-"));
 	const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(WLP_|RIVET|PORT$)/.test(key)));
+	const secret = process.env.WLP_SECRET = randomBytes(32).toString("hex");
+	delete process.env.WLP_SECRET_KEYS;
 	const child = spawn(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url), "--node"], {
 		cwd: fileURLToPath(new URL("../server/", import.meta.url)), stdio: ["ignore", "pipe", "pipe"],
-		env: { ...clean, WLP_SECRET: randomBytes(32).toString("hex"), WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_WEB_ORIGINS: origin,
+		env: { ...clean, WLP_SECRET: secret, WLP_FAKE_DELAY_MS: "10", WLP_ITEMS: "1", WLP_DEMO: "1", WLP_SANDBOX: "fake", WLP_WEB_ORIGINS: origin,
 			WLP_HTTP_PORT: String(port), WLP_PUBLIC_URL: api, RIVET_RUN_ENGINE_PORT: String(engine), RIVETKIT_STORAGE_PATH: storage, RIVET_LOG_LEVEL: "silent",
 			WLP_GITLAB_CLIENT_ID: fixture.clientId, WLP_GITLAB_CLIENT_SECRET: fixture.clientSecret, WLP_GITLAB_BASE_URL: fixture.url, WLP_GITLAB_REDIRECT_URL: fixture.redirectUrl },
 	});
@@ -61,17 +203,23 @@ async function connect() {
 			return (await fetch(api + "/health").catch(() => null))?.ok;
 		});
 		const client = createClient<Registry>({ endpoint: `http://127.0.0.1:${engine}`, headers: { Origin: origin } });
-		const login = async () => {
-			const auth = await loginHttp(api, origin).demo();
+		const ownerAuth = await loginHttp(api, origin).demo();
+		const login = async (auth = ownerAuth) => {
 			return client.userGitlab.getOrCreate([auth.profile.uid], { params: { token: auth.token } });
 		};
-		const owner = await login(), neighbour = await login();
+		const owner = await login(), neighbour = await login(await loginHttp(api, origin).demo());
 		const disconnected = { state: "disconnected" };
 		assert.deepEqual(await owner.gitlab(), disconnected);
 		await assert.rejects(owner.gitlabConnect({ origin: "https://other.invalid" }));
 		const begin = async () => fixture.authorize((await owner.gitlabConnect({ origin })).url);
 		const callback = (url: URL | string) => fetch(url, { redirect: "manual" });
 		const consent = await begin();
+		if (sections.some(s => s !== "connect")) {
+			const response = await callback(consent);
+			await owner.gitlabComplete(new URL(response.headers.get("location")!).hash.slice("#gitlab=".length));
+			await intakeChecks(sections, fixture, client, ownerAuth, owner);
+			return;
+		}
 		const invalid = new URL(consent); invalid.searchParams.set("state", "invalid");
 		const refused = async (url: URL | string) => {
 			const response = await callback(url);
@@ -129,7 +277,7 @@ async function connect() {
 		assert.equal(fixture.hooks.length, 1, "project pick must register one hook at GitLab");
 		const [hook] = fixture.hooks;
 		assert.equal(String(hook.projectId), String(project.id));
-		assert.ok(hook.url === api + "/gitlab/webhook", "hook must point at the public callback without embedded credentials");
+		assert.ok(new URL(hook.url).origin + new URL(hook.url).pathname === api + "/gitlab/webhook" && !hook.url.includes(hook.token), "hook must point at the public callback without embedded credentials");
 		assert.ok(hook.token.length >= 32 && !secrets.includes(hook.token), "expected a separate project hook secret");
 		secrets.push(hook.token);
 		assert.deepEqual(await owner.gitlabPickProject(String(project.id)), saved);
@@ -158,6 +306,12 @@ async function connect() {
 
 if (process.argv[2] === "--node") await startCheckNode();
 else {
-	assert.ok(process.argv.length === 2 || (process.argv.length === 3 && process.argv[2] === "connect"), "usage: gitlab-check.ts [connect]");
-	if (matchesSection("connect")) await connect().then(() => process.exit(0), error => { console.error(error); process.exit(1); });
+	const names = ["connect", "intake", "refuse", "untrusted"];
+	const sections = (process.argv.length > 2 ? process.argv.slice(2) : names.filter(matchesSection));
+	assert.ok(sections.length && sections.every(s => names.includes(s)), "usage: gitlab-check.ts [connect|intake|refuse|untrusted ...]");
+	try {
+		if (sections.includes("connect")) await checkGitlab(["connect"]);
+		if (sections.some(s => s !== "connect")) await checkGitlab(sections.filter(s => s !== "connect"));
+		process.exit(0);
+	} catch (error) { console.error(error); process.exit(1); }
 }

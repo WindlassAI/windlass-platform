@@ -12,6 +12,7 @@ import { githubInbox, githubHooks } from "./actors/github-inbox.js";
 import { githubRepository } from "./actors/github-repository.js";
 import { billingCustomers } from "./billing/customer-index.js";
 import { accountIdentities } from "./actors/account-identities.js";
+import { gitlabInbox } from "./actors/gitlab-inbox.js";
 import { userGitlab } from "./actors/user-gitlab.js";
 import { linearWorkspace } from "./actors/linear-workspace.js";
 import { login } from "./actors/login.js";
@@ -19,7 +20,7 @@ import { user } from "./actors/user.js";
 import { workItem } from "./actors/work-item.js";
 
 export const registry = setup({
-	use: { login, accountIdentities, billingCustomers, user, agentSession, machine, machinePairing, pairingDirectory, workItem, githubInbox, githubAccount, githubRepository, githubHooks, linearWorkspace, userGitlab },
+	use: { login, accountIdentities, billingCustomers, user, agentSession, machine, machinePairing, pairingDirectory, workItem, githubInbox, githubAccount, githubRepository, githubHooks, linearWorkspace, userGitlab, gitlabInbox },
 	// The native HTTP listener bounds the body before copying it into a JavaScript Request.
 	serverless: { maxStartPayloadBytes: 3 * 1024 * 1024 },
 	// A prompt may be 20,000 characters, and a snapshot carries a session's whole timeline.

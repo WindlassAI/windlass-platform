@@ -22,7 +22,7 @@ interface IssueText {
 }
 
 /** A task from an issue's text, the same for both intakes: hidden text stripped, the task bounded, third-party text quoted. */
-function taskOfText(input: IssueText) {
+export function taskOfText(input: IssueText) {
 	const { trusted, by } = input;
 	const title = cut(plain(input.title).replace(/\s+/g, " "), MAX_TITLE_CHARS) || input.fallbackTitle;
 	const acceptance: string[] = [], lines: string[] = [];
@@ -115,7 +115,14 @@ export interface LinearBinding {
 }
 
 /** How an item was filed from an issue: one of the two intakes. The item's source is the tracker's name. */
-export type Intake = { github: IssueBinding; linear?: undefined } | { linear: LinearBinding; github?: undefined };
+export interface GitlabBinding {
+	project: import("../contract.js").SessionRepository;
+	iid: string;
+	sources: string[];
+}
+export type Intake = { github: IssueBinding; linear?: undefined; gitlab?: undefined }
+	| { linear: LinearBinding; github?: undefined; gitlab?: undefined }
+	| { gitlab: GitlabBinding; github?: undefined; linear?: undefined };
 
 /**
  * A Linear issue the platform has validated (the webhook's signature checked, the issue read from Linear, its team mapped) and the
