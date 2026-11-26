@@ -14,7 +14,7 @@
  * start composer of an agent does, with the same cards (components/PlaceChoice.tsx): this platform, or one of the user's
  * machines. On a machine the server gives it that machine's first available sandbox.
  */
-import { originIssue } from "../lib/origin";
+import { filingSource, originIssue } from "../lib/origin";
 import { type GithubId, type HarnessId, type StepKind, ITEM_PAGE_DEFAULT, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemCursor, type ItemFeed, type ItemMode, type ItemState, type ItemSummary } from "@contract";
 import { savedPlace, resolveDefaultPlace } from "../../../server/src/factory/default-place";
 import { byFiling, nextCursor } from "../../../server/src/item-pages";
@@ -415,7 +415,7 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 						</span>
 					) : null}
 					{ci && item.origin && !originIssue(item.origin).trusted ? <span>from an outside author</span> : null}
-					{item.source === "api" ? <span>from the API</span> : null}
+					{item.source === "api" || item.source === "slack" ? <span>from {filingSource[item.source]}</span> : null}
 					{item.agent && item.agent.harness !== "windlass" ? (
 						<span>
 							<AgentGlyph harness={item.agent.harness} size={11} inline />

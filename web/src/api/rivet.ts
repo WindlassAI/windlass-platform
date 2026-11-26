@@ -83,7 +83,7 @@ const READS = new Set([
 	"me", "chatgpt", "models", "listSessions", "github", "githubRepositories", "githubBranches", "repositorySetup", "repositoryChecks",
 	"repositoryEnvironments", "repositoryNetwork", "repositorySecrets", "repository", "githubRepository", "savedRepositories", "account",
 	"accountSecrets", "modelProviders", "allowance", "usage", "billing", "machines", "machineCatalog", "listItems", "itemFeed", "item", "factoryLimits",
-	"apiTokens", "linear", "linearTeams", "snapshot", "changes", "diff", "publishState", "servers",
+	"apiTokens", "slack", "linear", "linearTeams", "snapshot", "changes", "diff", "publishState", "servers",
 ]);
 
 /** Whether an action may be sent twice: it reads, or it carries the key of its submission. */
@@ -449,6 +449,14 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			createItem: (input) => act("createItem", input),
 			actOnItem: (id, action) => act("actOnItem", { id, action }),
 			factoryLimits: () => act("factoryLimits"),
+			slack: () => act("slack"),
+			slackConnect: (input) => act("slackConnect", input),
+			slackComplete: (ticket) => act("slackComplete", ticket),
+			saveSlackMapping: (input) => act("saveSlackMapping", input),
+			removeSlackMapping: (channelId) => act("removeSlackMapping", channelId),
+			disconnectSlack: () => act("disconnectSlack"),
+			linkSlack: (ticket) => act("linkSlack", ticket),
+			unlinkSlack: (teamId) => act("unlinkSlack", teamId),
 			linear: () => act("linear"),
 			linearConnect: (input) => act("linearConnect", input),
 			linearComplete: (ticket) => act("linearComplete", ticket),

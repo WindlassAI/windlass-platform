@@ -38,6 +38,24 @@ Where the platform offers machines, this section links to **Your machines**. See
 
 Where Linear is available, connect your workspace and map each team to a GitHub repository. **Disconnect…** removes its mappings and stops new filings. Existing items stay. Label an issue `windlass` or assign it to the Windlass app. Use `windlass-quick` or `windlass:quick` for Quick mode. See [From a Linear issue](/docs/factory#from-a-linear-issue).
 
+### Slack
+
+Where Slack is available, open **Settings → Slack** to connect a workspace. Approve the app in Slack, then return to Settings in the Windlass account that started the connection. In the channel, use `/invite @Windlass`. Copy its ID from the channel details (for example, `C0123456789`) and map that ID to a repository you can write to. The installing owner manages the mappings. The channel can be public or private, but not archived or a direct message. Remove a mapping to stop filing from that channel.
+
+Installing the bot and linking a member are separate steps. Each person who wants to file work follows their own private, single-use link from Slack while signed in to Windlass. Unlink your identity to stop filing as that member; disconnect the workspace to stop using its bot connection.
+
+To check the mapping, try `@Windlass quick Fix the setup guide typo` in the channel. Windlass checks **your** write access, not the installer’s. The first word `quick` skips planning. Follow the item link in the request’s thread for questions, a plan to approve, the PR and the outcome. For `/windlass` without a parent message, follow the thread under the bot’s acknowledgement instead. See [From Slack](/docs/factory#from-slack).
+
+**For deployment operators.** Set `WLP_SLACK_CLIENT_ID`, `WLP_SLACK_CLIENT_SECRET` and `WLP_SLACK_SIGNING_SECRET` on the server. For example, with `WLP_PUBLIC_URL=https://windlass.example.com`, the default OAuth v2 redirect URL is `https://windlass.example.com/slack/callback`. Register the URLs on that same server in your Slack app:
+
+| Slack app setting | Path on the Windlass server |
+| --- | --- |
+| OAuth redirect URL | `/slack/callback` (or the exact URL set in `WLP_SLACK_REDIRECT_URL`) |
+| Event Subscriptions → Request URL | `/slack/events`; subscribe to the `app_mention` bot event |
+| Slash Commands → `/windlass` → Request URL | `/slack/commands` |
+
+Request these **bot token scopes**: `app_mentions:read` for mentions, `commands` for the slash command, `chat:write` for replies, and `channels:read` and `groups:read` to check public and private channels. No user token scopes are required.
+
 ### API tokens
 
 Where the platform offers work items, you can make up to 20 API tokens for scripts that file and read your work items. To file an item, send `POST /api/items` with the header `Authorization: Bearer <token>`. See [From the API](/docs/factory#from-the-api).
@@ -58,7 +76,7 @@ A **hosted minute** is one minute of a Medium sandbox on the platform (2 vCPU, 4
 | Hosted at once | 1 | 5 |
 | Sandbox sizes | Small, Medium | Small, Medium, Large |
 | Features over two repositories | No | Yes |
-| Items filed from GitHub and Linear together | 20 a day | 100 a day |
+| Items filed from GitHub, Linear and Slack together | 20 a day | 100 a day |
 | Past the included minutes | Hosted agents stop until the month resets | Monthly Pro bills $0.006 a minute up to your spend cap. Yearly Pro stops at 1,800 minutes a month. |
 
 - **Reset dates.** Free resets at 00:00 UTC on the first of the month. Pro starts when your subscription starts. Monthly Pro resets at the end of your billing period. Yearly Pro resets on each monthly anniversary, on the last day of a shorter month. Settings shows your next reset.
@@ -248,4 +266,4 @@ These are the deployment defaults without plans or account overrides. Your runne
 
 A question during a turn is one the agent asks while its turn runs, for example to approve a command. The turn holds its sandbox while it waits, so after 10 minutes the question is declined and the agent goes on. In a hosted sandbox an unanswered approval ends the turn after 5 minutes instead, and the sandbox pauses until you send a prompt. A work item never asks this way: its questions end the turn and wait for days if need be.
 
-Work items have their own budgets and one shared limit on items filed from GitHub and Linear. See [Factory limits](/docs/factory#limits). On your own machines, your runner sets sandbox limits. Windlass shares the daily model cap shown on Usage. See [Runner reference](/docs/runner#run-options).
+Work items have their own budgets and one shared limit on items filed from GitHub, Linear and Slack. See [Factory limits](/docs/factory#limits). On your own machines, your runner sets sandbox limits. Windlass shares the daily model cap shown on Usage. See [Runner reference](/docs/runner#run-options).

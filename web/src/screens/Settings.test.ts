@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMockClient } from "../api/mock";
+import { lastAppHref, rememberAppPage } from "../lib/router";
 import { loadAuth, saveAuth } from "../lib/authStore";
 import { AppProvider, useApp } from "../state/app";
 import { Settings } from "./Settings";
@@ -225,15 +226,16 @@ it("saves a machine agent and profile and hides machine choices for Hosted", asy
 	}
 });
 
-describe("Linear in Settings", () => {
-	async function open(client: ReturnType<typeof createMockClient>, hash = "") {
+describe("Integrations in Settings", () => {
+	async function open(client: ReturnType<typeof createMockClient>, hash = "", strict = false) {
 		const { url, redirectPrefix } = await client.login.start();
 		const auth = await client.login.finish(redirectPrefix + "?code=linear&state=" + new URL(url).searchParams.get("state"));
 		saveAuth("mock", auth);
 		history.replaceState(null, "", "/settings" + hash);
 		const host = document.body.appendChild(document.createElement("div"));
 		const root = createRoot(host);
-		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Settings) })));
+		const settings = createElement(AppProvider, { client, children: createElement(Settings) });
+		await act(async () => root.render(strict ? createElement(StrictMode, null, settings) : settings));
 		const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => void (await new Promise((r) => setTimeout(r, 5)))); };
 		await settle();
 		return { host, root, auth, settle, close: () => { act(() => root.unmount()); host.remove(); } };
@@ -317,4 +319,112 @@ describe("Linear in Settings", () => {
 		expect(section(off.host)).toBeNull();
 		off.close();
 	}, 15_000);
+
+	const slack = (host: HTMLElement) => host.querySelector<HTMLElement>("[data-testid='slack-settings']")!;
+
+	it("completes a Slack install, changes a channel’s repository, refuses read-only access, and removes the mapping", async () => {
+		const client = createMockClient({ pace: 0 });
+		const first = await open(client);
+		expect(slack(first.host).textContent).toContain("Connect Slack…");
+		const landing = await client.user(first.auth).slackConnect({ origin: location.origin });
+		first.close();
+		const screen = await open(client, new URL(landing.url).hash, true);
+		try {
+			const card = slack(screen.host);
+			expect(location.hash).toBe("");
+			expect(card.textContent).toContain("Acme Engineering");
+			expect(card.textContent).toContain("Not linked");
+			expect(card.querySelector('option[value="7105"]')).toBeNull(); // read-only
+			await choose(card.querySelector("select")!, "7101");
+			await act(async () => {
+				const input = card.querySelector("input")!;
+				Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "C08HARB01");
+				input.dispatchEvent(new Event("input", { bubbles: true }));
+			});
+			await press(card, "Map channel");
+			await screen.settle();
+			expect(card.querySelector('[aria-label="Mapped channels"]')?.textContent).toContain("acme/harbor");
+			await press(card, "Change mapping for harbor-engineering");
+			await choose(card.querySelector("select")!, "7102");
+			await press(card, "Map channel");
+			await screen.settle();
+			await expect(client.user(screen.auth).saveSlackMapping({ channelId: "C08HARB01", repositoryId: 7105 })).rejects.toThrow("write access");
+			expect(card.querySelectorAll('[aria-label="Mapped channels"] li')).toHaveLength(1);
+			expect(card.querySelector('[aria-label="Mapped channels"]')?.textContent).toContain("ada/tide-tables");
+			await press(card, "Remove mapping for harbor-engineering");
+			await screen.settle();
+			expect(card.querySelector('[aria-label="Mapped channels"] li')).toBeNull();
+			const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+			try { await press(card, "Disconnect…"); } finally { confirm.mockRestore(); }
+			await screen.settle();
+			expect(card.textContent).toContain("No workspace connected");
+		} finally { screen.close(); client.dispose(); }
+	});
+
+	it("scrubs private Slack links and lets a member confirm and unlink without installing a workspace", async () => {
+		const client = createMockClient({ pace: 0 });
+		const fragment = "#slack-link=" + client.mockSlackLinkTicket();
+		history.replaceState(null, "", "/settings?mock=1" + fragment);
+		rememberAppPage();
+		expect(lastAppHref()).toBe("/settings?mock=1");
+		const scroll = vi.fn();
+		const previousScroll = HTMLElement.prototype.scrollIntoView;
+		HTMLElement.prototype.scrollIntoView = scroll;
+		const screen = await open(client, fragment, true);
+		try {
+			const card = slack(screen.host);
+			expect(location.hash).toBe("");
+			expect(card.textContent).toContain("Not linked");
+			expect(card.innerHTML).not.toContain(fragment.split("=")[1]!);
+			expect(scroll.mock.contexts).toEqual([card]);
+			expect(document.activeElement?.textContent).toBe("Link Slack identity");
+			await press(card, "Link Slack identity");
+			await screen.settle();
+			expect(card.textContent).toContain("U08ADA001");
+			expect(card.textContent).toContain("No workspace connected");
+			await press(card, "Unlink Slack identity in T08ACME01");
+			await screen.settle();
+			expect(card.textContent).toContain("Not linked");
+		} finally { HTMLElement.prototype.scrollIntoView = previousScroll; screen.close(); client.dispose(); }
+	});
+
+	it("keeps an installing owner's mappings separate from another member's link", async () => {
+		const client = createMockClient({ pace: 0 });
+		try {
+			const owner = client.user(await client.login.finish((await client.login.start("github")).url));
+			const member = client.user(await client.login.finish((await client.login.start("google")).url));
+			const install = await owner.slackConnect({ origin: location.origin });
+			const ticket = new URL(install.url).hash.slice("#slack=".length);
+			await expect(member.slackComplete(ticket)).rejects.toThrow();
+			await owner.slackComplete(ticket);
+			await expect(owner.slackComplete(ticket)).rejects.toThrow();
+			const mapped = await owner.saveSlackMapping({ channelId: "C08HARB01", repositoryId: 7101 });
+			const proof = client.mockSlackLinkTicket();
+			expect(await member.linkSlack(proof)).toMatchObject({ state: "disconnected", links: [{ teamId: "T08ACME01" }] });
+			await expect(owner.linkSlack(proof)).rejects.toThrow();
+			await expect(member.removeSlackMapping("C08HARB01")).rejects.toThrow();
+			expect(await owner.slack()).toEqual(mapped);
+		} finally { client.dispose(); }
+	});
+
+	it("explains Slack callback failure without echoing tickets and hides Slack when off", async () => {
+		for (const [hash, message] of [["#slack-error=denied", "Slack was not given access"], ["#slack=invalid-ticket", "Connect Slack again"]] as const) {
+			const client = createMockClient({ pace: 0 });
+			const screen = await open(client, hash);
+			try {
+				expect(location.hash).toBe("");
+				expect(slack(screen.host).querySelector('[role="alert"]')?.textContent).toContain(message);
+				expect(screen.host.innerHTML).not.toContain("invalid-ticket");
+			} finally { screen.close(); client.dispose(); }
+		}
+		for (const options of [{ slack: false }, { items: "off" }] as const) {
+			const client = createMockClient({ pace: 0, ...options });
+			const screen = await open(client, "?mock=1#slack-link=private-proof");
+			try {
+				expect(location.hash).toBe("");
+				expect(location.search).toBe("?mock=1");
+				expect(slack(screen.host)).toBeNull();
+			} finally { screen.close(); client.dispose(); }
+		}
+	});
 });
