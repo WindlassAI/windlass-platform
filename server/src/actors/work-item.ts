@@ -22,7 +22,7 @@ import { mergeCandidate, requiredCiBranches } from "../factory/autonomy.js";
 import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
 import { criticSessionId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
-import { resolveRun } from "../factory/resolve-run.js";
+import { resolveProposedParts, resolveRun } from "../factory/resolve-run.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf, branchFor } from "../github/publish.js";
@@ -221,6 +221,12 @@ async function viewOf(c: Ctx): Promise<ItemView> {
 		return { stored, view: await pageOf(c, stored) };
 	});
 	const { item } = stored;
+	if (view.plan?.status === "proposed") {
+		const fresh = await userActor(c, stored.meta.uid).internalPartDefaults(planRepositories(stored));
+		const completed = completedKeys(item);
+		resolveProposedParts(view.plan.subtasks, { ...item.context, ...fresh.context }, completed, fresh.machines);
+		view.unattended = unattendedKeys(view.plan, completed);
+	}
 	const q = view.question;
 	if (q && (q.kind === "plan_approval" || q.kind === "replan_approval") && item.featurePlan?.status === "proposed" && item.filedTurn === currentKey(item) && !crossRepo(item)) {
 		try {
@@ -962,11 +968,13 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 	await c.db.execute("INSERT OR REPLACE INTO feedback_cursor VALUES(1,?)", now);
 }
 
+function planRepositories({ item, meta }: Stored): Record<string, GithubId> {
+	return { ...Object.fromEntries((item.repos ?? []).map(repo => [repo.alias, repo.repositoryId])), "": meta.repository.id };
+}
+
 /** `featureModel`: the feature's Windlass model, which a Windlass subtask choosing only an effort runs. */
 async function placementInventory(c: Ctx, uid: string, featureModel: string | undefined, snapshotRepository?: GithubId): Promise<PlacementInventory & { hostedCapacity: number }> {
-	const { item, meta } = c.vars.stored!;
-	const repositories = Object.fromEntries((item.repos ?? []).map(repo => [repo.alias, repo.repositoryId]));
-	repositories[""] = meta.repository.id;
+	const repositories = planRepositories(c.vars.stored!);
 	return { ...await userActor(c, uid).internalPlacementInventory(repositories, snapshotRepository), featureModel };
 }
 
@@ -2006,7 +2014,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					: selected === "hosted" ? "hosted" : parent.kind === "machine" ? parentName : undefined;
 				text += "\nOmit place and agent to inherit the owner’s settings. Use place.prefer or agent for a part that requires a different choice. Owner preference (data): " +
 					JSON.stringify({ prefer, selection: selected === "any-machine" ? "any compatible machine" : undefined, harness: run.agent, profile: run.profile, model: run.model ?? undefined, effort: run.effort ?? undefined });
-				text += "\n\nRunners reporting slots can allocate up to four slots within their reported capacity." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (Small 1 vCPU, 1 GiB; Medium 2 vCPU, 4 GiB, the default; Large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than Medium (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, screenshotsEnabled: inventory.screenshotsEnabled, repositoryScreenshots: inventory.repositoryScreenshots, hostedKeys: inventory.hostedKeys?.map(k => k.provider), hostedModels, keyProfiles: inventory.keyProfiles, hostedEgress: inventory.hostedEgress, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
+				text += "\n\nRunners reporting slots can allocate up to four slots within their reported capacity." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (Small 1 vCPU, 1 GiB; Medium 2 vCPU, 4 GiB, the default; Large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than Medium (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, screenshotsEnabled: inventory.screenshotsEnabled, repositoryScreenshots: inventory.repositoryScreenshots, hostedKeys: inventory.hostedKeys?.map(k => k.provider), hostedModels, keyProfiles: inventory.keyProfiles, hostedEgress: inventory.hostedEgress, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: resolveRun({ ...item.context, item: { ...item.context?.item, harness: "windlass" } }, "part").model ?? inventory.models?.windlass?.defaultModel, machines: places });
 				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
 			}
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.fresh && { fresh: effect.fresh }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) }).catch(onGone);

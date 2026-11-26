@@ -53,7 +53,7 @@ export interface SessionCreateInput {
 	 * Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's.
 	 * `signIn`: how the machine's agent signed in when the item was filed, where that counts its tokens (harnesses.ts, `itemTokensOf`).
 	 */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; planCritic?: true; subtaskScreenshots?: boolean; owns?: string[]; childBranch?: { name: string; start: string }; size?: number; effort?: string; signIn?: SignInMethod; payer?: import("../contract.js").CredentialSource; payerSource?: "account" | "deployment" };
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; planCritic?: true; afterPlanning?: { model: string; effort: string | null }; subtaskScreenshots?: boolean; owns?: string[]; childBranch?: { name: string; start: string }; size?: number; effort?: string; signIn?: SignInMethod; payer?: import("../contract.js").CredentialSource; payerSource?: "account" | "deployment" };
 	/** Set for a session that only builds the repository's prepared environment at its place (user-environments.ts). */
 	environmentBuild?: EnvironmentBuildOrigin;
 }
@@ -120,6 +120,7 @@ export interface UserInternal {
 
 	internalRepositoryAutonomy(repositoryId: GithubId): Promise<RepositoryAutonomy>;
 	internalPlanCritic(builderId: string, context: import("../factory/resolve-run.js").RunContext): Promise<void>;
+	internalPartDefaults(repositories: Record<string, GithubId>): ReturnType<typeof import("./user-items.js").partDefaults>;
 	internalPlacementInventory(repositories: Record<string, GithubId>, snapshot?: GithubId): Promise<import("../factory/placement.js").PlacementInventory & { hostedCapacity: number }>;
 
 	internalSessionChanged(summary: SessionSummary): Promise<void>;

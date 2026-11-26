@@ -54,7 +54,6 @@ import {
 	type EnvironmentSchedule,
 	type Verified,
 	type AccountDefaults,
-	type LastStart,
 	MODEL_CHECKS_PER_MINUTE,
 	isModelProvider,
 	MODEL_PROVIDERS,
@@ -790,8 +789,6 @@ interface World {
 		providers: Map<ModelProvider, ModelProviderStatus>;
 		checks: { minute: number; used: number };
 		defaults: SavedDefaults | null;
-		/** Where the newest agent the user started ran, its agent and mode (`AccountSettings.lastStart`). */
-		lastStart: LastStart | null;
 		servers: Map<string, { definition: Record<string, unknown>; unasked: boolean; updatedAt: number }>;
 		secrets: Map<string, { scope: SecretScope; updatedAt: number }>;
 	};
@@ -973,7 +970,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 		let world = worlds.get(uid);
 		if (!world) {
-			world = { offers: new Map(), guideChecks: new Map(), knowledge: new Map(), readiness: new Map(), planConnected: recall("wlp.mock.plan." + uid) === "1", profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { providers: new Map(), checks: { minute: 0, used: 0 }, defaults: null, lastStart: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
+			world = { offers: new Map(), guideChecks: new Map(), knowledge: new Map(), readiness: new Map(), planConnected: recall("wlp.mock.plan." + uid) === "1", profile: { uid, email: email || null, demo: kind === "demo" }, sessions: new Map(), feeds: new Set(), rotation: 0, github: null, nextPull: 41, approvals: [], setups: new Map(), checks: new Map(), network: new Map(), secrets: new Map(), defaults: new Map(), autonomy: new Map(), screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map((id) => [id, realNow() - 3 * 24 * HOUR])), names: new Map(), account: { providers: new Map(), checks: { minute: 0, used: 0 }, defaults: null, servers: new Map(), secrets: new Map() }, spent: new Map(Object.entries(MOCK_SPENT)), modelTokens: new Map(), created: new Map() };
 			// The seeded user starts connected; the demo user connects by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
 			if (githubOn && (kept === "1" || (kept === null && kind === "user"))) world.github = connectionFor(world.profile);
@@ -2825,9 +2822,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const next = { ...saved };
 		try {
 			const patch = cleanDefaults(change, profiles, models, MOCK_SIZES.map((size) => size.id), machines);
+			for (const key of ["model", "effort", "reviewModel", "reviewEffort"] as const) {
+				if (patch[key] !== undefined) next[key] = patch[key];
+			}
 			if (patch.profile !== undefined) next.profile = patch.profile;
-			if (patch.model !== undefined) next.model = patch.model;
-			if (patch.effort !== undefined) next.effort = patch.effort;
 			if (patch.hostedSize !== undefined) next.hostedSize = patch.hostedSize;
 			if (patch.item_place) Object.assign(next, patch.item_place);
 		} catch (error) {
@@ -2840,7 +2838,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			if (problem) throw new PlatformError("user", problem, { reason: "bad_input" });
 			Object.assign(next, policy);
 		}
-		if (change.startPlace === undefined && !changesPlace(change) && change.profile === undefined && change.model === undefined && change.effort === undefined && change.hostedSize === undefined) return before;
+		if (change.startPlace === undefined && !changesPlace(change) && change.profile === undefined && change.model === undefined && change.effort === undefined && change.reviewModel === undefined && change.reviewEffort === undefined && change.hostedSize === undefined) return before;
 		// As the server reads it back (repository-defaults.ts): interactive launches start at the saved place.
 		const place = next.place;
 		next.startPlace = place === "hosted" ? { kind: "hosted" } : place && typeof place === "object" && next.machineProfile ? { kind: "machine", machineId: place.machine, profile: next.machineProfile } : undefined;
@@ -2859,7 +2857,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const servers = [...world.account.servers.entries()].sort(([a], [b]) => (a < b ? -1 : 1));
 		return {
 			defaults: accountDefaultsOf(world),
-			lastStart: world.account.lastStart,
 			servers: servers.map(([name, server]): PersonalServer => {
 				const remote = typeof server.definition.url === "string";
 				const argv = remote ? [] : [String(server.definition.command ?? ""), ...(Array.isArray(server.definition.args) ? server.definition.args.map(String) : [])];
@@ -3414,7 +3411,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				}
 				setSummary(world(), session, {});
 				if (key !== null) world().created.set(key, { content: JSON.stringify(input), answer: session.summary.id });
-				if (!itemStarts.has(asked)) world().account.lastStart = { place: session.summary.place, harness, mode: session.summary.mode, startedAt: session.summary.createdAt };
 				return session.summary;
 			},
 			async renameSession(id: string, title: string) {
@@ -3676,11 +3672,6 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				// The same rules as a repository's defaults.
 				current.account.defaults = changedDefaults(current.account.defaults, change, modelsFor(current.profile), machinesView(auth));
 				return accountDefaultsOf(current);
-			},
-			async forgetLastStart(): Promise<AccountSettings> {
-				await latency(200);
-				world().account.lastStart = null;
-				return accountOf(world());
 			},
 			async savePersonalServer(server: { name: string; definition: unknown; unasked?: boolean; existing?: boolean }): Promise<AccountSettings> {
 				await latency(320);

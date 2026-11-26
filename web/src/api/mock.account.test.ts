@@ -259,25 +259,3 @@ describe("the mock's account settings", () => {
 		mock.dispose();
 	});
 });
-
-describe("where the newest agent was started", () => {
-	it("is remembered when an agent is started, not when a work item's agent is, and can be forgotten", async () => {
-		const client = make();
-		const user = client.user(ada);
-		expect((await user.account()).lastStart).toBeNull();
-		const agent = await user.createSession({ profile: "docker-windlass-sandbox", mode: "ask" });
-		const remembered = (await user.account()).lastStart;
-		expect(remembered).toEqual({ place: { kind: "hosted" }, harness: "windlass", mode: "ask", startedAt: agent.createdAt });
-		// It outlives the agent it came from.
-		await user.deleteSession(agent.id);
-		expect((await user.account()).lastStart).toEqual(remembered);
-		// A work item's agent is not one the user started.
-		await user.createItem({ repository: { id: 7101 }, mode: "single", title: "Log the release's checksum", body: "", start: true });
-		expect((await user.account()).lastStart).toEqual(remembered);
-		// The saved defaults are untouched by it.
-		expect((await user.account()).defaults).toEqual({ profile: null, model: null, updatedAt: null });
-		const forgotten = await user.forgetLastStart();
-		expect(forgotten.lastStart).toBeNull();
-		expect((await user.account()).lastStart).toBeNull();
-	});
-});

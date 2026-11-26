@@ -25,6 +25,7 @@ export interface AgentModels {
 
 type Machine = ReturnType<typeof plannerMachines>[number];
 export interface PlacementInventory {
+	defaults?: Pick<import("./resolve-run.js").RunContext, "account" | "repository" | "repositories" | "machinePayers">;
 	screenshotsEnabled?: boolean;
 	screenshotStorage?: boolean;
 	repositoryScreenshots?: Record<string, boolean>;
@@ -294,8 +295,10 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
  * place is refused for good: approval refuses then, and nothing the owner waits for would help.
  */
 export function choosePlacement(task: PlanSubtask, route: PlacementRoute, inventory: PlacementInventory, warm: string[] = [], at = Date.now()) {
-	if (task.resolved) task = { ...task, agent: runAgent(task.resolved),
-		needs: { ...task.needs, profile: task.needs?.profile ?? task.resolved.profile ?? undefined } };
+	if (task.resolved) {
+		if (task.resolved.agent === "windlass") inventory = { ...inventory, featureModel: inventory.models?.windlass?.defaultModel };
+		task = { ...task, agent: runAgent(task.resolved), needs: { ...task.needs, profile: task.needs?.profile ?? task.resolved.profile ?? undefined } };
+	}
 	const candidates = [route.preferred, ...route.alternatives].map((p, i) => candidate(task, p, inventory, i === 0, warm, at, route.names?.[placeKey(p)] ?? (i === 0 ? task.place?.prefer : undefined)));
 	const first = candidates[0]!;
 	if ("decision" in first) return { decision: first.decision } as const;

@@ -230,6 +230,7 @@ export interface ItemsCtx {
 }
 
 export interface ItemSessionInput {
+	afterPlanning?: Pick<ResolvedRun, "model" | "effort">;
 	sessionId: string;
 	itemId: string;
 	role: "builder" | "reviewer";
@@ -415,9 +416,12 @@ async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, j
 	}
 	try {
 		if (!profile) throw new UserError("Choose an available sandbox profile.", { code: "bad_profile" });
+		// A one-implementer plan reuses this Windlass workspace, with the build model.
+		const build = job.role === "planner" ? resolveRun({ ...job.context, item: { ...job.context.item, harness: "windlass" } }, "builder") : null;
 		const session = await makeSession(owner, { title: job.title, repository: job.repository, place: destination.place, profile,
 			harness: run.agent, model: run.model ?? undefined, ...(destination.place.kind === "hosted" && (run.sources.size !== "deployment" || job.context.deployment?.hostedSize) && { hostedSize: run.size }) },
-			{ sessionId, itemId, role: "builder", issue: job.issue, effort: run.effort ?? undefined, ...child });
+			{ sessionId, itemId, role: "builder", issue: job.issue, effort: run.effort ?? undefined,
+				...(build && { afterPlanning: { model: build.model, effort: build.effort } }), ...child });
 		return { session, destination };
 	} catch (error) {
 		if (child || !(error instanceof UserError) || !availabilityErrors.has(error.code)) throw error;
@@ -477,8 +481,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	if (!child) {
 		const offered = hostedSizesForPlan((await getLayer()).sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan);
 		context.deployment = { hostedSize: deploymentSize(offered.map(s => s.id)) };
-		context.machinePayers = Object.fromEntries([...c.vars.machines.values()].map(m => [m.machineId,
-			Object.fromEntries((m.harnesses ?? []).filter(h => h.source).map(h => [h.id, h.source]))]));
+		context.machinePayers = machinePayers([...c.vars.machines.values()]);
 		context.item = { place: input.place, harness: input.harness, hostedSize: input.hostedSize,
 			profile: input.profile, machineProfile: input.profile };
 		Object.assign(context.item, filedAgentSettings(context, input.model, input.effort));
@@ -1031,19 +1034,34 @@ export function accountTokenWait(c: Pick<ItemsCtx, "vars">): string | null {
 	return dailyTokenWait(used, accountLimits(c.vars.items.limits).factory.dailyTokens);
 }
 
+export async function partDefaults(c: ItemsCtx, repositories: Record<string, GithubId>) {
+	const [account, entries] = await Promise.all([
+		readAccountDefaults(c.db),
+		Promise.all(Object.entries(repositories).map(async ([alias, id]) => [alias, await readDefaults(c.db, "github:" + id)] as const)),
+	]);
+	const saved = Object.fromEntries(entries);
+	const machines = [...c.vars.machines.values()];
+	return { context: { account, repository: saved[""], repositories: saved, machinePayers: machinePayers(machines) },
+		machines: machines.map(({ name, machineId }) => ({ name, machineId })) };
+}
+
+function machinePayers(machines: MachineSummary[]) {
+	return Object.fromEntries(machines.map(m => [m.machineId, Object.fromEntries((m.harnesses ?? []).filter(h => h.source).map(h => [h.id, h.source]))]));
+}
+
 export async function placementInventory(c: ItemsCtx, models: () => Promise<AgentModels>, repositories: Record<string, GithubId>, snapshotRepository?: GithubId): Promise<PlacementInventory> {
 	const { sandboxes } = await getLayer();
 	const profiles = sandboxes.profiles().filter(p => p.available);
 	const machines = plannerMachines([...c.vars.machines.values()]);
 	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
 	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
-	const [catalogs, hostedKeys, accounts, permissions, fresh] = await Promise.all([
+	const [catalogs, hostedKeys, accounts, defaults, fresh] = await Promise.all([
 		models(), providerStatuses(c.db), providerAccounts(c.db, Date.now()),
-		Promise.all(Object.entries(repositories).map(async ([alias, id]) => [alias, (await readDefaults(c.db, "github:" + id)).screenshots])),
+		partDefaults(c, repositories),
 		snapshotRepository === undefined ? [] : snapshotPlaces(c.db, setupProjectKey(snapshotRepository) ?? "", c.vars.github?.connectedAt, config.hosted?.snapshots?.ttlMs).catch(() => []),
 	]);
-	return { machines, models: catalogs, hostedKeys: hostedKeys.filter(k => k.ok), limited: limitedAccounts(accounts), dailyTokenWait: accountTokenWait(c),
-		snapshotPlaces: fresh, screenshotsEnabled: config.factory.screenshots, screenshotStorage: !!attachmentStore(), repositoryScreenshots: Object.fromEntries(permissions),
+	return { defaults: defaults.context, machines, models: catalogs, hostedKeys: hostedKeys.filter(k => k.ok), limited: limitedAccounts(accounts), dailyTokenWait: accountTokenWait(c),
+		snapshotPlaces: fresh, screenshotsEnabled: config.factory.screenshots, screenshotStorage: !!attachmentStore(), repositoryScreenshots: Object.fromEntries(Object.entries(defaults.context.repositories).map(([alias, r]) => [alias, r.screenshots])),
 		hostedSizes: hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(size => size.id),
 		hostedProfiles: profiles.map(p => p.id), keyProfiles: profiles.filter(p => p.platformKeys).map(p => p.id), hostedEgress: sandboxes.egress?.() };
 }

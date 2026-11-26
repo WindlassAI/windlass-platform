@@ -158,6 +158,8 @@ describe("filing a work item", () => {
 		change();
 		// Windlass on this platform, on the repository's model: the efforts that model takes.
 		expect(efforts()).toEqual(["default", "low", "medium"]);
+		choose("Model", "gpt-6.1-sol");
+		expect(text()).toContain("Planning and review run on Windlass with GPT-6.1 Sol.");
 		choose("Model", "gpt-6-luna");
 		expect(efforts()).toEqual(["default", "low", "medium"]);
 		choose("Effort", "medium");

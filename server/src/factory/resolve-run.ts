@@ -5,6 +5,8 @@ import { ITEM_HOSTED_SIZE } from "../contract/hosted-sizes.js";
 export type RunRole = "builder" | "planner" | "part" | "repair" | "reviewer" | "critic" | "summary" | "setup" | "environment";
 type Source = "deployment" | "account" | "repository" | "item";
 export interface RunSettings extends ItemPlaceDefaults {
+	reviewModel?: string | null;
+	reviewEffort?: string | null;
 	model?: string | null;
 	effort?: string | null;
 	profile?: SandboxProfileId | null;
@@ -45,6 +47,13 @@ export function partRun(context: RunContext, task: Pick<PlanSubtask, "agent" | "
 	return resolveRun({ ...context, repository, item }, role, task);
 }
 
+/** Approved and completed parts keep the settings they ran with. */
+export function resolveProposedParts(tasks: PlanSubtask[], context: RunContext, completed: ReadonlySet<string>, machines?: readonly { name: string; machineId: string }[]) {
+	for (const task of tasks) {
+		if (!completed.has(task.key)) task.resolved = partRun(context, task, "part", machines);
+	}
+}
+
 export function deploymentSize(offered: readonly HostedSize[], preferred = ITEM_HOSTED_SIZE) {
 	return offered.includes(preferred) ? preferred : offered[0];
 }
@@ -68,7 +77,7 @@ export function filedAgentSettings(context: RunContext, model: string | null, ef
 	return agent === "windlass" ? { model, effort } : { machineModel: model, machineEffort: effort };
 }
 
-/** Model ids belong to their agent. The Windlass model also serves the planning and review roles. */
+/** Model IDs belong to their agent. Within each layer, planning can override the Windlass build settings. */
 export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanSubtask, "agent" | "needs">): ResolvedRun {
 	const layers = runLayers(context);
 	if (part) {
@@ -81,6 +90,7 @@ export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanS
 	// The final place selects the profile column. A machine model belongs to the agent in scope at its layer.
 	const priority = [...layers].reverse();
 	const placeLayer = priority.find(([, settings]) => settings.place != null);
+	const planning = role === "planner" || role === "reviewer" || role === "critic" || role === "summary";
 	const implementation = role === "builder" || role === "part" || role === "repair";
 	const agentLayer = implementation ? agentLayerOf(layers) : undefined;
 	const place = placeLayer?.[1].place ?? "hosted";
@@ -102,9 +112,12 @@ export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanS
 		set("size", layer.hostedSize, source);
 		set("profile", place === "hosted" ? layer.profile : layer.machineProfile, source);
 		if (agent !== "windlass") set("payer", layer.payer, source);
-		if (agent === "windlass" || agent === layerAgent) {
-			set("model", agent === "windlass" ? layer.model : layer.machineModel, source);
-			set("effort", agent === "windlass" ? layer.effort : layer.machineEffort, source);
+		if (agent === "windlass") {
+			set("model", planning ? layer.reviewModel ?? layer.model : layer.model, source);
+			set("effort", planning ? layer.reviewEffort ?? layer.effort : layer.effort, source);
+		} else if (agent === layerAgent) {
+			set("model", layer.machineModel, source);
+			set("effort", layer.machineEffort, source);
 		}
 	}
 	if (agent === "windlass" && windlassProvider(values.model ?? undefined)) set("payer", "key", sources.model);

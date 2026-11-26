@@ -2,7 +2,7 @@ import { afterWords } from "../lib/subtasks";
 import { modelWords } from "../lib/models";
 import { MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemBudget, type SubtaskBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
-import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
+import { singleAfterPlanning, subtaskHarness, unsupportedParts } from "../../../server/src/factory/feature-plan.js";
 import { ArrowDownIcon, ChevronIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { ItemSpend } from "../components/ItemSpend";
 import { FOLD_WORDS, FoldList, FoldToggle, LongText, PathList } from "../components/Fold";
@@ -12,7 +12,7 @@ import { AgentGlyph, Pill } from "../components/ui/Pill";
 import { machineLabel } from "../lib/machines";
 import { HARNESS_NAMES } from "../lib/acp";
 import { SOURCE_WORDS, runModelName, sourceOf } from "../lib/run";
-import type { ResolvedRun } from "../../../server/src/factory/resolve-run";
+import { runAgent, type ResolvedRun } from "../../../server/src/factory/resolve-run";
 import { HOSTED, OWNER_REASON, needsWords, routeWords, secretsFor, nextSubtask, orchestratorOf, parentPlaceName, placeChanged, placeDraftOf, placedWords, placementFit, placementProblem, placeWord, refusalFor, refusedSubtask, withPlace, type PlaceDraft } from "../lib/placement";
 import { compact, plural } from "../lib/format";
 import { subscriptionSpend } from "../lib/item-agent";
@@ -77,13 +77,14 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 	const singleAnswer = { kind: "answer", question: view.question.id, choice: "run_single" } as const;
 	const finished = view.completedSubtasks?.length ?? 0;
 	const tasks = plan.subtasks.length - finished;
+	const unsupported = single ? [] : unsupportedParts(plan, new Set(view.completedSubtasks));
 	const totalTokens = review.allotted.tokens;
 	const refused = review.refusal;
 	const unplaceable = single ? [] : unplaceableOf(view, plan, review.machines, review.models);
 	const unconfirmed = single ? 0 : review.unconfirmed;
 	const blocked = approvalProblem(review, unconfirmed);
 	// Only a permanent placement refusal blocks approval.
-	const placeBlocked = blocked === null && unplaceable.length > 0 ? unplaceable[0]! : null;
+	const placeBlocked = !unsupported.length && blocked === null && unplaceable.length > 0 ? unplaceable[0]! : null;
 	const revise = view.question.choices.find((choice) => choice.id === "revise");
 	const giveUp = view.question.choices.find((choice) => choice.id === "give_up");
 	return (
@@ -95,6 +96,7 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 			<p className="item-question-text">
 				{single ? view.question.text : <>{replan ? `${view.replanWhy ? view.replanWhy + ". " : ""}Review the revised plan` : "Review the plan"}: {tasks} subtasks{finished ? " to run" : ""}, {compact(totalTokens)} of {compact(plan.budget.tokens)} tokens.</>}
 			</p>
+			{unsupported.length > 0 && <p className="callout callout-warn">{HARNESS_NAMES[subtaskHarness(unsupported[0]!)]} cannot build Plan-first parts. Choose an agent for {unsupported.map(task => task.title).join(", ")}.</p>}
 			{!single && <PlanJump view={view} plan={plan} replan={replan} />}
 
 			{!single && view.question.criticReason && !view.question.criticFindings && <p className="callout callout-warn">{view.question.criticReason}</p>}
@@ -142,6 +144,11 @@ export function PlanQuestion({ view, review, acting, when, conflicted, onSetting
 						<button type="button" className="button button-quiet" disabled={busy} onClick={review.reset}>
 							Discard changes
 						</button>
+					</>
+				) : unsupported.length ? (
+					<>
+						<button type="button" className="button button-primary" disabled={busy} onClick={() => unsupported.forEach(task => review.setAgent(task.key, { harness: "windlass" }))}>Use Windlass for these parts</button>
+						<button type="button" className="button button-outline" disabled={busy} onClick={() => document.querySelector<HTMLButtonElement>(`.plan-task[data-key="${unsupported[0]!.key}"] .plan-agent button`)?.click()}>Choose another agent</button>
 					</>
 				) : (
 					<button type="button" className="button button-primary" disabled={busy || !!ciBlock || blocked !== null || placeBlocked !== null} onClick={() => void approve(single ? singleAnswer : undefined)} aria-describedby={blocked || placeBlocked ? `${title}-why` : undefined}>
@@ -971,11 +978,11 @@ function UnattendedConfirm({ plan, review, disabled }: { plan: FeaturePlan; revi
 				Agents that work without asking
 			</p>
 			<p className="plan-unattended-note">
-				{UNATTENDED_MEANS} The planner proposed {tasks.length === 1 ? "this one" : "these"} from the item's text, which may come from an issue anyone could file. Confirm each one, or choose Windlass for it below and save.
+				{UNATTENDED_MEANS} {tasks.every(task => task.agent) ? `The planner proposed ${tasks.length === 1 ? "this one" : "these"} from the item's text, which may come from an issue anyone could file.` : "These parts use an agent chosen in the plan or inherited from your settings."} Confirm each one, or choose Windlass for it below and save.
 			</p>
 			<ul className="plan-unattended-list">
 				{tasks.map((task) => {
-					const name = agentParts(task.agent, null).name;
+					const name = HARNESS_NAMES[subtaskHarness(task)];
 					return (
 						<li key={task.key}>
 							<Check
@@ -1043,8 +1050,8 @@ function PlanRoutes({ view, plan, machines, models, catalogs, accountModels, ref
 					const fit = machines ? placementFit(task, view.place, overflow, machines, models) : null;
 					const problem = refusalFor(task, refusal) ?? (fit && "refused" in fit ? fit.refused : null);
 					const wait = !problem && fit && "wait" in fit ? fit.wait : null;
-					const harness = task.agent?.harness ?? "windlass";
-					const agent = agentParts(task.agent, harness === "windlass" ? accountModels : machineModels(preferredMachine(task, parent, machines), harness, catalogs));
+					const harness = subtaskHarness(task);
+					const agent = agentParts(task.resolved ? runAgent(task.resolved) : task.agent, harness === "windlass" ? accountModels : machineModels(preferredMachine(task, parent, machines), harness, catalogs));
 					return (
 						<li key={task.key} className="plan-route">
 							<span className="plan-route-n" aria-hidden="true">

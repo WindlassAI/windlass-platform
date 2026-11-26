@@ -16,14 +16,14 @@ it("shows a repository's inherited place and agent with their source, overrides 
 	const auth = { token: "mock:user:u_over:ada@example.com", profile: { uid: "u_over", email: "ada@example.com", demo: false } };
 	const user = client.user(auth);
 	await user.saveAccountDefaults({ place: { machine: "m_nas" }, machineProfile: "docker-hardened", placeFallback: "wait" });
-	const start = (await user.repository(7101)).defaults;
+	const start = (await user.repository(7103)).defaults;
 	saveAuth("mock", auth);
 	function Page() {
 		const { client } = useApp();
 		const signedIn = useAuth();
 		const account = useAccount();
 		const [defaults, setDefaults] = useState<RepositoryDefaults>(start);
-		return createElement(RepositoryOverrides, { account, defaults, save: (change) => client.user(signedIn).saveRepositoryDefaults(7101, change), onSaved: setDefaults });
+		return createElement(RepositoryOverrides, { account, defaults, save: (change) => client.user(signedIn).saveRepositoryDefaults(7103, change), onSaved: setDefaults });
 	}
 	const host = document.body.appendChild(document.createElement("div"));
 	const root = createRoot(host);
@@ -40,13 +40,22 @@ it("shows a repository's inherited place and agent with their source, overrides 
 		await press(row("Place"), "Override for this repository");
 		await act(async () => { const el = row("Place").querySelector("select")!; el.value = "hosted"; el.dispatchEvent(new Event("change", { bubbles: true })); });
 		await settle();
-		expect((await user.repository(7101)).defaults.place).toBe("hosted");
+		expect((await user.repository(7103)).defaults.place).toBe("hosted");
 		expect(row("Place").textContent).toContain("Hosted");
 		expect(row("Place").textContent).toContain("set for this repository");
 		await press(row("Place"), "Use your default");
-		expect((await user.repository(7101)).defaults.place).toBeNull();
+		expect((await user.repository(7103)).defaults.place).toBeNull();
 		expect(row("Place").textContent).toContain("your default");
 		expect(row("Agent").textContent).toContain("Windlass");
+		expect(row("Plans & reviews").textContent).toContain("your default");
+		await press(row("Plans & reviews"), "Override for this repository");
+		await press(row("Plans & reviews"), "Same as building");
+		await act(async () => document.querySelector<HTMLElement>('[role="menuitemradio"][data-value="gpt-6-sol"]')!.click());
+		await settle();
+		expect((await user.repository(7103)).defaults).toMatchObject({ model: null, reviewModel: "gpt-6-sol" });
+		expect(row("Plans & reviews").textContent).toContain("set for this repository");
+		await press(row("Plans & reviews"), "Use your default");
+		expect(row("Plans & reviews").textContent).toContain("your default");
 	} finally {
 		act(() => root.unmount()); host.remove(); client.dispose(); localStorage.clear();
 	}

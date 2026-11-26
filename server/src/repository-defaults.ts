@@ -30,6 +30,8 @@ export class DefaultsProblem extends Error {
 
 /** What a save changes: a field that is absent stays as it is, and null saves none for it. */
 export interface DefaultsChange extends RepositoryAutonomy {
+	reviewModel?: string | null;
+	reviewEffort?: string | null;
 	effort?: string | null;
 	item_place?: ItemPlaceDefaults | null;
 	screenshots?: boolean;
@@ -82,16 +84,19 @@ export function cleanDefaults(raw: unknown, profiles: readonly SandboxProfile[],
 			change.profile = chosen.id;
 		}
 	}
-	const effort = input.effort;
-	if (effort !== undefined) {
+	for (const key of ["effort", "reviewEffort"] as const) {
+		const effort = input[key];
+		if (effort === undefined) continue;
 		if (effort !== null && (typeof effort !== "string" || !models.models.some(m => m.efforts.includes(effort))))
 			throw new DefaultsProblem("bad_input", "Choose an effort offered by the model.");
-		change.effort = effort;
+		change[key] = effort;
 	}
-	if (input.model !== undefined) {
-		const refusal = input.model === null ? null : modelRefusal(models, input.model);
+	for (const key of ["model", "reviewModel"] as const) {
+		const model = input[key];
+		if (model === undefined) continue;
+		const refusal = model === null ? null : modelRefusal(models, model);
 		if (refusal !== null) throw new DefaultsProblem("bad_model", refusal);
-		change.model = input.model as string | null;
+		change[key] = model as string | null;
 	}
 	if (input.hostedSize !== undefined) {
 		// The saved choice stays explicit if the deployment later withdraws a size.
@@ -153,8 +158,8 @@ export async function readDefaults(db: DefaultsDb, project: string): Promise<Rep
 }
 
 export async function saveDefaults(db: DefaultsDb, project: string, label: string, change: DefaultsChange, now: number): Promise<RepositoryDefaults> {
-	const { profile, model, effort, hostedSize } = change;
-	const patch = JSON.stringify({ profile, model, effort, hostedSize, ...change.item_place });
+	const { profile, model, effort, reviewModel, reviewEffort, hostedSize } = change;
+	const patch = JSON.stringify({ profile, model, effort, reviewModel, reviewEffort, hostedSize, ...change.item_place });
 	const columns = (["screenshots", ...AUTONOMY_FIELDS] as const).filter(key => change[key] !== undefined);
 	if (patch !== "{}" || columns.length) {
 		if (project !== ACCOUNT) await refuseAtRepositoryCap(db, "repository_defaults", project, MAX_REPOSITORY_DEFAULTS, "defaults");

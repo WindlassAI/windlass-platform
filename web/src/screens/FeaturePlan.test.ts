@@ -127,6 +127,7 @@ describe("the Factory composer's mode choice", () => {
 
 	it("files Plan first by default, says it on File, and switches to Quick from File's menu, which this browser remembers", async () => {
 		make({});
+		await api().saveRepositoryDefaults(7102, { model: null });
 		await show("/factory");
 		expect(main().textContent).toBe("File · Plan first");
 		// No budget note under the composer: File's menu says what each does.
@@ -365,6 +366,7 @@ describe("a feature's plan on its page", () => {
 		const block = "Add windlass/** to the workflow’s push branches.";
 		make({}, item => item.question ? { ...item, question: { ...item.question, approvalBlock: block,
 			choices: [{ id: "run_single", label: "Run as a single item" }, ...item.question.choices.filter(c => c.id !== "approve")] } } : item);
+		await api().saveRepositoryDefaults(7102, { model: null });
 		const made = await api().createItem({ repository: { id: 7102 }, title: "Tide charts", body: "Draw the week's tides.", mode: "orchestrate", start: true });
 		await show(`/items/${made.id}`);
 		expect(host.querySelector(".plan-question .callout-warn")?.textContent).toContain(block);
@@ -374,6 +376,7 @@ describe("a feature's plan on its page", () => {
 
 	it("says the server's refusal on a repository without checks, and offers the feature as one item", async () => {
 		make({});
+		await api().saveRepositoryDefaults(7102, { model: null });
 		const made = await api().createItem({ repository: { id: 7102 }, title: "Tide charts", body: "Draw the week's tides.", mode: "orchestrate", start: true });
 		await show(`/items/${made.id}`);
 		await act(async () => button("Approve version 1")?.click());
@@ -804,7 +807,7 @@ describe("agents in a feature's plan", () => {
 		expect(fact("sender", "agent")).not.toContain("works without asking");
 		// On the approval card: each subtask's agent, and the confirmation it needs.
 		const card = host.querySelector(".plan-question") as HTMLElement;
-		expect([...card.querySelectorAll(".plan-route-agent")].map((line) => line.textContent)).toEqual(["Claude Code · Opus · high effort works without asking", "Windlass · the feature's model"]);
+		expect([...card.querySelectorAll(".plan-route-agent")].map((line) => line.textContent)).toEqual(["Claude Code · Opus · high effort works without asking", "Windlass · GPT-6 Luna"]);
 		expect(card.querySelector(".plan-unattended-note")?.textContent).toContain("It runs every command and edit in its sandbox without asking you. The planner proposed this one from the item's text, which may come from an issue anyone could file.");
 		expect(card.querySelector(".plan-unattended-row")?.textContent).toBe("Run Write the alert email templates on Claude Code, which works without asking");
 		const approve = button("Approve version 1")!;
@@ -822,6 +825,24 @@ describe("agents in a feature's plan", () => {
 		// The first child runs Claude Code on its own model, never the feature's Windlass model.
 		expect(after.children?.[0]?.agent).toMatchObject({ harness: "claude", model: "opus", effort: "high" });
 		expect(after.children?.[0]?.placement?.harness).toBe("claude");
+	});
+
+	it("reads the current default for inherited agents and asks before replacing unsupported parts", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Email tide alerts to subscribers");
+		await api().saveRepositoryDefaults(feature.repository.id, { harness: "claude" });
+		const fresh = await api().item(feature.id);
+		expect(fresh.unattended).toEqual(["templates", "sender"]);
+		await expect(api().actOnItem(feature.id, { kind: "approve_plan", version: 1, agents: ["templates"] })).rejects.toThrow(/confirm that it runs Claude Code/);
+		await api().saveRepositoryDefaults(feature.repository.id, { harness: "codex" });
+		await show(`/items/${feature.id}`);
+		expect(button("Choose another agent")).toBeTruthy();
+		await act(async () => button("Use Windlass for these parts")!.click());
+		await act(async () => button("Save as version 2")!.click());
+		await settle();
+		const updated = await api().item(feature.id);
+		expect(updated.plan?.status).toBe("proposed");
+		expect(updated.plan?.subtasks.map(t => t.resolved?.agent)).toEqual(["claude", "windlass"]);
 	});
 
 	it("changes a subtask's agent among what its place offers, saves it, and asks to confirm the new one", async () => {

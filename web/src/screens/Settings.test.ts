@@ -151,16 +151,18 @@ async function screen(name: string, render: () => ReturnType<typeof createElemen
 it("chooses the default agent in Settings → Models, and says what plans and reviews", async () => {
 	const s = await screen("agent", () => createElement(Settings));
 	try {
-		const note = () => s.host.querySelector(".run-note")?.textContent ?? "";
 		expect(s.field("Agent")?.value).toBe("windlass");
-		expect(note()).toContain("Planning, review and summaries use this model too.");
+		expect(s.host.textContent).toContain("Builds with");
+		expect(s.host.textContent).toContain("Plans & reviews with");
+		const planning = [...s.host.querySelectorAll<HTMLButtonElement>('[data-picker="model"]')][1]!;
+		expect(planning.textContent).toBe("Same as building");
+		await act(async () => planning.click());
+		await act(async () => document.querySelector<HTMLElement>('[role="menuitemradio"][data-value="gpt-6-luna"]')!.click());
+		await s.settle();
+		expect((await s.user.account()).defaults).toMatchObject({ model: null, reviewModel: "gpt-6-luna" });
 		await s.select("Agent", "claude");
 		expect((await s.user.account()).defaults.harness).toBe("claude");
-		expect(note()).toContain("Planning, review and summaries run on Windlass with");
-		// No second line for the planner: its model opens from the note.
-		expect(s.host.textContent).not.toContain("Planning model");
-		await act(async () => [...s.host.querySelectorAll("button")].find(b => b.textContent === "Change")!.click());
-		expect(s.host.textContent).toContain("Planning model");
+		expect(planning.textContent).toContain("GPT-6 Luna");
 		expect(s.host.querySelector("#settings-defaults")).toBeNull();
 	} finally {
 		s.close();

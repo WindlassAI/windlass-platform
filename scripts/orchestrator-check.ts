@@ -1033,7 +1033,7 @@ test("approved subtasks get the screenshots image only when marked and permitted
 		const item = fixture.sessionOrigin();
 		assert.ok(item, JSON.stringify(fixture.facts));
 		assert.equal(item.subtaskScreenshots, marked);
-		const session = { ...sandbox, origin: { ...item, kind: "item" as const } };
+		const session = { ...sandbox, origin: { kind: "item" as const, itemId: item.itemId, role: item.role, subtaskScreenshots: item.subtaskScreenshots } };
 		assert.equal(sessionSandboxInput(session, true).screenshots, marked);
 		assert.equal(sessionSandboxInput(session, false).screenshots, false);
 	}
@@ -2083,6 +2083,16 @@ test("cross-repo: the planner's copy of the sibling holds its files read-only wi
 		await standin.stop();
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+test("approval resolves the current defaults before confirming or placing each part", () => {
+	const item = proposed(proposal());
+	const approve = { kind: "approve_plan", at: 4, version: 1, by: "owner" } as const;
+	const inventory = { machines: [], hostedProfiles: [], defaults: { repository: { harness: "claude" as const } } };
+	assert.throws(() => advance(item, { ...approve, inventory, agents: ["index"] }), /page: confirm that it runs Claude Code/);
+	const changed = advance(item, { ...approve, inventory: { ...inventory, defaults: { repository: { harness: "codex" } } } });
+	assert.equal(changed.item.featurePlan?.status, "proposed");
+	assert.equal(changed.item.question?.choices[0]?.label, "Use Windlass for these parts");
 });
 
 test("Codex parts require an owner choice before plan approval", () => {

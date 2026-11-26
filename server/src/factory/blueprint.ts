@@ -20,13 +20,13 @@ import type { OutOfMemory } from "../sandbox/api.js";
 import { MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
 import { CI_POLLING, type CiReading, rerunnableJobs, ciPollEvery, ciState, workflowOverdue } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
-import { partRun, resolveRun, runPlace } from "./resolve-run.js";
+import { partRun, resolveProposedParts, resolveRun, runPlace } from "./resolve-run.js";
 import { approveRoutes, bindRoute, choosePlacement, freeMachineSlots, machineSlots, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
 import { childItemId } from "./feature-ids.js";
 import { answeredWords, choice, CHOICES } from "./answered.js";
 import { feedbackWords, fixText, replanText } from "./feedback.js";
 import type { FeedbackDecision, FeedbackInput } from "./types.js";
-import { sharedPaths, singleAfterPlanning, subtaskMinimum, validatePlan, planScope, PlanError, approvalText, subtaskHarness, unattendedKeys, agentProfileProblem, agentOf } from "./feature-plan.js";
+import { sharedPaths, singleAfterPlanning, subtaskMinimum, validatePlan, planScope, PlanError, approvalText, subtaskHarness, unsupportedParts, unattendedKeys, agentProfileProblem, agentOf } from "./feature-plan.js";
 import { aliases, beginIntegration, boundRepos, crossFact, crossRepo, featureOpened, handOver as crossHandOver, integrationAnswer, integrationHeads, plannerText, recordIntegrated, recordOpened, recordSeed, repoOf, type Flow } from "./cross-repo.js";
 import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
 import { PLATFORM_TOOLS, refusalMessage } from "../provider-refusal.js";
@@ -2277,6 +2277,7 @@ function proposePlan(c: Change, fact: Extract<Fact, { kind: "edit_plan" | "file_
 	if (item.forceSplit && plan.singleSuggested) throw new PlanError("Propose two to six subtasks as requested.");
 	const keys = [...plannedJobs.map(job => job.task.key), ...plan.subtasks.map(task => task.key)];
 	if (new Set(keys).size > 6) throw new PlanError("A feature may have at most six distinct subtasks across its plans.");
+	if (fact.inventory?.defaults) item.context = { ...item.context, ...fact.inventory.defaults };
 	const approvedPlan = item.replans ? item.approvedPlan : undefined;
 	const previous = fact.kind === "file_plan" ? approvedPlan : item.featurePlan;
 	for (const q of plan.questions) {
@@ -2353,7 +2354,7 @@ function considerCritic(c: Change) {
 	const { item } = c, plan = item.featurePlan;
 	if (!trustedPlanInputs(item)) return askPlan(c, "Automatic approval requires a plan based on trusted inputs.");
 	if (!plan || item.filedTurn !== c.key) return askPlan(c, "The planner did not file a plan for this turn.");
-	if (plan.subtasks.some(s => subtaskHarness(s) === "codex")) return askPlan(c);
+	if (unsupportedParts(plan, completedKeys(item)).length) return askPlan(c);
 	if (plan.singleSuggested && item.context && (resolveRun(item.context, "builder").agent !== "windlass" || item.useHosted))
 		return askPlan(c, "Confirm the current Windlass session before it implements this item.");
 	const context = item.context;
@@ -2405,6 +2406,7 @@ function finishCritic(c: Change, fact: Extract<Fact, { kind: "review_ended" }>) 
 	}
 	if (plan.singleSuggested) runSingle(c);
 	else if (!approveFeature(c, fact.inventory)) return needsOwner("The reviewed plan is no longer eligible for approval.");
+	if (c.item.question) return;
 	c.say("Approved automatically: " + (review.findings.join(" ") || "The critic approved the plan as filed."));
 }
 
@@ -2421,8 +2423,9 @@ function askPlan(c: Change, criticReason?: string, criticFindings?: string[]) {
 	if (p.singleSuggested && !c.item.replans)
 		return askOwner("single_suggested", p.singleSuggested + (crossRepo(c.item) ? ` One implementer works on ${c.item.repos![0].alias} only: ${c.item.repos!.slice(1).map(r => r.alias).join(", ")} would be left out.` : ""),
 			[choice("run_single"), choice("orchestrate_anyway")]);
-	if (p.subtasks.some(s => subtaskHarness(s) === "codex"))
-		return askOwner("plan_approval", `${harnessName("codex")} cannot build Plan-first parts. Choose another agent for those parts, then review the updated plan.`, [choice("use_windlass"), choice("use_claude"), choice("use_opencode"), ...revise]);
+	const unsupported = unsupportedParts(p, completedKeys(c.item));
+	if (unsupported.length)
+		return askOwner("plan_approval", `${harnessName(subtaskHarness(unsupported[0]!))} cannot build Plan-first parts. Choose another agent for those parts, then review the updated plan.`, [{ id: "use_windlass", label: "Use Windlass for these parts" }, choice("use_claude"), choice("use_opencode"), ...revise]);
 	const larger = p.subtasks.filter(t => t.requestedLargerSize);
 	if (larger.length) return askOwner(c.item.replans ? "replan_approval" : "plan_approval",
 		larger.map(t => `${t.title} needs a ${t.requestedLargerSize} hosted sandbox at ${SIZE_WEIGHT[t.requestedLargerSize!]}× the standard hosted rate.`).join("\n"),
@@ -2821,7 +2824,11 @@ function approveFeature(c: Change, inventory?: PlacementInventory, agents: reado
 	// Admission checked the reconfirmed base against the live head.
 	for (const [alias, sha] of Object.entries(bases)) if (crossRepo(c.item) && c.item.repos!.some(r => r.alias === alias) && /^[0-9a-f]{40}$/.test(sha)) repoOf(c.item, alias).planningBaseSha = sha;
 	const completed = completedKeys(c.item);
-	if (p.subtasks.some(s => !completed.has(s.key) && subtaskHarness(s) === "codex")) {
+	if (inventory?.defaults) {
+		c.item.context = { ...c.item.context, ...inventory.defaults };
+		resolveProposedParts(p.subtasks, c.item.context, completed, inventory.machines);
+	}
+	if (unsupportedParts(p, completed).length) {
 		askPlan(c);
 		return true;
 	}
@@ -3006,7 +3013,7 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 	const harness = replacementAgents[fact.choice];
 	if (question.kind === "plan_approval" && harness) {
 		const plan = item.featurePlan!;
-		for (const task of plan.subtasks) if (subtaskHarness(task) === "codex") {
+		for (const task of unsupportedParts(plan, completedKeys(item))) {
 			task.agent = { harness };
 			task.resolved = partRun(item.context ?? {}, task);
 			delete task.placementProblem;

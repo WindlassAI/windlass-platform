@@ -37,7 +37,7 @@ A repository marked **read only** is one you can read on GitHub but not push to.
 
 ## Choose where it runs
 
-The **where** menu lists **Hosted** and, once you have paired one, your machines. It starts on the machine your last agent ran on, if that machine can still be used, and on **Hosted** otherwise.
+The **where** menu lists **Hosted** and, once you have paired one, your machines. It starts at the repository or account default, falling back to Hosted.
 
 - **This platform**: a sandbox the platform makes and controls. It counts against your daily sandbox time.
 - **A machine of yours**: the runner on that machine makes the sandbox. Turns use the runner’s slots and take no hosted sandbox time.
@@ -131,7 +131,7 @@ Where the platform offers more than one, **Options**, the sliders icon, lists th
 | Medium | 2 vCPU | 4 GiB |
 | Large | 4 vCPU | 8 GiB |
 
-A new agent starts on the repository's saved size (**Saved settings**, **Hosted size**), else on **Small**. The foot of **Options** says the size and its price. A sandbox keeps its size for its life: an agent that exists keeps the size it was launched with, and another size means a new sandbox. The daily sandbox time counts every size the same; a larger one costs more.
+A new agent starts on the repository's saved size (**Saved settings**, **Hosted size**), then your account’s saved size, then **Small**. The foot of **Options** says the size and its price. A sandbox keeps its size for its life: an agent that exists keeps the size it was launched with, and another size means a new sandbox. The daily sandbox time counts every size the same; a larger one costs more.
 
 A sandbox that runs out of memory stops answering, and every command in it hangs. The timeline then says "The sandbox ran out of memory (942 of 977 MiB)", restarts it from its disk, and names the next size up. Large builds, type checks and test suites of a big repository need **Medium** or more.
 
@@ -146,11 +146,8 @@ For the hosted sandbox and Windlass model, the platform takes the first availabl
 1. what you choose when you launch the agent;
 2. the repository's default, in its settings;
 3. your account's default, in **Settings**;
-4. what your newest agent on that repository was launched with, or your newest agent overall if none is on it;
-5. the platform's own default.
+4. the platform's own default.
 
-For **where it runs**, a choice in the composer wins. Otherwise Windlass uses the place of your last personal launch, then the repository default, then the account default, then Hosted. A saved machine includes its sandbox profile. If that machine is unpaired or its profile becomes unavailable, the composer explains which choice it skipped.
-
-The last launch also remembers its agent and mode across browsers, even if you delete the agent. Starting a work item leaves that memory intact.
+For **where it runs**, a choice in the composer wins. Otherwise Windlass uses the repository default, then the account default, then Hosted. A saved machine includes its sandbox profile. If that machine is unpaired or its profile becomes unavailable, the composer explains which choice it skipped.
 
 See [Where each choice lives](/docs/settings#where-each-choice-lives) to save defaults.

@@ -7,7 +7,7 @@ import { deploymentSize, resolveRun, type RunContext } from "../factory/resolve-
 import { checkRunPlace, changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
 import type { AccountDefaultsPatch, CredentialSource, ItemPlaceDefaults, RepositoryDefaultsPatch } from "../contract.js";
 import { digest, snapshotGeneration } from "../sandbox/snapshot-key.js";
-import { placementInventory } from "./user-items.js";
+import { partDefaults, placementInventory } from "./user-items.js";
 import type { AgentModels } from "../factory/placement.js";
 import { mayUse } from "../access.js";
 import { githubId, isGithubId } from "../github/ids.js";
@@ -74,7 +74,6 @@ import type { StoredRepository } from "../github/publish.js";
 import { GithubProblem, type StoredConnection, listBranches, listRepositories, resolveBoundRepository, resolveRepository } from "../github/repos.js";
 import { MAX_GITHUB_ACCOUNTS, STATE_TTL_MS, TICKET_TTL_MS, issueState, newCodeVerifier, newNonce, verifyTicket } from "../github/state.js";
 import { getLayer } from "../layer.js";
-import { LAST_START_TABLE, forgetLastStart, readLastStart, recordLastStart } from "../account-defaults.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
 import { hostedCatalog, hostedHarness, hostedKeyMessage, hostedProvider, availableCatalog, harnessName, itemHarnessProblem, itemProfileProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarnesses, initialHarnessModels, sessionCapabilities } from "../sandbox/harnesses.js";
@@ -528,13 +527,11 @@ const logged = (text: string) => text.replace(/[^\x21-\x7e]/g, "?");
 
 async function accountView(db: RawAccess): Promise<AccountSettings> {
 	const defaults = await readAccountDefaults(db);
-	const lastStart = await readLastStart(db);
 	const servers = await readServers(db);
 	const secrets = await accountSecretNames(db);
 	const { sandboxes } = await getLayer();
 	return {
 		defaults,
-		lastStart,
 		servers: servers.map((server) => listedServer(server, secrets)),
 		serverReach: personalServerReach(sandboxes.profiles(), sandboxes.egress?.()),
 		limits: { servers: MAX_PERSONAL_SERVERS, definitionBytes: MAX_SERVER_DEFINITION_BYTES, secrets: MAX_ACCOUNT_SECRETS },
@@ -744,7 +741,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(readiness && { readiness: true as const }),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
-			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, ...itemRole, ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(offered && { payer: offered.source ?? "machine", payerSource: offered.source ? "account" as const : "deployment" as const }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
+			...(item ? { origin: { kind: "item" as const, itemId: item.itemId, ...itemRole, ...(item.afterPlanning && { afterPlanning: { ...item.afterPlanning, model: item.afterPlanning.model ?? models.defaultModel } }), ...(item.owns && { owns: item.owns }), ...(item.childBranch && { childBranch: item.childBranch }), ...(size > 1 && { size }), ...(item.effort && { effort: item.effort }), ...(offered && { payer: offered.source ?? "machine", payerSource: offered.source ? "account" as const : "deployment" as const }), ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(!item && size > 1 && { size }),
 			...(build && { environmentBuild: build }),
 			...(readiness && { readiness }),
@@ -779,12 +776,6 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 	if (submission) c.vars.created.set(submission.key, { ...submission, id: summary.id });
 	await storeSession(c, summary, submission);
 	broadcastSessions(c);
-	// What the next agent starts on. An agent the user started, not a work item's: one that cannot be remembered is still made.
-	if (!item && !build && !readiness) {
-		await recordLastStart(c.db, { place: summary.place, harness: summary.harness ?? "windlass", mode: summary.mode, startedAt: summary.createdAt }).catch((error: unknown) => {
-			c.log.error({ msg: "the last start could not be remembered", error: String(error) });
-		});
-	}
 	return summary;
 }
 
@@ -1187,8 +1178,6 @@ export const user = actor({
 			await db.execute(CHECKS_TABLE);
 			await db.execute(NETWORK_TABLE);
 			await db.execute(REQUESTS_TABLE);
-			// Where the newest agent was started, its agent and its mode (account-defaults.ts): one row, written when an agent is made.
-			await db.execute(LAST_START_TABLE);
 			await db.execute(MODELS_TABLE);
 			await db.execute(PERSONAL_SERVERS_TABLE);
 			await db.execute(ACCOUNT_SECRETS_TABLE);
@@ -1396,6 +1385,10 @@ export const user = actor({
 				if (c.vars.machines.size && (location.harness === "windlass" || location.place !== "hosted")) await machinesChanged(c);
 				queueChanged(c);
 			}
+		},
+		internalPartDefaults: (c, repositories: Record<string, GithubId>) => {
+			requireService(c);
+			return partDefaults(c, repositories);
 		},
 		internalPlacementInventory: async (c, repositories: Record<string, GithubId>, snapshot?: GithubId) => {
 			requireService(c);
@@ -2337,17 +2330,6 @@ export const user = actor({
 				return saved;
 			} catch (error) {
 				throw clientError(c.log, error, "The defaults could not be saved. Try again.");
-			}
-		},
-
-		forgetLastStart: async (c): Promise<AccountSettings> => {
-			const profile = requireUser(c);
-			try {
-				await forgetLastStart(c.db);
-				console.log(`[wlp] last_start.forgotten uid=${profile.uid}`);
-				return await accountView(c.db);
-			} catch (error) {
-				throw clientError(c.log, error, "Where your last agent ran could not be forgotten. Try again.");
 			}
 		},
 
