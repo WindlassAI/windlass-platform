@@ -34,7 +34,7 @@ import { budgetStop, itemAgent, newAgent, noSpend, noteAgentTurn, retryAt, spell
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import { environmentFailure, outputExcerpt, type EnvironmentFailure } from "./check-environment.js";
 import type { ChoiceId, CiProgress, EarlierFinding, Fact, StepFact, FeatureCi, FeatureJob, HandoffReview, RequestedReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemSpend, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
-import { ASK_WHEN_BLOCKED, BUILDER_ASSUMPTIONS, PUBLISH_SERVER, REPORT_TOOL } from "../agent-publish.js";
+import { ASK_WHEN_BLOCKED, BUILDER_ASSUMPTIONS, BUILDER_REUSE, PLAN_SPLIT_GUIDANCE, PUBLISH_SERVER, REPORT_TOOL } from "../agent-publish.js";
 import { REVIEW_TOOL, type PersonDecision } from "./reviewer-task.js";
 import { runAnywayWords, sources, thirdParty, untrustedWords } from "./untrusted.js";
 import { REVIEW_OFF_REASON, openFindings, openFingerprint, reviewAlsoText, reviewFixText } from "./review.js";
@@ -938,7 +938,7 @@ function firstPlan(item: FactoryItem, note: string | null): TurnPlan {
 function singleFirstPlan({ task, mode, featurePlan, untrusted }: FactoryItem, note: string | null): TurnPlan {
 	const taskWithNote = withNote(taskText(task), note);
 	if (mode === "orchestrate") return { ...IMPLEMENT, kind: "refine", charge: "plan", text: `Read the repository. File a proposal with file_plan. Suggest a single item for small or unverifiable work. Include open questions and budget each verifiable subtask.\n\n${taskWithNote}`, ...marked(untrusted) };
-	const text = `${taskWithNote}\n\n${BUILDER_ASSUMPTIONS} ${ASK_WHEN_BLOCKED}`;
+	const text = `${taskWithNote}\n\n${BUILDER_REUSE} ${BUILDER_ASSUMPTIONS} ${ASK_WHEN_BLOCKED}`;
 	if (featurePlan?.status === "approved") {
 		const { goal, requirements, acceptance, outOfScope } = featurePlan.spec;
 		const spec = [
@@ -1172,7 +1172,7 @@ export function plannerBudgetText(item: FactoryItem): string {
 		`- One item's budget: ${n(single)} tokens.`,
 		`- Each subtask's budget: at least ${n(subtaskMinimum({ tokens: single }).tokens)}, at most ${n(single)} tokens.`,
 		`- On top of the subtasks, the feature's own allowance for planning, the summary and the review: ${n(ownTokens(item))} tokens, of which ${n(Math.max(0, ownSpent(item, item.spent).tokens))} are spent.`,
-		"Independent subtasks run in parallel. Split work by file, list accurate owned paths in owns, and use dependsOn only for real prerequisites.",
+		`Independent subtasks run in parallel. ${PLAN_SPLIT_GUIDANCE}`,
 		"- The feature's budget is its subtasks' budgets together and that allowance. A subtask that uses its budget asks the owner for more.",
 	].join("\n");
 }
