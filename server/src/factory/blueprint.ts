@@ -1429,7 +1429,10 @@ function publishFailed(c: Change, fact: Extract<Fact, { kind: "publish_failed" }
 		return;
 	}
 const said = fact.said.replace(/^GitHub refused the push(?::\s*|\s+(?=because))/, "");
-ask(c, "publish_refused", `GitHub refused the push${/^because/.test(said) ? " " : ": "}${said}`, [choice("again"), choice("give_up")], null, null);
+const refused = `GitHub refused the push${/^because/.test(said) ? " " : ": "}${said}`;
+// Handing it back gives the agent a turn to change what GitHub refused, with the person's note; Try again pushes the same work.
+const fix: TurnPlan = { ...IMPLEMENT, text: `${refused} Change the work so that it can be pushed, then finish as before.`, charge: "gate", fingerprint: "publish_refused" };
+ask(c, "publish_refused", refused, [choice("send_back"), choice("again"), choice("give_up")], null, fix);
 }
 
 function pollCi(c: Change, openItems: number, notBefore: number | null, sentence: string): void {
@@ -2783,6 +2786,11 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 	if (question.kind === "integration") return integrationAnswer(flow(c), fact.choice, question.text);
 	switch (fact.choice) {
 		case "send_back":
+			if (question.kind === "publish_refused" && resumeWithNote) {
+				nextTurn(c, resumeWithNote);
+				break;
+			}
+		// falls through: a push that failed CI after review
 		case "dismiss": {
 			const push = run.ci?.reviewPush;
 			if (question.kind !== "push_ci" || !push?.failure || push.head !== run.ci?.moved) return false;

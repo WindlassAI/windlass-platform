@@ -312,7 +312,7 @@ function seeds(state: MockItemsState, at: number, machines: MachineSummary[] | n
 			on: HARBOR,
 			state: "waiting",
 			filed: 140,
-			question: { kind: "publish_refused", text: "GitHub refused the push: refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission", choices: choices("again", "give_up"), asked: 101 },
+			question: { kind: "publish_refused", text: "GitHub refused the push: refusing to allow a GitHub App to create or update workflow `.github/workflows/ci.yml` without `workflows` permission", choices: choices("send_back", "again", "give_up"), asked: 101 },
 			run: { n: 1, started: 139, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 3, kind: "publish", attempt: 1, started: 102 } },
 			events: [
 				[139, "Started.", undefined, true],
