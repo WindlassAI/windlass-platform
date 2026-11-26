@@ -3,8 +3,18 @@
 Make the smallest change that solves the task. Start with the guide in the area you touch.
 Run each command below from the repository root in a fresh shell.
 
+## Quick commands
+
+Follow [Set up](#set-up) once, then typecheck all workspaces with `corepack pnpm -s typecheck`.
+
+## Key files
+
+- `package.json` defines the recursive typecheck script.
+- `pnpm-workspace.yaml` lists the workspace packages.
+
 ## Set up
 
+Use Node 22.22.2 or a newer 22.x patch.
 Use the pnpm version pinned in `package.json`. CI installs from the lockfile.
 
 ```sh
@@ -13,6 +23,8 @@ pnpm install --frozen-lockfile
 ```
 
 ## Typecheck first
+
+The workspace commands below are alternatives to the recursive typecheck in Quick commands.
 
 Server typecheck
 
@@ -58,6 +70,8 @@ cd server && WLP_CHECK_SECTIONS=issuing npx tsx ../scripts/connection-check.ts
 Copy the prefix from the script. A typo can leave every matching case unexecuted.
 
 ## Leave suites to CI
+
+The advice below is for focused development, not maintainer PR validation. For platform changes, maintainers run `WLP_SANDBOX=fake pnpm test`; for real sandbox behavior changes, follow the [Docker checks](./CONTRIBUTING.md#running-the-checks).
 
 Never run whole suites locally. Root `pnpm test` takes about 30 minutes.
 CI splits it into `pnpm test:factory`, `pnpm test:core`, `pnpm test:usage` and `pnpm test:resume`.
