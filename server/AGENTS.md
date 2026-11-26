@@ -7,7 +7,7 @@ Start with the area guide below before editing its code. Paths are repository-ro
 - `server/src/actors/` owns durable users, sessions and work items; see `server/src/actors/AGENTS.md`.
 - `server/src/factory/` decides work-item transitions and feature plans; see `server/src/factory/AGENTS.md`.
 - `server/src/github/` handles App access, publishing and webhooks; see `server/src/github/AGENTS.md`.
-- `server/src/repo-setup/` validates setup guides and prepares setup changes; start with `server/src/repo-setup/guide-check.ts` and `server/src/repo-setup/publish.ts`.
+- `server/src/repo-setup/` validates setup guides and prepares setup changes; see the [repository setup guide](./src/repo-setup/AGENTS.md).
 - `server/src/sandbox/` provisions workspaces and runs turns; see `server/src/sandbox/AGENTS.md`.
 - `server/src/registry.ts` wires actors; `server/src/index.ts` is the server entry point.
 
