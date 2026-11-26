@@ -191,7 +191,7 @@ test("C2 recovers the bound planner and the approved route for an already queued
 test("M13 renders both retired reviewer reasons from stored top-level items", async t => {
 	for (const [off, text] of [["machine", /hosted sandboxes/], ["profile", /commands.*network/]] as const) {
 		const item = { ...createItem({ ...base, mode: "single" }), reviewer: { off } };
-		const c = await oldItem(t, item, meta, { place: machine, model: "filed", profile: "docker-hardened" });
+		const c = await oldItem(t, item);
 		const view = await workItem.config.actions!.internalView(c as never);
 		assert.match(view.reviewNone!, text);
 	}

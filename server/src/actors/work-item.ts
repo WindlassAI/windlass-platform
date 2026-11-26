@@ -698,7 +698,8 @@ async function loadOnWake(c: Pick<Ctx, "db" | "client">) {
 	const { item, meta } = stored;
 	const pending = meta.pendingBuilder as DefaultBuilder | OldBuilder | undefined;
 	const old = pending && "policy" in pending ? pending : undefined;
-	if (item.context && item.runRole && !old) return stored;
+	// A bound single item has no builder to place or subtasks to resolve.
+	if (!old && (item.mode !== "orchestrate" || (item.context && item.runRole))) return stored;
 	const { defaultPlace } = meta as ItemMeta & { defaultPlace?: RunSettings };
 	const role = item.parent ? "part" : (old?.mode ?? item.mode) === "orchestrate" ? "planner" : "builder";
 	const settings: RunSettings = { ...defaultPlace };
