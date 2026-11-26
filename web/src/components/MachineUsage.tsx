@@ -46,7 +46,7 @@ export function MachineUsage() {
 							) : (
 								<ul className="machine-sandboxes usage-machine-sandboxes">
 									{machine.sandboxes.map((sandbox) => (
-										<SandboxLine key={sandbox.sessionId} sandbox={sandbox} now={now} />
+										<SandboxLine key={sandbox.sessionId} sandbox={sandbox} now={now} offlineSince={machine.status === "offline" ? machine.since : null} />
 									))}
 								</ul>
 							)}

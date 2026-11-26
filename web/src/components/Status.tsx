@@ -52,11 +52,12 @@ export function OutcomeGlyph({ outcome, size = 14 }: { outcome: TurnOutcome; siz
 
 const SANDBOX_WORD: Record<SessionSummary["sandbox"], string> = { none: "no sandbox yet", running: "sandbox running", paused: "sandbox paused" };
 
-export function SandboxState({ state }: { state: SessionSummary["sandbox"] }) {
+/** `asOf`: the state is only the last one reported, at that time (its machine is offline). */
+export function SandboxState({ state, asOf }: { state: SessionSummary["sandbox"]; asOf?: string }) {
 	return (
-		<span className={`sandbox-state sandbox-state-${state}`}>
+		<span className={`sandbox-state sandbox-state-${state}${asOf ? " sandbox-state-stale" : ""}`} title={asOf}>
 			<span className="sandbox-state-dot" aria-hidden="true" />
-			{SANDBOX_WORD[state]}
+			{SANDBOX_WORD[state]}{asOf && " when last seen"}
 		</span>
 	);
 }

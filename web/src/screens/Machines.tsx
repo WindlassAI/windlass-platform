@@ -303,7 +303,7 @@ function machineCapacity({ slots, turns, host }: MachineSummary) {
 	return parts.join(" · ");
 }
 
-export function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: number }) {
+export function SandboxLine({ sandbox, now, offlineSince = null }: { sandbox: MachineSandbox; now: number; offlineSince?: number | null }) {
 	return (
 		<li>
 			{sandbox.title === null ? (
@@ -313,7 +313,7 @@ export function SandboxLine({ sandbox, now }: { sandbox: MachineSandbox; now: nu
 					{sandbox.title}
 				</a>
 			)}
-			<SandboxState state={sandbox.state} />
+			<SandboxState state={sandbox.state} asOf={offlineSince === null ? undefined : `Reported before the machine went offline, ${absoluteTime(offlineSince)}.`} />
 			{sandbox.resizePending && <span>resized at next restart</span>}
 			<span className="machine-used" title={absoluteTime(sandbox.usedAt)}>
 				used {relativeTime(sandbox.usedAt, now)}
@@ -609,7 +609,7 @@ function MachineRow({ machine, info, now, onChanged, onRemove }: { machine: Mach
 					) : (
 						<ul className="machine-sandboxes">
 							{machine.sandboxes.map((sandbox) => (
-								<SandboxLine key={sandbox.sessionId} sandbox={sandbox} now={now} />
+								<SandboxLine key={sandbox.sessionId} sandbox={sandbox} now={now} offlineSince={machine.status === "offline" ? machine.since : null} />
 							))}
 						</ul>
 					)}

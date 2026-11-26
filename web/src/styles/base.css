@@ -1154,6 +1154,13 @@ h3 {
 	border-color: var(--accent);
 	background: var(--accent);
 }
+.sandbox-state-stale {
+	color: var(--ink-faint);
+}
+.sandbox-state-stale.sandbox-state-running .sandbox-state-dot {
+	border-color: var(--ink-faint);
+	background: transparent;
+}
 .sandbox-state-paused .sandbox-state-dot {
 	border-color: var(--ink-dim);
 	background: linear-gradient(90deg, var(--ink-dim) 0 35%, transparent 35% 65%, var(--ink-dim) 65%);

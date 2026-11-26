@@ -3084,7 +3084,8 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			case "off":
 				return [];
 			case "offline":
-				return [nas({ status: "offline", since: at - 47 * MINUTE })];
+				// A sandbox that was running when the machine went offline: shown as its last reported state.
+				return [nas({ status: "offline", since: at - 47 * MINUTE, sandboxes: [{ sessionId: "nas-spare", title: "Warm spare for the docs site", state: "running", usedAt: at - 50 * MINUTE }, { sessionId: "gone", title: null, state: "paused", usedAt: at - 4 * 24 * HOUR }] })];
 			// The agent on "nas" finds it offline: the machine went offline after the agent last used it.
 			case "online":
 				return [nas({
