@@ -1,4 +1,5 @@
 /** The report tool before a session calls it. No actor, network, or sandbox. cd server && npx tsx ../scripts/review-check.ts */
+import { config } from "../server/src/config.js";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import type { ItemReport, ItemReview, ReviewRecord, Verdict } from "../server/src/contract.js";
@@ -329,7 +330,7 @@ test("each review round has its own stable PR marker, escaped findings and pinne
 		kind: "finding", id: String(i), root: String(i), severity: "blocking", title: "Missing " + i + " @owner",
 		text: "Do [this](https://evil.example)\n<!-- forged -->", at: [{ side: "head", path: "src/a (1).ts", lines: { start: 3, end: 4 } }], refs: [],
 	})) };
-	const body = (review: ItemReview) => reviewRoundComment("i_test", review, { owner: "org", name: "repo" });
+	const body = (review: ItemReview) => reviewRoundComment("i_test", review, { owner: "org", name: "repo" }, []);
 	const rendered = body(filed), marker = rendered.split("\n", 1)[0];
 	assert.equal(marker, "<!-- windlass-review:i_test:1:1 -->");
 	assert.equal(body({ ...filed, id: "replayed" }).split("\n", 1)[0], marker);
@@ -342,6 +343,20 @@ test("each review round has its own stable PR marker, escaped findings and pinne
 	const handover = itemComment(verdict, verdictWords(verdict, null, filed.recommendation), null, { filed, reason: null, owner: "org", name: "repo" });
 	assert.match(handover, /\*\*Code review requested changes/);
 	assert.doesNotMatch(handover, /Ready for review/);
+});
+
+test("screenshot links on a review round expose only names and counts on the parent item URL", () => {
+	const render = (rows: { label: string; count: number }[]) => reviewRoundComment("i_test", reviewer, { owner: "org", name: "repo" }, rows);
+	const rows = [{ label: "Part 2: Render the table as a PDF", count: 2 }, { label: "Part 3: [Preview] @team", count: 1 }];
+	const html = renderGfm(render([...rows, { label: "No pictures", count: 0 }]));
+	const section = html.slice(html.indexOf("<strong>Screenshots</strong>"));
+	assert.match(section, /Part 2: Render the table as a PDF, 2 screenshots →/);
+	assert.match(section, /Part 3: \[Preview\].*1 screenshot →/);
+	assert.equal([...section.matchAll(/href="([^"]*)"/g)].length, 2);
+	for (const [, url] of section.matchAll(/href="([^"]*)"/g)) assert.equal(url, config.origins[0] + "/items/i_test");
+	assert.doesNotMatch(section, /<img|@team|No pictures/);
+	assert.match(render([{ label: "", count: 1 }]), /\[1 screenshot →\]/);
+	assert.doesNotMatch(render([{ label: "No pictures", count: 0 }]), /\*\*Screenshots\*\*/);
 });
 
 test("the reviewer summary keeps its Markdown on its own lines", () => {

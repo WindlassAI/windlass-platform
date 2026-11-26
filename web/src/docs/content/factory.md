@@ -212,7 +212,7 @@ If you or another repository writer pushes while the item is working or waiting,
 
 On a feature, blocking findings start a fix part on the feature branch. After it joins, CI and the whole-feature review run again. Repeated findings or two completed review fixes bring the choice to you: try another fix, hand over with changes requested, or give up.
 
-Each filed review round gets one PR comment with its verdict, findings and links to the reviewed lines. Retries edit that round’s comment.
+Each filed review round gets one PR comment with its verdict, findings and links to the reviewed lines. Retries edit that round’s comment. When screenshots were filed, the comment lists their counts and links to the item page, where the owner can view them.
 
 Windlass files through its host tool. Other agents can call `file_review` once per turn over MCP. A process in the sandbox can make that call. Findings and requests for changes take the same path for every agent. An MCP approval leaves the merge decision with you. Auto-merge requires a host-filed Windlass approval from a reviewer whose commands ran in the Windlass command sandbox. An issue written by someone else or feedback taken from another writer keeps the merge with you.
 

@@ -480,15 +480,21 @@ function reviewParagraphs(item: string, review: CommentReview, roundComment = fa
 	});
 	if (findings.length > lines.length) lines.push(`and ${findings.length - lines.length} more on the item's page`);
 	if (lines.length) paragraphs.push(lines.join("\n"));
-	const n = r.screenshots.length;
+	const n = roundComment ? 0 : r.screenshots.length;
 	paragraphs.push(`[View the full review${n ? ` and ${n} screenshot${n === 1 ? "" : "s"}` : ""}](${config.origins[0]}/items/${item}) (opens for the item's owner only)`);
 	return paragraphs;
 }
 
-export function reviewRoundComment(item: string, filed: ItemReview, repo: { owner: string; name: string }): string {
+export function reviewRoundComment(item: string, filed: ItemReview, repo: { owner: string; name: string }, screenshots: readonly { label: string; count: number }[]): string {
 	const marker = `<!-- windlass-review:${item}:${filed.run}:${filed.round} -->`;
 	const paragraphs = reviewParagraphs(item, { filed, reason: null, ...repo }, true);
-	return boundedComment([marker, ...paragraphs], "");
+	const url = config.origins[0] + "/items/" + item;
+	const lines = screenshots.filter(row => row.count > 0).map(({ label, count }) => {
+		const prefix = label ? commentText(label.replaceAll("@", "@\u200b"), 300) + ", " : "";
+		return "- [" + prefix + count + (count === 1 ? " screenshot" : " screenshots") + " →](" + url + ")";
+	});
+	const section = lines.length ? "\n\n**Screenshots**\n\n" + lines.join("\n") : "";
+	return boundedComment([marker, ...paragraphs], section);
 }
 
 /** Requested reviews are comments on the pinned commit. GitHub approval and change-request events

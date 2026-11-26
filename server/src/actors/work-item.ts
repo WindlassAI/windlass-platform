@@ -152,7 +152,7 @@ const ISSUE_CHANGE_WINDOW_MS = 15_000;
 
 type FeedbackEffect = { kind: "feedback_ready"; key: "pending"; at: number } | { kind: "feedback_ack"; key: string } | { kind: "feedback_comment"; key: string; run: number; who: string };
 /** `register`'s `repo`: a cross-repo feature's other repository, by alias, registered with that repository's directory. */
-type Effect = { kind: "review_comment"; key: string; pr: number } | { kind: "poll_branch"; key: string; at: number; repo?: string } | ({ kind: "linear_write" } & LinearWrite) | BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
+type Effect = { kind: "review_comment"; key: string; pr: number; parts?: { id: string; label: string }[] } | { kind: "poll_branch"; key: string; at: number; repo?: string } | ({ kind: "linear_write" } & LinearWrite) | BlueprintEffect | FeedbackEffect | IssueCheck | { kind: "issue_comment"; key: string; revision: number } | { kind: "register_issue"; key: string } | { kind: "register"; key: string; pr: number; head: string; repo?: string } | { kind: "forget"; key: string };
 type GithubNudge = { installationId: GithubId; repositoryId: GithubId } & ({ kind: "ci"; head: string } | { kind: "pr"; pr: number });
 
 type EffectRow = { id: string; effect: string; due_at: number; attempts: number };
@@ -279,8 +279,8 @@ async function publishReport(db: Pick<RawAccess, "execute">, turn: string, head:
 	await db.execute("UPDATE reports SET data = ? WHERE key = ?", JSON.stringify(report), turn);
 }
 
-export async function latestReport(db: Pick<RawAccess, "execute">, run: number): Promise<ItemReport | null> {
-	const [row] = await db.execute<{ data: string }>("SELECT data FROM reports WHERE run = ? ORDER BY at DESC, rowid DESC LIMIT 1", run);
+export async function latestReport(db: Pick<RawAccess, "execute">, run: number, at = Number.MAX_SAFE_INTEGER): Promise<ItemReport | null> {
+	const [row] = await db.execute<{ data: string }>("SELECT data FROM reports WHERE run = ? AND at <= ? ORDER BY at DESC, rowid DESC LIMIT 1", run, at);
 	return row ? JSON.parse(row.data) as ItemReport : null;
 }
 
@@ -296,6 +296,11 @@ async function feedbackView(db: RawAccess): Promise<ItemView["feedback"]> {
 	}
 	const [counts] = await db.execute<{ n: number }>("SELECT count(*) AS n FROM issue_actions WHERE subject LIKE 'feedback-denied:%'");
 	return { batches: [...batches.values()], notTaken: counts.n };
+}
+
+async function recentReviews(db: Pick<RawAccess, "execute">, at = Number.MAX_SAFE_INTEGER): Promise<ItemReview[]> {
+	const rows = await db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews WHERE at <= ? ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq", at);
+	return rows.map(row => JSON.parse(row.data) as ItemReview);
 }
 
 async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
@@ -316,7 +321,7 @@ async function pageOf(c: Ctx, stored: Stored): Promise<ItemView> {
 		canRetry: canRetry(stored.item),
 		reviewerSessionId: stored.meta.reviewerSessionId ?? null,
 		reviewNone: stored.meta.handoffReview?.reason ?? (stored.item.reviewer && "off" in stored.item.reviewer ? REVIEW_OFF_REASON[stored.item.reviewer.off] : null),
-		reviews: (await c.db.execute<{ data: string }>("SELECT data FROM (SELECT data, at, rowid AS seq FROM reviews ORDER BY at DESC, rowid DESC LIMIT 10) ORDER BY at, seq")).map(row => JSON.parse(row.data) as ItemReview),
+		reviews: await recentReviews(c.db),
 		task: stored.item.task,
 		// What the gate and CI read stays here: the page shows the run as the contract has it.
 		run: run === null ? null : { n: run.n, startedAt: run.startedAt, endedAt: run.endedAt, stopReason: run.stopReason, ...(stored.item.parent && {failureFingerprint: run.lastFailure}), step: run.step, autoSteps: run.autoSteps ?? 0, rounds: { ...run.rounds, review: run.rounds.review ?? 0 } },
@@ -521,7 +526,14 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	const data = JSON.stringify({ item: next, meta: stored.meta });
 	// An `ask` is the question on the item itself, which reaches the index with the summary: nothing is left to perform.
 	const effects: Effect[] = outcome.effects.filter((effect) => effect.kind !== "ask");
-	if (filing && !filing.requestedPull && before.pr) effects.push({ kind: "review_comment", key: filing.id, pr: before.pr.number });
+	if (filing && !filing.requestedPull && before.pr) {
+		// Pin the parts and their plan numbers before a new fix or replan can change them.
+		const parts = before.jobs?.filter(job => job.startedAt !== undefined || job.report || job.state === "done").map(job => {
+			const index = before.approvedPlan?.subtasks.findIndex(task => task.key === job.task.key) ?? -1;
+			return { id: job.id, label: index < 0 ? job.task.title : "Part " + (index + 1) + ": " + job.task.title };
+		});
+		effects.push({ kind: "review_comment", key: filing.id, pr: before.pr.number, parts });
+	}
 	// A cut-off review may have left its checkout paused while the item waited for its owner.
 	// Keep cleanup in the outbox, independently of GitHub and of a withdrawal still stopping a turn.
 	if (stored.meta.reviewerSessionId && next.run && before.state !== next.state && (next.state === "review" || ENDED.has(next.state))) {
@@ -1736,8 +1748,19 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return true;
 		case "review_comment": {
 			const [filing] = await c.db.execute<{ data: string }>("SELECT data FROM reviews WHERE id=?", effect.key);
+			if (!filing) return true;
 			const hub = await github(c, meta, "write");
-			const body = reviewRoundComment(item.id, JSON.parse(filing.data), hub);
+			const review: ItemReview = JSON.parse(filing.data);
+			const screenshots = effect.parts ? await Promise.all(effect.parts.map(async part => {
+				const sets = await itemActor(c, meta.uid, part.id).internalScreenshotSets();
+				return { label: part.label, count: sets.reduce((n, set) => n + (set.at <= review.at ? set.screenshots.length : 0), 0) };
+			})) : [];
+			if (!effect.parts) {
+				const report = await latestReport(c.db, review.run, review.at);
+				const reviews = await recentReviews(c.db, review.at);
+				screenshots.push({ label: "", count: reviews.reduce((n, r) => n + r.screenshots.length, report?.screenshots.length ?? 0) });
+			}
+			const body = reviewRoundComment(item.id, review, hub, screenshots);
 			await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } },
 				token => upsertMarkedComment(hub.app, token, hub.owner, hub.name, effect.pr, body));
 			return true;

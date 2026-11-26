@@ -1117,7 +1117,7 @@ if (!only.length || only.some(name => name.startsWith("reviewer"))) {
 			assert(shot?.by === "reviewer" && shot.sessionId === view.reviewerSessionId && shot.head === r.head && shot.width === 1 && shot.state === "kept" && r.blocks.some(b => b.kind === "screenshot" && b.attachment === shot.id) && (await user.itemAttachmentLinks(item.id)).some(link => link.id === shot.id), "missing reviewer screenshot");
 			const pull = standin.pulls.find(p => p.repository === harbor.id && p.number === view.pullRequest?.number)!;
 			const round = await waitFor("filed review round", () => pull.comments.find(c => c.body.startsWith("<!-- windlass-review:" + item.id + ":1:1 -->"))?.body, 30000);
-			assert(round.includes("Code review approved · aaaaaaa"), "the review round is missing its verdict");
+			assert(round.includes("Code review approved · aaaaaaa") && round.includes("**Screenshots**") && /screenshots? →\]\(/.test(round), "the review round is missing its verdict or screenshot link");
 			const comment = await waitFor("handoff comment", () => pull.comments.find(c => c.body.startsWith("<!-- windlass-item:" + item.id + " -->"))?.body, 30000);
 			assert(comment.includes("Code review approved · aaaaaaa") && comment.indexOf("Builder's report") > comment.indexOf("Code review approved") && comment.includes("1 screenshot"), "comment order or review text incorrect");
 			const own = (await user.listSessions()).filter(s => s.item?.id === item.id);
