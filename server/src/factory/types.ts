@@ -55,6 +55,8 @@ export interface CiProgress extends BaseFailureDecision {
 export interface Run extends ItemRun {
 	/** The PR summaries were published in this run. A retry can inherit a passing integration on the same heads. */
 	confirmFeatureCi?: true;
+	/** Read CI once before the owner takes the branch. */
+	takingPush?: true;
 	/** All planning deliveries in this run were checked for third-party input. Absent on older runs. */
 	planInputsTrusted?: boolean;
 	/** Ordered policy positions taken and the evidence that prompted each one. */
@@ -149,6 +151,7 @@ export type JoinResult = { key: string } & ({ head: string } | { reason: string;
 
 /** The independent CI poll on one feature branch, pinned to its current head. */
 export interface FeatureCi extends BaseFailureDecision {
+	afterParts?: true;
 	head: string;
 	since: number;
 	key?: string;
@@ -219,6 +222,8 @@ export interface FactoryItem {
 	placeAttempts?: number;
 	/** A foreign push observed on this PR disqualifies it even if the original head returns. */
 	foreignPush?: true;
+	/** Withdrawn turns can still report spend after the person answers. */
+	pushWithdrawals?: string[];
 	/** Question claimed by Add it and continue. No continuation is delivered until the save settles. */
 	claimedSecret?: Question;
 	/** One rerun request per commit. Keep the original job ids to distinguish a fresh attempt from a delayed listing. */
@@ -331,6 +336,7 @@ export type StopCause = "repeated" | "turns" | "interruptions" | "plan" | "gate"
 export interface Question extends ItemQuestion {
 	updateRepo?: string;
 	inherited?: { head: string; baseTip: string; repo?: string };
+	repo?: string;
 	child?: string;
 	cause: StopCause | null;
 	/** The turn that was about to start when the question was asked: what "raise" and "again" go on with. */
@@ -412,7 +418,10 @@ export type RequestedReview = Pick<FeatureRepository, "repositoryId" | "installa
 	key: string; pr: number; head: string; base: string; sender: string; untrusted: boolean;
 };
 
+export type BranchPush = Omit<NonNullable<ItemQuestion["push"]>, "head"> & { pusher: string; own: boolean };
+
 export type Fact =
+	| { kind: "branch_push"; at: number; key: string; previous: string | null; head: string; push?: BranchPush; repo?: string }
 	| { kind: "sandbox_reclaimed"; at: number; said: string }
 	| { kind: "request_review"; at: number; subject: string; request: RequestedReview }
 	| { kind: "default_place_ready"; reviewer: NonNullable<FactoryItem["reviewer"]>; reviewerSessionId: string | null; at: number; place: SandboxPlace; agent: NonNullable<FactoryItem["agent"]> }

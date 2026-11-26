@@ -1357,7 +1357,7 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
-export type QuestionKind = "run_place" | "push_ci" | "feature_update" | "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
+export type QuestionKind = "branch_push" | "run_place" | "push_ci" | "feature_update" | "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
 
 /** Stored response IDs. Retry starts a new run. Again retries the failed step. */
 export type ChoiceId = "use_hosted" | "use_windlass" | "use_claude" | "use_opencode" | "send_back" | "dismiss" | "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base" | "update_feature";
@@ -1384,6 +1384,8 @@ export interface ItemQuestion {
 	kind: QuestionKind;
 	/** Current repository requirement blocking approval of this plan. */
 	approvalBlock?: string;
+	/** Display-only commit metadata from GitHub. */
+	push?: { head: string; author: string; message: string };
 	/** Why automatic plan approval needs the owner. Also included in the full question text. */
 	criticReason?: string;
 	criticFindings?: string[];

@@ -41,6 +41,7 @@ export const untrustedWords = {
 	jira: (identifier: string, author: string) => `Jira issue ${identifier} by ${author}`,
 	linear: (identifier: string, author: string) => `Linear issue ${identifier} by ${author}`,
 	ci: (head: string) => `CI logs of ${short(head)}`,
+	push: (head: string, pusher: string) => `commit ${short(head)} pushed by @${pusher}`,
 	feedback: (writers: string) => `GitHub feedback from ${writers}`,
 	review: (head: string) => `the second reviewer's findings on ${short(head)}`,
 	builder: (pr: number) => `the builder's report on pull request #${pr}`,
@@ -62,7 +63,7 @@ export function thirdParty(list: readonly string[] | undefined | null): string[]
 }
 
 /** Source prefixes produced by `untrustedWords` for third-party text. */
-const THIRD_PARTY = [/^issue #\d+ by @/, /^Linear issue [A-Za-z0-9]+-\d+ by /, /^Jira issue [A-Za-z0-9_]+-\d+ by /, /^GitHub feedback from /];
+const THIRD_PARTY = [/^issue #\d+ by @/, /^Linear issue [A-Za-z0-9]+-\d+ by /, /^Jira issue [A-Za-z0-9_]+-\d+ by /, /^GitHub feedback from /, /^commit [a-f0-9]+ pushed by @/];
 
 /** The sources of several pieces of text, each once, in order. */
 export function sources(...lists: Array<readonly string[] | undefined | null>): string[] {

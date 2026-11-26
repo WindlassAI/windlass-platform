@@ -475,6 +475,7 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 			<LongText lines={6} className="item-question-text">
 				{question.text}
 			</LongText>
+			{question.push ? <p className="item-question-text"><code>{question.push.head.slice(0, 7)}</code> · {question.push.author} · {question.push.message}</p> : null}
 			{question.check ? <EnvironmentCheck check={question.check} /> : null}
 			{question.kind === "sandboxes" ? (
 				<p className="item-question-text">
@@ -497,7 +498,7 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 						</div>
 					) : null}
 					<div className="item-choices">
-						{question.choices.filter(choice => !view.parent || choice.id !== "hand_over").flatMap((choice, index) => [
+						{question.choices.filter(choice => !view.parent || question.kind === "branch_push" || choice.id !== "hand_over").flatMap((choice, index) => [
 							<button
 								key={choice.id}
 								type="button"
