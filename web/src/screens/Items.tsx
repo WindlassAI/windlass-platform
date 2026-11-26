@@ -16,14 +16,16 @@
  */
 import { originIssue } from "../lib/origin";
 import { type GithubId, type HarnessId, type StepKind, ITEM_PAGE_DEFAULT, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type CreateItemInput, type ItemCursor, type ItemFeed, type ItemMode, type ItemState, type ItemSummary } from "@contract";
-import { savedPlace, resolveDefaultPlace } from "../../../server/src/factory/default-place";
+import { checkRunPlace } from "../../../server/src/factory/default-place";
 import { byFiling, nextCursor } from "../../../server/src/item-pages";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason } from "../api/client";
 import { Dialog } from "../components/Dialog";
-import { PlaceChoice, itemAgentLine, itemHarnesses, itemProfilesHere, machineUnusable } from "../components/PlaceChoice";
-import { hostedAgentProblem, itemProfiles } from "../../../server/src/sandbox/harnesses.js";
-import { HARNESS_NAMES, type ReportedHarness } from "../lib/acp";
+import { PlaceChoice, itemHarnesses, itemProfilesHere, machineUnusable } from "../components/PlaceChoice";
+import { RunLine } from "../components/RunSettings";
+import { runModelName, runOf } from "../lib/run";
+import { hostedAgentProblem } from "../../../server/src/sandbox/harnesses.js";
+import { HARNESS_NAMES } from "../lib/acp";
 import { AskIcon, ChevronIcon, CrossIcon, ExternalIcon, Mark, MergedIcon, PullRequestIcon, RingIcon, StopIcon, WarnIcon } from "../components/Icons";
 import { absoluteTime, count, plural, relativeTime } from "../lib/format";
 import { feedCounts, type FeedFilters } from "../lib/repositories";
@@ -36,7 +38,7 @@ import { useAccount, useHostedProviders, useModels, useNow } from "../state/hook
 import { useDefaults, useCatalog } from "../components/StartComposer";
 import { effortChoices, effortsOf, harnessOptions } from "../lib/models";
 import { EffortSelect, ModelSelect, agentDefaultLabel, modelDisplay } from "../components/ModelPicker";
-import { clockTime, useMachines } from "./Machines";
+import { useMachines } from "./Machines";
 import { hardenedItemNote, machineLabel } from "../lib/machines";
 import { ItemModeCost, ItemModePicker } from "../components/ItemModePicker";
 import { ITEM_MODE_WORDS } from "../lib/feature";
@@ -696,48 +698,43 @@ const MACHINE_REFUSALS = ["machine_not_found", "machine_not_connected", "runner_
 export function NewItemDialog({ repositoryId, name, base, onClose }: { repositoryId: GithubId; name: string; base: string | null; onClose(): void }) {
 	const { client, explain, platform } = useApp();
 	const auth = useAuth();
-	// Where it runs: offered where the deployment has both work items and machines, and the user has a machine.
 	const machinesInfo = platform.info?.items ? (platform.info.machines ?? null) : null;
 	const machines = useMachines(machinesInfo !== null);
 	const now = useNow(30_000);
 	const mine = machinesInfo === null ? [] : (machines.list ?? []);
-	const [placeChoice, setPlace] = useState<string | null>();
 	const saved = useDefaults(repositoryId);
 	const account = useAccount();
-	const policy = placeChoice === undefined ? savedPlace(saved.defaults, account.settings?.defaults) : undefined;
-	const [modeChoice, setMode] = useState<ItemMode>("orchestrate");
-	const [agentChoice, setAgent] = useState<HarnessId | null>(null);
-	const usePolicy = !!policy && agentChoice === null;
-	const destination = policy && resolveDefaultPlace(policy, mine, usePolicy && platform.info?.items?.orchestrate ? modeChoice : "single");
-	const machineId = placeChoice ?? (destination?.place.kind === "machine" ? destination.place.machineId : null);
-	// A machine that was removed or can no longer be chosen while the form is open leaves the item on this platform, which the line then says.
-	const chosenMachine = mine.find((machine) => machine.machineId === machineId && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null;
-	// The builder's agent: Windlass, or one the chosen machine reports signed in, in its default item profile (Codex: Docker + Windlass
-	// sandbox, the others their hardened container). The start composer picks another profile.
-	function fitsDestination(offered: ReportedHarness) {
-		const profiles = itemProfilesHere(chosenMachine, offered.id);
-		if (destination?.harness === offered.id && destination.profile) return profiles.includes(destination.profile);
-		return profiles[0] === itemProfiles(offered.id)[0];
-	}
 	const keys = useHostedProviders();
-	const hostedProfile = platform.info?.profiles.find(p => p.available && p.platformKeys);
-	const agents = chosenMachine
-		? itemHarnesses(chosenMachine).filter(fitsDestination).map(({ id }) => ({ id, reason: null }))
-		: (["claude", "codex", "opencode"] as const).map(id => ({ id, reason: hostedAgentProblem(id, keys, !!hostedProfile) }));
-	const preferredAgent = agentChoice ?? destination?.harness ?? "windlass";
-	const agent: HarnessId = agents.some(offered => offered.id === preferredAgent && !offered.reason) ? preferredAgent : "windlass";
-	// Plan first is Windlass's: its planner files the plan with a tool only Windlass has.
-	const mode: ItemMode = agent === "windlass" || usePolicy ? modeChoice : "single";
-	// The model and effort: the account's models for Windlass, what the machine reported for another agent. "" is the agent's default.
 	const accountModels = useModels();
-	const modelAgent = mode === "orchestrate" && platform.info?.items?.orchestrate ? "windlass" : agent;
-	const catalog = useCatalog(modelAgent === "windlass" ? null : chosenMachine, modelAgent === "windlass" ? "claude" : modelAgent);
-	const modelList = modelAgent === "windlass" ? accountModels.list : harnessOptions(chosenMachine, modelAgent, catalog.options, keys).models;
+	// What this item changes for itself; everything else comes from the repository, then your defaults.
+	const [changing, setChanging] = useState(false);
+	const [placeChoice, setPlace] = useState<string | null>();
+	const [agentChoice, setAgent] = useState<HarnessId | null>(null);
 	const [modelChoice, setModel] = useState("");
 	const [effortChoice, setEffort] = useState("");
-	const model = modelList?.models.some((one) => one.id === modelChoice) ? modelChoice : "";
+	const [modeChoice, setMode] = useState<ItemMode>("orchestrate");
+	const orchestrate = !!platform.info?.items?.orchestrate;
+	// Plan first plans on Windlass: choosing another agent for this item files it as Quick. Its parts may still inherit one.
+	const mode: ItemMode = orchestrate && (agentChoice === null || agentChoice === "windlass") ? modeChoice : "single";
+	const layers = { account: account.settings?.defaults, repository: saved.defaults, machines: machines.list, sizes: platform.info?.hostedSizes };
+	const placeLayer = placeChoice === undefined ? {} : { place: placeChoice === null ? ("hosted" as const) : { machine: placeChoice } };
+	const agentRun = runOf({ ...layers, item: { ...placeLayer, harness: agentChoice } }, mode === "orchestrate" ? "part" : "builder");
+	const windlassAgent = agentRun.agent === "windlass";
+	const run = runOf({ ...layers, item: { ...placeLayer, harness: agentChoice, ...(modelChoice && (windlassAgent ? { model: modelChoice } : { machineModel: modelChoice })), ...(effortChoice && (windlassAgent ? { effort: effortChoice } : { machineEffort: effortChoice })) } }, mode === "orchestrate" ? "part" : "builder");
+	const planning = mode === "orchestrate" ? runOf({ ...layers, item: placeLayer }, "planner") : null;
+	const destination = checkRunPlace(run, mine);
+	const agent = run.agent;
+	const chosenMachine = typeof run.place === "object" ? (mine.find((machine) => machine.machineId === (run.place as { machine: string }).machine && machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", "item") === null) ?? null) : null;
+	const hostedProfile = platform.info?.profiles.find((p) => p.available && p.platformKeys);
+	const agents = chosenMachine
+		? itemHarnesses(chosenMachine).map(({ id }) => ({ id, reason: itemProfilesHere(chosenMachine, id).length ? null : `Not available on ${machineLabel(chosenMachine)}` }))
+		: (["claude", "codex", "opencode"] as const).map((id) => ({ id, reason: hostedAgentProblem(id, keys, !!hostedProfile) }));
+	const catalog = useCatalog(agent === "windlass" ? null : chosenMachine, agent === "windlass" ? "claude" : agent);
+	const modelList = agent === "windlass" ? accountModels.list : harnessOptions(chosenMachine, agent, catalog.options, keys).models;
+	const model = run.model ?? "";
 	const efforts = effortChoices(effortsOf(modelList, model || (modelList?.defaultModel ?? ""))).filter((level) => level !== "" && level !== "default");
-	const effort = efforts.includes(effortChoice) ? effortChoice : "";
+	const changed = placeChoice !== undefined || agentChoice !== null || modelChoice !== "" || effortChoice !== "";
+	const useDefault = () => { setPlace(undefined); setAgent(null); setModel(""); setEffort(""); setChanging(false); };
 	const [title, setTitle] = useState("");
 	const [body, setBody] = useState("");
 	const [criteria, setCriteria] = useState("");
@@ -753,13 +750,13 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const tooMany = acceptance.length > MAX_ACCEPTANCE_CRITERIA;
 	const tooLong = acceptance.some((line) => line.length > MAX_NOTE_CHARS);
 	const defaultsLoading = saved.reading || (account.reading && !account.settings);
-	const machinesLoading = policy && machinesInfo && !machines.list && !machines.error;
+	const machinesLoading = machinesInfo && !machines.list && !machines.error;
 	const ready = !defaultsLoading && !machinesLoading && title.trim() !== "" && !tooMany && !tooLong && body.length <= MAX_ITEM_BODY_CHARS;
 
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title, body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(placeChoice !== undefined && { place: placeChoice === null ? { kind: "hosted" as const } : { kind: "machine" as const, machineId: placeChoice } }), ...(agentChoice && { harness: agentChoice }), ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title, body: body.trim(), acceptance, start, mode: orchestrate ? mode : "single", ...(placeChoice !== undefined && { place: placeChoice === null ? { kind: "hosted" as const } : { kind: "machine" as const, machineId: placeChoice } }), ...(agentChoice && { harness: agentChoice }), ...(modelChoice ? { model: modelChoice } : {}), ...(effortChoice ? { effort: effortChoice } : {}) };
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;
@@ -782,7 +779,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 			title="New work item"
 			lede={
 				<>
-					On {name}, as a pull request into {base ?? "its default branch"}.{destination?.wait ? " " + destination.wait : mine.length > 0 ? null : " It runs on a hosted sandbox."}
+					On {name}, as a pull request into {base ?? "its default branch"}.
 				</>
 			}
 			onClose={onClose}
@@ -804,7 +801,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 						<span className="label">
 							How it runs
 						</span>
-						<ItemModePicker costId={ids.form + "-cost"} value={mode} onChange={setMode} disabled={busy || (!usePolicy && agent !== "windlass")} />
+						<ItemModePicker costId={ids.form + "-cost"} value={mode} onChange={setMode} disabled={busy || mode !== modeChoice} />
 						<ItemModeCost id={ids.form + "-cost"} mode={mode} />
 						<p className="field-note">{ITEM_MODE_WORDS[mode].description}</p>
 					</div>
@@ -835,64 +832,50 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 								: "One per line. The agent is given them, and the verdict lists them for you to check: no machine checks them."}
 					</p>
 				</div>
-				{mine.length > 0 || agents.length > 0 ? (
-					<PlaceChoice machines={mine} chosen={chosenMachine} minRunnerVersion={machinesInfo?.minRunnerVersion ?? ""} now={now} purpose="item" onChoose={setPlace}>
-						{chosenMachine ? (
-							<p className="field-note place-note">
-								It runs without asking on “{machineLabel(chosenMachine)}”, inside its container, and costs no hosted time.{" "}
-								{chosenMachine.status === "online" ? "If the machine is away, the item waits until it is back." : `“${machineLabel(chosenMachine)}” is offline since ${clockTime(chosenMachine.since, now)}, so the item waits until it is back.`}
-								{hardenedItemNote(chosenMachine)}
-							</p>
+				<div className="item-run">
+					<span className="label">Runs with</span>
+					<RunLine run={run} machines={machines.list} list={modelList} lead={mode === "orchestrate" ? "Parts run on" : "Runs on"} onChange={changing ? undefined : () => setChanging(true)} changeLabel="Change for this item">
+						{changed ? <button type="button" className="link run-line-change" onClick={useDefault} disabled={busy}>Use the default</button> : null}
+					</RunLine>
+					{planning ? <p className="field-note">Planning and review run on Windlass with {runModelName(planning, accountModels.list)}.</p> : null}
+					{destination.wait ? <p className="field-note tone-warn">{destination.wait} The item waits and asks before it runs anywhere else.</p> : null}
+				</div>
+				{changing ? (
+					<div className="item-run-change">
+						{mine.length > 0 ? (
+							<PlaceChoice machines={mine} chosen={chosenMachine} minRunnerVersion={machinesInfo?.minRunnerVersion ?? ""} now={now} purpose="item" onChoose={setPlace}>
+								{chosenMachine ? <p className="field-note place-note">{hardenedItemNote(chosenMachine)}</p> : null}
+							</PlaceChoice>
 						) : null}
-						{agents.length > 0 ? (
-							<div className="harness-pick">
-								<span className="label">Agent</span>
-								<div className="segmented" role="radiogroup" aria-label="Agent">
-									{[{ id: "windlass" as const, reason: null }, ...agents].map(({ id, reason }) => (
-										<label key={id} title={reason ?? undefined} className={`segment${id === agent ? " segment-chosen" : ""}`}>
-											<input className="segment-radio" type="radio" name={ids.form + "-agent"} value={id} checked={id === agent} disabled={busy || !!reason} onChange={() => setAgent(id)} />
-											{HARNESS_NAMES[id]}
-										</label>
-									))}
-								</div>
-								<p className="field-note">
-									{agent === "windlass"
-										? "Windlass runs your repository's checks before it hands the work over."
-										: chosenMachine ? itemAgentLine(agent, itemProfiles(agent)[0] ?? "docker-hardened") : `${HARNESS_NAMES[agent]} runs with your Settings key.`}
-								</p>
+						<div className="harness-pick">
+							<span className="label">Agent</span>
+							<div className="segmented" role="radiogroup" aria-label="Agent">
+								{[{ id: "windlass" as const, reason: null }, ...agents].map(({ id, reason }) => (
+									<label key={id} title={reason ?? undefined} className={`segment${id === agent ? " segment-chosen" : ""}`}>
+										<input className="segment-radio" type="radio" name={ids.form + "-agent"} value={id} checked={id === agent} disabled={busy || !!reason} onChange={() => { setAgent(id); setModel(""); setEffort(""); }} />
+										{HARNESS_NAMES[id]}
+									</label>
+								))}
 							</div>
-						) : null}
-					</PlaceChoice>
-				) : null}
-				{modelList && modelList.models.length > 0 ? (
-					<div className="item-agent-fields">
-						<div>
-							<label className="label" htmlFor={ids.model}>
-								Model
-							</label>
-							<ModelSelect
-								id={ids.model}
-								harness={modelAgent}
-								list={modelList}
-								value={model}
-								inherit={{ label: agentDefaultLabel(modelAgent, modelList) }}
-								entry={chosenMachine?.harnesses?.find((one) => one.id === modelAgent) ?? null}
-								machine={chosenMachine ? machineLabel(chosenMachine) : null}
-								onChange={setModel}
-								disabled={busy}
-							/>
+							{agentChoice && agentChoice !== "windlass" && orchestrate && modeChoice === "orchestrate" ? <p className="field-note">Plan first plans on Windlass, so choosing {HARNESS_NAMES[agentChoice]} here files this as Quick.</p> : null}
 						</div>
-						{efforts.length > 0 ? (
-							<div>
-								<label className="label" htmlFor={ids.effort}>
-									Effort
-								</label>
-								<EffortSelect id={ids.effort} efforts={efforts} value={effort} model={modelDisplay(modelAgent, modelList, model || modelList.defaultModel)} onChange={setEffort} disabled={busy} />
+						{modelList && modelList.models.length > 0 ? (
+							<div className="item-agent-fields">
+								<div>
+									<label className="label" htmlFor={ids.model}>Model</label>
+									<ModelSelect id={ids.model} harness={agent} list={modelList} value={model} inherit={{ label: agentDefaultLabel(agent, modelList) }}
+										entry={chosenMachine?.harnesses?.find((one) => one.id === agent) ?? null} machine={chosenMachine ? machineLabel(chosenMachine) : null}
+										onChange={(next) => { setModel(next); setEffort(""); }} disabled={busy} />
+								</div>
+								{efforts.length > 0 ? (
+									<div>
+										<label className="label" htmlFor={ids.effort}>Effort</label>
+										<EffortSelect id={ids.effort} efforts={efforts} value={run.effort ?? ""} model={modelDisplay(agent, modelList, model || modelList.defaultModel)} onChange={setEffort} disabled={busy} />
+									</div>
+								) : null}
 							</div>
 						) : null}
-						<p className="field-note" id={ids.effortNote}>
-							{efforts.length > 0 ? "Every turn of the item runs at this effort." : "This model takes no reasoning effort."}
-						</p>
+						<p className="field-note">These choices are for this item only. Your defaults are on Machines and in Settings → Models.</p>
 					</div>
 				) : null}
 				<Check checked={start} disabled={busy} onChange={(on) => setStart(on)}>

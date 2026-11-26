@@ -49,6 +49,9 @@ async function start(machine: MockMachineState): Promise<void> {
 }
 
 const text = () => host.textContent ?? "";
+const runLine = () => host.querySelector(".run-line")?.textContent ?? "";
+/** The form says what will run; its choices for this item open from "Change for this item". */
+const change = () => act(() => [...host.querySelectorAll("button")].find((one) => one.textContent === "Change for this item")!.click());
 const legend = () => [...host.querySelectorAll("legend")].find((one) => one.textContent === "Where it runs") ?? null;
 const radio = (value: string) => host.querySelector(`input[type="radio"][value="${value}"]`) as HTMLInputElement | null;
 
@@ -91,7 +94,11 @@ afterEach(() => {
 describe("filing a work item", () => {
 	it("runs on this platform unless a machine is chosen, and then says what that means and sends the machine", async () => {
 		await start("full");
-		expect(legend()).not.toBeNull();
+		expect(runLine()).toContain("Hosted · Windlass");
+		// The repository saves a model; nothing else is chosen, so the rest is the deployment's.
+		expect(runLine()).toContain("GPT-6 Luna— set for this repository");
+		expect(legend()).toBeNull();
+		change();
 		expect(host.querySelector(".sandbox-chosen-name")?.textContent).toBe("Hosted");
 		// The usable machines can be chosen, an offline one too.
 		expect(radio("m_nas")?.disabled).toBe(false);
@@ -107,9 +114,11 @@ describe("filing a work item", () => {
 		client.dispose();
 		sent = [];
 		await start("full");
+		change();
 		act(() => radio("m_nas")?.click());
 		expect(host.querySelector(".sandbox-chosen-name")?.textContent).toBe("nas");
-		expect(text()).toContain("It runs without asking on “nas”, inside its container, and costs no hosted time. If the machine is away, the item waits until it is back.");
+		expect(runLine()).toContain("nas · Windlass");
+		expect(runLine()).toContain("— chosen for this item");
 		expect(text()).toContain("It starts as soon as “nas” is online and has a free slot; until then it waits, and says for what.");
 		typeTitle("Cache the station list");
 		await file();
@@ -146,8 +155,9 @@ describe("filing a work item", () => {
 			return values;
 		};
 		await start("online");
-		// Windlass on this platform: the account's models, and the efforts of the chosen one.
-		expect(efforts()).toEqual(["default", "low", "medium", "high", "xhigh"]);
+		change();
+		// Windlass on this platform, on the repository's model: the efforts that model takes.
+		expect(efforts()).toEqual(["default", "low", "medium"]);
 		choose("Model", "gpt-6-luna");
 		expect(efforts()).toEqual(["default", "low", "medium"]);
 		choose("Effort", "medium");
@@ -161,11 +171,11 @@ describe("filing a work item", () => {
 		client.dispose();
 		sent = [];
 		await start("online");
+		change();
 		act(() => radio("m_nas")?.click());
 		act(() => radio("claude")?.click());
 		await wait();
 		expect(efforts()).toEqual([]);
-		expect(text()).toContain("This model takes no reasoning effort.");
 		choose("Model", "opus");
 		expect(efforts()).toEqual(["default", "low", "high", "max"]);
 		choose("Effort", "high");
@@ -176,14 +186,16 @@ describe("filing a work item", () => {
 
 	it("says an offline machine makes the item wait", async () => {
 		await start("full");
+		change();
 		act(() => radio("m_workshop")?.click());
-		expect(text()).toMatch(/“workshop” is offline since .+, so the item waits until it is back\./);
+		expect(text()).toContain("“workshop” is offline. The item waits and asks before it runs anywhere else.");
 		expect(text()).toContain("through the web proxy");
 		expect(text()).not.toContain("can reach the machine's network");
 	});
 
 	it("lists a machine with an old runner, or no usable sandbox, without letting it be chosen", async () => {
 		await start("outdated");
+		change();
 		expect(radio("m_nas")?.disabled).toBe(true);
 		expect(text()).toContain("Its runner needs an update.");
 		act(() => root.unmount());
@@ -191,22 +203,23 @@ describe("filing a work item", () => {
 		root = createRoot(host);
 		client.dispose();
 		await start("docker");
+		change();
 		expect(radio("m_nas")?.disabled).toBe(true);
 		expect(text()).toContain("Can't run sandboxes right now.");
 	});
 
 	it("offers only the hosted place and shows which agents need a Settings key", async () => {
 		await start("off");
-		expect(radio("platform")?.checked).toBe(true);
+		expect(runLine()).toContain("Hosted · Windlass");
+		change();
 		expect(radio("m_nas")).toBeNull();
 		expect(radio("claude")?.disabled).toBe(true);
-		expect(text()).toContain("It runs on a hosted sandbox.");
 		act(() => root.unmount());
 		host.replaceChildren();
 		root = createRoot(host);
 		client.dispose();
 		await start("none");
-		expect(radio("platform")?.checked).toBe(true);
+		change();
 		expect(radio("m_nas")).toBeNull();
 		expect(radio("claude")?.disabled).toBe(true);
 	});
