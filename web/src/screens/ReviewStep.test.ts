@@ -165,7 +165,7 @@ describe("pages rendered with the mock", () => {
 });
 
 describe("a prompt of the platform's in the reviewer's timeline", () => {
-	const turn = (n: number, text: string): TurnView => ({ turn: n, blocks: [{ id: `u${n}`, kind: "user", at: 1_700_000_000_000, text, model: "gpt-6.1-sol", effort: null, steer: false }], steps: 0, interruptRequested: false, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null });
+	const turn = (n: number, text: string): TurnView => ({ turn: n, blocks: [{ id: `u${n}`, kind: "user", at: 1_700_000_000_000, text, model: "gpt-6.1-sol", effort: null, steer: false }], steps: 0, stepOpen: false, interruptRequested: false, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null });
 	let host: HTMLElement;
 	let root: Root;
 

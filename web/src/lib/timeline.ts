@@ -177,6 +177,8 @@ export interface SubagentRun {
 	detail: string | null;
 	startedAt: number | null;
 	durationMs: number | null;
+	/** What it used in all, as `spawn.ended` said; null while it runs and when the ending said nothing. */
+	usage: TurnUsage | null;
 	/** Its steps, calls and words, folded as a session of its own: its one turn is turn 1. */
 	work: SessionView;
 }
@@ -285,10 +287,12 @@ export interface TurnView {
 	blocks: Block[];
 	/** Model calls started in this turn. */
 	steps: number;
+	/** A model call started and not ended yet: what it uses is counted once it ends. */
+	stepOpen: boolean;
 	interruptRequested: boolean;
 	/** Files the turn changed, from `workspace.changes`. */
 	changedFiles: string[] | null;
-	/** Tokens of the turn's finished model calls, added up as they end. */
+	/** Tokens of the turn's finished model calls, added up as they end. Its subagents' are theirs (`turnUsage`). */
 	usage: TurnUsage;
 	end: TurnEnd | null;
 	/**
@@ -423,9 +427,22 @@ export function addUsage(a: TurnUsage, b: TurnUsage): TurnUsage {
 	};
 }
 
-/** A turn's tokens: what its ending reported, or what its model calls add up to while it runs. */
+/**
+ * A turn's tokens: what its ending reported, or, while it runs, what its model calls add up to with its
+ * subagents': each one's total once it ended, its finished calls while it runs. A call still under way
+ * reports nothing until it ends.
+ */
 export function turnUsage(turn: TurnView): TurnUsage {
-	return turn.end?.usage ?? turn.usage;
+	if (turn.end?.usage) return turn.end.usage;
+	let sum = turn.usage;
+	for (const block of turn.blocks) if (block.kind === "tool" && block.subagent) sum = addUsage(sum, block.subagent.usage ?? sessionUsage(block.subagent.work));
+	return sum;
+}
+
+/** The model call the last turn waits on, while it runs: its number in the turn, or null when none is under way. */
+export function openStep(view: SessionView): { turn: number; step: number } | null {
+	const last = lastTurn(view);
+	return last && last.end === null && last.stepOpen ? { turn: last.turn, step: last.steps } : null;
 }
 
 export function sessionUsage(view: SessionView): TurnUsage {
@@ -499,7 +516,7 @@ class Draft {
 	turn(number: number): TurnView {
 		const found = this.view.turns.find((turn) => turn.turn === number);
 		if (found) return found;
-		const created: TurnView = { turn: number, blocks: [], steps: 0, interruptRequested: false, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null };
+		const created: TurnView = { turn: number, blocks: [], steps: 0, stepOpen: false, interruptRequested: false, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null };
 		const turns = [...this.view.turns, created].sort((a, b) => a.turn - b.turn);
 		this.view = { ...this.view, turns };
 		return created;
@@ -759,7 +776,7 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			const work = isRecord(data.work) ? data.work : null;
 			if (work?.kind !== "subagent") return;
 			const call = draft.find(turn, isCall(str(data.messageId), str(data.callId)));
-			if (call) draft.replace(turn, call, { subagent: { spawnId: str(data.spawnId), sessionId: str(work.sessionId), background: data.background === true, state: "running", detail: null, startedAt: at, durationMs: null, work: emptyView() } });
+			if (call) draft.replace(turn, call, { subagent: { spawnId: str(data.spawnId), sessionId: str(work.sessionId), background: data.background === true, state: "running", detail: null, startedAt: at, durationMs: null, usage: null, work: emptyView() } });
 			return;
 		}
 		case "child.event": {
@@ -776,20 +793,22 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 			if (!call?.subagent) return;
 			const run = call.subagent;
 			const state = oneOf(data.outcome, ["completed", "failed", "stopped", "lost"] as const) ?? "failed";
-			draft.replace(turn, call, { subagent: { ...run, state, detail: str(data.detail) || null, durationMs: at !== null && run.startedAt !== null ? Math.max(0, at - run.startedAt) : null } });
+			draft.replace(turn, call, { subagent: { ...run, state, detail: str(data.detail) || null, usage: usageOf(data.usage), durationMs: at !== null && run.startedAt !== null ? Math.max(0, at - run.startedAt) : null } });
 			return;
 		}
 
 		// ---- steps -----------------------------------------------------------------------------
 		case "step.started":
-			draft.patchTurn(turn, { steps: draft.turn(turn).steps + 1 });
+			draft.patchTurn(turn, { steps: draft.turn(turn).steps + 1, stepOpen: true });
 			return;
 		case "step.ended":
 			closeStreams(draft, turn, str(data.messageId));
+			draft.patchTurn(turn, { stepOpen: false });
 			recordCall(draft, turn, str(data.messageId), data.usage, false);
 			return;
 		case "step.failed": {
 			closeStreams(draft, turn, str(data.messageId));
+			draft.patchTurn(turn, { stepOpen: false });
 			recordCall(draft, turn, str(data.messageId), data.usage, true);
 			const error = isRecord(data.error) ? data.error : {};
 			// An interrupted step is not an error to read: the turn's ending says it was stopped.
@@ -799,6 +818,7 @@ function applyEvent(draft: Draft, turn: number, event: WindlassEvent, at: number
 		}
 		case "step.refused":
 			closeStreams(draft, turn, str(data.messageId));
+			draft.patchTurn(turn, { stepOpen: false });
 			recordCall(draft, turn, str(data.messageId), data.usage, true);
 			draft.push(turn, { kind: "error", at, title: "The provider refused to answer", message: str(data.message) || "It gave no reason.", detail: null });
 			return;
@@ -913,17 +933,16 @@ function closeStreams(draft: Draft, turn: number, messageId: string): void {
 	draft.mapBlocks(turn, (block) => ((block.kind === "text" || block.kind === "reasoning") && block.messageId === messageId && block.streaming ? { ...block, streaming: false } : block));
 }
 
+/** An event's token counts; null when it carries none. */
+function usageOf(usage: unknown): TurnUsage | null {
+	if (!isRecord(usage)) return null;
+	return { inputTokens: num(usage.inputTokens), cachedInputTokens: num(usage.cachedInputTokens), outputTokens: num(usage.outputTokens), reasoningTokens: num(usage.reasoningTokens) };
+}
+
 function recordCall(draft: Draft, turn: number, messageId: string, usage: unknown, failed: boolean): void {
-	if (!isRecord(usage)) return;
-	const call: ModelCall = {
-		turn,
-		messageId,
-		inputTokens: num(usage.inputTokens),
-		cachedInputTokens: num(usage.cachedInputTokens),
-		outputTokens: num(usage.outputTokens),
-		reasoningTokens: num(usage.reasoningTokens),
-		failed,
-	};
+	const used = usageOf(usage);
+	if (!used) return;
+	const call: ModelCall = { turn, messageId, ...used, failed };
 	draft.set({ calls: [...draft.view.calls, call] });
 	draft.patchTurn(turn, { usage: addUsage(draft.turn(turn).usage, call) });
 }
