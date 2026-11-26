@@ -7,8 +7,8 @@ Choose **Settings** in the top bar (in the account menu on a phone). What you sa
 Three places choose what runs, each saving as soon as you change it:
 
 - **Machines → Where work runs**: the default place, Hosted or one of your machines. For a machine, its isolation and what happens when it is offline: **Wait for it**, or **Offer Hosted**, where the item asks you before it moves. Nothing moves to another place, payer or sandbox without asking. See [Where work runs](/docs/machines#where-work-runs).
-- **Settings → Models → Default agent**: the agent, model and effort. Planning, review and summaries run on Windlass with your default Windlass model; when the default agent is another, **Change** in its note picks that model.
-- **A repository's Overrides**: a different place, agent or hosted sandbox for that repository only.
+- **Settings → Models** has two choices. **Builds with** sets the agent, model and effort. **Plans & reviews with** sets the Windlass model and effort for planning, review and summaries. **Same as building** uses the usual Windlass model.
+- **A repository's Overrides**: a different place, build agent, planning model or hosted sandbox for that repository only.
 
 An item's own choice comes first, then the repository's, then yours, then the deployment's. The composer, the **New work item** form and each part of a plan show one line of what will run and where it comes from, for example "nas · Codex · Astra — your default", with **Change** for that item only.
 

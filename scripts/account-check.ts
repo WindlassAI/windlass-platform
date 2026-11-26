@@ -1,7 +1,7 @@
 /**
  * The rules of the account's settings, on their own: no server, no sandbox, nothing sent anywhere.
  * What a user keeps for their account whatever the repository: the defaults for new sessions
- * (server/src/account-defaults.ts), their own MCP servers (personal-servers.ts), the secrets those
+ * (server/src/repository-defaults.ts), their own MCP servers (personal-servers.ts), the secrets those
  * read (account-secrets.ts), and Windlass's configuration file in a sandbox with the platform's
  * servers in it (windlass-config.ts). Every value in it is made up here, at random. The storage runs
  * against a SQLite database in memory, behind a door that makes every statement wait a little, as
@@ -31,7 +31,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../server/src/repository-defaults.js";
-import { LAST_START_TABLE, forgetLastStart, readLastStart, recordLastStart } from "../server/src/account-defaults.js";
 import {
 	ACCOUNT_SECRETS_TABLE,
 	ACCOUNT_SECRET_PROJECT,
@@ -83,7 +82,7 @@ const UNKNOWN = profile("e2b", { commandNetwork: true, commandsCanReadAccessToke
 /** A database whose every statement waits a moment first: whoever started another call meanwhile gets a turn. */
 function database(): { db: DefaultsDb; all(query: string): Array<Record<string, unknown>> } {
 	const sqlite = new DatabaseSync(":memory:");
-	for (const table of [DEFAULTS_TABLE, LAST_START_TABLE, PERSONAL_SERVERS_TABLE, ACCOUNT_SECRETS_TABLE]) sqlite.exec(table);
+	for (const table of [DEFAULTS_TABLE, PERSONAL_SERVERS_TABLE, ACCOUNT_SECRETS_TABLE]) sqlite.exec(table);
 	const db: DefaultsDb = {
 		async execute<Row extends Record<string, unknown>>(query: string, ...args: unknown[]): Promise<Row[]> {
 			for (let waits = Math.floor(Math.random() * 4); waits >= 0; waits -= 1) await new Promise<void>((done) => setImmediate(done));
@@ -116,26 +115,6 @@ const ROUNDS = 200;
 		if (now.profile === "docker-hardened" && now.model === "gpt-6-luna") both += 1;
 	}
 	expect(`a save of the sandbox and a save of the model that run together both stay (${ROUNDS} rounds)`, both === ROUNDS, `${both} of ${ROUNDS}`);
-}
-
-// ---- where the newest agent was started -------------------------------------------------------------
-
-{
-	const { db, all } = database();
-	expect("no start is remembered before the first agent", (await readLastStart(db)) === null);
-	await saveAccountDefaults(db, { model: "gpt-6-luna" }, 5);
-	await recordLastStart(db, { place: { kind: "machine", machineId: "m_nas" }, harness: "claude", mode: "plan", startedAt: 10 });
-	const mine = await readLastStart(db);
-	expect("a start is remembered with its machine, agent and mode", plain(mine) === plain({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", mode: "plan", startedAt: 10 }));
-	expect("remembering a start leaves the saved defaults and their time alone", (await readAccountDefaults(db)).updatedAt === 5 && (await readAccountDefaults(db)).model === "gpt-6-luna");
-	await recordLastStart(db, { place: { kind: "hosted" }, harness: "windlass", mode: "auto", startedAt: 20 });
-	await recordLastStart(db, { place: { kind: "machine", machineId: "m_old" }, harness: "opencode", mode: "build", startedAt: 15 });
-	expect("an older start that lands later does not replace a newer one", plain(await readLastStart(db)) === plain({ place: { kind: "hosted" }, harness: "windlass", mode: "auto", startedAt: 20 }) && all("SELECT * FROM account_last_start").length === 1);
-	await forgetLastStart(db);
-	expect("forgetting removes it, and the saved defaults stay", (await readLastStart(db)) === null && all("SELECT * FROM account_last_start").length === 0 && (await readAccountDefaults(db)).model === "gpt-6-luna");
-	await recordLastStart(db, { place: { kind: "hosted" }, harness: "windlass", mode: "auto", startedAt: 30 });
-	all("UPDATE account_last_start SET harness = 'gemini'");
-	expect("a row naming an agent this code does not know is none", (await readLastStart(db)) === null);
 }
 
 // ---- a server's name -------------------------------------------------------------------------------

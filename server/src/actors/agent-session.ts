@@ -4000,7 +4000,6 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 			meta.reviewRun = run;
 			meta.reviewBase = row.checkout.baseSha;
 		}
-		const effort = meta.origin?.effort ?? null;
 		await holdSandbox(c, meta, true);
 		if (c.vars.destroying) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
 		// The row is claimed before anything of the turn is: a withdrawal that came while the sandbox was being had leaves no
@@ -4012,6 +4011,15 @@ async function takeDelivered(c: Ctx, meta: SessionMeta, key: string, slot: strin
 			await giveBack(c, meta, key, slot);
 			return;
 		}
+		// The owner approved one implementer in the planner's workspace.
+		if (meta.origin?.afterPlanning && !row.agent && !row.checkout) {
+			const build = meta.origin.afterPlanning;
+			if (build.model !== meta.model) meta.windlassSessionId = null;
+			meta.model = build.model;
+			meta.origin.effort = build.effort ?? undefined;
+			delete meta.origin.afterPlanning;
+		}
+		const effort = meta.origin?.effort ?? null;
 		// Accepted. From here to the transaction nothing is awaited.
 		const now = Date.now();
 		delete meta.secretRequest;

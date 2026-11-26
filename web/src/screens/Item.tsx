@@ -148,8 +148,8 @@ export function useItem(id: string, enabled = true): ItemPage {
 	return { ...state, reload, replace };
 }
 
-/** `onConflict`: the server refused an action because the item moved on (`item_conflict`); the page reads it again. */
-function useActing(id: string, onDone: (view: ItemView) => void, onConflict?: (kind: string) => void): Acting {
+/** Read a refused approval again: a changed default may require new confirmations on the same version. */
+function useActing(id: string, onDone: (view: ItemView) => void, onRefresh?: (kind: string, conflict: boolean) => void): Acting {
 	const { client, explain } = useApp();
 	const auth = useAuth();
 	const [busy, setBusy] = useState<string | null>(null);
@@ -167,7 +167,8 @@ function useActing(id: string, onDone: (view: ItemView) => void, onConflict?: (k
 			setError(explain(failure));
 			setFailed({ kind: action.kind, reason: failure instanceof PlatformError ? (failure.reason ?? null) : null });
 			setBusy(null);
-			if (hasReason(failure, "item_conflict")) onConflict?.(action.kind);
+			const conflict = hasReason(failure, "item_conflict");
+			if (conflict || (action.kind === "approve_plan" && hasReason(failure, "bad_input"))) onRefresh?.(action.kind, conflict);
 			return false;
 		}
 	};
@@ -953,8 +954,8 @@ export function Item({ page }: { page: ItemPage }) {
 			setApprovalSettingFailed(false);
 			page.replace(next);
 		},
-		(kind) => {
-			if (kind === "edit_plan" || kind === "approve_plan") setConflicted(true);
+		(kind, conflict) => {
+			if (conflict && (kind === "edit_plan" || kind === "approve_plan")) setConflicted(true);
 			page.reload();
 		},
 	);

@@ -1,7 +1,7 @@
 /* The ids of a feature's children are in feature-ids.ts: this file is shared with the web mock and stays free of Node modules. */
 import type { EarlyCheck, FeaturePlan, FeaturePlanEdit, FinalIntegration, ItemBudget, MergeStep, PlanSubtask, SubtaskAgent, SubtaskBudget } from "../contract.js";
 import { runAgent } from "./resolve-run.js";
-import { harnessName, hostedProfiles, knownHarness, worksWithoutAsking } from "../sandbox/harnesses.js";
+import { subtaskHarnessProblem, harnessName, hostedProfiles, knownHarness, worksWithoutAsking } from "../sandbox/harnesses.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
 
 /** The figures a budget has (`ItemBudget`). A subtask's plan budget has `tokens` only. */
@@ -23,6 +23,11 @@ export const planTokens = (plan: Pick<FeaturePlanEdit, "subtasks">): number => p
 
 export function subtaskHarness(task: Pick<PlanSubtask, "resolved" | "agent">) {
 	return task.resolved?.agent ?? task.agent?.harness ?? "windlass";
+}
+
+// Remove this approval stopgap when every agent can plan and build Plan-first parts.
+export function unsupportedParts(plan: Pick<FeaturePlanEdit, "subtasks">, completed: ReadonlySet<string>) {
+	return plan.subtasks.filter(task => !completed.has(task.key) && subtaskHarnessProblem(subtaskHarness(task)));
 }
 
 function agentWords(agent: SubtaskAgent | undefined): string {

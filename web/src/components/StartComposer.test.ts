@@ -537,7 +537,6 @@ describe("what the start composer starts on", () => {
 			const user = mock.user(ada);
 			await user.saveAccountDefaults({ startPlace: { kind: "hosted" } });
 			await user.saveRepositoryDefaults(7101, { startPlace: { kind: "machine", machineId: "m_nas", profile: "docker-windlass-sandbox" } });
-			await user.forgetLastStart();
 		} });
 		expect(value("on")).toBe("nas");
 		write("Run the tests");
@@ -556,13 +555,14 @@ describe("what the start composer starts on", () => {
 		expect(pop().textContent).toContain("machine from your repository default is no longer paired");
 	});
 
-	it("goes by the newest agent where nothing is saved: its repository (none), its place, its sandbox, its model and its mode", async () => {
+	it("starts from deployment defaults after a launch on another machine", async () => {
 		await show({ before: lastOnNas });
 		created = [];
 		expect(value("repo")).toBe("none");
 		write("Look around");
 		await enter();
-		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-hardened", model: "gpt-6-sol", mode: "ask" });
+		expect(created[0]?.place).toBeUndefined();
+		expect(created[0]).toMatchObject({ model: "gpt-6.1-sol", mode: "auto" });
 	});
 
 	it("puts the account's saved default before the newest agent's, and the repository's before the account's", async () => {
@@ -570,8 +570,8 @@ describe("what the start composer starts on", () => {
 		created = [];
 		write("Look around");
 		await enter();
-		// The account's: on nas its Windlass sandbox and the first model; the newest agent's place and mode stand, as nothing is saved for them.
-		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, profile: "docker-windlass-sandbox", model: "gpt-6.1-sol" });
+		expect(created[0]?.place).toBeUndefined();
+		expect(created[0]).toMatchObject({ profile: "docker-windlass-sandbox", model: "gpt-6.1-sol" });
 		act(() => root?.unmount());
 		root = null;
 		client.dispose();
@@ -581,49 +581,6 @@ describe("what the start composer starts on", () => {
 		write("Look around");
 		await enter();
 		expect(created[0]).toMatchObject({ repository: { id: 7101 }, profile: "docker-hardened", model: "gpt-6-luna" });
-	});
-
-	/** Claude Code on "nas" in Plan, started and then deleted: only the server's memory of it is left. */
-	const claudeOnNasDeleted = async (mock: MockClient) => {
-		const user = mock.user(ada);
-		const made = await user.createSession({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", profile: "docker-hardened", mode: "plan" });
-		await user.deleteSession(made.id);
-	};
-
-	it("starts where the last agent started, with its agent and mode, after that agent is deleted", async () => {
-		await show({ before: claudeOnNasDeleted });
-		created = [];
-		expect(value("on")).toContain("nas");
-		expect(value("agent")).toContain("Claude Code");
-		expect(value("mode")).toBe("Plan");
-		write("Look around");
-		await enter();
-		expect(created[0]).toMatchObject({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", profile: "docker-hardened", mode: "plan" });
-	});
-
-	it("starts on the platform's own once the last start is forgotten, whatever the list of agents says", async () => {
-		await show({ before: async (mock) => (await lastOnNas(mock), void (await mock.user(ada).forgetLastStart())) });
-		created = [];
-		expect(value("on")).toBe("Hosted");
-		write("Look around");
-		await enter();
-		expect(created[0]?.place).toBeUndefined();
-		expect(created[0]?.harness).toBeUndefined();
-	});
-
-	it("falls back to a hosted Windlass agent when the last machine is gone, and says why", async () => {
-		await show({ before: claudeOnNasDeleted, machines: (list) => list.filter((machine) => machine.machineId !== "m_nas") });
-		created = [];
-		expect(value("on")).toBe("Hosted");
-		expect(value("agent")).toContain("Windlass");
-		expect(pill("on")?.classList.contains("ui-pill-warn")).toBe(true);
-		open("agent");
-		expect(pop().textContent).toContain("Your last agent was Claude Code, which is unavailable here, so this one is Windlass.");
-		act(() => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-		write("Look around");
-		await enter();
-		expect(created[0]?.place).toBeUndefined();
-		expect(created[0]?.harness).toBeUndefined();
 	});
 
 	it("puts a choice made here before every default", async () => {
@@ -764,7 +721,7 @@ it("opens an item's repository placement in the composer and honors an explicit 
 	saveAuth("mock", ada);
 	const user = client.user(ada);
 	await user.saveAccountDefaults({ place: "hosted" });
-	await user.saveRepositoryDefaults(7101, { place: { machine: "m_nas" }, harness: "claude", machineProfile: "docker-hardened" });
+	await user.saveRepositoryDefaults(7101, { place: { machine: "m_nas" }, harness: "claude", reviewModel: "gpt-6-sol", machineProfile: "docker-hardened" });
 	root = createRoot(host);
 	act(() => root!.render(createElement(AppProvider, { client, children: createElement(StartComposer, { kind: "item", sessions: [], items: [], repositoryId: 7101 }) })));
 	await settle();
@@ -773,6 +730,7 @@ it("opens an item's repository placement in the composer and honors an explicit 
 	expect(value("agent")).toContain("Claude Code");
 	const line = host.querySelector(".run-line")!.textContent!;
 	expect(line).toContain("Parts run on");
+	expect(host.querySelector(".start-run")?.textContent).toContain("Planning and review run on Windlass with GPT-6 Sol.");
 	expect(line).toContain("nas · Claude Code");
 	expect(line).toContain("set for this repository");
 	open("where");

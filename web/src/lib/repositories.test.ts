@@ -4,7 +4,7 @@ import type { ItemFeed, ItemSummary, ModelList, PlatformInfo, SandboxProfile, Se
 import { itemFeed } from "../../../server/src/item-pages";
 import { MAX_TITLE_CHARS } from "@contract";
 import { sessionCapabilities } from "../../../server/src/sandbox/harnesses.js";
-import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, feedCounts, feedRepositories, foldGroup, groupSessions, lastUsed, layerChoices, openPulls, ownAgents, sessionsOn, startedOn, shownLimit, startingChoices, startingModel, startingProfile, titleOf, itemOf, workingCounts, workingWords } from "./repositories";
+import { GROUP_SHOWN, LONE_GROUP_SHOWN, NO_REPOSITORY, feedCounts, feedRepositories, foldGroup, groupSessions, lastRepository, layerChoices, openPulls, ownAgents, sessionsOn, shownLimit, startingChoices, startingModel, startingProfile, titleOf, itemOf, workingCounts, workingWords } from "./repositories";
 
 const repository = (id: number, owner: string, name: string, branch = "main"): SessionRepository => ({ provider: "github", id, owner, name, branch, private: true, url: `https://github.com/${owner}/${name}` });
 const harbor = repository(7101, "acme", "harbor");
@@ -212,56 +212,11 @@ describe("what a new agent on a repository starts with", () => {
 	});
 });
 
-describe("what a new agent starts with, after the saved defaults", () => {
-	const profile = (id: string, available: boolean): SandboxProfile => ({ id: id as SandboxProfile["id"], name: `The ${id} sandbox`, summary: "", layers: [], approval: "auto", commandNetwork: false, commandsCanReadAccessToken: false, available });
-	const info: Pick<PlatformInfo, "profiles"> = { profiles: [profile("docker-windlass-sandbox", true), profile("docker-hardened", true), profile("e2b", false)] };
-	const models: ModelList = { source: "account", models: ["gpt-6.1-sol", "gpt-6-luna", "gpt-6-brisk"].map((id) => ({ id, name: null, efforts: [] })), defaultModel: "gpt-6.1-sol", fetchedAt: 1 };
-	const nas = { kind: "machine" as const, machineId: "m_nas" };
-	const sessions = [
-		session({ id: "old-harbor", repository: harbor, createdAt: 10, profile: "docker-hardened", model: "gpt-6-luna", mode: "ask" }),
-		session({ id: "claude", place: nas, harness: "claude", profile: "docker-hardened", model: "opus", mode: "plan", createdAt: 20 }),
-		session({ id: "newest", place: nas, profile: "docker-hardened", model: "gpt-6-brisk", mode: "full", createdAt: 30 }),
-		// A work item's session is newer, and is not an agent the user launched.
-		session({ id: "item", repository: harbor, createdAt: 40, model: "gpt-6.1-sol", item: { id: "i_1" } }),
-	];
-
-	it("is the newest agent's, field by field, and each agent's own model and mode", () => {
-		const last = lastUsed(sessions, null);
-		expect(last.place).toEqual(nas);
-		expect(last.harness).toBe("windlass");
-		expect(last.repository).toBeNull();
-		expect(last.of.windlass).toEqual({ model: "gpt-6-brisk", mode: "full", profile: "docker-hardened" });
-		expect(last.of.claude).toEqual({ model: "opus", mode: "plan", profile: "docker-hardened" });
-	});
-
-	it("is the newest agent on the chosen repository, else the newest of all", () => {
-		const onHarbor = lastUsed(sessions, harbor.id);
-		expect(onHarbor.place).toEqual({ kind: "hosted" });
-		expect(onHarbor.of.windlass?.model).toBe("gpt-6-luna");
-		// Claude Code was never used on it: its newest anywhere stands.
-		expect(onHarbor.of.claude?.model).toBe("opus");
-		expect(lastUsed(sessions, tides.id).of.windlass?.model).toBe("gpt-6-brisk");
-		// What the newest agent was launched on: a repository, a pasted address, or nothing.
-		expect(lastUsed([...sessions, session({ repository: tides, createdAt: 50 })], null).repository).toEqual({ kind: "github", repository: tides });
-		expect(lastUsed([...sessions, session({ repoUrl: "https://example.com/a/b.git", createdAt: 50 })], null).repository).toEqual({ kind: "address", url: "https://example.com/a/b.git" });
-		expect(lastUsed(null, null)).toEqual({ place: null, harness: null, of: {}, repository: null });
-	});
-
-	it("comes after the choice made now, the repository's default and the account's, and before the deployment's", () => {
-		const last = lastUsed(sessions, null).of.windlass ?? null;
-		const repository = startingChoices({ profile: "docker-windlass-sandbox", model: "gpt-6.1-sol", updatedAt: 1 }, info, models);
-		const account = startingChoices({ profile: "docker-windlass-sandbox", model: "gpt-6-luna", updatedAt: 1 }, info, models, "account");
-		const nothing = startingChoices(null, info, models);
-		// The deployment's alone, then the last agent's over it.
-		expect([startingProfile(null, nothing, info), startingModel("", nothing, models)]).toEqual(["docker-windlass-sandbox", "gpt-6.1-sol"]);
-		expect([startingProfile(null, nothing, info, last?.profile), startingModel("", nothing, models, last?.model)]).toEqual(["docker-hardened", "gpt-6-brisk"]);
-		// The account's over the last agent's, the repository's over the account's, and the choice made now over all.
-		expect([startingProfile(null, layerChoices(nothing, account), info, last?.profile), startingModel("", layerChoices(nothing, account), models, last?.model)]).toEqual(["docker-windlass-sandbox", "gpt-6-luna"]);
-		expect(startingModel("", layerChoices(repository, account), models, last?.model)).toBe("gpt-6.1-sol");
-		expect([startingProfile("docker-hardened", layerChoices(repository, account), info, last?.profile), startingModel("gpt-6-brisk", layerChoices(repository, account), models, last?.model)]).toEqual(["docker-hardened", "gpt-6-brisk"]);
-		// A last choice that cannot be made now is passed over.
-		expect([startingProfile(null, nothing, info, "e2b"), startingModel("", nothing, models, "gpt-3")]).toEqual(["docker-windlass-sandbox", "gpt-6.1-sol"]);
-	});
+it("keeps the repository from the newest personal agent", () => {
+	const latest = session({ repository: tides, createdAt: 50 });
+	expect(lastRepository([latest, session({ repository: harbor, createdAt: 60, item: { id: "i_1" } })])).toEqual({ kind: "github", repository: tides });
+	expect(lastRepository([session({ repoUrl: "https://example.com/a/b.git" })])).toEqual({ kind: "address", url: "https://example.com/a/b.git" });
+	expect(lastRepository(null)).toBeNull();
 });
 
 describe("a work item, from what was written", () => {
@@ -312,17 +267,6 @@ describe("what is at work", () => {
 		expect(workingWords({ ceilinged: 1, items: 1 }, 6)).toBe("1 of 6 working, a work item");
 		expect(workingWords({ ceilinged: 3, items: 3 }, 6)).toBe("3 of 6 working, all work items");
 		expect(workingWords({ ceilinged: 3, items: 1 }, 6)).toBe("3 of 6 working, 1 of them a work item");
-	});
-});
-
-describe("where a new agent starts, which agent, and its mode", () => {
-	it("is the start the server remembered, whatever the repository", () => {
-		const remembered = { place: { kind: "machine" as const, machineId: "m_box" }, harness: "opencode" as const, mode: "build", startedAt: 250 };
-		expect(startedOn(remembered)).toEqual({ place: remembered.place, harness: "opencode", mode: "build" });
-	});
-
-	it("is nothing before the first agent, or once forgotten: the list of agents is not asked", () => {
-		expect(startedOn(null)).toEqual({ place: null, harness: null, mode: null });
 	});
 });
 

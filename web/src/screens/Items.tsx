@@ -749,8 +749,9 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const placeLayer = placeChoice === undefined ? {} : { place: placeChoice === null ? ("hosted" as const) : { machine: placeChoice } };
 	const agentRun = runOf({ ...layers, item: { ...placeLayer, harness: agentChoice } }, mode === "orchestrate" ? "part" : "builder");
 	const windlassAgent = agentRun.agent === "windlass";
-	const run = runOf({ ...layers, item: { ...placeLayer, harness: agentChoice, ...(modelChoice && (windlassAgent ? { model: modelChoice } : { machineModel: modelChoice })), ...(effortChoice && (windlassAgent ? { effort: effortChoice } : { machineEffort: effortChoice })) } }, mode === "orchestrate" ? "part" : "builder");
-	const planning = mode === "orchestrate" ? runOf({ ...layers, item: placeLayer }, "planner") : null;
+	const selectedLayers = { ...layers, item: { ...placeLayer, harness: agentChoice, ...(modelChoice && (windlassAgent ? { model: modelChoice } : { machineModel: modelChoice })), ...(effortChoice && (windlassAgent ? { effort: effortChoice } : { machineEffort: effortChoice })) } };
+	const run = runOf(selectedLayers, mode === "orchestrate" ? "part" : "builder");
+	const planning = mode === "orchestrate" ? runOf(selectedLayers, "planner") : null;
 	const catalogs = useCatalogs(mine);
 	const destination = checkRunPlace(run, mine, agentModelsOf(mine, catalogs, null));
 	const agent = run.agent;

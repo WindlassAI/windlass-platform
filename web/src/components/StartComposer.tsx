@@ -1,7 +1,7 @@
 import { availableCatalog } from "../../../server/src/sandbox/harnesses.js";
 import { resolveStartPlace } from "../../../server/src/start-place";
 import { checkRunPlace } from "../../../server/src/factory/default-place";
-import { runOf } from "../lib/run";
+import { runModelName, runOf } from "../lib/run";
 import { RunLine } from "./RunSettings";
 import { monthReset, monthState } from "../lib/hosted";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type HostedSize, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
@@ -13,7 +13,7 @@ import { count, localTime, sandboxTime } from "../lib/format";
 import { MODEL_SOURCES, SOURCE_NAMES, cleanModelName, effortsOf, harnessOptions, modelLabel, modelName, modelsNote, modelsBySource, type ModelSource } from "../lib/models";
 import { safeStorage } from "../lib/workspace";
 import { OPEN_MODES, launchModes } from "../lib/modes";
-import { itemOf, lastUsed, layerChoices, repositoryName, startedOn, startingChoices, startingModel, startingProfile } from "../lib/repositories";
+import { itemOf, lastRepository, layerChoices, repositoryName, startingChoices, startingModel, startingProfile } from "../lib/repositories";
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { perHour, sizeName, sizeSpec, startingSize } from "../lib/sizes";
@@ -213,7 +213,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const connection = github.enabled ? (github.status?.connection ?? null) : null;
 	const connected = connection !== null;
 	const knowsConnection = !github.enabled || github.status !== null || github.error !== null;
-	const newest = lastUsed(sessions, null).repository;
+	const newest = lastRepository(sessions);
 	const newestItem = items?.reduce<ItemSummary | null>((found, candidate) => (found === null || candidate.createdAt > found.createdAt ? candidate : found), null) ?? null;
 	const startRepoId = repositoryId ?? (item && newestItem ? newestItem.repository.id : newest?.kind === "github" ? newest.repository.id : null);
 	const [opening, setOpening] = useState<{ id: GithubId | null; picked: PickedRepository | null; reading: boolean; error: string | null }>({ id: null, picked: null, reading: false, error: null });
@@ -255,7 +255,6 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const source = connection ? (item ? "github" : (chosenSource ?? (repo.kind === "address" ? "address" : "github"))) : "address";
 	const notice = github.notice?.where === "launch" ? github.notice : null;
 
-	const last = lastUsed(sessions, chosen?.repository.id ?? null);
 	const saved = useDefaults(chosen?.repository.id ?? null);
 	const account = useAccount();
 	const models = useModels();
@@ -270,22 +269,24 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const mine = machinesInfo === null ? [] : (machines.list ?? []);
 	const why = (machine: MachineSummary) => machineUnusable(machine, machinesInfo?.minRunnerVersion ?? "", item ? "item" : "agent");
 	const machinesReading = machinesInfo !== null && machines.list === null && machines.error === null;
-	const started = startedOn(account.settings?.lastStart ?? null);
 	const startPlace = !item ? resolveStartPlace({
 		launch: placeChoice === undefined ? undefined : placeChoice === null ? { kind: "hosted" } : { kind: "machine", machineId: placeChoice },
-		last: started.place, repository: saved.defaults?.startPlace, account: account.settings?.defaults.startPlace,
+		repository: saved.defaults?.startPlace, account: account.settings?.defaults.startPlace,
 		machines: machinesReading ? null : mine,
 	}) : null;
 	// A work item runs what the server's resolver gives: its own choices, then the repository's, then yours.
 	const itemLayers = { account: account.settings?.defaults, repository: saved.defaults, machines: machinesReading ? null : mine, sizes: info?.hostedSizes };
 	const itemPlace = placeChoice === undefined ? {} : { place: placeChoice === null ? ("hosted" as const) : { machine: placeChoice } };
 	const itemRole = info?.items?.orchestrate && (harnessChoice === null || harnessChoice === "windlass") && itemMode === "orchestrate" ? "part" : "builder";
+	const defaultRun = runOf(itemLayers);
 	const itemAgent = item ? runOf({ ...itemLayers, item: { ...itemPlace, harness: harnessChoice } }, itemRole).agent : "windlass";
-	const itemRun = item ? runOf({ ...itemLayers, item: { ...itemPlace, harness: harnessChoice, hostedSize: sizeChoice, profile: profileChoice, machineProfile: profileChoice,
+	const selectedLayers = { ...itemLayers, item: { ...itemPlace, harness: harnessChoice, hostedSize: sizeChoice, profile: profileChoice, machineProfile: profileChoice,
 		...(modelChoice && (itemAgent === "windlass" ? { model: modelChoice } : { machineModel: modelChoice })),
-		...(effortChoice && effortChoice !== "default" && (itemAgent === "windlass" ? { effort: effortChoice } : { machineEffort: effortChoice })) } }, itemRole) : null;
+		...(effortChoice && effortChoice !== "default" && (itemAgent === "windlass" ? { effort: effortChoice } : { machineEffort: effortChoice })) } };
+	const itemRun = item ? runOf(selectedLayers, itemRole) : null;
+	const planning = item && itemRole === "part" ? runOf(selectedLayers, "planner") : null;
 	const usePolicy = item && harnessChoice === null;
-	const machineCatalogs = useCatalogs(machinesReading ? null : mine);
+	const machineCatalogs = useCatalogs(item && !machinesReading ? mine : null);
 	const destination = itemRun ? checkRunPlace(itemRun, mine, agentModelsOf(mine, machineCatalogs, null)) : undefined;
 	const itemMachineId = placeChoice !== undefined ? placeChoice : destination?.place.kind === "machine" ? destination.place.machineId : null;
 	const chosenMachine = startPlace ? startPlace.machine : mine.find(machine => machine.machineId === itemMachineId && why(machine) === null) ?? null;
@@ -294,7 +295,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const keys = useHostedProviders();
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
 	const hardened = placeProfiles.some((candidate) => candidate.id === HARNESS_PROFILE && candidate.available);
-	const wantedHarness = harnessChoice ?? (item ? destination?.harness ?? "windlass" : (started.harness ?? "windlass"));
+	const wantedHarness = harnessChoice ?? (item ? destination?.harness ?? "windlass" : defaultRun.agent);
 	const harnessesHere = (machine: MachineSummary | null) => (item ? itemHarnesses(machine) : offeredHarnesses(machine));
 	const hostedProfile = placeProfiles.find(p => p.available && p.platformKeys);
 	const hostedProblem = (id: Exclude<HarnessId, "windlass">) => hostedAgentProblem(id, keys, !!hostedProfile);
@@ -302,34 +303,33 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const harness: HarnessId = wantedHarness !== "windlass" && (chosenMachine ? runsHere(wantedHarness) && harnessesHere(chosenMachine).some((offered) => offered.id === wantedHarness) : !hostedProblem(wantedHarness)) ? wantedHarness : "windlass";
 	const other = harness === "windlass" ? null : HARNESS_NAMES[harness];
 	const sizes = chosenMachine === null ? (info?.hostedSizes ?? []).filter((size) => planSizes === null || planSizes.includes(size.id)) : [];
-	const savedSize = saved.defaults?.hostedSize ?? null;
+	const savedSize = saved.defaults?.hostedSize ?? account.settings?.defaults.hostedSize ?? null;
 	const defaultSize = sizes.length > 1 ? startingSize(sizes, savedSize, item) : null;
 	const hostedSize = defaultSize === null ? null : sizeChoice !== null && sizes.some((size) => size.id === sizeChoice) ? sizeChoice : defaultSize;
 	const hostedOption = sizes.find((size) => size.id === hostedSize) ?? null;
 	const harnessProblem =
-		item || harnessChoice !== null || started.harness === null || started.harness === harness || machinesReading
+		item || harnessChoice !== null || wantedHarness === harness || machinesReading
 			? null
-			: `Your last agent was ${HARNESS_NAMES[started.harness]}, which ${chosenMachine ? `“${machineLabel(chosenMachine)}” does not offer now` : "is unavailable here"}, so this one is ${HARNESS_NAMES[harness]}.`;
+			: `Your default agent is ${HARNESS_NAMES[wantedHarness]}, which ${chosenMachine ? `“${machineLabel(chosenMachine)}” does not offer now` : "is unavailable here"}, so this one is ${HARNESS_NAMES[harness]}.`;
 	const catalogs = { codex: useCatalog(chosenMachine, "codex"), claude: useCatalog(chosenMachine, "claude"), opencode: useCatalog(chosenMachine, "opencode") };
 	const options = harnessOptions(chosenMachine, harness, harness === "windlass" ? undefined : catalogs[harness].options, keys);
-	const lastOf = last.of[harness] ?? null;
 
 	const hasCodexSandbox = (machine: MachineSummary | null) => harness === "codex" && machine?.harnesses?.some(h => h.id === "codex" && h.modes?.includes("workspace-write"));
 	// A Codex work item runs in Codex's sandbox unless "Docker, hardened" is picked (server/src/sandbox/harnesses.ts, `itemModes`).
 	const launchProfile = startPlace && placeChoice !== undefined && startPlace.source !== "launch" ? null : profileChoice;
 	const askedProfile = launchProfile ?? startPlace?.profile ?? (destination?.place.kind === "machine" ? destination.profile ?? null : null);
 	const codexItemSandbox = item && hasCodexSandbox(chosenMachine) && askedProfile !== HARNESS_PROFILE;
-	const profile = hasCodexSandbox(chosenMachine) && (askedProfile === "docker-windlass-sandbox" || codexItemSandbox) ? "docker-windlass-sandbox" : other ? chosenMachine ? HARNESS_PROFILE : hostedProfile?.id ?? null : startingProfile(askedProfile, defaults, info ? { profiles: placeProfiles } : null, last.of.windlass?.profile ?? null);
+	const profile = hasCodexSandbox(chosenMachine) && (askedProfile === "docker-windlass-sandbox" || codexItemSandbox) ? "docker-windlass-sandbox" : other ? chosenMachine ? HARNESS_PROFILE : hostedProfile?.id ?? null : startingProfile(askedProfile, defaults, info ? { profiles: placeProfiles } : null);
 	const modelList = other ? options.models : models.list;
 	const offers = (id: string) => modelList?.models.some((candidate) => candidate.id === id) === true;
 	// An empty model lets the harness select its reported default.
 	const reportedDefault = other && modelList !== null && modelList.models.length > 0 ? modelList.defaultModel : null;
 	const harnessModel = (id: string) => (offers(id) ? (id === reportedDefault ? "" : id) : null);
-	// A work item's agent starts on its own default model unless one is chosen here: not on the last agent's.
-	const wantedModel = modelChoice || (itemRun?.model ?? "");
-	const model = other ? (harnessModel(wantedModel) ?? (lastOf && !item ? harnessModel(lastOf.model) : null) ?? "") : startingModel(wantedModel, defaults, models.list, item ? null : (last.of.windlass?.model ?? null));
+	const resolvedAgent = itemRun ?? defaultRun;
+	const wantedModel = modelChoice || (resolvedAgent.agent === harness ? resolvedAgent.model ?? "" : "");
+	const model = other ? (harnessModel(wantedModel) ?? "") : startingModel(wantedModel, defaults, models.list);
 	const efforts = effortsOf(modelList, model === "" && reportedDefault !== null ? reportedDefault : model);
-	const wantedEffort = effortChoice || (itemRun?.effort ?? "");
+	const wantedEffort = effortChoice || (resolvedAgent.agent === harness ? resolvedAgent.effort ?? "" : "");
 	const effort = efforts.includes(wantedEffort) ? wantedEffort : "";
 	const chosenProfile = placeProfiles.find((candidate) => candidate.id === profile) ?? null;
 	const launch = launchModes(harness, chosenProfile);
@@ -337,7 +337,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		? codexModes(chosenProfile.id, chosenMachine ? chosenMachine.harnesses?.find(h => h.id === "codex")?.modes ?? [] : undefined)
 		: options.modes;
 	const modes = launch && other && reportedModes?.length ? { modes: reportedModes, default: reportedModes.some((mode) => mode.id === launch.default) ? launch.default : (reportedModes[0] as SessionMode).id } : launch;
-	const mode = modes ? (modes.modes.find((candidate) => candidate.id === modeChoice) ?? (started.harness === harness ? modes.modes.find((candidate) => candidate.id === started.mode) : undefined) ?? modes.modes.find((candidate) => candidate.id === lastOf?.mode) ?? modes.modes.find((candidate) => candidate.id === modes.default) ?? null) : null;
+	const mode = modes ? (modes.modes.find((candidate) => candidate.id === modeChoice) ?? modes.modes.find((candidate) => candidate.id === modes.default) ?? null) : null;
 	const setup = useSetupDraft(chosen?.repository.id ?? null);
 
 	const defaultProfile = startPlace?.profile ?? defaults.profile;
@@ -1162,7 +1162,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 						onOpenChange={openOnly("agent")}
 						surface={phone ? undefined : "popover"}
 						trigger={(props) => (
-							<AgentPill trigger={props} harness={harness} name={HARNESS_NAMES[harness]} model={agentModel} dot={agentWarn ? "warn" : modelChanged ? "changed" : null} dotLabel={harnessProblem ? "the last agent cannot be used here" : agentWarn ? "the saved default cannot be used" : undefined} changed={modelChanged} data-value={agentValue} />
+							<AgentPill trigger={props} harness={harness} name={HARNESS_NAMES[harness]} model={agentModel} dot={agentWarn ? "warn" : modelChanged ? "changed" : null} dotLabel={harnessProblem ? "the default agent cannot be used here" : agentWarn ? "the saved default cannot be used" : undefined} changed={modelChanged} data-value={agentValue} />
 						)}
 					/>
 					{effortSpec ? <Menu spec={effortSpec} open={open === "effort"} onOpenChange={openOnly("effort")} surface={phone ? undefined : "popover"} trigger={(props) => <EffortButton trigger={props} effort={effort} efforts={efforts} />} /> : null}
@@ -1217,6 +1217,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			{itemRun ? (
 				<div className="start-run">
 					<RunLine run={itemRun} machines={machinesReading ? null : mine} list={other ? options.models : models.list} lead={itemRole === "part" ? "Parts run on" : "Runs on"} onChange={() => setOpen("agent")} changeLabel="Change for this item" />
+					{planning && <p className="field-note">Planning and review run on Windlass with {runModelName(planning, models.list)}.</p>}
 					{destination?.wait ? <p className="field-note tone-warn">{destination.wait} The item waits and asks before it runs anywhere else.</p> : null}
 				</div>
 			) : null}

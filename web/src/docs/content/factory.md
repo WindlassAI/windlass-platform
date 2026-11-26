@@ -478,19 +478,19 @@ Once a subtask has its item, its row says where it **ran on** and why, for examp
 
 ### Each subtask's agent
 
-Each subtask says which **agent** it runs, on which model and effort. The planner may propose one for each subtask. A subtask it proposes nothing for runs Windlass on the feature's model and effort, as the planner itself does.
+Each subtask says which **agent** it runs, on which model and effort. The planner may propose one for each subtask. Parts inherit the build settings for their repository. Opening the plan and approving it both recheck the current defaults. The planner, critic, reviewer and summary use the Windlass model under **Settings → Models → Plans & reviews with**.
 
 While the plan is open you can change each subtask's agent, model and effort. The menus offer only what the subtask's place offers:
 
 - **This platform** runs Windlass, on any model of your account.
 - **A machine of yours** also offers Claude Code and OpenCode where its runner reports them signed in. One that is not signed in is listed but can't be chosen. The models and efforts are the ones the machine reported for that agent.
-- **Codex** is not offered for subtasks. A plan that names it is refused, and so is placing a subtask on it. Codex runs Quick items only.
+- **Codex** runs Quick items only. If a part resolves to Codex, approval asks you to **Use Windlass for these parts** or **Choose another agent**.
 
 A subtask with no agent of its own shows the agent it resolves to and where that comes from, for example "— your default". **The default** in its agent menu returns it there; **Windlass** pins it to Windlass.
 
 A subtask on Claude Code or OpenCode runs in the machine's hardened container, on its own model and effort. It never takes the feature's Windlass model: with no model chosen, it runs the agent's default. A choice the place does not offer, for example an agent the machine does not have or a model it does not list, shows **can't place** and the reason, and approval is refused the same way. If the machine changes after approval, for example the agent is signed out, the subtask can't be placed when the feature gets to it, and the feature asks you with the reason.
 
-**Works without asking.** Claude Code and OpenCode work without asking: they run every command and edit in their sandbox without asking you. Wherever such a subtask is shown, it says **works without asking**. The planner reads the item's text, which may come from an issue anyone could file. So its choice of such an agent never runs on approval alone: the approval card lists each such subtask under **Agents that work without asking**, and **Approve version N** stays unavailable until you tick every one. An approval sent any other way that does not name each one is refused. To run one on Windlass instead, choose **Windlass** for it and save.
+**Works without asking.** Claude Code and OpenCode work without asking: they run every command and edit in their sandbox without asking you. Wherever such a subtask is shown, it says **works without asking**. The planner reads the item's text, which may come from an issue anyone could file. An inherited agent needs the same confirmation as one the planner chose: the approval card lists each such subtask under **Agents that work without asking**, and **Approve version N** stays unavailable until you tick every one. An approval sent any other way that does not name each one is refused. To run one on Windlass instead, choose **Windlass** for it and save.
 
 **Budgets per agent.** A subtask's budget counts the way its agent's does. OpenCode's tokens count against the subtask's token budget, and an OpenCode turn that reports no tokens stops the subtask, because its budget can't be enforced. Claude Code runs on your Claude subscription: its tokens are shown, not counted. Only counted tokens reach the feature's budget. Such a subtask shows its turns and working time instead of a token meter, and the feature's cost lists them under **on a subscription**.
 

@@ -417,7 +417,6 @@ export function createRivetClient(built: string = import.meta.env.VITE_WLP_ENDPO
 			savedRepositories: () => act("savedRepositories"),
 			account: () => act("account"),
 			saveAccountDefaults: (change) => act("saveAccountDefaults", change),
-			forgetLastStart: () => act("forgetLastStart"),
 			savePersonalServer: (server) => act("savePersonalServer", server),
 			deletePersonalServer: (name) => act("deletePersonalServer", name),
 			modelProviders: () => act("modelProviders"),

@@ -66,8 +66,7 @@ export function Settings() {
 					title="Models"
 					lede={<>The agent and model your work uses, unless a repository or an item says otherwise. Keys stay on Windlass. <a className="link" href="/docs/settings#model-providers">How keys are used →</a></>}
 				>
-					<section className="usage-section" aria-label="Default agent">
-						<h3 className="usage-title">Default agent</h3>
+					<section className="usage-section" aria-label="Default models">
 						{settings === null ? <SettingsPending subject="Your settings" error={account.error} reload={account.reload} /> : <DefaultAgent account={account} />}
 					</section>
 					<ModelProviders />

@@ -15,7 +15,7 @@ export function startPlaceProblem(place: StartPlace, machines: readonly MachineS
 	return startProfiles(machine).some(p => p.id === place.profile) ? null : `“${machineLabel(machine)}” does not offer the selected profile.`;
 }
 
-type Source = "launch" | "last launch" | "repository default" | "account default" | "deployment default";
+type Source = "launch" | "repository default" | "account default" | "deployment default";
 
 interface StartDestination {
 	source: Source;
@@ -28,14 +28,13 @@ interface StartDestination {
 /** A missing inventory is still loading. An empty inventory has no paired machines. */
 export function resolveStartPlace(input: {
 	launch?: SandboxPlace;
-	last?: SandboxPlace | null;
 	repository?: StartPlace | null;
 	account?: StartPlace | null;
 	machines: readonly MachineSummary[] | null;
 }): StartDestination {
 	const notes: string[] = [];
 	const candidates: [Source, SandboxPlace | StartPlace | null | undefined][] = [
-		["launch", input.launch], ["last launch", input.last], ["repository default", input.repository], ["account default", input.account],
+		["launch", input.launch], ["repository default", input.repository], ["account default", input.account],
 	];
 	for (const [source, place] of candidates) {
 		if (!place) continue;
@@ -45,7 +44,6 @@ export function resolveStartPlace(input: {
 		const profiles = machine && startProfiles(machine);
 		if (machine && profiles?.length) {
 			if (!("profile" in place)) {
-				if (source === "last launch") return { source, machine, notes };
 				const saved = [input.repository, input.account].find(p => p?.kind === "machine" && p.machineId === machine.machineId && profiles.some(offered => offered.id === p.profile));
 				return { source, machine, profile: saved?.kind === "machine" ? saved.profile : undefined, notes };
 			}

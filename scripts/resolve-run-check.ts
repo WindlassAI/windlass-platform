@@ -28,6 +28,17 @@ test("planning, review, critic, summary and setup use the Windlass model", () =>
 	}
 });
 
+test("planning resolves each review field within each layer and charges the resolved provider", () => {
+	const layers: RunContext = { account: { model: "astra", effort: "low", reviewModel: "anthropic/claude-opus", reviewEffort: "high" }, repository: { effort: "medium" } };
+	for (const role of ["planner", "reviewer", "critic", "summary"] as const) {
+		const run = resolveRun(layers, role);
+		assert.deepEqual([run.model, run.effort, run.sources.model, run.sources.effort, run.payer, run.sources.payer], ["anthropic/claude-opus", "medium", "account", "repository", "key", "account"]);
+		assert.equal(resolveRun({ ...layers, item: { model: "chosen" } }, role).model, "chosen");
+	}
+	for (const role of ["builder", "part", "repair", "setup", "environment"] as const)
+		assert.equal(resolveRun(layers, role).model, "astra");
+});
+
 test("parts and repairs inherit their repository and keep agent-specific models separate", () => {
 	const withSibling = { ...context, repositories: { sibling: { harness: "codex" as const } } };
 	for (const role of ["part", "repair"] as const) {

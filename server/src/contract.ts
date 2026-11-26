@@ -891,6 +891,8 @@ export interface RepositoryDefaults extends RepositoryAutonomy, ItemPlaceDefault
 	screenshots: boolean;
 	/** The sandbox profile, by its id; null when none is saved. */
 	profile: SandboxProfileId | null;
+	reviewModel?: string | null;
+	reviewEffort?: string | null;
 	effort?: string | null;
 	/** The model; null when none is saved. */
 	model: string | null;
@@ -943,16 +945,6 @@ export type AccountDefaults = Omit<RepositoryDefaults, keyof RepositoryAutonomy 
 export type AccountDefaultsPatch = Partial<Omit<AccountDefaults, "updatedAt">>;
 export type RepositoryDefaultsPatch = Partial<Omit<RepositoryDefaults, "updatedAt" | "mergeKinds">> & { offer?: import("./factory/readiness-track.js").Offer };
 
-/** Last personal launch, retained after deleting the session. Item sessions never replace it. */
-export interface LastStart {
-	place: SandboxPlace;
-	harness: HarnessId;
-	/** The mode the agent started in: one of that agent's own. */
-	mode: string;
-	/** When, ms since the epoch. */
-	startedAt: number;
-}
-
 /** User-owned MCP definition supplied to every session independent of repository configuration. */
 export interface PersonalServer {
 	/** Its key in Windlass's configuration: what the model calls it by. */
@@ -986,8 +978,6 @@ export interface PersonalServerReach {
 /** The account's settings, as their page shows them. No value of a secret is among them: `accountSecrets` lists those. */
 export interface AccountSettings {
 	defaults: AccountDefaults;
-	/** Where the user's newest agent was started, its agent and its mode (`LastStart`); null before the first, or once forgotten. */
-	lastStart: LastStart | null;
 	/** By name. */
 	servers: PersonalServer[];
 	/** One entry for each sandbox this deployment can run. */
@@ -2123,8 +2113,6 @@ export interface UserActions {
 	account(): Promise<AccountSettings>;
 	/** Omission preserves a field and null clears it. Repository overrides still take precedence. */
 	saveAccountDefaults(input: AccountDefaultsPatch): Promise<AccountDefaults>;
-	/** Clears the remembered launch so saved start places apply. The next personal launch is remembered again. */
-	forgetLastStart(): Promise<AccountSettings>;
 	/**
 	 * Saves an MCP server of the user's own. With `existing`, the definition of the one of that name is
 	 * replaced, and its setting with it; without, a new one is added. `unasked` is `PersonalServer.unasked`,

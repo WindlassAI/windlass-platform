@@ -52,6 +52,7 @@ function refused(raw: unknown): { code: string; message: string } | null {
 }
 
 expect("a sandbox this deployment can run and one of the user's models are taken", plain(cleanDefaults({ profile: "docker-hardened", model: "gpt-6-luna" }, PROFILES, MODELS)) === plain({ profile: "docker-hardened", model: "gpt-6-luna" }));
+expect("a review model must be offered by the account or a checked key", refused({ reviewModel: "anthropic/missing" })?.code === "bad_model" && cleanDefaults({ reviewModel: "gpt-6-luna" }, PROFILES, MODELS).reviewModel === "gpt-6-luna");
 expect("a field that is left out is not part of the change", plain(cleanDefaults({ model: "gpt-6-luna" }, PROFILES, MODELS)) === plain({ model: "gpt-6-luna" }) && plain(cleanDefaults({}, PROFILES, MODELS)) === "{}");
 expect("null saves none for a field", plain(cleanDefaults({ profile: null, model: null }, PROFILES, MODELS)) === plain({ profile: null, model: null }));
 expect("screenshots must be a boolean", [null, 0, "false"].every(screenshots => refused({ screenshots })?.code === "bad_input"));
@@ -87,6 +88,10 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 	expect("a change that names no field keeps nothing either", values(await saveDefaults(db, HARBOR, "acme/harbor", {}, 1)) === plain([null, null]) && rows().length === 0);
 	expect("screenshot opt-in is stored without other defaults", (await saveDefaults(db, HARBOR, "", cleanDefaults({ screenshots: true }, PROFILES, MODELS), 2)).screenshots && (await readDefaults(db, HARBOR)).screenshots);
 	expect("opting out restores the repository default", (await saveDefaults(db, HARBOR, "", { screenshots: false }, 3)).screenshots === false && rows().length === 0);
+	await saveDefaults(db, HARBOR, "", { reviewModel: "gpt-6-luna", reviewEffort: "high" }, 4);
+	await saveDefaults(db, HARBOR, "", { reviewModel: null }, 5);
+	expect("clearing the review model preserves the separate effort", (await readDefaults(db, HARBOR)).reviewEffort === "high");
+	await saveDefaults(db, HARBOR, "", { reviewEffort: null }, 6);
 	const first = await saveDefaults(db, HARBOR, "acme/harbor", { profile: "docker-hardened" }, 10);
 	expect("a sandbox saved alone leaves the model as none, and says when", !first.screenshots && values(first) === plain(["docker-hardened", null]) && first.updatedAt === 10, plain(first));
 	const second = await saveDefaults(db, HARBOR, "", { model: "gpt-6-luna" }, 20);
@@ -128,10 +133,9 @@ const values = (defaults: RepositoryDefaults) => plain([defaults.profile, defaul
 	expect("each scope retains its machine and profile independently of hosted sandbox and work items",
 		plain(account) === plain(machine) && plain(repo.startPlace) === plain({ ...machine, machineId: "laptop" }) && typeof repo.place === "object" && repo.place?.machine === "laptop");
 	const saved = { machines, account, repository: repo.startPlace };
-	expect("a launch choice precedes even a remembered hosted launch", resolveStartPlace({ ...saved, launch: machine, last: hosted }).source === "launch");
-	expect("the remembered launch precedes saved places", resolveStartPlace({ ...saved, last: hosted }).machine === null && resolveStartPlace({ ...saved, last: hosted }).source === "last launch");
+	expect("a launch choice precedes saved places", resolveStartPlace({ ...saved, launch: hosted }).source === "launch");
 	const chosen = resolveStartPlace(saved);
-	expect("after Forget, a repository machine and its own profile win", chosen.machine === laptop && chosen.profile === machine.profile);
+	expect("a repository machine and its own profile win", chosen.machine === laptop && chosen.profile === machine.profile);
 	const unpaired = resolveStartPlace({ ...saved, machines: [nas] });
 	expect("an unpaired repository machine falls through to the account with an explanation", unpaired.machine === nas && unpaired.notes[0]?.includes("no longer paired") === true);
 	const disallowed = resolveStartPlace({ ...saved, machines: [nas, { ...laptop, allowedProfiles: ["docker-windlass-sandbox"] }] });

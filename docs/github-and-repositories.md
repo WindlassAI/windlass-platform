@@ -947,7 +947,7 @@ longer covers with a setup command, secret and approval still saved (`/repositor
 
 Account settings apply across repositories. On `/settings` (account menu; `web/src/screens/Settings.tsx`) the owner sets
 defaults for new sessions, the user's own MCP servers, and the secrets those read. Each is its own table in the
-`user` actor with its own actions (`account`, `saveAccountDefaults`, `forgetLastStart`, `savePersonalServer`,
+`user` actor with its own actions (`account`, `saveAccountDefaults`, `savePersonalServer`,
 `deletePersonalServer`, `accountSecrets`, `saveAccountSecret`, `deleteAccountSecret`). With work items, the page
 also has the user's API tokens for filing them by script and, when configured, the Linear workspace
 and team mappings ([Linear intake](work-items.md#linear-intake)). **Where work items run** stores the
@@ -960,7 +960,7 @@ and up to 32 model IDs. The Settings screen uses these actions to add, check, re
 
 ### Defaults
 
-- A sandbox profile and a model (`server/src/account-defaults.ts`), under a repository's defaults' rules,
+- A sandbox profile and a model (`server/src/repository-defaults.ts`), under a repository's defaults' rules,
   concurrent saves included.
 - **Order**, per field: the form's choice, then the repository's default, then the account's, then the
   deployment's first sandbox and the user's default model (`layerChoices`, `web/src/lib/repositories.ts`). An
@@ -968,10 +968,6 @@ and up to 32 model IDs. The Settings screen uses these actions to add, check, re
 - **The form says** which defaults it stands on and whose each is, offers to undo a choice made over a default,
   and says of an unusable default that it is ignored, whose it was and where to change it. A repository's
   Settings say what an empty field comes to.
-- **The last start** is not a default: the place, agent and mode of the newest agent the user started, written
-  in its own row when the server makes it (`AccountSettings.lastStart`; work items' agents never write it). The
-  form starts those three from it alone (`startedOn`), so `forgetLastStart` does what it says. An unusable
-  machine, or an agent it no longer offers, falls back to hosted with Windlass, and the form says so.
 
 ### MCP servers of the user's own
 

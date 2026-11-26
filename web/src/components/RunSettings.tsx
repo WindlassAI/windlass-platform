@@ -156,7 +156,7 @@ function HostedFields({ hosted, inputs, disabled, onChange }: { hosted: Resolved
 	);
 }
 
-function AgentFields({ run, inputs, disabled, onChange, agentChoice = true }: { run: ResolvedRun; inputs: RunInputs; disabled: boolean; onChange(patch: AccountDefaultsPatch): void; agentChoice?: boolean }) {
+function AgentFields({ run, inputs, disabled, onChange, review }: { run: ResolvedRun; inputs: RunInputs; disabled: boolean; onChange(patch: AccountDefaultsPatch): void; review?: Pick<AccountDefaultsPatch, "reviewModel" | "reviewEffort"> }) {
 	const id = useId();
 	const list = inputs.modelsOf(run);
 	const windlass = run.agent === "windlass";
@@ -170,23 +170,23 @@ function AgentFields({ run, inputs, disabled, onChange, agentChoice = true }: { 
 	return (
 		<>
 			<div className="run-fields">
-				{agentChoice ? <div className="field">
+				{!review ? <div className="field">
 					<label className="label" htmlFor={id}>Agent</label>
 					<select id={id} className="select" value={run.agent} disabled={disabled} onChange={(e) => onChange(agentPatch(e.target.value as HarnessId))}>
 						{AGENTS.map((agent) => <option key={agent} value={agent}>{HARNESS_NAMES[agent]}</option>)}
 					</select>
 				</div> : null}
 				<div className="field">
-					<label className="label" htmlFor={id + "-model"}>{agentChoice ? "Model" : "Planning model"}</label>
-					<ModelSelect id={id + "-model"} harness={run.agent} list={list} value={model} disabled={disabled}
-						inherit={{ label: windlass ? `${runModelName({ agent: "windlass", model: null }, list)} (default)` : `${HARNESS_NAMES[run.agent]}'s default` }}
-						onChange={(next) => onChange(windlass ? { model: next || null } : { harness: run.agent, machineModel: next || null, machineEffort: null })} />
+					<label className="label" htmlFor={id + "-model"}>{review ? "Planning model" : "Model"}</label>
+					<ModelSelect id={id + "-model"} harness={run.agent} list={list} value={review ? review.reviewModel ?? "" : model} disabled={disabled}
+						inherit={{ label: review ? "Same as building" : windlass ? `${runModelName({ agent: "windlass", model: null }, list)} (default)` : `${HARNESS_NAMES[run.agent]}'s default` }}
+						onChange={(next) => onChange(review ? { reviewModel: next || null, reviewEffort: null } : windlass ? { model: next || null } : { harness: run.agent, machineModel: next || null, machineEffort: null })} />
 				</div>
-				{efforts.length > 0 || run.effort ? (
+				{review || efforts.length > 0 || run.effort ? (
 					<div className="field field-effort">
 						<label className="label" htmlFor={id + "-effort"}>Effort</label>
-						<EffortSelect id={id + "-effort"} efforts={efforts} value={run.effort ?? ""} model={runModelName(run, list)} disabled={disabled}
-							onChange={(level) => { const effort = level && level !== "default" ? level : null; onChange(windlass ? { effort } : { harness: run.agent, machineEffort: effort }); }} />
+						<EffortSelect id={id + "-effort"} efforts={efforts} value={run.effort ?? ""} model={runModelName(run, list)} disabled={disabled || (!efforts.length && !run.effort)}
+							onChange={(level) => { const effort = level && level !== "default" ? level : null; onChange(review ? { reviewEffort: effort } : windlass ? { effort } : { harness: run.agent, machineEffort: effort }); }} />
 					</div>
 				) : null}
 			</div>
@@ -253,7 +253,6 @@ export function DefaultAgent({ account }: { account: AccountState }) {
 	const auth = useAuth();
 	const inputs = useRunInputs();
 	const { saving, save, status } = useSave();
-	const [planner, setPlanner] = useState(false);
 	const defaults = account.settings?.defaults ?? null;
 	if (!defaults || !inputs.info) return <p className="usage-empty" aria-busy="true">Reading your defaults…</p>;
 	const run = runOf({ account: defaults, machines: inputs.list, sizes: inputs.sizes });
@@ -264,12 +263,10 @@ export function DefaultAgent({ account }: { account: AccountState }) {
 	});
 	return (
 		<div className="run-default">
+			<h3 className="usage-title">Builds with</h3>
 			<AgentFields run={run} inputs={inputs} disabled={saving} onChange={change} />
-			<p className="field-note run-note">
-				Runs on {placeName(run.place, inputs.list)}, <a className="link" {...linkProps({ name: "machines" })}>chosen on Machines</a>.{" "}
-				{run.agent === "windlass" ? "Planning, review and summaries use this model too." : <>Planning, review and summaries run on Windlass with {runModelName(planning, inputs.models.list)}. {!planner && <button type="button" className="link" onClick={() => setPlanner(true)}>Change</button>}</>}
-			</p>
-			{planner && run.agent !== "windlass" ? <AgentFields run={planning} inputs={inputs} disabled={saving} agentChoice={false} onChange={change} /> : null}
+			<h3 className="usage-title">Plans &amp; reviews with</h3>
+			<AgentFields run={planning} inputs={inputs} disabled={saving} review={defaults} onChange={change} />
 			{status}
 		</div>
 	);
@@ -281,6 +278,7 @@ interface OverrideRowProps {
 	title: string;
 	value: string;
 	source: RunSource;
+	overridden?: boolean;
 	open: boolean;
 	disabled: boolean;
 	onOpen(): void;
@@ -288,7 +286,7 @@ interface OverrideRowProps {
 	children: ReactNode;
 }
 
-function OverrideRow({ title, value, source, open, disabled, onOpen, onReset, children }: OverrideRowProps) {
+function OverrideRow({ title, value, source, overridden = source === "repository", open, disabled, onOpen, onReset, children }: OverrideRowProps) {
 	const own = source === "repository";
 	return (
 		<div className={`run-row${open ? " run-row-open" : ""}`}>
@@ -296,13 +294,13 @@ function OverrideRow({ title, value, source, open, disabled, onOpen, onReset, ch
 				<span className="run-row-title">{title}</span>
 				<span className="run-row-value">{value}</span>
 				<span className={`run-row-source${own ? " run-row-own" : ""}`}>{own ? "set for this repository" : SOURCE_WORDS[source]}</span>
-				{own ? (
+				{overridden ? (
 					<button type="button" className="link run-row-action" disabled={disabled} onClick={onReset}>Use your default</button>
 				) : open ? null : (
 					<button type="button" className="link run-row-action" disabled={disabled} onClick={onOpen}>Override for this repository</button>
 				)}
 			</div>
-			{open || own ? <div className="run-row-body">{children}</div> : null}
+			{open || overridden ? <div className="run-row-body">{children}</div> : null}
 		</div>
 	);
 }
@@ -310,10 +308,11 @@ function OverrideRow({ title, value, source, open, disabled, onOpen, onReset, ch
 export function RepositoryOverrides({ account, defaults, save, onSaved }: { account: AccountState; defaults: RepositoryDefaults; save(change: AccountDefaultsPatch): Promise<RepositoryDefaults>; onSaved(next: RepositoryDefaults): void }) {
 	const inputs = useRunInputs();
 	const { saving, save: persist, status } = useSave();
-	const [open, setOpen] = useState<"place" | "agent" | "hosted" | null>(null);
+	const [open, setOpen] = useState<"place" | "agent" | "review" | "hosted" | null>(null);
 	if (!account.settings || !inputs.info) return <p className="usage-empty" aria-busy="true">Reading your defaults…</p>;
 	const layers = { account: account.settings.defaults, repository: defaults, machines: inputs.list, sizes: inputs.sizes };
 	const run = runOf(layers);
+	const planning = runOf(layers, "planner");
 	const hosted = runOf({ ...layers, item: { place: "hosted" } satisfies RunSettings });
 	const change = (patch: AccountDefaultsPatch) => persist(async () => onSaved(await save(patch)));
 	const reset = (patch: AccountDefaultsPatch) => { setOpen(null); void change(patch); };
@@ -329,6 +328,10 @@ export function RepositoryOverrides({ account, defaults, save, onSaved }: { acco
 			<OverrideRow title="Agent" value={runWords(run, inputs.list, list, { place: false })} source={sourceOf(run, ["agent", "model", "effort"])} open={open === "agent"} disabled={saving}
 				onOpen={() => setOpen("agent")} onReset={() => reset({ harness: null, machineModel: null, machineEffort: null, model: null, effort: null })}>
 				<AgentFields run={run} inputs={inputs} disabled={saving} onChange={change} />
+			</OverrideRow>
+			<OverrideRow title="Plans &amp; reviews" value={runWords(planning, inputs.list, inputs.models.list, { place: false })} source={sourceOf(planning, ["model", "effort"]) === "repository" ? "repository" : "account"} overridden={defaults.reviewModel != null || defaults.reviewEffort != null} open={open === "review"} disabled={saving}
+				onOpen={() => setOpen("review")} onReset={() => reset({ reviewModel: null, reviewEffort: null })}>
+				<AgentFields run={planning} inputs={inputs} disabled={saving} review={defaults} onChange={change} />
 			</OverrideRow>
 			{hostedValue ? (
 				<OverrideRow title="Hosted sandbox" value={hostedValue} source={sourceOf(hosted, ["size", "profile"])} open={open === "hosted"} disabled={saving}
