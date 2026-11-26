@@ -35,7 +35,7 @@ import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine }
 import type { CheckRunUpdate } from "../github/checks.js";
 import type { GithubUser } from "../github/app.js";
 import { hostedCatalog } from "../sandbox/harnesses.js";
-import type { ItemReview, ModelList } from "../contract.js";
+import type { ItemReview, ModelList, PartScreenshots } from "../contract.js";
 import { itemAgent, ledgerSeconds, retryAt } from "../factory/budget.js";
 import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
@@ -2328,6 +2328,15 @@ export const workItem = actor({
 			requireService(c);
 			if (!c.vars.stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
 			return await viewOf(c);
+		},
+
+		internalScreenshotSets: async (c): Promise<Omit<PartScreenshots, "itemId" | "key" | "title">[]> => {
+			requireService(c);
+			const filed = [
+				...(await c.db.execute<{ data: string }>("SELECT data FROM reports ORDER BY at DESC LIMIT 20")).map(row => JSON.parse(row.data) as ItemReport),
+				...(await c.db.execute<{ data: string }>("SELECT data FROM reviews ORDER BY at DESC LIMIT 20")).map(row => ({ ...JSON.parse(row.data) as ItemReview, by: "reviewer" as const })),
+			];
+			return filed.filter(one => one.screenshots.length > 0).map(one => ({ by: one.by, head: one.head, at: one.at, screenshots: one.screenshots })).sort((a, b) => b.at - a.at);
 		},
 
 		internalSecretRequestLimit: async (c, key: string, name: string): Promise<string | null> => {

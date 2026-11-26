@@ -9,7 +9,7 @@
  * nothing in them becomes a link.
  */
 import type { ItemAttachment } from "@contract";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import type { AttachmentLink } from "../api/client";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
@@ -214,13 +214,13 @@ function FullSize({ shot, links, onClose }: { shot: ItemAttachment; links: Scree
  * Screenshots in filing order. Builder screenshots name the commit published for the report.
  * Reviewer screenshots name the checkout the reviewer inspected.
  */
-export function Screenshots({ by, head, shots, links, days }: { by: ItemAttachment["by"]; head: string | null; shots: ItemAttachment[]; links: ScreenshotLinks; days?: number }) {
+export function Screenshots({ by, head, shots, links, days, label = "Screenshots" }: { by: ItemAttachment["by"]; head: string | null; shots: ItemAttachment[]; links: ScreenshotLinks; days?: number; label?: ReactNode }) {
 	const [open, setOpen] = useState<ItemAttachment | null>(null);
 	if (shots.length === 0) return null;
 	const kept = shots.some((shot) => shot.state === "kept");
 	return (
 		<section className="item-shots" aria-label={by === "builder" ? "Screenshots by the agent that made the change" : "Screenshots by the second reviewer"}>
-			<p className="machine-label item-shots-label">Screenshots</p>
+			<p className="machine-label item-shots-label">{label}</p>
 			{kept ? (
 				<>
 					<p className="usage-gloss">{whoLine(by, head)}</p>

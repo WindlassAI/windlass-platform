@@ -901,6 +901,18 @@
 	margin-top: 22px;
 }
 
+/* A feature's parts' screenshots: a block a part, its sets under it. */
+.item-part-shots {
+	display: grid;
+	gap: 14px;
+}
+.item-part-shots .item-shots + .item-shots {
+	margin-top: 8px;
+}
+.item-repair-why {
+	margin-top: 8px;
+}
+
 /* Screenshots under a report: small pictures in a row, each with its caption, and full size in a dialog. */
 .item-shots {
 	padding: 12px 8px 4px 12px;
@@ -2260,8 +2272,10 @@ a.plan-task-title:hover {
 	font-size: var(--text-13);
 	color: var(--ink);
 }
-.plan-ask-answer::before {
-	content: "→ ";
+.plan-ask-by {
+	margin-right: 4px;
+	font-family: var(--font-mono);
+	font-size: var(--size-mono-small);
 	color: var(--ink-faint);
 }
 .plan-ask-why {
@@ -2923,6 +2937,13 @@ a.plan-task-title:hover {
 	text-underline-offset: 3px;
 }
 /* Inline text, so that a long reason wraps as a sentence does. */
+/* Why the factory added a repair part, under its title. */
+.subtask-run-why {
+	margin-top: 1px;
+	font-size: var(--text-13);
+	color: var(--ink-dim);
+	text-wrap: pretty;
+}
 .subtask-run-doing {
 	margin-top: 1px;
 	font-size: var(--text-13);

@@ -263,7 +263,9 @@ function PlanAsk({ question, edit }: { question: FeaturePlan["questions"][number
 		return (
 			<div className="plan-ask plan-ask-answered">
 				<p className="plan-ask-text">{ask}</p>
-				<p className="plan-ask-answer">{question.answeredBy === "critic" && "Answered by the reviewer: "}{question.answer}</p>
+				<p className="plan-ask-answer">
+					<span className="plan-ask-by">{question.answeredBy === "critic" ? "The plan reviewer's answer" : "Your answer"}</span> {question.answer}
+				</p>
 				{background}
 			</div>
 		);
@@ -353,6 +355,8 @@ export function PlanSection({ view, review, acting }: { view: ItemView; review: 
 							<Inline text={plan.spec.goal} />
 						</p>
 					</div>
+					{/* What was answered stays in sight while the rest of the plan is folded. */}
+					{plan.questions.filter((question) => question.answer).map((question) => <PlanAsk key={question.id} question={question} />)}
 					<p className="plan-folded">
 						<FoldToggle open={false} controls={body} label={FOLD_WORDS.all} onToggle={() => setOpened(true)} />
 						<span className="tone-dim">{[...specParts(plan), plural(plan.subtasks.length, "subtask brief")].join(" · ")}</span>

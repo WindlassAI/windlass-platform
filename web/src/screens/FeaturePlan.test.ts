@@ -227,6 +227,19 @@ describe("a feature's plan on its page", () => {
 		expect(host.querySelector(".plan-question")?.textContent).toContain(reason);
 	});
 
+	it("gathers its parts' screenshots, the part that filed last first, each linking to its part", async () => {
+		make({ items: "features" });
+		const feature = await featureNamed("Nightly tide table as a PDF");
+		await show(`/items/${feature.id}`);
+		await settle();
+		const section = host.querySelector('[aria-labelledby="item-part-shots"]')!;
+		expect(section.querySelector("h2")?.textContent).toBe("Screenshots from the parts3 screenshots");
+		const parts = [...section.querySelectorAll(".item-report-title")];
+		expect(parts.map((part) => part.textContent)).toEqual(["Part 2: Render the table as a PDF", "Part 1: Read the night's readings"]);
+		expect(parts[0]?.getAttribute("href")).toBe(`/items/${feature.children!.find((child) => child.parent?.key === "render")!.id}`);
+		expect([...section.querySelectorAll(".item-shot-caption")].map((caption) => caption.textContent)[0]).toBe("The first page of the PDF: Dover, with its high and low waters");
+	});
+
 	it("links a reviewer-approved plan to the repository's work item approvals", async () => {
 		make({ items: "features" }, item => item.plan ? { ...item, plan: { ...item.plan, approvedBy: "critic",
 			questions: [{ id: "newline", text: "Add a trailing newline?", answer: "Yes", answeredBy: "critic" }] } } : item);
@@ -234,7 +247,7 @@ describe("a feature's plan on its page", () => {
 		await show(`/items/${feature.id}`);
 		openPlan();
 		expect(host.querySelector(".feature-plan .plan-ask-text")?.textContent).toBe("Add a trailing newline?");
-		expect(host.querySelector(".feature-plan .plan-ask-answer")?.textContent).toBe("Answered by the reviewer: Yes");
+		expect(host.querySelector(".feature-plan .plan-ask-answer")?.textContent).toBe("The plan reviewer's answer Yes");
 		const change = host.querySelector('.feature-plan a[aria-label="Change work item approvals"]');
 		expect(change?.textContent).toBe("Change");
 		expect(change?.getAttribute("href")).toBe(`/repositories/${feature.repository.id}/settings#autonomy`);
@@ -270,6 +283,9 @@ describe("a feature's plan on its page", () => {
 		// Approved and running: the subtasks block shows where each one is, and the plan folds under it.
 		expect(host.querySelector(".subtasks-block")).not.toBeNull();
 		expect(host.querySelector(".plan-task")).toBeNull();
+		// The answer stays in sight beside the folded plan, saying who gave it.
+		expect(host.querySelector(".feature-plan .plan-ask-text")?.textContent).toBe("Should search include the notes of releases older than 2.0?");
+		expect(host.querySelector(".feature-plan .plan-ask-answer")?.textContent).toBe("Your answer No, 2.0 and later");
 		openPlan();
 		expect(host.querySelector(".plan-task:first-child .plan-task-title")?.tagName).toBe("A");
 	});
@@ -423,8 +439,9 @@ describe("a feature's plan on its page", () => {
 		await show(`/items/${feature.id}`);
 		// The subtasks block says what each is doing now; the plan is folded under it.
 		// Running first, then what is next; the merged one is folded under Done.
-		expect([...host.querySelectorAll(".subtask-run .subtask-run-word")].map((word) => word.textContent)).toEqual(["running", "waits for"]);
-		expect([...host.querySelectorAll(".subtask-group-head")].map((head) => head.textContent)).toEqual(["Running now1 of 3", "Up next1", "Done1 integratedShow"]);
+		// The factory's repair of the feature's CI runs with them, and the integrated count stays the plan's.
+		expect([...host.querySelectorAll(".subtask-run .subtask-run-word")].map((word) => word.textContent)).toEqual(["running", "running", "waits for"]);
+		expect([...host.querySelectorAll(".subtask-group-head")].map((head) => head.textContent)).toEqual(["Running now2 of 3", "Up next1", "Done1 integratedShow"]);
 		expect(host.querySelector(".subtasks-head .subtask-tally")?.textContent).toBe("1 of 3 integrated");
 		expect(host.querySelector(".plan-task")).toBeNull();
 		openPlan();

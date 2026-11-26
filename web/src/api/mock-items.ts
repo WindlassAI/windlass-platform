@@ -1270,6 +1270,11 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 		const view = viewOf({ ...seed, title: sub.title, on: HARBOR, body: sub.brief, acceptance: sub.acceptance }, at, uid);
 		return { ...view, mode: "single", parent: { itemId: parent.id, key, title: parent.title }, plan: null, children: [], budget: { tokens: sub.budget.tokens, hostedSeconds: MOCK_FACTORY_LIMITS.item.hostedSeconds }, review: { state: "off", recommendation: null }, reviewNone: FEATURE_REVIEW, task: { ...view.task, base: `windlass/feature-${parent.id}` } };
 	};
+	// A part the factory adds on its own (blueprint.ts, `queueRepair`): not in the plan, keyed "ci-fix-<n>" or "conflict-fix-<n>".
+	const repair = (parent: ItemView, key: string, title: string, body: string, seed: Omit<Seed, "title" | "on" | "body">): ItemView => {
+		const view = viewOf({ ...seed, title, on: HARBOR, body }, at, uid);
+		return { ...view, mode: "single", parent: { itemId: parent.id, key, title: parent.title }, plan: null, children: [], review: { state: "off", recommendation: null }, reviewNone: FEATURE_REVIEW, task: { ...view.task, base: `windlass/feature-${parent.id}` } };
+	};
 
 	// 1. Waiting for approval: three subtasks in a chain, and a question to answer before it can be approved.
 	const searchPlan = featurePlan(
@@ -1328,7 +1333,12 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 	);
 	const writer = child(exporting, "writer", { n: 63, title: "", on: HARBOR, state: "done", filed: 79, run: { n: 1, started: 79, ended: 31, stopReason: null, rounds: { plan: 0, gate: 1, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 31 } }, spent: { tokens: 1_210_000, turns: 3, activeSeconds: 44 * 60, hostedSeconds: 41 * 60 } });
 	const flag = child(exporting, "flag", { n: 64, title: "", on: HARBOR, state: "working", filed: 30, run: { n: 1, started: 30, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 29, turn: "started" } }, spent: { tokens: 520_000, turns: 1, activeSeconds: 12 * 60, hostedSeconds: 12 * 60 } });
-	exporting.children = [writer, flag].map(summaryOf);
+	// The feature's CI failed once the writer was integrated: the factory added a part to fix it (not in `?long=1`, whose parts are its own).
+	const ciFix = repair(exporting, "ci-fix-7", "Fix failing feature checks", "Inspect the feature diff with git diff main...4be1c02.\n\nThe check `test` failed on 4be1c02: `src/csv/writer.test.ts` expects CRLF line endings.", { n: 96, state: "working", filed: 20, run: { n: 1, started: 20, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 1, kind: "implement", started: 19, turn: "started" } }, spent: { tokens: 160_000, turns: 1, activeSeconds: 6 * 60, hostedSeconds: 6 * 60 } });
+	if (!long) {
+		exporting.events.push({ ...exporting.events[exporting.events.length - 1]!, at: ago(21), said: "Queued a fix for feature CI on 4be1c02." });
+		exporting.children = [writer, flag, ciFix].map(summaryOf);
+	} else exporting.children = [writer, flag].map(summaryOf);
 	const longOnes: ItemView[] = [];
 	if (long) {
 		const studio: SandboxPlace = { kind: "machine", machineId: "m_studio" };
@@ -1473,7 +1483,15 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 	query.placement = { place: nas, name: "nas", reason: "Same place as the feature", units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
 	const render = child(table, "render", { n: 72, title: "", on: HARBOR, state: "done", filed: 32, place: nas, run: { n: 1, started: 32, ended: 8, stopReason: null, rounds: { plan: 0, gate: 1, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 8 } }, spent: { tokens: 1_020_000, turns: 3, activeSeconds: 27 * 60, hostedSeconds: 0 } });
 	render.placement = { place: nas, name: "nas", reason: "Approved overflow from ‘studio’", units: 1, sendSecrets: true, profile: "docker-windlass-sandbox" };
-	table.children = [query, render].map(summaryOf);
+	// Screenshots each part filed with its report: the feature's page gathers them (`partScreenshots`).
+	withShots(query, 70, [{ ...AGENTS_1280, caption: "The night's readings for Dover, one row a reading", page: "/export/preview?station=dover" }], ago(34), `9c1e7a2${hex(70).slice(7)}`);
+	withShots(render, 72, [
+		{ ...ITEM_FULL_PAGE, caption: "The first page of the PDF: Dover, with its high and low waters", page: "/export/tide-table.pdf, page 1" },
+		{ ...AGENTS_390, caption: "The same page as a phone renders the PDF", page: "/export/tide-table.pdf, page 1" },
+	], ago(9), `51d0be4${hex(72).slice(7)}`);
+	// The main branch moved under the feature: the factory added a part to merge it, which is integrated.
+	const conflictFix = repair(table, "conflict-fix-4", "Resolve conflicts with main", "Merge main into the feature branch and resolve the conflicts in src/export/pdf/layout.ts.", { n: 97, state: "done", filed: 26, place: nas, run: { n: 1, started: 26, ended: 12, stopReason: null, rounds: { plan: 0, gate: 0, ci: 0, conflict: 0 }, step: { n: 6, kind: "merged", started: 12 } }, spent: { tokens: 240_000, turns: 1, activeSeconds: 9 * 60, hostedSeconds: 0 } });
+	table.children = [query, render, conflictFix].map(summaryOf);
 
 	// 7. A subtask that could not be placed once the feature got to it: "ci-box" was approved, and its owner set it to never since.
 	const alertsPlan = featurePlan(
@@ -1649,7 +1667,7 @@ function seededFeatures(at: number, uid: string, long = false): ItemView[] {
 	];
 	importing.completedSubtasks = ["parser"];
 
-	return [search, exporting, writer, flag, ...longOnes, theme, tokens, resuming, chart, table, query, render, alerts, detect, rounding, mail, sessionFeedback, importing, parser, units, cache];
+	return [search, exporting, writer, flag, ...(long ? [] : [ciFix]), ...longOnes, theme, tokens, resuming, chart, table, query, render, conflictFix, alerts, detect, rounding, mail, sessionFeedback, importing, parser, units, cache];
 }
 
 /** Match the server’s reasons when an item has no reviewer session. */
@@ -2058,6 +2076,19 @@ export function createMockItems(deps: MockItemsDeps) {
 		return structuredClone({ ...item, canRetry: canRetry(item), ...(item.plan && { unattended: unattendedKeys(item.plan, completed), completedSubtasks: [...completed] }) });
 	};
 
+	/** As the server's `partScreenshots`: a feature's page carries its parts' screenshot sets, the newest first. */
+	function withPartScreenshots(auth: AuthResult, view: ItemView): ItemView {
+		delete view.partScreenshots;
+		const items = keptOf(auth).items;
+		const sets = (view.children ?? []).flatMap((summary) => {
+			const part = items.find((one) => one.id === summary.id);
+			const filed = [...(part?.report ? [part.report] : []), ...(part?.reviews ?? []).map((review) => ({ ...review, by: "reviewer" as const }))];
+			return filed.filter((one) => one.screenshots.length > 0).map((one) => ({ itemId: summary.id, key: summary.parent?.key ?? "", title: summary.title, by: one.by, head: one.head, at: one.at, screenshots: structuredClone(one.screenshots) }));
+		});
+		if (sets.length) view.partScreenshots = sets.sort((a, b) => b.at - a.at);
+		return view;
+	}
+
 	/**
 	 * A feature's page while its plan is proposed carries the owner's current secrets policy for each place
 	 * the plan names, or inherits (user-items.ts, `attachmentStates`).
@@ -2097,7 +2128,7 @@ export function createMockItems(deps: MockItemsDeps) {
 			},
 			async item(id) {
 				await answer(220);
-				return withPlacementReview(auth, pageOf(itemOf(auth, id)));
+				return withPlacementReview(auth, withPartScreenshots(auth, pageOf(itemOf(auth, id))));
 			},
 			// As the server's `links`: the kept screenshots only, each a fresh ten-minute link. The mock's are the
 			// fixtures under web/public/mock/, with a query that differs on every answer as a signed link does.
@@ -2221,7 +2252,7 @@ export function createMockItems(deps: MockItemsDeps) {
 				await answer(360);
 				const item = itemOf(auth, id);
 				await act(auth, item, action);
-				return withPlacementReview(auth, pageOf(item));
+				return withPlacementReview(auth, withPartScreenshots(auth, pageOf(item)));
 			},
 			// Answered without work items too, as the server answers it: the ceiling on running agents is every agent's.
 			async factoryLimits() {
@@ -2481,6 +2512,16 @@ function withSeededReport(view: ItemView, n: number): ItemView {
 		screenshots,
 	};
 	return { ...view, report };
+}
+
+/** A builder's report on a feature's part with only screenshots in it, filed `at`: what the feature's page gathers. */
+function withShots(view: ItemView, n: number, shots: MockShot[], at: number, head: string): void {
+	const screenshots = shots.map((shot, index): ItemAttachment => {
+		const id = `a_${hex(n * 10 + index, 16)}`;
+		if (shot.file) MOCK_SHOT_FILES.set(id, shot.file);
+		return { id, by: "builder", sessionId: view.sessionId, head, width: shot.width, height: shot.height, bytes: shot.bytes, sha256: hex(n * 10 + index, 64), caption: shot.caption, shows: shot.shows ?? null, page: shot.page ?? null, state: "kept" };
+	});
+	view.report = { by: "builder", sessionId: view.sessionId, run: 1, key: `${view.id}:1:1:1`, head, at, title: view.title, blocks: screenshots.map((shot): MockBlock => ({ kind: "screenshot", attachment: shot.id })), records: [], screenshots };
 }
 
 // ---- the second review on the item's page (Reviewer slice R3-D) -------------------------------------

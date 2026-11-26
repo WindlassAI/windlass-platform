@@ -18,7 +18,7 @@ import { useId, useState, type ReactNode } from "react";
 import { FoldToggle, LongText } from "../components/Fold";
 import { absoluteTime, compact, plural } from "../lib/format";
 import { linkProps } from "../lib/router";
-import { activeSubtasks, doingNow, elapsed, groupSubtasks, plannedSubtasks, subtaskState, tallyParts, type PlannedSubtask, type SubtaskLine, type SubtaskState, type SubtaskTally } from "../lib/subtasks";
+import { activeSubtasks, doingNow, elapsed, groupSubtasks, plannedSubtasks, REPAIR_WHY, subtaskState, tallyParts, type PlannedSubtask, type SubtaskLine, type SubtaskState, type SubtaskTally } from "../lib/subtasks";
 import { ItemGlyph } from "./Items";
 
 const STATE_LABEL: Record<SubtaskState, string> = { running: "running", asks: "asks you", done: "done", stopped: "stopped", to_go: "not started" };
@@ -54,7 +54,7 @@ const askedText = (child: ItemSummary): string => child.question?.asked?.text ??
 function SubtaskName({ entry, className = "subtask-run-link" }: { entry: PlannedSubtask; className?: string }) {
 	return (
 		<>
-			<span className="subtask-run-n">{entry.n}</span>
+			<span className="subtask-run-n">{entry.repair ? "fix" : entry.n}</span>
 			{entry.child ? (
 				<a className={className} {...linkProps({ name: "item", id: entry.child.id })}>
 					{entry.task.title}
@@ -121,6 +121,7 @@ function SubtaskLineRow({ line, now }: { line: SubtaskLine; now: number }) {
 				<p className="subtask-run-title">
 					<SubtaskName entry={entry} />
 				</p>
+				{entry.repair ? <p className="subtask-run-why">{REPAIR_WHY[entry.repair]}</p> : null}
 				<p className="subtask-run-doing">
 					<span className="subtask-run-word">{line.word}</span>
 					{phase === "checks" && line.fact ? <code className="plan-code subtask-run-fact">{line.fact}</code> : phase === "place" && line.fact ? <span className="subtask-run-fact subtask-run-wait">{line.fact}</span> : <WaitsFor line={line} />}
@@ -161,20 +162,24 @@ export function showsSubtasks(view: Pick<ItemView, "plan" | "children" | "state"
 	return view.mode === "orchestrate" && view.plan?.status === "approved" && view.plan.subtasks.length > 0 && !["done", "failed", "cancelled"].includes(view.state);
 }
 
-/** "1 integrated · 1 failed": the done group's counts, by how each ended. */
+/** "1 integrated · 1 failed · 1 repair integrated": the done group's counts, by how each ended, the factory's repairs apart from the plan's parts. */
 export function doneWords(done: readonly SubtaskLine[]): string {
 	const counts = new Map<string, number>();
-	for (const line of done) counts.set(line.word, (counts.get(line.word) ?? 0) + 1);
-	return ["integrated", "failed", "cancelled"].filter((word) => counts.has(word)).map((word) => `${counts.get(word)} ${word}`).join(" · ");
+	for (const line of done) {
+		const word = line.entry.repair ? `repair ${line.word}` : line.word;
+		counts.set(word, (counts.get(word) ?? 0) + 1);
+	}
+	const order = ["integrated", "failed", "cancelled"];
+	return [...order, ...order.map((word) => `repair ${word}`)].filter((word) => counts.has(word)).map((word) => `${counts.get(word)} ${word}`).join(" · ");
 }
 
 /**
  * The feature page's block of its subtasks: "Running now (2 of 3)" first, each with what it is doing,
  * where and for how long; then "Up next", each with what holds it; then "Done", folded to its counts.
  */
-export function SubtasksBlock({ plan, children, jobs, now }: { plan: FeaturePlan; children: readonly ItemSummary[]; jobs?: ItemView["subtasks"]; now: number }) {
+export function SubtasksBlock({ plan, children, jobs, wait, now }: { plan: FeaturePlan; children: readonly ItemSummary[]; jobs?: ItemView["subtasks"]; wait?: ItemView["wait"]; now: number }) {
 	const subtasks = plannedSubtasks(plan, children);
-	const groups = groupSubtasks(plan, children, jobs);
+	const groups = groupSubtasks(plan, children, jobs, wait);
 	const [showDone, setShowDone] = useState(false);
 	const doneId = useId();
 	const planKeys = new Set(plan.subtasks.map((task) => task.key));
