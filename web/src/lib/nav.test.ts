@@ -48,9 +48,10 @@ describe("a page's trail", () => {
 
 	it("gives a work item's agent the item's trail, and the user's own agent Agents'", () => {
 		const part = sessionTrail({ title: "s", repository: harbor, item: { id: "p1" } }, { title: "Part", repository: harbor, parent: { itemId: "f1", title: "Feature" } });
-		expect(part.map((crumb) => crumb.label)).toEqual(["Factory", "harbor", "Feature", "Part", "Agent"]);
+		expect(part.map((crumb) => crumb.label)).toEqual(["Factory", "harbor", "Feature", "Part", "Builder"]);
 		expect(trailParent(part)).toEqual({ route: { name: "item", id: "p1" }, label: "Part" });
-		expect(sessionTrail({ title: "r", item: { id: "i1", role: "reviewer" } }, null).at(-1)?.label).toBe("Reviewer");
+		expect(sessionTrail({ title: "r", item: { id: "i1", role: "reviewer" } }, null).at(-1)?.label).toBe("Code review");
+		expect(sessionTrail({ title: "Part", item: { id: "i1", role: "reviewer", planCritic: true } }, null).at(-1)?.label).toBe("Plan review");
 		const own = sessionTrail({ title: "Fix it", repository: harbor }, null);
 		expect(own.map((crumb) => crumb.label)).toEqual(["Agents", "harbor", "Fix it"]);
 		expect(trailParent(own)).toEqual({ route: { name: "repository", id: 7101 }, label: "harbor" });

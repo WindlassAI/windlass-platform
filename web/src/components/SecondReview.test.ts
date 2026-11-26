@@ -193,9 +193,9 @@ describe("the second review's section", () => {
 		]);
 		const shown = host.querySelector(".review-article");
 		expect(shown?.textContent).toContain("the second round");
-		expect([...(shown?.querySelectorAll(".review-block-earlier .review-title") ?? [])].map((node) => node.textContent?.replace(/\s+/g, " "))).toEqual(["r1.f1 fixed", "r1.f2 not fixed"]);
+		expect([...(shown?.querySelectorAll(".review-block-earlier .review-title") ?? [])].map((node) => node.textContent?.replace(/\s+/g, " "))).toEqual(["Round 1, finding 1 fixed", "Round 1, finding 2 not fixed"]);
 		expect(shown?.querySelector(".review-block-earlier .review-continues")?.textContent).toBe("GET /healthz answers 200 during a migration");
-		expect(shown?.querySelector(".review-block-finding .review-continues")?.textContent).toBe("Raised in an earlier round as r1.f2: The version is read from package.json at every request");
+		expect(shown?.querySelector(".review-block-finding .review-continues")?.textContent).toBe("First raised in Round 1, finding 2: The version is read from package.json at every request");
 		expect(text).toContain("Show 1 earlier review");
 		const folded = host.querySelector("[hidden]");
 		expect(folded?.textContent).toContain("Second review: asks for changes");
@@ -256,7 +256,7 @@ describe("rendered on the item's page", () => {
 			const report = host.querySelector('section[aria-labelledby="item-report"]');
 			if (report) expect((panel?.compareDocumentPosition(report) ?? 0) & Node.DOCUMENT_POSITION_FOLLOWING, title).toBeTruthy();
 			// The header links the reviewer's session beside the builder's, where the item has one.
-			expect([...host.querySelectorAll(".item-actions a")].map((link) => link.textContent).includes("Reviewer"), title).toBe(view.reviewerSessionId !== null);
+			expect([...host.querySelectorAll(".item-actions a")].map((link) => link.textContent).includes(title + " · Code review"), title).toBe(view.reviewerSessionId !== null);
 		}
 	});
 });

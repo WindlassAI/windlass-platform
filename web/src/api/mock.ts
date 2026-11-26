@@ -44,6 +44,7 @@ import {
 	isolationName,
 	generatedSessionTitle,
 	promptTitle,
+	sessionTitle,
 	MAX_MACHINES,
 	CLAUDE_LAUNCH_MODES,
 	type RepositoryCheck,
@@ -1153,7 +1154,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const today = [...world.sessions.values()]
 			.map((session) => ({
 				sessionId: session.summary.id,
-				title: session.summary.title,
+				title: sessionTitle(session.summary),
 				// What the day's state adds is the busiest agent's.
 				seconds: (world.spent.get(session.summary.id) ?? 0) + (session.summary.id === "add-test" ? offset : 0),
 				unreportedSeconds: MOCK_UNREPORTED[session.summary.id] ?? 0,
@@ -1172,7 +1173,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			kept: keptSandboxes(world)
 				.map((session) => ({
 					sessionId: session.summary.id,
-					title: session.summary.title,
+					title: sessionTitle(session.summary),
 					state: session.summary.sandbox === "running" ? ("running" as const) : ("paused" as const),
 					usedAt: session.summary.updatedAt,
 					busy: session.summary.status !== "idle",
@@ -2963,7 +2964,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** The list as the server answers it: each sandbox named by its agent's title now, none for an agent that was deleted. */
 	function machinesView(auth: AuthResult): MachineSummary[] {
 		const world = worldOf(auth);
-		return machinesOf(auth).list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map(({ options, ...entry }) => listedHarness(options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry, [...world.account.providers.keys()], entry.source)), warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
+		return machinesOf(auth).list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map(({ options, ...entry }) => listedHarness(options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry, [...world.account.providers.keys()], entry.source)), warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => {
+			const session = world.sessions.get(sandbox.sessionId);
+			return { ...sandbox, title: session ? sessionTitle(session.summary) : null };
+		}) }));
 	}
 
 	function machinesChanged(auth: AuthResult): void {

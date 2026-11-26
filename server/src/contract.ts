@@ -343,6 +343,14 @@ export interface SessionSummary {
 	environment?: { commit: string; validatedAt: number; checks: number };
 }
 
+export function itemSessionRole(item: NonNullable<SessionSummary["item"]>): string {
+	return item.planCritic ? "Plan review" : item.role === "reviewer" ? "Code review" : "Builder";
+}
+
+export function sessionTitle(session: Pick<SessionSummary, "title" | "item">): string {
+	return session.item ? `${session.title} · ${itemSessionRole(session.item)}` : session.title;
+}
+
 /** The user index keeps one builder per item. Its reviewer is reachable from the item and counts toward its usage. */
 export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
 	const reviewers = new Map(sessions.flatMap(s => s.item?.role === "reviewer" && !s.item.planCritic ? [[s.item.id, { id: s.id, status: s.status }] as const] : []));

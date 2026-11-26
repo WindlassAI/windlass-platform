@@ -8,7 +8,7 @@
  * timezone"), and the header's back control returns to where you came from (lib/router.ts `useBack`),
  * falling back to the trail's parent on a direct visit.
  */
-import type { SessionRepository } from "@contract";
+import { itemSessionRole, type SessionSummary, type SessionRepository } from "@contract";
 import type { RepositoryPaneView, Route } from "./router";
 
 export type Section = "agents" | "factory" | "machines" | "account";
@@ -105,13 +105,13 @@ export function itemTrail(view: ItemLike | null): Crumb[] {
 
 /**
  * A session's trail. A work item's agent is the Factory's: the item's trail, the item linked, then the
- * agent ("Agent", or "Reviewer" for its second review). The user's own: Agents › its repository › its title.
+ * role (Builder, Code review or Plan review). The user's own: Agents › its repository › its title.
  */
-export function sessionTrail(session: { title: string | null; repository?: Repo | null; item?: { id: string; role?: string } }, itemView: ItemLike | null): Crumb[] {
+export function sessionTrail(session: { title: string | null; repository?: Repo | null; item?: SessionSummary["item"] }, itemView: ItemLike | null): Crumb[] {
 	if (session.item) {
 		const item = itemTrail(itemView ?? (session.repository ? { title: "Work item", repository: session.repository } : null));
 		const own = item.pop()!;
-		return [...item, { label: own.label, route: { name: "item", id: session.item.id } }, { label: session.item.role === "reviewer" ? "Reviewer" : "Agent" }];
+		return [...item, { label: itemView?.title ?? session.title ?? own.label, route: { name: "item", id: session.item.id } }, { label: itemSessionRole(session.item) }];
 	}
 	const repository = session.repository ?? null;
 	return [{ label: "Agents", route: { name: "home" } }, ...(repository ? [{ label: repository.name, route: { name: "repository", id: repository.id } as Route }] : []), { label: session.title ?? "Agent" }];

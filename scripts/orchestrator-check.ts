@@ -1126,10 +1126,12 @@ test("a subtask's agent: the planner may propose Claude Code or OpenCode, never 
 });
 
 test("approval names each agent that works without asking, and needs the person's confirmation of every one", () => {
-	const item = proposed(mixedPlan());
-	assert.match(item.question!.text, /index\. index .* Claude Code \(sonnet, high effort\), works without asking/);
-	assert.match(item.question!.text, /page\. page .* Windlass on the feature's model/);
-	assert.match(item.question!.text, /index would run an agent that works without asking/);
+	const plan = mixedPlan();
+	plan.subtasks[0].title = "Build the search index";
+	const item = proposed(plan);
+	assert.match(item.question!.text, /Build the search index .* Claude Code \(sonnet, high effort\), works without asking/);
+	assert.match(item.question!.text, /page .* Windlass on the feature's model/);
+	assert.match(item.question!.text, /“Build the search index” would run an agent that works without asking/);
 	const inventory = { machines: plannerMachines([agentMac()]), hostedProfiles: [] };
 	const approve = { kind: "approve_plan" as const, version: 1, at: 4, by: "person:owner", inventory };
 	for (const agents of [undefined, [], ["page"]])

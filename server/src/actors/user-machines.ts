@@ -5,7 +5,7 @@ import type { RawAccess } from "rivetkit/db";
 import { requireServiceFor, requireUser, serviceParams } from "../auth.js";
 import { config } from "../config.js";
 import { accountLimits, type UserLimits } from "../user-limits.js";
-import { machineLabel, type CredentialSource, type HarnessOptions, type MachineClaim, type MachineSummary, type SandboxPlace, type SessionSummary } from "../contract.js";
+import { machineLabel, sessionTitle, type CredentialSource, type HarnessOptions, type MachineClaim, type MachineSummary, type SandboxPlace, type SessionSummary } from "../contract.js";
 import type { Registry } from "../registry.js";
 import { machineDetails } from "../machines/details.js";
 import { machineProfiles } from "../machines/profiles.js";
@@ -107,7 +107,7 @@ export async function listMachines(c: { db: RawAccess; vars: Pick<Ctx["vars"], "
 		const { report, ...facts }: MachineUpdate = JSON.parse(row.facts);
 		const harnesses = report?.harnesses?.map(h => listedHarness(h, keys, sources.get(`${row.id}/${h.id}`)));
 		const sessions = [...c.vars.sessions.values()].filter(s => s.place.kind === "machine" && s.place.machineId === row.id);
-		const titles = new Map(sessions.map(s => [s.id, s.title]));
+		const titles = new Map(sessions.map(s => [s.id, sessionTitle(s)]));
 		return {
 			whenToUse: "", tags: [], orchestrator: "yes" as const,
 			...(row.details && JSON.parse(row.details) as import("../contract.js").MachineDetails),
