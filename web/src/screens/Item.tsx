@@ -1,4 +1,4 @@
-import { originIssue } from "../lib/origin";
+import { filingSource, originIssue } from "../lib/origin";
 import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemSummary, type ItemView, type SessionSummary, type StepKind, type Verdict } from "@contract";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
@@ -1007,7 +1007,7 @@ export function Item({ page }: { page: ItemPage }) {
 				<p className="item-meta">
 					<span><a {...linkProps({ name: "repository", id: repository.id })}>{repository.owner}/{repository.name}</a> → {view.task.base}</span>
 					{view.origin ? <IssueOrigin origin={view.origin} /> : (
-						<span>from {view.source === "api" ? "the API" : view.source === "github" ? "GitHub" : view.source === "linear" ? "Linear" : "the web"}</span>
+						<span>from {filingSource[view.source]}</span>
 					)}
 					<time dateTime={new Date(view.createdAt).toISOString()} title={absoluteTime(view.createdAt)}>filed {relativeTime(view.createdAt, now)}</time>
 					{view.endedAt !== undefined ? <time dateTime={new Date(view.endedAt).toISOString()} title={absoluteTime(view.endedAt)}>ended {relativeTime(view.endedAt, now)}</time> : null}

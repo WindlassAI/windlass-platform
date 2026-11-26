@@ -6,7 +6,7 @@ Work items need a repository from your GitHub connection. They run with Windlass
 
 The Factory has the same repository rail as **Agents**, with its search, owners and foot. There, a repository's ring counts its work items in progress and the amber count what needs you; choosing one shows only its work items. A repository with no work item is dimmer; choose it to file one on it.
 
-GitHub and Linear issues and the Factory composer use the repository’s **Work items** default, then the account setting, then Hosted. You can override the selection in the composer. Any of my machines takes the first compatible online machine with a free slot. If none is ready, the timeline explains the wait or hosted fallback. Plan first uses Windlass to plan and passes the placement preference to the planner for parts that fit. A part on the saved agent starts on its saved model and effort unless the planner chose one.
+GitHub and Linear issues, Slack requests and the Factory composer use the repository’s **Work items** default, then the account setting, then Hosted. You can override the selection in the composer. Any of my machines takes the first compatible online machine with a free slot. If none is ready, the timeline explains the wait or hosted fallback. Plan first uses Windlass to plan and passes the placement preference to the planner for parts that fit. A part on the saved agent starts on its saved model and effort unless the planner chose one.
 
 A work item runs in one of two ways:
 
@@ -111,7 +111,7 @@ Where the platform has a Linear OAuth client and signing secret, you can file a 
 
 `windlass-quick` (Linear does not allow a colon in a plain label name) selects **Quick**. The existing `windlass:quick` spelling also selects **Quick**. A plain `windlass` label selects **Plan first** by default. As on GitHub, a `bug` label selects **Quick** on a qualifying issue. An unrelated edit to an issue that already has the label or the assignment does not file anything. Each delivery from Linear is taken once, and one active issue files one item however many events qualify.
 
-**Placement and limits.** The item uses the same intake as GitHub: the repository's **Work items** default, then the account setting, then Hosted. It shares the daily limit with GitHub issues, drafts and filings in progress included, so a day's items from GitHub and Linear are counted together. If the daily limit is full, a later trigger or redelivery can file the issue once there is room.
+**Placement and limits.** The item uses the same intake as GitHub: the repository's **Work items** default, then the account setting, then Hosted. It shares the daily limit with GitHub issues, drafts and filings in progress included, so a day's items from GitHub, Linear and Slack are counted together. If the daily limit is full, a later trigger or redelivery can file the issue once there is room.
 
 **Trust.** Linear identifies the Windlass app as the connected user. Issues arrive as drafts with their authors' text quoted. Review and start the item in Windlass. Its page and list link to the Linear issue by its identifier, for example ENG-123.
 
@@ -120,6 +120,19 @@ Where the platform has a Linear OAuth client and signing secret, you can file a 
 Windlass attaches the pull request and comments when it opens, at handover, and when the item merges, fails or is cancelled. These comments include the PR link when available. At PR open or handover, Windlass moves the issue to **In Review** if the team has a Started state with that exact name and the move is forward. A merge moves the issue to a Completed state. Giving up or cancelling leaves the status for you to decide. Windlass preserves completed and canceled issues' statuses and only updates issues still in their mapped team. The item continues if Linear is unavailable. If you connected Linear before Windlass requested the `write` scope, reconnect to grant it.
 
 Removing a label, unassigning, editing or closing the Linear issue leaves the item as filed. To stop it, cancel it in Windlass. After the item ends, a new qualifying event on the active issue can file another item.
+
+### From Slack
+
+In a channel [mapped to a repository](/docs/settings#slack), mention the bot or use the slash command. For example:
+
+- `@Windlass Add installation steps to the setup guide` uses **Plan first** where planning is enabled.
+- `/windlass quick Fix the broken link in the setup guide` skips planning. Put `quick` first in a mention or command to select **Quick**.
+
+**File as yourself.** If you haven’t linked yet, no item is filed. Sign in to your own Windlass account, open the private, single-use link from the bot, confirm the link in Settings, then send your request again. You need current write access to the channel’s mapped repository; the installer’s permissions don’t count. DMs and unmapped channels don’t file items.
+
+An accepted request starts an item, not a tracker issue or a draft. The Slack text is quoted as untrusted input. Normal saved defaults, queueing and the daily intake limit apply. Slack retrying the same delivery won’t create a second item.
+
+**Follow the thread.** For a mention, the acknowledgement and updates stay in the request’s thread. When a slash command has no parent message, the bot’s channel acknowledgement starts the thread. Look there for short links when a plan needs approval, a question needs an answer, a pull request opens, or the item finishes or fails. Open the item in Windlass to approve or answer; repository content isn’t copied into Slack beyond titles and links.
 
 ### From the API
 
@@ -589,11 +602,11 @@ The Factory page lists your items by what you must do:
 
 A repository's **Work items** tab in **Agents** shows that repository's open items the same way, with its ended ones folded under **Show N ended items**. The **Work items** table on **Usage** shows the cost of your open items and your 25 newest ended ones, and says how many older ended items the Factory page lists.
 
-Filter it with **repo** and **from**: filed from the web, the API, a GitHub issue or a Linear issue. The filters are kept in the address, as `?repository=` and `?from=`.
+Filter it with **repo** and **from**: filed from the web, the API, a GitHub issue, a Linear issue or Slack. The filters are kept in the address, as `?repository=` and `?from=`.
 
 ## Limits
 
-When a Factory turn reaches a limit of this platform, the item waits and shows the reason. Machine turns use the runner's slots and do not count against hosted sandbox limits. GitHub and Linear intake share a daily filing limit. The deployment operator can override these limits for your account, and the **Work items** section of the **Usage** page shows them. By default:
+When a Factory turn reaches a limit of this platform, the item waits and shows the reason. Machine turns use the runner's slots and do not count against hosted sandbox limits. GitHub, Linear and Slack intake share a daily filing limit. The deployment operator can override these limits for your account, and the **Work items** section of the **Usage** page shows them. By default:
 
 | Limit | Default |
 | --- | --- |
@@ -601,7 +614,7 @@ When a Factory turn reaches a limit of this platform, the item waits and shows t
 | Tokens per item, cost-weighted | 2,000,000 |
 | Hosted sandbox time per item | 2 hours |
 | A feature | its subtasks' budgets and one item's for itself |
-| Items filed from GitHub and Linear together per UTC day, drafts among them | 20 |
+| Items filed from GitHub, Linear and Slack together per UTC day, drafts among them | 20 |
 | Daily model tokens across items and interactive sessions | Unlimited |
 
 When an item reaches its own budget, it pauses and asks you for more: see [When the budget is used](#when-the-budget-is-used). The operator's item budget applies to newly created items.

@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Dialog } from "../components/Dialog";
 import { ApiTokens } from "../components/ApiTokens";
 import { SettingsSecrets } from "../components/Secrets";
 import { DefaultsSection } from "../components/Defaults";
 import { CopyButton } from "../components/Copy";
 import { GithubSettings } from "../components/GithubSettings";
+import { SlackSettings } from "../components/SlackSettings";
 import { LinearSettings } from "../components/LinearSettings";
 import { LoginMethods } from "../components/LoginMethods";
 import { ModelProviders } from "../components/ModelProviders";
@@ -28,6 +29,12 @@ export function Settings() {
 	const models = useModels();
 	const { settings } = account;
 	const info = platform.info;
+	// A disabled integration has no Settings component to consume its callback.
+	useEffect(() => {
+		if (info && !info.items && /^#(?:slack(?:-link|-error)?|linear(?:-error)?)=/.test(location.hash)) {
+			history.replaceState(history.state, "", location.pathname + location.search);
+		}
+	}, [info]);
 	const machines = useMachines(!!info?.machines);
 	const choices = startingChoices(settings?.defaults ?? null, info, models.list, "account");
 
@@ -109,6 +116,7 @@ export function Settings() {
 					<SettingsGroup id="settings-integrations" title="Integrations" lede={info?.items ? "Your repositories, and work items filed from other places." : "Your repositories."}>
 						<GithubSettings />
 						{info?.items ? <LinearSettings /> : null}
+						{info?.items ? <SlackSettings key={auth.profile.uid} /> : null}
 						{info?.items ? <ApiTokens /> : null}
 					</SettingsGroup>
 				) : null}

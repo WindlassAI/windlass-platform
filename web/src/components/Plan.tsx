@@ -285,7 +285,7 @@ const FEATURES: Array<{ label: string; of(plan: PlanInfo, period: BillingPeriod)
 	{ label: "Sandbox sizes", of: (plan) => plan.sizes.map(sizeName).join(", ") },
 	{ label: "The Factory", of: () => "All of it: plan first, checks, CI fixes, review" },
 	{ label: "Features over two repositories", of: (plan) => plan.crossRepo },
-	{ label: "Items filed from GitHub or Linear", of: (plan) => `${count(plan.githubItemsPerDay)} a day, GitHub and Linear together` },
+	{ label: "Items filed from GitHub, Linear or Slack", of: (plan) => `${count(plan.githubItemsPerDay)} a day across all three sources` },
 	{ label: "Past the included minutes", of: (plan, period) => (plan.overageCentsPer1000 === null ? "Hosted agents stop until the month resets" : period === "year" ? "No overage: hosted agents stop at 1,800 minutes a month" : `$${(plan.overageCentsPer1000 / 100000).toFixed(3)} a minute, up to a spend cap you set (default $20)`) },
 ];
 
