@@ -2646,14 +2646,15 @@ async function machineChecks(): Promise<void> {
 		await check("machine: offline at launch waits without spend and resumes to review", async () => {
 			await runner.setOffline(true);
 			await waitFor("offline in the index", async () => (await user.machines())[0]?.status === "offline", 15_000);
-			const item = await user.createItem({ ...task, profile: "e2b", start: true });
+			await refused(() => user.createItem({ ...task, profile: "e2b", start: true }), "bad_profile");
+			const item = await user.createItem({ ...task, start: true });
 			const waiting = await untilItem(user, item.id, "machine wait", view => view.wait?.reason === "machine");
 			assert(waiting.wait?.sentence === 'Waiting for your machine "Test machine" to come back online.' && Object.values(waiting.spent).every(n => n === 0), JSON.stringify(waiting));
 			await runner.setOffline(false);
 			const pushed = await untilItem(user, item.id, "push after reconnection", view => !!view.pullRequest);
 			setCi(harbor, standin.pulls.find(p => p.repository === harbor.id && p.number === pushed.pullRequest!.number)!.head, "success");
 			const review = await untilItem(user, item.id, "review after reconnection", view => view.state === "review", CI_WAIT_MS);
-			assert([...runner.boxes.values()].some(box => box.sessionId === item.sessionId && box.profile === "docker-windlass-sandbox"), "missing fallback to the machine's first available profile");
+			assert([...runner.boxes.values()].some(box => box.sessionId === item.sessionId && box.profile === "docker-windlass-sandbox"), "the item did not use the machine's first available profile");
 			assert(review.reviewerSessionId, "missing machine reviewer");
 			const reviewer = await client.agentSession.get([auth.profile.uid, review.reviewerSessionId], { params: { token: auth.token } }).snapshot();
 			assert(reviewer.summary.place.kind === "machine" && reviewer.summary.place.machineId === place.machineId, "reviewer left the builder’s machine");
