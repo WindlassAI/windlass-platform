@@ -176,7 +176,7 @@ await symlink(join(root, 'fixtures/claude-relay/docker.cjs'), join(dir, 'docker'
 async function settingsKeyTurns() {
 	const id = await owner.create('keys', profile, false, 'opencode');
 	const anth = 'anthropic/claude-opus-4-6';
-	await channelTurn(owner, 'keys', id, 'default', undefined, undefined, { providers: ['anthropic'] });
+	await channelTurn(owner, 'keys', id, 'default', undefined, undefined, { providers: ['anthropic'], source: 'key' });
 	await storeProvider(owner, {provider:'anthropic', key:token+'-key'});
 	await storeProvider(owner, {provider:'openai', key:token+'-key'});
 	await owner.loginChanged(true);

@@ -794,7 +794,9 @@ describe("agents in a feature's plan", () => {
 		expect(pill("Effort: high", row("templates"))).toBeTruthy();
 		expect(fact("templates", "agent")).toContain("works without asking");
 		expect(pill("Agent: Windlass", row("sender"))).toBeTruthy();
-		expect(pill("Model: the feature's model", row("sender"))).toBeTruthy();
+		// No agent of its own: the part shows the model it resolves to, and where that comes from.
+		expect(pill("Model: GPT-6 Luna", row("sender"))).toBeTruthy();
+		expect(fact("sender", "agent")).toContain("— set for this repository");
 		expect(fact("sender", "agent")).not.toContain("works without asking");
 		// On the approval card: each subtask's agent, and the confirmation it needs.
 		const card = host.querySelector(".plan-question") as HTMLElement;
@@ -823,8 +825,8 @@ describe("agents in a feature's plan", () => {
 		const feature = await featureNamed("Email tide alerts to subscribers");
 		await show(`/items/${feature.id}`);
 		act(() => pill("Agent: Windlass", row("sender")).click());
-		// "nas" reports Claude Code only, signed in: Windlass and Claude Code are offered, nothing else.
-		expect([...document.querySelectorAll('[role="menuitemradio"]')].map((one) => one.querySelector(".ui-item-label")?.textContent)).toEqual(["Windlass", "Claude Code"]);
+		// "nas" reports Claude Code only, signed in: the default, Windlass and Claude Code are offered, nothing else.
+		expect([...document.querySelectorAll('[role="menuitemradio"]')].map((one) => one.querySelector(".ui-item-label")?.textContent)).toEqual(["The default", "Windlass", "Claude Code"]);
 		act(() => menuRow("Claude Code")!.click());
 		await settle(2);
 		expect(fact("sender", "agent")).toContain("works without asking");
@@ -833,9 +835,9 @@ describe("agents in a feature's plan", () => {
 		expect((await api().item(feature.id)).plan?.subtasks[1]?.agent).toEqual({ harness: "claude" });
 		expect(confirmBoxes()).toHaveLength(2);
 		expect(document.getElementById(button("Approve version 2")!.getAttribute("aria-describedby")!)?.textContent).toBe("Confirm the 2 agents that work without asking first.");
-		// Back to Windlass for the templates: nothing of it is left to confirm.
+		// Back to the default for the templates: nothing of it is left to confirm.
 		act(() => pill("Agent: Claude Code", row("templates")).click());
-		act(() => menuRow("Windlass")!.click());
+		act(() => menuRow("The default")!.click());
 		await act(async () => button("Save as version 3")?.click());
 		await settle();
 		expect((await api().item(feature.id)).plan?.subtasks[0]?.agent).toBeUndefined();

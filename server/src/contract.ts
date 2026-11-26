@@ -871,7 +871,7 @@ export interface RepositoryAutonomy {
 
 export type DefaultPlace = "hosted" | "any-machine" | { machine: string };
 
-/** One placement policy. A repository without a place inherits the account's whole policy. */
+/** Each omitted or null choice inherits from the next settings layer. */
 export interface ItemPlaceDefaults {
 	place?: DefaultPlace | null;
 	placeFallback?: "wait" | "hosted" | null;
@@ -885,12 +885,13 @@ export interface ItemPlaceDefaults {
 export type StartPlace = { kind: "hosted" } | { kind: "machine"; machineId: string; profile: SandboxProfileId };
 
 export interface RepositoryDefaults extends RepositoryAutonomy, ItemPlaceDefaults {
-	/** The place for interactive launches, independent of work-item placement and the hosted profile. */
+	/** The default place projected into the interactive launch controls. */
 	startPlace?: StartPlace | null;
 	/** Allow item agents to file screenshots for this repository. Defaults to false. */
 	screenshots: boolean;
 	/** The sandbox profile, by its id; null when none is saved. */
 	profile: SandboxProfileId | null;
+	effort?: string | null;
 	/** The model; null when none is saved. */
 	model: string | null;
 	/** The hosted sandbox size of the repository's agents and work items; null when none is saved (agents small, work items standard). */
@@ -937,7 +938,7 @@ export interface SavedRepository {
 // The account's settings
 
 /** Account defaults apply after explicit launch and repository choices. Ignore unavailable profiles and models. */
-export type AccountDefaults = Omit<RepositoryDefaults, keyof RepositoryAutonomy | "screenshots" | "hostedSize">;
+export type AccountDefaults = Omit<RepositoryDefaults, keyof RepositoryAutonomy | "screenshots">;
 
 export type AccountDefaultsPatch = Partial<Omit<AccountDefaults, "updatedAt">>;
 export type RepositoryDefaultsPatch = Partial<Omit<RepositoryDefaults, "updatedAt" | "mergeKinds">> & { offer?: import("./factory/readiness-track.js").Offer };
@@ -1333,10 +1334,10 @@ export interface FactoryLimits {
 }
 
 /** "turn_refused": the session or provider refused the turn, in its words. "sandboxes": the hosted cap on kept sandboxes stopped a turn. "check_environment": a check failed because the sandbox could not run it (`ItemQuestion.check`). */
-export type QuestionKind = "push_ci" | "feature_update" | "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
+export type QuestionKind = "run_place" | "push_ci" | "feature_update" | "sandboxes" | "integration" | "feedback_feature" | "feedback_more" | "placement_refused" | "single_suggested" | "replan_approval" | "plan_approval" | "rounds" | "budget" | "no_change" | "publish_refused" | "ci_timeout" | "turn_refused" | "machine_removed" | "review_question" | "agent_ask" | "secret_needed" | "check_environment" | "sandbox_failed" | "out_of_memory" | "machine_away";
 
 /** Stored response IDs. Retry starts a new run. Again retries the failed step. */
-export type ChoiceId = "send_back" | "dismiss" | "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base" | "update_feature";
+export type ChoiceId = "use_hosted" | "use_windlass" | "use_claude" | "use_opencode" | "send_back" | "dismiss" | "send" | "leave" | "run_single" | "orchestrate_anyway" | "approve" | "revise" | "raise" | "retry" | "again" | "wait" | "hand_over" | "give_up" | "fix" | "add_secret" | "without_secret" | "reply" | "run_anyway" | "fresh_sandbox" | "larger_sandbox" | "run_checks" | "ci_alone" | "update_from_base" | "update_feature";
 
 /** Render the reason as quoted plain text, separately from the platform's own notice. */
 export interface SecretRequest {
@@ -1637,6 +1638,8 @@ export interface LinearIssueOrigin {
 export type ItemOrigin = GithubIssueOrigin | LinearIssueOrigin;
 
 export interface ItemSummary {
+	resolved?: import("./factory/resolve-run.js").ResolvedRun;
+	ranWith?: Partial<Record<import("./factory/resolve-run.js").RunRole, import("./factory/resolve-run.js").ActualRun>>;
 	record?: import("./factory/readiness-track.js").ItemRecord | null;
 	/** Its builder session has not been created yet. */
 	awaitingPlace?: boolean;
@@ -1782,10 +1785,11 @@ export interface ItemView extends ItemSummary {
 export type ItemMode = "single" | "orchestrate";
 
 export interface PlacementNeeds {
+	hostedSize?: HostedSize;
 	tags?: string[];
 	screenshots?: boolean;
 	egress?: "open" | "restricted";
-	profile?: "docker-hardened" | "docker-windlass-sandbox" | "e2b-open" | "daytona";
+	profile?: SandboxProfileId;
 	cpus?: number;
 	memoryGiB?: number;
 }
@@ -1819,6 +1823,9 @@ export interface ChildPlacement {
 }
 
 export interface PlanSubtask {
+	placementProblem?: string;
+	requestedLargerSize?: HostedSize;
+	resolved?: import("./factory/resolve-run.js").ResolvedRun;
 	/** Older plans inherit the feature's place. */
 	place?: { prefer: string; reason: string; allow?: string[] };
 	needs?: PlacementNeeds;
@@ -1936,8 +1943,6 @@ export interface IntegrationView {
 }
 
 export interface CreateItemInput {
-	/** Resolve the saved placement again at filing. An explicit place overrides this. */
-	useDefaultPlace?: boolean;
 	mode?: ItemMode;
 	/** Cross-repo plans list one or two repositories, starting with repository. Omission uses that repository alone. */
 	repositories?: FeatureRepoInput[];
@@ -1949,25 +1954,14 @@ export interface CreateItemInput {
 	body: string;
 	/** At most MAX_ACCEPTANCE_CRITERIA, each at most MAX_NOTE_CHARS. */
 	acceptance?: string[];
-	/** The agent's sandbox profile and model. A hosted item uses the usual defaults. */
+	/** Omitted choices inherit the repository, account and deployment settings in order. */
 	profile?: SandboxProfileId;
-	/** One of the account's models for Windlass; for a machine harness one its machine reported (`HarnessOptions.models`). Left out: the agent's default. */
 	model?: string;
-	/**
-	 * The reasoning effort of every turn of the item's builder: one its agent reported for the item's model
-	 * (`ModelChoice.efforts`; for a machine harness model whose efforts it reports only once selected, one it
-	 * reported for any model). Left out: the agent's default. Refused (`bad_effort`) otherwise.
-	 */
 	effort?: string;
-	/**
-	 * The builder's agent: "windlass" (the default), or a harness the chosen machine reports and is signed
-	 * into (`MachineSummary.harnesses`), which runs in its hardened container. Not on hosted, not with Plan
-	 * first. The second reviewer uses the same agent and place.
-	 */
+	/** Implementation agent. Planning and review use Windlass. */
 	harness?: HarnessId;
-	/** Left out: hosted. On a paired machine, use the requested profile if available, otherwise its first available profile. */
 	place?: SandboxPlace;
-	/** Hosted only: the size of the item's sandboxes. Left out: the repository's saved size, else standard. A Plan-first subtask whose plan names `cpus` or `memoryGiB` gets the least size that has them, if larger. */
+	/** Hosted size for this item and its parts. */
 	hostedSize?: HostedSize;
 	/** True: started at once, as "Start" would. Left out: the item is a draft until started. */
 	start?: boolean;

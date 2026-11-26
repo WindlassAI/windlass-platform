@@ -20,16 +20,17 @@
  * a slot is given back, when a session of the person's goes idle, and at its wait's time on the actor's schedule.
  */
 
-import { type DefaultDestination, resolveDefaultPlace, savedPlace } from "../factory/default-place.js";
+import { deploymentSize, filedAgentSettings, partRun, resolveRun, runPlace, type ResolvedRun, type RunContext } from "../factory/resolve-run.js";
+import { type DefaultDestination, checkRunPlace, placeMachines } from "../factory/default-place.js";
 import { isBranchName } from "../github/git.js";
-import type { ItemPlaceDefaults, SessionRepository } from "../contract.js";
+import type { SessionRepository } from "../contract.js";
 import { windlassProvider, hostedProvider, selectedKey } from "../sandbox/harnesses.js";
 import { accountFor, accountKey, loginGeneration, limitedAccounts, providerAccounts, PROVIDER_TABLE } from "./provider-accounts.js";
-import { choosePlacement, machineSlots, placeKey, type AgentModels, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
+import { bindRoute, choosePlacement, machineSlots, placeKey, type AgentModels, type PlacementInventory, type PlacementRoute } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
-import type { ChildPlacement, HarnessId, HostedSize, ItemFeed, ModelProvider, PlanSubtask } from "../contract.js";
+import type { ChildPlacement, HostedSize, ItemFeed, ModelProvider, PlanSubtask } from "../contract.js";
 import { providerStatuses, savedProviders } from "../model-providers.js";
-import { harnessName, itemHarnessProblem, itemProfiles, knownHarness } from "../sandbox/harnesses.js";
+import { availableCatalog, harnessName, initialHarnessModels, itemHarnessProblem, knownHarness } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch, subtaskBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
@@ -48,7 +49,6 @@ import { createHash, randomBytes } from "node:crypto";
 import { UserError } from "rivetkit";
 import type { RawAccess } from "rivetkit/db";
 import { mayUse } from "../access.js";
-import { readAccountDefaults } from "../account-defaults.js";
 import { type CleanPage, ItemPageProblem, cleanItemPage, itemFeed, itemPage, listedItems } from "../item-pages.js";
 import { API_TOKEN_WINDOW_MS, API_TOKENS_TABLE, ApiTokenProblem, createApiToken, listApiTokens, revokeApiToken, tokenOwner, useApiToken } from "../api-tokens.js";
 import { clientError, requireService, requireServiceFor, requireUser } from "../auth.js";
@@ -68,7 +68,7 @@ import {
 	type ItemView,
 	type PartScreenshots,
 	type MachineSummary,
-	type SandboxPlace,
+	type ItemMode,
 	MAX_ACCEPTANCE_CRITERIA,
 	MAX_ITEM_BODY_CHARS,
 	MAX_NOTE_CHARS,
@@ -86,14 +86,14 @@ import { keptFull, makeSandboxRoom, nextSandboxRelease, releaseAt, releaseDueSan
 import { admit, retryAt } from "../factory/budget.js";
 import { getLayer } from "../layer.js";
 import { REVIEW_OFF_REASON } from "../factory/review.js";
-import { readDefaults } from "../repository-defaults.js";
+import { readAccountDefaults, readDefaults } from "../repository-defaults.js";
 import { Attempts, type Submission, SubmissionProblem, isRepeat, submissionOf } from "../submissions.js";
 import { hostedSizesForPlan } from "../billing/plans.js";
 import { accountLimits, LIMITS_AUDIT_TABLE, readUserLimits, type UserLimits } from "../user-limits.js";
 import { dailyTokenWait, TOKEN_USAGE_TABLE, usesPlatformModel, type UsageBook, dayOf, hostedLimitsApply, keptHolder } from "../usage.js";
 import { createItemActor, isSessionGone, itemActor, sessionActor } from "./internal.js";
 import type { TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
-import { itemMachines, launchPlace, launchMachineProfiles } from "./user-machines.js";
+import { itemMachines, launchPlace, machineCatalog } from "./user-machines.js";
 import type { ItemMeta } from "./work-item.js";
 
 declare module "./internal.js" { interface UserInternal extends AttachmentLedger {} }
@@ -229,8 +229,20 @@ export interface ItemsCtx {
 	scheduledFire?: { id: string; scheduledAt: number; firedAt: number };
 }
 
-/** `makeSession` of user.ts: makes the item's session under the id given, with the item as its origin, and puts it in the index. */
-export type MakeSession = (c: ItemsCtx, profile: UserProfile, input: CreateSessionInput, submission: null, item: { sessionId: string; itemId: string; role: "builder" | "reviewer"; subtaskScreenshots?: boolean; planCritic?: true; size?: number; /** Hosted: the item's size, where it chose one (`CreateItemInput.hostedSize`, a subtask's placement). */ hostedSize?: HostedSize; owns?: string[]; childBranch?: { name: string; start: string }; issue?: { number: number; installationId: GithubId }; effort?: string }) => Promise<SessionSummary>;
+export interface ItemSessionInput {
+	sessionId: string;
+	itemId: string;
+	role: "builder" | "reviewer";
+	subtaskScreenshots?: boolean;
+	planCritic?: true;
+	size?: number;
+	hostedSize?: HostedSize;
+	owns?: string[];
+	childBranch?: { name: string; start: string };
+	issue?: { number: number; installationId: GithubId };
+	effort?: string;
+}
+export type MakeSession = (owner: UserProfile, input: CreateSessionInput, item: ItemSessionInput) => Promise<SessionSummary>;
 
 // ---------------------------------------------------------------------------------------------
 // The index
@@ -246,7 +258,7 @@ const feedOf = (state: ItemsState): ItemFeed => itemFeed(itemList(state), state.
 /** The summary's own fields of an item's summary or page: the index keeps no more. */
 function summaryFields(item: ItemSummary): ItemSummary {
 	const { id, title, repository, place, source, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision } = item;
-	return { id, title, repository, place, record: item.record, endedAt: item.endedAt, ...(item.awaitingPlace && { awaitingPlace: true }), ...(item.placement && { placement: item.placement }), source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision, ...(item.step && { step: item.step }) };
+	return { id, title, repository, place, agent: item.agent, resolved: item.resolved, ranWith: item.ranWith, repositories: item.repositories, record: item.record, endedAt: item.endedAt, ...(item.awaitingPlace && { awaitingPlace: true }), ...(item.placement && { placement: item.placement }), source, mode: item.mode ?? "single", parent: item.parent ?? null, origin: item.origin ?? null, state, wait, question, pullRequest, verdict, review, budget, spent, sessionId, createdAt, updatedAt, revision, ...(item.step && { step: item.step }) };
 }
 
 /** Takes a summary the item reported when it is newer than the one held: reports can arrive out of order. */
@@ -272,12 +284,12 @@ const githubItemId = (uid: string, key: string) => `i_${hex16(JSON.stringify(["g
 const hex16 = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 16);
 
 /** The input of a new item, checked. */
-function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | "body" | "acceptance">> & { place: SandboxPlace; repository: { id: GithubId; branch?: string }; repositories: FeatureRepoInput[] | null; profile: SandboxProfileId | null; model: string | null; effort: string | null; start: boolean; mode: "single" | "orchestrate"; harness: HarnessId; hostedSize?: HostedSize } {
+function cleanItemInput(raw: unknown) {
 	const bad = (message: string) => new UserError(message, { code: "bad_input" });
-	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput | "harness" | "mode", unknown>>;
+	const input = (typeof raw === "object" && raw !== null ? raw : {}) as Partial<Record<keyof CreateItemInput, unknown>>;
 	if (input.mode !== undefined && input.mode !== "single" && input.mode !== "orchestrate") throw bad("Choose single or orchestrate for the work item.");
 	if (input.mode === "orchestrate" && process.env.WLP_FACTORY_ORCHESTRATE === "0") throw bad("Orchestrated work items are disabled.");
-	const harness = input.harness === undefined || input.harness === null ? "windlass" : knownHarness(input.harness);
+	const harness = knownHarness(input.harness ?? "windlass");
 	if (harness === null) throw bad("Choose an agent this platform runs: windlass, or one of your machine's.");
 	const notForItems = itemHarnessProblem(harness);
 	if (notForItems) throw bad(notForItems);
@@ -290,32 +302,29 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 		throw bad(`The acceptance criteria are at most ${MAX_ACCEPTANCE_CRITERIA} lines of text, each at most ${MAX_NOTE_CHARS} characters.`);
 	}
 	const place = launchPlace(input.place ?? undefined);
-	if (harness !== "windlass") {
-		const name = harnessName(harness);
-		// Plan first's planner files its plan with a Windlass tool, which an ACP agent does not have.
-		if ((input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate")) === "orchestrate") throw bad(`Plan first runs only with Windlass. Choose Quick for ${name}.`);
-	}
 	const repository = input.repository as { id?: unknown; branch?: unknown } | undefined;
 	if (typeof repository !== "object" || repository === null || !isGithubId(repository.id)) throw bad("Choose a repository of your GitHub connection for the item.");
 	if (input.start !== undefined && input.start !== null && typeof input.start !== "boolean") throw bad("Say yes or no to starting the item at once.");
-	const repositories = cleanRepositories(input.repositories, repository.id as GithubId, input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate"), bad);
+	const mode: ItemMode = input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate");
+	if (mode === "orchestrate" && harness !== "windlass") throw bad(`Plan first runs only with Windlass. Choose Quick for ${harnessName(harness)}.`);
+	const repositories = cleanRepositories(input.repositories, repository.id, mode, bad);
 	const text = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
 	if (input.effort !== undefined && input.effort !== null && (typeof input.effort !== "string" || input.effort.length > 64)) throw new UserError("Choose one of the efforts the item's agent offers.", { code: "bad_effort" });
 	if (input.hostedSize !== undefined && input.hostedSize !== null && !isHostedSize(input.hostedSize)) throw bad("Choose a hosted size: Small, Medium or Large.");
 	if (isHostedSize(input.hostedSize) && place.kind !== "hosted") throw bad("A hosted size is for an item that runs hosted.");
 	return {
-		mode: input.mode ?? (process.env.WLP_FACTORY_ORCHESTRATE === "0" ? "single" : "orchestrate"),
-		place,
+		mode,
+		place: input.place == null ? input.place : runPlace(place),
 		title,
 		body,
-		acceptance: (acceptance as string[]).map((line) => line.trim()),
+		acceptance: acceptance.map((line: string) => line.trim()),
 		repository: { id: repository.id, ...(typeof repository.branch === "string" ? { branch: repository.branch } : {}) },
 		repositories,
 		profile: text(input.profile) as SandboxProfileId | null,
 		model: text(input.model),
 		effort: text(input.effort),
 		start: input.start === true,
-		harness,
+		harness: input.harness == null ? input.harness : harness,
 		...(isHostedSize(input.hostedSize) && { hostedSize: input.hostedSize }),
 	};
 }
@@ -333,7 +342,7 @@ function cleanRepositories(raw: unknown, primary: GithubId, mode: string, bad: (
 		if (typeof e.alias !== "string" || !ALIAS.test(e.alias)) throw bad("Give each repository a short alias: a lowercase letter, then up to 15 lowercase letters, digits or dashes.");
 		if (!isGithubId(e.id)) throw bad("Name each repository by GitHub's id for it.");
 		if (e.branch !== undefined && typeof e.branch !== "string") throw bad("A repository's base branch is a branch name.");
-		return { alias: e.alias, id: e.id as GithubId, ...(typeof e.branch === "string" && { branch: e.branch }) };
+		return { alias: e.alias, id: e.id, ...(typeof e.branch === "string" && { branch: e.branch }) };
 	});
 	if (String(list[0]!.id) !== String(primary)) throw bad("The first of the repositories is the item's repository.");
 	if (new Set(list.map(r => r.alias)).size !== list.length || new Set(list.map(r => String(r.id))).size !== list.length) throw bad("Name each repository once, each with its own alias.");
@@ -368,96 +377,70 @@ async function bindRepositories(c: ItemsCtx, list: FeatureRepoInput[], primaryBr
 	return bound;
 }
 
-/**
- * The profile a machine harness's item asks for: the filed one where the harness has more than one item
- * profile (Codex), else its first. Claude Code and OpenCode have one, "Docker, hardened", whatever was filed.
- */
-function machineItemProfile(harness: HarnessId, filed: SandboxProfileId | null): SandboxProfileId {
-	const profiles = itemProfiles(harness);
-	return profiles.length > 1 && filed !== null ? filed : profiles[0] ?? "docker-hardened";
-}
-
-/**
- * The sandbox an item's session is made in when the input names none: the repository's default, the account's, then the deployment's first that can be chosen.
- * `exact`: a machine harness's profile, which is never swapped for another the machine has: makeSession refuses one it cannot use, with its reason.
- */
-async function itemProfile(c: ItemsCtx, repositoryId: GithubId, asked: SandboxProfileId | null, place: SandboxPlace, exact = false): Promise<SandboxProfileId> {
-	if (place.kind === "machine") {
-		const machine = await launchMachineProfiles(c.db, place.machineId);
-		if (exact && asked !== null) {
-			if (!machine.profiles.some(profile => profile.id === asked)) throw new UserError(`Your machine "${machine.name}" has no ${asked} profile, which this item runs in. Choose another profile for it.`, { code: "bad_profile" });
-			return asked;
-		}
-		// Honor an explicit owner-denied choice. makeSession returns the same refusal as a personal launch.
-		if (asked === "docker-windlass-sandbox" && machine.allowedProfiles && !machine.allowedProfiles.includes(asked)) return asked;
-		const available = machine.profiles.filter(profile => profile.available);
-		const chosen = available.find(profile => profile.id === asked) ?? available[0];
-		if (!chosen) throw new UserError(`Your machine "${machine.name}" offers no available sandbox profile for this item.`, { code: "bad_profile" });
-		return chosen.id;
-	}
-	if (asked !== null) return asked;
-	const saved = (await readDefaults(c.db, `github:${repositoryId}`)).profile ?? (await readAccountDefaults(c.db)).profile;
-	if (saved !== null) return saved;
-	const first = (await getLayer()).sandboxes.profiles().find((profile) => profile.available);
-	if (!first) throw new UserError("This deployment offers no sandbox an item could run in.", { code: "bad_profile" });
-	return first.id;
-}
-
 export interface DefaultBuilder {
-	policy: ItemPlaceDefaults;
+	context: RunContext;
+	role: "builder" | "planner" | "part" | "repair";
 	repository: CreateItemInput["repository"];
 	title: string;
-	model: string | null;
-	effort: string | null;
-	mode: "single" | "orchestrate";
-	hostedProfile: SandboxProfileId | null;
-	hostedSize?: HostedSize;
-	machineModel?: string;
-	machineEffort?: string;
 	issue?: { number: number; installationId: GithubId };
 }
 
-async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, job: DefaultBuilder, makeSession: MakeSession): Promise<{ session: SessionSummary | null; destination: DefaultDestination }> {
+const availabilityErrors = new Set(["bad_input", "bad_model", "bad_effort", "machine_not_found", "machine_not_connected", "runner_outdated", "runner_signing_disabled", "bad_profile", "profile_unavailable", "harness_signed_out"]);
+
+async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, job: DefaultBuilder, run: ResolvedRun, makeSession: MakeSession, phase: "file" | "retry",
+	child?: Pick<ItemSessionInput, "owns" | "size" | "subtaskScreenshots" | "childBranch">): Promise<{ session: SessionSummary | null; destination: DefaultDestination }> {
 	const sessionId = itemSessionId(itemId);
 	const existing = c.vars.sessions.get(sessionId);
 	if (existing) return { session: existing, destination: { place: existing.place, harness: existing.harness ?? "windlass" } };
-	const destination = resolveDefaultPlace(job.policy, itemMachines(c.vars.machines), job.mode);
-	if (destination.wait) return { session: null, destination };
-	const open = async () => {
-		const hosted = destination.place.kind === "hosted";
-		const agent = hosted ? "windlass" : destination.harness;
-		const model = agent === "windlass" ? job.model : job.machineModel;
-		const effort = agent === "windlass" ? job.effort : job.machineEffort;
-		const profile = hosted ? await itemProfile(c, job.repository.id, job.hostedProfile, destination.place) : destination.profile!;
-		return makeSession(c, owner, { title: job.title, repository: job.repository, place: destination.place, profile, harness: agent,
-			...(model && { model }), ...(hosted && job.hostedSize && { hostedSize: job.hostedSize }) }, null,
-			{ sessionId, itemId, role: "builder", issue: job.issue, ...(effort && { effort }) });
-	};
-	try { return { session: await open(), destination }; }
-	catch (error) {
-		// The runner can change its report while the launch checks GitHub or fetches a catalog.
-		if (destination.place.kind !== "machine" || !(error instanceof UserError) ||
-			!["machine_not_found", "machine_not_connected", "runner_outdated", "runner_signing_disabled", "bad_input", "bad_profile", "profile_unavailable", "harness_signed_out"].includes(error.code)) throw error;
-		if (job.policy.placeFallback !== "hosted") {
-			destination.wait = error.message + " Waiting for the selected machine placement.";
-			destination.note = destination.wait;
-			return { session: null, destination };
-		}
-		destination.place = { kind: "hosted" };
-		destination.note = error.message + " Using the hosted fallback with Windlass.";
-		return { session: await open(), destination };
+	const machines = itemMachines(c.vars.machines);
+	let models: AgentModels | undefined;
+	if (!child && run.place !== "hosted" && run.agent !== "windlass" && (run.model || run.effort)) {
+		const lists = await Promise.all(placeMachines(run.place, machines).map(async m => {
+			const h = m.harnesses?.find(entry => entry.id === run.agent);
+			const options = h?.optionsDigest ? await machineCatalog(c, m.machineId, h.id, h.optionsDigest) : h?.options;
+			return [m.machineId, { [run.agent]: initialHarnessModels(availableCatalog(options ?? undefined, h)) }] as const;
+		}));
+		models = { machines: Object.fromEntries(lists) };
+	}
+	const destination: DefaultDestination = child && typeof run.place === "object" ? { place: { kind: "machine", machineId: run.place.machine }, profile: run.profile ?? undefined, harness: run.agent }
+		: checkRunPlace(run, machines, models);
+	// Explicit filing choices fail at the call site. A saved default or a retry can wait for availability.
+	const filedChoice = phase === "file" && [run.sources.place, run.sources.agent, run.sources.model, run.sources.effort].includes("item");
+	if (filedChoice && destination.refusal) throw new UserError(destination.refusal.message, { code: destination.refusal.code });
+	if (destination.wait && !child) return { session: null, destination };
+	let profile = destination.profile;
+	if (!profile) {
+		const available = (await getLayer()).sandboxes.profiles().filter(p => p.available);
+		profile = (run.agent === "windlass" ? available[0] : available.find(p => p.platformKeys) ?? available[0])?.id;
+	}
+	try {
+		if (!profile) throw new UserError("Choose an available sandbox profile.", { code: "bad_profile" });
+		const session = await makeSession(owner, { title: job.title, repository: job.repository, place: destination.place, profile,
+			harness: run.agent, model: run.model ?? undefined, ...(destination.place.kind === "hosted" && (run.sources.size !== "deployment" || job.context.deployment?.hostedSize) && { hostedSize: run.size }) },
+			{ sessionId, itemId, role: "builder", issue: job.issue, effort: run.effort ?? undefined, ...child });
+		return { session, destination };
+	} catch (error) {
+		if (child || !(error instanceof UserError) || !availabilityErrors.has(error.code)) throw error;
+		if (filedChoice && ["bad_input", "bad_model", "bad_effort", "harness_signed_out"].includes(error.code)) throw error;
+		return { session: null, destination: { ...destination, wait: error.message } };
 	}
 }
 
-async function bindReviewer(c: ItemsCtx, owner: UserProfile, session: SessionSummary, itemId: string, child: boolean, issue: DefaultBuilder["issue"], makeSession: MakeSession) {
+async function bindReviewer(c: ItemsCtx, owner: UserProfile, session: SessionSummary, itemId: string, child: boolean, job: DefaultBuilder, makeSession: MakeSession): Promise<{ reviewer?: import("../factory/types.js").FactoryItem["reviewer"]; reviewerSessionId: string | null; wait?: string }> {
 	const off = (reason: keyof typeof REVIEW_OFF_REASON) => ({ reviewer: { off: reason }, reviewerSessionId: null });
 	if (child) return off("feature");
 	if (!config.factory.reviewer) return off("deployment");
 	const reviewerSessionId = `s_${hex16(`review\n${itemId}`)}`;
 	if (!c.vars.sessions.has(reviewerSessionId)) {
 		const { id, branch } = session.repository!;
-		await makeSession(c, owner, { title: session.title, place: session.place, profile: session.profile, harness: session.harness, model: session.model, repository: { id, branch } }, null,
-			{ sessionId: reviewerSessionId, itemId, role: "reviewer", issue, ...(session.hostedSize && { hostedSize: session.hostedSize }) });
+		const run = resolveRun(job.context, "reviewer");
+		try {
+			await makeSession(owner, { title: session.title, place: session.place, profile: run.profile ?? session.profile, harness: run.agent, model: run.model ?? undefined, repository: { id, branch } },
+				{ sessionId: reviewerSessionId, itemId, role: "reviewer", issue: job.issue, effort: run.effort ?? undefined, ...(session.hostedSize && { hostedSize: session.hostedSize }) });
+		} catch (error) {
+			if (!(error instanceof UserError) || !availabilityErrors.has(error.code)) throw error;
+			return { wait: "The reviewer cannot start. " + error.message, reviewerSessionId: null, reviewer: undefined };
+		}
 	}
 	return { reviewer: { on: true } as const, reviewerSessionId };
 }
@@ -478,12 +461,9 @@ async function waitingRepository(c: ItemsCtx, job: DefaultBuilder): Promise<Sess
  * before anything is asked of the engine, and one that exists already is taken as made: a creation
  * that is tried again after a lost answer, or after the server stopped half way, finishes the first.
  */
-async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, intake?: Intake, child?: { screenshots: boolean; mergeTarget?: string; joinOnGate: boolean; featureBody: string; placement: ChildPlacement; id: string; base: string; start?: string | null; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
+async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, intake?: Intake, child?: { resolved: ResolvedRun; context: RunContext; role: "part" | "repair"; screenshots: boolean; mergeTarget?: string; joinOnGate: boolean; featureBody: string; placement: ChildPlacement; id: string; base: string; start?: string | null; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
-	const asked = raw as CreateItemInput;
 	const { github, linear } = intake ?? {};
-	const policy = github?.defaultPlace ?? linear?.defaultPlace ?? (source === "web" && !child && asked.useDefaultPlace === true && asked.place === undefined
-		? savedPlace(await readDefaults(c.db, "github:" + input.repository.id), await readAccountDefaults(c.db)) : undefined);
 	// An issue proposes a feature in its own repository only: a sibling needs the owner's own filing.
 	if (intake && input.repositories) throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
 	// Where the deployment has billing, a feature over two repositories is Pro's (billing/plans.ts).
@@ -492,13 +472,19 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	const itemId = child?.id ?? (intake && submission ? githubItemId(uid, submission.key) : `i_${submission ? hex16(`${uid}\n${submission.key}`) : randomBytes(8).toString("hex")}`);
 	const sessionId = itemSessionId(itemId);
 	const issue = github && { number: github.origin.issue.number, installationId: github.installationId };
-	const externalModel = source === "web" && policy?.harness && policy.harness !== "windlass" && input.mode === "single";
-	// The machine agent runs the model filed with a Quick item, else the one saved with the place.
-	const machine = externalModel ? { model: input.model, effort: input.effort } : { model: policy?.machineModel, effort: policy?.machineEffort };
-	const job: DefaultBuilder | undefined = policy && { policy, repository: input.repository, mode: input.mode, title: input.title,
-		model: externalModel ? null : input.model, effort: externalModel ? null : input.effort,
-		...(machine.model && { machineModel: machine.model }), ...(machine.effort && { machineEffort: machine.effort }),
-		hostedProfile: input.profile, hostedSize: input.hostedSize, issue };
+	const context: RunContext = child?.context ?? { account: await readAccountDefaults(c.db), repository: await readDefaults(c.db, "github:" + input.repository.id) };
+	const role = child?.role ?? (input.mode === "orchestrate" ? "planner" : "builder");
+	if (!child) {
+		const offered = hostedSizesForPlan((await getLayer()).sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan);
+		context.deployment = { hostedSize: deploymentSize(offered.map(s => s.id)) };
+		context.machinePayers = Object.fromEntries([...c.vars.machines.values()].map(m => [m.machineId,
+			Object.fromEntries((m.harnesses ?? []).filter(h => h.source).map(h => [h.id, h.source]))]));
+		context.item = { place: input.place, harness: input.harness, hostedSize: input.hostedSize,
+			profile: input.profile, machineProfile: input.profile };
+		Object.assign(context.item, filedAgentSettings(context, input.model, input.effort));
+	}
+	const run = child?.resolved ?? resolveRun(context, role);
+	const job: DefaultBuilder = { context, role, repository: input.repository, title: input.title, issue };
 	let summary: ItemSummary;
 	// Set just before the session is made: a refusal before that made nothing, and leaves the key unused.
 	let begun = false;
@@ -510,29 +496,33 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		else await c.db.execute("INSERT OR IGNORE INTO item_keys (key, sent, id) VALUES (?, ?, ?)", submission.key, submission.sent, itemId);
 	}
 	try {
-		const existing = c.vars.sessions.get(sessionId);
-		// A machine harness runs in a profile it has an item mode for: the filed one, else its first (Codex: Docker + Windlass sandbox),
-		// and only in "Docker, hardened" where that is its only one. makeSession refuses any other.
-		const harness = child?.placement.harness ?? input.harness;
-		let asked = input.profile;
-		if (!existing && !job && harness !== "windlass") {
-			asked = input.place.kind === "machine" ? machineItemProfile(harness, asked)
-				: asked ?? (await getLayer()).sandboxes.profiles().find(p => p.available && p.platformKeys)?.id ?? null;
-		}
-		const sandbox = existing || job ? null : child?.placement.profile ?? await itemProfile(c, input.repository.id, asked, input.place, harness !== "windlass");
 		// Bound before anything is made: a repository the connection cannot read refuses the filing with nothing left behind.
 		const repos = input.repositories && !child ? await bindRepositories(c, input.repositories, input.repository.branch) : undefined;
+		if (repos) context.repositories = Object.fromEntries(await Promise.all(repos.map(async r => [r.alias, await readDefaults(c.db, "github:" + r.repositoryId)])));
 		begun = true;
-		const placed = job ? await defaultBuilder(c, profile, itemId, job, makeSession) : null;
-		const session = placed ? placed.session : existing ?? (await makeSession(c, profile, { title: input.title, place: input.place, profile: sandbox as SandboxProfileId, ...(harness !== "windlass" && { harness }), ...(input.model ? { model: input.model } : {}), repository: input.repository }, null, { sessionId, itemId, role: "builder", issue, owns: child?.owns, ...(child?.start && { childBranch: { name: subtaskBranch(child.parent.itemId, child.parent.key, itemId), start: child.start } }), ...(child && { size: child.placement.units, subtaskScreenshots: child.screenshots }), ...((child?.placement.hostedSize ?? input.hostedSize) && { hostedSize: child?.placement.hostedSize ?? input.hostedSize! }), ...(input.effort && { effort: input.effort }) }));
-		const repository = session?.repository ?? (job ? await waitingRepository(c, job) : null);
+		const { session, destination } = await defaultBuilder(c, profile, itemId, job, run, makeSession, "file", child && { owns: child.owns, size: child.placement.units, subtaskScreenshots: child.screenshots,
+			...(child.start && { childBranch: { name: subtaskBranch(child.parent.itemId, child.parent.key, itemId), start: child.start } }) });
+		if (session) {
+			if (!run.model && run.agent === "windlass" && !child) (context.deployment ??= {}).model = session.model;
+			run.model ??= session.model;
+			run.profile ??= session.profile;
+			run.size = session.hostedSize ?? run.size;
+		}
+		const repository = session?.repository ?? await waitingRepository(c, job);
 		if (!repository) throw new Error("the item's session has no repository");
-		const review = session && await bindReviewer(c, profile, session, itemId, !!child, issue, makeSession);
+		const review = session && await bindReviewer(c, profile, session, itemId, !!child, job, makeSession);
 		const now = Date.now();
-		const meta: ItemMeta = { ...(policy && { defaultPlace: policy }), ...(placed && !session && { pendingBuilder: job }), uid, sessionId, reviewerSessionId: review?.reviewerSessionId ?? null, reviewBase: null, handoffReview: null, repository, source, github, ...(linear && { linear }), createdAt: now, activityAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
+		const meta: ItemMeta = { ...((!session || review?.wait) && { pendingBuilder: job }), uid, sessionId, reviewerSessionId: review?.reviewerSessionId ?? null, reviewBase: null, handoffReview: null, repository, source, github, ...(linear && { linear }), createdAt: now, activityAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
 		const limits = accountLimits(c.vars.items.limits).factory;
-		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer: review?.reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session?.place ?? placed!.destination.place, budget: child?.budget ?? limits.item, agent: { harness: session ? session.harness ?? "windlass" : placed!.destination.harness, model: session?.model ?? "default", effort: input.effort, ...(session?.item?.signIn && { signIn: session.item.signIn }) } });
-		if (placed && !session) item.awaitingPlace = placed.destination.wait;
+		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer: review?.reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session?.place ?? destination.place, budget: child?.budget ?? limits.item, agent: { harness: session ? session.harness ?? "windlass" : destination.harness, model: session?.model ?? "default", effort: run.effort, ...(session?.item?.signIn && { signIn: session.item.signIn }) } });
+		item.runRole = role;
+		item.context = context;
+		item.resolved = run;
+		if (!session) item.awaitingPlace = destination.wait;
+		if (review?.wait) {
+			item.awaitingPlace = review.wait;
+			item.awaitingReviewer = true;
+		}
 		if (child) {
 			item.task.featureBody = child.featureBody;
 			item.parent = child.parent;
@@ -546,7 +536,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		if (outside.length) item.untrusted = outside;
 		const allowed = thirdParty(child?.unsandboxed).filter(source => outside.includes(source));
 		if (allowed.length) item.unsandboxed = allowed;
-		await createItemActor(c, uid, itemId, { item, meta, placeNote: placed?.destination.note, startedBy: input.start ? `person:${uid}` : null });
+		await createItemActor(c, uid, itemId, { item, meta, placeNote: destination.wait, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
 	} catch (error) {
 		// Nothing was made: the key is unused again, as a refused attempt leaves it. Once anything may exist, it stays this body's.
@@ -1041,31 +1031,34 @@ export function accountTokenWait(c: Pick<ItemsCtx, "vars">): string | null {
 	return dailyTokenWait(used, accountLimits(c.vars.items.limits).factory.dailyTokens);
 }
 
-/**
- * A child's place, chosen as approval checked it: with the models each agent offers (`agentModels`, read only
- * for a subtask that chose a model or effort) and the feature's model, so overflow never picks a place that
- * cannot run the subtask's model.
- */
-async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId, featureModel: string, agentModels: () => Promise<AgentModels>, repositoryId?: GithubId): Promise<ReturnType<typeof choosePlacement>> {
+export async function placementInventory(c: ItemsCtx, models: () => Promise<AgentModels>, repositories: Record<string, GithubId>, snapshotRepository?: GithubId): Promise<PlacementInventory> {
+	const { sandboxes } = await getLayer();
+	const profiles = sandboxes.profiles().filter(p => p.available);
+	const machines = plannerMachines([...c.vars.machines.values()]);
+	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
+	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
+	const [catalogs, hostedKeys, accounts, permissions, fresh] = await Promise.all([
+		models(), providerStatuses(c.db), providerAccounts(c.db, Date.now()),
+		Promise.all(Object.entries(repositories).map(async ([alias, id]) => [alias, (await readDefaults(c.db, "github:" + id)).screenshots])),
+		snapshotRepository === undefined ? [] : snapshotPlaces(c.db, setupProjectKey(snapshotRepository) ?? "", c.vars.github?.connectedAt, config.hosted?.snapshots?.ttlMs).catch(() => []),
+	]);
+	return { machines, models: catalogs, hostedKeys: hostedKeys.filter(k => k.ok), limited: limitedAccounts(accounts), dailyTokenWait: accountTokenWait(c),
+		snapshotPlaces: fresh, screenshotsEnabled: config.factory.screenshots, screenshotStorage: !!attachmentStore(), repositoryScreenshots: Object.fromEntries(permissions),
+		hostedSizes: hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(size => size.id),
+		hostedProfiles: profiles.map(p => p.id), keyProfiles: profiles.filter(p => p.platformKeys).map(p => p.id), hostedEgress: sandboxes.egress?.() };
+}
+
+async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: PlacementRoute, warm: string[], defaultProfile: SandboxProfileId, featureModel: string, agentModels: () => Promise<AgentModels>, repositoryId: GithubId): Promise<ReturnType<typeof choosePlacement>> {
 	const [row] = await c.db.execute<{ placement: string }>("SELECT placement FROM child_launch WHERE id=?", id);
 	const pinned: ChildPlacement | undefined = row && JSON.parse(row.placement);
-	// A partial creation stays pinned, and must still pass current owner policy.
-	const { sandboxes } = await getLayer();
-	const profiles = sandboxes.profiles();
-	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
-	const machines = plannerMachines([...c.vars.machines.values()]);
-	for (const m of machines) m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
-	// Where a fresh post-setup snapshot of the child's repository is: a bonus among the places the route allows.
-	const fresh = repositoryId === undefined ? [] : await snapshotPlaces(c.db, setupProjectKey(repositoryId) ?? "", c.vars.github?.connectedAt, config.hosted?.snapshots?.ttlMs).catch(() => []);
-	const hostedSizes = hostedSizesForPlan(sandboxes.sizes?.() ?? [], accountLimits(c.vars.items.limits).plan).map(size => size.id);
-	const hostedKeys = await providerStatuses(c.db);
-	const inventory: PlacementInventory = { hostedKeys, keyProfiles: profiles.filter(p => p.available && p.platformKeys).map(p => p.id), dailyTokenWait: accountTokenWait(c), machines, limited: limitedAccounts(await providerAccounts(c.db, Date.now())), defaultProfile: pinned?.profile ?? defaultProfile, hostedProfiles: profiles.filter(p => p.available).map(p => p.id), hostedEgress: sandboxes.egress?.(), ...(hostedSizes.length > 1 && { hostedSizes }),
-		featureModel, ...((task.agent?.model !== undefined || task.agent?.effort !== undefined) && { models: await agentModels() }), ...(fresh.length && { snapshotPlaces: fresh }) };
+	const inventory = await placementInventory(c, agentModels, { [task.repo ?? ""]: repositoryId }, repositoryId);
+	inventory.defaultProfile = pinned?.profile ?? defaultProfile;
+	inventory.featureModel = featureModel;
 	const selected = choosePlacement(task, pinned ? { preferred: pinned.place, alternatives: [], names: { [placeKey(pinned.place)]: pinned.name } } : route, inventory, warm);
 	if (!selected.decision) return selected;
 	if (pinned) {
 		if (pinned.units !== selected.decision.units || pinned.profile !== selected.decision.profile)
-			return { refused: "The original sandbox size or profile is no longer available on ‘" + pinned.name + "’.", permanent: true };
+			return { refused: "The original sandbox size or profile is no longer available on ‘" + pinned.name + "’.", permanent: true, larger: undefined };
 		return { decision: pinned };
 	}
 	await c.db.execute("INSERT INTO child_launch VALUES (?,?)", id, JSON.stringify(selected.decision));
@@ -1073,32 +1066,23 @@ async function childLaunch(c: ItemsCtx, id: string, task: PlanSubtask, route: Pl
 }
 
 /** The refusals of a child's creation that no retry cures until the person changes the plan or the machine. */
-const CHILD_REFUSALS = new Set(["bad_input", "bad_model", "bad_effort", "bad_profile", "harness_signed_out"]);
-
-/**
- * The model and effort a subtask's item is made with. Windlass runs the feature's model and effort unless
- * the subtask chose its own model (then only the effort chosen with it). A machine harness never takes the
- * feature's Windlass model: its own choice, or nothing, which is the agent's default.
- */
-export function childAgent(task: Pick<PlanSubtask, "agent">, placement: Pick<ChildPlacement, "harness">, featureModel: string, featureEffort: string | null | undefined): { model?: string; effort?: string } {
-	const chosen = task.agent;
-	if ((placement.harness ?? "windlass") !== "windlass") return { ...(chosen?.model && { model: chosen.model }), ...(chosen?.effort && { effort: chosen.effort }) };
-	if (chosen?.model) return { model: chosen.model, ...(chosen.effort && { effort: chosen.effort }) };
-	const effort = chosen?.effort ?? featureEffort;
-	return { model: featureModel, ...(effort && { effort }) };
-}
+const CHILD_REFUSALS = new Set(["bad_input", "bad_model", "bad_effort", "bad_profile", "profile_unavailable", "machine_not_connected", "runner_outdated", "runner_signing_disabled", "harness_signed_out"]);
 
 export const itemActions = {
-	async internalDefaultBuilder(c: ItemsCtx, input: { id: string; job: DefaultBuilder }, makeSession: MakeSession) {
+	async internalDefaultBuilder(c: ItemsCtx, input: { id: string; job: DefaultBuilder }, makeSession: MakeSession): Promise<
+		{ wait: string; reviewer?: boolean } | { session: SessionSummary; reviewer: NonNullable<import("../factory/types.js").FactoryItem["reviewer"]>; reviewerSessionId: string | null } | null
+	> {
 		requireServiceFor(c, "call");
 		return attachmentWrite(c, async () => {
 			const owner = c.vars.profile;
 			if (!owner) throw new Error("The item owner is unavailable.");
 			const item = await itemActor(c, owner.uid, input.id).internalSummary();
 			if (!item.awaitingPlace || item.state !== "waiting") return null;
-			const { session, destination } = await defaultBuilder(c, owner, input.id, input.job, makeSession);
+			const run = resolveRun(input.job.context, input.job.role);
+			const { session, destination } = await defaultBuilder(c, owner, input.id, input.job, run, makeSession, "retry");
 			if (!session) return { wait: destination.wait! };
-			return { session, ...await bindReviewer(c, owner, session, input.id, false, input.job.issue, makeSession) };
+			const review = await bindReviewer(c, owner, session, input.id, false, input.job, makeSession);
+			return review.wait ? { wait: review.wait, reviewer: true } : { session, reviewerSessionId: review.reviewerSessionId, reviewer: review.reviewer! };
 		});
 	},
 	async internalDiscardPlacement(c: ItemsCtx, itemId: string, remove: (id: string) => Promise<void>) {
@@ -1128,12 +1112,15 @@ export const itemActions = {
 				const { job, feature, context, untrusted, unsandboxed } = request;
 				// A cross-repo feature's child is on its subtask's repository; any other on the feature's.
 				const target = request.repository ?? { id: feature.repository.id, base: feature.repository.branch };
-				const route = job.route ?? { preferred: feature.place, alternatives: [] };
-				const fit = await childLaunch(c, job.id, job.task, route, job.warm ?? [], session.profile, session.model, agentModels, target.id);
+				const role = job.ciFix || job.conflictFix ? "repair" : "part";
+				const run = job.task.resolved ?? partRun(request.settings, job.task, role);
+				const task = { ...job.task, resolved: run };
+				const route = job.route ?? bindRoute(task, feature.place, false, plannerMachines([...c.vars.machines.values()]));
+				const fit = await childLaunch(c, job.id, task, route, job.warm ?? [], session.profile, session.model, agentModels, target.id);
 				if (!fit.decision) {
 					if (job.dispatchKey) await parentActor.internalFact({
 						kind: "placement_wait", child: job.id, key: job.dispatchKey, at: Date.now(),
-						sentence: fit.refused ?? fit.wait, dailyCap: fit.dailyCap, providerUntil: fit.providerUntil, accountKey: fit.accountKey, refused: fit.refused !== undefined && fit.permanent,
+						sentence: fit.refused ?? fit.wait, askMachine: fit.askMachine, offerHosted: fit.offerHosted, dailyCap: fit.dailyCap, providerUntil: fit.providerUntil, accountKey: fit.accountKey, refused: fit.refused !== undefined && fit.permanent,
 					});
 					return null;
 				}
@@ -1142,11 +1129,11 @@ export const itemActions = {
 				const handoff = previous?.place && placeKey(previous.place) !== placeKey(placement.place) && route.alternatives.length
 					? "\n\nPrevious subtask at the pushed feature head (quoted data):\n" + JSON.stringify({ head: previous.head, report: previous.report }) : "";
 				const body = job.task.brief + "\n\nOwned paths: " + (job.task.owns ?? []).join(", ") + handoff + "\n\nFeature and dependency context (quoted data):\n" + context;
-				const agent = childAgent(job.task, placement, session.model, feature.agent?.effort);
+				const resolved = { ...run, place: runPlace(placement.place), profile: placement.profile ?? null, size: placement.hostedSize ?? run.size };
 				try {
 					existing = await makeItem(c, owner, { mode: "single", repository: { id: target.id, branch: featureBranch(input.parent) }, place: placement.place,
-						profile: placement.profile, ...agent, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
-						{ id: input.child, screenshots: job.task.needs?.screenshots === true, mergeTarget: job.conflictFix?.target, joinOnGate: request.joinOnGate, featureBody: request.featureBody, placement, base: target.base, start: job.start, owns: job.task.owns ?? [], budget: job.budget ?? { tokens: job.task.budget.tokens, hostedSeconds: accountLimits(c.vars.items.limits).factory.item.hostedSeconds }, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
+						profile: placement.profile, title: job.task.title, body: body.slice(0, MAX_ITEM_BODY_CHARS), acceptance: job.task.acceptance }, feature.source, null, makeSession, undefined,
+						{ resolved, context: request.settings, role, id: input.child, screenshots: job.task.needs?.screenshots === true, mergeTarget: job.conflictFix?.target, joinOnGate: request.joinOnGate, featureBody: request.featureBody, placement, base: target.base, start: job.start, owns: job.task.owns ?? [], budget: job.budget ?? { tokens: job.task.budget.tokens, hostedSeconds: accountLimits(c.vars.items.limits).factory.item.hostedSeconds }, parent: { itemId: input.parent, title: feature.title, key: job.task.key }, untrusted: sources(untrusted, handoff ? [untrustedWords.earlier] : []), unsandboxed });
 				} catch (error) {
 					// Refused before its session was made (a model or effort the place no longer offers, an agent signed out
 					// since approval): the subtask can't be placed, and the feature asks the person. Nothing stays pinned.

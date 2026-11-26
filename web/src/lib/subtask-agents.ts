@@ -85,9 +85,9 @@ export function agentParts(agent: SubtaskAgent | undefined, list: ModelList | nu
 	return { name: HARNESS_NAMES[harness], model, effort: agent?.effort ?? null, unattended: worksWithoutAsking(harness) };
 }
 
-/** The agent a draft names, as the plan saves it: Windlass with nothing chosen is no choice at all. */
+/** The agent a draft names, as the plan saves it. No agent runs the resolved default; Windlass is a choice of its own. */
 export function cleanAgent(agent: SubtaskAgent | null | undefined): SubtaskAgent | undefined {
-	if (!agent || (agent.harness === "windlass" && !agent.model && !agent.effort)) return undefined;
+	if (!agent) return undefined;
 	return { harness: agent.harness, ...(agent.model && { model: agent.model }), ...(agent.effort && { effort: agent.effort }) };
 }
 

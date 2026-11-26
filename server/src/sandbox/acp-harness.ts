@@ -518,6 +518,8 @@ export class AcpHarness implements Harness {
 			if (effort) {
 				if (configs.effort && configChoices(configs.effort).some(choice => choice.id === effort)) {
 					if (input.effort) await select(configs.effort, effort);
+				} else if (input.unattended && input.effort) {
+					throw new Error(`${profile.name} does not offer the selected effort “${effort}” for this model.`);
 				} else if (changed || input.model) {
 					const option = configs.effort;
 					if (option && option.currentValue !== "default" && configChoices(option).some(choice => choice.id === "default"))

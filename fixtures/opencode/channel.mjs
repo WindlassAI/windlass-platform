@@ -40,6 +40,8 @@ export async function channelTurn(owner, session, id, model, expectedFailure, co
 		assert.ok(box);
 		if (!codex) await box.writeTextFile('/workspace/opencode.json', JSON.stringify({enabled_providers: [], default_agent: 'nonexistent'}));
 		const harness = new AcpHarness(codex ? CODEX : OPENCODE, 'fixture');
+		// This fixture runs the executor without its service's periodic inventory refresh.
+		await owner.refresh();
 		const offered = owner.report().harnesses.find(entry => entry.id === harness.id);
 		assert.ok(offered, `runner did not report ${harness.id}`);
 		let previous;

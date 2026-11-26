@@ -582,7 +582,7 @@ async function keyWireCheck(provider: typeof MODEL_PROVIDERS[number]) {
 	const credential = (value: string) => auth === "authorization" ? "Bearer " + value : value;
 	const sql = new DatabaseSync(":memory:");
 	for (const statement of MODEL_PROVIDER_TABLES) sql.exec(statement);
-	sql.prepare("INSERT INTO model_provider(provider, sealed, generation, last4, added_at) VALUES (?, ?, ?, ?, ?)").run(provider,
+	sql.prepare("INSERT INTO model_provider(provider, sealed, generation, last4, added_at, check_ok) VALUES (?, ?, ?, ?, ?, 1)").run(provider,
 		serverSealer().seal("model-key", JSON.stringify([uid, provider]), key), generation, key.slice(-4), Date.now());
 	const internal = { key: [uid], vars: { tokenGen: 0 }, conn: { params: { token: issueServiceToken(modelKeyCaller(uid)) } },
 		db: { async execute<Row>(query: string, ...args: unknown[]) { return sql.prepare(query).all(...args as SQLInputValue[]) as Row[]; } } };

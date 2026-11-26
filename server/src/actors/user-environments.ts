@@ -10,8 +10,9 @@
 import { config } from "../config.js";
 import { itemScreenshots, type EnvironmentBuildReport } from "./internal.js";
 import type { RawAccess } from "rivetkit/db";
-import type { EnvironmentBuild, EnvironmentPlace, EnvironmentSchedule, EnvironmentTrigger, HostedSize, MachineSummary, RepositoryCheck, RepositoryDefaults, RepositoryEnvironments, SessionSummary } from "../contract.js";
-import { ITEM_HOSTED_SIZE, machineLabel } from "../contract.js";
+import type { EnvironmentBuild, EnvironmentPlace, EnvironmentSchedule, EnvironmentTrigger, HostedSize, MachineSummary, RepositoryCheck, RepositoryDefaults, RepositoryEnvironments, SandboxProfileId, SessionSummary } from "../contract.js";
+import { resolveRun, type RunSettings } from "../factory/resolve-run.js";
+import { machineLabel } from "../contract.js";
 import {
 	afterChange, afterPush, emptyRow, environmentInputs, environmentPlaces, environmentView, finishBuild, interruptBuild, HOSTED, nextBuild, nextScheduled, nextWake, placeRefusal, readEnvironments, readSchedule, sameInputs,
 	BUILD_LOST_MS, INTERRUPTION_RETRY_MS, RETRY_MS, usable, writeEnvironment, defaultSchedule, type DueBuild, type EnvironmentRow, type PlaceFacts,
@@ -20,9 +21,9 @@ import {
 type Db = Pick<RawAccess, "execute">;
 
 /** What is saved for a repository that a build depends on. */
-export interface SavedInputs { command: string; checks: RepositoryCheck[]; secrets: number; defaults: RepositoryDefaults; label: string }
+export interface SavedInputs { command: string; checks: RepositoryCheck[]; secrets: number; defaults: RepositoryDefaults; account?: RunSettings; deployment?: RunSettings; label: string }
 
-export interface BuildRequest { project: string; place: EnvironmentPlace; profile: string; screenshots: boolean; trigger: EnvironmentTrigger; repositoryId: string; /** Hosted: the size the build's sandbox is asked for (`makeSession` holds it to the sizes offered). */ hostedSize?: HostedSize }
+export interface BuildRequest { project: string; place: EnvironmentPlace; profile: SandboxProfileId; screenshots: boolean; trigger: EnvironmentTrigger; repositoryId: string; /** Hosted: the size the build's sandbox is asked for (`makeSession` holds it to the sizes offered). */ hostedSize?: HostedSize }
 
 /**
  * Whether a hosted environment was built in a session's size. A sandbox's image starts only sandboxes of its own size
@@ -130,18 +131,19 @@ async function rearm(host: EnvironmentHost): Promise<void> {
 	if (wake !== null) await host.arm(Math.max(wake, host.now()));
 }
 
-/**
- * The profile, screenshots and hosted size a build at a place uses: those of the repository's latest Windlass session
- * there, else its defaults (the size: the repository's saved one, else a work item's, which most builds serve).
- */
-function buildSandbox(host: EnvironmentHost, project: string, place: EnvironmentPlace, saved: SavedInputs): { profile: string; screenshots: boolean; hostedSize?: HostedSize } | null {
+async function buildSandbox(host: EnvironmentHost, project: string, place: EnvironmentPlace, saved: SavedInputs) {
 	const latest = host.sessions()
 		.filter(s => !s.environmentBuild && String(s.repository?.id ?? "") === repoOf(project) && placeOf(s) === place && (s.harness ?? "windlass") === "windlass")
 		.sort((a, b) => b.updatedAt - a.updatedAt)[0];
 	const allowed = config.factory.screenshots && saved.defaults.screenshots;
-	const hostedSize = place === HOSTED ? (latest?.hostedSize ?? saved.defaults.hostedSize ?? ITEM_HOSTED_SIZE) : undefined;
-	if (latest) return { profile: latest.profile, screenshots: itemScreenshots(latest.item, latest.harness, allowed), ...(hostedSize && { hostedSize }) };
-	return saved.defaults.profile ? { profile: saved.defaults.profile, screenshots: allowed, ...(hostedSize && { hostedSize }) } : null;
+	const machine = place !== HOSTED && (await host.machines()).find(m => m.machineId === place);
+	const deployment = { ...saved.deployment, machineProfile: machine ? machine.profiles?.find(p => p.available)?.id : undefined };
+	const run = resolveRun({ deployment, account: saved.account, repository: saved.defaults,
+		item: { place: place === HOSTED ? "hosted" : { machine: place } } }, "environment");
+	const profile = run.profile;
+	if (!profile) return null;
+	return { profile, screenshots: latest ? itemScreenshots(latest.item, latest.harness, allowed) : allowed,
+		...(place === HOSTED && (run.sources.size !== "deployment" || deployment.hostedSize) && { hostedSize: run.size }) };
 }
 
 /**
@@ -192,8 +194,8 @@ async function start(host: EnvironmentHost, due: DueBuild): Promise<void> {
 	const hostedProjects = (await readEnvironments(host.db)).filter(r => r.place === HOSTED && r.ready).map(r => r.project);
 	const refusal = facts ? placeRefusal(facts, { userEnvironments: hostedProjects.length, userMax: host.hostedUserMax }, due.project, hostedProjects) : "That machine is not yours any more.";
 	if (refusal) return later(refusal, retry && facts && !facts.online ? INTERRUPTION_RETRY_MS : RETRY_MS);
-	const sandbox = buildSandbox(host, due.project, due.place, saved);
-	if (!sandbox) return later("Choose a sandbox under Defaults for new agents, or run an agent on this repository here first.");
+	const sandbox = await buildSandbox(host, due.project, due.place, saved);
+	if (!sandbox) return later("Choose an available sandbox profile for this environment.");
 	const inputs = environmentInputs(saved.command, saved.checks);
 	// Compare the tree after pushes settle with the one whose setup and checks ran.
 	if (due.trigger === "push" && row.attempt?.commit && sameInputs(row.attempt, inputs)) {

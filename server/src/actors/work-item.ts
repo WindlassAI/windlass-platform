@@ -22,6 +22,7 @@ import { mergeCandidate, requiredCiBranches } from "../factory/autonomy.js";
 import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
 import { criticSessionId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
+import { resolveRun } from "../factory/resolve-run.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf } from "../github/publish.js";
@@ -43,7 +44,7 @@ import { db, type RawAccess } from "rivetkit/db";
 import { clientError, describeError, requireService, requireServiceFor, serviceParams } from "../auth.js";
 import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
-import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
+import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SandboxPlace, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { RULES, activeJob, advance, rerunKey, personAdds, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, plannerCapacityText, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, requestedReviewBody, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
@@ -61,7 +62,6 @@ export interface ItemMeta {
 	flaky?: boolean;
 	ciCodeFailure?: boolean;
 	mergedDifferentHead?: true;
-	defaultPlace?: import("../contract.js").ItemPlaceDefaults;
 	pendingBuilder?: import("./user-items.js").DefaultBuilder;
 	/** Sealed by the requesting session. Kept with the claim until the save is settled. */
 	pendingSecret?: RequestedSecretSave;
@@ -185,6 +185,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		repository: { provider: repository.provider, id: repository.id, owner: repository.owner, name: repository.name, branch: repository.branch, private: repository.private, url: repository.url },
 		...(crossRepo(item) && { repositories: repoViews(item), integration: integrationView(item) }),
 		place: item.place,
+		resolved: item.resolved, ranWith: item.ranWith,
 		...(item.awaitingPlace && { awaitingPlace: true }),
 		...(item.placement && { placement: item.placement }),
 		source: meta.source,
@@ -941,15 +942,10 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 
 /** `featureModel`: the feature's Windlass model, which a Windlass subtask choosing only an effort runs. */
 async function placementInventory(c: Ctx, uid: string, featureModel: string | undefined, snapshotRepository?: GithubId): Promise<PlacementInventory & { hostedCapacity: number }> {
-	const user = userActor(c, uid);
-	const [hostedKeys, capacity, limited, dailyTokenWait, models, snapshotPlaces] = await Promise.all([user.internalHostedProviders(), user.internalPlannerCapacity(), user.internalLimitedAccounts(), user.internalDailyTokenWait(), user.internalAgentModels(),
-		// Only a hint for ranking places: a failure leaves it out.
-		snapshotRepository === undefined ? undefined : user.internalSnapshotPlaces(snapshotRepository).catch(() => undefined)]);
-	const { sandboxes } = await getLayer();
-	const profiles = sandboxes.profiles().filter(p => p.available);
-	const hostedProfiles = profiles.map(p => p.id);
-	const keyProfiles = profiles.filter(p => p.platformKeys).map(p => p.id);
-	return { ...capacity, hostedKeys, keyProfiles, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models, ...(featureModel && { featureModel }), ...(snapshotPlaces?.length && { snapshotPlaces }) };
+	const { item, meta } = c.vars.stored!;
+	const repositories = Object.fromEntries((item.repos ?? []).map(repo => [repo.alias, repo.repositoryId]));
+	repositories[""] = meta.repository.id;
+	return { ...await userActor(c, uid).internalPlacementInventory(repositories, snapshotRepository), featureModel };
 }
 
 async function planCiBranches(c: Ctx, { item, meta }: Stored, repo?: FeatureRepoState) {
@@ -1513,7 +1509,7 @@ async function dispatchFeature(c: Ctx, { item, meta }: Stored, effect: Extract<E
 		return true;
 	}
 	if (effect.kind === "dispatch" && item.pr && job) {
-		if (job.route && !job.placement && job.state === "draft" && !job.cancelRequested) {
+		if (!job.placement && job.state === "draft" && !job.cancelRequested) {
 			await take(c, { kind: "place_child", child: job.id, key, inventory: await placementInventory(c, meta.uid, item.agent?.model, crossRepo(item) ? undefined : meta.repository.id), at: Date.now() });
 			return true;
 		}
@@ -1645,13 +1641,13 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return true;
 		case "resolve_default_place": {
 			if (!meta.pendingBuilder) return false;
-			const result = await userActor(c, meta.uid).internalDefaultBuilder({ id: item.id, job: meta.pendingBuilder });
+			const result = await userActor(c, meta.uid).internalDefaultBuilder({ id: item.id, job: item.useHosted ? { ...meta.pendingBuilder, context: { ...meta.pendingBuilder.context, item: { ...meta.pendingBuilder.context.item, place: "hosted" } } } : meta.pendingBuilder });
 			if (!result || !c.vars.stored || !live(c.vars.stored.item, effect)) return false;
-			if (!("session" in result)) await take(c, { kind: "default_place_wait", at: Date.now(), sentence: result.wait });
+			if (!("session" in result)) await take(c, { kind: "default_place_wait", at: Date.now(), sentence: result.wait, reviewer: result.reviewer });
 			else {
 				const session = result.session;
 				await take(c, { kind: "default_place_ready", at: Date.now(), place: session.place, reviewer: result.reviewer, reviewerSessionId: result.reviewerSessionId,
-					agent: newAgent(session.harness ?? "windlass", session.model, meta.pendingBuilder.effort, session.item?.signIn) });
+					agent: newAgent(session.harness ?? "windlass", session.model, resolveRun(meta.pendingBuilder.context, meta.pendingBuilder.role).effort, session.item?.signIn) });
 			}
 			return true;
 		}
@@ -1851,9 +1847,9 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "deliver": {
 			if (effect.to === "critic") {
 				try {
-					await userActor(c, meta.uid).internalPlanCritic(meta.sessionId);
-				} catch {
-					await take(c, { kind: "review_ended", key: effect.key, at: Date.now(), outcome: "error", said: null, refused: "The reviewer session could not be started.",
+					await userActor(c, meta.uid).internalPlanCritic(meta.sessionId, item.context!);
+				} catch (error) {
+					await take(c, { kind: "review_ended", key: effect.key, at: Date.now(), outcome: "error", said: null, refused: describeError(error),
 						review: null, spend: { tokens: 0, hostedSeconds: item.spent.hostedSeconds } });
 					return true;
 				}
@@ -1892,22 +1888,19 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					limited: inventory.limited?.filter(a => limitApplies(a, machineId)).map(({ harness, limitedUntil }) => ({ harness, limitedUntil })) }));
 				const parent = item.place;
 				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
-				const preferred = meta.defaultPlace;
-				const selected = preferred?.place;
-				const defaultPlace = selected && typeof selected === "object" ? { kind: "machine" as const, machineId: selected.machine }
-					: selected === "hosted" ? { kind: "hosted" as const } : parent;
+				const run = resolveRun(item.context!, "part");
+				const selected = run.place;
+				const defaultPlace: SandboxPlace = typeof selected === "object" ? { kind: "machine", machineId: selected.machine }
+					: selected === "hosted" ? { kind: "hosted" } : parent;
 				if (await autoApprovePlans(c, stored)) text += "\nThis repository auto-approves small plans. Ask only questions whose answers change the work and state the obvious defaults in the spec.";
 				text += plannerReadiness(await userActor(c, meta.uid).internalReadinessLevel(meta.repository.id));
 				text += "\n" + plannerCapacityText(defaultPlace, inventory.machines, inventory.hostedCapacity);
-				if (preferred?.place) {
-					const chosen = preferred.place;
-					// A hosted fallback runs this planner only. Its parts still prefer a compatible machine.
-					const prefer = typeof chosen === "object" ? inventory.machines.find(m => m.machineId === chosen.machine)?.name
-						: chosen === "hosted" ? "hosted" : parent.kind === "machine" ? parentName : undefined;
-					text += "\nWhen a part fits the owner's preferred place, use it as place.prefer. Choose a different place or agent when that part requires it. Owner preference (data): " +
-						JSON.stringify({ prefer, selection: preferred.place === "any-machine" ? "any compatible machine" : undefined, harness: preferred.harness ?? "windlass", profile: preferred.machineProfile, model: preferred.machineModel ?? undefined, effort: preferred.machineEffort ?? undefined });
-				}
-				text += "\n\nCurrent runners do not support sizing beyond one slot." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (Small 1 vCPU, 1 GiB; Medium 2 vCPU, 4 GiB, the default; Large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than Medium (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedKeys: inventory.hostedKeys?.map(k => k.provider), hostedModels, keyProfiles: inventory.keyProfiles, hostedEgress: inventory.hostedEgress, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
+				// A hosted fallback runs this planner only. Its parts still prefer a compatible machine.
+				const prefer = typeof selected === "object" ? inventory.machines.find(m => m.machineId === selected.machine)?.name
+					: selected === "hosted" ? "hosted" : parent.kind === "machine" ? parentName : undefined;
+				text += "\nOmit place and agent to inherit the owner’s settings. Use place.prefer or agent for a part that requires a different choice. Owner preference (data): " +
+					JSON.stringify({ prefer, selection: selected === "any-machine" ? "any compatible machine" : undefined, harness: run.agent, profile: run.profile, model: run.model ?? undefined, effort: run.effort ?? undefined });
+				text += "\n\nRunners reporting slots can allocate up to four slots within their reported capacity." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (Small 1 vCPU, 1 GiB; Medium 2 vCPU, 4 GiB, the default; Large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than Medium (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, screenshotsEnabled: inventory.screenshotsEnabled, repositoryScreenshots: inventory.repositoryScreenshots, hostedKeys: inventory.hostedKeys?.map(k => k.provider), hostedModels, keyProfiles: inventory.keyProfiles, hostedEgress: inventory.hostedEgress, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
 				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
 			}
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.fresh && { fresh: effect.fresh }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) }).catch(onGone);
@@ -1924,7 +1917,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				await take(c, { kind: "sandbox_resize_refused", key: effect.key, at: Date.now(), plan: effect.plan, size: result.sizeUnavailable });
 				return true;
 			}
-			await take(c, { kind: "sandbox_freed", key: effect.key, at: Date.now(), plan: effect.plan });
+			await take(c, { kind: "sandbox_freed", key: effect.key, at: Date.now(), plan: effect.plan, hostedSize: effect.hostedSize });
 			return true;
 		}
 		case "withdraw":
@@ -2282,7 +2275,7 @@ export const workItem = actor({
 			const reports = completed.filter(j => job.task.dependsOn.includes(j.task.key)).map(j => j.report);
 			// A cross-repo feature's child is made in its subtask's repository, from that repository's feature branch.
 			const repo = crossRepo(s.item) ? repoOf(s.item, job.task.repo) : null;
-			return { paused: !!s.item.featureUpdate || s.item.question?.kind === "feature_update", job: { ...job, start: repo?.head ?? s.item.head, dispatchKey: job.dispatchKey ?? currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
+			return { settings: s.item.context!, paused: !!s.item.featureUpdate || s.item.question?.kind === "feature_update", job: { ...job, start: repo?.head ?? s.item.head, dispatchKey: job.dispatchKey ?? currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
 				repository: repo && { id: repo.repositoryId, base: repo.baseRef, alias: repo.alias },
 				joinOnGate: !!(repo ?? s.item).featureCi, featureBody: s.item.task.body, context: JSON.stringify({ spec: s.item.featurePlan.spec, answers: s.item.featurePlan.questions.map(({ text, answer }) => ({ text, answer })), reports }),
 				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place },
@@ -2293,13 +2286,10 @@ export const workItem = actor({
 		},
 		internalFilePlan: async (c, input: { key: string; plan: unknown }): Promise<string> => {
 			requireService(c);
-			// A part on the owner's saved machine agent starts on its saved model and effort where the planner named none.
-			const saved = c.vars.stored?.meta.defaultPlace;
-			const parts = (input.plan as { subtasks?: { agent?: { harness?: string; model?: string; effort?: string } }[] } | null)?.subtasks;
-			if (saved?.machineModel && Array.isArray(parts)) for (const agent of parts.map(part => part?.agent))
-				if (agent && agent.harness === saved.harness && !agent.model) Object.assign(agent, { model: saved.machineModel, ...(saved.machineEffort && !agent.effort && { effort: saved.machineEffort }) });
 			try {
-				return await take(c, { ...input, kind: "file_plan", at: Date.now() }) ? "Plan filed. End your turn." : "This planning turn ended.";
+				const { item, meta } = c.vars.stored!;
+				const inventory = await placementInventory(c, meta.uid, item.agent?.model);
+				return await take(c, { ...input, inventory, kind: "file_plan", at: Date.now() }) ? "Plan filed. End your turn." : "This planning turn ended.";
 			} catch (error) { return describeError(error); }
 		},
 		internalSummary: async (c): Promise<ItemSummary> => {
@@ -2385,7 +2375,7 @@ export const workItem = actor({
 					}
 				}
 				if (fact.kind === "note") fact.steered = await steerNote(c, stored, fact.note);
-				if (fact.kind === "set_subtask_agent") fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
+				if (fact.kind === "set_subtask_agent" || fact.kind === "edit_plan") fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
 				const approving = stored.item.featurePlan?.status === "proposed" && (fact.kind === "approve_plan" || (fact.kind === "answer" && fact.choice === "approve"));
 				if (approving && (fact.kind === "approve_plan" || fact.kind === "answer")) {
 					fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
@@ -2431,7 +2421,7 @@ export const workItem = actor({
 			requireServiceFor(c, "call");
 			await queued(c, async () => {
 				const item = c.vars.stored?.item;
-				if (!item?.awaitingPlace || item.state !== "waiting") return;
+				if (!item?.awaitingPlace || item.question || item.state !== "waiting") return;
 				await c.db.execute("UPDATE effects SET due_at=0 WHERE id=?", "resolve_default_place:" + item.wait?.retryAt);
 				await armDueInQueue(c);
 			});
