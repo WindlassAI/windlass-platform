@@ -250,6 +250,8 @@ function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number 
 			return 1;
 		case "publish":
 		case "conflict":
+		// A feature's summary is pushed before its CI and second review: it is not yours yet.
+		case "summary":
 			return 2;
 		case "ci":
 		case "ci_fix":
@@ -258,7 +260,6 @@ function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number 
 		case "review":
 		case "review_fix":
 			return reviewer ? 4 : 3;
-		case "summary":
 		case "handoff":
 		case "merged":
 			return stages;
