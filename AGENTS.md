@@ -79,4 +79,4 @@ Avoid `pkill -f`: it can stop another checkout's server or check.
 - Keep comments short and explain why. Skip restatements and long prose blocks.
 - Keep `README.md` short. Put behaviour documentation in `web/src/docs/content/*.md`.
 - When a guide's paths or commands change, run `node scripts/agents-docs-check.ts`.
-- Write one short, plain imperative line for each commit message.
+- Write each commit message and pull request title as one short Conventional Commit line, such as `fix: keep auto-merge when main moves`.
