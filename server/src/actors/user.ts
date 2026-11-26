@@ -65,6 +65,7 @@ import {
 	type UsageNumbers,
 	type UserProfile,
 } from "../contract.js";
+import { SLACK_TABLES, slackSettingsActions } from "./user-slack.js";
 import { LINEAR_TABLES, type LinearItemWrite, linearHoldsTeam, writeLinearItem, beginLinearConnect, claimLinearState, completeLinearConnection, fileLinearDelivery, linearStatus, linearTeams, removeLinearMapping, disconnectLinear, saveLinearMapping } from "./user-linear.js";
 import { GITHUB_SYNC, GITHUB_SYNC_TABLE, retryGithubSync, syncGithubWebhooks, updateGithubInstallation, replaceGithubConnection, type InstallationChange } from "./user-github.js";
 import { githubApp, type GithubApp } from "../github/app.js";
@@ -1130,6 +1131,7 @@ export const user = actor({
 					updated_at INTEGER NOT NULL
 				)
 			`);
+			for (const table of SLACK_TABLES) await db.execute(table);
 			for (const table of LINEAR_TABLES) await db.execute(table);
 			await db.execute("DROP TABLE IF EXISTS github_grant");
 			await db.execute(GITHUB_SYNC_TABLE);
@@ -1462,6 +1464,9 @@ export const user = actor({
 			return null;
 		},
 		internalGithubIntake: (c, input: import("../factory/intake.js").IntakeTrigger) => itemActions.internalGithubIntake(c, input, itemSession(c)),
+
+		...slackSettingsActions,
+		internalSlackIntake: (c, filing: import("../factory/intake.js").SlackFiling) => itemActions.internalSlackIntake(c, filing, itemSession(c)),
 
 		linear: async (c): Promise<LinearStatus> => {
 			requireUser(c);

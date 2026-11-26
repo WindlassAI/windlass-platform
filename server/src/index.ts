@@ -33,6 +33,10 @@ import { GITHUB_CALLBACK_PATH, githubCallbackResponse } from "./github/connect.j
 import { actorLinearConnectStore, dispatchLinearDelivery } from "./actors/user-linear.js";
 import { LINEAR_CALLBACK_PATH, linearCallbackResponse } from "./linear/connect.js";
 import { LINEAR_WEBHOOK_PATH, linearWebhookRoute } from "./linear/webhook.js";
+import { actorSlackConnectStore } from "./actors/user-slack.js";
+import { SLACK_CALLBACK_PATH, slackCallbackResponse } from "./slack/connect.js";
+import { dispatchSlackDelivery } from "./slack/dispatch.js";
+import { SLACK_COMMANDS_PATH, SLACK_EVENTS_PATH, slackWebhookRoute } from "./slack/webhook.js";
 import { getLayer } from "./layer.js";
 import { connectionTokens, platformConnectionResponse, platformInfoResponse } from "./platform-info.js";
 import { webFiles } from "./web.js";
@@ -169,6 +173,7 @@ const web = config.webDir ? webFiles(config.webDir, {
 if (config.webDir) console.log(`[wlp] web app: served from ${config.webDir}`);
 
 const linearWebhooks = linearWebhookRoute({ dispatch: dispatchLinearDelivery });
+const slackWebhooks = slackWebhookRoute({ dispatch: dispatchSlackDelivery });
 
 async function route(request: Request): Promise<Response> {
 	const { pathname } = new URL(request.url);
@@ -188,6 +193,8 @@ async function route(request: Request): Promise<Response> {
 	// Linear's: where its authorization sends the owner's browser back to, and its signed webhook deliveries (docs: factory.md). Not found where Linear is off.
 	if (pathname === LINEAR_CALLBACK_PATH) return linearCallbackResponse(request, { store: actorLinearConnectStore });
 	if (pathname === LINEAR_WEBHOOK_PATH) return (await linearWebhooks(request))!;
+	if (pathname === SLACK_CALLBACK_PATH) return slackCallbackResponse(request, { store: actorSlackConnectStore });
+	if (pathname === SLACK_EVENTS_PATH || pathname === SLACK_COMMANDS_PATH) return (await slackWebhooks(request))!;
 	// The payment provider's webhooks (docs/billing.md); not found where billing is off.
 	if (pathname === BILLING_WEBHOOK_PATH) return billingWebhookRoute(request);
 	// For a load balancer or the host's health check: the node's own view of its connection to the engine.
