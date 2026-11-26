@@ -60,6 +60,8 @@ export interface Run extends ItemRun {
 	lastFailure: string | null;
 	/** Older runs keep only lastFailure. */
 	failures?: string[];
+	/** The one fix turn for failed checks this run took past its token budget (`RULES.checkFixGrace`). */
+	budgetGrace?: true;
 	/** Set while the workspace is pushed for "Hand it over as it is" (blueprint.ts `answer`): it is handed over once pushed. */
 	handOver?: true;
 	/** A part can take another base update once its feature tip changes again. */

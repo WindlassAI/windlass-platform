@@ -58,6 +58,8 @@ export const RULES = {
 	/** Check for a lost turn receipt. */
 	turnCheckMs: 5 * 60_000,
 	personDecisions: 12,
+	/** How far over its token budget one fix turn for failed checks may start without asking. */
+	checkFixGrace: 0.25,
 } as const;
 
 type AutoChoice = ChoiceId | "rerun_ci";
@@ -1057,7 +1059,14 @@ function nextTurn(c: Change, plan: TurnPlan): void {
 	if (backstopTurns(item) >= RULES.turnBackstop) return stop(c, "turns", `This item has taken ${RULES.turnBackstop} turns without finishing. Look at its log before it goes on.`, plan);
 
 	const over = turnBudgetStop(c);
-	if (over !== null) return askBudget(c, over.cause, over.sentence, plan);
+	const fix = plan.charge === "gate" || plan.charge === "ci";
+	// A turn that ran past its tokens and left only failed checks gets one fix turn within the grace, instead of a question.
+	const grace = over?.cause === "tokens" && fix && !run.budgetGrace && item.spent.tokens <= item.budget.tokens * (1 + RULES.checkFixGrace);
+	if (over !== null && !grace) return askBudget(c, over.cause, fix ? "Its checks failed, and it " + over.sentence[0].toLowerCase() + over.sentence.slice(1) : over.sentence, plan);
+	if (grace) {
+		run.budgetGrace = true;
+		c.say(`Its checks failed after it used its token budget: one fix turn, up to ${Math.round(RULES.checkFixGrace * 100)}% over.`);
+	}
 
 	if (plan.fingerprint !== null) {
 		run.lastFailure = plan.fingerprint;

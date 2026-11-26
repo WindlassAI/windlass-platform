@@ -1105,7 +1105,7 @@ drive("a step-limit continuation names the failing required check and a repeat t
 ]);
 drive("a step-limit continuation waits for more budget", newItem({ budget: { tokens: 100_000 } }), [
 	...begun.slice(0, 2),
-	{ fact: limitedWithFailure, state: "waiting", wait: "budget", effects: ["ask"],
+	{ fact: ended("failed", currentFailure, { stepLimit: 60, changes: false, tokens: 130_000 }), state: "waiting", wait: "budget", effects: ["ask"],
 		also: o => holds(o.item.question?.cause === "tokens" && o.item.run?.step.interruptions === 0, "expected a token-budget question") },
 ]);
 
@@ -1346,20 +1346,29 @@ drive("the item's budget runs out, and the person gives it more", newItem({ budg
 	{ fact: ended("unresolved", FAILING), state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{
-		fact: ended("unresolved", verified("unresolved", [check("test", "failed", "Error: expected 3, got 4")])),
+		fact: ended("unresolved", verified("unresolved", [check("test", "failed", "Error: expected 3, got 4")]), { tokens: 160_000 }),
 		state: "waiting",
 		wait: "budget",
 		effects: ["ask"],
 		also: (o) => holds(o.item.question?.kind === "budget"
-			&& o.item.wait?.sentence === "Used its 200k-token budget. Give it more to continue."
+			&& o.item.wait?.sentence === "Its checks failed, and it used its 200k-token budget. Give it more to continue."
 			&& o.item.question.choices.map(c => `${c.id}:${c.label}`).join() === "raise:Give it 200k more tokens,hand_over:Hand it over as it is,give_up:Give up", `asked, with the numbers: ${o.item.wait?.sentence} ${JSON.stringify(o.item.question?.choices)}`),
 	},
-	{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.budget.tokens === 400_000 && o.item.run?.n === 1 && effect(o, "deliver")?.text.includes("Continue fixing") === true, `Give it more goes on with the same run: ${o.item.budget.tokens}`) },
+	{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.budget.tokens >= 400_000 && o.item.run?.n === 1 && effect(o, "deliver")?.text.includes("Continue fixing") === true, `Give it more goes on with the same run: ${o.item.budget.tokens}`) },
+]);
+drive("failed checks just past the budget get one fix turn, then the question", newItem({ budget: { tokens: 100_000 } }), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: ended("unresolved", FAILING, { tokens: 110_000 }), state: "working", effects: ["deliver", "check_turn"],
+		also: (o) => holds(o.item.run?.budgetGrace === true && o.events.some(e => e.said.includes("one fix turn, up to 25% over")), "no grace fix turn") },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: ended("unresolved", verified("unresolved", [check("lint", "failed", "Error: unused import")]), { tokens: 5_000 }), state: "waiting", wait: "budget", effects: ["ask"],
+		also: (o) => holds(o.item.wait?.sentence.startsWith("Its checks failed, and it used its 100k-token budget.") === true, `second overrun asks: ${o.item.wait?.sentence}`) },
 ]);
 drive("out of budget before anything was pushed: Hand it over pushes the work as it is", newItem({ budget: { tokens: 100_000 } }), [
 	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: ended("unresolved", FAILING), state: "waiting", wait: "budget", effects: ["ask"], also: (o) => holds(o.item.question?.choices.some(c => c.id === "hand_over") === true, "no handover offered before a push") },
+	{ fact: ended("unresolved", FAILING, { tokens: 130_000 }), state: "waiting", wait: "budget", effects: ["ask"], also: (o) => holds(o.item.question?.choices.some(c => c.id === "hand_over") === true, "no handover offered before a push") },
 	{ fact: answer("hand_over"), state: "working", effects: ["publish"], also: (o) => holds(o.item.run?.n === 1 && o.item.run.handOver === true, "the work was not pushed for handover") },
 	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"], also: (o) => holds(o.item.run?.step.kind === "handoff" && o.item.run.handOver === undefined, "the push did not go to handover") },
 	{ fact: ci(H(1), ciRead([{ name: "e2e", state: "passed" }])), state: "review", effects: ["handoff", "verified_check", "poll_pr"] },
