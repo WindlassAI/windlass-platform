@@ -1,5 +1,6 @@
 /* The ids of a feature's children are in feature-ids.ts: this file is shared with the web mock and stays free of Node modules. */
 import type { EarlyCheck, FeaturePlan, FeaturePlanEdit, FinalIntegration, ItemBudget, MergeStep, PlanSubtask, SubtaskAgent, SubtaskBudget } from "../contract.js";
+import { runAgent } from "./resolve-run.js";
 import { harnessName, hostedProfiles, knownHarness, worksWithoutAsking } from "../sandbox/harnesses.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
 
@@ -20,8 +21,11 @@ export const crossRepoPlan = (plan: Pick<FeaturePlanEdit, "repos"> | null | unde
 /** The tokens a plan gives its subtasks, together. */
 export const planTokens = (plan: Pick<FeaturePlanEdit, "subtasks">): number => plan.subtasks.reduce((sum, task) => sum + task.budget.tokens, 0);
 
-/** Describe the implementation agent on the approval question. */
-export function agentWords(agent: SubtaskAgent | undefined): string {
+export function subtaskHarness(task: Pick<PlanSubtask, "resolved" | "agent">) {
+	return task.resolved?.agent ?? task.agent?.harness ?? "windlass";
+}
+
+function agentWords(agent: SubtaskAgent | undefined): string {
 	if (!agent) return "the resolved default agent";
 	const choice = [agent.model ?? "its default model", ...(agent.effort ? [agent.effort + " effort"] : [])].join(", ");
 	return `${harnessName(agent.harness)} (${choice})` + (worksWithoutAsking(agent.harness) ? ", works without asking" : "");
@@ -29,15 +33,15 @@ export function agentWords(agent: SubtaskAgent | undefined): string {
 
 /** The keys of the subtasks still to run whose agent works without asking: approval needs the person's confirmation of each. */
 export function unattendedKeys(plan: Pick<FeaturePlanEdit, "subtasks">, completed: ReadonlySet<string> = new Set()): string[] {
-	return plan.subtasks.filter(s => !completed.has(s.key) && worksWithoutAsking(s.resolved?.agent ?? s.agent?.harness)).map(s => s.key);
+	return plan.subtasks.filter(s => !completed.has(s.key) && worksWithoutAsking(subtaskHarness(s))).map(s => s.key);
 }
 
 export function approvalText(plan: FeaturePlan): string {
 	const words = (b: SubtaskBudget) => b.tokens.toLocaleString("en-US") + " tokens";
-	const unattended = plan.subtasks.filter(s => worksWithoutAsking(s.resolved?.agent ?? s.agent?.harness)).map(s => `“${s.title}”`);
+	const unattended = plan.subtasks.filter(s => worksWithoutAsking(subtaskHarness(s))).map(s => `“${s.title}”`);
 	const cross = crossRepoPlan(plan);
 	const final = plan.finalIntegration;
-	return [plan.spec.goal, ...plan.subtasks.map(s => (cross ? `[${s.repo}] ` : "") + s.title + " — " + words(s.budget) + (s.place ? ` on ‘${s.place.prefer}’: ${s.place.reason}` : "") + " — " + agentWords(s.resolved ? { harness: s.resolved.agent, model: s.resolved.model ?? undefined, effort: s.resolved.effort ?? undefined } : s.agent) + (s.needs?.hostedSize ? " · hosted size " + s.needs.hostedSize : "")),
+	return [plan.spec.goal, ...plan.subtasks.map(s => (cross ? `[${s.repo}] ` : "") + s.title + " — " + words(s.budget) + (s.place ? ` on ‘${s.place.prefer}’: ${s.place.reason}` : "") + " — " + agentWords(s.resolved ? runAgent(s.resolved) : s.agent) + (s.needs?.hostedSize ? " · hosted size " + s.needs.hostedSize : "")),
 		...(unattended.length ? [`${unattended.join(", ")} would run an agent that works without asking: it runs every command and edit in its sandbox without asking you. The planner proposed it from the item's text; approve only after confirming each one.`] : []),
 		...(cross && final ? [
 			"Merge order — " + (plan.mergeOrder ?? []).map(m => m.repo + (m.prerequisite.length ? ` after ${m.prerequisite.join(", ")}` : "")).join(", then ") + ".",

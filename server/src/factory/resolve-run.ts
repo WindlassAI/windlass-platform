@@ -34,6 +34,10 @@ export type ActualRun = Omit<ResolvedRun, "size"> & { size: HostedSize | number 
 export interface ResolvedRun extends RunValues {
 	sources: Record<keyof RunValues, Source>;
 }
+export function runAgent(run: ResolvedRun) {
+	return { harness: run.agent, model: run.model ?? undefined, effort: run.effort ?? undefined };
+}
+
 export function partRun(context: RunContext, task: Pick<PlanSubtask, "agent" | "needs" | "repo" | "place">, role: "part" | "repair" = "part", machines?: readonly { name: string; machineId: string }[]) {
 	const repository = task.repo ? context.repositories?.[task.repo] ?? context.repository : context.repository;
 	const place = task.place?.prefer;

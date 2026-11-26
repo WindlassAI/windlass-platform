@@ -782,7 +782,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 			title="New work item"
 			lede={
 				<>
-					On {name}, as a pull request into {base ?? "its default branch"}.{destination?.note ? " " + destination.note : mine.length > 0 ? null : " It runs on a hosted sandbox."}
+					On {name}, as a pull request into {base ?? "its default branch"}.{destination?.wait ? " " + destination.wait : mine.length > 0 ? null : " It runs on a hosted sandbox."}
 				</>
 			}
 			onClose={onClose}

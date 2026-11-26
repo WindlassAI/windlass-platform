@@ -1,6 +1,6 @@
 import { machineLabel, type HarnessId, type ItemMode, type ItemPlaceDefaults, type MachineSummary, type SandboxPlace, type SandboxProfileId } from "../contract.js";
 import { harnessName, itemModeOf, itemProfiles, initialHarnessModels, machinePayerProblem, itemSignInMessage, itemSignInMethodProblem, knownHarness, machineHarness } from "../sandbox/harnesses.js";
-import { resolveRun, type ResolvedRun } from "./resolve-run.js";
+import { resolveRun, runAgent, type ResolvedRun } from "./resolve-run.js";
 import { agentModelProblem, machineSlots, runnerProblem, type AgentModels } from "./placement.js";
 
 export function savedPlace(repo?: ItemPlaceDefaults | null, account?: ItemPlaceDefaults | null): ItemPlaceDefaults | undefined {
@@ -25,14 +25,6 @@ export function profilesForItems(machine: MachineSummary, harness: HarnessId) {
 		(!agent.sandboxedOn.includes(id) || offered.modes?.includes(itemModeOf(harness, id) ?? ""))));
 }
 
-function compatible(defaults: ItemPlaceDefaults, machines: readonly MachineSummary[]) {
-	return placeMachines(defaults.place, machines).flatMap(machine => {
-		const profiles = profilesForItems(machine, defaults.harness ?? "windlass");
-		const profile = defaults.machineProfile != null ? profiles.find(p => p.id === defaults.machineProfile) : profiles[0];
-		return profile ? [{ machine, profile: profile.id }] : [];
-	});
-}
-
 export function placeProblem(policy: ItemPlaceDefaults, machines: readonly MachineSummary[]): string | null {
 	const { place, harness, machineProfile, placeFallback, machineModel, machineEffort } = policy;
 	if ([machineModel, machineEffort].some(id => id != null && (typeof id !== "string" || !/^[\w.:/@+\[\]-]{1,200}$/.test(id)))) return "Choose a model and effort from the list.";
@@ -42,8 +34,9 @@ export function placeProblem(policy: ItemPlaceDefaults, machines: readonly Machi
 	if (harness != null && !knownHarness(harness)) return "Choose an agent from the list.";
 	if (place == null || place === "hosted") return null;
 	if (place !== "any-machine" && (typeof place !== "object" || typeof place.machine !== "string")) return "Choose where items run.";
-	if (!placeMachines(place, machines).length) return place === "any-machine" ? "There are no paired machines." : "The selected machine is no longer in your account.";
-	if (!compatible(policy, machines).length) return `No selected machine currently supports ${harnessName(harness ?? "windlass")}${machineProfile ? " with " + machineProfile : ""} for work items. Check its profiles and agent sign-in.`;
+	const candidates = placeMachines(place, machines);
+	if (!candidates.length) return place === "any-machine" ? "There are no paired machines." : "The selected machine is no longer in your account.";
+	if (!candidates.some(m => profilesForItems(m, harness ?? "windlass").some(p => machineProfile == null || p.id === machineProfile))) return `No selected machine currently supports ${harnessName(harness ?? "windlass")}${machineProfile ? " with " + machineProfile : ""} for work items. Check its profiles and agent sign-in.`;
 	return null;
 }
 
@@ -52,11 +45,15 @@ export function defaultPlaceRetryAt(at: number, attempt: number) {
 	return at + minutes * 60_000;
 }
 
-export function hasRoom(machine: MachineSummary) {
+function roomProblem(machine: MachineSummary): string | null {
+	if (machine.sandboxes.filter(b => b.state === "running").length >= (machine.maxRunning ?? Infinity)) return "is at its running sandbox limit.";
+	if (machine.sandboxes.length >= (machine.maxSandboxes ?? Infinity)) return "is at its kept sandbox limit.";
 	const slots = machineSlots(machine);
-	return machine.status === "online" && (slots.max === null || slots.busy < slots.max)
-		&& machine.sandboxes.filter(b => b.state === "running").length < (machine.maxRunning ?? Infinity)
-		&& machine.sandboxes.length < (machine.maxSandboxes ?? Infinity);
+	return slots.max === null || slots.busy < slots.max ? null : "has no free slot.";
+}
+
+export function hasRoom(machine: MachineSummary) {
+	return machine.status === "online" && roomProblem(machine) === null;
 }
 
 export interface DefaultDestination {
@@ -64,7 +61,6 @@ export interface DefaultDestination {
 	harness: HarnessId;
 	profile?: SandboxProfileId;
 	wait?: string;
-	note?: string;
 }
 
 export function resolveDefaultPlace(defaults: ItemPlaceDefaults, machines: readonly MachineSummary[], mode: ItemMode): DefaultDestination {
@@ -81,11 +77,10 @@ export function checkRunPlace(run: ResolvedRun, machines: readonly MachineSummar
 		const profiles = profilesForItems(machine, harness);
 		const profile = run.profile ?? profiles[0]?.id;
 		const offered = machine.harnesses?.find(h => h.id === harness);
-		const options = offered?.options;
 		const runner = runnerProblem(machine.warnings);
 		const payer = offered && machinePayerProblem(offered, run.model ?? undefined, offered.source ?? "machine", offered.platformKeys ?? []);
-		const list = harness === "windlass" ? models?.windlass : models?.machines?.[machine.machineId]?.[harness] ?? initialHarnessModels(options);
-		const model = agentModelProblem({ agent: { harness, model: run.model ?? undefined, effort: run.effort ?? undefined } }, list);
+		const list = harness === "windlass" ? models?.windlass : models?.machines?.[machine.machineId]?.[harness] ?? initialHarnessModels(offered?.options);
+		const model = agentModelProblem(runAgent(run), list);
 		if (machine.status !== "online") reasons.push(`“${label}” is offline.`);
 		else if (runner) reasons.push(`“${label}”: ${runner}`);
 		else if (offered && typeof run.place === "object" && run.payer !== (offered.source ?? "machine")) reasons.push(`“${label}”: restore the payer selected for this run before retrying.`);
@@ -94,16 +89,16 @@ export function checkRunPlace(run: ResolvedRun, machines: readonly MachineSummar
 		else if (run.profile && !machine.profiles.some(p => p.id === run.profile && p.available)) reasons.push(
 			`“${label}” cannot run ${run.profile}. ${machine.profiles.find(p => p.id === run.profile)?.unavailableReason ?? "Choose another profile or enable it on the runner."}`);
 		else if (!profiles.some(p => p.id === profile)) reasons.push(`“${label}” cannot run ${harnessName(harness)} with ${profile ?? "an available profile"}. Check its allowed profiles and payer.`);
-		else if (machine.sandboxes.filter(b => b.state === "running").length >= (machine.maxRunning ?? Infinity)) reasons.push(`“${label}” is at its running sandbox limit.`);
-		else if (machine.sandboxes.length >= (machine.maxSandboxes ?? Infinity)) reasons.push(`“${label}” is at its kept sandbox limit.`);
-		else if (!hasRoom(machine)) reasons.push(`“${label}” has no free slot.`);
-		else return { place: { kind: "machine", machineId: machine.machineId }, harness, profile };
+		else {
+			const room = roomProblem(machine);
+			if (!room) return { place: { kind: "machine", machineId: machine.machineId }, harness, profile };
+			reasons.push(`“${label}” ${room}`);
+		}
 	}
 	const wait = reasons.join(" ") || "No paired machine matches this choice.";
 	const machineId = typeof run.place === "object" ? run.place.machine : candidates[0]?.machineId;
-	return { place: { kind: "machine", machineId: machineId ?? "any-machine" }, harness, profile: run.profile ?? undefined, wait, note: wait };
+	return { place: { kind: "machine", machineId: machineId ?? "any-machine" }, harness, profile: run.profile ?? undefined, wait };
 }
-
 
 export const changesPlace = (change: ItemPlaceDefaults) =>
 	[change.place, change.harness, change.machineProfile, change.placeFallback, change.machineModel, change.machineEffort].some(v => v !== undefined);

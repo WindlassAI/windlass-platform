@@ -26,7 +26,7 @@ import { childItemId } from "./feature-ids.js";
 import { answeredWords, choice, CHOICES } from "./answered.js";
 import { feedbackWords, fixText, replanText } from "./feedback.js";
 import type { FeedbackDecision, FeedbackInput } from "./types.js";
-import { sharedPaths, singleAfterPlanning, subtaskMinimum, validatePlan, planScope, PlanError, approvalText, unattendedKeys, agentProfileProblem, agentOf } from "./feature-plan.js";
+import { sharedPaths, singleAfterPlanning, subtaskMinimum, validatePlan, planScope, PlanError, approvalText, subtaskHarness, unattendedKeys, agentProfileProblem, agentOf } from "./feature-plan.js";
 import { aliases, beginIntegration, boundRepos, crossFact, crossRepo, featureOpened, handOver as crossHandOver, integrationAnswer, integrationHeads, plannerText, recordIntegrated, recordOpened, recordSeed, repoOf, type Flow } from "./cross-repo.js";
 import { MAX_PROVIDER_WAIT, MINUTE, providerWait, usageRefusal } from "../provider-usage.js";
 import { PLATFORM_TOOLS, refusalMessage } from "../provider-refusal.js";
@@ -2251,7 +2251,7 @@ function considerCritic(c: Change) {
 	const { item } = c, plan = item.featurePlan;
 	if (!trustedPlanInputs(item)) return askPlan(c, "Automatic approval requires a plan based on trusted inputs.");
 	if (!plan || item.filedTurn !== c.key) return askPlan(c, "The planner did not file a plan for this turn.");
-	if (plan.subtasks.some(s => (s.resolved?.agent ?? s.agent?.harness) === "codex")) return askPlan(c);
+	if (plan.subtasks.some(s => subtaskHarness(s) === "codex")) return askPlan(c);
 	if (plan.singleSuggested && item.context && (resolveRun(item.context, "builder").agent !== "windlass" || item.useHosted))
 		return askPlan(c, "Confirm the current Windlass session before it implements this item.");
 	if (item.context && plan.subtasks.some(s => {
@@ -2318,7 +2318,7 @@ function askPlan(c: Change, criticReason?: string, criticFindings?: string[]) {
 	if (p.singleSuggested && !c.item.replans)
 		return askOwner("single_suggested", p.singleSuggested + (crossRepo(c.item) ? ` One implementer works on ${c.item.repos![0].alias} only: ${c.item.repos!.slice(1).map(r => r.alias).join(", ")} would be left out.` : ""),
 			[choice("run_single"), choice("orchestrate_anyway")]);
-	if (p.subtasks.some(s => (s.resolved?.agent ?? s.agent?.harness) === "codex"))
+	if (p.subtasks.some(s => subtaskHarness(s) === "codex"))
 		return askOwner("plan_approval", "Codex cannot build Plan-first parts. Choose an agent for the Codex parts, then review the updated plan.", [choice("use_windlass"), choice("use_claude"), choice("use_opencode"), ...revise]);
 	const larger = p.subtasks.filter(t => t.requestedLargerSize);
 	if (larger.length) return askOwner(c.item.replans ? "replan_approval" : "plan_approval",
@@ -2697,12 +2697,13 @@ function approveFeature(c: Change, inventory?: PlacementInventory, agents: reado
 	// Admission checked the reconfirmed base against the live head.
 	for (const [alias, sha] of Object.entries(bases)) if (crossRepo(c.item) && c.item.repos!.some(r => r.alias === alias) && /^[0-9a-f]{40}$/.test(sha)) repoOf(c.item, alias).planningBaseSha = sha;
 	const completed = completedKeys(c.item);
-	if (p.subtasks.some(s => !completed.has(s.key) && (s.resolved?.agent ?? s.agent?.harness) === "codex")) {
+	if (p.subtasks.some(s => !completed.has(s.key) && subtaskHarness(s) === "codex")) {
 		askPlan(c);
 		return true;
 	}
-	const unconfirmed = p.subtasks.filter(s => unattendedKeys(p, completed).includes(s.key) && !agents.includes(s.key));
-	if (unconfirmed.length) throw new PlanError(unconfirmed.map(s => `${s.title}: confirm that it runs ${harnessName(s.resolved?.agent ?? s.agent!.harness)}, which works without asking.`).join(" "));
+	const unattended = unattendedKeys(p, completed);
+	const unconfirmed = p.subtasks.filter(s => unattended.includes(s.key) && !agents.includes(s.key));
+	if (unconfirmed.length) throw new PlanError(unconfirmed.map(s => `${s.title}: confirm that it runs ${harnessName(subtaskHarness(s))}, which works without asking.`).join(" "));
 	if (inventory) c.item.routes = approveRoutes(p, c.item.place, inventory, completed);
 	p.status = "approved";
 	p.approvedAt = c.at;
@@ -2879,7 +2880,7 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 	}
 	if (question.kind === "plan_approval" && (fact.choice === "use_windlass" || fact.choice === "use_claude" || fact.choice === "use_opencode")) {
 		const plan = item.featurePlan!;
-		for (const task of plan.subtasks) if ((task.resolved?.agent ?? task.agent?.harness) === "codex") {
+		for (const task of plan.subtasks) if (subtaskHarness(task) === "codex") {
 			task.agent = { harness: fact.choice === "use_windlass" ? "windlass" : fact.choice === "use_claude" ? "claude" : "opencode" };
 			task.resolved = partRun(item.context ?? {}, task);
 			delete task.placementProblem;

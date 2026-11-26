@@ -2207,7 +2207,7 @@ export function createMockItems(deps: MockItemsDeps) {
 					reviewerSessionId: null,
 				};
 				if (policy && destination?.wait) pendingPlaces.set(item, { policy, input, attempts: 0 });
-				if (destination?.note) item.events.push({ at, by: "platform", step: null, said: destination.note });
+				if (destination?.wait) item.events.push({ at, by: "platform", step: null, said: destination.wait });
 				mine.items.unshift(item);
 				if (typeof idempotencyKey === "string") mine.made.set(idempotencyKey, { content, id });
 				if (input.start) beginRun(auth, item, "Started.");

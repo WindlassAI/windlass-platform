@@ -4,16 +4,14 @@ import { nextUtcDay, usesPlatformModel } from "../usage.js";
 import { HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, hostedSizeFor, isolationName, sandboxSlots } from "../contract.js";
 import type { ChildPlacement, EgressMode, HostedSize, FeaturePlanEdit, HarnessId, MachineSummary, ModelList, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
 import type { plannerMachines } from "../machines/details.js";
-import { PlanError } from "./feature-plan.js";
+import { runAgent } from "./resolve-run.js";
+import { PlanError, subtaskHarness } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
 import { type CheckedProvider, windlassProvider, hostedCatalog, hostedProvider, hostedKeyMessage, initialHarnessModels, selectedKey, machinePayerProblem, harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
 import { checkItemEffort, chosenModel, ModelProblem } from "../account-models.js";
 
 /** A machine harness (Claude Code, OpenCode) runs only in the hardened container. */
-const HARNESS_PROFILE = "docker-hardened" as const;
-
-/** The agent a subtask's item runs: Windlass unless it names another. */
-export const subtaskHarness = (task: Pick<PlanSubtask, "agent">): HarnessId => task.agent?.harness ?? "windlass";
+const HARNESS_PROFILE = "docker-hardened";
 
 /**
  * The models each agent offers, as a session would be checked against them (user.ts, `makeSession`):
@@ -103,7 +101,7 @@ export function bindRoute(task: PlanSubtask, parent: SandboxPlace, overflow: boo
  * profile). Approval refuses only a subtask whose every allowed place is permanently refused. A busy or
  * offline machine is a wait, never a refusal.
  */
-type Candidate = { refused: string; permanent: boolean; larger?: HostedSize } | { wait: string; offline?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string } | { decision: ChildPlacement; score: number; snapshot?: boolean };
+type Candidate = { refused: string; permanent: boolean; larger?: HostedSize } | { wait: string; offline?: boolean; dailyCap?: boolean; providerUntil?: number; accountKey?: string } | { decision: ChildPlacement; score: number };
 export function placementRetryAt(at: number, providerUntil?: number, dailyCap?: boolean) {
 	return Math.min(providerUntil ?? retryAt(at, 0), dailyCap ? nextUtcDay(at) : Infinity, at + MAX_PROVIDER_WAIT);
 }
@@ -133,8 +131,7 @@ export const freeMachineSlots = ({ max, busy }: Pick<ReturnType<typeof machineSl
  * was chosen. Windlass without a model of its own runs the feature's (`featureModel`): an effort alone is held
  * to that model, and is not judged where the feature's model is not known.
  */
-export function agentModelProblem(task: Pick<PlanSubtask, "agent">, list: ModelList | null | undefined, featureModel?: string): string | null {
-	const agent = task.agent;
+export function agentModelProblem(agent: PlanSubtask["agent"], list: ModelList | null | undefined, featureModel?: string): string | null {
 	if (!agent || !list || (agent.model === undefined && agent.effort === undefined)) return null;
 	const machine = machineHarness(agent.harness) !== null;
 	if (agent.model === undefined && !machine && featureModel === undefined) return null;
@@ -160,21 +157,19 @@ function agentFit(machine: Machine, task: PlanSubtask, inventory: PlacementInven
 	if (profile) {
 		const offered = machine.harnesses?.find(h => h.id === harness);
 		if (!offered) return `it does not offer ${profile.name}`;
-		if (offered.source === "key") {
-			const problem = machinePayerProblem(offered, task.agent?.model, "key", offered.platformKeys ?? []);
-			if (problem) return problem;
-		}
+		const source = offered.source ?? "machine";
+		const payer = machinePayerProblem(offered, task.agent?.model, source, offered.platformKeys ?? []);
+		if (source === "key" && payer) return payer;
 		if (offered.signIn === "none") return `${profile.name} is not signed in there (run windlass-runner login ${profile.id} on it)`;
 		if (offered.signIn !== "token") return `it could not say whether ${profile.name} is signed in there, and a subtask runs only where it is`;
 		const chosen = task.resolved;
-		if (chosen && typeof chosen.place === "object" && chosen.place.machine === machine.machineId && chosen.payer !== (offered.source ?? "machine"))
+		if (chosen && typeof chosen.place === "object" && chosen.place.machine === machine.machineId && chosen.payer !== source)
 			return "The payer selected for this part has changed. Restore its original payer before retrying.";
-		const payer = machinePayerProblem(offered, task.agent?.model, offered.source ?? "machine", offered.platformKeys ?? []);
 		if (payer) return payer;
 		if (machine.allowedProfiles && !machine.allowedProfiles.includes(HARNESS_PROFILE)) return `the owner does not allow the ${isolationName(HARNESS_PROFILE)} profile, which ${profile.name} needs`;
 	}
 	const list = harness === "windlass" ? inventory.models?.windlass : inventory.models?.machines?.[machine.machineId]?.[harness];
-	return agentModelProblem(task, list, inventory.featureModel);
+	return agentModelProblem(task.agent, list, inventory.featureModel);
 }
 
 /** What the machine cannot do at all, from its last report. Kept while it is offline. */
@@ -198,8 +193,6 @@ function capabilityFit(machine: Machine, task: PlanSubtask, inventory: Placement
 
 function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementInventory, preferred: boolean, warm: string[], at: number, name?: string): Candidate {
 	const resolved = task.resolved;
-	if (resolved) task = { ...task, agent: { harness: resolved.agent, model: resolved.model ?? undefined, effort: resolved.effort ?? undefined },
-		needs: { ...task.needs, profile: task.needs?.profile ?? resolved.profile ?? undefined } };
 	const needs = task.needs ?? {};
 	const harness = subtaskHarness(task);
 	if (needs.screenshots) {
@@ -211,8 +204,8 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	}
 	const bonus = (preferred ? 3 : 0) + Number(warm.includes(placeKey(place)));
 	// Usage limits are an account's: only those of the subtask's own agent there hold it back.
-	const machine = place.kind === "machine" ? inventory.machines.find(m => m.machineId === place.machineId) : undefined;
-	const keys = machine?.harnesses?.find(h => h.id === harness)?.platformKeys ?? [];
+	const m = place.kind === "machine" ? inventory.machines.find(m => m.machineId === place.machineId) : undefined;
+	const keys = m?.harnesses?.find(h => h.id === harness)?.platformKeys ?? [];
 	const model = task.agent?.model ?? (harness === "windlass" ? inventory.featureModel : inventory.models?.machines?.[placeKey(place)]?.[harness]?.defaultModel);
 	const tokenWait = usesPlatformModel(harness, model) ? inventory.dailyTokenWait : null;
 	const provider = harness === "windlass" ? windlassProvider(model) : place.kind === "hosted" ? hostedProvider(harness, model, inventory.hostedKeys?.map(k => k.provider) ?? []) : selectedKey(harness, model, keys);
@@ -230,8 +223,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 		const profiles = harness === "windlass" ? inventory.hostedProfiles : inventory.keyProfiles ?? [];
 		if (harness !== "windlass" && !provider)
 			return { refused: hostedKeyMessage(harness, model), permanent: true };
-		if (harness !== "windlass" && needs.screenshots) return { refused: `Hosted ${harnessName(harness)} cannot take screenshots.`, permanent: true };
-		const modelProblem = agentModelProblem(task, harness === "windlass" ? inventory.models?.windlass : initialHarnessModels(hostedCatalog(harness, inventory.hostedKeys ?? [])), inventory.featureModel);
+		const modelProblem = agentModelProblem(task.agent, harness === "windlass" ? inventory.models?.windlass : initialHarnessModels(hostedCatalog(harness, inventory.hostedKeys ?? [])), inventory.featureModel);
 		if (modelProblem) return { refused: `hosted: ${modelProblem}.`, permanent: true };
 		if (!profiles.length || (needs.profile && !profiles.includes(needs.profile))) return { refused: "hosted has no available matching profile", permanent: true };
 		if (inventory.hostedEgress === "none") return { refused: "hosted sandboxes have no network for repositories", permanent: true };
@@ -257,7 +249,6 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 		const profile = needs.profile ?? profiles.find(p => p === inventory.defaultProfile) ?? (harness === "windlass" ? undefined : profiles[0]);
 		return { decision: { name: "hosted", place, ...(harness !== "windlass" && { harness }), units: 1, reason, sendSecrets: true, profile, ...(size && inventory.hostedSizes && { hostedSize: size }) }, score: bonus };
 	}
-	const m = inventory.machines.find(m => m.machineId === place.machineId);
 	if (!m) return { refused: (name ? "‘" + name + "’" : "The selected machine") + " is no longer one of your machines.", permanent: true };
 	const never = (message: string): Candidate => ({ refused: `‘${m.name}’: ${message}.`, permanent: true });
 	const notNow = (message: string): Candidate => ({ refused: `‘${m.name}’: ${message}.`, permanent: false });
@@ -297,14 +288,17 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
  * place is refused for good: approval refuses then, and nothing the owner waits for would help.
  */
 export function choosePlacement(task: PlanSubtask, route: PlacementRoute, inventory: PlacementInventory, warm: string[] = [], at = Date.now()) {
+	if (task.resolved) task = { ...task, agent: runAgent(task.resolved),
+		needs: { ...task.needs, profile: task.needs?.profile ?? task.resolved.profile ?? undefined } };
 	const candidates = [route.preferred, ...route.alternatives].map((p, i) => candidate(task, p, inventory, i === 0, warm, at, route.names?.[placeKey(p)] ?? (i === 0 ? task.place?.prefer : undefined)));
+	const first = candidates[0]!;
+	if ("decision" in first) return { decision: first.decision } as const;
 	const decided = candidates.flatMap(c => "decision" in c ? [{ ...c, snapshot: !!inventory.snapshotPlaces?.includes(placeKey(c.decision.place)) }] : []);
-	const ready = "decision" in candidates[0]! ? candidates[0] : decided.sort((a, b) =>
+	const ready = decided.sort((a, b) =>
 		(route.preferred.kind === "machine" ? Number(a.decision.place.kind === "hosted") - Number(b.decision.place.kind === "hosted") : 0) ||
 		(b.score + (b.snapshot ? SNAPSHOT_BONUS : 0)) - (a.score + (a.snapshot ? SNAPSHOT_BONUS : 0)))[0];
 	if (ready && ready.decision.place.kind === "hosted" && route.preferred.kind === "machine") {
-		const first = candidates[0]!;
-		const reason = "wait" in first ? first.wait : "refused" in first ? first.refused : "The preferred machine is unavailable.";
+		const reason = "wait" in first ? first.wait : first.refused;
 		if (!route.waitForMachine) return { wait: reason, askMachine: true, offerHosted: true };
 	} else if (ready) return { decision: ready.decision } as const;
 	const waits = candidates.filter(c => "wait" in c);

@@ -401,7 +401,7 @@ async function defaultBuilder(c: ItemsCtx, owner: UserProfile, itemId: string, j
 		return { session, destination };
 	} catch (error) {
 		if (child || !(error instanceof UserError) || !availabilityErrors.has(error.code)) throw error;
-		return { session: null, destination: { ...destination, wait: error.message, note: error.message } };
+		return { session: null, destination: { ...destination, wait: error.message } };
 	}
 }
 
@@ -517,7 +517,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		if (outside.length) item.untrusted = outside;
 		const allowed = thirdParty(child?.unsandboxed).filter(source => outside.includes(source));
 		if (allowed.length) item.unsandboxed = allowed;
-		await createItemActor(c, uid, itemId, { item, meta, placeNote: placed?.destination.note, startedBy: input.start ? `person:${uid}` : null });
+		await createItemActor(c, uid, itemId, { item, meta, placeNote: placed.destination.wait, startedBy: input.start ? `person:${uid}` : null });
 		summary = await itemActor(c, uid, itemId).internalSummary();
 	} catch (error) {
 		// Nothing was made: the key is unused again, as a refused attempt leaves it. Once anything may exist, it stays this body's.
