@@ -2298,6 +2298,9 @@ export type AcpUpdate = (
 
 /** Name an untitled agent from a complete opening sentence or clause. */
 export function promptTitle(prompt: string): string {
+	// A short one-line prompt is its own title; a longer one gives its first sentence or clause.
+	const whole = prompt.replace(/\s+/g, " ").trim();
+	if (whole && !prompt.trim().includes("\n") && whole.length <= MAX_TITLE_CHARS) return whole;
 	const line = prompt.trim().split(/\n|(?<=[.!?])\s+/, 1)[0]!.replace(/\s+/g, " ").trim();
 	if (line && line.length <= MAX_TITLE_CHARS) return line;
 	const clause = line.split(/;\s*|,?\s+(?:and then|then|and|so that|in order to|using|without|which|because)\s+/i, 1)[0]!.trim();
