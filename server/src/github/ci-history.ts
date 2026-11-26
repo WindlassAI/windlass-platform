@@ -1,4 +1,4 @@
-import type { CiHistory } from "../factory/readiness.js";
+import { RECENT_COMMITS, type CiHistory } from "../factory/readiness.js";
 import type { GithubApp, Repository } from "./app.js";
 
 const commitsQuery = `query($owner: String!, $name: String!, $head: GitObjectID!, $since: GitTimestamp!, $after: String) {
@@ -25,7 +25,7 @@ interface Job { name: string; run_attempt: number; head_sha: string; conclusion:
 
 export async function scanCiHistory(app: GithubApp, token: string, repo: Repository, head: string | null, at: number): Promise<CiHistory> {
 	const branch = repo.defaultBranch;
-	const history: CiHistory = { at, branch, checked: 0, green: 0, flaky: [], reverts: 0, redMerges: 0, hasCi: false };
+	const history: CiHistory = { at, branch, checked: 0, green: 0, recent: { checked: 0, green: 0 }, flaky: [], reverts: 0, redMerges: 0, hasCi: false };
 	if (!head) return history;
 	const auth = { bearer: token }, since = new Date(at - 30 * 86_400_000).toISOString();
 	const path = app.settings.apiUrl.endsWith("/api/v3") ? "/../graphql" : "/graphql";
@@ -69,6 +69,7 @@ export async function scanCiHistory(app: GithubApp, token: string, repo: Reposit
 		if (state === "SUCCESS") history.green++;
 		else if (commit.parents.totalCount > 1 || commit.associatedPullRequests.nodes.some(p => p.baseRefName === branch && p.mergeCommit?.oid === oid && p.mergedAt))
 			history.redMerges++;
+		if (history.checked <= RECENT_COMMITS) history.recent = { checked: history.checked, green: history.green };
 	}
 
 	const runsPath = `/repos/${repo.owner}/${repo.name}/actions/runs`;
