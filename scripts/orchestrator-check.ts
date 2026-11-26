@@ -264,11 +264,11 @@ test("finished children unlock their dependents, and the final summary uses a re
 test("feature ref updates are fast-forward only and confined to the platform feature branch", async () => {
 	const { advanceFeatureRef } = await import("../server/src/github/feature.js");
 	const calls: any[] = []; const app = { call: async (req: any) => { calls.push(req); return { body: { object: { sha: head } } }; } };
-	await advanceFeatureRef(app as never, "token", "owner", "repo", "i_feature", "main", head);
+	await advanceFeatureRef(app as never, "token", "owner", "repo", "i_feature", "main", head, "Add the index");
 	assert.equal(calls[0].method, "PATCH"); assert.equal(calls[0].body.force, false);
 	assert.match(calls[0].path, /git\/refs\/heads\/windlass\/feature-i_feature$/);
 	assert.doesNotMatch(calls[0].path, /\/main$/);
-	await assert.rejects(advanceFeatureRef(app as never, "token", "owner", "repo", "i_feature", "windlass/feature-i_feature", head));
+	await assert.rejects(advanceFeatureRef(app as never, "token", "owner", "repo", "i_feature", "windlass/feature-i_feature", head, "Add the index"));
 });
 
 test("a planner cannot answer its own questions or introduce a scope change without a question", () => {
@@ -1126,10 +1126,12 @@ test("a subtask's agent: the planner may propose Claude Code or OpenCode, never 
 });
 
 test("approval names each agent that works without asking, and needs the person's confirmation of every one", () => {
-	const item = proposed(mixedPlan());
-	assert.match(item.question!.text, /index\. index .* Claude Code \(sonnet, high effort\), works without asking/);
-	assert.match(item.question!.text, /page\. page .* Windlass on the feature's model/);
-	assert.match(item.question!.text, /index would run an agent that works without asking/);
+	const plan = mixedPlan();
+	plan.subtasks[0].title = "Build the search index";
+	const item = proposed(plan);
+	assert.match(item.question!.text, /Build the search index .* Claude Code \(sonnet, high effort\), works without asking/);
+	assert.match(item.question!.text, /page .* Windlass on the feature's model/);
+	assert.match(item.question!.text, /“Build the search index” would run an agent that works without asking/);
 	const inventory = { machines: plannerMachines([agentMac()]), hostedProfiles: [] };
 	const approve = { kind: "approve_plan" as const, version: 1, at: 4, by: "person:owner", inventory };
 	for (const agents of [undefined, [], ["page"]])
@@ -1151,7 +1153,7 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 	refused({ harness: "opencode" }, agentMac({ harnesses: [signedIn[0]] }), /‘Mac’: it does not offer OpenCode/);
 	refused({ harness: "claude" }, agentMac({ harnesses: [{ ...signedIn[0], signIn: "none" }] }), /Claude Code is not signed in there/);
 	refused({ harness: "claude" }, agentMac({ harnesses: [{ ...signedIn[0], signIn: "unknown" }] }), /could not say whether Claude Code is signed in/);
-	refused({ harness: "claude" }, agentMac({ allowedProfiles: ["docker-windlass-sandbox"] }), /does not allow the docker-hardened profile, which Claude Code needs/);
+	refused({ harness: "claude" }, agentMac({ allowedProfiles: ["docker-windlass-sandbox"] }), /does not allow the Open profile, which Claude Code needs/);
 	refused({ harness: "claude", model: "opus" }, agentMac(), /Claude Code: That model is not offered/);
 	refused({ harness: "claude", model: "sonnet", effort: "max" }, agentMac(), /effort for sonnet must be one of: low, high/);
 	refused({ harness: "windlass", model: "o9" }, agentMac(), /Windlass: That model is not among the ones your ChatGPT plan offers/);
@@ -1253,7 +1255,7 @@ test("a re-plan can't keep a machine agent on a subtask it moves out of the hard
 	const fit = choosePlacement(task, { preferred: { kind: "machine", machineId: macId }, alternatives: [] }, inventory);
 	assert.equal(fit.decision, undefined);
 	assert.equal(fit.permanent, true);
-	assert.match(String(fit.refused), /‘Mac’: Claude Code runs only in the docker-hardened profile, and the subtask asks for docker-windlass-sandbox/);
+	assert.match(String(fit.refused), /‘Mac’: Claude Code runs only in the Open profile, and the subtask asks for Strict/);
 });
 
 test("a Windlass subtask choosing only an effort is held to the feature's model at approval", () => {
@@ -1929,6 +1931,7 @@ test("cross-repo: the managed PR section links the counterpart by full URL, keep
 	const { linkSection, withSection, issueReference } = await import("../server/src/factory/cross-repo.js");
 	const { item } = crossOpened();
 	const section = linkSection(item, "cli");
+	assert.ok(section.includes(item.task.title) && !section.includes(item.id));
 	assert.match(section, /this pull request: sibling, cli, ada\/cli/);
 	assert.match(section, /primary platform: https:\/\/github.com\/ada\/platform\/pull\/1/);
 	assert.match(section, /Merge order: 1\. cli 2\. platform after cli/);

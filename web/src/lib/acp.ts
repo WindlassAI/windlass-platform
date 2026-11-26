@@ -18,6 +18,7 @@
  */
 import type { AcpContext, AcpUpdate, HarnessId, MachineSummary, ModelList, SessionSummary } from "@contract";
 import type { Block, PlanEntry, ReasoningBlock, SessionView, TextBlock, ToolBlock, ToolState, TurnView } from "./timeline";
+import { cleanModelName } from "./models";
 import { harnessName } from "../../../server/src/sandbox/harnesses.js";
 
 /** The message id of every ACP tool call: the platform names an ACP question's call this way too. */
@@ -36,12 +37,12 @@ export function harnessModelsOf(summary: Pick<SessionSummary, "harnessModels">):
 	return summary.harnessModels ?? { source: "harness", defaultModel: "default", models: [{ id: "default", name: null, efforts: [] }], fetchedAt: null };
 }
 
-/** The session's model in a few words for its panel: an ACP harness's model by the name the harness gave it ("Fable 5.2", not "fable"), its unnamed default as "Claude Code's default"; Windlass's by its id. */
+/** The session's model in a few words for its panel: an ACP harness's model by the name the harness gave it ("Fable 5.2", not "fable"), its unnamed default as "Claude Code's default"; Windlass's by its readable model name. */
 export function sessionModelWords(summary: Pick<SessionSummary, "harness" | "harnessModels" | "model">): string {
 	const harness = acpHarnessName(summary);
-	if (!harness) return summary.model;
+	if (!harness) return cleanModelName(summary.model);
 	const name = summary.harnessModels?.models.find(model => model.id === summary.model)?.name;
-	return name || (summary.model === "default" ? `${harness}'s default` : summary.model);
+	return !name && summary.model === "default" ? `${harness}'s default` : cleanModelName(summary.model, name);
 }
 
 /** A harness a machine's runner reported, as `MachineSummary.harnesses` lists it. */

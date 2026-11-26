@@ -1,3 +1,5 @@
+import { afterWords } from "../lib/subtasks";
+import { modelWords } from "../lib/models";
 import { MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemBudget, type SubtaskBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { singleAfterPlanning } from "../../../server/src/factory/feature-plan.js";
@@ -337,7 +339,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 	const children = new Map((view.children ?? []).filter((child) => child.parent).map((child) => [child.parent!.key, child]));
 	const single = plan.compare.singleBudget;
 	const floor = subtaskFloor(single);
-	const numbers = new Map(plan.subtasks.map((task, index) => [task.key, index + 1]));
+	const titles = new Map(plan.subtasks.map(task => [task.key, task.title]));
 	const setAside = plan.status === "superseded";
 	const machines = review.machines;
 	// A re-plan keeps finished subtasks as they ran: only the rest can change.
@@ -408,10 +410,10 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 					</p>
 					{placing || editing ? <FeaturePlacement parent={parent} editing={editing} overflow={overflow} disabled={acting.busy !== null} onOverflow={review.setOverflow} /> : null}
 					<ol className="plan-tasks" aria-label="Subtasks">
-						{review.rows.map(({ task, edited, routeEdited }) => (
+						{review.rows.map(({ task, edited, routeEdited }, index) => (
 							<SubtaskRow key={task.key} task={task} child={children.get(task.key) ?? null}
 								place={placing || editing ? place(task, edited, routeEdited) : null} agent={agentRow(task, edited)}
-								n={numbers.get(task.key)!} numbers={numbers} setAside={setAside}
+								n={index + 1} titles={titles} setAside={setAside}
 								editing={editing && !done.has(task.key)} finished={editing && done.has(task.key)}
 								draft={review.budgets[task.key]} invalid={!!review.problems.fields[task.key]?.tokens}
 								floor={floor} single={single} disabled={acting.busy !== null}
@@ -493,11 +495,11 @@ export function Inline({ text }: { text: string }) {
 	);
 }
 
-function SubtaskRow({ task, place, agent, n, numbers, child, setAside, editing, finished, draft, invalid, floor, single, disabled, onChange }: { task: PlanSubtask; place: PlaceRow | null; agent: AgentRow; n: number; numbers: Map<string, number>; child: ItemSummary | null; setAside: boolean; editing: boolean; finished: boolean; draft: string | undefined; invalid: boolean; floor: SubtaskBudget; single: Pick<ItemBudget, "tokens">; disabled: boolean; onChange(text: string): void }) {
+function SubtaskRow({ task, place, agent, n, titles, child, setAside, editing, finished, draft, invalid, floor, single, disabled, onChange }: { task: PlanSubtask; place: PlaceRow | null; agent: AgentRow; n: number; titles: Map<string, string>; child: ItemSummary | null; setAside: boolean; editing: boolean; finished: boolean; draft: string | undefined; invalid: boolean; floor: SubtaskBudget; single: Pick<ItemBudget, "tokens">; disabled: boolean; onChange(text: string): void }) {
 	const input = `${useId()}-tokens`;
 	const reason = placeReason(task, child, place);
 	return (
-		<li className={`plan-task${child ? ` plan-task-is-${child.state}` : ""}${finished ? " plan-task-finished" : ""}`}>
+		<li data-key={task.key} className={`plan-task${child ? ` plan-task-is-${child.state}` : ""}${finished ? " plan-task-finished" : ""}`}>
 			<span className="plan-task-n" aria-hidden="true">
 				{child ? <ItemGlyph item={child} /> : n}
 			</span>
@@ -510,12 +512,7 @@ function SubtaskRow({ task, place, agent, n, numbers, child, setAside, editing, 
 					) : (
 						<span className="plan-task-title">{task.title}</span>
 					)}
-					<span className="plan-task-key">{task.key}</span>
-					{task.dependsOn.length > 0 ? (
-						<span className="plan-task-after" title={`After ${task.dependsOn.join(", ")}`}>
-							after {task.dependsOn.map((key) => numbers.get(key) ?? key).join(", ")}
-						</span>
-					) : null}
+					{task.dependsOn.length > 0 && <span className="plan-task-after">{afterWords(task.dependsOn, titles)}</span>}
 					{task.owns.length > 0 ? <span className="plan-task-files">{plural(task.owns.length, "file")}</span> : null}
 				</div>
 
@@ -870,7 +867,7 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 				<dd>
 					<AgentGlyph harness={child.agent.harness} size={11} inline />
 					<strong className="plan-agent-name">{words.name}</strong>
-					<span className="tone-dim"> · {child.agent.model}{child.agent.effort ? ` · ${child.agent.effort} effort` : ""}</span>
+					<span className="tone-dim"> · {modelWords(child.agent.model)}{child.agent.effort ? ` · ${child.agent.effort} effort` : ""}</span>
 					{words.unattended ? <UnattendedTag /> : null}
 				</dd>
 			</div>

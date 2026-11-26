@@ -81,11 +81,10 @@ export interface Doing {
 	code?: string;
 }
 
-/** The keys a subtask waits for, by number, in words: "after 2", "after 2 and 3". */
-export function afterWords(task: PlanSubtask, numbers: ReadonlyMap<string, number>): string | null {
-	if (task.dependsOn.length === 0) return null;
-	const ns = task.dependsOn.map((key) => numbers.get(key) ?? key).sort((a, b) => (typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b)))).map(String);
-	return `after ${ns.length === 1 ? ns[0] : `${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}`}`;
+/** Name the prerequisites in plan order. */
+export function afterWords(dependsOn: readonly string[], titles: ReadonlyMap<string, string>): string | null {
+	const names = [...titles].filter(([key]) => dependsOn.includes(key)).map(([, title]) => `“${title}”`);
+	return names.length ? "After " + new Intl.ListFormat("en").format(names) : null;
 }
 
 /** A command quoted in a subtask's first check, for the fact of a fixing step: "pnpm test test/golden". */
@@ -94,13 +93,13 @@ const firstCommand = (task: PlanSubtask): string | undefined => task.acceptance.
 /**
  * What a subtask is doing now, from its summary's step (`ItemSummary.step`) where the server sends one:
  * "implementing · turn 2", "fixing · your checks failed, fix 1", "asks you · 3m ago".
- * A subtask not made yet says what it waits for: "after 2 and 3", or "not started".
+ * A subtask not made yet says what it waits for: "After “Add the CSV writer”", or "not started".
  */
-export function doingNow(entry: PlannedSubtask, numbers: ReadonlyMap<string, number>, done: ReadonlySet<string>, now: number): Doing {
+export function doingNow(entry: PlannedSubtask, titles: ReadonlyMap<string, string>, done: ReadonlySet<string>, now: number): Doing {
 	const { child, task } = entry;
 	if (!child) {
 		const waiting = task.dependsOn.filter((key) => !done.has(key));
-		return waiting.length > 0 ? { word: "waits", fact: afterWords({ ...task, dependsOn: waiting }, numbers) } : { word: "not started", fact: null };
+		return waiting.length > 0 ? { word: "waits", fact: afterWords(waiting, titles) } : { word: "not started", fact: null };
 	}
 	return itemDoing(child, now, task);
 }

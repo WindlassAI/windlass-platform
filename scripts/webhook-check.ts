@@ -1249,7 +1249,7 @@ async function run() {
 				const v=await until("missed review taken",async()=>{const v=await item.view();return v.run?.n === 2 ? v : null;});
 				assert.equal(v.feedback.batches[0].entries[0].id,"review:"+r.review.id);
 				assert.equal(v.feedback.batches[0].entries[0].access,"write");
-				await until("feedback status in marked comment",async()=>item.pull.comments.some(c=>c.body.includes("Changes asked for by \\@"+peer.login+" are being worked on in run 2\\.")));
+				await until("feedback status in marked comment",async()=>item.pull.comments.some(c=>c.body.includes("The agent is addressing \\@"+peer.login+"'s feedback\\.")));
 				await until("reworked PR awaiting CI",async()=>(await item.view()).run?.step.kind==="ci");
 				await item.clock().checkAdvance("poll",0);
 				await until("writer requested again", async()=>item.pull.requestedReviewers.includes(peer.login));
@@ -1412,7 +1412,7 @@ async function run() {
 				const explicit = make(182, reader);
 				await mention(explicit, standin.issueComment(explicit, author.person, "/windlass orchestrate").id, author.person);
 				assert.deepEqual(await items(explicit, author.account), []);
-				await until("explicit orchestration refusal", async () => bots(explicit).some(c => /Not taken.*disabled/.test(c.body)));
+				await until("explicit orchestration refusal", async () => bots(explicit).some(c => /couldn't start this issue because.*disabled/.test(c.body)));
 				await assert.rejects(author.account.createItem({ repository: { id: projectG2.id }, title: "Export", body: "Make an export.", mode: "orchestrate" }));
 			} finally { await settings.checkPlanning(true); }
 		});
@@ -1449,7 +1449,7 @@ async function run() {
 			const [item] = await items(issue); assert.ok(item); assert.equal(item.state, "draft");
 			const view = await g2User.item(item.id); assert.equal(view.run, null); assert.equal(view.origin?.issue?.trusted, false);
 			assert.match(view.task.body, /written by @g3-reader/); assert.equal(view.spent.turns, 0);
-			await until("draft comment", async () => bots(issue).some(c => c.body.includes("Filed as a draft for @" + owner)));
+			await until("draft comment", async () => bots(issue).some(c => c.body.includes("for @" + owner + ". [View work item]")));
 			issue.body = "New words"; issue.updated_at = new Date().toISOString(); await notify(issue, "edited");
 			await until("edit note", async () => (await g2User.item(item.id)).events.some(e => e.said.includes("issue was edited")), 25_000);
 			const edited = await g2User.item(item.id); assert.deepEqual(edited.task, view.task); assert.ok(edited.events.some(e => e.said.includes("issue was edited")));
@@ -1762,7 +1762,7 @@ async function run() {
 			try {
 				// Drafts are no cap of their own: the one daily limit holds them.
 				const another = make(121, stranger); await change(another, "labeled", quotaUser);
-				assert.ok(!bots(another).some(c => /Not taken/.test(c.body)));
+				assert.ok(!bots(another).some(c => /couldn't start this issue because/.test(c.body)));
 				assert.equal((await account.user.listItems()).length, 21);
 			} finally { await settings.checkDailyLimit(20); }
 		});

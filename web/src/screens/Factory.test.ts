@@ -360,7 +360,7 @@ describe("filing a work item from the Factory page", () => {
 		await show("/factory");
 		const before = (await listed()).length;
 		write("Add the tests command to the README\nSay how to run the unit tests, with its command.");
-		expect(host.querySelector(".start-title")?.textContent).toBe("Title: Add the tests command to the README");
+		expect(host.querySelector<HTMLInputElement>(".start-title input")?.value).toBe("Add the tests command to the README");
 		// Its done-when criteria: one line under the text, opened only when used, one criterion a line.
 		expect(pill("criteria")?.textContent).toBe("Add done-when criteria");
 		expect(host.querySelector(".start-criteria-inline")).toBeNull();
@@ -404,7 +404,7 @@ describe("filing a work item from the Factory page", () => {
 		act(() => (host.querySelector(".ui-split-more") as HTMLButtonElement).click());
 		await act(async () => ([...(pop()?.querySelectorAll('[role="menuitem"]') ?? [])].find((row) => row.querySelector(".ui-item-label")?.textContent === "File as a draft") as HTMLElement).click());
 		await settle();
-		expect(filed[0]).toMatchObject({ title: "Rename the tide table columns again", body: "", start: false });
+		expect(filed[0]).toMatchObject({ title: "Rename the tide table columns again", body: "Rename the tide table columns again", start: false });
 		expect(groups().find((group) => group.name === "Drafts")?.titles).toContain("Rename the tide table columns again");
 		expect(host.querySelector(".start-filed")?.textContent).toBe("Filed “Rename the tide table columns again” as a draft. Open");
 	});

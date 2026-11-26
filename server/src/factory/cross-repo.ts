@@ -15,6 +15,8 @@
  */
 
 import type { FeatureRepository, FeatureRepoView, FinalIntegration, IntegrationView, MergeStep } from "../contract.js";
+import { MAX_TITLE_CHARS } from "../contract.js";
+import { commentText } from "./review.js";
 import { featureBranch } from "../github/feature.js";
 import { untrustedWords } from "./untrusted.js";
 import type { ChoiceId, Effect, Fact, FactoryItem, FeatureRepoState, IntegrationRun, ItemState, QuestionKind, Run, StepKind, Wait } from "./types.js";
@@ -132,7 +134,7 @@ export function linkSection(item: FactoryItem, alias: string, plan = item.approv
 	const others = item.repos!.filter(r => r !== own).map(r => `- ${role(r)} ${r.alias}: ${r.pr ? r.pr.url : fullName(r) + " (not opened yet)"}`);
 	return [
 		SECTION_START,
-		`**Cross-repo feature** \`${item.id}\` (this pull request: ${role(own)}, ${own.alias}, ${fullName(own)}).`,
+		`**Cross-repo feature** “${commentText(item.task.title, MAX_TITLE_CHARS)}” (this pull request: ${role(own)}, ${own.alias}, ${fullName(own)}).`,
 		...others,
 		`Merge order: ${order.map((m, i) => `${i + 1}. ${m.repo}${m.prerequisite.length ? ` after ${m.prerequisite.join(", ")}` : ""}`).join(" ")}`,
 		integrationWords(item.integration) + ".",

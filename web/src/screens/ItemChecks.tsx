@@ -13,6 +13,7 @@
  *
  * Earlier verdicts fold at its foot. The reviewer's and people's words are shown as their own, in plain text.
  */
+import { modelWords } from "../lib/models";
 import type { FeedbackEntry, ItemReview, ItemView, ReviewBlock, Verdict, VerdictRun } from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { InlineMarkdown } from "../components/Blocks";
@@ -311,7 +312,7 @@ function Review({ view, links, when }: { view: ItemView; links: ScreenshotLinks;
 							<span className="agent-meta">
 								<span>at {current!.head.slice(0, 7)}</span>
 								{current!.round > 1 ? <span>round {current!.round}</span> : null}
-								<span className="review-model">{current!.by.model}</span>
+								<span className="review-model">{modelWords(current!.by.model)}</span>
 							</span>
 						</>
 					) : (

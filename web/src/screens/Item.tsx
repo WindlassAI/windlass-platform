@@ -979,10 +979,10 @@ export function Item({ page }: { page: ItemPage }) {
 						</a>
 					) : null}
 					{!view.awaitingPlace ? (
-						<a className="button button-outline button-small" {...linkProps({ name: "session", id: view.sessionId })} title="What its agent did, turn by turn">Agent</a>
+						<a className="button button-outline button-small" {...linkProps({ name: "session", id: view.sessionId })} title="What its agent did, turn by turn">Builder</a>
 					) : null}
 					{view.reviewerSessionId ? (
-						<a className="button button-outline button-small" {...linkProps({ name: "session", id: view.reviewerSessionId })}>Reviewer</a>
+						<a className="button button-outline button-small" {...linkProps({ name: "session", id: view.reviewerSessionId })}>Code review</a>
 					) : null}
 					{view.state === "draft" && !reading ? (
 						<button type="button" className="button button-outline button-small" onClick={() => acting.act({ kind: "start" })} disabled={busy}>

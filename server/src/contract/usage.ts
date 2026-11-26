@@ -120,7 +120,7 @@ export interface UsageDay {
 export interface KeptSandbox {
 	/** The agent it was made for: what `freeSandbox` takes. */
 	sessionId: string;
-	/** Null when that agent no longer exists and its sandbox was left behind. A work item's reviewer reads "Reviewer of “title”". */
+	/** Null when that agent no longer exists and its sandbox was left behind. Work-item sessions include their role. */
 	title: string | null;
 	/** The work item whose builder or reviewer it is. */
 	item?: { id: string; role: "builder" | "reviewer" };

@@ -11,7 +11,7 @@ import { config } from "../config.js";
 import { itemScreenshots, type EnvironmentBuildReport } from "./internal.js";
 import type { RawAccess } from "rivetkit/db";
 import type { EnvironmentBuild, EnvironmentPlace, EnvironmentSchedule, EnvironmentTrigger, HostedSize, MachineSummary, RepositoryCheck, RepositoryDefaults, RepositoryEnvironments, SessionSummary } from "../contract.js";
-import { ITEM_HOSTED_SIZE } from "../contract.js";
+import { ITEM_HOSTED_SIZE, machineLabel } from "../contract.js";
 import {
 	afterChange, afterPush, emptyRow, environmentInputs, environmentPlaces, environmentView, finishBuild, interruptBuild, HOSTED, nextBuild, nextScheduled, nextWake, placeRefusal, readEnvironments, readSchedule, sameInputs,
 	BUILD_LOST_MS, INTERRUPTION_RETRY_MS, RETRY_MS, usable, writeEnvironment, defaultSchedule, type DueBuild, type EnvironmentRow, type PlaceFacts,
@@ -76,7 +76,7 @@ export async function placeFacts(host: EnvironmentHost, project: string): Promis
 	const machines = await host.machines();
 	return [
 		{ place: HOSTED, name: "Hosted", snapshots: host.snapshots.hosted, online: true, featuresLimited: false, lastUsed: used.get(HOSTED) ?? 0 },
-		...machines.map(m => ({ place: m.machineId, name: `‘${m.name}’`, snapshots: host.snapshots.machines, online: m.status === "online", featuresLimited: (m.orchestrator ?? "yes") !== "yes", lastUsed: used.get(m.machineId) ?? 0 })),
+		...machines.map(m => ({ place: m.machineId, name: `‘${machineLabel(m)}’`, snapshots: host.snapshots.machines, online: m.status === "online", featuresLimited: (m.orchestrator ?? "yes") !== "yes", lastUsed: used.get(m.machineId) ?? 0 })),
 	];
 }
 

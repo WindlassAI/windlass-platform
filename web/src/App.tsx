@@ -1,4 +1,5 @@
 /** The shell: which screen the address asks for, behind the sign-in where it has to be. */
+import { sessionTitle } from "@contract";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { MissingPageLinks } from "./components/MissingPageLinks";
 import { Mark } from "./components/Icons";
@@ -50,12 +51,13 @@ function SessionRoute({ sessionId, bar }: { sessionId: string; bar: Bar }) {
 	const machine = useSessionMachine(state.summary?.place);
 	const hidden = useHidden();
 	const waiting = state.summary?.status === "waiting";
+	const title = state.summary ? sessionTitle(state.summary) : null;
 	useEffect(() => {
 		// A tab in the background says when its agent is waiting on the user.
 		const mark = waiting && hidden ? "(?) Needs you · " : "";
-		document.title = state.summary ? `${mark}${state.summary.title} · Windlass` : "Windlass";
-	}, [state.summary, waiting, hidden]);
-	usePageLabel(state.summary ? (state.summary.item ? `${item?.title ?? "Work item"} · agent` : state.summary.title) : null);
+		document.title = title ? `${mark}${title} · Windlass` : "Windlass";
+	}, [title, waiting, hidden]);
+	usePageLabel(title);
 	// Its section is known once its summary is: a work item's agent is the Factory's.
 	const section = state.summary ? sectionOfPage({ name: "session", id: sessionId }, Boolean(state.summary.item)) : null;
 	return (

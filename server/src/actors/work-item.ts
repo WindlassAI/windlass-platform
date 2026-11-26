@@ -1686,7 +1686,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } }, async token => {
 					const marker = `<!-- windlass-item:${item.id} -->`;
 					const [prev] = await c.db.execute<{data:string}>("SELECT data FROM verdicts WHERE run < ? ORDER BY at DESC,rowid DESC LIMIT 1", effect.run);
-					let body = marker + "\n\n" + feedbackComment(effect.who, effect.run);
+					let body = marker + "\n\n" + feedbackComment(effect.who);
 					if (prev) {
 						const verdict: Verdict = JSON.parse(prev.data);
 						const [filed] = await c.db.execute<{data:string}>("SELECT data FROM reviews WHERE run=? AND head=? AND json_extract(data,'$.requestedPull') IS NULL ORDER BY at DESC LIMIT 1", verdict.run, verdict.head);
@@ -1790,7 +1790,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					result = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { contents: "write", metadata: "read" } }, async token => {
 						if (item.mergeTarget && (await compareBranches(hub.app, token, hub.owner, hub.name, item.mergeTarget, effect.head)).behind)
 							return { key: effect.key, reason: "The conflict resolution did not merge the requested target commit.", conflict: false, missingTarget: true };
-						const head = await advanceFeatureRef(hub.app, token, hub.owner, hub.name, item.parent!.itemId, item.childBase!, effect.head);
+						const head = await advanceFeatureRef(hub.app, token, hub.owner, hub.name, item.parent!.itemId, item.childBase!, effect.head, item.task.title);
 						return { key: effect.key, head };
 					});
 				} catch (error) {
@@ -1815,7 +1815,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const hub = await github(c, meta);
 			const [old] = await c.db.execute<{ id: string }>("SELECT id FROM issue_comment");
 			const latest = c.vars.stored!.item;
-			const id = await writeIssueComment(hub.app, { ...hub, id: meta.repository.id }, binding, item.id, latest.state, latest.pr?.number, old?.id);
+			const id = await writeIssueComment(hub.app, { ...hub, id: meta.repository.id }, binding, item.id, latest.task.title, latest.state, latest.pr?.number, old?.id);
 			await c.db.execute("INSERT OR REPLACE INTO issue_comment VALUES(1,?)", id);
 			return true;
 		}

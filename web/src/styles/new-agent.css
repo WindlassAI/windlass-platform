@@ -879,14 +879,16 @@
 	font-size: var(--size-small);
 }
 
-/* A work item's title, as it will be filed: as quiet as the line under it. */
 .start-title {
-	overflow: hidden;
-	color: var(--ink-faint);
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-.start-title-text {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 8px;
 	color: var(--ink-dim);
+	font-size: var(--size-small);
+}
+.start-title input {
+	flex: 1;
+	min-width: 0;
 }
 

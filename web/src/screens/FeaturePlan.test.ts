@@ -107,7 +107,7 @@ async function featureNamed(title: string): Promise<ItemView> {
 
 /** A subtask's budget field on the page, by its key and figure ("tokens"). */
 function budgetField(task: string, short: string): HTMLInputElement {
-	const row = [...host.querySelectorAll(".plan-task")].find((candidate) => candidate.querySelector(".plan-task-head > .plan-task-key")?.textContent === task) as HTMLElement;
+	const row = [...host.querySelectorAll(".plan-task")].find((candidate) => candidate.getAttribute("data-key") === task) as HTMLElement;
 	const label = [...row.querySelectorAll("label.plan-budget-label")].find((candidate) => candidate.textContent === short) as HTMLLabelElement;
 	return row.querySelector(`#${CSS.escape(label.htmlFor)}`) as HTMLInputElement;
 }
@@ -246,7 +246,7 @@ describe("a feature's plan on its page", () => {
 		await show(`/items/${feature.id}`);
 		expect(host.querySelector(".feature-plan .usage-count")?.textContent).toBe("v2 · proposed");
 		expect([...host.querySelectorAll(".plan-task-title")].map((title) => title.textContent)).toEqual(["Build the search index at release", "Add the search command", "Document search in the README"]);
-		expect(host.querySelector(".plan-task:nth-child(2) .plan-task-after")?.textContent).toBe("after 1");
+		expect(host.querySelector(".plan-task:nth-child(2) .plan-task-after")?.textContent).toBe("After “Build the search index at release”");
 		expect(host.querySelector(".plan-task:first-child .plan-task-files")?.textContent).toBe("2 files");
 		expect([...host.querySelectorAll(".plan-task:first-child .plan-path")].map((path) => path.textContent)).toEqual(["src/search/index/**", "scripts/release.ts"]);
 		// Not approvable until the question is answered.
@@ -498,7 +498,7 @@ describe("the rules the page checks before sending", () => {
 });
 
 describe("placement in a feature's plan", () => {
-	const row = (key: string) => [...host.querySelectorAll(".plan-task")].find((candidate) => candidate.querySelector(".plan-task-head > .plan-task-key")?.textContent === key) as HTMLElement;
+	const row = (key: string) => [...host.querySelectorAll(".plan-task")].find((candidate) => candidate.getAttribute("data-key") === key) as HTMLElement;
 	const fact = (key: string, term: string) => [...row(key).querySelectorAll(".plan-task-facts > div")].find((candidate) => candidate.querySelector("dt")?.textContent === term)?.querySelector("dd")?.textContent ?? null;
 	/** Why the subtask runs where it does: under its Details, not repeated in its row. */
 	const why = (key: string) => [...row(key).querySelectorAll(".plan-task-more-facts > div")].find((candidate) => candidate.querySelector("dt")?.textContent === "why there")?.querySelector("dd")?.textContent ?? null;
@@ -761,7 +761,7 @@ describe("a turn's token counts", () => {
 });
 
 describe("agents in a feature's plan", () => {
-	const row = (key: string) => [...host.querySelectorAll(".plan-task")].find((candidate) => candidate.querySelector(".plan-task-head > .plan-task-key")?.textContent === key) as HTMLElement;
+	const row = (key: string) => [...host.querySelectorAll(".plan-task")].find((candidate) => candidate.getAttribute("data-key") === key) as HTMLElement;
 	const fact = (key: string, term: string) => [...row(key).querySelectorAll(".plan-task-facts > div")].find((candidate) => candidate.querySelector("dt")?.textContent === term)?.querySelector("dd")?.textContent ?? null;
 	const pill = (label: string, within: ParentNode = host) => [...within.querySelectorAll("button")].find((candidate) => candidate.getAttribute("aria-label") === label) as HTMLButtonElement;
 	const menuRow = (name: string) => [...document.querySelectorAll('[role="menuitemradio"]')].find((candidate) => candidate.textContent?.startsWith(name)) as HTMLElement | undefined;
