@@ -64,7 +64,7 @@ A revert of an agent pull request or three failed verifications in a row drops o
 ### From the Factory page
 
 1. Open **Factory** in the bar. Everything its composer files is a work item; agents start from **Agents**.
-2. Type the task in **What should be done?** The first line becomes the title. The rest is the body.
+2. Type the task in **What should be done?** The first line suggests a title. Edit **Title** before filing if you prefer another name.
 3. Choose the repository and branch in the **where** menu, and the machine there too if you like.
 4. Optionally, choose the agent, its model and its effort in the **agent** menu. See [Choose the agent](#choose-the-agent).
 5. Optionally, choose **Add done-when criteria** under the task and write them, one per line. The agent is given them, and the verdict lists them for you to check. No machine checks them. Once written, they show as a short list there; choose **Edit** to change them.

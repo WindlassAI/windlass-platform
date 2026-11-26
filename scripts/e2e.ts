@@ -1165,7 +1165,7 @@ async function main(server: Server | null): Promise<void> {
 		assert(last, "no summary event");
 		assert(watch.statuses() === "starting > running > idle", `statuses were ${watch.statuses()}`);
 		assert(last.turns === 1 && last.lastOutcome === "succeeded" && last.sandbox === "running", `summary is ${plain(last)}`);
-		assert(last.title.startsWith("Write a small Python program") && last.title !== "New agent", `title is "${last.title}"`);
+		assert(last.title === promptOne, `title is "${last.title}"`);
 		assert(last.updatedAt > first.updatedAt, "updatedAt did not move");
 		const listed = await waitFor("the user's list to show the turn", async () => {
 			const [entry] = await userConn.listSessions();
@@ -1263,16 +1263,16 @@ async function main(server: Server | null): Promise<void> {
 		const summaries = watch.summaries.length;
 		await refused(() => userConn.renameSession(sid, "   "), "bad_title");
 		await refused(() => userConn.renameSession("s_0000000000000000", "x"), "session_not_found");
-		const renamed = await userConn.renameSession(sid, "  Primes,   renamed ");
-		assert(renamed.title === "Primes, renamed", `title is "${renamed.title}"`);
+		const title = "  Primes,   renamed ";
+		const renamed = await userConn.renameSession(sid, title);
+		assert(renamed.title === title, `title is "${renamed.title}"`);
 		const event = await waitFor("the session's summary event", () => (watch.summaries.length > summaries ? watch.summaries.at(-1) : undefined), 5_000);
-		assert(event.title === "Primes, renamed", "the session's summary event has another title");
+		assert(event.title === title, "the session's summary event has another title");
 		const list = await waitFor("the user's sessions event", () => (sessionLists.length > lists ? sessionLists.at(-1) : undefined), 5_000);
-		assert(list.find((entry) => entry.id === sid)?.title === "Primes, renamed", "the sessions event has another title");
-		const long = await userConn.renameSession(sid, "x".repeat(200));
-		assert(long.title.length === 80, `a long title was kept at ${long.title.length} characters`);
+		assert(list.find((entry) => entry.id === sid)?.title === title, "the sessions event has another title");
+		await refused(() => userConn.renameSession(sid, "x".repeat(200)), "bad_input");
 		await userConn.renameSession(sid, "Primes, renamed");
-		return "trimmed, announced on both actors, capped at 80";
+		return "explicit title preserved on both actors, overlong title refused";
 	});
 
 	// --- sleep and wake ---------------------------------------------------------------------------

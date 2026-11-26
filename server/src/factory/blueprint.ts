@@ -2481,7 +2481,7 @@ function readFeatureCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>) {
 			const key = `ci-fix-${item.revision + 1}`;
 			const brief = `Inspect the feature diff with git diff ${branch.seed ?? item.task.base}...${fact.head}.\n\n` +
 				ciFixText(fact.head, reading).slice(0, 10_000);
-			queueRepair(c, { key, title: "Fix feature CI on " + shortSha(fact.head), brief, repo: fact.repo,
+			queueRepair(c, { key, title: "Fix failing feature checks", brief, repo: fact.repo,
 				owns: fact.paths ?? [], acceptance: ["The failing feature checks pass."] }, { ciFix: { head: fact.head, fingerprint } });
 			c.say(`Queued a fix for feature CI on ${shortSha(fact.head)}.`);
 		}

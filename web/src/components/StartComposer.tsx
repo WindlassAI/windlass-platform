@@ -2,7 +2,7 @@ import { availableCatalog } from "../../../server/src/sandbox/harnesses.js";
 import { resolveStartPlace } from "../../../server/src/start-place";
 import { resolveDefaultPlace, savedPlace } from "../../../server/src/factory/default-place";
 import { monthReset, monthState } from "../lib/hosted";
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type HostedSize, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type HostedSize, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
 import { isLimitRefusal } from "../api/errors";
@@ -163,6 +163,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		setItemModeState(mode);
 		saveItemMode(mode);
 	};
+	const [editedTitle, setEditedTitle] = useState<string | null>(draft?.title ?? null);
 	const [criteria, setCriteria] = useState(draft?.criteria ?? "");
 	const [criteriaOpen, setCriteriaOpen] = useState(false);
 	const [filed, setFiled] = useState<{ id: string; title: string; started: boolean; feature: boolean } | null>(null);
@@ -348,12 +349,13 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const canLaunch = canCreate && task !== "" && !tooLong;
 
 	const filing = item ? itemOf(prompt) : null;
+	const title = editedTitle ?? filing?.title ?? "";
 	const acceptance = criteria
 		.split("\n")
 		.map((line) => line.trim())
 		.filter((line) => line !== "");
 	const criteriaWrong = acceptance.length > MAX_ACCEPTANCE_CRITERIA ? `At most ${MAX_ACCEPTANCE_CRITERIA}; there are ${acceptance.length}.` : acceptance.some((line) => line.length > MAX_NOTE_CHARS) ? `Each is at most ${count(MAX_NOTE_CHARS)} characters.` : null;
-	const canFile = item && !reading && chosen !== null && filing !== null && !tooLong && criteriaWrong === null && busy === null;
+	const canFile = item && !reading && chosen !== null && filing !== null && title.trim() !== "" && !tooLong && criteriaWrong === null && busy === null;
 
 	// Reuse the key if a launch or filing succeeded but its response was lost.
 	const asked = useRef<Submission | null>(null);
@@ -406,9 +408,9 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		const mode = info?.items?.orchestrate && (!other || usePolicy) ? itemMode : "single";
 		const input: Omit<CreateItemInput, "idempotencyKey"> = {
 			repository: { id: chosen.repository.id, branch: chosen.branch },
-			title: filing.title,
+			title,
 			mode,
-			body: filing.body,
+			body: title === filing.title && filing.body ? filing.body : task,
 			acceptance,
 			start: now,
 			...(usePolicy ? { useDefaultPlace: true } : { place: chosenMachine ? { kind: "machine", machineId: chosenMachine.machineId } : { kind: "hosted" } }),
@@ -424,6 +426,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			const made = await client.user(auth).createItem({ ...input, idempotencyKey: asked.current.idempotencyKey });
 			asked.current = null;
 			setPrompt("");
+			setEditedTitle(null);
 			setCriteria("");
 			setCriteriaOpen(false);
 			setFiled({ id: made.id, title: made.title, started: now, feature: input.mode === "orchestrate" });
@@ -511,7 +514,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 				.
 			</p>
 		) : null;
-	const connectGithub = () => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, itemMode, criteria } });
+	const connectGithub = () => github.connect({ where: "launch", draft: { prompt, repoUrl, profile: profileChoice, model: modelChoice, effort: effortChoice, place: placeChoice === undefined ? null : (placeChoice ?? "platform"), harness: harnessChoice, mode: modeChoice, kind: kindChoice, itemMode, criteria, title: editedTitle } });
 	const connectLine =
 		github.enabled && !connection ? (
 			<p className={`ui-menu-note gh-connect-line${notice?.tone === "bad" || github.error ? " tone-bad" : ""}`} role={notice?.tone === "bad" ? "alert" : undefined}>
@@ -1115,7 +1118,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 			) : null}
 			<div className="start-box">
 				<label className="visually-hidden" htmlFor={ids.text}>
-					{item ? "What the work item asks for: its first line is the title" : "What the agent should do"}
+					{item ? "What the work item asks for" : "What the agent should do"}
 				</label>
 				<textarea
 					ref={area}
@@ -1123,7 +1126,7 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					className="start-text"
 					rows={phone ? 1 : 2}
 					value={prompt}
-					placeholder={item ? (phone ? "What should be done?" : "What should be done? The first line is its title.") : "What should an agent do?"}
+					placeholder={item ? (phone ? "What should be done?" : "What should be done? The first line suggests a title.") : "What should an agent do?"}
 					onChange={(event) => setPrompt(event.target.value)}
 					onKeyDown={onKeyDown}
 					disabled={busy !== null}
@@ -1198,10 +1201,11 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 					</PickerPanel>
 				</div>
 			</div>
-			{filing ? (
-				<p className="start-line-note start-title">
-					Title: <span className="start-title-text">{filing.title}</span>
-				</p>
+			{item && (filing || editedTitle !== null) ? (
+				<label className="start-title">
+					Title
+					<input className="input" value={title} maxLength={MAX_TITLE_CHARS} disabled={busy !== null} onChange={(event) => setEditedTitle(event.target.value)} />
+				</label>
 			) : null}
 			{orchestrateWarn ? (
 				<p className="field-note tone-warn start-line-note" role="status">

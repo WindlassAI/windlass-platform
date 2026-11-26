@@ -87,7 +87,7 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 				{` · ${plural(ci.reverts, "revert")}`}{ci.redMerges > 0 && ` · ${plural(ci.redMerges, "red commit")} after a merge`}
 			</> : "Could not read CI history from GitHub"}</p>
 			{ci && <p className="usage-note">{data.ciReadFailed && "Could not refresh CI history from GitHub. "}Last read {absoluteTime(ci.at)}</p>}
-			{ci?.flaky.map((job, i) => <div key={job.name}>{fileButton(i, "File as work item: make " + job.name + " reliable")}</div>)}
+			{ci?.flaky.map((job, i) => <div key={job.name}>{fileButton(i, "File as work item: fix intermittent failures in " + job.name)}</div>)}
 		</div>}
 		<p className="usage-note">Draft contributor guides and skills from the repository and its latest build. A second reviewer checks the files before the pull request opens.</p>
 		{check && <label className="check setup-weekly"><input role="switch" type="checkbox" checked={check.enabled} disabled={disabled} onChange={e => submit("guides", async () =>

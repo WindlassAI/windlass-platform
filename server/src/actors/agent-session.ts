@@ -42,6 +42,7 @@ import { assertOrigin, authenticate, clientError, describeError, isSandboxUserEr
 import { config, snapshotsFor } from "../config.js";
 import {
 	generatedSessionTitle,
+	promptTitle,
 	isMachineIdName,
 	machineLabel,
 	type LiveDelta,
@@ -1275,7 +1276,7 @@ async function draftMessage(c: Ctx, meta: SessionMeta, files: WorkspaceFile[] | 
 	}
 	// Until there is a pull request the title is the session's: a push whose pull request GitHub refused is no reason for another.
 	const first = !meta.pull;
-	const title = (first || prompt === "" ? meta.title : titleFrom(prompt)).replace(/…$/, "").trim().slice(0, MAX_PUBLISH_TITLE_CHARS);
+	const title = (first || prompt === "" ? meta.title : promptTitle(prompt)).trim().slice(0, MAX_PUBLISH_TITLE_CHARS);
 	let body = brief(answer, 600);
 	if (body === "" && files && files.length > 0) {
 		const listed = files.slice(0, 10).map((file) => `- ${file.path}`);
@@ -2185,18 +2186,6 @@ function failureMessage(result: RunTurnResult): string {
 	else if (result.exitCode === 0) what = "Windlass ended without reporting a result";
 	else what = `Windlass ended without a result (exit code ${result.exitCode})`;
 	return said ? `${what}:\n${said}` : `${what}.`;
-}
-
-function titleFrom(prompt: string): string {
-	const text = prompt.replace(/\s+/g, " ").trim();
-	let title = "";
-	for (const word of text.split(" ").slice(0, 8)) {
-		const next = title === "" ? word : `${title} ${word}`;
-		if (next.length > 60) break;
-		title = next;
-	}
-	if (title === "") title = text.slice(0, 60);
-	return title.length < text.length ? `${title}…` : title;
 }
 
 function itemPrompt(row: InboxRow): string {
@@ -3898,7 +3887,7 @@ async function startPrompt(c: Ctx, meta: SessionMeta, input: PromptInput, messag
 		delete meta.pauseNow;
 		meta.updatedAt = now;
 		meta.turnStartedAt = now;
-		if (turn === 1 && !meta.titleIsTyped && !meta.origin) meta.title = titleFrom(shown);
+		if (turn === 1 && !meta.titleIsTyped && !meta.origin) meta.title = promptTitle(shown);
 		meta.run = newRun(meta, turn, effort, capabilitiesOf(meta.harness).planMode && input.planMode === true, now, c.vars.nextSeq);
 		if (meta.run && credential) meta.run.credential = credential;
 		let untrusted: string[] | undefined;
