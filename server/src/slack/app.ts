@@ -10,7 +10,7 @@ export function settings() {
 }
 
 async function call(method: string, fields: Record<string, string>, token?: string) {
-	const read = method === "conversations.list";
+	const read = method === "conversations.list" || method === "conversations.info";
 	const params = new URLSearchParams(fields);
 	const url = new URL(`/api/${method}`, settings().url);
 	if (read) url.search = params.toString();
@@ -34,6 +34,11 @@ export async function exchangeCode(code: string) {
 	if (result.token_type !== "bot" || !result.access_token || !result.bot_user_id || !result.team?.name || !result.team.id ||
 		!SLACK_SCOPES.every(scope => result.scope?.split(",").includes(scope))) throw new Error("Slack did not grant the requested bot permissions.");
 	return { teamId: String(result.team.id), name: String(result.team.name), bot: String(result.bot_user_id), token: String(result.access_token) };
+}
+
+export async function isJoinedChannel(token: string, id: string): Promise<boolean> {
+	const { channel } = await call("conversations.info", { channel: id }, token);
+	return channel?.id === id && channel.is_member === true && channel.is_archived === false;
 }
 
 export async function listChannels(token: string): Promise<SlackChannel[]> {

@@ -6,7 +6,7 @@ import { config } from "../config.js";
 import type { SlackMapping } from "../contract.js";
 import { openSecret } from "../repo-secrets.js";
 import { serverSealer } from "../signin/seal.js";
-import { listChannels, postMessage, postPrivate, revoke } from "../slack/app.js";
+import { isJoinedChannel, listChannels, postMessage, postPrivate, revoke } from "../slack/app.js";
 import type { SlackDelivery } from "../slack/webhook.js";
 import { userActor } from "./internal.js";
 
@@ -38,7 +38,7 @@ async function deliver(c: Ctx, d: SlackDelivery, generation: string, uid: string
 	if (!current || current.generation !== generation || current.uid !== uid) return;
 	const bearer = token(c, await install(c));
 	// Slash commands also reach channels the bot has left since the mapping was saved.
-	if (d.deliveryId.startsWith("command:") && !(await listChannels(bearer)).some(channel => channel.id === d.channelId)) return;
+	if (d.deliveryId.startsWith("command:") && !(await isJoinedChannel(bearer, d.channelId))) return;
 	if (!uid) {
 		const proof = randomUUID();
 		await c.db.execute("INSERT OR REPLACE INTO proof VALUES(?,?,?)", hash(proof), d.userId, Date.now() + 300_000);

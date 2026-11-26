@@ -94,10 +94,24 @@ async function run() {
 		await member.actOnItem({ id: plan.id, action: { kind: "cancel" } });
 		await receipt(plan.id, "Work item cancelled");
 		const form = new URLSearchParams({ team_id: slack.team.id, channel_id: slack.channel.id, user_id: slack.member, command: "/windlass", trigger_id: randomUUID(), text: "quick Fix café" });
+		const listsBeforeCommands = slack.channelListCalls;
+		for (const state of [{ isMember: false, archived: false }, { isMember: true, archived: true }]) {
+			Object.assign(slack, state);
+			const rejected = new URLSearchParams(form);
+			rejected.set("trigger_id", randomUUID());
+			rejected.set("text", "quick This should not file");
+			const prior = slack.channelInfoCalls;
+			await ack(slack.send(commands, rejected.toString(), { command: true }));
+			await until("command channel lookup", async () => slack.channelInfoCalls > prior);
+		}
+		slack.archived = false;
 		await ack(slack.send(commands, form.toString(), { command: true }));
 		await ack(slack.send(commands, form.toString(), { command: true, retry: 1 }));
 		const quick = await until("command item", async () => (await items()).find(item => item.id !== plan.id));
 		assert.equal(quick.mode, "single");
+		assert.equal(quick.title, "Fix café");
+		assert.equal(slack.channelInfoCalls, 3);
+		assert.equal(slack.channelListCalls, listsBeforeCommands);
 		const root = await receipt(quick.id, "Work item filed");
 		assert.equal(root.thread, null);
 		assert.equal((await receipt(quick.id, "Pull request opened")).thread, root.ts);

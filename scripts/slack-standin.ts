@@ -7,6 +7,10 @@ export class SlackStandin {
 	readonly member = "U55667788";
 	readonly bot = "UBOT";
 	readonly channel = { id: "C12345678", name: "engineering" };
+	isMember = true;
+	archived = false;
+	channelInfoCalls = 0;
+	channelListCalls = 0;
 	readonly messages: { channel: string; text: string; thread: string | null; ts: string }[] = [];
 	readonly privateReplies: { user: string; text: string }[] = [];
 	readonly secret = randomUUID();
@@ -30,7 +34,13 @@ export class SlackStandin {
 		const token = req.headers.authorization?.slice(7) ?? "";
 		if (!this.tokens.has(token)) return json({ ok: false, error: "invalid_auth" });
 		switch (url.pathname) {
+			case "/api/conversations.info": {
+				if (req.method !== "GET" || form.get("channel") !== this.channel.id) return json({ ok: false, error: "channel_not_found" });
+				this.channelInfoCalls++;
+				return json({ ok: true, channel: { ...this.channel, is_member: this.isMember, is_archived: this.archived } });
+			}
 			case "/api/conversations.list": {
+				this.channelListCalls++;
 				if (req.method !== "GET" || form.get("types") !== "public_channel,private_channel" || form.get("exclude_archived") !== "true") return json({ ok: false });
 				const second = form.get("cursor") === "page2";
 				return json({ ok: true, channels: second ? [{ ...this.channel, is_member: true }] : [{ id: "COTHER", name: "not-joined", is_member: false }],
