@@ -30,7 +30,7 @@ export function finishedItem(v: ItemView, kind?: TaskKind, flaky = false, featur
 		verdict?.result === "fail" && (ci === "failed" || verdict.gate.required.some(c => c.status === "failed"));
 	return { at: v.endedAt ?? v.updatedAt, pr: v.pullRequest?.number, kind, feature: v.mode === "orchestrate", merged,
 		closed: v.events.some(e => e.said === "The pull request was closed without merging."), verified, failed, sentBack, ciFix, fixed, flaky,
-		ciPassed: ci === "passed", clean: verified && ci === "passed" && !fixed && !flaky && !verdict.flags.length && (!v.review?.recommendation || v.review.recommendation === "approve") };
+		ciPassed: ci === "passed", clean: verified && ci === "passed" && !fixed && !verdict.flags.length && (!v.review?.recommendation || v.review.recommendation === "approve") };
 }
 
 export type ItemRecord = ReturnType<typeof finishedItem>;

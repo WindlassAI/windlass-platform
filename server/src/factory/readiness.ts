@@ -2,15 +2,10 @@ import { MAX_TITLE_CHARS, type CreateItemInput, type GithubId } from "../contrac
 
 import { trackRecord, type ReadinessLevel, type ItemRecord, type RevertedPulls, type TrackRecord } from "./readiness-track.js";
 export type { ReadinessLevel } from "./readiness-track.js";
-const MIN_GREEN_RATE = 0.8;
-const MAX_FLAKES = 3;
-export const RECENT_COMMITS = 20;
 
 export interface CiHistory {
 	revertedPulls?: RevertedPulls;
 	at: number; branch: string; checked: number; green: number; hasCi: boolean;
-	/** The newest RECENT_COMMITS finished commits: the Not ready bar, so an old red stretch stops counting once main is green again. */
-	recent?: { checked: number; green: number };
 	flaky: { name: string; count: number }[]; reverts: number; redMerges: number;
 }
 
@@ -32,11 +27,11 @@ export interface RepositoryReadiness { builds?: { passed: number; total: number;
 
 export function setupReport(findings: Finding[], at: number, ci: CiHistory | null, items: ItemRecord[] = []): SetupReport {
 	const proven = (id: CriterionId) => findings.some(f => f.id === id && f.pass);
-	const bar = ci?.recent ?? ci;
-	const healthy = ci && bar && bar.checked > 0 && bar.green / bar.checked >= MIN_GREEN_RATE && ci.flaky.every(job => job.count <= MAX_FLAKES);
 	const record = trackRecord(items, ci?.revertedPulls);
-	const level = proven("setup") && proven("checks") && healthy ? record.level : "Not ready";
-	if (!proven("setup") || !proven("checks") || !healthy) { record.earned = {}; record.progress = "Finish setup and pass CI to reach Ask first."; }
+	// CI history is shown, not a gate: each item reads CI on its own change and the record counts only CI-passed work.
+	const ready = proven("setup") && proven("checks");
+	const level = ready ? record.level : "Not ready";
+	if (!ready) { record.earned = {}; record.progress = "Finish setup to reach Ask first."; }
 	return { at, level, ci, record, passed: findings.filter(row => row.pass).length, findings };
 }
 

@@ -213,7 +213,7 @@ describe("a repository's old addresses", () => {
 		expect(host.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toBe("Overview");
 		const setup = host.querySelector("#repo-setup")!;
 		for (const words of ["Setup 3 of 8", "Level: Not ready", "CI history (30 days): 94% green on main", "1 flaky job: e2e (macos)", "0 reverts", "1 red commit after a merge",
-			"Track record:", "sent back", "Finish setup and pass CI to reach Ask first."]) expect(setup.textContent).toContain(words);
+			"Track record:", "sent back", "Finish setup to reach Ask first."]) expect(setup.textContent).toContain(words);
 		const file = [...setup.querySelectorAll("button")].find(b => b.textContent === "File as work item: make e2e (macos) reliable")!;
 		act(() => file.click());
 		await settle();

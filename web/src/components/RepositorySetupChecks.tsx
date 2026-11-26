@@ -82,7 +82,6 @@ export function RepositorySetupChecks({ page, offersItems }: { page: RepositoryP
 			<details><summary>Track record details</summary><p>{report.record.firstTry} verified first try · {report.record.verified - report.record.firstTry} after fixes · {report.record.ciPassed} passed CI · {report.record.flaky} had a check fail on the base branch too · {report.record.merged} merged · {report.record.closed} closed without merging{data.builds && ` · ${data.builds.passed} of ${data.builds.total} recorded builds passed · setup succeeded in ${data.builds.setupPassed}`}</p></details>
 			<p><strong>CI history (30 days):</strong> {ci ? <>
 				{ci.checked ? `${percent(ci.green / ci.checked)} green on ${ci.branch}` : ci.hasCi ? `No finished checks on ${ci.branch}` : "No CI to read"}
-				{ci.recent && ci.recent.checked < ci.checked && ` · newest ${ci.recent.checked}: ${percent(ci.recent.green / ci.recent.checked)} green`}
 				{ci.hasCi && ` · ${plural(ci.flaky.length, "flaky job")}`}
 				{!!ci.flaky.length && ": " + ci.flaky.map(job => `${job.name} (${job.count}×)`).join(", ")}
 				{` · ${plural(ci.reverts, "revert")}`}{ci.redMerges > 0 && ` · ${plural(ci.redMerges, "red commit")} after a merge`}

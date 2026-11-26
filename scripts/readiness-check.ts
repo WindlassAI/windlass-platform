@@ -21,14 +21,12 @@ const answers = (...fail: CriterionId[]) => readinessCriteria.map(({ id }) => ({
 
 const history: CiHistory = { at: now, branch: "trunk", green: 4, checked: 5, flaky: [{ name: "test", count: 3 }], hasCi: true, reverts: 1, redMerges: 1 };
 
-test("working setup and passing CI earn Ask first at both boundaries", () => {
+test("working setup and checks earn Ask first whatever the CI history", () => {
 	const report = setupReport(answers("guide", "areas", "templates"), now, history);
 	assert.equal(report.level, "Ask first");
 	assert.equal(report.passed, 5);
-	for (const ci of [null, { ...history, green: 0, checked: 0 }, { ...history, green: 159, checked: 200 }, { ...history, flaky: [{ name: "test", count: 4 }] },
-		{ ...history, green: 200, checked: 200, recent: { green: 15, checked: 20 } }])
-		assert.equal(setupReport(answers(), now, ci).level, "Not ready");
-	assert.equal(setupReport(answers(), now, { ...history, green: 18, checked: 55, recent: { green: 16, checked: 20 } }).level, "Ask first");
+	for (const ci of [null, { ...history, green: 0, checked: 0 }, { ...history, green: 18, checked: 55 }, { ...history, flaky: [{ name: "test", count: 4 }] }])
+		assert.equal(setupReport(answers(), now, ci).level, "Ask first");
 	for (const id of ["setup", "checks"] as const) assert.equal(setupReport(answers(id), now, history).level, "Not ready");
 	const partial = setupReport([{ id: "guide", pass: null, reason: "Pending" }, { id: "areas", pass: false, reason: "Missing guide" }], now, history);
 	assert.throws(() => readinessItem(7, partial, "guide"));
@@ -123,7 +121,7 @@ test("CI history reads default-branch checks and statuses, merge results and rer
 		return { status: 200, next: false, link: "", body };
 	};
 	const actual = await scanCiHistory(app, "install", repo, "head", now);
-	assert.deepEqual(actual, { ...history, revertedPulls: { 2: now }, green: 1, checked: 3, recent: { green: 1, checked: 3 }, reverts: 2, redMerges: 2, flaky: [{ name: "e2e", count: 3 }] });
+	assert.deepEqual(actual, { ...history, revertedPulls: { 2: now }, green: 1, checked: 3, reverts: 2, redMerges: 2, flaky: [{ name: "e2e", count: 3 }] });
 	assert.equal((await scanCiHistory(app, "install", repo, null, now)).hasCi, false);
 	limited = true;
 	await assert.rejects(scanCiHistory(app, "install", repo, "head", now), GithubError);
