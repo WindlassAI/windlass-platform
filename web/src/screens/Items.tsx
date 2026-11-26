@@ -289,7 +289,32 @@ export function ItemTrack({ item, reviewer = true }: { item: Pick<ItemSummary, "
  * The item page's stepper: the same stages as a row's track, each named, the one it is at lit (and
  * moving, while a turn or CI runs there). An ordered list, so a screen reader reads where it is.
  */
-export function ItemStages({ item, reviewer = true, step = null }: { item: Pick<ItemSummary, "state" | "wait" | "pullRequest" | "review">; reviewer?: boolean; step?: StepKind | null }) {
+/** What an item does in a step, as the stage it stands at says it. */
+const STEP_DOING: Record<StepKind, string> = {
+	refine: "planning", plan_review: "plan in review", subtasks: "parts running", implement: "building", run_checks: "checking", gate: "checking",
+	publish: "pushing", conflict: "resolving conflicts", summary: "writing the summary", ci: "CI running", ci_fix: "fixing CI", integration: "testing",
+	review: "in review", review_fix: "fixing the review", handoff: "handing over", merged: "merged",
+};
+
+/** What an item waits for, as the stage it stands at says it. */
+const WAIT_DOING: Record<NonNullable<ItemSummary["wait"]>["reason"], string> = {
+	provider: "waiting for the provider", children: "parts running", capacity: "waiting for a turn", machine: "waiting for a machine", ci: "waiting for CI",
+	person: "waiting for you", budget: "out of budget", integration: "testing", sandboxes: "waiting for a sandbox",
+};
+
+/**
+ * The name the stage an item stands at shows: what it does there now. The stages' own names say they are
+ * done ("built", "pushed"), which a stage still running or waiting is not.
+ */
+export function standingWord(item: Pick<ItemSummary, "state" | "wait" | "question">, step: StepKind | null): string {
+	if (item.question) return "asks you";
+	if (item.state === "review") return "in review";
+	const wait = item.state === "waiting" ? item.wait?.reason : undefined;
+	if (wait && !(wait === "children" && step !== null)) return WAIT_DOING[wait];
+	return step ? STEP_DOING[step] : "building";
+}
+
+export function ItemStages({ item, reviewer = true, step = null }: { item: Pick<ItemSummary, "state" | "wait" | "pullRequest" | "review" | "question">; reviewer?: boolean; step?: StepKind | null }) {
 	const summary = itemTrack(item, reviewer);
 	if (summary === null) return null;
 	// The page knows the step the run is at, which the summary does not: a working or waiting item stands at that step's stage.
@@ -307,7 +332,7 @@ export function ItemStages({ item, reviewer = true, step = null }: { item: Pick<
 				return (
 					<li key={stage} className={`item-stage${done ? " item-stage-done" : ""}${now ? " item-stage-now" : standing ? " item-stage-at" : ""}`} aria-current={now || (track.at === index + 1 && !track.now) ? "step" : undefined}>
 						<span className="item-stage-bar" aria-hidden="true" />
-						<span className="item-stage-name">{stage}</span>
+						<span className="item-stage-name">{now || standing ? standingWord(item, at === null ? null : step) : stage}</span>
 					</li>
 				);
 			})}
