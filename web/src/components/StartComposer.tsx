@@ -21,7 +21,8 @@ import { clockTime, useMachines } from "../screens/Machines";
 import { useApp, useAuth } from "../state/app";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
-import { useHostedProviders, allowanceState, useAccount, useAllowance, useModels, useNow } from "../state/hooks";
+import { useHostedProviders, allowanceState, useAccount, useAllowance, useCatalogs, useModels, useNow } from "../state/hooks";
+import { agentModelsOf } from "../lib/subtask-agents";
 import { ArrowUpIcon, CheckIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SlidersIcon, WarnIcon } from "./Icons";
 import { modeMenu } from "./Modes";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
@@ -284,7 +285,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 		...(modelChoice && (itemAgent === "windlass" ? { model: modelChoice } : { machineModel: modelChoice })),
 		...(effortChoice && effortChoice !== "default" && (itemAgent === "windlass" ? { effort: effortChoice } : { machineEffort: effortChoice })) } }, itemRole) : null;
 	const usePolicy = item && harnessChoice === null;
-	const destination = itemRun ? checkRunPlace(itemRun, mine) : undefined;
+	const machineCatalogs = useCatalogs(machinesReading ? null : mine);
+	const destination = itemRun ? checkRunPlace(itemRun, mine, agentModelsOf(mine, machineCatalogs, null)) : undefined;
 	const itemMachineId = placeChoice !== undefined ? placeChoice : destination?.place.kind === "machine" ? destination.place.machineId : null;
 	const chosenMachine = startPlace ? startPlace.machine : mine.find(machine => machine.machineId === itemMachineId && why(machine) === null) ?? null;
 	const placeProblem = startPlace ? startPlace.notes.join(" ") || null : destination?.wait ??

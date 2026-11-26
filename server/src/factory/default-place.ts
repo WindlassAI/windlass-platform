@@ -82,7 +82,8 @@ export function checkRunPlace(run: ResolvedRun, machines: readonly MachineSummar
 		const runner = runnerProblem(machine.warnings);
 		const source = offered?.source ?? "machine";
 		const payer = offered && machinePayerProblem(offered, run.model ?? undefined, source, offered.platformKeys ?? [], label);
-		const list = harness === "windlass" ? models?.windlass : models?.machines?.[machine.machineId]?.[harness] ?? initialHarnessModels(offered?.options);
+		// Given lists are judged as given: one not read yet is not judged, rather than held to the summary's "default" only.
+		const list = harness === "windlass" ? models?.windlass : models ? models.machines?.[machine.machineId]?.[harness] : initialHarnessModels(offered?.options);
 		const model = agentModelRefusal(runAgent(run), list);
 		if (machine.status !== "online") reasons.push(`“${label}” is offline.`);
 		else if (runner) reasons.push(`“${label}”: ${runner}`);
