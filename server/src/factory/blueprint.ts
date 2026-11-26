@@ -18,7 +18,7 @@ import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { isDeepStrictEqual } from "node:util";
 import type { OutOfMemory } from "../sandbox/api.js";
 import { MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, outOfMemoryWords, type FeatureRepository, type HarnessId, type ItemAgent, type ItemReview, type ReviewRecord, type TurnOutcome, type Verified, type VerifiedCheck } from "../contract.js";
-import { CI_POLLING, type CiReading, ciPollEvery, ciState, workflowOverdue } from "../github/ci.js";
+import { CI_POLLING, type CiReading, rerunnableJobs, ciPollEvery, ciState, workflowOverdue } from "../github/ci.js";
 import { spellSeconds } from "../usage.js";
 import { partRun, resolveRun, runPlace } from "./resolve-run.js";
 import { approveRoutes, bindRoute, choosePlacement, freeMachineSlots, machineSlots, placeKey, placementRetryAt, type PlacementInventory, type PlacementRoute } from "./placement.js";
@@ -33,7 +33,7 @@ import { PLATFORM_TOOLS, refusalMessage } from "../provider-refusal.js";
 import { budgetStop, itemAgent, newAgent, noSpend, noteAgentTurn, retryAt, spellTokens, unmeasuredTurn } from "./budget.js";
 import { checkConclusion, checkTitle } from "./verified-check.js";
 import { environmentFailure, outputExcerpt, type EnvironmentFailure } from "./check-environment.js";
-import type { ChoiceId, CiProgress, EarlierFinding, Fact, StepFact, FeatureJob, HandoffReview, RequestedReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemSpend, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
+import type { ChoiceId, CiProgress, EarlierFinding, Fact, StepFact, FeatureCi, FeatureJob, HandoffReview, RequestedReview, ItemProviderRefusal, ReviewerInput, TurnSpend, FactoryItem, ItemBudget, ItemSpend, ItemEvent, ItemState, Outcome, Question, QuestionKind, Run, StepKind, StopCause, Task, TurnPlan, TurnStepKind, Wait, Effect } from "./types.js";
 import { ASK_WHEN_BLOCKED, BUILDER_ASSUMPTIONS, PUBLISH_SERVER, REPORT_TOOL } from "../agent-publish.js";
 import { REVIEW_TOOL, type PersonDecision } from "./reviewer-task.js";
 import { runAnywayWords, sources, thirdParty, untrustedWords } from "./untrusted.js";
@@ -193,7 +193,8 @@ export function advance(item: FactoryItem, fact: Fact): Outcome {
 		const started = !watchingParts(item) && fact.kind !== "ci_read";
 		for (const target of featureBranches(change.item)) {
 			if (target.featureCi && target.head && (target.featureCi.head !== target.head || started)) {
-				target.featureCi = { head: target.head, since: fact.at };
+				const decision = target.featureCi.head === target.head ? target.featureCi : undefined;
+				target.featureCi = { head: target.head, since: fact.at, waitForBase: decision?.waitForBase, fixInherited: decision?.fixInherited };
 				queueFeatureCi(change, "alias" in target ? target.alias : undefined);
 			}
 		}
@@ -349,12 +350,15 @@ function apply(c: Change, fact: Fact): boolean {
 			const job = update.child && item.jobs?.find(j => j.id === update.child);
 			if (job) job.featureUpdateReceipt = update.key;
 			if ("head" in fact.result) {
-				item.head = fact.result.head;
-				c.say(`Updated the feature from ${item.task.base} to ${shortSha(item.head)}.`);
+				if (update.repo) recordIntegrated(item, update.repo, fact.result.head);
+				else item.head = fact.result.head;
+				const ci = featureCiBranch(item, update.repo).featureCi;
+				if (ci) delete ci.waitForBase;
+				c.say(`Updated the feature from ${update.repo ? repoOf(item, update.repo).baseRef : item.task.base} to ${shortSha(fact.result.head)}.`);
 			}
 			if (FINAL.has(item.state) || item.state === "failed" || item.machineRemoved) return true;
 			if ("problem" in fact.result) {
-				ask(c, "feature_update", fact.result.problem, [{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], null, null, undefined, { target: update.target });
+				ask(c, "feature_update", fact.result.problem, [{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], null, null, undefined, { target: update.target, updateRepo: update.repo });
 			} else if ("head" in fact.result && c.run.step.kind === "ci") {
 				c.run.ci = ciProgress(fact.result.head, c.at, null, c.run.ci?.webhooks ?? false);
 				readUpdatedCi(c);
@@ -362,7 +366,7 @@ function apply(c: Change, fact: Fact): boolean {
 			} else {
 				if ("conflicts" in fact.result) {
 					if (c.run.step.kind !== "subtasks") c.enter("subtasks");
-					queueConflictFix(c, { target: update.target, child: update.child }, fact.result.conflicts);
+					queueConflictFix(c, { target: update.target, child: update.child }, fact.result.conflicts, update.repo);
 				}
 				c.state("waiting", { reason: "children", sentence: "conflicts" in fact.result ? "Resolving the feature update conflicts." : "Continuing subtasks on the updated feature branch.", retryAt: null });
 				for (const job of item.jobs ?? []) if (activeJob(job) && (!repair(job) || job.dispatchKey)) dispatchJob(c, job);
@@ -553,7 +557,7 @@ function apply(c: Change, fact: Fact): boolean {
 		case "repo_pr_lost":
 			return item.run !== null && crossRepo(item) && crossFact(flow(c), fact, item.approvedPlan?.finalIntegration);
 		case "ci_rerun_result": {
-			const rerun = item.ciReruns?.[fact.head];
+			const rerun = item.ciReruns?.[rerunKey(fact)];
 			if (!rerun || rerun.reported) return false;
 			rerun.reported = true;
 			for (const job of rerun.jobs) if (job.jobId && !fact.accepted.includes(job.jobId)) job.jobId = null;
@@ -631,10 +635,10 @@ function stepFact(c: Change, fact: StepFact): boolean {
 			} else {
 				if (job.state === "done" && job.head && !job.join) integratedTip(c.item, job, job.head);
 				if (job.state === "failed" && job.conflictFix && !c.item.stoppedJob) {
-					if (!job.conflictFix.retry) queueConflictFix(c, { ...job.conflictFix, retry: true }, job.task.owns ?? []);
+					if (!job.conflictFix.retry) queueConflictFix(c, { ...job.conflictFix, retry: true }, job.task.owns ?? [], job.task.repo);
 					else {
 						ask(c, "feature_update", "The conflict-resolution part failed twice. Check the feature branch again or give up.",
-							[{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], "repeated", null);
+							[{ id: "update_feature", label: "Check the feature branch again" }, choice("give_up")], "repeated", null, undefined, { updateRepo: job.task.repo });
 						return true;
 					}
 				} else if (job.state !== "done" && !c.item.stoppedJob) {
@@ -668,6 +672,22 @@ function stepFact(c: Change, fact: StepFact): boolean {
 			else {
 				prRead(c, { mergedByApp: true, kind: "pr_read", key, at: c.at, state: "merged", prHead: fact.head, webhooks: !!run.ci?.webhooks });
 			}
+			return true;
+		case "ci_rerun_started":
+			if (c.item.ciReruns?.[rerunKey(fact)]) return false;
+			if (step.kind === "subtasks") {
+				const ci = featureCiBranch(c.item, fact.repo).featureCi;
+				if (!watchingParts(c.item) || ci?.key !== fact.key || ci.head !== fact.head) return false;
+				(c.item.ciReruns ??= {})[rerunKey(fact)] = { jobs: fact.jobs };
+				queueFeatureCi(c, fact.repo, c.at + ciPollEvery(fact.openItems));
+				return true;
+			}
+			if (c.item.question || step.kind !== "ci" || fact.key !== key || run.ci?.head !== fact.head) return false;
+			// Commit the claim and the next poll before the POST. Replaying the effect cannot request a second run.
+			(c.item.ciReruns ??= {})[rerunKey(fact)] = { jobs: fact.jobs };
+			step.attempt++;
+			run.ci.since = c.at;
+			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the checks.");
 			return true;
 		case "ci_read":
 			if (step.kind === "subtasks") {
@@ -831,14 +851,6 @@ function stepFact(c: Change, fact: StepFact): boolean {
 			if (step.kind !== "publish") return false;
 			if (fact.kind === "published") published(c, fact);
 			else publishFailed(c, fact);
-			return true;
-		case "ci_rerun_started":
-			if (step.kind !== "ci" || run.ci?.head !== fact.head || c.item.ciReruns?.[fact.head]) return false;
-			// Commit the claim and the next poll before the POST. Replaying the effect cannot request a second run.
-			(c.item.ciReruns ??= {})[fact.head] = { jobs: fact.jobs };
-			step.attempt++;
-			run.ci.since = c.at;
-			pollCi(c, fact.openItems, null, "Waiting for GitHub to rerun the checks.");
 			return true;
 	}
 }
@@ -1535,30 +1547,72 @@ function updateFromBase(c: Change): boolean {
 	const previous = failuresOf(run);
 	// Main can move again while an earlier update runs; follow it a few times.
 	const movedAgain = !item.parent && run.updatedBaseTip && run.ci?.baseTip !== run.updatedBaseTip && run.rounds.conflict < 3;
-	if (previous.includes(fingerprint) && !newerPartBase(item, run.ci!) && !movedAgain) return false;
+	if (previous.includes(fingerprint) && !run.ci?.waitForBase && !newerPartBase(item, run.ci!) && !movedAgain) return false;
 	run.updatedBaseTip = run.ci?.baseTip;
 	if (!previous.includes(fingerprint)) run.failures = [...previous, fingerprint];
 	run.lastFailure = fingerprint;
 	run.rounds.conflict++;
-	run.updateFromBase = { head, at: c.at };
+	run.updateFromBase = { head, at: c.at, ...(run.ci?.waitForBase && { baseTip: run.ci.baseTip }) };
 	c.say(`Updating the item branch from ${item.task.base}.`);
 	publish(c);
 	return true;
+}
+
+type CiReadFact = Extract<Fact, { kind: "ci_read" }>;
+type ReadChecks = Extract<CiReading, { kind: "read" }>;
+export const rerunKey = ({ head, repo }: { head: string; repo?: string }) => repo ? `${repo}/${head}` : head;
+
+function rerunState(c: Change, fact: CiReadFact, reading: CiReading) {
+	const jobs = c.item.ciReruns?.[rerunKey(fact)]?.jobs;
+	let awaiting = false;
+	if (reading.kind === "read") for (const job of jobs ?? []) {
+		if (!job.failed || !job.jobId) continue;
+		const attempt = reading.runs.find(check => check.workflowId === job.retryRunId && check.name === job.name &&
+			check.jobId && BigInt(check.jobId) > BigInt(job.jobId!));
+		if (!attempt || attempt.state === "pending") awaiting = true;
+		else if (attempt.state === "passed" && !job.passedOnRerun) {
+			job.passedOnRerun = true;
+			c.say(`CI job ${job.name} was flaky: it passed on re-run on the same commit ${shortSha(fact.head)}.`);
+		}
+	}
+	let state = ciState(reading);
+	if (awaiting || (reading.kind === "read" && ["passed", "none", "skipped"].includes(state) &&
+		jobs?.some(job => !reading.runs.some(check => check.name === job.name)))) state = "pending";
+	return { state, rerun: jobs, awaitingFlakyJob: awaiting };
+}
+
+function requestCiRerun(c: Change, fact: CiReadFact, reading: ReadChecks, infrastructure: boolean) {
+	if (reading.truncated || !isSha(fact.head) || c.item.ciReruns?.[rerunKey(fact)]) return false;
+	const jobs = rerunnableJobs(reading, infrastructure);
+	if (!jobs.length) return false;
+	const feature = c.run.step.kind === "subtasks" && featureCiBranch(c.item, fact.repo).featureCi;
+	if (feature) feature.key = fact.key;
+	c.effects.push({ kind: "rerun_ci", key: feature ? fact.key : c.key, repo: fact.repo, head: fact.head, openItems: fact.openItems, jobs });
+	return true;
+}
+
+function repairChecks(c: Change, fact: CiReadFact, reading: ReadChecks, ci: FeatureCi | CiProgress) {
+	const failed = reading.runs.filter(check => check.state === "failed" && !check.environment);
+	if (failed.some(check => check.baseResult === "pending")) return null;
+	const actionable = failed.filter(check => !check.baseResult || ci.fixInherited && check.baseResult === "failed");
+	if (!actionable.length) {
+		const base = fact.repo ? repoOf(c.item, fact.repo).baseRef : c.item.task.base;
+		const inherited = failed.filter(check => check.baseResult === "failed");
+		if (inherited.length && fact.baseTip) {
+			ask(c, "ci_timeout", `The same checks fail on ${base}: ${inherited.map(check => check.name).join(", ")}.`,
+				[{ id: "wait", label: `Wait for ${base} to be fixed, then update from it` }, { id: "again", label: "Fix it here anyway" }, choice("give_up")],
+				null, null, undefined, { inherited: { head: fact.head, baseTip: fact.baseTip, repo: fact.repo } });
+		}
+		return null;
+	}
+	return { ...reading, runs: actionable, logs: reading.logs.filter(log => actionable.some(check => check.name === log.name)) };
 }
 
 function recordCiRead(c: Change, ci: CiProgress, fact: Extract<Fact, { kind: "ci_read" }>) {
 	// Evidence for another commit cannot settle this head.
 	const reading: CiReading =
 		fact.reading.kind === "read" && isSha(ci.head) && fact.reading.head !== ci.head ? { kind: "failed", said: `GitHub answered for commit ${shortSha(fact.reading.head)}, not ${shortSha(ci.head)}` } : fact.reading;
-	const rerun = reading.kind === "read" ? c.item.ciReruns?.[reading.head]?.jobs : undefined;
-	let state = ciState(reading);
-	// A webhook can arrive before GitHub lists the replacement attempt.
-	const awaitingFlakyJob = reading.kind === "read" && rerun?.some(job => job.flaky && job.jobId &&
-		!reading.runs.some(check => check.workflowId === job.retryRunId && check.name === job.name && check.jobId && BigInt(check.jobId) > BigInt(job.jobId!)));
-	if (awaitingFlakyJob) state = "pending";
-	// GitHub can briefly omit the old jobs before listing their replacements.
-	if (reading.kind === "read" && (state === "passed" || state === "none" || state === "skipped") &&
-		rerun?.some(job => !reading.runs.some(check => check.name === job.name))) state = "pending";
+	const { state, rerun, awaitingFlakyJob } = rerunState(c, fact, reading);
 	ci.lastReadState = state;
 	ci.webhooks = fact.webhooks;
 	// Consume this poll before scheduling another.
@@ -1650,6 +1704,10 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 		return ask(c, "ci_timeout", sentence, [...choices, ...(canUpdate ? [choice("update_from_base")] : []), ...(feature ? [feature] : []), ...handOver(c.item), choice("give_up")], null, plan, undefined,
 			{ policy, target: fact.featureTargetHead, evidence: ciEvidence });
 	};
+	if (ci.waitForBase) {
+		if (fact.baseTip && fact.baseTip !== ci.waitForBase && fact.basePassed && updateFromBase(c)) return;
+		return pollCi(c, fact.openItems, null, `Waiting for passing CI on a new ${c.item.task.base} commit.`);
+	}
 	if (fact.mergeable === false && !canUpdate) {
 		c.say(`GitHub says the pull request conflicts with ${c.item.task.base}.`);
 		return nextTurn(c, conflictPlan(c.item.task.base));
@@ -1659,28 +1717,14 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			return question("GitHub has not reported the re-run of the failed CI jobs.");
 		return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the re-run of the failed CI jobs.");
 	}
-	if (state === "failed" && reading.kind === "read" && !reading.truncated && !rerun && c.item.pr && fact.prHead === ci.head && isSha(ci.head)) {
-		const failed = reading.runs.filter(check => check.state === "failed");
-		const jobs = failed.map(({ name, jobId, workflowId, baseResult, conclusion }) => ({
-			name, jobId, retryRunId: conclusion === "failure" ? workflowId : undefined, flaky: fact.flakyJobs?.includes(name) ? "history" as const : baseResult === "failed" ? "base" as const : undefined,
-		}));
-		if (jobs.length && jobs.every(job => job.flaky && job.jobId && job.retryRunId)) {
-			c.effects.push({ kind: "rerun_ci", key: c.key, head: ci.head, openItems: fact.openItems, jobs });
-			return;
-		}
-		if (failed.some(check => !check.jobId && check.app !== "github-actions" && (fact.flakyJobs?.includes(check.name) || check.baseResult === "failed")))
-			c.say("Only GitHub Actions jobs can be re-run automatically.");
+	const interrupted = reading.kind === "read" && reading.runs.some(check => check.retryRunId && (check.state === "cancelled" || check.environment));
+	if (reading.kind === "read" && (state === "failed" || state === "cancelled") && !rerun && (c.item.parent || fact.prHead === ci.head)) {
+		const allowInfra = interrupted && !!automatic(c, "ci_timeout", ciEvidence, ["rerun_ci"]);
+		if (requestCiRerun(c, fact, reading, allowInfra)) return;
 	}
 	if (reading.kind === "read" && (state === "cancelled" || (state === "failed" && reading.runs.some(check => check.environment)))) {
 		const interrupted = reading.runs.filter(check => check.state === "cancelled" || check.environment);
-		const eligible = interrupted.filter(check => check.retryRunId);
 		const sentence = state === "cancelled" ? ciSentence(verdictCi(ci)) : "CI reported an environment failure in " + interrupted.map(check => check.name).join(", ") + ".";
-		if (eligible.length && !rerun && isSha(reading.head) && automatic(c, "ci_timeout", ciEvidence, ["rerun_ci"])) {
-			c.say(sentence);
-			c.effects.push({ kind: "rerun_ci", key: c.key, head: reading.head, openItems: fact.openItems,
-				jobs: eligible.map(({ name, jobId, retryRunId, environment }) => ({ name, jobId, retryRunId, ...(environment && { environment }) })) });
-			return;
-		}
 		if (rerun?.some(job => !reading.runs.some(check => check.name === job.name) ||
 			(job.jobId && interrupted.some(check => check.jobId === job.jobId)))) {
 			return pollCi(c, fact.openItems, null, "Waiting for GitHub to report the rerun of the interrupted checks.");
@@ -1701,23 +1745,15 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 			return afterCi(c, ci);
 		case "failed": {
 			if (reading.kind !== "read") return;
-			const failed = reading.runs.filter(check => check.state === "failed" && !check.environment).map(check =>
-				rerun?.some(job => job.flaky && job.jobId && job.name === check.name && check.workflowId === job.retryRunId)
-					? { ...check, baseResult: undefined } : check);
-			if (failed.some(check => check.baseResult === "pending"))
-				return pollCi(c, fact.openItems, null, `Waiting for the same check to finish on ${c.item.task.base}.`);
-			const inherited = failed.filter(check => check.baseResult === "failed");
-			const actionable = failed.filter(check => !check.baseResult);
-			if (!actionable.length || (canUpdate && inherited.length)) {
-				const sentence = inherited.length ? `This check also fails on ${c.item.task.base}; it is not caused by this change.`
-					: `The platform could not confirm whether this check fails on ${c.item.task.base}.`;
-				return ask(c, "ci_timeout", sentence, [...(canUpdate ? [choice("update_from_base")] : []), ...handOver(c.item), choice("wait"), choice("give_up")],
-					null, null, undefined, canUpdate && inherited.length ? { policy: "ci_timeout", evidence: ciEvidence } : {});
+			const fixes = repairChecks(c, fact, reading, ci);
+			if (!fixes) {
+				if (c.item.question) return;
+				if (reading.runs.some(check => check.baseResult === "pending")) return waitForReading();
+				return question(`The platform could not confirm whether this check fails on ${c.item.task.base}.`);
 			}
-			const fixes = { ...reading, runs: actionable, logs: reading.logs.filter(log => actionable.some(check => check.name === log.name)) };
 			const plan: TurnPlan = { ...IMPLEMENT, kind: "ci_fix", text: ciFixText(ci.head, fixes), charge: "ci", fingerprint: ciFingerprint(fixes), ...marked([untrustedWords.ci(ci.head)]) };
 			const sentence = ciSentence(verdictCi(ci));
-			if (canUpdate || fact.featureTarget) return question(sentence, plan);
+			if (!ci.fixInherited && (canUpdate || fact.featureTarget)) return question(sentence, plan);
 			c.say(sentence);
 			return nextTurn(c, plan);
 		}
@@ -2445,32 +2481,32 @@ function stoppedChild(c: Change, job: FeatureJob) {
 }
 
 export function featureCiQuestion(item: FactoryItem): boolean {
-	return item.run?.step.kind === "ci" && (item.question?.kind === "ci_timeout" || item.question?.kind === "rounds");
+	return !item.question?.inherited && item.run?.step.kind === "ci" && (item.question?.kind === "ci_timeout" || item.question?.kind === "rounds");
 }
 
 export const featureUpdateChoice = (target: string) => ({ id: "update_feature" as const, label: `Update the feature from ${target}` });
 
 /** A single feature ref can move during part integration or before whole-feature CI is settled. */
-export function canUpdateFeature(item: FactoryItem): boolean {
-	if (item.mode !== "orchestrate" || crossRepo(item) || !item.pr || !item.head || item.state !== "waiting" || item.featureUpdate || item.jobs?.some(j => j.conflictFix && activeJob(j)) || item.machineRemoved) return false;
+export function canUpdateFeature(item: FactoryItem, repo?: string): boolean {
+	if (item.mode !== "orchestrate" || (crossRepo(item) && !repo) || !item.pr || !item.head || item.state !== "waiting" || item.featureUpdate || item.jobs?.some(j => j.conflictFix && activeJob(j)) || item.machineRemoved) return false;
 	return (item.run?.step.kind === "subtasks" || item.run?.step.kind === "ci") &&
 		(!item.question || item.question.kind === "feature_update" || featureCiQuestion(item));
 }
 
 function grantFeatureUpdate(c: Change) {
-	const { key, target } = c.item.featureUpdate!;
+	const { key, target, repo } = c.item.featureUpdate!;
 	c.item.joining = { child: c.item.id, key };
-	c.effects.push({ kind: "merge_feature_target", key, target });
+	c.effects.push({ kind: "merge_feature_target", key, target, repo });
 }
 
-function requestFeatureUpdate(c: Change, target?: string, request?: string, child?: string): boolean {
+function requestFeatureUpdate(c: Change, target?: string, request?: string, child?: string, repo?: string): boolean {
 	const { item } = c;
-	if (!target || !isSha(target) || !canUpdateFeature(item)) return false;
+	if (!target || !isSha(target) || !canUpdateFeature(item, repo)) return false;
 	if (child && !item.jobs?.some(j => j.id === child && activeJob(j) && !j.cancelRequested)) return false;
 	item.question = null;
 	// A CI read already in flight must not replace a later merge-conflict question.
 	if (c.run.step.kind === "ci") c.run.step.attempt++;
-	item.featureUpdate = { key: request ?? `${item.id}:update:${item.revision + 1}`, target, child };
+	item.featureUpdate = { key: request ?? `${item.id}:update:${item.revision + 1}`, target, child, repo };
 	c.state("waiting", { reason: c.run.step.kind === "ci" ? "ci" : "children", sentence: `Updating the feature from ${item.task.base}.`, retryAt: null });
 	if (!item.joining) grantFeatureUpdate(c);
 	return true;
@@ -2555,10 +2591,10 @@ function queueRepair(c: Change, task: Omit<FeatureJob["task"], "dependsOn" | "bu
 		start: featureCiBranch(item, task.repo).head, ...fix, state: "draft", spent: noSpend(), head: null, report: "" });
 }
 
-function queueConflictFix(c: Change, conflictFix: NonNullable<FeatureJob["conflictFix"]>, files: string[]) {
-	const base = c.item.task.base;
+function queueConflictFix(c: Change, conflictFix: NonNullable<FeatureJob["conflictFix"]>, files: string[], repo?: string) {
+	const base = repo ? repoOf(c.item, repo).baseRef : c.item.task.base;
 	const title = "Resolve conflicts with " + base;
-	queueRepair(c, { key: "conflict-fix-" + (c.item.revision + 1), title, brief: conflictPlan(base).text,
+	queueRepair(c, { key: "conflict-fix-" + (c.item.revision + 1), title, repo, brief: conflictPlan(base).text,
 		owns: files, acceptance: ["The feature includes " + conflictFix.target + " and its checks pass."] }, { conflictFix });
 	c.say("Queued a part to resolve conflicts with " + base + ".");
 }
@@ -2567,19 +2603,27 @@ function readFeatureCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>) {
 	const { item } = c, branch = featureCiBranch(item, fact.repo), ci = branch.featureCi!;
 	const reading = fact.reading;
 	const current = reading.kind === "read" && reading.head === fact.head && fact.prHead === fact.head;
-	const state = current ? ciState(reading) : "retry";
-	ci.passed = state === "passed";
+	const state = current ? rerunState(c, fact, reading).state : "retry";
+	ci.passed = state === "passed" && !ci.waitForBase;
 	delete ci.key;
-	if (state === "failed" && current && !item.jobs!.some(j => activeJob(j) && j.ciFix)) {
-		const fingerprint = ciFingerprint(reading);
-		ci.repeated = item.jobs!.some(j => j.state === "done" && j.ciFix?.fingerprint === fingerprint && j.task.repo === fact.repo);
-		if (!ci.repeated) {
-			const key = `ci-fix-${item.revision + 1}`;
-			const brief = `Inspect the feature diff with git diff ${branch.seed ?? item.task.base}...${fact.head}.\n\n` +
-				ciFixText(fact.head, reading).slice(0, 10_000);
-			queueRepair(c, { key, title: "Fix failing feature checks", brief, repo: fact.repo,
-				owns: fact.paths ?? [], acceptance: ["The failing feature checks pass."] }, { ciFix: { head: fact.head, fingerprint } });
-			c.say(`Queued a fix for feature CI on ${shortSha(fact.head)}.`);
+	if (ci.waitForBase) {
+		if (current && fact.baseTip && fact.baseTip !== ci.waitForBase && fact.basePassed &&
+			requestFeatureUpdate(c, fact.baseTip, undefined, undefined, fact.repo)) return;
+	} else if (state === "failed" && current && !item.jobs!.some(j => activeJob(j) && j.ciFix)) {
+		if (requestCiRerun(c, fact, reading, true)) return;
+		const fixes = repairChecks(c, fact, reading, ci);
+		if (c.item.question) return;
+		if (fixes) {
+			const fingerprint = ciFingerprint(fixes);
+			ci.repeated = item.jobs!.some(j => j.state === "done" && j.ciFix?.fingerprint === fingerprint && j.task.repo === fact.repo);
+			if (!ci.repeated) {
+				const key = `ci-fix-${item.revision + 1}`;
+				const brief = `Inspect the feature diff with git diff ${branch.seed ?? item.task.base}...${fact.head}.\n\n` +
+					ciFixText(fact.head, fixes).slice(0, 10_000);
+				queueRepair(c, { key, title: "Fix failing feature checks", brief, repo: fact.repo,
+					owns: fact.paths ?? [], acceptance: ["The failing feature checks pass."] }, { ciFix: { head: fact.head, fingerprint } });
+				c.say(`Queued a fix for feature CI on ${shortSha(fact.head)}.`);
+			}
 		}
 	}
 	nextChild(c);
@@ -2801,7 +2845,7 @@ function askRemoved(c: Change): void {
 }
 
 type Recovery = { policy?: Policy; evidence?: string; target?: string };
-function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, details: Pick<Question, "asked" | "check" | "secret" | "largerSize" | "child" | "criticReason" | "criticFindings"> & Recovery = {}): void {
+function ask(c: Change, kind: QuestionKind, text: string, choices: Question["choices"], cause: StopCause | null, resume: TurnPlan | null, sentence = text, details: Pick<Question, "asked" | "check" | "secret" | "largerSize" | "child" | "updateRepo" | "inherited" | "criticReason" | "criticFindings"> & Recovery = {}): void {
 	const { item } = c;
 	// The revision this change gives the item: no two questions of an item share it.
 	const { policy: explicit, evidence = kind === "integration" && item.integration?.url ? text.replace(item.integration.url, "").trim() : text, target, ...fields } = details;
@@ -2933,6 +2977,22 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 		return true;
 	}
 	const run = c.run;
+	if (question.inherited && (fact.choice === "again" || fact.choice === "wait")) {
+		const { repo, head, baseTip } = question.inherited;
+		const feature = run.step.kind === "subtasks";
+		const ci = feature ? featureCiBranch(item, repo).featureCi : run.ci;
+		if (!ci) return false;
+		if (ci.head === head) {
+			if (fact.choice === "wait") ci.waitForBase = baseTip;
+			else ci.fixInherited = true;
+		}
+		c.state("waiting", { reason: "ci", sentence: "Checking CI after your decision.", retryAt: c.at });
+		if (feature) {
+			// Dispatch observations may have expired while the question was open.
+			for (const job of item.jobs ?? []) if (activeJob(job) && job.dispatchKey) dispatchJob(c, job);
+		} else c.effects.push({ kind: "poll_ci", key: c.key, head: ci.head, at: c.at });
+		return true;
+	}
 	const resume = question.resume;
 	const resumeWithNote = resume && { ...resume, text: withNote(resume.text, note) };
 	if (question.kind === "integration") return integrationAnswer(flow(c), fact.choice, question.text);
@@ -2961,7 +3021,7 @@ function takeChoice(c: Change, question: Question, fact: Extract<Fact, { kind: "
 		}
 		case "update_feature":
 			if (!fact.target || !isSha(fact.target)) return false;
-			if (!item.parent) return requestFeatureUpdate(c, fact.target);
+			if (!item.parent) return requestFeatureUpdate(c, fact.target, undefined, undefined, question.updateRepo);
 			if (run.step.kind !== "ci" || !run.ci) return false;
 			c.enter("ci");
 			c.state("waiting", { reason: "ci", sentence: "Waiting for the feature branch to update.", retryAt: null });

@@ -66,6 +66,7 @@ import {
 	type ItemAction,
 	type ItemSummary,
 	type ItemView,
+	type PartScreenshots,
 	type MachineSummary,
 	type ItemMode,
 	MAX_ACCEPTANCE_CRITERIA,
@@ -604,12 +605,24 @@ async function attachmentStates(c: ItemsCtx, view: ItemView): Promise<ItemView> 
 			if (names.has("hosted")) view.placementReview.push({ name: "hosted", sendSecrets: true });
 		}
 	}
-	const shots = [...view.report?.screenshots ?? [], ...view.reviews.flatMap(review => review.screenshots)];
+	const parts = view.children?.length ? await partScreenshots(c, view.children) : [];
+	if (parts.length) view.partScreenshots = parts;
+	const shots = [...view.report?.screenshots ?? [], ...view.reviews.flatMap(review => review.screenshots), ...parts.flatMap(set => set.screenshots)];
 	if (!shots.length) return view;
-	const rows = await c.db.execute<{ id: string }>("SELECT id FROM attachments WHERE item=? AND state='kept' AND ended_at IS NOT 0", view.id);
+	const items = [view.id, ...new Set(parts.map(set => set.itemId))];
+	const rows = await c.db.execute<{ id: string }>(`SELECT id FROM attachments WHERE item IN (${items.map(() => "?").join(",")}) AND state='kept' AND ended_at IS NOT 0`, ...items);
 	const live = new Set(rows.map(row => row.id));
 	for (const shot of shots) shot.state = live.has(shot.id) ? "kept" : "removed";
 	return view;
+}
+
+/** The screenshot sets of a feature's parts, the newest first. A part that cannot be read now is left out of this answer. */
+async function partScreenshots(c: ItemsCtx, children: ItemSummary[]): Promise<PartScreenshots[]> {
+	const sets = await Promise.all(children.map(async child => {
+		const filed = await itemActor(c, c.key[0] as string, child.id).internalScreenshotSets().catch(() => []);
+		return filed.map(set => ({ itemId: child.id, key: child.parent?.key ?? "", title: child.title, ...set }));
+	}));
+	return sets.flat().sort((a, b) => b.at - a.at);
 }
 
 async function itemView(c: ItemsCtx, id: string): Promise<ItemView> {

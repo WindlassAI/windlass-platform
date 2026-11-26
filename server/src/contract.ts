@@ -1513,6 +1513,19 @@ export interface ItemAttachment {
 	state: "kept" | "removed";
 }
 
+/** One set of a part's screenshots, as its builder's report or a review filed them, on its feature's page. */
+export interface PartScreenshots {
+	itemId: string;
+	/** The part's key in the plan, or a repair's ("ci-fix-<n>", "conflict-fix-<n>"). */
+	key: string;
+	title: string;
+	by: ItemAttachment["by"];
+	/** The commit the set shows, as `ItemReport.head` and `ItemReview.head`. */
+	head: string | null;
+	at: number;
+	screenshots: ItemAttachment[];
+}
+
 /** Builder-authored report, presented separately from platform evidence. */
 export interface ItemReport {
 	screenshots: ItemAttachment[];
@@ -1750,6 +1763,8 @@ export interface ItemView extends ItemSummary {
 	subtasks?: { id: string; key: string; state: ItemState; dispatchedAt: number | null; startedAt: number | null; wait: string | null }[];
 	/** Current owner policy for the places named in the proposed plan. */
 	placementReview?: { name: string; sendSecrets: boolean }[];
+	/** A feature's: the screenshots its parts filed, a set for each report or review that has any, the newest set first. */
+	partScreenshots?: PartScreenshots[];
 	/** The builder's last report in the run shown, as the page shows it; null before one was filed. */
 	report: ItemReport | null;
 	/** Last ten, oldest first. */

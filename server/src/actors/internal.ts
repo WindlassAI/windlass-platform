@@ -11,7 +11,7 @@
 import type { HoldReport } from "../usage.js";
 import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
-import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, ModelProvider, RepositoryAutonomy, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, PartScreenshots, ModelProvider, RepositoryAutonomy, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { SignInMethod } from "../sandbox/harnesses.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -103,7 +103,6 @@ export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: st
 export interface UserInternal {
 	internalSetupPublished(session: string, publication: import("../repo-setup/types.js").SetupPublication, decisions: import("../repo-setup/types.js").NoteDecision[], installation: GithubId, source: string): Promise<void>;
 	internalReadinessResult(session: string, attempt: string, report: import("../factory/readiness.js").Judgment | string | null, diagnosis?: import("../repo-setup/types.js").SetupDiagnosis | null): Promise<void>;
-	internalFlakyJobs(id: GithubId): Promise<string[]>;
 	internalReadinessLevel(id: GithubId): Promise<import("../factory/readiness.js").ReadinessLevel | null>;
 	internalLinearHoldsTeam(workspaceId: string, teamId: string): Promise<boolean>;
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
@@ -250,7 +249,7 @@ export interface SessionInternal {
 	internalCheckTurn(input: { turn: string; check: string }): Promise<Fact | null>;
 	/** Pushes the item's work and opens or updates its pull request, with the agent's report or else the item's title and body. */
 	internalBaseTests(input: { head: string; base: string; tests: import("../factory/base-tests.js").NamedTests }): Promise<import("../factory/base-tests.js").BaseTestResult | "pending">;
-	internalPublish(input: { key: string; title: string; body: string; blockedNetwork?: import("../contract.js").BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number } }): Promise<ItemPublishAnswer>;
+	internalPublish(input: { key: string; title: string; body: string; blockedNetwork?: import("../contract.js").BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number; baseTip?: string } }): Promise<ItemPublishAnswer>;
 }
 
 export interface NetworkReceipt { sessionId: string; revision: number; network: import("../contract.js").BlockedNetwork }
@@ -276,6 +275,8 @@ export interface ItemInternal {
 	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;
 	internalSummary(): Promise<ItemSummary>;
 	internalView(): Promise<ItemView>;
+	/** Each report and review that filed screenshots, the newest first: what its feature's page gathers. */
+	internalScreenshotSets(): Promise<Omit<PartScreenshots, "itemId" | "key" | "title">[]>;
 	internalAct(input: { action: ItemAction; by: string }): Promise<ItemView>;
 	/** A fact about the item's turn; resolves once it is stored. */
 	internalFact(fact: Fact): Promise<void>;

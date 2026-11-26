@@ -507,7 +507,7 @@ function subagentSaid(block: ToolBlock, run: SubagentRun): string | null {
 	return run.detail;
 }
 
-const EMPTY_TURN: TurnView = { turn: 1, blocks: [], steps: 0, interruptRequested: false, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null };
+const EMPTY_TURN: TurnView = { turn: 1, blocks: [], steps: 0, stepOpen: false, interruptRequested: false, changedFiles: null, usage: ZERO_USAGE, end: null, platformAnswer: null };
 
 /**
  * A call of the `subagent` tool once its subagent started: a row like any call's, whose state is the

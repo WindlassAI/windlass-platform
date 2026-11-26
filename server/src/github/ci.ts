@@ -249,7 +249,19 @@ export interface CiTarget {
 	head: string;
 }
 
-export type RerunnableJob = Pick<CiRun, "name" | "jobId" | "retryRunId" | "environment"> & { flaky?: "history" | "base" };
+export type RerunnableJob = Pick<CiRun, "name" | "jobId" | "retryRunId" | "environment"> & { failed?: true; passedOnRerun?: true };
+
+export function rerunnableJobs(reading: Extract<CiReading, { kind: "read" }>, infrastructure: boolean) {
+	const jobs: RerunnableJob[] = [];
+	for (const check of reading.runs) {
+		const { name, jobId, retryRunId, environment } = check;
+		if (infrastructure && jobId && retryRunId && (environment || check.state === "cancelled"))
+			jobs.push({ name, jobId, retryRunId, ...(environment && { environment }) });
+		else if (check.state === "failed" && !environment && check.conclusion === "failure" && jobId && check.workflowId)
+			jobs.push({ name, jobId, retryRunId: check.workflowId, failed: true });
+	}
+	return jobs;
+}
 
 async function readWorkflowJobs(app: GithubApp, token: string, target: CiTarget, runId: string, head: string) {
 	const { owner, name } = target;
@@ -308,11 +320,11 @@ export async function rerunJobs(app: GithubApp, target: CiTarget, jobs: Rerunnab
 	const accepted: string[] = [];
 	const problems = new Set<string>();
 	const workflows = new Map<string, Map<string, boolean>>();
-	for (const { jobId, retryRunId, environment, flaky } of jobs) {
+	for (const { jobId, retryRunId, environment, failed } of jobs) {
 		// Effects stored by older versions did not record why the job was cancelled.
 		if (!retryRunId || !jobId) continue;
 		if (!workflows.has(retryRunId)) workflows.set(retryRunId, new Map());
-		workflows.get(retryRunId)!.set(jobId, !!environment || !!flaky);
+		workflows.get(retryRunId)!.set(jobId, !!environment || !!failed);
 	}
 	const problem = (error: GithubError) => error.status === 403 && !error.rateLimited
 		? "GitHub refused Actions: write for this installation" : error.message;
@@ -354,9 +366,7 @@ export async function rerunJobs(app: GithubApp, target: CiTarget, jobs: Rerunnab
 	}
 	const notes = [];
 	for (const job of jobs) {
-		if (!job.flaky || !job.jobId || !accepted.includes(job.jobId)) continue;
-		const reason = job.flaky === "history" ? "it's known to be flaky here" : "it also failed on the base";
-		notes.push(`CI job ${job.name} failed; ${reason}, so it was re-run once.`);
+		if (job.failed && job.jobId && accepted.includes(job.jobId)) notes.push(`Requested one re-run of failed CI job ${job.name}.`);
 	}
 	const said = [notes.join(" ") || (accepted.length ? "Requested a GitHub Actions rerun for the interrupted checks." : ""),
 		problems.size ? `Could not request ${accepted.length ? "every" : "a"} rerun: ${[...problems].join(". ")}.` : ""].filter(Boolean).join(" ");
