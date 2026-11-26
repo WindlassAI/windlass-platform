@@ -103,6 +103,7 @@ function take<T>(storageKey: string): T | null {
  * starting an agent or filing a work item, with that item's acceptance criteria.
  */
 export interface LaunchDraft {
+	title?: string | null;
 	prompt: string;
 	repoUrl: string;
 	profile: string | null;
@@ -121,7 +122,7 @@ export function takeLaunchDraft(): LaunchDraft | null {
 	if (typeof draft !== "object" || draft === null) return null;
 	const text = (value: unknown) => (typeof value === "string" ? value : "");
 	const chosen = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
-	return { prompt: text(draft.prompt), repoUrl: text(draft.repoUrl), profile: chosen(draft.profile), model: text(draft.model), effort: text(draft.effort), place: chosen(draft.place), harness: chosen(draft.harness), mode: chosen(draft.mode), kind: draft.kind === "agent" || draft.kind === "item" ? draft.kind : null, ...(draft.kind === "item" && (draft.itemMode === "single" || draft.itemMode === "orchestrate") && { itemMode: draft.itemMode }), criteria: text(draft.criteria) };
+	return { ...(typeof draft.title === "string" && { title: draft.title }), prompt: text(draft.prompt), repoUrl: text(draft.repoUrl), profile: chosen(draft.profile), model: text(draft.model), effort: text(draft.effort), place: chosen(draft.place), harness: chosen(draft.harness), mode: chosen(draft.mode), kind: draft.kind === "agent" || draft.kind === "item" ? draft.kind : null, ...(draft.kind === "item" && (draft.itemMode === "single" || draft.itemMode === "orchestrate") && { itemMode: draft.itemMode }), criteria: text(draft.criteria) };
 }
 
 // ---- actions ------------------------------------------------------------------------------------

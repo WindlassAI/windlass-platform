@@ -661,7 +661,7 @@ print("\n== R4: the second review sends the builder back");
 		if (!deliverIs(o, t => t.includes("r1.f1: Finding r1.f1") && t.includes("Fix r1.f1.") && t.includes("src/add.ts, lines 3–4") && t.includes("concerns"))) return "the fix turn lacks the finding";
 		if (o.item.run.rounds.review !== 1) return `rounds.review is ${o.item.run.rounds.review}`;
 		if (!o.tookReview?.endsWith(":1:5:1")) return `the filing was not taken for the page (${o.tookReview})`;
-		return holds(check?.key === reviewHead && check.state === "in_progress" && check.title === "Second review asked for changes; round 2 is being worked on" && o.item.pendingChecks?.find(p => p.sha === reviewHead)?.reviewRound === 1, "H(1)'s check does not say round 2 is being worked on");
+		return holds(check?.key === reviewHead && check.state === "in_progress" && check.title === "Addressing code review feedback · round 2" && o.item.pendingChecks?.find(p => p.sha === reviewHead)?.reviewRound === 1, "H(1)'s check does not say round 2 is being worked on");
 	} };
 	const fixed = (head: string): Row[] => [
 		{ fact: started(), state: "working", effects: ["check_turn"] },
@@ -672,7 +672,7 @@ print("\n== R4: the second review sends the builder back");
 		const input = effect(o, "deliver")?.reviewerInput, check = effect(o, "verified_check");
 		if (input?.round !== round || input.previousHead !== previousHead || input.head !== head) return `reviewer input round ${input?.round}, previous ${input?.previousHead}`;
 		if (input.earlier.map(e => e.id).join() !== earlier.join() || (earlier.length && input.earlier[0].root !== earlier[0])) return `earlier ${JSON.stringify(input.earlier)}`;
-		return holds(check?.key === head && check.state === "in_progress" && check.title === `Second review of ${head.slice(0, 7)}, round ${round}`, "the new head's check does not name its review round");
+		return holds(check?.key === head && check.state === "in_progress" && check.title === `Code review in progress · round ${round} · ${head.slice(0, 7)}`, "the new head's check does not name its review round");
 	} });
 	const H3 = H(3), H4 = H(4), H5 = H(5);
 	const round2: Row[] = [...reviewing, sentBack, ...fixed(H3), nextReview(H3, 2, reviewHead, ["r1.f1"])];
@@ -698,7 +698,7 @@ print("\n== R4: the second review sends the builder back");
 
 	// 4, 7
 	const round3: Row[] = [...round2,
-		{ ...sentBack, fact: filedAt("changes_requested", 2, H3, ["r2.f1"]), also: o => holds(o.item.run?.rounds.review === 2 && deliverIs(o, t => t.includes("r2.f1")) && effect(o, "verified_check")?.title === "Second review asked for changes; round 3 is being worked on", "round 2's new finding did not get its fix") },
+		{ ...sentBack, fact: filedAt("changes_requested", 2, H3, ["r2.f1"]), also: o => holds(o.item.run?.rounds.review === 2 && deliverIs(o, t => t.includes("r2.f1")) && effect(o, "verified_check")?.title === "Addressing code review feedback · round 3", "round 2's new finding did not get its fix") },
 		...fixed(H4), nextReview(H4, 3, H3, ["r2.f1"]),
 	];
 	const capped: Row = { fact: filedAt("changes_requested", 3, H4, ["r2.f1"]), state: "waiting", wait: "person", effects: ["ask"], also: o =>
@@ -711,7 +711,7 @@ print("\n== R4: the second review sends the builder back");
 		{ fact: ci(H4, ciPassed), state: "review", effects: ["handoff", "verified_check", "verified_check", "verified_check", "poll_pr"], also: o => {
 			const handed = effect(o, "handoff"), [c4, ...older] = checks(o);
 			if (handed?.review !== `${newItem().id}:1:15:1` || handed.reviewNone !== null || handed.assessment?.recommendation !== "changes_requested") return `handed ${JSON.stringify(handed && { review: handed.review, none: handed.reviewNone })}`;
-			if (c4?.key !== H4 || c4.conclusion !== "action_required" || c4.title !== "Second review requests changes") return `head's check ${c4?.conclusion} ${c4?.title}`;
+			if (c4?.key !== H4 || c4.conclusion !== "action_required" || c4.title !== "Code review requested changes") return `head's check ${c4?.conclusion} ${c4?.title}`;
 			return holds(older.map(c => `${c.key.slice(0, 1)}:${c.conclusion}:${c.title}`).join() === "1:cancelled:Reworked in round 3 on 4444444,3:cancelled:Reworked in round 3 on 4444444", `older checks ${older.map(c => c.title).join()}`);
 		} },
 	]);
@@ -730,14 +730,14 @@ print("\n== R4: the second review sends the builder back");
 	const question: Block = { kind: "question", text: "Should the range include its end?" };
 	const asked: Row = { fact: filedAt("needs_person", 1, reviewHead, [], [question]), state: "waiting", wait: "person", effects: ["verified_check", "ask"], also: o =>
 		holds(o.item.question?.kind === "review_question" && o.item.question.choices.map(c => `${c.id}:${c.label}`).join() === "fix:Have the agent change it,hand_over:Hand it over as it is,give_up:Give up" &&
-			effect(o, "verified_check")?.state === "in_progress" && effect(o, "verified_check")?.title === "Second review needs you", `asked ${JSON.stringify(o.item.question)}`) };
+			effect(o, "verified_check")?.state === "in_progress" && effect(o, "verified_check")?.title === "Code review needs your input", `asked ${JSON.stringify(o.item.question)}`) };
 	drive("R4 6: needs a person, and the person has the agent change it", reviewerOn(), [...reviewing, asked,
 		{ fact: answer("fix", { note: "use the v2 API" }), state: "working", effects: ["deliver", "check_turn", "verified_check"], also: o =>
 			holds(o.item.run?.step.kind === "review_fix" && o.item.run.rounds.review === 1 && deliverIs(o, t => t.includes("Should the range include its end?") && t.endsWith("The person adds: use the v2 API")), `delivered ${effect(o, "deliver")?.text}`) },
 	]);
 	drive("R4 6: needs a person, handed over as it is with the review", reviewerOn(), [...reviewing, asked, refresh(answer("hand_over")),
 		{ fact: freshCi, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: o =>
-			holds(effect(o, "handoff")?.review === publishedVerdict && effect(o, "handoff")?.reviewNone === null && effect(o, "verified_check")?.conclusion === "action_required" && effect(o, "verified_check")?.title === "Second review needs a person", "the handover dropped the review") },
+			holds(effect(o, "handoff")?.review === publishedVerdict && effect(o, "handoff")?.reviewNone === null && effect(o, "verified_check")?.conclusion === "action_required" && effect(o, "verified_check")?.title === "Code review needs your input", "the handover dropped the review") },
 	]);
 
 	// 8
@@ -788,7 +788,7 @@ print("\n== R4: the second review sends the builder back");
 	const unfinished: Row = { fact: ci(H3, ciPassed), state: "review", effects: ["handoff", "verified_check", "verified_check", "poll_pr"], also: o => {
 		const handed = effect(o, "handoff"), [head, older] = checks(o);
 		if (handed?.review !== null || handed.unfinished !== true || handed.verdict.head !== H3) return `handed ${JSON.stringify(handed && { review: handed.review, unfinished: handed.unfinished })}`;
-		if (head?.key !== H3 || head.conclusion !== "action_required" || head.title !== "Second review did not finish after it asked for changes") return `H(3)'s check: ${head?.conclusion} ${head?.title}`;
+		if (head?.key !== H3 || head.conclusion !== "action_required" || head.title !== "Code review is incomplete after requesting changes") return `H(3)'s check: ${head?.conclusion} ${head?.title}`;
 		return holds(older?.key === reviewHead && older.conclusion === "cancelled", "the reviewed head's check was not completed");
 	} };
 	drive("R4 12: a refused round 2 does not leave a green check on the unreviewed fix", reviewerOn(), [...round2,
@@ -824,7 +824,7 @@ print("\n== R4: the second review sends the builder back");
 			const d = effect(o, "deliver"), input = d?.reviewerInput;
 			if (o.item.question !== null) return `asked ${o.item.question.kind}`;
 			if (d?.to !== "review" || input?.round !== 2 || input.head !== reviewHead || input.previousHead !== reviewHead || input.earlier.map(e => e.id).join() !== "r1.f1") return `delivered ${JSON.stringify(input && { round: input.round, head: input.head })}`;
-			return holds(effect(o, "verified_check")?.key === reviewHead && effect(o, "verified_check")?.title === "Second review of 1111111, round 2", "the head's check does not name round 2");
+			return holds(effect(o, "verified_check")?.key === reviewHead && effect(o, "verified_check")?.title === "Code review in progress · round 2 · 1111111", "the head's check does not name round 2");
 		} },
 		refresh(filedAt("approve", 2, reviewHead, [], [{ kind: "earlier", finding: "r1.f1", status: "withdrawn", text: "The report is right." }])),
 		{ fact: freshCi, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: o => holds(checks(o)[0]?.conclusion === "success" && !o.item.pendingChecks?.length, "the re-reviewed head was not approved") },
@@ -837,7 +837,7 @@ print("\n== R4: the second review sends the builder back");
 		{ fact: endReview({ outcome: "interrupted" }), state: "waiting", wait: "person", effects: ["ask"] },
 		refresh(answer("hand_over")),
 		{ fact: freshCi, state: "review", effects: ["handoff", "verified_check", "poll_pr"], also: o =>
-			holds(effect(o, "handoff")?.review === publishedVerdict && effect(o, "handoff")?.unfinished === undefined && checks(o)[0]?.title === "Second review requests changes", `handed ${effect(o, "handoff")?.review}, ${checks(o)[0]?.title}`) },
+			holds(effect(o, "handoff")?.review === publishedVerdict && effect(o, "handoff")?.unfinished === undefined && checks(o)[0]?.title === "Code review requested changes", `handed ${effect(o, "handoff")?.review}, ${checks(o)[0]?.title}`) },
 	]);
 
 	drive("R4 10: feedback held during an approving review waits for the handoff", reviewerOn(), [...reviewing, held, refresh(endReview({ review: filing("approve") })),
@@ -1105,7 +1105,7 @@ drive("a step-limit continuation names the failing required check and a repeat t
 ]);
 drive("a step-limit continuation waits for more budget", newItem({ budget: { tokens: 100_000 } }), [
 	...begun.slice(0, 2),
-	{ fact: limitedWithFailure, state: "waiting", wait: "budget", effects: ["ask"],
+	{ fact: ended("failed", currentFailure, { stepLimit: 60, changes: false, tokens: 130_000 }), state: "waiting", wait: "budget", effects: ["ask"],
 		also: o => holds(o.item.question?.cause === "tokens" && o.item.run?.step.interruptions === 0, "expected a token-budget question") },
 ]);
 
@@ -1346,20 +1346,29 @@ drive("the item's budget runs out, and the person gives it more", newItem({ budg
 	{ fact: ended("unresolved", FAILING), state: "working", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
 	{
-		fact: ended("unresolved", verified("unresolved", [check("test", "failed", "Error: expected 3, got 4")])),
+		fact: ended("unresolved", verified("unresolved", [check("test", "failed", "Error: expected 3, got 4")]), { tokens: 160_000 }),
 		state: "waiting",
 		wait: "budget",
 		effects: ["ask"],
 		also: (o) => holds(o.item.question?.kind === "budget"
-			&& o.item.wait?.sentence === "Used its 200k-token budget. Give it more to continue."
+			&& o.item.wait?.sentence === "Its checks failed, and it used its 200k-token budget. Give it more to continue."
 			&& o.item.question.choices.map(c => `${c.id}:${c.label}`).join() === "raise:Give it 200k more tokens,hand_over:Hand it over as it is,give_up:Give up", `asked, with the numbers: ${o.item.wait?.sentence} ${JSON.stringify(o.item.question?.choices)}`),
 	},
-	{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.budget.tokens === 400_000 && o.item.run?.n === 1 && effect(o, "deliver")?.text.includes("Continue fixing") === true, `Give it more goes on with the same run: ${o.item.budget.tokens}`) },
+	{ fact: answer("raise"), state: "working", effects: ["deliver", "check_turn"], also: (o) => holds(o.item.budget.tokens >= 400_000 && o.item.run?.n === 1 && effect(o, "deliver")?.text.includes("Continue fixing") === true, `Give it more goes on with the same run: ${o.item.budget.tokens}`) },
+]);
+drive("failed checks just past the budget get one fix turn, then the question", newItem({ budget: { tokens: 100_000 } }), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: ended("unresolved", FAILING, { tokens: 110_000 }), state: "working", effects: ["deliver", "check_turn"],
+		also: (o) => holds(o.item.run?.budgetGrace === true && o.events.some(e => e.said.includes("one fix turn, up to 25% over")), "no grace fix turn") },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: ended("unresolved", verified("unresolved", [check("lint", "failed", "Error: unused import")]), { tokens: 5_000 }), state: "waiting", wait: "budget", effects: ["ask"],
+		also: (o) => holds(o.item.wait?.sentence.startsWith("Its checks failed, and it used its 100k-token budget.") === true, `second overrun asks: ${o.item.wait?.sentence}`) },
 ]);
 drive("out of budget before anything was pushed: Hand it over pushes the work as it is", newItem({ budget: { tokens: 100_000 } }), [
 	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: ended("unresolved", FAILING), state: "waiting", wait: "budget", effects: ["ask"], also: (o) => holds(o.item.question?.choices.some(c => c.id === "hand_over") === true, "no handover offered before a push") },
+	{ fact: ended("unresolved", FAILING, { tokens: 130_000 }), state: "waiting", wait: "budget", effects: ["ask"], also: (o) => holds(o.item.question?.choices.some(c => c.id === "hand_over") === true, "no handover offered before a push") },
 	{ fact: answer("hand_over"), state: "working", effects: ["publish"], also: (o) => holds(o.item.run?.n === 1 && o.item.run.handOver === true, "the work was not pushed for handover") },
 	{ fact: published(H(1)), state: "waiting", wait: "ci", effects: ["verified_check", "poll_ci"], also: (o) => holds(o.item.run?.step.kind === "handoff" && o.item.run.handOver === undefined, "the push did not go to handover") },
 	{ fact: ci(H(1), ciRead([{ name: "e2e", state: "passed" }])), state: "review", effects: ["handoff", "verified_check", "poll_pr"] },
@@ -3087,7 +3096,7 @@ const { checkConclusion, checkSummary } = await import("../server/src/factory/ve
 	}
 	expect("a second review that asked for changes and did not finish blocks an otherwise ready commit", checkConclusion(v, null, true) === "action_required" && checkConclusion(v, null) === "success" &&
 		checkConclusion(v, { recommendation: "approve", blocking: 0 }, true) === "success" && checkConclusion({ ...v, result: "fail" }, null, true) === "failure");
-	expect("its summary says why", checkSummary(v, null, newItem().spent, newItem().budget, "https://windlass.invalid/items/i", undefined, true).includes("Second review did not finish after it asked for changes.") &&
+	expect("its summary says why", checkSummary(v, null, newItem().spent, newItem().budget, "https://windlass.invalid/items/i", undefined, true).includes("Code review is incomplete after requesting changes.") &&
 		checkSummary(v, null, newItem().spent, newItem().budget, "https://windlass.invalid/items/i", undefined, true).includes("the last one filed did not approve"));
 	const budget = newItem().budget;
 	const url = "https://windlass.invalid/items/i";
@@ -3134,7 +3143,7 @@ try {
 	const b = standin.commit(repo, "child-b", { b: "two" }, "Second change", branch);
 	const conflicting = standin.commit(repo, "child-c", { a: "conflict" }, "Third change", branch);
 	await app.withToken(installation.id, { repositoryId: repo.id, permissions: { contents: "write", metadata: "read" } }, async token => {
-		const integrate = (head: string) => advanceFeatureRef(app, token, repo.owner, repo.name, id, "main", head);
+		const integrate = (head: string) => advanceFeatureRef(app, token, repo.owner, repo.name, id, "main", head, "Update the files");
 		assert.equal(await integrate(a), a);
 		const merged = await integrate(b);
 		assert.notEqual(merged, b);

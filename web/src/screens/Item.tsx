@@ -364,7 +364,7 @@ export function ValidatedEnvironment({ environment, now }: { environment: Sessio
 	);
 }
 
-export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView["run"]>; events: ItemEvent[]; asks: boolean; now: number }) {
+export function RunFacts({ run, events, asks, now, waitingForCi = false }: { run: NonNullable<ItemView["run"]>; events: ItemEvent[]; asks: boolean; now: number; waitingForCi?: boolean }) {
 	const { step, rounds } = run;
 	const sentBack = events.filter((event) => event.step === null && event.said.startsWith("Sent back")).length;
 	return (
@@ -385,7 +385,7 @@ export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView
 				<div>
 					<dt>{asks ? "Stopped at" : "Step"}</dt>
 					<dd>
-						{STEP_WORD[step.kind]}
+						{step.kind === "subtasks" && waitingForCi ? "Checking the whole feature in CI" : STEP_WORD[step.kind]}
 						{TRIED.has(step.kind) && step.attempt > 1 ? `, ${ordinal(step.attempt)} try` : ""}
 						{step.turn === "delivered" ? <span className="tone-dim"> · its turn waits to start</span> : step.turn === "started" ? <span className="tone-dim"> · its turn runs</span> : null}
 					</dd>
@@ -483,7 +483,7 @@ function Question({ view, question, acting, now }: { view: ItemView; question: I
 					</a>
 				</p>
 			) : null}
-			{asked ? <AgentAsked id={ids.asked} asked={asked} busy={busy} onPick={setNote} /> : null}
+			{asked ? <AgentAsked id={ids.asked} asked={asked} busy={busy} chosen={note} onPick={setNote} /> : null}
 			{raising ? (
 				<RaiseBudget view={view} busy={acting.busy === "raise"} onRaise={(budget) => answer("raise", budget)} onBack={() => setRaising(false)} />
 			) : (
@@ -585,9 +585,8 @@ function EnvironmentCheck({ check }: { check: NonNullable<ItemQuestion["check"]>
 }
 
 // Third-party input may steer the question. Render it as plain text until the person answers.
-function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullable<ItemQuestion["asked"]>; busy: boolean; onPick: (text: string) => void }) {
-	// Options of a sentence's length stack as full-width rows rather than wrapping as pills.
-	const stacked = asked.options.some((option) => option.length > LONG_OPTION);
+function AgentAsked({ id, asked, busy, chosen, onPick }: { id: string; asked: NonNullable<ItemQuestion["asked"]>; busy: boolean; chosen: string; onPick: (text: string) => void }) {
+	const group = `${id}-options`;
 	return (
 		<figure className="item-asked" id={id}>
 			<figcaption className="item-asked-who">
@@ -597,12 +596,14 @@ function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullabl
 				{asked.text}
 			</LongText>
 			{asked.options.length > 0 ? (
-				<div className={`item-asked-options${stacked ? " item-asked-options-stacked" : ""}`} role="group" aria-label="Answers the agent suggests">
-					<span className="item-asked-options-label">It suggests</span>
+				// The same choice rows as a plan's questions: picking one makes it the answer, which can still be edited below.
+				<div className="plan-ask-options item-asked-options" role="radiogroup" aria-label="Answers the agent suggests">
 					{asked.options.map((option) => (
-						<button key={option} type="button" className="button button-outline button-small item-asked-option" disabled={busy} onClick={() => onPick(option)} title="Put this in your answer">
-							{option}
-						</button>
+						<label key={option} className={`plan-ask-option${chosen === option ? " plan-ask-chosen" : ""}`}>
+							<input className="check-input" type="radio" name={group} value={option} checked={chosen === option} disabled={busy} onChange={() => onPick(option)} />
+							<span className="plan-ask-dot" aria-hidden="true" />
+							<span className="plan-ask-label">{option}</span>
+						</label>
 					))}
 				</div>
 			) : null}
@@ -610,8 +611,6 @@ function AgentAsked({ id, asked, busy, onPick }: { id: string; asked: NonNullabl
 	);
 }
 
-/** An option longer than this stacks all of a question's options as rows. */
-const LONG_OPTION = 40;
 
 /** The verdict a report's references are read against: the one at the commit it was filed at, else its run's last, else none. */
 function verdictFor(report: ItemReport, verdicts: Verdict[]): Verdict | null {
@@ -979,10 +978,10 @@ export function Item({ page }: { page: ItemPage }) {
 						</a>
 					) : null}
 					{!view.awaitingPlace ? (
-						<a className="button button-outline button-small" {...linkProps({ name: "session", id: view.sessionId })} title="What its agent did, turn by turn">Agent</a>
+						<a className="button button-outline button-small" {...linkProps({ name: "session", id: view.sessionId })} title="What its agent did, turn by turn">Builder</a>
 					) : null}
 					{view.reviewerSessionId ? (
-						<a className="button button-outline button-small" {...linkProps({ name: "session", id: view.reviewerSessionId })}>Reviewer</a>
+						<a className="button button-outline button-small" {...linkProps({ name: "session", id: view.reviewerSessionId })}>Code review</a>
 					) : null}
 					{view.state === "draft" && !reading ? (
 						<button type="button" className="button button-outline button-small" onClick={() => acting.act({ kind: "start" })} disabled={busy}>
@@ -1082,7 +1081,7 @@ export function Item({ page }: { page: ItemPage }) {
 				) : (
 					<Now view={view} now={now} />
 				)}
-				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
+				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} waitingForCi={view.wait?.reason === "ci"} /> : null}
 				{!view.question && noteTargets.length > 0 && (
 					<NoteBox key={view.mode === "orchestrate" ? noteTargets.map(target => target.id).join(" ") : undefined} targets={noteTargets} onDone={view.mode === "orchestrate" ? () => void page.reload() : page.replace} />
 				)}

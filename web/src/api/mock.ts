@@ -41,7 +41,10 @@ import {
 	MAX_CHECK_TIMEOUT_SECONDS,
 	MIN_SECRET_VALUE_CHARS,
 	MAX_TITLE_CHARS,
+	isolationName,
 	generatedSessionTitle,
+	promptTitle,
+	sessionTitle,
 	MAX_MACHINES,
 	CLAUDE_LAUNCH_MODES,
 	type RepositoryCheck,
@@ -1191,7 +1194,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const prompt = [...session.timeline].reverse().find((item) => item.kind === "user" && !item.steer);
 		const files = [...session.files.keys()].sort();
 		const body = said !== "" ? (said.length > 600 ? `${said.slice(0, 600).trim()}…` : said) : files.length > 0 ? `Changed files:\n${files.map((path) => `- ${path}`).join("\n")}` : "";
-		const title = session.pushed && prompt?.kind === "user" ? openingWords(prompt.text) : session.summary.title;
+		const title = session.pushed && prompt?.kind === "user" ? promptTitle(prompt.text) : session.summary.title;
 		return {
 			repository,
 			pullRequest: session.summary.pullRequest ?? null,
@@ -1275,7 +1278,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		const today = [...world.sessions.values()]
 			.map((session) => ({
 				sessionId: session.summary.id,
-				title: session.summary.title,
+				title: sessionTitle(session.summary),
 				// What the day's state adds is the busiest agent's.
 				seconds: (world.spent.get(session.summary.id) ?? 0) + (session.summary.id === "add-test" ? offset : 0),
 				unreportedSeconds: MOCK_UNREPORTED[session.summary.id] ?? 0,
@@ -1294,7 +1297,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			kept: keptSandboxes(world)
 				.map((session) => ({
 					sessionId: session.summary.id,
-					title: session.summary.title,
+					title: sessionTitle(session.summary),
 					state: session.summary.sandbox === "running" ? ("running" as const) : ("paused" as const),
 					usedAt: session.summary.updatedAt,
 					busy: session.summary.status !== "idle",
@@ -1552,7 +1555,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				cancel(session.pauseTimer);
 				session.pauseTimer = null;
 				store(session, { turn, kind: "user", text: input.text, model, effort: input.effort ?? null });
-				const title = !session.titled && session.summary.turns === 0 ? openingWords(input.text) : session.summary.title;
+				const title = !session.titled && session.summary.turns === 0 ? promptTitle(input.text) : session.summary.title;
 				setSummary(world, session, { status: "starting", model, title, updatedAt: now() });
 			},
 		});
@@ -2195,7 +2198,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					session.pauseTimer = null;
 					store(session, { turn, kind: "user", text: input.text, model, effort: fallback ? null : input.effort ?? null });
 					if (fallback) store(session, { turn, kind: "platform", level: "info", text: "The selected model uses its default effort." });
-					const title = !session.titled && session.summary.turns === 0 ? openingWords(input.text) : session.summary.title;
+					const title = !session.titled && session.summary.turns === 0 ? promptTitle(input.text) : session.summary.title;
 					setSummary(world, session, { status: "starting", model, title, updatedAt: now() });
 				},
 			},
@@ -3085,7 +3088,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 	/** The list as the server answers it: each sandbox named by its agent's title now, none for an agent that was deleted. */
 	function machinesView(auth: AuthResult): MachineSummary[] {
 		const world = worldOf(auth);
-		return machinesOf(auth).list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map(({ options, ...entry }) => listedHarness(options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry, [...world.account.providers.keys()], entry.source)), warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => ({ ...sandbox, title: world.sessions.get(sandbox.sessionId)?.summary.title ?? null })) }));
+		return machinesOf(auth).list.map((machine) => ({ ...machine, harnesses: machine.harnesses?.map(({ options, ...entry }) => listedHarness(options ? { ...entry, optionsDigest: String(options.checkedAt) } : entry, [...world.account.providers.keys()], entry.source)), warnings: machine.warnings.map((warning) => ({ ...warning })), sandboxes: machine.sandboxes.map((sandbox) => {
+			const session = world.sessions.get(sandbox.sessionId);
+			return { ...sandbox, title: session ? sessionTitle(session.summary) : null };
+		}) }));
 	}
 
 	function machinesChanged(auth: AuthResult): void {
@@ -3479,7 +3485,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					: machine?.harnesses?.find(entry => entry.id === harness)?.options;
 				if (harness !== "windlass") {
 					if (!machine && !hostedProvider(harness, input.model, [...world().account.providers.keys()])) throw new PlatformError("user", hostedKeyMessage(harness), { reason: "harness_signed_out" });
-					if (machine ? input.profile !== "docker-hardened" : !profile.platformKeys) throw new PlatformError("user", `${HARNESS_NAMES[harness]} requires the docker-hardened profile.`, { reason: "bad_input" });
+					if (machine ? input.profile !== "docker-hardened" : !profile.platformKeys) throw new PlatformError("user", `${HARNESS_NAMES[harness]} requires the ${isolationName("docker-hardened")} profile.`, { reason: "bad_input" });
 					if (input.publishUnasked) throw new PlatformError("user", publishAsksEveryTime(HARNESS_NAMES[harness]), { reason: "bad_input" });
 					if (machine && !machine.harnesses?.some((offered) => offered.id === harness)) throw new PlatformError("user", `This machine does not offer ${HARNESS_NAMES[harness]}.`, { reason: "bad_input" });
 				}
@@ -3502,7 +3508,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					if (!found) throw new PlatformError("user", "That repository is not among the ones your GitHub connection covers. Add it to the GitHub App's installation at GitHub, then choose it again.");
 					repository = sessionRepository(found.owner, found.name, input.repository.branch ?? found.defaultBranch);
 				}
-				const title = input.title?.trim() ?? "";
+				const title = input.title?.trim() ? input.title : "";
 				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
 				if (repository && input.setupCommand !== undefined) saveSetup(world(), repository.id, input.setupCommand);
 				const session = addSession(world(), { id: hex(10), title: title || "New agent", titled: title !== "", profile: profile.id, harness, modes, model: input.model || models.defaultModel, repoUrl, repository, publishUnasked: repository !== null && input.publishUnasked === true });
@@ -3527,11 +3533,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency();
 				const session = world().sessions.get(id);
 				if (!session) throw new PlatformError("not_found", "That agent no longer exists.");
-				const trimmed = title.trim();
-				if (trimmed === "") throw new PlatformError("user", "A title cannot be empty.");
-				if (trimmed.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
+				if (!title.trim()) throw new PlatformError("user", "A title cannot be empty.");
+				if (title.length > MAX_TITLE_CHARS) throw new PlatformError("user", `A title can be at most ${MAX_TITLE_CHARS} characters.`);
 				session.titled = true;
-				setSummary(world(), session, { title: trimmed });
+				setSummary(world(), session, { title });
 				return session.summary;
 			},
 			async deleteSession(id: string) {
@@ -4507,15 +4512,6 @@ function minutes(ms: number): string {
 	if (value >= 1) return `${value} ${value === 1 ? "minute" : "minutes"}`;
 	const seconds = Math.round(ms / 1000);
 	return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
-}
-
-/** A title from a prompt's opening words. */
-export function openingWords(text: string): string {
-	const line = text.trim().split("\n", 1)[0] ?? "";
-	if (line.length <= 56) return line || "New agent";
-	const cut = line.slice(0, 56);
-	const space = cut.lastIndexOf(" ");
-	return `${space > 24 ? cut.slice(0, space) : cut}…`;
 }
 
 /** Start times like those measured on a 2-CPU host (docs/architecture.md, "Start times"): a new sandbox on the first turn, a connected one after. */

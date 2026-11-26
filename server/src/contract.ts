@@ -345,6 +345,14 @@ export interface SessionSummary {
 	environment?: { commit: string; validatedAt: number; checks: number };
 }
 
+export function itemSessionRole(item: NonNullable<SessionSummary["item"]>): string {
+	return item.planCritic ? "Plan review" : item.role === "reviewer" ? "Code review" : "Builder";
+}
+
+export function sessionTitle(session: Pick<SessionSummary, "title" | "item">): string {
+	return session.item ? `${session.title} · ${itemSessionRole(session.item)}` : session.title;
+}
+
 /** The user index keeps one builder per item. Its reviewer is reachable from the item and counts toward its usage. */
 export function listedSessions(sessions: SessionSummary[]): SessionSummary[] {
 	const reviewers = new Map(sessions.flatMap(s => s.item?.role === "reviewer" && !s.item.planCritic ? [[s.item.id, { id: s.id, status: s.status }] as const] : []));
@@ -362,7 +370,7 @@ export interface CreateSessionInput {
 	/** Windlass defaults to the profile approval. Claude prefers auto when offered. */
 	mode?: string;
 	harness?: HarnessId;
-	/** Defaults to "New agent"; replaced by the first prompt's opening words when left unset. */
+	/** Defaults to "New agent"; replaced by the first prompt’s opening phrase when left unset. */
 	title?: string;
 	/** Left out: run on the hosted layer. */
 	place?: SandboxPlace;
@@ -2289,6 +2297,17 @@ export type AcpUpdate = (
 	| { sessionUpdate: "compaction_update" }
 	| { sessionUpdate: "unknown"; originalSessionUpdate: string }
 ) & Record<string, unknown>;
+
+/** Name an untitled agent from a complete opening sentence or clause. */
+export function promptTitle(prompt: string): string {
+	// A short one-line prompt is its own title; a longer one gives its first sentence or clause.
+	const whole = prompt.replace(/\s+/g, " ").trim();
+	if (whole && !prompt.trim().includes("\n") && whole.length <= MAX_TITLE_CHARS) return whole;
+	const line = prompt.trim().split(/\n|(?<=[.!?])\s+/, 1)[0]!.replace(/\s+/g, " ").trim();
+	if (line && line.length <= MAX_TITLE_CHARS) return line;
+	const clause = line.split(/;\s*|,?\s+(?:and then|then|and|so that|in order to|using|without|which|because)\s+/i, 1)[0]!.trim();
+	return clause && clause.length <= MAX_TITLE_CHARS ? clause : "Work on the requested task";
+}
 
 /** The title an ACP update may give a personal session whose owner has not named it. */
 export function generatedSessionTitle(update: AcpUpdate, owner: { typed?: boolean; item?: { role?: "builder" | "reviewer" } }, redactor?: { text(value: string): string }): string | undefined {

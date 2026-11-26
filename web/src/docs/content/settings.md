@@ -226,7 +226,7 @@ When less than a fifth of the day's time is left, the session and the composer w
 
 A finished, failed or cancelled work item frees its sandboxes, including its subtasks' sandboxes as they end. An item waiting for review or an answer keeps its sandbox for three days after its last activity. Later PR feedback starts a fresh checkout of the published branch. If a new turn reaches the hosted kept limit or a runner’s configured kept limit, Windlass frees the least recently used eligible sandbox there. Working turns are protected, and a personal agent is eligible only after more than three idle days.
 
-A hosted sandbox left behind by an agent that no longer exists takes no place, and the platform removes it within 30 minutes. A work item's second reviewer is listed as **Reviewer of “…”**, and shares its item's place.
+A hosted sandbox left behind by an agent that no longer exists takes no place, and the platform removes it within 30 minutes. A work item's second reviewer is listed as **Task title · Code review**, and shares its item's place.
 
 ### Estimated cost
 

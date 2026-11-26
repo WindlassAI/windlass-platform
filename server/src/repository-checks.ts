@@ -22,6 +22,7 @@
  * scripts/verified-check.ts runs them against a database of its own.
  */
 
+import { refuseAtRepositoryCap } from "./repository-defaults.js";
 import { MAX_CHECKS_PER_REPOSITORY, MAX_CHECK_NAME_CHARS, MAX_CHECK_PATTERNS, MAX_CHECK_PATTERN_CHARS, MAX_CHECK_TIMEOUT_SECONDS, MAX_SETUP_COMMAND_CHARS, type RepositoryCheck, type RepositoryChecks } from "./contract.js";
 
 /** How many repositories one user may have checks for; the ones saved longest ago go first. */
@@ -121,6 +122,7 @@ export async function saveChecks(db: ChecksDb, project: string, label: string, c
 	if (checks.length === 0) {
 		await db.execute("DELETE FROM repository_checks WHERE project = ?", project);
 	} else {
+		await refuseAtRepositoryCap(db, "repository_checks", project, MAX_CHECKED_REPOSITORIES, "checks");
 		await db.execute(
 			"INSERT INTO repository_checks (project, label, checks, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, checks = excluded.checks, updated_at = excluded.updated_at",
 			project,
@@ -128,8 +130,6 @@ export async function saveChecks(db: ChecksDb, project: string, label: string, c
 			JSON.stringify(checks),
 			now,
 		);
-		// Somebody who saves for one repository after another leaves no more than this many rows.
-		await db.execute("DELETE FROM repository_checks WHERE project NOT IN (SELECT project FROM repository_checks ORDER BY updated_at DESC, project LIMIT ?)", MAX_CHECKED_REPOSITORIES);
 	}
 	return readChecks(db, project);
 }

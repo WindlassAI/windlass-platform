@@ -31,7 +31,7 @@ import type { SnapshotSource } from "./snapshot-key.js";
 import { config } from "../config.js";
 import { isActorGone } from "../actors/internal.js";
 import type { Attachment, MachineFacts, TurnSlot } from "../actors/machine.js";
-import type { SandboxProfile, SandboxProfileId, SessionSnapshot } from "../contract.js";
+import { isolationName, type SandboxProfile, type SandboxProfileId, type SessionSnapshot } from "../contract.js";
 import { harnessName, machineHarness } from "./harnesses.js";
 import { describeError, serviceParams } from "../auth.js";
 import { type ChannelSocket, type ConversationRecord, ConversationLost, ServerChannel } from "../runner/channel.js";
@@ -712,7 +712,7 @@ class RunnerSandboxes implements Sandboxes {
 		// A `create` lost with its conversation may have made the sandbox: the runner answers the repeat with that one.
 		// Request the screenshots image only when this runner offers it.
 		const agent = input.harness ? machineHarness(input.harness) : null;
-		if (agent && !agent.profiles.includes(input.profile)) throw new SandboxUserError(`${agent.name} requires the ${agent.profiles.join(" or ")} profile.`);
+		if (agent && !agent.profiles.includes(input.profile)) throw new SandboxUserError(`${agent.name} requires the ${agent.profiles.map(isolationName).join(" or ")} profile.`);
 		const report = input.profile === "docker-windlass-sandbox" || input.environmentBuild || input.spareRecipe || input.mirrorRepo || input.harness || input.screenshots || (input.size ?? 1) > 1 ? (await link.facts()).report : null;
 		if ((input.size ?? 1) > 1 && !report?.slots) throw new SandboxUserError("This runner does not support sizing beyond one slot.");
 		if (report?.allowedProfiles && !report.allowedProfiles.includes(input.profile)) throw new SandboxUserError(PROFILE_DENIED);

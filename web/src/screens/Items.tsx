@@ -250,6 +250,8 @@ function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number 
 			return 1;
 		case "publish":
 		case "conflict":
+		// A feature's summary is pushed before its CI and second review: it is not yours yet.
+		case "summary":
 			return 2;
 		case "ci":
 		case "ci_fix":
@@ -258,7 +260,6 @@ function stageOfStep(step: StepKind, stages: number, reviewer: boolean): number 
 		case "review":
 		case "review_fix":
 			return reviewer ? 4 : 3;
-		case "summary":
 		case "handoff":
 		case "merged":
 			return stages;
@@ -758,7 +759,7 @@ export function NewItemDialog({ repositoryId, name, base, onClose }: { repositor
 	const file = async (event: FormEvent) => {
 		event.preventDefault();
 		if (!ready || busy) return;
-		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title: title.trim(), body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(usePolicy ? { useDefaultPlace: true } : chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}), ...(!usePolicy && agent !== "windlass" ? { harness: agent } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
+		const input: Omit<CreateItemInput, "idempotencyKey"> = { repository: { id: repositoryId }, title, body: body.trim(), acceptance, start, mode: platform.info?.items?.orchestrate ? mode : "single", ...(usePolicy ? { useDefaultPlace: true } : chosenMachine ? { place: { kind: "machine" as const, machineId: chosenMachine.machineId } } : {}), ...(!usePolicy && agent !== "windlass" ? { harness: agent } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}) };
 		// Every attempt of the same form is one submission: a call that was answered late is not taken twice.
 		const submission = submissionOf(JSON.stringify(input), last.current);
 		last.current = submission;

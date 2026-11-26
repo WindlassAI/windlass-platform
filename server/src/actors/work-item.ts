@@ -378,6 +378,11 @@ async function repositoryAutonomy(c: Ctx, meta: ItemMeta, repositoryId = meta.re
 	catch { return { autoApprovePlans: false, autoMergeSingles: false, waitForCiOnEachPart: false, mergeKinds: undefined }; }
 }
 
+/** Whether a feature's parts wait for their own CI: fixed when the feature PR opens, so an unreadable setting fails the effect (it is tried again) rather than dropping the wait. */
+async function waitsForPartCi(c: Ctx, meta: ItemMeta, repositoryId = meta.repository.id): Promise<boolean> {
+	return (await userActor(c, meta.uid).internalRepositoryAutonomy(repositoryId)).waitForCiOnEachPart === true;
+}
+
 async function autoApprovePlans(c: Ctx, { item, meta }: Stored) {
 	const repositories = item.repos?.map(r => r.repositoryId) ?? [meta.repository.id];
 	try {
@@ -1439,8 +1444,9 @@ async function crossOpenOrDescribe(c: Ctx, meta: ItemMeta, item: FactoryItem, ef
 					await take(c, { kind: "feature_seed", key, sha, repo: repo.alias, at: Date.now() });
 					return;
 				}
+				const waitForCiOnEachPart = await waitsForPartCi(c, meta, repo.repositoryId);
 				const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: repo.baseRef, seed: repo.seed!, author, created: meta.createdAt, body: networkBody(withSection(item.featurePlan!.spec.goal, linkSection(item, repo.alias)), itemNetwork(meta), false), draftOnly: true });
-				await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart: (await repositoryAutonomy(c, meta, repo.repositoryId)).waitForCiOnEachPart, repo: repo.alias, at: Date.now() });
+				await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart, repo: repo.alias, at: Date.now() });
 			});
 			return;
 		}
@@ -1542,8 +1548,9 @@ async function dispatchFeature(c: Ctx, { item, meta }: Stored, effect: Extract<E
 				const sha = await refHead(app, token, owner, name, meta.repository.branch);
 				await take(c, { kind: "feature_seed", key, sha, at: Date.now() });
 			} else {
+				const waitForCiOnEachPart = await waitsForPartCi(c, meta);
 				const opened = await openFeature(app, token, owner, name, { id: item.id, title: item.task.title, base: meta.repository.branch, seed: item.seed, author: hub.author, created: meta.createdAt, body: networkBody(item.featurePlan!.spec.goal, itemNetwork(meta), hub.repository.private) });
-				await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart: (await repositoryAutonomy(c, meta)).waitForCiOnEachPart, at: Date.now() });
+				await take(c, { kind: "feature_ready", key, ...opened, waitForCiOnEachPart, at: Date.now() });
 			}
 		});
 	} catch (error) {
@@ -1707,7 +1714,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", pull_requests: "write" } }, async token => {
 					const marker = `<!-- windlass-item:${item.id} -->`;
 					const [prev] = await c.db.execute<{data:string}>("SELECT data FROM verdicts WHERE run < ? ORDER BY at DESC,rowid DESC LIMIT 1", effect.run);
-					let body = marker + "\n\n" + feedbackComment(effect.who, effect.run);
+					let body = marker + "\n\n" + feedbackComment(effect.who);
 					if (prev) {
 						const verdict: Verdict = JSON.parse(prev.data);
 						const [filed] = await c.db.execute<{data:string}>("SELECT data FROM reviews WHERE run=? AND head=? AND json_extract(data,'$.requestedPull') IS NULL ORDER BY at DESC LIMIT 1", verdict.run, verdict.head);
@@ -1811,7 +1818,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					result = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { contents: "write", metadata: "read" } }, async token => {
 						if (item.mergeTarget && (await compareBranches(hub.app, token, hub.owner, hub.name, item.mergeTarget, effect.head)).behind)
 							return { key: effect.key, reason: "The conflict resolution did not merge the requested target commit.", conflict: false, missingTarget: true };
-						const head = await advanceFeatureRef(hub.app, token, hub.owner, hub.name, item.parent!.itemId, item.childBase!, effect.head);
+						const head = await advanceFeatureRef(hub.app, token, hub.owner, hub.name, item.parent!.itemId, item.childBase!, effect.head, item.task.title);
 						return { key: effect.key, head };
 					});
 				} catch (error) {
@@ -1836,7 +1843,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const hub = await github(c, meta);
 			const [old] = await c.db.execute<{ id: string }>("SELECT id FROM issue_comment");
 			const latest = c.vars.stored!.item;
-			const id = await writeIssueComment(hub.app, { ...hub, id: meta.repository.id }, binding, item.id, latest.state, latest.pr?.number, old?.id);
+			const id = await writeIssueComment(hub.app, { ...hub, id: meta.repository.id }, binding, item.id, latest.task.title, latest.state, latest.pr?.number, old?.id);
 			await c.db.execute("INSERT OR REPLACE INTO issue_comment VALUES(1,?)", id);
 			return true;
 		}

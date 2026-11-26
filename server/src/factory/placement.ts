@@ -1,7 +1,7 @@
 // Names are a proposal. Only the owner's inventory may turn them into durable destinations.
 import { MAX_PROVIDER_WAIT, WINDLASS_ACCOUNT, providerWait } from "../provider-usage.js";
 import { nextUtcDay, usesPlatformModel } from "../usage.js";
-import { HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, hostedSizeFor, sandboxSlots } from "../contract.js";
+import { HOSTED_SIZE_NAMES, HOSTED_SIZE_SPECS, hostedSizeFor, isolationName, sandboxSlots } from "../contract.js";
 import type { ChildPlacement, EgressMode, HostedSize, FeaturePlanEdit, HarnessId, MachineSummary, ModelList, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
 import type { plannerMachines } from "../machines/details.js";
 import { PlanError } from "./feature-plan.js";
@@ -144,7 +144,7 @@ function agentFit(machine: Machine, task: PlanSubtask, inventory: PlacementInven
 		if (!offered) return `it does not offer ${profile.name}`;
 		if (offered.signIn === "none") return `${profile.name} is not signed in there (run windlass-runner login ${profile.id} on it)`;
 		if (offered.signIn !== "token") return `it could not say whether ${profile.name} is signed in there, and a subtask runs only where it is`;
-		if (machine.allowedProfiles && !machine.allowedProfiles.includes(HARNESS_PROFILE)) return `the owner does not allow the ${HARNESS_PROFILE} profile, which ${profile.name} needs`;
+		if (machine.allowedProfiles && !machine.allowedProfiles.includes(HARNESS_PROFILE)) return `the owner does not allow the ${isolationName(HARNESS_PROFILE)} profile, which ${profile.name} needs`;
 	}
 	const list = harness === "windlass" ? inventory.models?.windlass : inventory.models?.machines?.[machine.machineId]?.[harness];
 	return agentModelProblem(task, list, inventory.featureModel);
@@ -163,7 +163,7 @@ function capabilityFit(machine: Machine, task: PlanSubtask, inventory: Placement
 	const agent = agentFit(machine, task, inventory);
 	if (agent) return agent;
 	if (needs.profile === "e2b-open" || needs.profile === "daytona") return "this profile runs only on hosted sandboxes";
-	if (needs.profile && machine.allowedProfiles && !machine.allowedProfiles.includes(needs.profile)) return `the owner does not allow the ${needs.profile} profile`;
+	if (needs.profile && machine.allowedProfiles && !machine.allowedProfiles.includes(needs.profile)) return `the owner does not allow the ${isolationName(needs.profile)} profile`;
 	return null;
 }
 
@@ -219,7 +219,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	if (m.orchestrator === "never" || m.orchestrator === "named" && !task.place) return never("owner placement policy is " + m.orchestrator);
 	const onMachine = harness !== "windlass" ? harness : null;
 	// A machine harness runs only in the hardened container, whatever profile the subtask asks for.
-	if (onMachine && needs.profile && needs.profile !== HARNESS_PROFILE) return never(`${harnessName(onMachine)} runs only in the ${HARNESS_PROFILE} profile, and the subtask asks for ${needs.profile}`);
+	if (onMachine && needs.profile && needs.profile !== HARNESS_PROFILE) return never(`${harnessName(onMachine)} runs only in the ${isolationName(HARNESS_PROFILE)} profile, and the subtask asks for ${isolationName(needs.profile)}`);
 	const slots = machineSlots(m);
 	const needed = Math.max(1, needs.cpus && slots.unit.cpus > 0 ? Math.ceil(needs.cpus / slots.unit.cpus) : 1,
 		needs.memoryGiB ? Math.ceil(needs.memoryGiB * GiB / slots.unit.memoryBytes) : 1);

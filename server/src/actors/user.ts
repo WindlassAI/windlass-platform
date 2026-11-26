@@ -39,6 +39,7 @@ import {
 	type GithubStatus,
 	type LinearStatus,
 	type LinearTeamList,
+	isolationName,
 	listedSessions,
 	MAX_ACCOUNT_SECRETS,
 	MAX_PERSONAL_SERVERS,
@@ -87,7 +88,7 @@ import { refreshSecretRows } from "../signin/secret-rows.js";
 import { criticAllowed } from "../factory/review.js";
 import { MAX_SECRETS_PER_USER, SecretProblem, unavailableSecretName, validRequestedSecretName, cleanSecretName, cleanSecretScope, cleanSecretValue, commandSandbox, listedSecrets, saveRepoSecret, sealSecret } from "../repo-secrets.js";
 import { criticSessionId } from "../factory/feature-ids.js";
-import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, repositoryDefaultsLog, migrateDefaults, readDefaults, saveDefaults } from "../repository-defaults.js";
+import { DEFAULTS_TABLE, type DefaultsChange, DefaultsProblem, cleanDefaults, repositoryDefaultsLog, migrateDefaults, readDefaults, saveDefaults, refuseAtRepositoryCap } from "../repository-defaults.js";
 import { ApprovalBook, type BookChange, type ServerApproval, sessionProjectKey } from "../server-approvals.js";
 import { forgettingWords, personalServerReach } from "../server-question.js";
 import { CHECKS_TABLE, ChecksProblem, cleanChecks, readChecks, saveChecks } from "../repository-checks.js";
@@ -278,6 +279,7 @@ async function saveSetup(c: UserCtx, uid: string, project: string, label: string
 	if (command === "") {
 		await c.db.execute("DELETE FROM setup_command WHERE project = ?", project);
 	} else {
+		await refuseAtRepositoryCap(c.db, "setup_command", project, MAX_SETUP_COMMANDS, "setup commands");
 		await c.db.execute(
 			"INSERT INTO setup_command (project, label, command, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT (project) DO UPDATE SET label = CASE WHEN excluded.label = '' THEN label ELSE excluded.label END, command = excluded.command, snapshot_connection = NULL, updated_at = MAX(updated_at + 1, excluded.updated_at)",
 			project,
@@ -285,7 +287,6 @@ async function saveSetup(c: UserCtx, uid: string, project: string, label: string
 			command,
 			Date.now(),
 		);
-		await c.db.execute("DELETE FROM setup_command WHERE project NOT IN (SELECT project FROM setup_command ORDER BY updated_at DESC LIMIT ?)", MAX_SETUP_COMMANDS);
 	}
 	await dropHostedSnapshots(uid, project.slice("github:".length));
 	console.log(`[wlp] setup.saved uid=${uid} project=${project} chars=${command.length}`);
@@ -565,7 +566,8 @@ export function cleanTitle(title: unknown): string | null {
 	if (typeof title !== "string") return null;
 	const clean = title.replace(/\s+/g, " ").trim();
 	if (clean === "") return null;
-	return clean.length > MAX_TITLE_CHARS ? clean.slice(0, MAX_TITLE_CHARS) : clean;
+	if (clean.length > MAX_TITLE_CHARS) throw new UserError(`A title can be at most ${MAX_TITLE_CHARS} characters.`, { code: "bad_input" });
+	return clean;
 }
 
 /** An https git address with no credentials in it, and nothing a shell or git could read as an option. */
@@ -620,7 +622,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		const notForItems = item ? itemHarnessProblem(harness) : null;
 		if (notForItems) throw new UserError(notForItems, { code: "bad_input" });
 		const agent = place.kind === "hosted" ? hostedHarness(harness) : machineHarnesses[harness];
-		if (!agent.profiles.includes(input.profile)) throw new UserError(`${agent.name} requires ${agent.profiles.join(" or ")} here.`, { code: "bad_input" });
+		if (!agent.profiles.includes(input.profile)) throw new UserError(`${agent.name} requires ${[...new Set(agent.profiles.map(isolationName))].join(" or ")} isolation here.`, { code: "bad_input" });
 		const profileProblem = item ? itemProfileProblem(harness, input.profile) : null;
 		if (profileProblem) throw new UserError(profileProblem, { code: "bad_input" });
 		// Its publish comes over MCP, which any process in the container may reach (platform-tools.ts): it asks every time.
@@ -714,11 +716,14 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 		// Saved before the session exists, so that its first sandbox finds it. It stays if the session cannot be made.
 		if (repo && setupCommand !== null) await saveSetup(c, profile.uid, setupKeyOf(repo.id), `${repo.owner}/${repo.name}`, setupCommand);
 
+		let title = givenTitle ?? DEFAULT_TITLE;
+		if (repo && build) title = `Prepare environment for ${repo.owner}/${repo.name}`;
+		if (repo && readiness) title = `Check repository setup · ${repo.owner}/${repo.name}`;
 		const now = Date.now();
 		const itemRole = item && { role: item.role, subtaskScreenshots: item.subtaskScreenshots, ...(item.planCritic && { planCritic: true as const }) };
 		summary = {
 			id: readiness?.attempt ?? item?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
-			title: givenTitle ?? DEFAULT_TITLE,
+			title,
 			place,
 			harness,
 			capabilities: sessionCapabilities(harness),
@@ -746,7 +751,7 @@ async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSess
 			...(readiness && { readiness }),
 			...(hostedSize && { hostedSize }),
 			title: summary.title,
-			titleIsTyped: !item && givenTitle !== null,
+			titleIsTyped: !item && (givenTitle !== null || !!readiness || !!build),
 			place: summary.place,
 			harness,
 			...(machine ? { machineName: machine.name } : {}),
@@ -891,7 +896,7 @@ async function assessRepository(c: CreateCtx, profile: UserProfile, id: GithubId
 			const offered = await modelsOf(c, profile.demo);
 			model = [repoDefaults.model, account.model].find((id): id is string => offered.models.some(m => m.id === id));
 		}
-		await makeSession(c, profile, { title: "Repo setup", repository: { id }, place: destination.place, profile: profileId, model }, null, undefined, { readiness });
+		await makeSession(c, profile, { repository: { id }, place: destination.place, profile: profileId, model }, null, undefined, { readiness });
 		await sessionActor(c, profile.uid, session).internalAssessRepository(prompt);
 	} catch (error) {
 		await finishAssessment(c.db, session, error instanceof UserError ? error.message : "The setup check could not start.");
@@ -928,11 +933,10 @@ function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 		createBuild: async (request) => {
 			const profile = c.vars.profile;
 			if (!profile) throw new Error("Sign in again so the platform can build environments.");
-			const [row] = await c.db.execute<{ label: string }>("SELECT label FROM setup_command WHERE project = ?", request.project);
 			const place = request.place === HOSTED ? { kind: "hosted" as const } : { kind: "machine" as const, machineId: request.place };
 			let summary: SessionSummary;
 			try {
-				summary = await makeSession(c, profile, { title: `Environment of ${row?.label ?? "the repository"}`, place, profile: request.profile as SandboxProfileId, ...(request.hostedSize && { hostedSize: request.hostedSize }), repository: { id: githubId(request.repositoryId) ?? request.repositoryId } }, null, undefined,
+				summary = await makeSession(c, profile, { place, profile: request.profile as SandboxProfileId, ...(request.hostedSize && { hostedSize: request.hostedSize }), repository: { id: githubId(request.repositoryId) ?? request.repositoryId } }, null, undefined,
 					{ build: { project: request.project, place: request.place, screenshots: request.screenshots } });
 			} catch (error) {
 				throw new Error(error instanceof UserError ? error.message : "The build's sandbox could not be made.");
