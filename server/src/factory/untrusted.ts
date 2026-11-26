@@ -1,7 +1,7 @@
 /**
  * Text the platform hands an item's agent without vouching for it, and how Windlass is told.
  *
- * Someone else's issue (GitHub's or Linear's), CI logs, GitHub feedback from people other than the item's person, a second
+ * Someone else's issue (GitHub, Linear or Jira), CI logs, GitHub feedback from people other than the item's person, a second
  * reviewer's findings, the builder's report the reviewer reads, and the reports of other subtasks are
  * all written by someone (or something) other than the item's person. The platform labels them in the
  * prompt for the model ("quoted data", "untrusted text"), and also names where they came from on the
@@ -37,7 +37,8 @@ const short = (head: string) => (/^[0-9a-f]{40}$/.test(head) ? head.slice(0, 7) 
 /** Each source as the person reads it on the timeline and in Windlass's approval wording. */
 export const untrustedWords = {
 	issue: (number: number, author: string) => `issue #${number} by @${author}`,
-	/** A Linear issue of someone else's: `identifier` is its own ("ENG-12"), `author` the creator's name as `linearName` made it. */
+	/** The tracker names the author; a matching sender name does not make the text trusted. */
+	jira: (identifier: string, author: string) => `Jira issue ${identifier} by ${author}`,
 	linear: (identifier: string, author: string) => `Linear issue ${identifier} by ${author}`,
 	ci: (head: string) => `CI logs of ${short(head)}`,
 	feedback: (writers: string) => `GitHub feedback from ${writers}`,
@@ -60,8 +61,8 @@ export function thirdParty(list: readonly string[] | undefined | null): string[]
 	return sources(list).filter(source => THIRD_PARTY.some(form => form.test(source)));
 }
 
-/** `untrustedWords.issue`, `untrustedWords.linear` and `untrustedWords.feedback`, as they begin: every source is made by those words. */
-const THIRD_PARTY = [/^issue #\d+ by @/, /^Linear issue [A-Za-z0-9]+-\d+ by /, /^GitHub feedback from /];
+/** Source prefixes produced by `untrustedWords` for third-party text. */
+const THIRD_PARTY = [/^issue #\d+ by @/, /^Linear issue [A-Za-z0-9]+-\d+ by /, /^Jira issue [A-Za-z0-9_]+-\d+ by /, /^GitHub feedback from /];
 
 /** The sources of several pieces of text, each once, in order. */
 export function sources(...lists: Array<readonly string[] | undefined | null>): string[] {

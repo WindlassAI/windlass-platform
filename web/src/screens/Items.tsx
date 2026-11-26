@@ -372,6 +372,7 @@ export function dayWord(word: string, at: number, now: number): string {
 export function ItemRow({ item, now, repository = false, why, ci = false, reviewer = true, filed = false, subtasks }: { item: ItemSummary; now: number; repository?: boolean; why?: ReactNode; ci?: boolean; reviewer?: boolean; filed?: boolean; subtasks?: readonly ItemSummary[] }) {
 	const asks = item.question !== null;
 	const line = why ?? rowWhy(item);
+	const origin = item.origin && originIssue(item.origin);
 	const running = !asks && item.mode === "orchestrate" && subtasks !== undefined && childrenOf(item, subtasks).length > 0;
 	return (
 		<li className={`agent-row item-row item-row-is-${item.state}${asks ? " item-row-asks" : ""}${item.state === "working" ? " agent-row-active" : ""}${filed ? " item-row-filed" : ""}`}>
@@ -406,15 +407,15 @@ export function ItemRow({ item, now, repository = false, why, ci = false, review
 							</a>
 						</span>
 					) : null}
-					{item.origin ? (
+					{origin ? (
 						<span>
-							<a className="item-pull" href={originIssue(item.origin).url} target="_blank" rel="noreferrer" aria-label={item.origin.issue ? `Issue #${item.origin.issue.number} on GitHub` : `Issue ${item.origin.linear.identifier} on Linear`}>
-								{originIssue(item.origin).label}
+							<a className="item-pull" href={origin.url} target="_blank" rel="noreferrer" aria-label={`Issue ${origin.label} on ${origin.tracker}`}>
+								{origin.tracker === "GitHub" ? `issue ${origin.label}` : origin.label}
 								<ExternalIcon size={10} />
 							</a>
 						</span>
 					) : null}
-					{ci && item.origin && !originIssue(item.origin).trusted ? <span>from an outside author</span> : null}
+					{ci && origin && !origin.trusted ? <span>from an outside author</span> : null}
 					{item.source === "api" ? <span>from the API</span> : null}
 					{item.agent && item.agent.harness !== "windlass" ? (
 						<span>

@@ -1,33 +1,25 @@
-/**
- * What the two intakes that file work items from an issue share: GitHub's (github-intake.ts) and Linear's (below).
- * One owner queue, one daily cap with its reservations, one reading of the saved placement and defaults, one way to turn
- * text into a task and a mode (factory/intake.ts). Neither shares anything with an item filed on the web or by API key.
- *
- * What stays GitHub's: the issue's claim in the repository directory, the permission and subject reads, the refusal
- * comment, and everything an item does with its issue afterwards (the binding of work-item.ts). A Linear item has none of that:
- * its provenance is kept apart in `LinearBinding`.
- */
+/** The owner queue, reservations, cap and saved policy shared by issue intakes. */
 
 import { mayUse } from "../access.js";
 import { readAccountDefaults } from "../account-defaults.js";
 import { config } from "../config.js";
 import type { CreateItemInput, GithubId, ItemSummary, UserProfile } from "../contract.js";
 import { savedPlace } from "../factory/default-place.js";
-import { issueMode, linearIdentifier, linearId, linearName, refusals, taskOfLinear, type LinearBinding, type LinearFiled, type LinearFiling } from "../factory/intake.js";
+import { issueMode, linearIdentifier, trackerId, trackerName, refusals, taskOfJira, taskOfLinear, type JiraBinding, type JiraFiled, type JiraFiling, type LinearBinding, type LinearFiled, type LinearFiling, type TrackerBinding, type TrackerFiled, type TrackerFiling } from "../factory/intake.js";
 import { untrustedWords } from "../factory/untrusted.js";
 import { githubApp } from "../github/app.js";
 import { isGithubId } from "../github/ids.js";
 import { GithubProblem, resolveRepository } from "../github/repos.js";
-import { QUICK_LABELS } from "../linear/webhook.js";
+import { QUICK_LABELS as LINEAR_QUICK_LABELS } from "../linear/webhook.js";
 import { accountLimits } from "../user-limits.js";
 import { readDefaults } from "../repository-defaults.js";
 import { isActorGone, itemActor } from "./internal.js";
 import type { ItemsCtx, ItemsState } from "./user-items.js";
 
 /** The sources of an item filed from an issue: the ones that share the queue, the cap and the reservations. */
-export const INTAKE_SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["github", "linear"]);
+export const INTAKE_SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["github", "linear", "jira"]);
 
-/** The in-memory scope of an issue-filed creation's key (`ItemsState.created`): apart from the web's and the API's, with one namespace for both trackers (their keys differ in form). */
+/** The in-memory scope of an issue-filed creation's key (`ItemsState.created`): apart from the web's and the API's, with one namespace for all trackers (their keys differ in form). */
 export const intakeScope = (key: string) => "intake:" + key;
 
 const queues = new WeakMap<ItemsState, Promise<unknown>>();
@@ -48,7 +40,7 @@ export async function existingItem(c: ItemsCtx, uid: string, id: string) {
 }
 
 /**
- * The one cap on items filed from an issue: how many a day, GitHub's and Linear's together, drafts among them. A flood of
+ * The one cap on items filed from an issue: how many a day, all trackers together, drafts among them. A flood of
  * labelled issues stops here. A filing interrupted after its key was reserved counts as filed (`github_item_keys` rows the
  * index does not have yet), and `resuming` is the id of one that is being finished, which the cap does not refuse again.
  */
@@ -78,43 +70,70 @@ export function intakeInput(task: { title: string; body: string; acceptance: str
 
 export const isEnded = (item: Pick<ItemSummary, "state">) => item.state === "done" || item.state === "failed" || item.state === "cancelled";
 
-/** The key of a Linear issue's nth filing. Reserved with the same table as GitHub's, and told apart from them by its form. */
-export const linearKey = (issueId: string, generation: number) => `linear:${issueId}:${generation}`;
+type TrackerFile<B> = (profile: UserProfile, filing: { input: CreateItemInput; binding: B }) => Promise<ItemSummary>;
 
-/**
- * Files a Linear issue as a work item on its team's repository, in the queue and under the cap that GitHub's intake uses.
- *
- * `filing` is what the platform validated: the signed event, the issue as Linear has it, its team's mapping. This checks what
- * the owner's own account decides (may they use Windlass, work items on, the repository still writable through their GitHub
- * connection, the day's cap) and files, or says why not.
- *
- * One Linear issue is one active item: a second qualifying event while its item is open, or a repeat of the one that filed it,
- * files nothing (`exists`). Once the item is done, failed or cancelled, the next qualifying event files a new one (generation + 1).
- * A filing interrupted after its key was reserved is finished by the next call, whatever the issue says by then.
- *
- * Call it inside `inIntakeQueue`.
- */
-export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling,
-	file: (profile: UserProfile, filing: { input: CreateItemInput; binding: LinearBinding }) => Promise<ItemSummary>): Promise<LinearFiled> {
-	const { profile } = c.vars;
-	const { issue, trigger, team } = f;
-	const well = issue && trigger && team && f.repository && f.owner
-		&& linearId(issue.id) && linearIdentifier(issue.identifier) && linearId(team.id) && linearId(team.workspaceId) && linearId(f.owner.linearUserId)
+// Jira Cloud account IDs may contain colons. Site and issue IDs go in keys; account IDs never do.
+const jiraAccount = (id: unknown) => typeof id === "string" && /^[a-zA-Z0-9_:-]{1,128}$/.test(id);
+
+function wellFormed(f: TrackerFiling, accountId: (id: unknown) => boolean) {
+	if (!f) return false;
+	const { issue, trigger } = f;
+	return issue && trigger && f.repository && trackerId(issue.id)
 		&& isGithubId(f.repository.id) && (trigger.via === "label" || trigger.via === "assignment") && Number.isFinite(trigger.at)
-		&& linearId(trigger.sender?.id) && typeof issue.title === "string" && typeof issue.description === "string" && Array.isArray(issue.labels)
-		&& (issue.creator === null || (linearId(issue.creator?.id) && typeof issue.creator.name === "string"))
+		&& accountId(trigger.sender?.id) && typeof issue.title === "string" && typeof issue.description === "string" && Array.isArray(issue.labels)
+		&& (issue.creator === null || (accountId(issue.creator?.id) && typeof issue.creator.name === "string"))
 		&& typeof issue.url === "string" && /^https:\/\/[^\s/]+\//.test(issue.url);
-	if (!well) return { kind: "refused", reason: "The Linear issue was not well formed." };
+}
+
+interface TrackerPolicy<B> {
+	tracker: "Linear" | "Jira";
+	keyPrefix: string;
+	trusted: boolean;
+	bugType?: boolean;
+	quickLabels: readonly string[];
+	bind: (fields: TrackerBinding) => B;
+}
+
+/** Call inside inIntakeQueue, with the signed event and repository mapping already checked. */
+export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling, file: TrackerFile<LinearBinding>): Promise<LinearFiled> {
+	if (!wellFormed(f, trackerId) || !linearIdentifier(f.issue.identifier) || !trackerId(f.team?.id) || !trackerId(f.team.workspaceId) || !trackerId(f.owner?.linearUserId))
+		return { kind: "refused", reason: "The Linear issue was not well formed." };
+	const { issue, team } = f;
+	const trusted = issue.creator !== null && issue.creator.id === f.owner.linearUserId;
+	const origin = { linear: { id: issue.id, identifier: issue.identifier, url: issue.url, author: trackerName(issue.creator?.name), trusted }, sender: trackerName(f.trigger.sender.name) };
+	return fileTrackerIssue(c, f, { tracker: "Linear", keyPrefix: `linear:${issue.id}:`, trusted, quickLabels: LINEAR_QUICK_LABELS,
+		bind: fields => ({ ...fields, teamId: team.id, workspaceId: team.workspaceId, origin }) }, file);
+}
+
+export async function fileJiraIssue(c: ItemsCtx, f: JiraFiling, file: TrackerFile<JiraBinding>): Promise<JiraFiled> {
+	if (!wellFormed(f, jiraAccount) || !trackerId(f.project?.id) || !trackerId(f.project.siteId)
+		|| typeof f.issue.identifier !== "string" || !/^[A-Za-z][A-Za-z0-9_]{0,31}-\d{1,16}$/.test(f.issue.identifier)
+		|| typeof f.issue.issueType !== "string" || f.issue.url.length > 2048 || /[^\x21-\x7e]/.test(f.issue.url) || !URL.canParse(f.issue.url))
+		return { kind: "refused", reason: "The Jira issue was not well formed." };
+	const { issue, project } = f;
+	const origin = { jira: { id: issue.id, identifier: issue.identifier, url: issue.url, author: trackerName(issue.creator?.name), trusted: false as const }, sender: trackerName(f.trigger.sender.name) };
+	return fileTrackerIssue(c, f, { tracker: "Jira", keyPrefix: `jira:${project.siteId}:${issue.id}:`, trusted: false, quickLabels: ["windlass:quick", "windlass-quick"],
+		bugType: issue.issueType.trim().toLowerCase() === "bug",
+		bind: fields => ({ ...fields, projectId: project.id, siteId: project.siteId, origin }) }, file);
+}
+
+/** Finish an interrupted filing, reuse its active item, or reserve the next generation. */
+async function fileTrackerIssue<B>(c: ItemsCtx, f: TrackerFiling, rules: TrackerPolicy<B>, file: TrackerFile<B>): Promise<TrackerFiled> {
+	const { tracker, keyPrefix, trusted, bugType, bind } = rules;
+	const { profile } = c.vars;
+	const { issue, trigger } = f;
 	if (!profile || !mayUse(profile, config.access)) return { kind: "ignored", why: "The owner may not use Windlass here." };
-	if (issue.closed) return { kind: "ignored", why: "The issue is closed in Linear." };
+	if (issue.closed) return { kind: "ignored", why: `The issue is closed in ${tracker}.` };
 	const uid = profile.uid;
 
 	// The issue's earlier filings, from the keys: those the index holds, and one the index does not yet (an interrupted filing).
-	const prefix = intakeScope(`linear:${issue.id}:`);
+	const prefix = intakeScope(keyPrefix);
 	const made = [...c.vars.items.created].flatMap(([key, entry]) => key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length)) ? [{ generation: Number(key.slice(prefix.length)), id: entry.id }] : []);
 	const last = made.sort((a, b) => a.generation - b.generation).at(-1);
 	const held = last && c.vars.items.items.get(last.id);
 	if (last && held && !isEnded(held)) return { kind: "exists", itemId: last.id };
+	// An older Jira trigger delivered out of order belongs to the finished generation.
+	if (tracker === "Jira" && held?.endedAt !== undefined && trigger.at <= held.endedAt) return { kind: "exists", itemId: held.id };
 	const resuming = last && !held ? last : undefined;
 	if (trigger.lapsed && !resuming) return { kind: "ignored", why: "The issue no longer has what qualified it." };
 	const generation = resuming?.generation ?? (last?.generation ?? 0) + 1;
@@ -125,28 +144,25 @@ export async function fileLinearIssue(c: ItemsCtx, f: LinearFiling,
 	let repository;
 	try { repository = (await resolveRepository(app, connection, f.repository.id, "write")).repository; }
 	catch (error) {
-		// A GitHub that cannot answer is no refusal: the delivery fails and Linear redelivers it.
+		// A GitHub that cannot answer is no refusal: the delivery fails and the tracker redelivers it.
 		if (error instanceof GithubProblem && error.code !== "github_unreachable" && error.code !== "github_failed") return { kind: "refused", reason: "Not taken: " + error.message };
 		throw error;
 	}
 
-	const author = linearName(issue.creator?.name);
-	const trusted = issue.creator !== null && issue.creator.id === f.owner.linearUserId;
 	const labels = issue.labels.filter((label): label is string => typeof label === "string").map(label => label.trim().toLowerCase());
-	const { mode, reason: modeReason, refusal } = issueMode("", labels, process.env.WLP_FACTORY_ORCHESTRATE !== "0", QUICK_LABELS);
+	if (bugType) labels.push("bug");
+	const { mode, reason: modeReason, refusal } = issueMode("", labels, process.env.WLP_FACTORY_ORCHESTRATE !== "0", rules.quickLabels);
 	const resumed = resuming && await existingItem(c, uid, resuming.id);
 	if (refusal) return { kind: "refused", reason: refusal };
-	const cap = resumed ? null : await quotaRefusal(c, resuming?.id, "Linear");
+	const cap = resumed ? null : await quotaRefusal(c, resuming?.id, tracker);
 	if (cap) return { kind: "refused", reason: cap, dailyCap: true };
 
-	const key = linearKey(issue.id, generation);
+	const key = keyPrefix + generation;
 	const policy = await intakePolicy(c, repository.id);
-	const { task } = taskOfLinear({ title: issue.title, body: issue.description, identifier: issue.identifier, url: issue.url, author, trusted });
-	const binding: LinearBinding = {
-		...(policy.defaultPlace && { defaultPlace: policy.defaultPlace }), modeReason, generation, via: trigger.via, triggeredAt: trigger.at, senderId: trigger.sender.id,
-		workspaceId: team.workspaceId, teamId: team.id,
-		origin: { linear: { id: issue.id, identifier: issue.identifier, url: issue.url, author, trusted }, sender: linearName(trigger.sender.name) },
-	};
+	const text = { title: issue.title, body: issue.description, identifier: issue.identifier, url: issue.url, author: trackerName(issue.creator?.name), trusted };
+	const { task } = tracker === "Jira" ? taskOfJira(text) : taskOfLinear(text);
+	const binding = bind({ ...(policy.defaultPlace && { defaultPlace: policy.defaultPlace }), modeReason: bugType ? "This is a Jira bug, so it runs in Quick mode without a plan." : modeReason,
+		generation, via: trigger.via, triggeredAt: trigger.at, senderId: trigger.sender.id });
 	const input = intakeInput(task, mode, { id: repository.id, branch: repository.defaultBranch }, policy, trusted, key);
 	const item = await file(profile, { input, binding });
 	return { kind: "filed", itemId: item.id, state: item.state };

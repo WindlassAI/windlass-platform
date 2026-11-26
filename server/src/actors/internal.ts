@@ -99,12 +99,23 @@ export interface ReserveRequest {
  */
 export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: string; seconds: number }; numbers: UsageNumbers } | { ok: false; reason: "allowance" | "sandboxes" | "gone"; numbers: UsageNumbers };
 
+/** The item supplies the destination from its stored filing, never from task or question text. */
+export interface JiraItemWrite {
+	siteId: string;
+	projectId: string;
+	issueId: string;
+	itemId: string;
+	action: import("../factory/intake.js").JiraCommentAction;
+}
+
 /** Actions of `user` that only actors may call. */
 export interface UserInternal {
 	internalSetupPublished(session: string, publication: import("../repo-setup/types.js").SetupPublication, decisions: import("../repo-setup/types.js").NoteDecision[], installation: GithubId, source: string): Promise<void>;
 	internalReadinessResult(session: string, attempt: string, report: import("../factory/readiness.js").Judgment | string | null, diagnosis?: import("../repo-setup/types.js").SetupDiagnosis | null): Promise<void>;
 	internalFlakyJobs(id: GithubId): Promise<string[]>;
 	internalReadinessLevel(id: GithubId): Promise<import("../factory/readiness.js").ReadinessLevel | null>;
+	/** Service call: true when posted (including a replay), false for a permanent decline. Throw to retry. */
+	internalJiraWrite(input: JiraItemWrite): Promise<boolean>;
 	internalLinearHoldsTeam(workspaceId: string, teamId: string): Promise<boolean>;
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
 	internalDefaultBuilder(input: { id: string; job: import("./user-items.js").DefaultBuilder }): ReturnType<typeof import("./user-items.js").itemActions.internalDefaultBuilder>;

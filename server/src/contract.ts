@@ -454,6 +454,29 @@ export interface LinearTeamList {
 	teams: LinearTeam[];
 }
 
+/** Browser-visible Jira connection metadata. Tokens and hook credentials stay with the service. */
+export interface JiraSite { id: string; name: string; url: string }
+
+export interface JiraConnection {
+	user: { id: string; name: string };
+	sites: JiraSite[];
+	/** Null until the owner chooses an authorized site. */
+	site: JiraSite | null;
+	connectedAt: number;
+}
+
+export type JiraStatus = { state: "off" } | { state: "disconnected" } | { state: "connected"; connection: JiraConnection };
+
+export interface JiraMapping {
+	siteId: string;
+	projectId: string;
+	repository: { id: GithubId; owner: string; name: string };
+	savedAt: number;
+}
+
+export interface JiraProject { id: string; key: string; name: string; mapping: JiraMapping | null }
+export interface JiraProjectList { projects: JiraProject[] }
+
 /** A repository the connection covers and the connected GitHub user can open. */
 export interface GithubRepository {
 	/** GitHub's id for it: what `CreateSessionInput.repository` names. */
@@ -1595,11 +1618,12 @@ export interface ItemAgent {
 	fiveHour: { first: number; latest: number } | null;
 }
 
-/** How a work item was filed. "github" and "linear" are the two intakes that file from an issue (factory/intake.ts). */
-export type ItemSource = "web" | "api" | "github" | "linear";
+/** How a work item was filed. */
+export type ItemSource = "web" | "api" | "github" | "linear" | "jira";
 
 /** The PR closes this issue in the item's repository. The sender added the label or wrote the command. */
 export interface GithubIssueOrigin {
+	jira?: undefined;
 	issue: { number: number; url: string; author: string; trusted: boolean };
 	sender: string;
 	linear?: undefined;
@@ -1607,13 +1631,22 @@ export interface GithubIssueOrigin {
 
 /** Linear provenance is separate from the GitHub PR binding. The event sender and issue author may differ. */
 export interface LinearIssueOrigin {
+	jira?: undefined;
 	/** `trusted`: the issue creator's id matches the user who connected the workspace; whoever added the label does not make another person's text trusted. */
 	linear: { id: string; identifier: string; url: string; author: string; trusted: boolean };
 	sender: string;
 	issue?: undefined;
 }
 
-export type ItemOrigin = GithubIssueOrigin | LinearIssueOrigin;
+/** Jira text is always third-party, even when the consenting account wrote it. */
+export interface JiraIssueOrigin {
+	jira: { id: string; identifier: string; url: string; author: string; trusted: false };
+	sender: string;
+	issue?: undefined;
+	linear?: undefined;
+}
+
+export type ItemOrigin = GithubIssueOrigin | LinearIssueOrigin | JiraIssueOrigin;
 
 export interface ItemSummary {
 	record?: import("./factory/readiness-track.js").ItemRecord | null;
@@ -1635,7 +1668,7 @@ export interface ItemSummary {
 	place: SandboxPlace;
 	/** How the item was filed. */
 	source: ItemSource;
-	/** The issue it was filed from: null unless `source` is "github" or "linear" (a GitHub issue's origin has `issue`, a Linear issue's has `linear`). */
+	/** The source issue; null for items not filed through issue intake. */
 	origin: ItemOrigin | null;
 	state: ItemState;
 	/** Set exactly when `state` is "waiting". */
@@ -2031,6 +2064,15 @@ export interface UserActions {
 	removeLinearMapping(teamId: string): Promise<LinearTeamList>;
 	/** Forgets the Linear connection and every mapping; nothing is filed from Linear after it. Items already filed stay. */
 	disconnectLinear(): Promise<LinearStatus>;
+	/** Jira Cloud 3LO; completion lists authorized sites without exposing the grant. */
+	jira(): Promise<JiraStatus>;
+	jiraConnect(input: { origin: string }): Promise<{ url: string }>;
+	jiraComplete(ticket: string): Promise<JiraStatus>;
+	jiraSelectSite(siteId: string): Promise<JiraStatus>;
+	jiraProjects(): Promise<JiraProjectList>;
+	saveJiraMapping(input: { siteId: string; projectId: string; repositoryId: GithubId }): Promise<JiraProjectList>;
+	removeJiraMapping(input: { siteId: string; projectId: string }): Promise<JiraProjectList>;
+	disconnectJira(): Promise<JiraStatus>;
 	/** Search owner/name, newest push first. Use fresh after changing an installation's repository access. */
 	githubRepositories(query: string, fresh?: boolean): Promise<GithubRepositoryList>;
 	githubBranches(repositoryId: GithubId): Promise<GithubBranchList>;

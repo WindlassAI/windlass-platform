@@ -1,10 +1,10 @@
-import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type GithubIssueOrigin, type ItemPlaceDefaults, type ItemState, type LinearIssueOrigin, type CreateItemInput, type GithubId } from "../contract.js";
+import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS, type GithubIssueOrigin, type ItemPlaceDefaults, type ItemState, type LinearIssueOrigin, type JiraIssueOrigin, type CreateItemInput, type GithubId } from "../contract.js";
 import type { GithubUser } from "../github/app.js";
 
 const plain = (s: string) => s.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g, "").replace(/<!--[\s\S]*?(?:-->|$)/g, "").trim();
 const cut = (s: string, limit: number, mark = "…") => s.length <= limit ? s : s.slice(0, limit - mark.length).trimEnd() + mark;
 
-/** What the two intakes make a task of: an issue's text as its tracker has it, and who wrote it. */
+/** What issue intakes make a task of: an issue's text as its tracker has it, and who wrote it. */
 interface IssueText {
 	title: string;
 	body: string;
@@ -21,7 +21,7 @@ interface IssueText {
 	note: string;
 }
 
-/** A task from an issue's text, the same for both intakes: hidden text stripped, the task bounded, third-party text quoted. */
+/** A task from an issue's text, the same for every intake: hidden text stripped, the task bounded, third-party text quoted. */
 function taskOfText(input: IssueText) {
 	const { trusted, by } = input;
 	const title = cut(plain(input.title).replace(/\s+/g, " "), MAX_TITLE_CHARS) || input.fallbackTitle;
@@ -51,14 +51,20 @@ export function taskOfIssue(input: { title: string; body: string; number: number
 		by: `@${author.login}`, tracker: "GitHub", trusted: author.id === sender.id, note: input.note });
 }
 
-/** A person's name from Linear as one short line: it goes into the task, the sources of a turn and the item's first log line. */
-export const linearName = (name: unknown) => cut(plain(typeof name === "string" ? name : "").replace(/[\s;]+/g, " "), 60) || "an unknown author";
+/** A tracker user's name as one short line: it goes into the task, the sources of a turn and the item's first log line. */
+export const trackerName = (name: unknown) => cut(plain(typeof name === "string" ? name : "").replace(/[\s;]+/g, " "), 60) || "an unknown author";
 
-/** The task of a Linear issue. `trusted` is the platform's own decision (the creator is the person who connected the workspace). */
-export function taskOfLinear(input: { title: string; body: string; identifier: string; url: string; author: string; trusted: boolean }) {
-	return taskOfText({ title: input.title, body: input.body, fallbackTitle: `Issue ${input.identifier}`, from: `From Linear issue ${input.identifier}. ${input.url}`,
-		by: input.author, tracker: "Linear", trusted: input.trusted, note: "" });
+export const linearName = trackerName;
+
+interface TrackerText { title: string; body: string; identifier: string; url: string; author: string }
+
+function taskOfTracker(tracker: "Jira" | "Linear", input: TrackerText, trusted: boolean) {
+	return taskOfText({ title: input.title, body: input.body, fallbackTitle: `Issue ${input.identifier}`, from: `From ${tracker} issue ${input.identifier}. ${input.url}`,
+		by: input.author, tracker, trusted, note: "" });
 }
+
+export const taskOfJira = (input: TrackerText) => taskOfTracker("Jira", input, false);
+export const taskOfLinear = (input: TrackerText & { trusted: boolean }) => taskOfTracker("Linear", input, input.trusted);
 
 export const refusals = {
 	connection: "Not taken: your GitHub account's Windlass connection does not include this repository's installation. Connect GitHub again in Windlass's Settings, then label the issue again.",
@@ -99,13 +105,8 @@ export interface IssueBinding {
 
 export type IssueFiling = { input: CreateItemInput; binding: IssueBinding };
 
-/** The source issue and workspace for a Linear item's progress updates. */
-export interface LinearBinding {
-	origin: LinearIssueOrigin;
-	/** The Linear issue's own id, and its workspace and team: the same issue is one item at a time. */
-	workspaceId: string;
-	teamId: string;
-	/** Which filing of this issue it is (1, then 2 once the first ended and the issue qualified again). */
+/** A generation is reserved before the item exists and reused on retry. */
+export interface TrackerBinding {
 	generation: number;
 	via: "label" | "assignment";
 	triggeredAt: number;
@@ -114,47 +115,64 @@ export interface LinearBinding {
 	modeReason?: string | null;
 }
 
-/** How an item was filed from an issue: one of the two intakes. The item's source is the tracker's name. */
-export type Intake = { github: IssueBinding; linear?: undefined } | { linear: LinearBinding; github?: undefined };
+export interface LinearBinding extends TrackerBinding {
+	workspaceId: string;
+	teamId: string;
+	origin: LinearIssueOrigin;
+}
 
-/**
- * A Linear issue the platform has validated (the webhook's signature checked, the issue read from Linear, its team mapped) and the
- * repository it files to: what `fileLinearIssue` takes. Every text here is Linear's own and is cleaned and bounded when the task is made.
- */
-export interface LinearFiling {
+export interface JiraBinding extends TrackerBinding {
+	siteId: string;
+	projectId: string;
+	origin: JiraIssueOrigin;
+}
+
+/** A tracker binding is separate from the repository where the PR is opened. */
+export type Intake = { github: IssueBinding; linear?: undefined; jira?: undefined }
+	| { linear: LinearBinding; github?: undefined; jira?: undefined }
+	| { jira: JiraBinding; github?: undefined; linear?: undefined };
+
+/** A verified trigger, the current issue snapshot and the repository it maps to. */
+export interface TrackerFiling {
 	issue: {
 		id: string;
-		/** "ENG-12". */
 		identifier: string;
 		url: string;
 		title: string;
-		/** Markdown, as Linear has it; empty for none. */
 		description: string;
-		/** Names of its labels. `windlass-quick` and `windlass:quick` select Quick. */
 		labels: string[];
-		/** Its creator; null for one Linear did not name (an integration, a deleted user): then the text is third-party. */
 		creator: { id: string; name: string } | null;
-		/** The issue is archived, cancelled or completed in Linear: not filed. */
 		closed?: boolean;
 	};
-	/** The mapped team and the owner's repository it files to. */
-	team: { id: string; workspaceId: string };
 	repository: { id: GithubId };
-	/** The Linear user who connected the workspace. Their own issues are the owner's own text. */
-	owner: { linearUserId: string };
-	/**
-	 * What qualified it: the label added or the assignment to the Windlass app user, by whom and when. `lapsed`: the issue, as
-	 * read now, no longer has it. Only a filing that was interrupted is finished then.
-	 */
+	/** If qualification lapsed, only finish an interrupted filing. */
 	trigger: { via: "label" | "assignment"; at: number; sender: { id: string; name: string }; lapsed?: true };
 }
 
-/** What `fileLinearIssue` did. A refusal is the platform's reason, for the log: Linear is told nothing. */
-export type LinearFiled =
+export interface LinearFiling extends TrackerFiling {
+	team: { id: string; workspaceId: string };
+	owner: { linearUserId: string };
+}
+
+export interface JiraFiling extends TrackerFiling {
+	issue: TrackerFiling["issue"] & { issueType: string };
+	project: { id: string; siteId: string };
+}
+
+export type TrackerFiled =
 	| { kind: "filed"; itemId: string; state: ItemState }
 	| { kind: "exists"; itemId: string }
 	| { kind: "ignored"; why: string }
 	| { kind: "refused"; reason: string; dailyCap?: true };
+
+export type LinearFiled = TrackerFiled;
+export type JiraFiled = TrackerFiled;
+
+/** The writer renders these stored links; it deduplicates by item ID and milestone key. */
+export type JiraCommentAction =
+	| { key: "filed"; itemUrl: string }
+	| { key: "opened"; itemUrl: string; pr: string }
+	| { key: "done" | "failed" | "cancelled"; itemUrl: string; pr: string | null };
 
 export type IntakeTrigger = { repositoryId: GithubId; installationId: GithubId; issue: number; senderId: GithubId } & ({ via: "label"; label?: string } | { via: "mention"; commentId: string });
 
@@ -179,14 +197,16 @@ export function filedFromIssue(origin: { issue: { number: number; author: string
 	return author === origin.sender ? `Filed from GitHub issue #${number}, written and filed by @${author}.` : `Filed from GitHub issue #${number}, written by @${author}. Filed by @${origin.sender}.`;
 }
 
-/** The item's first log line for one filed from a Linear issue, in the way of `filedFromIssue`: who wrote the issue, and, apart, who filed it. */
-export function filedFromLinear(origin: LinearIssueOrigin): string {
-	const { identifier, author } = origin.linear;
-	return author === origin.sender ? `Filed from Linear issue ${identifier}, written and filed by ${author}.` : `Filed from Linear issue ${identifier}, written by ${author}. Filed by ${origin.sender}.`;
+function filedFromTracker(tracker: string, issue: { identifier: string; author: string }, sender: string) {
+	const { identifier, author } = issue;
+	return author === sender ? `Filed from ${tracker} issue ${identifier}, written and filed by ${author}.` : `Filed from ${tracker} issue ${identifier}, written by ${author}. Filed by ${sender}.`;
 }
 
-/** What a Linear id is: its UUID, and no more than the ids of its own are allowed to hold in a key. */
-export const linearId = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(id);
+export const filedFromLinear = (origin: LinearIssueOrigin) => filedFromTracker("Linear", origin.linear, origin.sender);
+export const filedFromJira = (origin: JiraIssueOrigin) => filedFromTracker("Jira", origin.jira, origin.sender);
+
+/** Bounded identity component: never contains the reservation key separator. */
+export const trackerId = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(id);
 
 /** What a Linear issue's identifier is: its team's key and its number. */
 export const linearIdentifier = (identifier: unknown): identifier is string => typeof identifier === "string" && /^[A-Za-z0-9]{1,16}-\d{1,9}$/.test(identifier);
