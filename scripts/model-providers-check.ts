@@ -124,7 +124,7 @@ test("model provider actions keep keys sealed and check with the provider", asyn
 		const failed = await save(provider, bad[provider]);
 		clean(failed);
 		assert.ok(!failed.ok && failed.message?.includes("check the key") && !failed.models);
-		assert.deepEqual(await actions.modelProviders(c), [{ provider, last4: bad[provider].slice(-4), addedAt: failed.addedAt, checkedAt: failed.checkedAt, ok: false }]);
+		assert.deepEqual(await actions.modelProviders(c), [checked]);
 		await actions.removeModelProvider(c, provider);
 		assert.equal(await actions.internalModelKey(a.internal, provider, nonce), null);
 	}
