@@ -6,7 +6,7 @@ Work items need a repository from your GitHub connection. They run with Windlass
 
 The Factory has the same repository rail as **Agents**, with its search, owners and foot. There, a repository's ring counts its work items in progress and the amber count what needs you; choosing one shows only its work items. A repository with no work item is dimmer; choose it to file one on it.
 
-GitHub and Linear issues and the Factory composer use the repository’s **Work items** default, then the account setting, then Hosted. You can override the selection in the composer. Any of my machines takes the first compatible online machine with a free slot. If none is ready, the timeline explains the wait or hosted fallback. Plan first uses Windlass to plan and passes the placement preference to the planner for parts that fit. A part on the saved agent starts on its saved model and effort unless the planner chose one.
+Every item resolves its place and agent the same way, whether filed from the composer, the API, GitHub or Linear: the item's own choice, then the repository's override, then your defaults ([Where each choice lives](/docs/settings#where-each-choice-lives)), then the deployment's. The composer shows the result in one line, with where it comes from, and **Change for this item**. If the result can't run (the machine is offline, the payer can't be used), the item waits and asks you instead of running elsewhere. Plan first plans on Windlass; its parts start from the same resolved place and agent unless the planner chose another.
 
 A work item runs in one of two ways:
 
@@ -111,7 +111,7 @@ Where the platform has a Linear OAuth client and signing secret, you can file a 
 
 `windlass-quick` (Linear does not allow a colon in a plain label name) selects **Quick**. The existing `windlass:quick` spelling also selects **Quick**. A plain `windlass` label selects **Plan first** by default. As on GitHub, a `bug` label selects **Quick** on a qualifying issue. An unrelated edit to an issue that already has the label or the assignment does not file anything. Each delivery from Linear is taken once, and one active issue files one item however many events qualify.
 
-**Placement and limits.** The item uses the same intake as GitHub: the repository's **Work items** default, then the account setting, then Hosted. It shares the daily limit with GitHub issues, drafts and filings in progress included, so a day's items from GitHub and Linear are counted together. If the daily limit is full, a later trigger or redelivery can file the issue once there is room.
+**Placement and limits.** The item resolves its place and agent as any item does. It shares the daily limit with GitHub issues, drafts and filings in progress included, so a day's items from GitHub and Linear are counted together. If the daily limit is full, a later trigger or redelivery can file the issue once there is room.
 
 **Trust.** Linear identifies the Windlass app as the connected user. Issues arrive as drafts with their authors' text quoted. Review and start the item in Windlass. Its page and list link to the Linear issue by its identifier, for example ENG-123.
 
@@ -482,6 +482,8 @@ While the plan is open you can change each subtask's agent, model and effort. Th
 - **This platform** runs Windlass, on any model of your account.
 - **A machine of yours** also offers Claude Code and OpenCode where its runner reports them signed in. One that is not signed in is listed but can't be chosen. The models and efforts are the ones the machine reported for that agent.
 - **Codex** is not offered for subtasks. A plan that names it is refused, and so is placing a subtask on it. Codex runs Quick items only.
+
+A subtask with no agent of its own shows the agent it resolves to and where that comes from, for example "— your default". **The default** in its agent menu returns it there; **Windlass** pins it to Windlass.
 
 A subtask on Claude Code or OpenCode runs in the machine's hardened container, on its own model and effort. It never takes the feature's Windlass model: with no model chosen, it runs the agent's default. A choice the place does not offer, for example an agent the machine does not have or a model it does not list, shows **can't place** and the reason, and approval is refused the same way. If the machine changes after approval, for example the agent is signed out, the subtask can't be placed when the feature gets to it, and the feature asks you with the reason.
 
