@@ -54,8 +54,12 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 		input.onHostTools?.(names);
 		if (input.prompt.includes("ada/setup-no-filing") || input.prompt.includes("ada/setup-refused")) {
 			if (input.prompt.includes("ada/setup-refused")) {
+				const badLines = Array.from({ length: 11 }, (_, i) => i === 1 ? "password=diagnosisFixtureSecret" : "- Run `make invented` for " + "x".repeat(150));
+				const rejected = { path: "AGENTS.md", kind: "guide", content: ["# Guide", "## Quick commands", ...badLines].join("\n"),
+					lines: badLines.map((_, i) => ({ line: i + 3, evidence: { file: "README.md", line: 1 } })) };
 				for (const [i, args] of [{}, { files: [{ kind: "skill", path: ".agents/skills/read-source/SKILL.md",
-					content: "# Inspect source\nOwner preview ghs_diagnosisFixtureSecret123. " + "x".repeat(350), lines: [] }], notes: [], score: [] }].entries()) {
+					content: "# Inspect source\nOwner preview ghs_diagnosisFixtureSecret123. " + "x".repeat(350), lines: [] }], notes: [], score: [] },
+					{ files: [rejected], score: ["setup", "checks", "guide"].map(id => ({ id, pass: false, reason: "Missing proof." })) }].entries()) {
 					const reply = await input.onSetup!({ messageId: "draft", callId: "file-" + i, arguments: args }, input.signal!);
 					if (!reply.includes("Correct the filing")) throw Error("Expected a retryable rejection.");
 				}
@@ -108,6 +112,12 @@ FakeWindlass.prototype.runTurn = async function(sandbox, input) {
 				...(revise && notes.some(n => n.verdict === "question") ? [skill("unreviewed", "README.md")] : [])],
 			notes,
 		} };
+		const guide = call.arguments.files[0];
+		for (const command of ["make prepare", "make verify"]) {
+			if (!input.prompt.includes(JSON.stringify(command))) throw Error("Missing saved repository command.");
+			guide.content += "Run `" + command + "`.\n";
+			(guide.lines as { line: number; evidence: unknown }[]).push({ line: guide.content.trimEnd().split("\n").length, evidence: { command } });
+		}
 		const invoke = host.get("file_repo_setup")!;
 		const answer = await invoke(call, input.signal!);
 		if (!answer.startsWith("Guides filed") || !(await invoke(call, input.signal!)).includes("closed")) throw Error("Unexpected filing reply: " + answer);

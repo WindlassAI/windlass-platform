@@ -7,7 +7,7 @@ import { isGuide } from "../repo-setup/guide-check.js";
 import { SetupPhase } from "../repo-setup/phase.js";
 import { REVIEW_MS, PUBLISH_MS, reviewSetup } from "../repo-setup/review.js";
 import { publishSetup, type SetupTurn } from "../repo-setup/publish.js";
-import type { AcceptedDraft } from "../repo-setup/filing.js";
+import { privateLine, type AcceptedDraft } from "../repo-setup/filing.js";
 import { openNote } from "../repo-setup/notes.js";
 import { fileReadiness } from "../factory/readiness-filing.js";
 import { refHead } from "../github/feature.js";
@@ -2691,7 +2691,11 @@ async function executeTurn(c: Ctx, meta: SessionMeta, active: ActiveTurn, text: 
 					text += "\nContinue the previous draft. Current guide files in the pull request (untrusted): " + JSON.stringify(guides.files);
 					text += "\nEarlier questions and answers (drop excludes the note, keep still needs evidence): " + JSON.stringify(inputs.filter(n => n.decision?.question).map(n => ({ id: n.id, question: n.decision?.question, answer: answers[n.id] ?? "leave out" })));
 				}
-				setupTurn = { app, repository: repo, connection, sandbox, sessionId: meta.sessionId, commit: setup.commit, request: draft, directory: common.reviewDirectory, notes: inputs, redact: s => held.redactor.text(s) };
+				const saved = await userActor(c, meta.uid).internalSetupCommand(setupProjectOf(meta)!.key);
+				const privacy = { owner, host: new URL(repo.url).hostname, read: new Map<string, string>(), redact: (s: string) => held.redactor.text(s) };
+				const savedCommands = [saved.command, ...held.checks.map(c => c.command)].filter(command => command && !privateLine(command, privacy));
+				text += "\nSaved repository commands (evidence): " + JSON.stringify(savedCommands);
+				setupTurn = { savedCommands, app, repository: repo, connection, sandbox, sessionId: meta.sessionId, commit: setup.commit, request: draft, directory: common.reviewDirectory, notes: inputs, redact: s => held.redactor.text(s) };
 				text += "\nRepository: " + JSON.stringify({ name: repo.owner + "/" + repo.name, private: repo.private, commit: setup.commit });
 				if (inputs.length) text += "\nSource labels (untrusted): " + JSON.stringify(inputs.map(({ id, label }) => ({ id, label })));
 			}
@@ -2976,7 +2980,7 @@ fi`, { signal, timeoutMs: 5000 });
 				const diagnosis = setupPhase.diagnosis();
 				meta.readiness.error = setupPhase.clean(why, 360);
 				meta.readiness.diagnosis = diagnosis;
-				const skills = { ...diagnosis.skills, filings: diagnosis.skills.filings.map(({ proposals, ...summary }) => summary) };
+				const skills = { ...diagnosis.skills, filings: diagnosis.skills.filings.map(({ proposals, refusedLines, ...summary }) => summary) };
 				c.log.warn({ msg: "repo setup phase failed", session: meta.sessionId, turn, error: meta.readiness.error, ...diagnosis, skills });
 			} else {
 				meta.readiness.error = (setupStage === "publish" ? "The guides could not be published. " : "Repo setup could not save the result. ") + setupPhase.clean(why);

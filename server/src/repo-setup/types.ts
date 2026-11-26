@@ -9,6 +9,7 @@ export interface SkillFiling {
 	droppedBySmoke: { path: string; reason: string }[];
 	kept: number;
 	refused?: string;
+	refusedLines?: { path: string; line: number; text: string; reason: string }[];
 }
 
 export interface SetupDiagnosis {

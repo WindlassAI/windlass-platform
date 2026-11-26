@@ -8,10 +8,11 @@ import type { DraftRequest, SetupNote, SkillFiling } from "./types.js";
 
 export interface SetupTurn {
 	app: GithubApp; repository: StoredRepository; connection: StoredConnection; sandbox: SandboxHandle;
-	sessionId: string; commit: string; request: DraftRequest; directory: string; notes: SetupNote[]; redact(text: string): string;
+	savedCommands: string[]; sessionId: string; commit: string; request: DraftRequest; directory: string; notes: SetupNote[]; redact(text: string): string;
 }
 
-export async function checkSetupFiling(turn: SetupTurn, args: unknown, signal: AbortSignal, revision: boolean, stats: SkillFiling) {
+export async function checkSetupFiling(turn: SetupTurn, args: unknown, signal: AbortSignal, revision: boolean, stats: SkillFiling,
+	onRefusedLine: (path: string, line: number, text: string, reason: string) => void) {
 	const { app, repository, connection, commit } = turn;
 	const { installation } = await sessionRepository(app, connection, repository, "read");
 	const wanted = evidencePaths(args);
@@ -28,7 +29,7 @@ export async function checkSetupFiling(turn: SetupTurn, args: unknown, signal: A
 			return { paths: read.slice(0, 160), maxFileBytes: 128 * 1024, maxBytes: 4 * 1024 * 1024, more: false };
 		}), { revokeAfter: true });
 	if (scan.commit !== commit) throw Error("The repository changed. Run setup again.");
-	const draft = validateDraft(args, { ...turn, revision, paths, read: new Map(scan.files.map(f => [f.path, f.text])), owner: repository.owner, host: new URL(repository.url).hostname }, stats);
+	const draft = validateDraft(args, { ...turn, revision, paths, onRefusedLine, read: new Map(scan.files.map(f => [f.path, f.text])), owner: repository.owner, host: new URL(repository.url).hostname }, stats);
 	for (const path of draft.skills.keys()) {
 		const command = smokeCommand(draft.files.get(path)!);
 		if (!command) continue;

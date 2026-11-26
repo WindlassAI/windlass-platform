@@ -1,4 +1,5 @@
 import { parse } from "yaml";
+import { workflowCommands } from "./workflow-commands.js";
 import { requireGuideStructure } from "./guide-structure.js";
 import { record as row } from "../github/app.js";
 import { readinessJudgment } from "../factory/readiness-filing.js";
@@ -9,6 +10,8 @@ import type { DraftRequest, NoteDecision, SetupNote, SkillFiling, Verdict } from
 
 interface DraftContext {
 	revision?: boolean;
+	savedCommands?: readonly string[];
+	onRefusedLine?(path: string, line: number, text: string, reason: string): void;
 	request: DraftRequest;
 	notes: SetupNote[];
 	paths: string[];
@@ -25,7 +28,7 @@ const verdicts: Verdict[] = ["team", "personal", "private", "secret", "stale", "
 const opaqueCredential = /\b(?=[A-Za-z0-9_+/=-]{32,}\b)(?=[A-Za-z0-9_+/=-]*[A-Z])(?=[A-Za-z0-9_+/=-]*[a-z])(?=[A-Za-z0-9_+/=-]*\d)[A-Za-z0-9_+/=-]{32,}/;
 const secret = (s: string) => opaqueCredential.test(s) || redact(s) !== s || pushTokenKinds(s).length > 0 || /(?:password|passwd|api[_-]?key|access[_-]?token)\s*[:=]\s*["']?[^\s"'<>]{4,}|-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(s);
 // Bare domains in prose can look like filenames. These are common repository file extensions.
-const fileExtension = /\.(?:[cm]?[jt]sx?|mdc?|rst|txt|json[c5]?|ya?ml|toml|lock|sql|css|scss|html?|xml|svg|png|jpe?g|gif|webp|sh|bash|zsh|py|go|rs|java|kt|swift|cs|cpp|hpp|rb|php|scala|vue|svelte|dart|exs?|hs|lua|env|conf|config|ini|mod|sum|gradle|properties|proto|tf|hcl|csv|tsv|pdf|gz|zip)$/i;
+const fileExtension = /\.(?:[cm]?[jt]sx?|mdc?|rst|txt|json[c5]?|ya?ml|toml|lockb?|sql|css|scss|html?|xml|svg|png|jpe?g|gif|webp|sh|bash|zsh|py|go|rs|java|kt|swift|cs|cpp|hpp|rb|php|scala|vue|svelte|dart|exs?|hs|lua|env|conf|config|ini|mod|sum|gradle|properties|proto|tf|hcl|csv|tsv|pdf|gz|zip)$/i;
 export function privateLine(s: string, ctx: Pick<DraftContext, "host" | "owner" | "read" | "redact">) {
 	if (ctx.redact(s) !== s || secret(s) || /(?:\/home\/|\/Users\/|[a-z]:\\Users\\)|\b[\w.+-]+@[\w.-]+|\b(?:\d{1,3}\.){3}\d{1,3}\b|\b(?:[a-f\d]{1,4}:){3,}[a-f\d:]+/i.test(s)) return true;
 	const owners = [ctx.owner, ...((ctx.read.get(".github/CODEOWNERS") ?? ctx.read.get("CODEOWNERS") ?? "").match(/@[\w/-]+/g) ?? [])].map(v => v.replace(/^@/, "").toLowerCase());
@@ -46,17 +49,25 @@ function short(v: unknown) {
 	return v.trim();
 }
 
-interface Proof { label: string; file?: string; source?: string }
+interface Proof { label: string; file?: string; source?: string; savedCommand?: string; run?: string }
 
-function evidence(value: unknown, ctx: DraftContext): Proof | null {
+function evidence(value: unknown, ctx: DraftContext, workflows: Map<string, Map<number, string>>, allowSaved = true): Proof | null {
 	const e = row(value);
 	if (typeof e.file === "string" && ctx.paths.includes(e.file) && !privateLine(e.file, ctx)) {
-		if (e.line === undefined) return { label: e.file };
+		if (e.line === undefined) return { label: e.file, file: e.file };
 		if (Number.isSafeInteger(e.line) && Number(e.line) > 0) {
-			const source = ctx.read.get(e.file)?.split("\n")[Number(e.line) - 1];
-			if (source?.trim()) return { label: e.file + ":" + e.line, file: e.file, source };
+			const contents = ctx.read.get(e.file);
+			const source = contents?.split("\n")[Number(e.line) - 1];
+			if (contents && source?.trim()) {
+				const proof = { label: e.file + ":" + e.line, file: e.file };
+				if (!/^\.github\/workflows\/[^/]+\.ya?ml$/.test(e.file)) return { ...proof, source };
+				if (!workflows.has(e.file)) workflows.set(e.file, workflowCommands(contents));
+				return { ...proof, run: workflows.get(e.file)?.get(Number(e.line)) };
+			}
 		}
 	}
+	if (allowSaved && typeof e.command === "string" && ctx.savedCommands?.includes(e.command))
+		return { label: "Saved repository command", savedCommand: e.command };
 	// Replay only path-existence checks against the trusted tree. Never execute submitted commands.
 	if (typeof e.command === "string" && e.exit === 0 && typeof e.said === "string" && e.said.length <= 200) {
 		const path = /^(?:test -[ef]|ls --|git ls-files --error-unmatch) ([\w./-]+)$/.exec(e.command)?.[1];
@@ -70,23 +81,43 @@ function containsLiteral(source: string, value: string) {
 	return new RegExp("(?<![\\w-])" + escaped + "(?![\\w-])").test(source);
 }
 
-function supportsCommands(line: string, proofs: (Proof | null)[], ctx: DraftContext) {
-	const commands = [...line.matchAll(/`([^`]+)`/g)].map(m => m[1]).filter(s => /\s|^--?[a-z]|^[\w-]+:[\w:-]+$/i.test(s));
-	if (/^\s*(?:npm|pnpm|bun|yarn|node|npx|make|cargo|go|python3?|git|bash|sh)\s/.test(line)) commands.push(line.trim());
-	return commands.every(command => proofs.some(proof => {
-		if (!proof?.source || !proof.file) return false;
-		const { source, file } = proof;
-		if (!/(^|\/)package\.json$/.test(file)) return containsLiteral(source, command);
-		const script = command === "npm test" ? "test" : /^(?:(?:npm run|bun run|pnpm(?: run)?|yarn(?: run)?) )?([\w:-]+)$/.exec(command)?.[1];
-		try {
-			const scripts = JSON.parse(ctx.read.get(file) ?? "{}").scripts ?? {};
-			return Object.entries(scripts).some(([name, value]) => {
-				if (typeof value !== "string") return false;
-				if (name === script && new RegExp(`"${script}"\\s*:`).test(source)) return true;
-				return source.includes(JSON.stringify(value)) && containsLiteral(value, command);
-			});
-		} catch { return false; }
-	}));
+const installLocks = new Map<string, string[]>([
+	["npm ci", ["package-lock.json", "npm-shrinkwrap.json"]], ["npm install", ["package-lock.json", "npm-shrinkwrap.json"]],
+	["pnpm install", ["pnpm-lock.yaml"]], ["yarn install", ["yarn.lock"]], ["bun install", ["bun.lock", "bun.lockb"]],
+]);
+
+function citedInvocation(command: string, proof: Proof | null) {
+	return proof?.savedCommand === command || !!proof?.run && containsLiteral(proof.run, command);
+}
+
+function supportsCommand(command: string, proof: Proof | null, ctx: DraftContext) {
+	if (!proof) return false;
+	if (citedInvocation(command, proof)) return true;
+	const { source, file } = proof;
+	if (!file) return false;
+	const locks = installLocks.get(command);
+	if (locks?.includes(file)) return true;
+	if (locks && file === "package.json" && (command !== "npm ci" || locks.some(path => ctx.paths.includes(path)))) return true;
+	if (!/(^|\/)package\.json$/.test(file)) return !!source && containsLiteral(source, command);
+	const script = command === "npm test" ? "test" : /^(?:(?:npm run|bun run|pnpm(?: run)?|yarn(?: run)?) )?([\w.:-]+)$/.exec(command)?.[1];
+	try {
+		const scripts = JSON.parse(ctx.read.get(file) ?? "{}").scripts ?? {};
+		return Object.entries(scripts).some(([name, value]) => {
+			if (typeof value !== "string") return false;
+			if (name === script && (!source || [...source.matchAll(/"([\w.:-]+)"\s*:/g)].some(m => m[1] === name))) return true;
+			return !!source && source.includes(JSON.stringify(value)) && containsLiteral(value, command);
+		});
+	} catch { return false; }
+}
+
+function supportsCommands(line: string, proofs: (Proof | null)[], ctx: DraftContext, shellLine: boolean, quickCommands: boolean) {
+	const snippets = [...line.matchAll(/`([^`]+)`/g)].map(m => m[1]);
+	const commands = snippets.filter(s => /\s|^--?[a-z]|^[\w-]+:[\w:-]+$/i.test(s) ||
+		quickCommands && /^[a-z][\w-]*$/.test(s) && !ctx.paths.some(p => p === s || p.startsWith(s + "/")));
+	if (shellLine || /^\s*(?:npm|pnpm|bun|yarn|node|npx|make|cargo|go|python3?|git|bash|sh)\s/.test(line)) commands.push(line.trim());
+	// A saved command proves only an invocation of that command on this guide line.
+	if (proofs.some(p => p?.savedCommand && ![...snippets, line.trim()].includes(p.savedCommand))) return false;
+	return commands.every(command => proofs.some(proof => supportsCommand(command, proof, ctx)));
 }
 
 export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFiling): AcceptedDraft {
@@ -111,6 +142,7 @@ export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFil
 	const allowed = new Set(["AGENTS.md", ...ctx.request.areas.map(d => d + "/AGENTS.md")]);
 	const entries = list(a.files, 20);
 	const repoFiles = new Set(ctx.paths);
+	const workflows = new Map<string, Map<number, string>>();
 	const tree = guideTree(ctx.paths, path => ctx.read.get(path));
 	for (const { path } of entries) if (typeof path === "string" && allowed.has(path)) tree.paths.add(path);
 	const skills: AcceptedDraft["skills"] = new Map();
@@ -143,7 +175,12 @@ export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFil
 		const path = f.path;
 		const command = skill && smokeCommand(f.content);
 		const proposed = f.content.split(/\r?\n/);
-		const issues = checkGuide(path, f.content, tree);
+		const cited = list(f.lines, 450).map(r => ({ ref: r, proof: evidence(r.evidence, ctx, workflows) }));
+		const shellLines = new Set<number>();
+		const issues = checkGuide(path, f.content, tree, (line, command) => {
+			if (command && !command.startsWith("#") && command === proposed[line - 1].trim()) shellLines.add(line);
+			return cited.some(c => c.ref.line === line && citedInvocation(command, c.proof));
+		});
 		const headerEnd = skill ? skillHeaderEnd(proposed, skill) : -1;
 		if (skill && (headerEnd < 0 || issues.length)) {
 			rejectSkill(headerEnd < 0 ? "Supply matching YAML name and description and nonempty When to use, Steps and Check sections."
@@ -153,25 +190,34 @@ export function validateDraft(args: unknown, ctx: DraftContext, stats?: SkillFil
 		const original = ctx.read.get(path)?.split(/\r?\n/) ?? [];
 		const old = new Set(original);
 		const removed = list(f.removed ?? [], 150);
-		if (original.some((line, i) => line.trim() && !proposed.includes(line) && !privateLine(line, ctx) && !removed.some(r => r.line === i + 1 && evidence(r.evidence, ctx))))
-			throw Error("Keep existing guide text, or cite evidence for each removed line.");
-		const refs = list(f.lines, 450);
+		const missing = original.findIndex((line, i) => line.trim() && !proposed.includes(line) && !privateLine(line, ctx) &&
+			!removed.some(r => r.line === i + 1 && evidence(r.evidence, ctx, workflows, false)));
+		if (missing !== -1) {
+			const reason = "Keep existing guide text, or cite evidence for each removed line.";
+			ctx.onRefusedLine?.(path, missing + 1, original[missing], reason);
+			throw Error(reason);
+		}
+		let quickCommands = false;
 		const kept: string[] = [];
 		let skillIssue = "";
 		for (const [i, line] of proposed.entries()) {
-			const claims = refs.filter(r => r.line === i + 1);
-			const sources = claims.map(r => decisions.find(n => n.noteId === r.noteId));
-			const proofs = claims.map(r => evidence(r.evidence, ctx));
+			const claims = cited.filter(c => c.ref.line === i + 1);
+			const sources = claims.map(({ ref }) => decisions.find(n => n.noteId === ref.noteId));
+			const proofs = claims.map(c => c.proof);
+			if (/^#{1,2}\s/.test(line)) quickCommands = line.trim() === "## Quick commands";
+			const referenceIssue = issues.find(e => e.line === i + 1);
 			const layout = /^\s*(?:$|`{3}\w*$|[| :\-]+$|#{1,6} [\w &-]{1,50}$)/.test(line);
 			const format = skill && (i <= headerEnd || command && (line === command || line === "`" + command + "`"));
 			let issue = "";
 			if (privateLine(line, ctx) || excludedLines.some(q => line.includes(q))) issue = "Contains private or excluded content.";
-			else if (issues.some(e => e.line === i + 1)) issue = "Contains an unresolved repository reference.";
-			else if (claims.some((r, j) => r.noteId && (!sources[j] || !["team", "duplicate"].includes(sources[j]!.verdict) || ctx.request.answers?.[String(r.noteId)] === "drop")))
+			else if (referenceIssue) issue = referenceIssue.message;
+			else if (claims.some(({ ref: r }, j) => r.noteId && (!sources[j] || !["team", "duplicate"].includes(sources[j]!.verdict) || ctx.request.answers?.[String(r.noteId)] === "drop")))
 				issue = "The cited note was excluded.";
 			else if (!layout && !format && !old.has(line) && !claims.length) issue = "A new instruction needs a repository citation.";
-			else if (proofs.some(p => !p) || claims.length && !supportsCommands(line, proofs, ctx)) issue = "The cited evidence does not support this line.";
+			else if (proofs.some(p => !p)) issue = "The citation does not identify repository evidence.";
+			else if (claims.length && !supportsCommands(line, proofs, ctx, shellLines.has(i + 1), quickCommands)) issue = "The cited evidence does not support the command.";
 			if (issue) {
+				ctx.onRefusedLine?.(path, i + 1, issue === "Contains private or excluded content." ? "[redacted]" : line, issue);
 				if (!skill) continue;
 				skillIssue = `Line ${i + 1}: ${issue}`;
 				break;
