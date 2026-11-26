@@ -6,7 +6,7 @@ import { DockerSnapshots } from "../server/src/sandbox/snapshots.js";
 /** Run: cd server && npx tsx ../scripts/runner-check.ts
  * Use --screenshots-only to check the screenshots pins, or --harness-only for Claude login and isolation.
  * Without a flag it runs --profiles-only and --harness-only first; --main-only leaves them out (CI runs them in a job of their own).
- * The five-minute Wi-Fi outage and two-minute laptop sleep are wall time.
+ * CI splits --main-only into --service-only and --outages-only. The five-minute outage and two-minute sleep are wall time.
  */
 import { writeProofDocker } from "./runner-proof-docker.js";
 import { imageId } from "./check-image.js";
@@ -885,6 +885,56 @@ require("node:module").syncBuiltinESMExports();`);
 			}
 			return;
 		}
+		const bin = join(tmp, "bin");
+		await mkdir(bin);
+		const measured = join(tmp, "disk-measurements");
+		const pullStarted = join(tmp, "pull-started"), releasePull = join(tmp, "release-pull");
+		const wrappedDocker = { PATH: bin + ":" + env(state).PATH, CHECK_DOCKER_PATH: env(state).PATH };
+		// A delayed pull is entirely local. All container operations use the real daemon.
+		await writeFile(join(bin, "docker"), `#!/bin/sh
+if [ "$1" = manifest ] && [ "$2" = inspect ]; then
+  echo '{"manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64"}}]}'
+  exit 0
+fi
+if [ "$1" = "pull" ]; then
+  echo start >> "$CHECK_PULL_STARTED"
+  for i in $(seq 1 100); do [ -f "$CHECK_RELEASE_PULL" ] && break; sleep 0.1; done
+  exit 1
+fi
+for arg in "$@"; do
+  if [ "$arg" = "df" ] && [ -n "$CHECK_DF_LOG" ]; then echo df >> "$CHECK_DF_LOG"; fi
+  if [ "$arg" = "df" ] && [ -n "$CHECK_LOW_DISK" ]; then printf 'Avail\\n4999999999\\n'; exit 0; fi
+done
+PATH="$CHECK_DOCKER_PATH" exec docker "$@"
+`, { mode: 0o700 });
+
+		async function checkOutages(ch: ServerChannel, id: string, child: ChildProcess) {
+			const name = containerName(id.slice(-12));
+			let windlass: string | undefined;
+			for (const [duration, freeze] of [[5000, false], [300_000, false], [120_000, true]] as const) {
+				windlass = await scripted(ch, id, async () => {
+					const before = await readFile(measured, "utf8");
+					srv.cut();
+					if (freeze) { child.kill("SIGSTOP"); await docker(["pause", name], { check: true }); }
+					try { await wait(duration); assert.equal(await readFile(measured, "utf8"), before); }
+					finally { if (freeze) { await docker(["unpause", name], { check: true }); child.kill("SIGCONT"); } srv.restore(); }
+				}, windlass);
+				ok(`A scripted Windlass turn finished with unique events across a ${duration / 1000}s ${freeze ? "laptop sleep" : "network loss"}.`);
+			}
+			ok("Disk is measured on welcome and create, and the five-minute outage starts no disk helper.");
+			return windlass;
+		}
+		if (process.argv.includes("--outages-only")) {
+			const service = run(state, undefined, bundle, { ...wrappedDocker, CHECK_DF_LOG: measured }, { flags: ["--allow-profile", "docker-windlass-sandbox"] });
+			await until(() => !!srv.state.report, "Runner did not report.");
+			assert.equal(await readFile(measured, "utf8"), "df\n");
+			await srv.attach();
+			const ch = srv.channel(sessionId);
+			const id = await ch.request("create", { profile: srv.state.report!.commandSandbox.ok ? "docker-windlass-sandbox" : "docker-hardened" });
+			assert.ok((await readFile(measured, "utf8")).split("df\n").length >= 3);
+			await checkOutages(ch, id, service.child);
+			return;
+		}
 		for (const [flag, value] of [["--max-running", "0"], ["--max-sandboxes", "1.5"]]) {
 			await assert.rejects(exec(process.execPath, [bundle, "status", flag, value], { env: env(state) }),
 				(error: { code?: number; stderr?: string }) => error.code === 1 && error.stderr?.trim() === `Give ${flag} a positive whole number.`);
@@ -1004,28 +1054,6 @@ require("node:module").syncBuiltinESMExports();`);
 
 		const missing = join(tmp, "missing.cjs");
 		await exec(process.execPath, ["runner/bundle.mjs", "sha256:" + randomBytes(32).toString("hex"), missing], { cwd: root });
-		const bin = join(tmp, "bin");
-		await mkdir(bin);
-		const measured = join(tmp, "disk-measurements");
-		const pullStarted = join(tmp, "pull-started"), releasePull = join(tmp, "release-pull");
-		const wrappedDocker = { PATH: bin + ":" + env(state).PATH, CHECK_DOCKER_PATH: env(state).PATH };
-		// A delayed pull is entirely local. All container operations use the real daemon.
-		await writeFile(join(bin, "docker"), `#!/bin/sh
-if [ "$1" = manifest ] && [ "$2" = inspect ]; then
-  echo '{"manifests":[{"platform":{"os":"linux","architecture":"amd64"}},{"platform":{"os":"linux","architecture":"arm64"}}]}'
-  exit 0
-fi
-if [ "$1" = "pull" ]; then
-  echo start >> "$CHECK_PULL_STARTED"
-  for i in $(seq 1 100); do [ -f "$CHECK_RELEASE_PULL" ] && break; sleep 0.1; done
-  exit 1
-fi
-for arg in "$@"; do
-  if [ "$arg" = "df" ] && [ -n "$CHECK_DF_LOG" ]; then echo df >> "$CHECK_DF_LOG"; fi
-  if [ "$arg" = "df" ] && [ -n "$CHECK_LOW_DISK" ]; then printf 'Avail\\n4999999999\\n'; exit 0; fi
-done
-PATH="$CHECK_DOCKER_PATH" exec docker "$@"
-`, { mode: 0o700 });
 		for (const fault of ["daemon", "image", "disk"] as const) {
 			await stop(service.child); await until(() => !srv.online(), "Test runner did not disconnect.");
 			srv.state.report = null;
@@ -1249,19 +1277,10 @@ PATH="$CHECK_DOCKER_PATH" exec docker "$@"
 		await until(async () => (await docker(["exec", name, "test", "-e", "/tmp/orphan-finished"])).code === 0, "Reset killed an independent run.");
 		ok("Control logout removes the turn file. A fresh conversation closes Windlass and lets an independent command finish.");
 
-		let windlass: string | undefined;
-		for (const [duration, freeze] of [[5000, false], [300_000, false], [120_000, true]] as const) {
-			windlass = await scripted(ch, id, async () => {
-				const before = await readFile(measured, "utf8");
-				srv.cut();
-				if (freeze) { service.child.kill("SIGSTOP"); await docker(["pause", name], { check: true }); }
-				try { await wait(duration); assert.equal(await readFile(measured, "utf8"), before); }
-				finally { if (freeze) { await docker(["unpause", name], { check: true }); service.child.kill("SIGCONT"); } srv.restore(); }
-			}, windlass);
-			ok(`A scripted Windlass turn finished with unique events across a ${duration / 1000}s ${freeze ? "laptop sleep" : "network loss"}.`);
-		}
-
-		ok("Disk is measured on welcome and create, and the five-minute outage starts no disk helper.");
+		// The crash test resumes a real session even when CI runs the outage sequence separately.
+		const windlass = process.argv.includes("--service-only")
+			? await scripted(ch, id, async () => {})
+			: await checkOutages(ch, id, service.child);
 		const crash = ch.start({ id, tag: "crash", argv: ["sh", "-c", "sleep 120 | windlass acp"] }, () => {});
 		await until(async () => !!(await docker(["exec", name, "wlp-run", "list", "crash"])).stdout.trim(), "Crash fixture did not start.");
 		const epoch = srv.state.epoch;
@@ -1381,7 +1400,7 @@ const privateHarnessTag = "chk-" + randomUUID();
 const privateTag = process.env.WLP_RUNNER_CHECK_IMAGE ? undefined : `windlass-runner:chk-${randomUUID()}`;
 try {
 	const image = await imageId();
-	if (process.argv.includes("--profiles-only") || process.argv.includes("--sizing-only") || process.argv.includes("--snapshots-only")) {
+	if (process.argv.includes("--profiles-only") || process.argv.includes("--sizing-only") || process.argv.includes("--snapshots-only") || process.argv.includes("--outages-only")) {
 		await exec(process.execPath, ["runner/bundle.mjs", image, bundle], { cwd: root });
 		await check(image);
 	} else if (process.argv.includes("--harness-only")) {
@@ -1396,7 +1415,7 @@ try {
 		await exec(process.execPath, ["runner/bundle.mjs", image, bundle, shots], { cwd: root });
 		await check(image, shots);
 	} else {
-		if (!process.argv.includes("--real-machine") && !process.argv.includes("--main-only")) {
+		if (!process.argv.includes("--real-machine") && !process.argv.includes("--main-only") && !process.argv.includes("--service-only")) {
 			for (const suite of ["--profiles-only", "--harness-only"]) {
 				const focused = spawn(process.execPath, [...process.execArgv, process.argv[1]!, suite], { stdio: "inherit" });
 				assert.equal(await new Promise(resolve => focused.on("exit", resolve)), 0);
