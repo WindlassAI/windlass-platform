@@ -17,7 +17,7 @@ import { limitedAccounts, loginGeneration, providerAccounts, recordProviderUsage
 import type { UsageObservation } from "../provider-usage.js";
 import { changed as machinesChanged, machineCatalog, itemMachines, launchPlace, listMachines, launchMachineProfiles, machineActions, machineSecrets, machineTables, credentialSource } from "./user-machines.js";
 import { keptFull, makeSandboxRoom } from "./user/kept-sandboxes.js";
-import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type MakeSession, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, plannerHostedCapacity, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
+import { accountTokenWait, ATTACHMENT_SWEEP_ACTION, ITEM_TABLES, type ItemFacts, type MakeSession, type ItemSessionInput, QUEUE_ACTION, notifyProviderWaits, notifyRemovedMachines, factorySlots, plannerHostedCapacity, itemActions, itemSessionRefusal, loadItems, queueChanged } from "./user-items.js";
 import type { EnvironmentPlace, EnvironmentSchedule, RepositoryEnvironments, SandboxProfileId } from "../contract.js";
 import { ENVIRONMENT_SCHEDULES } from "../contract.js";
 import { HOSTED_SIZE_NAMES, HOSTED_SIZES, ITEM_HOSTED_SIZE, SESSION_HOSTED_SIZE, isHostedSize, type HostedSize } from "../contract.js";
@@ -595,7 +595,7 @@ interface CreateCtx extends UserCtx, ModelsCtx {
 
 const KEYED = "agent";
 
-async function sessionHostedSize(c: CreateCtx, asked: unknown, project: string | null, item: Parameters<MakeSession>[4] | undefined): Promise<HostedSize | undefined> {
+async function sessionHostedSize(c: CreateCtx, asked: unknown, project: string | null, item: ItemSessionInput | undefined): Promise<HostedSize | undefined> {
 	const layer = await getLayer();
 	if (asked !== undefined && asked !== null && !isHostedSize(asked)) throw new UserError(`Choose a hosted size: ${HOSTED_SIZES.map(size => HOSTED_SIZE_NAMES[size]).join(", ")}.`, { code: "bad_input" });
 	// Where the deployment has billing, the plan's sizes only (billing/plans.ts): Free has no large.
@@ -604,13 +604,13 @@ async function sessionHostedSize(c: CreateCtx, asked: unknown, project: string |
 	const listed = layer.sandboxes.sizes?.() ?? [];
 	const offered = hostedSizesForPlan(listed, plan).map(size => size.id);
 	if (listed.length > 0 && offered.length === 0) throw new UserError("No hosted sandbox size is available on your plan.", { code: "bad_input" });
-	const selected = (asked as HostedSize | undefined) ?? item?.hostedSize ?? (!item && project ? (await readDefaults(c.db, project)).hostedSize : null);
+	const selected = asked ?? item?.hostedSize ?? (!item && project ? (await readDefaults(c.db, project)).hostedSize : null);
 	if (selected && !offered.includes(selected)) throw new UserError(`${HOSTED_SIZE_NAMES[selected]} is unavailable here. Choose ${offered.map(size => HOSTED_SIZE_NAMES[size]).join(" or ") || "the deployment size"}.`, { code: "bad_input" });
 	if (listed.length <= 1) return offered[0];
 	return selected ?? deploymentSize(offered, item ? ITEM_HOSTED_SIZE : SESSION_HOSTED_SIZE);
 }
 
-async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: Parameters<MakeSession>[4], { build, readiness }: { build?: EnvironmentBuildOrigin; readiness?: SessionCreateInput["readiness"] } = {}): Promise<SessionSummary> {
+async function makeSession(c: CreateCtx, profile: UserProfile, input: CreateSessionInput, submission: Submission | null, item?: ItemSessionInput, { build, readiness }: { build?: EnvironmentBuildOrigin; readiness?: SessionCreateInput["readiness"] } = {}): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
 	if (input.size !== undefined && ![1, 2, 4].includes(input.size))
 		throw new UserError("Choose a sandbox size of 1, 2 or 4 slots.", { code: "bad_input" });
@@ -965,7 +965,7 @@ function environmentHost(c: EnvironmentCtx): EnvironmentHost {
 
 /** `makeSession` for an item's session, as user-items.ts asks for it, with the action's own context. */
 function itemSession(c: CreateCtx): MakeSession {
-	return (_, profile, input, submission, item) => makeSession(c, profile, input, submission, item);
+	return (profile, input, item) => makeSession(c, profile, input, null, item);
 }
 
 type RevocationContext = UserCtx & {

@@ -44,7 +44,7 @@ import { db, type RawAccess } from "rivetkit/db";
 import { clientError, describeError, requireService, requireServiceFor, serviceParams } from "../auth.js";
 import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
-import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
+import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SandboxPlace, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
 import { RULES, activeJob, advance, personAdds, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, plannerCapacityText, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, requestedReviewBody, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
@@ -1877,22 +1877,18 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					limited: inventory.limited?.filter(a => limitApplies(a, machineId)).map(({ harness, limitedUntil }) => ({ harness, limitedUntil })) }));
 				const parent = item.place;
 				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
-				const partRun = resolveRun(item.context!, "part");
-				const preferred = { place: partRun.place, harness: partRun.agent, machineProfile: partRun.profile, machineModel: partRun.model, machineEffort: partRun.effort };
-				const selected = preferred?.place;
-				const defaultPlace = selected && typeof selected === "object" ? { kind: "machine" as const, machineId: selected.machine }
-					: selected === "hosted" ? { kind: "hosted" as const } : parent;
+				const run = resolveRun(item.context!, "part");
+				const selected = run.place;
+				const defaultPlace: SandboxPlace = typeof selected === "object" ? { kind: "machine", machineId: selected.machine }
+					: selected === "hosted" ? { kind: "hosted" } : parent;
 				if (await autoApprovePlans(c, stored)) text += "\nThis repository auto-approves small plans. Ask only questions whose answers change the work and state the obvious defaults in the spec.";
 				text += plannerReadiness(await userActor(c, meta.uid).internalReadinessLevel(meta.repository.id));
 				text += "\n" + plannerCapacityText(defaultPlace, inventory.machines, inventory.hostedCapacity);
-				if (preferred?.place) {
-					const chosen = preferred.place;
-					// A hosted fallback runs this planner only. Its parts still prefer a compatible machine.
-					const prefer = typeof chosen === "object" ? inventory.machines.find(m => m.machineId === chosen.machine)?.name
-						: chosen === "hosted" ? "hosted" : parent.kind === "machine" ? parentName : undefined;
-					text += "\nOmit place and agent to inherit the owner’s settings. Use place.prefer or agent for a part that requires a different choice. Owner preference (data): " +
-						JSON.stringify({ prefer, selection: preferred.place === "any-machine" ? "any compatible machine" : undefined, harness: preferred.harness ?? "windlass", profile: preferred.machineProfile, model: preferred.machineModel ?? undefined, effort: preferred.machineEffort ?? undefined });
-				}
+				// A hosted fallback runs this planner only. Its parts still prefer a compatible machine.
+				const prefer = typeof selected === "object" ? inventory.machines.find(m => m.machineId === selected.machine)?.name
+					: selected === "hosted" ? "hosted" : parent.kind === "machine" ? parentName : undefined;
+				text += "\nOmit place and agent to inherit the owner’s settings. Use place.prefer or agent for a part that requires a different choice. Owner preference (data): " +
+					JSON.stringify({ prefer, selection: selected === "any-machine" ? "any compatible machine" : undefined, harness: run.agent, profile: run.profile, model: run.model ?? undefined, effort: run.effort ?? undefined });
 				text += "\n\nRunners reporting slots can allocate up to four slots within their reported capacity." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (Small 1 vCPU, 1 GiB; Medium 2 vCPU, 4 GiB, the default; Large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than Medium (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, screenshotsEnabled: inventory.screenshotsEnabled, repositoryScreenshots: inventory.repositoryScreenshots, hostedKeys: inventory.hostedKeys?.map(k => k.provider), hostedModels, keyProfiles: inventory.keyProfiles, hostedEgress: inventory.hostedEgress, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
 				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
 			}

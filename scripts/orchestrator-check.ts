@@ -900,7 +900,7 @@ interface ChildOptions {
 	refuse?: { code: string; message: string };
 	/** Pick the job of this subtask (default: the first). */
 	subtask?: string;
-	/** What the user actor answers for each agent's models (`internalAgentModels`); left out: nothing listed. */
+	/** Agent catalogs available to placement. */
 	models?: import("../server/src/factory/placement.js").AgentModels;
 }
 async function childCreation(t: import("node:test").TestContext, overflow = false, options: ChildOptions = {}) {
@@ -937,12 +937,12 @@ async function childCreation(t: import("node:test").TestContext, overflow = fals
 		db: { execute: async (sql: string, ...args: never[]) => raw.prepare(sql).all(...args) },
 		client: () => ({ workItem: { get: ([, id]: string[]) => id === job.id ? childActor : parent,
 			create: async (_key: string[], { input }: { input: { item: typeof feature } }) => { child = input.item; } } }) };
-	let sessionOrigin: Parameters<import("../server/src/actors/user-items.js").MakeSession>[4] | undefined;
+	let sessionOrigin: import("../server/src/actors/user-items.js").ItemSessionInput | undefined;
 	const delivered: { place: unknown; size?: number; profile?: string }[] = [];
 	const sessions: { harness?: string; model?: string; effort?: string }[] = [];
 	const started: string[] = [];
 	childActor.internalAct = async (input: { action: { kind: string } }) => { started.push(input.action.kind); return child; };
-	const create = (cancel = false) => itemActions.internalFeatureChild(ctx as never, { parent: feature.id, child: job.id, cancel }, async (_c, _owner, input, _submission, origin) => {
+	const create = (cancel = false) => itemActions.internalFeatureChild(ctx as never, { parent: feature.id, child: job.id, cancel }, async (_owner, input, origin) => {
 		if (options.refuse) throw clientError({ error() {} }, new Error(options.refuse.message), options.refuse.message, options.refuse.code);
 		sessionOrigin = origin;
 		delivered.push({ place: input.place, size: origin.size, profile: input.profile });

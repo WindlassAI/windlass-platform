@@ -2125,7 +2125,7 @@ async function memoryChecks(): Promise<void> {
 				}),
 			},
 		});
-		const makeSession = async (_c: unknown, _profile: unknown, _input: unknown, _submission: unknown, ids: { sessionId: string }) => {
+		const makeSession = async (_profile: unknown, _input: unknown, ids: { sessionId: string }) => {
 			const summary = { id: ids.sessionId, place: { kind: "hosted" }, repository: { provider: "github", id: 1, owner: "u", name: "r", branch: "main", private: true, url: "" } };
 			q.c.vars.sessions.set(ids.sessionId, summary as never);
 			return summary;
