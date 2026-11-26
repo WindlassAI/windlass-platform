@@ -794,10 +794,10 @@ function Log({ view, now }: { view: ItemView; now: number }) {
 const readFirst = (item: Pick<ItemView, "state" | "origin">) => item.state === "draft" && item.origin !== null && item.origin !== undefined && !originIssue(item.origin).trusted;
 
 function IssueOrigin({ origin }: { origin: NonNullable<ItemView["origin"]> }) {
-	const { url, author, tracker } = originIssue(origin);
+	const { url, author, tracker, label } = originIssue(origin);
 	return (
 		<span className="item-origin">
-			from <a href={url} target="_blank" rel="noreferrer" title={tracker}>{origin.issue ? `#${origin.issue.number}` : origin.linear.identifier}</a> by {author}
+			from <a href={url} target="_blank" rel="noreferrer" title={tracker}>{label}</a> by {author}
 		</span>
 	);
 }

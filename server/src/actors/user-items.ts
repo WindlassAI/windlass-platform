@@ -33,8 +33,8 @@ import { harnessName, itemHarnessProblem, itemProfiles, knownHarness } from "../
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch, subtaskBranch } from "../github/feature.js";
 import { githubIntake } from "./github-intake.js";
-import { fileLinearIssue, inIntakeQueue, INTAKE_SOURCES, intakeScope, linearSources } from "./issue-intake.js";
-import type { Intake, IntakeTrigger, LinearFiled, LinearFiling } from "../factory/intake.js";
+import { fileJiraIssue, fileLinearIssue, inIntakeQueue, INTAKE_SOURCES, intakeScope, linearSources } from "./issue-intake.js";
+import type { Intake, IntakeTrigger, JiraFiled, JiraFiling, LinearFiled, LinearFiling } from "../factory/intake.js";
 import { GithubProblem, resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { githubApp } from "../github/app.js";
 import { refHead } from "../github/feature.js";
@@ -174,7 +174,7 @@ const KEYED = "work item";
 /** The action the turn queue's schedule fires (factory-e2e.ts checks it is registered under this name). */
 export const QUEUE_ACTION = "internalTurnQueue";
 
-/** The key of a creation in `ItemsState.created`: an item filed from an issue (GitHub's or Linear's) is in a scope of its own, apart from the web's and the API's. */
+/** The key of a creation in `ItemsState.created`: an item filed from an issue is in a scope of its own, apart from the web's and the API's. */
 const scopedKey = (intake: boolean, key: string) => intake ? intakeScope(key) : "user:" + key;
 
 export async function loadItems(db: RawAccess): Promise<ItemsState> {
@@ -480,8 +480,8 @@ async function waitingRepository(c: ItemsCtx, job: DefaultBuilder): Promise<Sess
 async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source: ItemSummary["source"], submission: Submission | null, makeSession: MakeSession, intake?: Intake, child?: { screenshots: boolean; mergeTarget?: string; joinOnGate: boolean; featureBody: string; placement: ChildPlacement; id: string; base: string; start?: string | null; owns: string[]; parent: NonNullable<ItemSummary["parent"]>; budget: ItemSummary["budget"]; untrusted?: string[]; unsandboxed?: string[] }): Promise<ItemSummary> {
 	const input = cleanItemInput(raw);
 	const asked = raw as CreateItemInput;
-	const { github, linear } = intake ?? {};
-	const policy = github?.defaultPlace ?? linear?.defaultPlace ?? (source === "web" && !child && asked.useDefaultPlace === true && asked.place === undefined
+	const { github, linear, jira } = intake ?? {};
+	const policy = github?.defaultPlace ?? linear?.defaultPlace ?? jira?.defaultPlace ?? (source === "web" && !child && asked.useDefaultPlace === true && asked.place === undefined
 		? savedPlace(await readDefaults(c.db, "github:" + input.repository.id), await readAccountDefaults(c.db)) : undefined);
 	// An issue proposes a feature in its own repository only: a sibling needs the owner's own filing.
 	if (intake && input.repositories) throw new UserError("An issue files a feature in its own repository only.", { code: "bad_input" });
@@ -528,7 +528,7 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 		if (!repository) throw new Error("the item's session has no repository");
 		const review = session && await bindReviewer(c, profile, session, itemId, !!child, issue, makeSession);
 		const now = Date.now();
-		const meta: ItemMeta = { ...(policy && { defaultPlace: policy }), ...(placed && !session && { pendingBuilder: job }), uid, sessionId, reviewerSessionId: review?.reviewerSessionId ?? null, reviewBase: null, handoffReview: null, repository, source, github, ...(linear && { linear }), createdAt: now, activityAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
+		const meta: ItemMeta = { ...(policy && { defaultPlace: policy }), ...(placed && !session && { pendingBuilder: job }), uid, sessionId, reviewerSessionId: review?.reviewerSessionId ?? null, reviewBase: null, handoffReview: null, repository, source, github, ...(linear && { linear }), ...(jira && { jira }), createdAt: now, activityAt: now, verdict: null, ledger: { seconds: 0, holds: [] } };
 		const limits = accountLimits(c.vars.items.limits).factory;
 		const item = createItem({ id: itemId, mode: input.mode, ...(repos && { repos }), reviewer: review?.reviewer, task: { title: input.title, body: input.body, acceptance: input.acceptance, base: repository.branch }, place: session?.place ?? placed!.destination.place, budget: child?.budget ?? limits.item, agent: { harness: session ? session.harness ?? "windlass" : placed!.destination.harness, model: session?.model ?? "default", effort: input.effort, ...(session?.item?.signIn && { signIn: session.item.signIn }) } });
 		if (placed && !session) item.awaitingPlace = placed.destination.wait;
@@ -541,7 +541,8 @@ async function makeItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 			item.placement = child.placement;
 		}
 		// An issue someone else wrote is not the person's own text: every turn that hands the agent the task says where it came from.
-		const outside = sources(child?.untrusted, github && !github.origin.issue.trusted ? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)] : [], linear ? linearSources(linear.origin) : []);
+		const outside = sources(child?.untrusted, github && !github.origin.issue.trusted ? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)] : [], linear ? linearSources(linear.origin) : [],
+			jira ? [untrustedWords.jira(jira.origin.jira.identifier, jira.origin.jira.author)] : []);
 		if (outside.length) item.untrusted = outside;
 		const allowed = thirdParty(child?.unsandboxed).filter(source => outside.includes(source));
 		if (allowed.length) item.unsandboxed = allowed;
@@ -585,8 +586,11 @@ async function fileItem(c: ItemsCtx, profile: UserProfile, raw: unknown, source:
 	let attempt: Promise<ItemSummary>;
 	try {
 		const { idempotencyKey, ...asked } = raw as CreateItemInput;
-		// What a Linear item's key stands for is the issue's filing, not the text it had when the first attempt was made: an attempt that finishes an interrupted one is the same.
-		const submission = submissionOf(idempotencyKey, intake?.linear ? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation } : intake ? { asked, github: intake.github } : asked);
+		// Retrying a tracker reservation finishes the same generation even after the issue text changes.
+		const identity = intake?.linear ? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation }
+			: intake?.jira ? { jira: intake.jira.origin.jira.id, siteId: intake.jira.siteId, generation: intake.jira.generation }
+			: intake ? { asked, github: intake.github } : asked;
+		const submission = submissionOf(idempotencyKey, identity);
 		if (submission === null) return await makeItem(c, profile, asked, source, null, makeSession);
 		const key = scopedKey(!!intake, submission.key);
 		const made = c.vars.items.created.get(key);
@@ -1155,7 +1159,7 @@ export const itemActions = {
 	},
 	internalGithubIntake(c: ItemsCtx, trigger: IntakeTrigger, makeSession: MakeSession) {
 		requireServiceFor(c, "call");
-		// All installations share this user's budget, and so does Linear: one queue. The durable claim makes interruption replayable.
+		// All trackers share this user's budget: one queue. The durable claim makes interruption replayable.
 		return inIntakeQueue(c, () => githubIntake(c, trigger,
 			key => githubItemId(c.key[0]!, key),
 			(profile, filing) => fileItem(c, profile, filing.input, "github", makeSession, { github: filing.binding })));
@@ -1168,6 +1172,11 @@ export const itemActions = {
 		requireServiceFor(c, "call");
 		return inIntakeQueue(c, () => fileLinearIssue(c, filing,
 			(profile, made) => fileItem(c, profile, made.input, "linear", makeSession, { linear: made.binding })));
+	},
+	internalJiraIntake(c: ItemsCtx, filing: JiraFiling, makeSession: MakeSession): Promise<JiraFiled> {
+		requireServiceFor(c, "call");
+		return inIntakeQueue(c, () => fileJiraIssue(c, filing,
+			(profile, made) => fileItem(c, profile, made.input, "jira", makeSession, { jira: made.binding })));
 	},
 	internalReserveAttachment(c: ItemsCtx, input: Reservation) {
 		requireService(c);

@@ -37,7 +37,7 @@ import { useSavedRepositories } from "./Home";
 import { asking, EndedFoot, endedWords, ItemRow, questionLine, useEndedPages, type ItemsState } from "./Items";
 
 /** How an item was filed, in the filter's words. */
-export const SOURCE_WORD: Record<ItemSource, string> = { web: "web", api: "API", github: "GitHub issue", linear: "Linear issue" };
+export const SOURCE_WORD: Record<ItemSource, string> = { web: "web", api: "API", github: "GitHub issue", linear: "Linear issue", jira: "Jira issue" };
 
 const IN_PROGRESS: ItemState[] = ["working", "queued", "waiting"];
 const ENDED: ItemState[] = ["done", "failed", "cancelled"];
