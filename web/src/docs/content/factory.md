@@ -291,6 +291,7 @@ Each automatic action appears in the timeline and counts against that run’s al
 | The sandbox runs out of memory | Try the next allowed hosted size once, or retry the same size once. Resizing also starts from GitHub. |
 | Checks cannot run in the environment | Retry the step once. |
 | Local checks did not verify a subtask | Run the saved checks once. By default, the part waits for passing local checks. With per-part CI enabled, the factory can accept passing CI on the exact commit and record the missing local evidence in the verdict. |
+| A CI job fails | Rerun eligible GitHub Actions jobs once on the same commit. A job that then passes is recorded as flaky. If the remaining checks also fail on the base head, choose to wait for a new passing base and update from it, fix here anyway, or give up. |
 | CI is cancelled or times out | Request one eligible infrastructure rerun, update from an ahead base once, then wait once. |
 | A blocked part’s feature is behind its target | Update the feature from the target once, between integrations. |
 | No sandbox or approved place is free, or a machine is away | Show the reason and wait up to six hours. Work resumes when the place becomes available. |
@@ -523,7 +524,7 @@ After approval, a subtask that has not started yet can still change its agent, m
 
 When you approve a split plan, the platform opens a draft pull request from `windlass/feature-<id>` into the base branch. Each subtask's work lands on that branch. When the feature is handed over, the pull request is marked ready for review. Merging a feature stays yours.
 
-By default, the factory watches CI on the current feature head as parts join. A failure queues one fix part with the failing checks, their logs and the feature diff. The fix passes the local gate and joins through the same integration queue. Each new head supersedes the previous CI result. Handover waits until all parts have finished and CI passes on the current head. If the same failure comes back after a fix, the feature stops and asks you.
+By default, the factory watches CI on the current feature head as parts join. After the rerun and base check, a failure specific to the feature queues one fix part with the failing checks, their logs and the feature diff. The fix passes the local gate and joins through the same integration queue. Each new head supersedes the previous CI result. Handover waits until all parts have finished and CI passes on the current head. If the same failure comes back after a fix, the feature stops and asks you.
 
 With **Wait for CI on each part** enabled, a failure on the assembled feature asks you to check the PR again, hand it over as it is, or give up.
 

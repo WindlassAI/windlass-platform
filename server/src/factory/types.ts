@@ -21,7 +21,12 @@ export interface GateEvidence {
 	flags: VerifiedFlag[];
 }
 
-export interface CiProgress {
+interface BaseFailureDecision {
+	waitForBase?: string;
+	fixInherited?: boolean;
+}
+
+export interface CiProgress extends BaseFailureDecision {
 	autoMergeKey?: string;
 	/** Base branch tip observed when this part was offered a CI update. */
 	baseTip?: string;
@@ -67,7 +72,7 @@ export interface Run extends ItemRun {
 	/** A part can take another base update once its feature tip changes again. */
 	updatedBaseTip?: string;
 	/** A person's base update stays attached to its publish step across retries. */
-	updateFromBase?: { head: string; at: number };
+	updateFromBase?: { head: string; at: number; baseTip?: string };
 	/** The turn that produced the work about to be published, including across publish retries. */
 	gate: (GateEvidence & { turn: string }) | null;
 	ci: CiProgress | null;
@@ -143,7 +148,7 @@ export interface IntegrationRun extends IntegrationView {
 export type JoinResult = { key: string } & ({ head: string } | { reason: string; conflict: boolean; missingTarget?: boolean });
 
 /** The independent CI poll on one feature branch, pinned to its current head. */
-export interface FeatureCi {
+export interface FeatureCi extends BaseFailureDecision {
 	head: string;
 	since: number;
 	key?: string;
@@ -253,7 +258,7 @@ export interface FactoryItem {
 	joinOnGate?: boolean;
 	joining?: { child: string; key: string };
 	/** Target commit pinned when requested. Waits behind a part already holding the join grant. */
-	featureUpdate?: { key: string; target: string; child?: string };
+	featureUpdate?: { repo?: string; key: string; target: string; child?: string };
 	stoppedJob?: string;
 	retryChildren?: boolean;
 	forceSplit?: boolean;
@@ -316,6 +321,8 @@ export type StopCause = "repeated" | "turns" | "interruptions" | "plan" | "gate"
 
 /** A question as the contract shows it (`ItemQuestion`), and what answering it goes on with. */
 export interface Question extends ItemQuestion {
+	updateRepo?: string;
+	inherited?: { head: string; baseTip: string; repo?: string };
 	child?: string;
 	cause: StopCause | null;
 	/** The turn that was about to start when the question was asked: what "raise" and "again" go on with. */
@@ -435,7 +442,7 @@ export type Fact =
 	| { kind: "claim_secret"; at: number; by: Cause; question: string; name: string }
 	| { kind: "settle_secret"; at: number; by: Cause; question: string; error: string | null }
 	| { kind: "answer"; target?: string; inventory?: PlacementInventory; at: number; by: Cause; question: string; choice: ChoiceId; note?: string; budget?: Partial<ItemBudget>; agents?: string[] }
-	| { kind: "ci_rerun_result"; at: number; head: string; accepted: string[]; said: string }
+	| { kind: "ci_rerun_result"; repo?: string; at: number; head: string; accepted: string[]; said: string }
 	/** The ledger has counted more hosted sandbox time for the item's session (it settles after a turn ends, and then while nothing else happens). */
 	| { kind: "spent"; at: number; hostedSeconds: number }
 	| StepFact;
@@ -506,9 +513,9 @@ export type StepFact =
 	/** `transient`: a network error, retried; otherwise GitHub refused (a moved branch, a protected one, `.github/workflows`). */
 	| { kind: "publish_failed"; at: number; key: string; said: string; transient: boolean }
 	| { kind: "secret_attempt"; at: number; key: string; previous: number }
-	| { kind: "ci_rerun_started"; at: number; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
+	| { kind: "ci_rerun_started"; repo?: string; at: number; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
 	/** `prHead`: the commit the pull request's branch is at, as GitHub said it with the reading; null when it did not. */
-	| { kind: "ci_read"; flakyJobs?: string[]; featureHead?: string; repo?: string; paths?: string[]; autoMergeSingles?: boolean; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
+	| { kind: "ci_read"; basePassed?: boolean; featureHead?: string; repo?: string; paths?: string[]; autoMergeSingles?: boolean; at: number; key: string; head: string; reading: CiReading; baseAhead?: number; baseTip?: string; featureTarget?: string; featureTargetHead?: string; mergeable: boolean | null; prHead: string | null; openItems: number; webhooks: boolean }
 	| { kind: "auto_merge_result"; behind?: boolean; at: number; key: string; head: string; reason: string | null }
 	| { kind: "pr_read"; pushCi?: CiReading; mergedByApp?: boolean; at: number; key: string; state: "open" | "draft" | "merged" | "closed"; prHead: string | null; webhooks: boolean };
 
@@ -538,7 +545,7 @@ export type Effect =
 	| { kind: "cancel_children"; key: string; ids: string[] }
 	| { kind: "notify_integrated"; key: string; head: string }
 	| { kind: "integrate"; key: string; head: string }
-	| { kind: "merge_feature_target"; key: string; target: string }
+	| { kind: "merge_feature_target"; repo?: string; key: string; target: string }
 	| { kind: "update_parent_feature"; automatic?: true; key: string; target: string }
 	| { kind: "describe_feature"; key: string }
 	/** A cross-repo feature: write the managed section that links its pull requests on each of them. */
@@ -560,7 +567,7 @@ export type Effect =
 	| { kind: "check_turn"; key: string; turn: string; at: number; to?: "review" | "critic" }
 	/** Commit and push the session's branch, then open or update its pull request with the agent's report and the verified section. */
 	| { kind: "publish"; key: string; at?: number }
-	| { kind: "rerun_ci"; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
+	| { kind: "rerun_ci"; repo?: string; key: string; head: string; jobs: RerunnableJob[]; openItems: number }
 	| { kind: "poll_ci"; repo?: string; key: string; head: string; at: number; notBefore?: number }
 	| { kind: "poll_pr"; key: string; pr: number; at: number }
 	/** Record the question and show it ("Needs you"). */

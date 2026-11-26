@@ -45,12 +45,12 @@ import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
 import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
-import { RULES, activeJob, advance, personAdds, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, plannerCapacityText, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
+import { RULES, activeJob, advance, rerunKey, personAdds, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, plannerCapacityText, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, requestedReviewBody, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, RequestedReview, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { checkBaseFailures } from "../github/ci-base.js";
-import { CI_POLLING, ciState, readCi, rerunJobs, workflowOverdue } from "../github/ci.js";
+import { CI_POLLING, ciState, readCi, rerunJobs, rerunnableJobs, workflowOverdue } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { type RequestedSecretSave, secretsActor, grantIsValid, isSessionGone, itemActor, sessionActor, userActor } from "./internal.js";
 import type { ItemFacts } from "./user-items.js";
@@ -472,8 +472,8 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	if (fact.kind === "turn_ended" && fact.changes) stored.meta.taskKind = fact.taskKind;
 	if (fact.kind === "ci_read" && fact.reading.kind === "read" && fact.head === fact.reading.head) {
 		const failed = fact.reading.runs.filter(r => r.state === "failed");
-		const retry = outcome.effects.find(e => e.kind === "rerun_ci") ?? before.ciReruns?.[fact.head];
-		if (failed.some(r => r.baseResult === "failed" && !retry?.jobs.some(j => j.flaky && j.jobId === r.jobId))) stored.meta.flaky = true;
+		const retry = outcome.effects.find(e => e.kind === "rerun_ci") ?? before.ciReruns?.[rerunKey(fact)];
+		if (failed.some(r => r.baseResult === "failed" && !retry?.jobs.some(j => j.failed && j.jobId === r.jobId))) stored.meta.flaky = true;
 		if (failed.length && before.run?.step.kind === "ci") stored.meta.ciCodeFailure = failed.some(r => !r.environment && !r.baseResult);
 	}
 	if (outcome.item.run?.step.kind === "plan_review") stored.meta.criticSessionId = criticSessionId(outcome.item.id);
@@ -1325,7 +1325,9 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 		case "publish":
 			return effect.key === key && run.step.kind === "publish" && item.question?.kind !== "turn_refused";
 		case "rerun_ci":
-			return effect.key === key && run.step.kind === "ci" && !item.question;
+			if (item.question || (run.step.kind !== "subtasks" && run.step.kind !== "ci")) return false;
+			// Reruns belong to the same feature head and repository as their poll.
+			// falls through
 		case "poll_ci":
 			if (run.step.kind === "subtasks") {
 				const branch = featureCiBranch(item, effect.repo);
@@ -1577,28 +1579,36 @@ async function pollCi(c: Ctx, stored: Stored, effect: Extract<Effect, { kind: "p
 		const head = reading.kind === "read" && !/^[0-9a-f]{40}$/.test(effect.head) ? reading.head : effect.head;
 		const itemCi = item.run?.step.kind === "ci" && item.mode !== "orchestrate" && (!pull?.headSha || pull.headSha === head);
 		const mergeCheck = autoMergeSingles && pull?.state === "open" && pull.base === item.task.base && pull.headSha === effect.head;
+		const progress = branch.featureCi ?? ci;
+		const baseRef = repo?.baseRef ?? item.task.base;
 		const needsPaths = !!branch.featureCi && state === "failed" && pull?.headSha === head && !item.jobs?.some(j => j.ciFix && activeJob(j));
-		const compare = needsPaths || mergeCheck || itemCi && /^[0-9a-f]{40}$/.test(head) && (state === "failed" || state === "cancelled" || timedOut || noChildCi);
+		const compare = needsPaths || mergeCheck || !!(item.parent && progress?.waitForBase) || itemCi && /^[0-9a-f]{40}$/.test(head) && (state === "failed" || state === "cancelled" || timedOut || noChildCi);
 		const comparison = compare ? await hub.app.withToken(hub.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", contents: "read" } },
 			token => compareBranches(hub.app, token, hub.owner, hub.name, needsPaths ? branch.seed! : item.task.base, head), { reuse: true }).catch(() => null) : null;
-		if (itemCi && state === "failed" && reading.kind === "read" && reading.head === head) {
-			const base = comparison?.base ?? (pull?.base === item.task.base ? pull.baseSha : null);
-			if (base) await checkBaseFailures(hub.app, { ...target, head: base }, reading, tests =>
-				session.internalBaseTests({ head, base, tests }).catch(() => "unknown"));
-			else for (const check of reading.runs) if (check.state === "failed" && !check.environment) check.baseResult = "pending";
+		// The feature seed is for the diff. The PR's current base SHA is the one whose checks count.
+		const prBase = pull?.base === baseRef ? pull.baseSha : undefined;
+		const baseTip = needsPaths ? prBase : comparison?.base ?? prBase;
+		let basePassed;
+		if (progress?.waitForBase) {
+			if (baseTip && baseTip !== progress.waitForBase) {
+				const base = await readCi(hub.app, { ...target, head: baseTip });
+				basePassed = base.kind === "read" && base.head === baseTip && ciState(base) === "passed";
+			}
+		} else if ((itemCi || needsPaths) && state === "failed" && reading.kind === "read" && reading.head === head) {
+			const willRetry = !reading.truncated && (item.parent || pull?.headSha === head) && !item.ciReruns?.[rerunKey(effect)] && rerunnableJobs(reading, false).length > 0;
+			if (!willRetry && baseTip) await checkBaseFailures(hub.app, { ...target, head: baseTip }, reading, branch.featureCi ? undefined : tests =>
+				session.internalBaseTests({ head, base: baseTip, tests }).catch(() => "unknown"));
+			else if (!baseTip) for (const check of reading.runs) if (check.state === "failed" && !check.environment) check.baseResult = "pending";
 		}
 		const paths = needsPaths ? comparison?.files?.map(f => f.filename) : undefined;
-		return { reading, featureHead, paths, baseAhead: comparison?.behind, baseTip: comparison?.base, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
+		return { reading, featureHead, paths, baseAhead: comparison?.behind, baseTip: baseTip ?? undefined, basePassed, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
 	};
-	const { reading, featureHead, paths, baseAhead, baseTip, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, featureHead: undefined, paths: undefined, baseAhead: 0, baseTip: undefined, mergeable: null, prHead: null, baseSha: null }));
-	const flakyJobs = item.pr && item.run?.step.kind === "ci" && item.mode !== "orchestrate" && prHead === effect.head &&
-		!item.ciReruns?.[effect.head] && ciState(reading) === "failed"
-		? await userActor(c, meta.uid).internalFlakyJobs(meta.repository.id) : undefined;
+	const { reading, featureHead, paths, baseAhead, baseTip, basePassed, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, featureHead: undefined, paths: undefined, baseAhead: 0, baseTip: undefined, basePassed: undefined, mergeable: null, prHead: null, baseSha: null }));
 	const target = item.run?.step.kind === "ci" && (item.parent || item.mode === "orchestrate") && (ciState(reading) !== "passed" || mergeable === false)
 		? await targetStatus(c, stored).catch(() => null) : null;
 	const featureTarget = target?.available && target.value > 0 ? target.branch : undefined;
 	const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
-	await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, repo: effect.repo, featureHead, paths, reading, flakyJobs, autoMergeSingles, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
+	await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, repo: effect.repo, featureHead, paths, reading, basePassed, autoMergeSingles, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
 	return true;
 }
 
@@ -1770,9 +1780,10 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "merge_feature_target": {
 			let result: Extract<Fact, { kind: "feature_updated" }>["result"];
 			try {
-				const hub = await github(c, meta, "write");
-				const head = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "write" } },
-					token => mergeIntoFeature(hub.app, token, hub.owner, hub.name, item.id, effect.target, "Update the feature from " + item.task.base));
+				const repo = effect.repo ? repoOf(item, effect.repo) : undefined;
+				const hub = await github(c, meta, "write", repo);
+				const head = await hub.app.withToken(hub.installationId, { repositoryId: hub.repository.id, permissions: { metadata: "read", contents: "write" } },
+					token => mergeIntoFeature(hub.app, token, hub.owner, hub.name, item.id, effect.target, "Update the feature from " + (repo?.baseRef ?? item.task.base)));
 				result = { head };
 			} catch (error) {
 				if (error instanceof GithubError && error.status === 409) {
@@ -1978,12 +1989,12 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			if (!await take(c, { ...effect, kind: "ci_rerun_started", at: Date.now() })) return false;
 			let result;
 			try {
-				const hub = await github(c, meta, "write");
-				result = await rerunJobs(hub.app, { installationId: hub.installationId, repositoryId: meta.repository.id, owner: hub.owner, name: hub.name, head: effect.head }, effect.jobs);
+				const hub = await github(c, meta, "write", effect.repo ? repoOf(item, effect.repo) : undefined);
+				result = await rerunJobs(hub.app, { installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: effect.head }, effect.jobs);
 			} catch (error) {
 				result = { accepted: [], said: `Could not request a CI rerun: ${describeError(error)}.` };
 			}
-			await take(c, { kind: "ci_rerun_result", at: Date.now(), head: effect.head, ...result });
+			await take(c, { kind: "ci_rerun_result", repo: effect.repo, at: Date.now(), head: effect.head, ...result });
 			return true;
 		}
 		case "poll_ci":
@@ -2349,17 +2360,18 @@ export const workItem = actor({
 			try {
 				if (fact.kind === "update_feature" || (fact.kind === "answer" && fact.choice === "update_feature")) {
 					let branch: string | undefined;
+					const repo = stored.item.question?.updateRepo ? repoOf(stored.item, stored.item.question.updateRepo) : undefined;
 					if (fact.kind === "update_feature" && canUpdateFeature(stored.item)) branch = stored.item.task.base;
 					else if (fact.kind === "answer" && stored.item.question?.id === fact.question) {
-						if (stored.item.question.kind === "feature_update") branch = stored.item.task.base;
+						if (stored.item.question.kind === "feature_update") branch = repo?.baseRef ?? stored.item.task.base;
 						else if (featureCiQuestion(stored.item)) {
 							const target = await targetStatus(c, stored);
 							if (target?.available && target.value > 0) branch = target.branch;
 						}
 					}
 					if (branch) {
-						const hub = await github(c, stored.meta);
-						fact.target = await hub.app.withToken(hub.installationId, { repositoryId: stored.meta.repository.id, permissions: { metadata: "read", contents: "read" } },
+						const hub = await github(c, stored.meta, "read", repo);
+						fact.target = await hub.app.withToken(hub.installationId, { repositoryId: hub.repository.id, permissions: { metadata: "read", contents: "read" } },
 							token => refHead(hub.app, token, hub.owner, hub.name, branch), { reuse: true });
 					}
 				}
