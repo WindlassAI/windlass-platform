@@ -28,7 +28,7 @@ duplicate jobs because the push already ran them.
 each group (or each shard of one) is one job. `scripts/ci-heavy.mjs select` reads the changed files
 against the merge base (the pull request's base, or `main` for a branch) and picks the groups:
 
-In the Actions UI each job shows a readable title (for example "Factory 1 of 4" for `factory/1`, "Runner: full check" for `runner-docker/runner`); the titles live in `TITLES` in `scripts/ci-heavy.mjs`. Use the group/shard id with `node scripts/ci-heavy.mjs run <group>[/<shard>]`.
+In the Actions UI each job shows a readable title (for example "Factory 1 of 4" for `factory/1`, "Runner: service and lifecycle" for `runner-docker/runner`); the titles live in `TITLES` in `scripts/ci-heavy.mjs`. Use the group/shard id with `node scripts/ci-heavy.mjs run <group>[/<shard>]`.
 
 - a file that a group lists runs that group;
 - a core file (the package files, the lockfile, `server/src/contract.ts`, the CI files) runs every group;
@@ -60,9 +60,10 @@ node scripts/ci-heavy.mjs select --files server/src/usage.ts    # what a change 
 | (a) Already in `pnpm test` | e2e.ts (fake), factory-check, orchestrator-check, fairness, machine-fairness (through `runner-e2e.ts fairness`), timeline-write, web-stage, item-feed, keyring, login-handover, revocation, snapshot, container-logs, the relay and setup `.mjs` checks, release-images (which drives release-check.ts), the web vitest suite | CI `test` |
 | (b) Docker, base image (`windlass-platform-sandbox:latest`) | sandbox, mcp, model-relay-docker, github `--docker`, verified `--docker`, e2b-provider-test `--docker`, e2b-snapshot `--docker`, sizing `docker`; e2e.ts with `WLP_SANDBOX=docker`, and with `--snapshots-only` | CI heavy: `sandbox-docker/*` (sandbox-check in two shards by `WLP_CHECK_SECTIONS`), `e2e-docker/*` |
 | (b) Docker, screenshots image (`:shots`) | shot `--docker`, attachments `--docker`, browser-hello `--docker` | CI heavy: `shots-docker` |
-| (b) Docker, base image; builds its own runner and Claude images | runner-check `--main-only` (the five-minute outage and two-minute sleep are wall time) | CI heavy: `runner-docker/runner` |
-| (b) Docker, base and screenshots images | runner-check `--profiles-only`, `--harness-only`, `--sizing-only`, `--snapshots-only`, `--screenshots-only` | CI heavy: `runner-docker/suites` |
-| (b) Docker, Claude and OpenCode images built on base (`sandbox/harness/build.sh`) | claude-relay-docker, opencode-docker, runner-egress-live, `runner-e2e.ts egress` | CI heavy: `runner-docker/harness` |
+| (b) Docker, base image; builds its own runner and Claude images | runner-check `--service-only` (service, sandbox lifecycle and packaged runner) | CI heavy: `runner-docker/runner` |
+| (b) Docker, base image | runner-check `--outages-only` (the five-minute outage and two-minute sleep are wall time) | CI heavy: `runner-docker/outages` |
+| (b) Docker, base, screenshots and OpenCode images | opencode-docker; runner-check `--profiles-only`, `--harness-only`, `--sizing-only`, `--snapshots-only`, `--screenshots-only` | CI heavy: `runner-docker/suites` |
+| (b) Docker, Claude image built on base (`sandbox/harness/build.sh`) | claude-relay-docker, runner-egress-live, `runner-e2e.ts egress` | CI heavy: `runner-docker/harness` |
 | (b) Docker, the Codex image built on base (`sandbox/harness/build.sh codex`) | codex-docker (the relay, sign-in and modes), codex-sandbox-escape (refusals, a repository's and the user's config, and the platform's tools over MCP); both with a scripted model, no sign-in | CI heavy: `codex-docker` |
 | (c) Real services, local only | e2b-check, model-relay-e2b, e2b-snapshot `--live`, e2b-backup-check, e2b-template (except `--print`), e2b-cleanup (an E2B account); backup-check `--bucket` (a real bucket); connection-check's `cluster` section and runner-socket-probe with `WLP_CHECK_ENGINE` (a real engine and its admin token) | your machine |
 | (c) A running self-hosted stack, local only | selfhost-csp, selfhost-ingress (with cloudflared), selfhost-load | the loopback demo stack of `deploy/selfhost` |
