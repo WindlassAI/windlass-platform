@@ -364,7 +364,7 @@ export function ValidatedEnvironment({ environment, now }: { environment: Sessio
 	);
 }
 
-export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView["run"]>; events: ItemEvent[]; asks: boolean; now: number }) {
+export function RunFacts({ run, events, asks, now, waitingForCi = false }: { run: NonNullable<ItemView["run"]>; events: ItemEvent[]; asks: boolean; now: number; waitingForCi?: boolean }) {
 	const { step, rounds } = run;
 	const sentBack = events.filter((event) => event.step === null && event.said.startsWith("Sent back")).length;
 	return (
@@ -385,7 +385,7 @@ export function RunFacts({ run, events, asks, now }: { run: NonNullable<ItemView
 				<div>
 					<dt>{asks ? "Stopped at" : "Step"}</dt>
 					<dd>
-						{STEP_WORD[step.kind]}
+						{step.kind === "subtasks" && waitingForCi ? "Checking the whole feature in CI" : STEP_WORD[step.kind]}
 						{TRIED.has(step.kind) && step.attempt > 1 ? `, ${ordinal(step.attempt)} try` : ""}
 						{step.turn === "delivered" ? <span className="tone-dim"> · its turn waits to start</span> : step.turn === "started" ? <span className="tone-dim"> · its turn runs</span> : null}
 					</dd>
@@ -1081,7 +1081,7 @@ export function Item({ page }: { page: ItemPage }) {
 				) : (
 					<Now view={view} now={now} />
 				)}
-				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} /> : null}
+				{view.run ? <RunFacts run={view.run} events={view.events} asks={view.question !== null} now={now} waitingForCi={view.wait?.reason === "ci"} /> : null}
 				{!view.question && noteTargets.length > 0 && (
 					<NoteBox key={view.mode === "orchestrate" ? noteTargets.map(target => target.id).join(" ") : undefined} targets={noteTargets} onDone={view.mode === "orchestrate" ? () => void page.reload() : page.replace} />
 				)}
