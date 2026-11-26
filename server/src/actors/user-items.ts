@@ -280,8 +280,8 @@ function cleanItemInput(raw: unknown): Required<Pick<CreateItemInput, "title" | 
 	if (harness === null) throw bad("Choose an agent this platform runs: windlass, or one of your machine's.");
 	const notForItems = itemHarnessProblem(harness);
 	if (notForItems) throw bad(notForItems);
-	const title = typeof input.title === "string" ? input.title : "";
-	if (title.trim() === "" || title.length > MAX_TITLE_CHARS) throw bad(`Give the item a title of at most ${MAX_TITLE_CHARS} characters.`);
+	const title = typeof input.title === "string" ? input.title.replace(/\s+/g, " ").trim() : "";
+	if (title === "" || title.length > MAX_TITLE_CHARS) throw bad(`Give the item a title of at most ${MAX_TITLE_CHARS} characters.`);
 	const body = typeof input.body === "string" ? input.body.trim() : "";
 	if (body === "" || body.length > MAX_ITEM_BODY_CHARS) throw bad(`Say what is to be done, in at most ${MAX_ITEM_BODY_CHARS} characters.`);
 	const acceptance = input.acceptance === undefined || input.acceptance === null ? [] : input.acceptance;
