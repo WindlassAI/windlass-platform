@@ -882,7 +882,7 @@ async function nudge(c: Ctx, input: GithubNudge, provider: SessionRepository["pr
 	const stored = await load(c.db);
 	if (!stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
 	const { item, meta } = stored;
-	if (provider !== meta.repository.provider) return false;
+	if (provider !== (meta.repository.provider ?? "github")) return false;
 	// A cross-repo feature's other repository: its PR poll, woken only by a nudge from the installation bound to that repository at filing.
 	const sibling = crossRepo(item) && input.repositoryId !== meta.repository.id ? item.repos!.find(r => r.repositoryId === input.repositoryId) : undefined;
 	if (sibling) {
@@ -1237,7 +1237,7 @@ async function upsertMarkedComment(hub: CommentHub, token: string, owner: string
 		? String(c.person?.id) === hub.viewer : c.author.toLowerCase() === hub.app.settings.slug.toLowerCase() + "[bot]"));
 	if (own && !own.id) throw new Error("GitHub returned an invalid verdict comment id");
 	const id = own?.id ?? await host.createComment(token, owner, name, pr, body);
-	if (own?.id && own.body !== body) await host.updateComment(token, owner, name, own.id, body);
+	if (own?.id) await host.updateComment(token, owner, name, own.id, body);
 	return id;
 }
 
