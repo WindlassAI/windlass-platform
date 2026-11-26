@@ -2,13 +2,15 @@
 
 Choose **Settings** in the top bar (in the account menu on a phone). What you save here holds for every agent of yours, whatever the repository. What you save for one repository is under **Saved settings** when you choose it in **Agents**.
 
-### Defaults
+### Where each choice lives
 
-Each choice saves as soon as you make it. A field you leave unset shows what it comes to in quiet text: the deployment's default here, your account's default on a repository's page.
+Three places choose what runs, each saving as soon as you change it:
 
-**Agents you start here** shows where your next agent starts. **Where** saves Hosted or one of your paired machines. Choose a sandbox for Hosted or a profile the machine offers. Your last launch takes precedence until you choose **Forget**. If a saved machine or profile becomes unavailable, **Starts on** shows the next usable default and explains the change. [Launch defaults](/docs/start-an-agent#defaults)
+- **Machines → Where work runs**: the default place, Hosted or one of your machines. For a machine, its isolation and what happens when it is offline: **Wait for it**, or **Offer Hosted**, where the item asks you before it moves. Nothing moves to another place, payer or sandbox without asking. See [Where work runs](/docs/machines#where-work-runs).
+- **Settings → Models → Default agent**: the agent, model and effort. Planning, review and summaries run on Windlass with your default Windlass model; when the default agent is another, **Change** in its note picks that model.
+- **A repository's Overrides**: a different place, agent or hosted sandbox for that repository only.
 
-**Work items** sets where new work items run: a hosted sandbox, a paired machine, or Any of my machines. For a machine, choose its profile, whether an unavailable machine waits or runs hosted with Windlass, the agent, and for Claude Code, Codex or OpenCode its model and effort. Windlass work items use the model above. A repository can inherit your account setting or save its own.
+An item's own choice comes first, then the repository's, then yours, then the deployment's. The composer, the **New work item** form and each part of a plan show one line of what will run and where it comes from, for example "nas · Codex · Astra — your default", with **Change** for that item only.
 
 ### Model providers
 
@@ -29,10 +31,6 @@ A change holds from each agent's next turn. An account can keep 20 servers. A se
 ### Secrets
 
 Account secrets go to MCP servers by default: your own, and a repository's once you approve it. You can also give one to the agent's commands. A repository's setup command never gets an account secret. An account can keep 50. See [Secrets](/docs/security#secrets) for where each one goes.
-
-### Machines
-
-Where the platform offers machines, this section links to **Your machines**. See [Use your own machine](/docs/machines).
 
 ### Linear
 
@@ -85,11 +83,9 @@ Without plans, the platform's operator sets your limits, and **Usage** shows the
 
 Choose a repository in the rail of **Agents**, then **Saved settings**. Sections such as **Checks** have a direct address, for example `/repositories/<id>/settings#checks`.
 
-### Defaults
+### Overrides
 
-The same two groups as in account settings, for this repository: unset fields show your account's default. You can still change any of them when you launch an agent. An agent that exists keeps what it was launched with.
-
-Where the platform offers more than one, **Hosted size** sets the CPUs and memory of the repository's hosted sandboxes, for its agents and its work items. Each choice shows its estimated price an hour. It shows where it applies: beside the agents' sandbox, and under work items that run hosted or fall back to hosted (**Hosted size if it falls back**). Without a saved size, agents start on **Small** and work items on **Medium**. A size chosen when you launch an agent or file an item wins over the saved one. See [Hosted sizes](/docs/start-an-agent#hosted-sizes).
+Each row shows what this repository's work runs with and where it comes from: **Place**, **Agent** and, where there is a choice, **Hosted sandbox** (its size and isolation). Choose **Override for this repository** to change one here; **Use your default** removes the override. Without a saved size, work items run on **Medium**. A choice made when you file an item still wins. See [Hosted sizes](/docs/start-an-agent#hosted-sizes).
 
 ### Work item approvals
 

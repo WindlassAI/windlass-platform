@@ -39,22 +39,27 @@ const groupMatchers = Object.entries(map.groups).map(([name, g]) => [name, match
 const TITLES = {
 	rules: "Unit checks",
 	actors: "Server: sign-in and sessions",
-	machines: "Server: machines and runner protocol",
+	"machines/machines": "Server: machines and item recovery",
+	"machines/protocol": "Server: runner protocol and sessions",
 	webhook: "GitHub webhooks",
-	"factory/1": "Factory 1 of 3",
-	"factory/2": "Factory 2 of 3",
-	"factory/3": "Factory 3 of 3",
+	"factory/1": "Factory 1 of 4",
+	"factory/2": "Factory 2 of 4",
+	"factory/3": "Factory 3 of 4",
+	"factory/4": "Factory 4 of 4",
+	"factory/orchestration": "Factory orchestration",
 	"sandbox-docker/1": "Docker sandbox 1 of 2",
 	"sandbox-docker/2": "Docker sandbox 2 of 2",
-	"sandbox-docker/mcp": "Docker sandbox: MCP servers",
+	"sandbox-docker/mcp": "Docker sandbox: GitHub, MCP and relays",
 	"shots-docker": "Docker screenshots",
 	"e2e-docker/actors": "Docker end to end: sessions",
 	"e2e-docker/snapshots": "Docker end to end: snapshots",
-	"runner-docker/runner": "Runner: full check",
-	"runner-docker/suites": "Runner: focused suites",
-	"runner-docker/harness": "Runner: agent images and relays",
+	"runner-docker/runner": "Runner: service and lifecycle",
+	"runner-docker/outages": "Runner: network loss and laptop sleep",
+	"runner-docker/suites": "Runner: focused suites and OpenCode",
+	"runner-docker/harness": "Runner: Claude relay and egress",
 	"codex-docker": "Codex image: sandbox, refusals and platform tools",
 };
+const harnessImages = ["claude", "opencode", "codex"];
 const titleOf = (job) => TITLES[job] ?? job;
 
 /** The jobs of a group: one, or one per shard. */
@@ -114,7 +119,7 @@ function select(argv) {
 	const jobs = picked.flatMap(jobsOf);
 	const plain = jobs.filter((j) => !j.images), docker = jobs.filter((j) => j.images);
 	// The harness images are built on base in the job that needs them (`run`): only base is made ahead.
-	const builtInJob = (i) => i === "harness" || i === "codex";
+	const builtInJob = (i) => harnessImages.includes(i);
 	const images = [...new Set(docker.flatMap((j) => j.images.split(" ")))].filter((i) => !builtInJob(i));
 	if (docker.some((j) => j.images.split(" ").some(builtInJob)) && !images.includes("base")) images.push("base");
 	const summary = [`### Heavy checks: ${jobs.length ? jobs.map((j) => j.job).join(", ") : "none"}`, "", `Selected by ${reason || "the files given"}.`, ...lines].join("\n");
@@ -160,13 +165,10 @@ async function run([job]) {
 	const windlassDir = sh("sandbox/fetch-windlass.sh");
 	extra.WLP_WINDLASS_BIN = join(windlassDir, `windlass-linux-${process.arch === "arm64" ? "arm64" : "x64"}`);
 	if (images.includes("base")) extra.WLP_CI_BASE_IMAGE = sh("docker image inspect --format '{{.Id}}' windlass-platform-sandbox:latest");
-	const harnesses = [...(images.includes("harness") ? ["claude", "opencode"] : []), ...(images.includes("codex") ? ["codex"] : [])];
-	if (harnesses.length) {
-		for (const harness of harnesses) {
-			const started = Date.now();
-			extra[`WLP_CI_${harness.toUpperCase()}_IMAGE`] = sh(`WLP_HARNESS_TAG=ci sandbox/harness/build.sh ${harness} windlass-platform-sandbox:latest`);
-			console.log(`built the ${harness} harness image in ${Math.round((Date.now() - started) / 1000)} s`);
-		}
+	for (const harness of harnessImages.filter((name) => images.includes(name))) {
+		const started = Date.now();
+		extra[`WLP_CI_${harness.toUpperCase()}_IMAGE`] = sh(`WLP_HARNESS_TAG=ci sandbox/harness/build.sh ${harness} windlass-platform-sandbox:latest`);
+		console.log(`built the ${harness} harness image in ${Math.round((Date.now() - started) / 1000)} s`);
 	}
 	const results = [];
 	for (const check of checks) {

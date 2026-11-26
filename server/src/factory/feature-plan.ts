@@ -1,6 +1,7 @@
 /* The ids of a feature's children are in feature-ids.ts: this file is shared with the web mock and stays free of Node modules. */
 import type { EarlyCheck, FeaturePlan, FeaturePlanEdit, FinalIntegration, ItemBudget, MergeStep, PlanSubtask, SubtaskAgent, SubtaskBudget } from "../contract.js";
-import { harnessName, hostedProfiles, knownHarness, subtaskHarnessProblem, worksWithoutAsking } from "../sandbox/harnesses.js";
+import { runAgent } from "./resolve-run.js";
+import { harnessName, hostedProfiles, knownHarness, worksWithoutAsking } from "../sandbox/harnesses.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
 
 /** The figures a budget has (`ItemBudget`). A subtask's plan budget has `tokens` only. */
@@ -20,31 +21,34 @@ export const crossRepoPlan = (plan: Pick<FeaturePlanEdit, "repos"> | null | unde
 /** The tokens a plan gives its subtasks, together. */
 export const planTokens = (plan: Pick<FeaturePlanEdit, "subtasks">): number => plan.subtasks.reduce((sum, task) => sum + task.budget.tokens, 0);
 
-/** A subtask's agent in words: "Claude Code (sonnet, high effort), works without asking"; "Windlass on the feature's model". */
-export function agentWords(agent: SubtaskAgent | undefined): string {
-	if (!agent) return "Windlass on the feature's model";
-	const choice = [agent.model ?? (agent.harness === "windlass" ? "the feature's model" : "its default model"), ...(agent.effort ? [agent.effort + " effort"] : [])].join(", ");
+export function subtaskHarness(task: Pick<PlanSubtask, "resolved" | "agent">) {
+	return task.resolved?.agent ?? task.agent?.harness ?? "windlass";
+}
+
+function agentWords(agent: SubtaskAgent | undefined): string {
+	if (!agent) return "the resolved default agent";
+	const choice = [agent.model ?? "its default model", ...(agent.effort ? [agent.effort + " effort"] : [])].join(", ");
 	return `${harnessName(agent.harness)} (${choice})` + (worksWithoutAsking(agent.harness) ? ", works without asking" : "");
 }
 
 /** The keys of the subtasks still to run whose agent works without asking: approval needs the person's confirmation of each. */
 export function unattendedKeys(plan: Pick<FeaturePlanEdit, "subtasks">, completed: ReadonlySet<string> = new Set()): string[] {
-	return plan.subtasks.filter(s => !completed.has(s.key) && worksWithoutAsking(s.agent?.harness)).map(s => s.key);
+	return plan.subtasks.filter(s => !completed.has(s.key) && worksWithoutAsking(subtaskHarness(s))).map(s => s.key);
 }
 
 export function approvalText(plan: FeaturePlan): string {
 	const words = (b: SubtaskBudget) => b.tokens.toLocaleString("en-US") + " tokens";
-	const unattended = plan.subtasks.filter(s => worksWithoutAsking(s.agent?.harness)).map(s => `“${s.title}”`);
+	const unattended = plan.subtasks.filter(s => worksWithoutAsking(subtaskHarness(s))).map(s => `“${s.title}”`);
 	const cross = crossRepoPlan(plan);
 	const final = plan.finalIntegration;
-	return [plan.spec.goal, ...plan.subtasks.map(s => (cross ? `[${s.repo}] ` : "") + s.title + " — " + words(s.budget) + (s.place ? ` on ‘${s.place.prefer}’: ${s.place.reason}` : "") + " — " + agentWords(s.agent)),
+	return [plan.spec.goal, ...plan.subtasks.map(s => (cross ? `[${s.repo}] ` : "") + s.title + " — " + words(s.budget) + (s.place ? ` on ‘${s.place.prefer}’: ${s.place.reason}` : "") + " — " + agentWords(s.resolved ? runAgent(s.resolved) : s.agent) + (s.needs?.hostedSize ? " · hosted size " + s.needs.hostedSize : "")),
 		...(unattended.length ? [`${unattended.join(", ")} would run an agent that works without asking: it runs every command and edit in its sandbox without asking you. The planner proposed it from the item's text; approve only after confirming each one.`] : []),
 		...(cross && final ? [
 			"Merge order — " + (plan.mergeOrder ?? []).map(m => m.repo + (m.prerequisite.length ? ` after ${m.prerequisite.join(", ")}` : "")).join(", then ") + ".",
 			`Tested together in ${final.runFrom}: ${final.command} (inputs ${final.inputs.join(", ")}; at most ${final.timeoutSeconds} seconds; required cases: ${final.requiredCases.join("; ")}).`,
 			plan.releaseGate === "wait" ? "Ends when the owner's release is adopted." : "Ends at a tested set of pull requests and a release request; adopting a release is a separate feature.",
 		] : []),
-		...(plan.subtasks.some(s => s.needs?.cpus !== undefined || s.needs?.memoryGiB !== undefined) ? ["On hosted, cpus and memoryGiB choose the least sandbox size that has them, at most 4 vCPU and 8 GiB; on a machine, its slots."] : []),
+		...(plan.subtasks.some(s => s.needs?.cpus !== undefined || s.needs?.memoryGiB !== undefined) ? ["On hosted, cpus and memoryGiB must fit the chosen size. A larger size requires your approval. On a machine they determine the slots."] : []),
 		"Subtasks together — " + words({ tokens: planTokens(plan) }) + " (cost-weighted: cached input counts at a tenth)", "Feature budget with planning, summary and review — " + words(plan.budget), "At most per subtask — " + words(plan.compare.singleBudget),
 		...plan.questions.filter(q => !q.answer).map(q => q.text)].join("\n");
 }
@@ -133,25 +137,19 @@ export function ownsPath(owns: string[], path: string): boolean {
 /** The longest model id a subtask may name; an effort is at most 64 characters, as a Quick item's. */
 const MAX_AGENT_ID = 200;
 
-/**
- * A subtask's agent, checked as far as a plan can be: an agent subtasks run (not Codex: `subtaskHarnessProblem`), a model and an
- * effort of plain id text. Whether its place offers them is placement's (`placement.ts`, `agentFit`).
- * Windlass with nothing chosen is no choice: the subtask inherits the feature's model.
- */
+/** Check the proposal’s agent and identifiers. Placement checks the agent’s capabilities. */
 export function agentOf(value: unknown): SubtaskAgent | undefined {
 	const a = record(value);
 	for (const key of Object.keys(a)) requirePlan(["harness", "model", "effort"].includes(key), "Unknown agent field: " + key);
 	const harness = a.harness === undefined ? "windlass" : knownHarness(a.harness);
 	requirePlan(harness !== null, "Choose a supported agent: windlass, claude or opencode.");
-	const problem = subtaskHarnessProblem(harness);
-	requirePlan(problem === null, problem!);
 	const id = (v: unknown, what: string, max: number) => {
 		requirePlan(typeof v === "string" && v.length > 0 && v.length <= max && /^[\w.:/@+\[\]-]+$/.test(v), `Name the ${what} by its id.`);
 		return v;
 	};
 	const model = a.model === undefined || a.model === null || a.model === "" ? undefined : id(a.model, "model", MAX_AGENT_ID);
 	const effort = a.effort === undefined || a.effort === null || a.effort === "" ? undefined : id(a.effort, "effort", 64);
-	if (harness === "windlass" && model === undefined && effort === undefined) return undefined;
+	if (value == null) return undefined;
 	return { harness, ...(model !== undefined && { model }), ...(effort !== undefined && { effort }) };
 }
 
@@ -171,7 +169,7 @@ function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" 
 	}
 	if (s.needs !== undefined) {
 		const n = record(s.needs);
-		for (const key of Object.keys(n)) requirePlan(["tags", "screenshots", "egress", "profile", "harness", "cpus", "memoryGiB"].includes(key), "Unknown placement need: " + key);
+		for (const key of Object.keys(n)) requirePlan(["tags", "screenshots", "egress", "profile", "harness", "cpus", "memoryGiB", "hostedSize"].includes(key), "Unknown placement need: " + key);
 		const needs: NonNullable<PlanSubtask["needs"]> = {};
 		if (n.tags !== undefined) needs.tags = lines(n.tags, 0, 24).map(tag => text(tag, 100));
 		if (n.screenshots !== undefined) {
@@ -181,6 +179,10 @@ function placementFields(s: Record<string, unknown>): Pick<PlanSubtask, "place" 
 		if (n.egress !== undefined) {
 			requirePlan(n.egress === "open" || n.egress === "restricted", "Choose open or restricted egress.");
 			needs.egress = n.egress;
+		}
+		if (n.hostedSize !== undefined) {
+			requirePlan(n.hostedSize === "small" || n.hostedSize === "standard" || n.hostedSize === "large", "Choose a listed hosted size.");
+			needs.hostedSize = n.hostedSize;
 		}
 		if (n.profile !== undefined) {
 			requirePlan(n.profile === "docker-hardened" || n.profile === "docker-windlass-sandbox" || n.profile === "e2b-open" || n.profile === "daytona", "Choose a supported sandbox profile.");

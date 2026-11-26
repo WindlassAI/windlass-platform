@@ -20,7 +20,7 @@
  */
 
 import { snapshotsFor } from "../server/src/config.js";
-import { choosePlacement, SNAPSHOT_BONUS } from "../server/src/factory/placement.js";
+import { choosePlacement, type PlacementInventory, SNAPSHOT_BONUS } from "../server/src/factory/placement.js";
 import type { PlanSubtask } from "../server/src/contract.js";
 import { digest, DEFERRED_INPUTS, type SnapshotSelection } from "../server/src/sandbox/snapshot-key.js";
 import type { E2bClient } from "../server/src/sandbox/e2b/client.js";
@@ -283,8 +283,12 @@ async function fakeChecks() {
 
 function placementChecks() {
 	const task = (over: Partial<PlanSubtask> = {}): PlanSubtask => ({ key: "a", title: "A", brief: "b", owns: ["src"], dependsOn: [], acceptance: [], place: { prefer: "pref" }, ...over } as unknown as PlanSubtask);
-	const machine = (id: string, busy = 0) => ({ machineId: id, name: id, online: true, tags: [], os: "linux", arch: "x64", egress: "open", orchestrator: "allowed", availableProfiles: ["docker-hardened"], allowedProfiles: ["docker-hardened"],
-		freeDiskBytes: 50 * 2 ** 30, slots: { max: 4, busy, queued: 0, unit: { cpus: 2, memoryBytes: 2 ** 31 } }, personalRunning: 0, repositorySecrets: false, screenshots: false } as never);
+	const machine = (id: string, busy = 0): PlacementInventory["machines"][number] => ({
+		machineId: id, name: id, online: true, tags: [], os: "linux", arch: "x64", egress: "open", orchestrator: "yes", warnings: [], whenToUse: "",
+		sandboxes: { running: busy, kept: busy, maxRunning: undefined, maxSandboxes: undefined }, availableProfiles: ["docker-hardened"], allowedProfiles: ["docker-hardened"],
+		freeDiskBytes: 50 * 2 ** 30, slots: { max: 4, busy, queued: 0, unit: { cpus: 2, memoryBytes: 2 ** 31, pids: 1024 } }, personalRunning: 0,
+		repositorySecrets: false, screenshots: false, commandSandbox: null, turns: undefined, host: undefined, harnesses: undefined,
+	});
 	const inventory = (snapshotPlaces?: string[], machines = [machine("m1"), machine("m2")]) => ({ machines, hostedProfiles: ["e2b" as const], ...(snapshotPlaces && { snapshotPlaces }) });
 	const route = (preferred: string, ...alternatives: string[]) => ({ preferred: preferred === "hosted" ? { kind: "hosted" as const } : { kind: "machine" as const, machineId: preferred }, alternatives: alternatives.map((id) => id === "hosted" ? { kind: "hosted" as const } : { kind: "machine" as const, machineId: id }) });
 	const at = (fit: ReturnType<typeof choosePlacement>) => fit.decision ? (fit.decision.place.kind === "hosted" ? "hosted" : fit.decision.place.machineId) : "none";
@@ -294,16 +298,17 @@ function placementChecks() {
 	expect("without one, the first", at(choosePlacement(task(), route("m9", "m1", "m2"), inventory())) === "m1");
 	expect("a ready preferred place is never left for an alternative that only the bonus puts ahead", at(choosePlacement(task(), route("m1", "m2"), inventory(["m2"]))) === "m1");
 	expect("nor for one a little less loaded", at(choosePlacement(task(), route("m1", "m2"), inventory(["m2"], [machine("m1", 1), machine("m2", 0)]))) === "m1");
-	expect("an alternative that outranks the preferred place on its own still does", at(choosePlacement(task(), route("m1", "m2"), inventory([], [machine("m1", 4), machine("m2", 0)]))) === "m2");
-	expect("the bonus can keep the preferred place ahead of a less loaded alternative", at(choosePlacement(task(), route("m1", "m2"), inventory(["m1"], [machine("m1", 2), machine("m2", 0)]))) === "m1"
+	expect("a ready alternative can take a task when the preferred machine is full", at(choosePlacement(task(), route("m1", "m2"), inventory([], [machine("m1", 4), machine("m2", 0)]))) === "m2");
+	expect("a ready preferred machine wins with or without a snapshot", at(choosePlacement(task(), route("m1", "m2"), inventory(["m1"], [machine("m1", 2), machine("m2", 0)]))) === "m1"
 		&& at(choosePlacement(task(), route("m1", "m2"), inventory([], [machine("m1", 2), machine("m2", 0)]))) === "m1");
 	expect("a place that must wait gets nothing from it", at(choosePlacement(task(), route("m9", "m1", "m2"), inventory(["m2"], [machine("m1"), machine("m2", 4)]))) === "m1");
-	const offline = { ...(machine("m2") as object), online: false } as never;
+	const offline = { ...machine("m2"), online: false };
 	expect("nor one that is offline", at(choosePlacement(task(), route("m9", "m1", "m2"), inventory(["m2"], [machine("m1"), offline]))) === "m1");
 	expect("nor one refused for a capability", at(choosePlacement(task({ needs: { tags: ["gpu"] } } as never), route("m9", "hosted", "m2"), inventory(["m2"]))) === "none");
 	const busy = [machine("m1", 3)];
-	expect("hosted counts as one place: a snapshot there ranks it among the alternatives", at(choosePlacement(task(), route("m9", "m1", "hosted"), inventory(["hosted"], busy))) === "hosted"
-		&& at(choosePlacement(task(), route("m9", "m1", "hosted"), inventory([], busy))) === "m1");
+	expect("a hosted snapshot cannot displace a ready machine", at(choosePlacement(task(), route("m9", "m1", "hosted"), inventory(["hosted"], busy))) === "m1");
+	const hosted = choosePlacement(task(), route("m9", "hosted"), inventory(["hosted"]));
+	expect("using the hosted snapshot requires the owner's answer", !hosted.decision && hosted.offerHosted === true);
 }
 
 /** The disk check as E2B's root would run it, in a container of the sandbox image that is removed afterwards: each case puts one thing on the disk. */

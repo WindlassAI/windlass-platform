@@ -148,6 +148,8 @@ function newItem(more: { reviewer?: FactoryItem["reviewer"]; mode?: FactoryItem[
 	item.awaitingPlace = "Waiting for a machine.";
 	let at = T0;
 	let outcome = advance(item, { kind: "start", by: "person", at });
+	assert.equal(outcome.item.question?.kind, "run_place");
+	outcome = advance(outcome.item, { kind: "answer", by: "person", question: outcome.item.question!.id, choice: "wait", at });
 	for (const minutes of [1, 2, 5, 10, 10]) {
 		at += minutes * MINUTE;
 		assert.equal(outcome.item.wait?.retryAt, at);
@@ -203,6 +205,34 @@ function drive(name: string, start: FactoryItem, rows: Row[]): void {
 /** Picks one effect of an outcome. */
 const effect = <K extends Effect["kind"]>(outcome: Outcome, kind: K) => outcome.effects.find((candidate): candidate is Extract<Effect, { kind: K }> => candidate.kind === kind);
 const holds = (ok: boolean, otherwise: string) => (ok ? null : otherwise);
+
+// The dogfood case: a typecheck ran a 1 GiB hosted sandbox out of memory and the turn did not finish. The item asks with the
+// figures, and "Go on in a larger sandbox" frees the sandbox and names the next size for the new one.
+const outOfMemory: Row["fact"] = (k) => ({ kind: "turn_ended", key: k.key, outcome: "error", verified: null, flags: [], changes: false, report: null, outOfMemory: { usedMiB: 942, totalMiB: 977, size: "small", larger: "standard" }, spend: { tokens: 0, hostedSeconds: 0 } });
+let largerPlan: TurnPlan | undefined;
+drive("a sandbox that ran out of memory asks, and goes on in a larger one", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: outOfMemory, state: "waiting", wait: "person", effects: ["ask"] },
+	{ fact: k => ({ kind: "answer", question: k.question, choice: "larger_sandbox", by: "person" }), state: "working", effects: ["fresh_sandbox"], also: (o) => {
+		const freed = effect(o, "fresh_sandbox");
+		largerPlan = freed?.plan;
+		return holds(freed?.hostedSize === "standard" && !!largerPlan, JSON.stringify(freed));
+	} },
+	{ fact: (k) => ({ kind: "sandbox_freed", key: k.key, plan: largerPlan! }), state: "working", effects: ["deliver", "check_turn"] },
+]);
+drive("a turn that succeeded after a program was killed for memory is not asked about", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: (k) => ({ ...(ended("succeeded", PASSED)(k) as Extract<Fact, { kind: "turn_ended" }>), outOfMemory: { usedMiB: 942, totalMiB: 977, size: "small", larger: "standard" } }), state: "working", effects: ["publish"] },
+]);
+drive("the largest size offers no larger sandbox", newItem(), [
+	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
+	{ fact: started(), state: "working", effects: ["check_turn"] },
+	{ fact: (k) => ({ ...(outOfMemory(k) as Extract<Fact, { kind: "turn_ended" }>), outOfMemory: { usedMiB: 8000, totalMiB: 8100, size: "large" } }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "out_of_memory" && !o.item.question.choices.some(c => c.id === "larger_sandbox") && o.item.question.largerSize === undefined, o.item.question?.text ?? "") },
+]);
+
+if (process.env.FACTORY_ONLY === "hosted-size") process.exit(failures ? 1 : 0);
 
 // ---------------------------------------------------------------------------------------------
 // Runs of the blueprint
@@ -1240,32 +1270,6 @@ drive("manually retrying does not reset the automatic allowance", newItem(), [
 	]);
 }
 
-// The dogfood case: a typecheck ran a 1 GiB hosted sandbox out of memory and the turn did not finish. The item asks with the
-// figures, and "Go on in a larger sandbox" frees the sandbox and names the next size for the new one.
-const outOfMemory: Row["fact"] = (k) => ({ kind: "turn_ended", key: k.key, outcome: "error", verified: null, flags: [], changes: false, report: null, outOfMemory: { usedMiB: 942, totalMiB: 977, size: "small", larger: "standard" }, spend: { tokens: 0, hostedSeconds: 0 } });
-let largerPlan: TurnPlan | undefined;
-drive("a sandbox that ran out of memory asks, and goes on in a larger one", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
-	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: outOfMemory, state: "working", effects: ["fresh_sandbox"], also: (o) => {
-		const freed = effect(o, "fresh_sandbox");
-		largerPlan = freed?.plan;
-		return holds(freed?.hostedSize === "standard" && /out of memory/.test(largerPlan?.text ?? ""), JSON.stringify(freed));
-	} },
-	{ fact: (k) => ({ kind: "sandbox_freed", key: k.key, plan: largerPlan! }), state: "working", effects: ["deliver", "check_turn"] },
-]);
-drive("a turn that succeeded after a program was killed for memory is not asked about", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
-	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: (k) => ({ ...(ended("succeeded", PASSED)(k) as Extract<Fact, { kind: "turn_ended" }>), outOfMemory: { usedMiB: 942, totalMiB: 977, size: "small", larger: "standard" } }), state: "working", effects: ["publish"] },
-]);
-drive("the largest size offers no larger sandbox", newItem(), [
-	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
-	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: k => ({ ...outOfMemory(k), outOfMemory: { usedMiB: 7999, totalMiB: 8100, size: "large" } } as FactBody), state: "working", effects: ["deliver", "check_turn"] },
-	{ fact: (k) => ({ ...(outOfMemory(k) as Extract<Fact, { kind: "turn_ended" }>), outOfMemory: { usedMiB: 8000, totalMiB: 8100, size: "large" } }), state: "waiting", wait: "person", effects: ["ask"], also: (o) => holds(o.item.question?.kind === "out_of_memory" && !o.item.question.choices.some(c => c.id === "larger_sandbox") && o.item.question.largerSize === undefined, o.item.question?.text ?? "") },
-]);
-
 // Found on the live item after the fix above: the person freed the broken sandbox and chose Try again; the step ran in a
 // new sandbox whose agent had no memory of it, was told only "Continue from where you were", and changed nothing. Every
 // delivery that goes on with a builder's step carries the step's whole task, which the session gives an agent without
@@ -1506,7 +1510,6 @@ const machineItem = { ...newItem(), place: { kind: "machine" as const, machineId
 drive("a machine out of memory asks how to continue in its slot", machineItem, [
 	{ fact: () => ({ kind: "start", by: "person:u1" }), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: started(), state: "working", effects: ["check_turn"] },
-	{ fact: k => ({ ...outOfMemory(k), outOfMemory: { usedMiB: 1536, totalMiB: 1536 } } as FactBody), state: "queued", effects: ["deliver", "check_turn"] },
 	{ fact: k => ({ ...(outOfMemory(k) as Extract<Fact, { kind: "turn_ended" }>), outOfMemory: { usedMiB: 1536, totalMiB: 1536 } }),
 		state: "waiting", wait: "person", effects: ["ask"], also: o => {
 			const q = o.item.question;
@@ -2162,7 +2165,7 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	const proposed = walk(newItem({ mode: "orchestrate", budget: { tokens: 10_000 } }), [{ kind: "start" }, { kind: "file_plan", plan: split }, turnEnded("succeeded", null)]).item;
 	const alternative = singlePlanAlternative(proposed);
 	const single = walk(proposed, [{ kind: "answer", choice: alternative?.id }]);
-	expect("a split plan's CI fallback starts one implementer from the approval question", alternative?.label === "Run as a single item"
+	expect("a split plan's CI fallback starts one implementer from the approval question", alternative?.label === "Use the current Windlass session as one implementer"
 		&& single.item.mode === "single" && !single.item.jobs?.length && single.item.run?.step.kind === "implement" && !!effect(single.last, "deliver"));
 	function start(subtasks: ReturnType<typeof task>[], available?: number, hostedSpent = 0) {
 		const plan = { subtasks, questions: [], spec: { goal: "Build", acceptance: ["Run npm test"], requirements: [], outOfScope: [] } };
@@ -2205,6 +2208,41 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 		assert.equal(walk(feature, [stale]).item, feature);
 		feature = update(feature, "two", "working");
 		const red = read(feature, failed);
+		for (const initial of [feature, walk(newItem(), pushedRun(H(2))).item]) {
+			const isFeature = initial === feature;
+			const poll = (item: FactoryItem, jobId: string, state: "passed" | "failed", inherited = false, baseTip = H(7), basePassed = false) => {
+				const checks = ciRead([{ name: "build", state }]);
+				Object.assign(checks.runs[0]!, { workflowId: "42", jobId, baseResult: inherited ? "failed" : undefined });
+				return walk(item, [{ ...ciFact(checks, H(2)), key: isFeature ? item.featureCi!.key : currentKey(item), paths: ["one"], baseTip, basePassed }]);
+			};
+			const first = poll(initial, "101", "failed");
+			const rerun = effect(first.last, "rerun_ci");
+			assert.ok(rerun);
+			const claimed = walk(first.item, [{ ...rerun, kind: "ci_rerun_started" },
+				{ kind: "ci_rerun_result", head: H(2), accepted: ["101"], said: "Requested a re-run." }]).item;
+			const stale = poll(claimed, "101", "failed");
+			assert.ok(effect(stale.last, "poll_ci"));
+			const green = poll(stale.item, "102", "passed");
+			assert.equal(green.item.run!.rounds.ci, 0);
+			assert.ok(green.last.events.some(e => e.said.includes("build was flaky")));
+			assert.ok(!green.item.jobs?.some(j => j.ciFix));
+			const real = poll(stale.item, "102", "failed");
+			assert.ok(isFeature ? real.item.jobs!.some(j => j.ciFix) : real.item.run!.step.kind === "ci_fix");
+			const shared = poll(stale.item, "102", "failed", true);
+			assert.match(shared.item.question!.text, /same checks fail on main: build/);
+			assert.deepEqual(shared.item.question!.choices.map(c => c.id), ["wait", "again", "give_up"]);
+			assert.equal(shared.item.run!.rounds.ci, 0);
+			const override = walk(shared.item, [{ kind: "answer", choice: "again" }]);
+			assert.equal(poll(override.item, "102", "failed", true).item.run!.rounds.ci, 1);
+			const wait = walk(shared.item, [{ kind: "answer", choice: "wait" }]);
+			const unchangedBase = poll(wait.item, "102", "failed", true, H(7), true);
+			const redBase = poll(unchangedBase.item, "102", "failed", true, H(8));
+			assert.ok(effect(unchangedBase.last, "poll_ci") && effect(redBase.last, "poll_ci"));
+			assert.equal(redBase.item.run!.rounds.ci, 0);
+			const updated = poll(redBase.item, "102", "failed", false, H(8), true);
+			assert.ok(isFeature ? effect(updated.last, "merge_feature_target")?.target === H(8) : effect(updated.last, "publish") && updated.item.run?.updateFromBase?.baseTip === H(8));
+			expect(`${isFeature ? "feature" : "single"} CI retries once, records flakes, asks about inherited failures and repairs independent failures`, true);
+		}
 		const queued = walk(feature, [{ ...red, paths: ["two"] }]).item;
 		assert.equal(queued.jobs!.at(-1)?.task.key, `ci-fix-${feature.revision + 1}`);
 		assert.equal(queued.jobs!.at(-1)?.dispatchKey, undefined, "overlapping work keeps the fix queued");
@@ -3289,10 +3327,9 @@ try {
 		const baseCi = { runs: [checkRun(5361, "unit", "failure")], statuses: [] };
 		repo.ci.set(base, baseCi);
 		const inherited = await check();
-		expect("matching failed check on the current base asks with the cause and offers handover", inherited.item.question?.text === "This check also fails on main; it is not caused by this change." &&
-			!!inherited.item.question.choices.some(c => c.id === "hand_over") && !inherited.item.question.resume && !effect(inherited.last, "deliver"));
-		const update = await check(2);
-		expect("an inherited check automatically updates from a newer base", !!effect(update.last, "publish") && update.item.run?.updatedBaseTip === base && update.item.run.rounds.ci === 0);
+		expect("matching failed check on the current base asks before a fix", inherited.item.question?.text === "The same checks fail on main: unit." &&
+			isDeepStrictEqual(inherited.item.question.choices.map(c => c.id), ["wait", "again", "give_up"]) && !effect(inherited.last, "deliver"));
+		expect("a newer failing base still needs an owner choice", (await check(2)).item.question?.text === inherited.item.question?.text);
 		baseCi.runs = [checkRun(5361, "unit", "failure"), checkRun(5362, "unit", "success")];
 		expect("a successful latest base attempt leaves the item failure eligible for a fix", (await check()).item.run?.step.kind === "ci_fix");
 		baseCi.runs = [checkRun(5363, "unit", null)];
@@ -3324,7 +3361,7 @@ try {
 
 		ciData.runs = [job, checkRun(5364, "lint", "failure")];
 		baseCi.runs = [checkRun(5365, "unit", "failure"), checkRun(5366, "lint", "success")];
-		expect("a mixed failure takes a newer base before fixing independent checks", !!effect((await check(1)).last, "publish"));
+		expect("a mixed failure offers to update from an ahead base", !!(await check(1)).item.question?.choices.some(c => c.id === "update_from_base"));
 		const mixed = effect((await check()).last, "deliver")?.text ?? "";
 		expect("a mixed CI fix receives only the independent failing check and its log", mixed.includes("lint") && !mixed.includes("adds two numbers") && !mixed.includes("- unit"));
 	}

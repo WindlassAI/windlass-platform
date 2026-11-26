@@ -301,13 +301,13 @@ export async function pushWork(input: PushInput, message: string): Promise<Pushe
 export class BaseMergeConflict extends Error {}
 
 /** Fetch at answer time. Only the exact merge of the polled head may go through the normal scanned push. */
-export async function updateBranchFromBase(input: PushInput, update: { head: string; at: number }): Promise<Pushed> {
+export async function updateBranchFromBase(input: PushInput, update: { head: string; at: number; baseTip?: string }): Promise<Pushed> {
 	const { app, repository, branch, sandbox, connection } = input;
 	if (!connection) throw new GithubProblem("github_gone", NOT_CONNECTED);
 	const resolved = await sessionRepository(app, connection, repository, "write");
 	const found = await fetchBase(app, connection, repository, sandbox, branch);
 	if (!found || !repository.baseSha) throw new GithubProblem("github_unreachable", "The item branch or its current base could not be confirmed.");
-	const merged = await mergeBaseForCi(sandbox, branch, repository.branch, repository.baseSha, update.head, update.at, authorOf(connection));
+	const merged = await mergeBaseForCi(sandbox, branch, repository.branch, update.baseTip ?? repository.baseSha, update.head, update.at, authorOf(connection));
 	if (merged.ok && merged.marks.has("conflict")) throw new BaseMergeConflict();
 	const head = merged.marks.get("head");
 	if (!merged.ok || !head) throw new GithubProblem("github_failed", `The base could not be merged into ${branch}. ${merged.said}`.trim());

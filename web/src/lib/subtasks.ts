@@ -36,6 +36,29 @@ export interface PlannedSubtask {
 	task: PlanSubtask;
 	child: ItemSummary | null;
 	state: SubtaskState;
+	/** A part the factory added on its own, not in the plan: what it repairs. */
+	repair?: RepairKind;
+}
+
+/** What a part the factory adds repairs: the feature's failing CI, or its branch's conflicts with the base (blueprint.ts, `queueRepair`). */
+export type RepairKind = "ci" | "conflict";
+
+/** The repair a part's key names ("ci-fix-<n>", "conflict-fix-<n>"); null for a part of the plan. */
+export function repairKind(key: string): RepairKind | null {
+	return key.startsWith("ci-fix-") ? "ci" : key.startsWith("conflict-fix-") ? "conflict" : null;
+}
+
+/** Why the factory added a repair part, and what it fixes, in a sentence. */
+export const REPAIR_WHY: Record<RepairKind, string> = {
+	ci: "Added by the factory: the feature's CI failed after its parts were integrated. This part fixes the failing checks.",
+	conflict: "Added by the factory: the feature branch no longer merges cleanly with its base. This part merges the base in and resolves the conflicts.",
+};
+
+/** A part as its feature's page names it: "Part 2: Render the table as a PDF", "Repair: Fix failing feature checks". */
+export function partName(plan: Pick<FeaturePlan, "subtasks"> | null | undefined, key: string, title: string): string {
+	const index = plan ? plan.subtasks.findIndex((task) => task.key === key) : -1;
+	if (index >= 0) return `Part ${index + 1}: ${title}`;
+	return repairKind(key) ? `Repair: ${title}` : title;
 }
 
 /** The plan's subtasks in order, each with its item where there is one. A child the plan no longer names (an earlier version's) is left out. */
@@ -287,15 +310,17 @@ export function repairSubtasks(plan: Pick<FeaturePlan, "subtasks">, children: re
 	const planned = new Set(plan.subtasks.map((task) => task.key));
 	const byKey = new Map<string, ItemSummary>();
 	for (const child of [...children].sort((a, b) => a.createdAt - b.createdAt)) if (child.parent && !planned.has(child.parent.key)) byKey.set(child.parent.key, child);
-	return [...byKey.values()].map((child, index) => ({
-		n: from + index,
-		task: { key: child.parent!.key, title: child.title, brief: "", acceptance: [], owns: [], dependsOn: [], budget: child.budget } as PlanSubtask,
-		child,
-		state: subtaskState(child),
-	}));
+	return [...byKey.values()].map((child, index) => {
+		const key = child.parent!.key;
+		const repair = repairKind(key);
+		const task = { key, title: child.title, brief: "", acceptance: [], owns: [], dependsOn: [], budget: child.budget } as PlanSubtask;
+		return { n: from + index, task, child, state: subtaskState(child), ...(repair && { repair }) };
+	});
 }
 
-export function groupSubtasks(plan: Pick<FeaturePlan, "subtasks">, children: readonly ItemSummary[], jobs: readonly DispatchedSubtask[] | undefined): SubtaskGroups {
+export function groupSubtasks(plan: Pick<FeaturePlan, "subtasks">, children: readonly ItemSummary[], jobs: readonly DispatchedSubtask[] | undefined, featureWait?: ItemSummary["wait"]): SubtaskGroups {
+	// The feature waiting for a place is about the next subtask to start: that one says so, in the server's words.
+	let placeWait = featureWait && WAITS_FOR_PLACE.has(featureWait.reason) ? featureWait.sentence : null;
 	const planned = plannedSubtasks(plan, children);
 	// Repairs run and end like any part, so they are listed with them; the "of N integrated" count stays the plan's.
 	const entries = [...planned, ...repairSubtasks(plan, children, planned.length + 1)];
@@ -336,7 +361,10 @@ export function groupSubtasks(plan: Pick<FeaturePlan, "subtasks">, children: rea
 			continue;
 		}
 		if (groups.running.length >= PARALLEL_SUBTASKS) groups.next.push({ ...base, phase: "slot", word: "waits for", fact: `a free slot: ${PARALLEL_SUBTASKS} run at once` });
-		else groups.next.push({ ...base, phase: "starting", word: "starting", fact: null });
+		else if (placeWait) {
+			groups.next.push({ ...base, phase: "starting", word: "waiting for a place", fact: placeWait });
+			placeWait = null;
+		} else groups.next.push({ ...base, phase: "starting", word: "starting", fact: null });
 	}
 	return groups;
 }

@@ -148,7 +148,7 @@ async function runCheck(db: DefaultsDb, provider: ModelProvider, key: string, ge
 }
 
 export function savedModelKeys(db: DefaultsDb) {
-	return db.execute<{ provider: ModelProvider; generation: string }>("SELECT provider, generation FROM model_provider ORDER BY provider");
+	return db.execute<{ provider: ModelProvider; generation: string }>("SELECT provider, generation FROM model_provider WHERE check_ok=1 ORDER BY provider");
 }
 
 export async function providerStatuses(db: DefaultsDb): Promise<ModelProviderStatus[]> {
@@ -167,10 +167,19 @@ export const modelProviderActions = {
 		if (!validModelKey(provider, key)) throw new UserError("The key format does not match the provider.", { code: "bad_model_key" });
 		await takeCheck(c.db);
 		const generation = randomUUID();
+		const [before] = await c.db.execute<{ generation: string }>("SELECT generation FROM model_provider WHERE provider=?", provider);
+		const at = Date.now();
+		const result = await fetchModels(provider, key).catch(() => null);
+		const checked = Date.now();
+		if (!result) return { provider, last4: key.slice(-4), addedAt: at, checkedAt: checked, ok: false, message: "Could not check the key with the provider. Verify the key and try again." };
 		const sealed = serverSealer().seal("model-key", subject(uid, provider), key);
-		await c.db.execute(`INSERT OR REPLACE INTO model_provider (provider, generation, sealed, last4, added_at) VALUES (?, ?, ?, ?, ?)`,
-			provider, generation, sealed, key.slice(-4), Date.now());
-		return runCheck(c.db, provider, key, generation);
+		const [row] = await c.db.execute<StatusRow>(`INSERT INTO model_provider (provider, generation, sealed, last4, added_at, checked_at, check_ok, models, windlass_models)
+			SELECT ?, ?, ?, ?, ?, ?, 1, ?, ? WHERE (SELECT generation FROM model_provider WHERE provider=?) IS ?
+			ON CONFLICT(provider) DO UPDATE SET generation=excluded.generation, sealed=excluded.sealed, last4=excluded.last4,
+			added_at=excluded.added_at, checked_at=excluded.checked_at, check_ok=1, models=excluded.models, windlass_models=excluded.windlass_models RETURNING ${STATUS_COLUMNS}`,
+			provider, generation, sealed, key.slice(-4), at, checked, JSON.stringify(result.models), result.windlass && JSON.stringify(result.windlass), provider, before?.generation ?? null);
+		if (!row) throw new UserError("The saved key changed during the check.", { code: "model_key_changed" });
+		return status(row);
 	},
 	async checkModelProvider(c: Context, raw: ModelProvider): Promise<ModelProviderCheck> {
 		const { uid } = requireUser(c);
@@ -192,7 +201,7 @@ export const modelProviderActions = {
 	/** A turn can pin the saved generation without opening the key. */
 	async internalModelKeyGeneration(c: Context, raw: ModelProvider): Promise<string | null> {
 		requireServiceFor(c, modelKeyCaller(c.key[0]!));
-		const [row] = await c.db.execute<{ generation: string }>("SELECT generation FROM model_provider WHERE provider = ?", providerOf(raw));
+		const [row] = await c.db.execute<{ generation: string }>("SELECT generation FROM model_provider WHERE provider = ? AND check_ok=1", providerOf(raw));
 		return row?.generation ?? null;
 	},
 	async internalModelKey(c: Context, raw: ModelProvider, nonce: string): Promise<string | null> {

@@ -11,7 +11,8 @@ import { HARNESS_NAMES, loginCommand, signInWords, type ReportedHarness } from "
 import { absoluteTime, clockTime, plural, relativeTime, spelledDuration } from "../lib/format";
 import { linkProps, navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { useHostedProviders, useNow } from "../state/hooks";
+import { useAccount, useHostedProviders, useNow } from "../state/hooks";
+import { DefaultPlace } from "../components/RunSettings";
 import { SOURCE_NAMES } from "../lib/models";
 import { anyOf } from "../../../server/src/sandbox/harnesses.js";
 import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, tagsOf } from "../lib/machines";
@@ -404,7 +405,7 @@ function CredentialChoice({ machine, harness, providers, onChanged }: { machine:
 	};
 	return (
 		<div className="machine-credential">
-			<span className="label" id={label}>Pays with</span>
+			<span className="label" id={label}>Paid by</span>
 			<div className="segmented machine-credential-choice" role="radiogroup" aria-labelledby={label}>
 				{choices.map((choice) => (
 					<label key={choice.id} className={`segment${shown === choice.id ? " segment-chosen" : ""}`} data-source={choice.id}>
@@ -413,6 +414,7 @@ function CredentialChoice({ machine, harness, providers, onChanged }: { machine:
 					</label>
 				))}
 			</div>
+			<p className="field-note">Only this one is used. If it can't be, the item stops and asks.</p>
 			{error && <p className="field-note tone-bad" role="alert">{error}</p>}
 		</div>
 	);
@@ -1005,6 +1007,7 @@ function useMachineLimit(): number {
 export function Machines({ adding }: { adding: boolean }) {
 	const { platform } = useApp();
 	const machines = useMachines();
+	const account = useAccount();
 	const now = useNow(30_000);
 	const [removing, setRemoving] = useState<MachineSummary | null>(null);
 	const info = platform.info?.machines ?? null;
@@ -1074,6 +1077,14 @@ export function Machines({ adding }: { adding: boolean }) {
 							<span>{machines.error} <button className="link" onClick={machines.reload}>Try again</button></span>
 						</p>
 					) : null}
+
+					<section className="usage-section" aria-labelledby="machines-default">
+						<h2 className="usage-title" id="machines-default">Where work runs</h2>
+						<p className="usage-lede">Your default for work items and new agents. A repository or an item can choose another place.</p>
+						<div className="usage-card run-card">
+							<DefaultPlace account={account} />
+						</div>
+					</section>
 
 					<section className="usage-section" aria-labelledby="machines-list">
 						<h2 className="usage-title" id="machines-list">

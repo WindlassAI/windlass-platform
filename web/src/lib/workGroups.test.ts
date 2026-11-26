@@ -64,7 +64,7 @@ describe("rows of work", () => {
 			shell("curl example.com", { question: { title: "Allow network?", subject: "curl", details: [], choices: [] } }),
 			shell("curl example.com", { answer: { choice: "allow", approve: true, note: null, by: "user", platformText: null, remembers: null } }),
 			shell("rm -rf /", { state: "failed", refusal: { reason: "policy", needs: [], text: "Refused." } }),
-			tool("subagent", { task: "Look" }, { subagent: { spawnId: "s", sessionId: "x", background: false, state: "completed", detail: null, startedAt: null, durationMs: null, work: emptyView() } }),
+			tool("subagent", { task: "Look" }, { subagent: { spawnId: "s", sessionId: "x", background: false, state: "completed", detail: null, startedAt: null, durationMs: null, usage: null, work: emptyView() } }),
 			tool("push", { message: "Fix" }),
 			tool("fetch_base", {}),
 			thought("**Still**", true),
@@ -107,7 +107,7 @@ describe("what a row of work says", () => {
 });
 
 describe("what the agent does now", () => {
-	const live = (blocks: Block[], end: TurnView["end"] = null): TurnView => ({ turn: 1, blocks, steps: 3, interruptRequested: false, changedFiles: null, usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, end, platformAnswer: null });
+	const live = (blocks: Block[], end: TurnView["end"] = null): TurnView => ({ turn: 1, blocks, steps: 3, stepOpen: false, interruptRequested: false, changedFiles: null, usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 }, end, platformAnswer: null });
 
 	it("says the running call and what it acts on, or that it thinks, writes or prepares a call", () => {
 		expect(liveStep(live([read("a.ts"), shell("bun run build", { state: "running" })]))).toEqual({ words: "running", target: "bun run build" });

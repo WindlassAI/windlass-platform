@@ -20,7 +20,7 @@ import { absoluteTime, compact, count, percent, plural, shortId } from "../lib/f
 import { linkProps } from "../lib/router";
 import { perHour, sizeName } from "../lib/sizes";
 import { startHeadline, startLine, startRows } from "../lib/start-times";
-import { blockedRequests, cachedShare, lastTurn, sessionUsage, turnNetwork, turnUsage, type ModelCall, type SessionView } from "../lib/timeline";
+import { blockedRequests, cachedShare, lastTurn, openStep, sessionUsage, turnNetwork, turnUsage, type ModelCall, type SessionView } from "../lib/timeline";
 import { useApp, useAuth } from "../state/app";
 import { Dialog } from "./Dialog";
 import { DiffView } from "./DiffView";
@@ -297,6 +297,24 @@ function TokenTable({ view, perCall }: { view: SessionView; perCall: boolean }) 
 const tokensUnreported = (view: SessionView) => view.turns.some((one) => one.end !== null) && view.calls.length === 0 && view.turns.every((one) => one.end === null || one.end.usage === null);
 
 /**
+ * What is not counted yet while a turn runs, in a sentence; null when everything so far is. An agent that counts
+ * per model call counts each when it ends (`step.ended`), its subagents' as theirs end; one that counts per turn,
+ * when the turn ends. `none`: nothing is counted yet, so the figures say so rather than show a false 0.
+ */
+export function uncountedWords(view: SessionView, perCall: boolean): { text: string; none: boolean } | null {
+	const used = sessionUsage(view);
+	const none = used.inputTokens + used.outputTokens === 0;
+	if (perCall) {
+		const open = openStep(view);
+		if (!open) return null;
+		return { none, text: none ? `Counted when step ${open.step} ends.` : `Step ${open.step} is counted when it ends.` };
+	}
+	const last = lastTurn(view);
+	if (!last || last.end !== null) return null;
+	return { none, text: none ? "Counted when this turn ends." : "This turn is counted when it ends." };
+}
+
+/**
  * What the agent has used: its cost first where its agent says it, how full its context is, and its tokens in
  * and out. Every count and the cache per model call are under "Token details".
  */
@@ -307,6 +325,7 @@ function Usage({ view, summary }: { view: SessionView; summary: SessionSummary }
 	const tokens = perCall || reportsTokens(view);
 	const unreported = tokensUnreported(view);
 	const session = sessionUsage(view);
+	const uncounted = tokens ? uncountedWords(view, perCall) : null;
 	const context = usage === "context" ? view.context : null;
 	const share = context ? Math.min(1, context.used / context.size) : 0;
 	return (
@@ -332,12 +351,12 @@ function Usage({ view, summary }: { view: SessionView; summary: SessionSummary }
 				{context?.fiveHourUsedPct != null ? <Figure value={`${Math.round(context.fiveHourUsedPct)}%`} label="5-hour window" /> : null}
 				{perCall || (tokens && !context) ? (
 					<>
-						<Figure value={unreported ? "–" : compact(session.inputTokens)} label="tokens in" />
-						<Figure value={unreported ? "–" : compact(session.outputTokens)} label="tokens out" />
+						<Figure value={unreported || uncounted?.none ? "–" : compact(session.inputTokens)} label="tokens in" />
+						<Figure value={unreported || uncounted?.none ? "–" : compact(session.outputTokens)} label="tokens out" />
 					</>
 				) : null}
 			</div>
-			{unreported ? <p className="panel-empty panel-note">No token counts were reported.</p> : null}
+			{unreported ? <p className="panel-empty panel-note">No token counts were reported.</p> : uncounted && (perCall || !context) ? <p className="panel-empty panel-note">{uncounted.text}</p> : null}
 			{tokens && !unreported ? (
 				<details className="panel-more">
 					<summary>

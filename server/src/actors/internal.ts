@@ -11,7 +11,7 @@
 import type { HoldReport } from "../usage.js";
 import { UserError } from "rivetkit";
 import type { CreateSandboxInput } from "../sandbox/api.js";
-import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, ModelProvider, RepositoryAutonomy, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
+import type { EnvironmentBuild, GithubId, HarnessOptions, HarnessId, HostedSize, ItemAction, ItemSummary, ItemView, ModelList, PartScreenshots, ModelProvider, RepositoryAutonomy, RepositoryCheck, RepositorySetup, SandboxPlace, SandboxProfileId, SecretScope, SessionSummary, UsageNumbers } from "../contract.js";
 import type { Fact } from "../factory/types.js";
 import type { SignInMethod } from "../sandbox/harnesses.js";
 import type { Delivery, TurnAnswer, TurnRelease, TurnRequest } from "./session-inbox.js";
@@ -25,7 +25,7 @@ import { issueServiceToken, verifyToken } from "../tokens.js";
 
 /** What `user` passes when it creates an `agentSession`. */
 export interface SessionCreateInput {
-	readiness?: { attempt: string; commit: string; draft?: import("../repo-setup/types.js").DraftRequest };
+	readiness?: { attempt: string; commit: string; model?: string; effort?: string; draft?: import("../repo-setup/types.js").DraftRequest };
 	size?: number;
 	/** Hosted only, where the layer offers sizes (`Sandboxes.sizes`): the sandbox's size. */
 	hostedSize?: HostedSize;
@@ -53,7 +53,7 @@ export interface SessionCreateInput {
 	 * Set for a work item's session: its prompts come from that item (session-inbox.ts). Absent: a person's.
 	 * `signIn`: how the machine's agent signed in when the item was filed, where that counts its tokens (harnesses.ts, `itemTokensOf`).
 	 */
-	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; planCritic?: true; subtaskScreenshots?: boolean; owns?: string[]; childBranch?: { name: string; start: string }; size?: number; effort?: string; signIn?: SignInMethod; filedWithKey?: true };
+	origin?: { kind: "item"; itemId: string; role?: "builder" | "reviewer"; planCritic?: true; subtaskScreenshots?: boolean; owns?: string[]; childBranch?: { name: string; start: string }; size?: number; effort?: string; signIn?: SignInMethod; payer?: import("../contract.js").CredentialSource; payerSource?: "account" | "deployment" };
 	/** Set for a session that only builds the repository's prepared environment at its place (user-environments.ts). */
 	environmentBuild?: EnvironmentBuildOrigin;
 }
@@ -103,14 +103,13 @@ export type ReserveAnswer = { ok: true; clampedSize?: HostedSize; hold: { id: st
 export interface UserInternal {
 	internalSetupPublished(session: string, publication: import("../repo-setup/types.js").SetupPublication, decisions: import("../repo-setup/types.js").NoteDecision[], installation: GithubId, source: string): Promise<void>;
 	internalReadinessResult(session: string, attempt: string, report: import("../factory/readiness.js").Judgment | string | null, diagnosis?: import("../repo-setup/types.js").SetupDiagnosis | null): Promise<void>;
-	internalFlakyJobs(id: GithubId): Promise<string[]>;
 	internalReadinessLevel(id: GithubId): Promise<import("../factory/readiness.js").ReadinessLevel | null>;
 	internalSlackIntake(filing: import("../factory/intake.js").SlackFiling): Promise<import("../factory/intake.js").IntakeFiled>;
 	internalLinearHoldsTeam(workspaceId: string, teamId: string): Promise<boolean>;
 	internalLinearWrite(input: import("./user-linear.js").LinearItemWrite): Promise<boolean>;
 	internalDefaultBuilder(input: { id: string; job: import("./user-items.js").DefaultBuilder }): ReturnType<typeof import("./user-items.js").itemActions.internalDefaultBuilder>;
 	internalDiscardPlacement(itemId: string): Promise<void>;
-	internalHostedProviders(): Promise<import("../sandbox/harnesses.js").CheckedProvider[]>;
+
 	internalHostedSizes(): Promise<HostedSize[]>;
 	internalDailyTokenWait(): Promise<string | null>;
 	internalRecordTurnTokens(input: { sessionId: string; receipt: import("../usage.js").TokenReceipt }): Promise<void>;
@@ -119,11 +118,11 @@ export interface UserInternal {
 	internalFeatureChild(input: { parent: string; child: string; cancel?: boolean }): Promise<ItemView | null>;
 	internalProviderGeneration(location: import("./provider-accounts.js").AccountLocation): Promise<string | null>;
 	internalObserveUsage(location: import("./provider-accounts.js").AccountLocation, generation: string, observation: import("../provider-usage.js").UsageObservation): Promise<void>;
-	internalLimitedAccounts(): Promise<ReturnType<typeof import("./provider-accounts.js").limitedAccounts>>;
+
 	internalRepositoryAutonomy(repositoryId: GithubId): Promise<RepositoryAutonomy>;
-	internalPlanCritic(builderId: string): Promise<void>;
-	internalPlannerCapacity(): Promise<{ machines: ReturnType<typeof import("../machines/details.js").plannerMachines>; hostedCapacity: number }>;
-	internalAgentModels(): Promise<import("../factory/placement.js").AgentModels>;
+	internalPlanCritic(builderId: string, context: import("../factory/resolve-run.js").RunContext): Promise<void>;
+	internalPlacementInventory(repositories: Record<string, GithubId>, snapshot?: GithubId): Promise<import("../factory/placement.js").PlacementInventory & { hostedCapacity: number }>;
+
 	internalSessionChanged(summary: SessionSummary): Promise<void>;
 	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
 	internalRemoveBackupLater(sessionId: string): Promise<void>;
@@ -141,10 +140,8 @@ export interface UserInternal {
 	internalServerForget(input: { project: string; name: string }): Promise<{ forgotten: number; approvals: ServerApproval[] }>;
 	/** The setup command the user saved for a repository, by its key (setup-command.ts); `command` is "" when there is none. */
 	internalHasChecks(repositoryId: GithubId): Promise<boolean>;
-	/** A post-setup snapshot of the project was saved at `place` ("hosted" or a machine id): remembered for placement (`internalSnapshotPlaces`). */
+	/** A post-setup snapshot of the project was saved at `place` ("hosted" or a machine id): remembered for placement. */
 	internalSnapshotSaved(project: string, updatedAt: number | null, connectedAt: number, place?: string): Promise<void>;
-	/** The places ("hosted", machine ids) that saved a snapshot of the repository for this user under its current setup and GitHub connection, in the last 14 days. A hint: the place may have evicted it since. */
-	internalSnapshotPlaces(repositoryId: GithubId): Promise<string[]>;
 	/** A build session's result (user-environments.ts `buildResult`); the session is deleted after it. */
 	internalEnvironmentResult(sessionId: string, result: EnvironmentBuildReport): Promise<void>;
 	/** A session found its place's ready image missing (`missed`), or started cold where the repository has no environment (`cold`). */
@@ -253,7 +250,7 @@ export interface SessionInternal {
 	internalCheckTurn(input: { turn: string; check: string }): Promise<Fact | null>;
 	/** Pushes the item's work and opens or updates its pull request, with the agent's report or else the item's title and body. */
 	internalBaseTests(input: { head: string; base: string; tests: import("../factory/base-tests.js").NamedTests }): Promise<import("../factory/base-tests.js").BaseTestResult | "pending">;
-	internalPublish(input: { key: string; title: string; body: string; blockedNetwork?: import("../contract.js").BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number } }): Promise<ItemPublishAnswer>;
+	internalPublish(input: { key: string; title: string; body: string; blockedNetwork?: import("../contract.js").BlockedNetwork; branchOnly?: boolean; updateFromBase?: { head: string; at: number; baseTip?: string } }): Promise<ItemPublishAnswer>;
 }
 
 export interface NetworkReceipt { sessionId: string; revision: number; network: import("../contract.js").BlockedNetwork }
@@ -273,12 +270,14 @@ export interface ItemInternal {
 	internalFinishJoin(child: string, result: import("../factory/types.js").JoinResult): Promise<void>;
 	internalChildNotice(child: Pick<ItemSummary, "id" | "spent" | "state"> & { budget?: ItemSummary["budget"]; integratedHead?: string }): Promise<void>;
 	/** `repository`: a cross-repo feature's child's own repository and base; null for a one-repository feature. */
-	internalChildRequest(child: string): Promise<{ paused?: boolean; job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; joinOnGate: boolean; featureBody: string; repository: { id: GithubId; base: string; alias: string } | null; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace }; /** Where the subtask's outside text came from (factory/untrusted.ts). Absent from an older parent. */ untrusted?: string[]; /** The feature's `FactoryItem.unsandboxed`. */ unsandboxed?: string[] } | null>;
+	internalChildRequest(child: string): Promise<{ settings: import("../factory/resolve-run.js").RunContext; paused?: boolean; job: import("../factory/types.js").FeatureJob; sessionId: string; feature: ItemSummary; joinOnGate: boolean; featureBody: string; repository: { id: GithubId; base: string; alias: string } | null; context: string; previous?: { head: string | null; report: string; place?: SandboxPlace }; /** Where the subtask's outside text came from (factory/untrusted.ts). Absent from an older parent. */ untrusted?: string[]; /** The feature's `FactoryItem.unsandboxed`. */ unsandboxed?: string[] } | null>;
 	/** A cross-repo feature's planning turn of `key`: the other repositories it reads, and where in the workspace. */
 	internalPlanningInputs(key: string): Promise<{ directory: string; inputs: { alias: string; repositoryId: GithubId; installationId: GithubId; owner: string; name: string; baseRef: string; sha: string | null }[] } | null>;
 	internalFilePlan(input: { key: string; plan: unknown }): Promise<string>;
 	internalSummary(): Promise<ItemSummary>;
 	internalView(): Promise<ItemView>;
+	/** Each report and review that filed screenshots, the newest first: what its feature's page gathers. */
+	internalScreenshotSets(): Promise<Omit<PartScreenshots, "itemId" | "key" | "title">[]>;
 	internalAct(input: { action: ItemAction; by: string }): Promise<ItemView>;
 	/** A fact about the item's turn; resolves once it is stored. */
 	internalFact(fact: Fact): Promise<void>;

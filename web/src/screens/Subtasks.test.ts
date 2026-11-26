@@ -87,8 +87,9 @@ describe("the subtasks of a running feature", () => {
 		const subtasks = plannedSubtasks(short.plan!, short.children ?? []);
 		expect(tallyLine(tallyOf(subtasks))).toBe("1 running · 1 of 3 done");
 		const html = renderToStaticMarkup(createElement(SubtasksBlock, { plan: short.plan!, children: short.children ?? [], now: NOW() }));
-		expect(html.match(/class="subtask-run /g)).toHaveLength(2);
-		expect(html).toContain("1 of 3");
+		// Its two running rows: the plan's part and the factory's repair of the feature's CI.
+		expect(html.match(/class="subtask-run /g)).toHaveLength(3);
+		expect(html).toContain("<strong>1</strong> of 3 integrated");
 	});
 });
 
@@ -172,6 +173,17 @@ describe("subtasks in parallel, grouped", () => {
 		const text = html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
 		expect(text).toContain("Fix failing feature checks");
 		expect(text).toContain(`1 of ${parallel.plan!.subtasks.length} integrated`);
+		// It says why it is there and what it fixes, and is not numbered as a part of the plan.
+		expect(text.replace(/&#x27;/g, "'")).toContain("fix Fix failing feature checks Added by the factory: the feature's CI failed after its parts were integrated.");
+		const ended = groupSubtasks(parallel.plan!, [...(parallel.children ?? []), { ...repair, state: "done" as const }], parallel.subtasks);
+		expect(doneWords(ended.done)).toBe("1 integrated · 1 repair integrated");
+	});
+
+	it("says what the feature waits for on the next subtask, rather than that it is starting", () => {
+		const wait = { reason: "machine" as const, sentence: "Waiting for two free slots on studio.", since: 0, retryAt: null };
+		const plan = { subtasks: [{ ...parallel.plan!.subtasks[0]!, key: "solo", dependsOn: [], owns: ["solo/**"] }] };
+		expect(groupSubtasks(plan, [], [], wait).next[0]).toMatchObject({ word: "waiting for a place", fact: "Waiting for two free slots on studio." });
+		expect(groupSubtasks(plan, [], [], null).next[0]).toMatchObject({ word: "starting", fact: null });
 	});
 
 	it("draws Running now (2 of 3), Up next with what holds each, and Done folded", () => {

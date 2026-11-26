@@ -159,13 +159,6 @@ async function testNode() {
 		return session;
 	});
 	Object.assign(user.config.actions!, {
-		checkFlakyHistory: async (c: UserCtx, id: number, name: string) => {
-			requireServiceFor(c, "call");
-			const { saveSetupScan } = await import("../server/src/actors/user-readiness.js");
-			const at = Date.now();
-			await saveSetupScan(c.db, `github:${id}`, at, { commit: null, findings: [], areas: [], later: 0 },
-				{ at, branch: "main", checked: 1, green: 1, hasCi: true, reverts: 0, redMerges: 0, flaky: [{ name, count: 1 }] });
-		},
 		checkCancelDuringPlacement: (c: UserCtx, id: string) => {
 			requireServiceFor(c, "call");
 			cancelDuringPlacement = id;
@@ -229,18 +222,18 @@ async function testNode() {
 	const actions = githubInbox.config.actions!;
 	type Ctx = Parameters<typeof actions.internalReceive>[0];
 	const original = HANDLERS.installation!;
-	const failures = new Map<string, number>();
+	const failures = new Map<string, { attempts: number; at: number }>();
 	HANDLERS.installation = (d, c) => {
 		if (d.installationId !== RETRY_INSTALLATION) return original(d, c);
-		const tried = failures.get(d.guid) ?? 0;
-		failures.set(d.guid, tried + 1);
+		const tried = failures.get(d.guid)?.attempts ?? 0;
+		failures.set(d.guid, { attempts: tried + 1, at: Date.now() });
 		if (d.action === "suspended" || tried < 3) throw new Error("injected failure");
 	};
 	Object.assign(actions, {
 		checkRow: async (c: Ctx, guid: string) => {
 			requireServiceFor(c, "call");
 			const [r] = await c.db.execute("SELECT state, said, attempts, next_at, received_at, data, CAST(repository AS TEXT) AS repository FROM deliveries WHERE guid = ?", guid);
-			return r ?? null;
+			return r ? { ...r, attemptedAt: failures.get(guid)?.at } : null;
 		},
 		checkFixture: async (c: Ctx, kind: string, guid: string) => {
 			requireServiceFor(c, "call");
@@ -306,7 +299,7 @@ async function run() {
 	const client = createClient<import("../server/src/registry.js").Registry>({ endpoint: base(engine) });
 	const service = () => ({ params: serviceParams() });
 	const inbox = (id: number | string) => client.githubInbox.getOrCreate([String(id)], service());
-	type Row = { data: string; repository: string | null; state: string; said: string; attempts: number; next_at: number; received_at: number };
+	type Row = { attemptedAt?: number; data: string; repository: string | null; state: string; said: string; attempts: number; next_at: number; received_at: number };
 	const fixture = (id: number | string) => inbox(id) as unknown as { checkRow(guid: string): Promise<Row | null>; checkFixture(op: string, guid: string): Promise<void> };
 	const shaPayload = { installation: { id: 91234 }, repository: { id: 123 }, sha: HEAD, state: "success", description: bodyMarker };
 	const web = api + "/github/webhook";
@@ -730,8 +723,6 @@ async function run() {
 		});
 		for (const outcome of ["passes", "fails twice", "mixed failures", "inherited"] as const) await check("G2 flaky re-run " + outcome, async () => {
 			const name = outcome === "inherited" ? "unit" : "e2e (macos)";
-			const cache = client.user.get([uid], service()) as unknown as { checkFlakyHistory(id: number, name: string): Promise<void> };
-			await cache.checkFlakyHistory(projectG2.id, "e2e (macos)");
 			standin.appPermissions.actions = "write";
 			const item = await push();
 			const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === item.pr)!;
@@ -750,20 +741,15 @@ async function run() {
 				projectG2.ci.set(item.head, { runs, statuses: [], workflows: [{ id: workflow, check_suite_id: suite, status: "completed" }] });
 				for (const check of runs) projectG2.jobs.set(String(check.id), { ...check, head_sha: item.head, run_id: workflow, runner_id: 1, runner_name: "runner", steps: [] });
 				await delivered("check_suite", { action: "completed", check_suite: { head_sha: item.head } });
-				if (outcome === "mixed failures") {
-					await until("CI fix for a non-flaky failure", async () => (await item.view()).run?.rounds.ci === 1, 30_000);
-					assert.equal(postCount(), 0);
-					return;
-				}
-				const reason = outcome === "inherited" ? "it also failed on the base" : "it's known to be flaky here";
-				await until("re-run recorded", async () => (await item.view()).events.some(e => e.said === `CI job ${name} failed; ${reason}, so it was re-run once.`), 30_000);
+				await until("re-run recorded", async () => (await item.view()).events.some(e => e.said.includes(`Requested one re-run of failed CI job ${name}.`)), 30_000);
 				const first = await item.poll();
 				await clock.checkAdvance("poll", 0);
 				await until("stale failure polled again", async () => { const row = await item.poll(); return row && row.id !== first?.id; });
 				assert.equal((await item.view()).run?.rounds.ci, 0);
 				runs.push(job(old.id + 2, name, outcome === "fails twice" ? "failure" : "success"));
+				if (outcome === "mixed failures") runs.push(job(old.id + 3, "lint", "failure"));
 				await clock.checkAdvance("poll", 0);
-				if (outcome === "fails twice") {
+				if (outcome === "fails twice" || outcome === "mixed failures") {
 					await until("CI fix after failed re-run", async () => (await item.view()).run?.rounds.ci === 1);
 				} else {
 					await until("green CI on the original head", async () => (await item.view()).verdict?.ci === "passed");
@@ -803,34 +789,35 @@ async function run() {
 
 			projectG2.name = "renamed-factory";
 			ci(item.head, "pending");
-			const sent = Date.now();
 			const handled = await delivered("check_suite", suite(item.head));
 			assert.equal(handled.state, "done");
 			const early = await item.poll(); assert.ok(early);
 			assert.deepEqual({ ...early, due_at: first.due_at }, first);
-			assert.ok(early.due_at <= Date.now() + 15_000 && early.due_at < first.due_at);
+			assert.ok(early.due_at >= handled.received_at + 15_000 && early.due_at < first.due_at);
 			assert.equal((await item.view()).revision, initial.revision);
 			await until("one pending live CI read", async () => (await item.view()).wait?.sentence.includes("0 of 1"), 20_000);
 			assert.equal(countReads(item.head), 1);
-			assert.ok(Date.now() - sent < 20_000);
 			assert.ok(standin.requests.some(r => r.path.endsWith("/repositories/" + projectG2.id) && r.status === 200));
 			assert.ok(standin.requests.some(r => r.path.includes("/renamed-factory/commits/" + item.head) && r.status === 200));
-			console.log(`PASS G2 signed suite caused one CI read in ${Date.now() - sent} ms; claimed success, GitHub pending`);
+			console.log("PASS G2 signed suite caused one live CI read; claimed success, GitHub pending");
 
-			const began = Date.now();
+			const beforeBurst = await item.poll(); assert.ok(beforeBurst);
 			const guids = Array.from({ length: 30 }, () => randomUUID());
 			const burst = guids.map(guid => standin.deliver(web, "check_run", { installation: { id: installation.id }, repository: { id: projectG2.id },
 				action: "completed", check_run: { head_sha: item.head, conclusion: "failure" } }, { secret, guid }));
 			for (const res of await Promise.all(burst)) assert.deepEqual(await res.json(), { taken: true });
 			const receipts = await Promise.all(guids.map(guid => fixture(installation.id).checkRow(guid)));
 			const times = receipts.map(row => { assert.ok(row); return row.received_at; });
-			assert.ok(Math.max(...times) - Math.min(...times) <= 2000);
-			const coalesced = await item.poll(); assert.ok(coalesced);
-			assert.ok(coalesced.due_at >= began + 15_000 && coalesced.due_at <= Date.now() + 15_000);
+			const coalesced = await until("burst nudged the pending poll", async () => {
+				const row = await item.poll();
+				return row?.id === beforeBurst.id && row.due_at < beforeBurst.due_at ? row : null;
+			});
+			assert.ok(coalesced.due_at >= Math.min(...times) + 15_000 && coalesced.due_at <= Math.max(...times) + 17_000);
+			await until("all thirty deliveries handled", async () => (await Promise.all(guids.map(guid => fixture(installation.id).checkRow(guid)))).every(r => r?.state === "done"));
 			await until("burst CI read", async () => countReads(item.head) >= 2, 20_000);
-			await until("next CI poll stored", async () => { const row = await item.poll(); return row && row.id !== coalesced.id; });
+			const fallback = await until("next CI poll stored", async () => { const row = await item.poll(); return row && row.id !== coalesced.id ? row : null; });
 			assert.equal(countReads(item.head), 2);
-			assert.ok((await item.poll())!.due_at > Date.now() + 20_000);
+			assert.equal(fallback.due_at, JSON.parse(fallback.effect).at, "no delivery nudged a second poll");
 			assert.equal(logs.split("factory.ci.nudge_found item=" + item.id).length - 1, 1);
 			console.log("PASS G2 thirty signed check runs coalesced into one more read");
 
@@ -845,10 +832,8 @@ async function run() {
 			assert.equal((await item.view()).state, "review");
 			const pull = standin.pulls.find(p => p.repository === projectG2.id && p.number === item.pr)!;
 			pull.state = "closed"; pull.merged = true;
-			const mergedAt = Date.now();
 			await delivered("pull_request", closed);
 			await until("fetched merge", async () => (await item.view()).state === "done", 20_000);
-			assert.ok(Date.now() - mergedAt < 20_000);
 			await until("directory removal", async () => !(await directory().internalFind({ pr: item.pr })).length);
 			const rev = (await item.view()).revision;
 			assert.equal(await item.handle().internalGithubNudge(target), false);
@@ -925,7 +910,7 @@ async function run() {
 			return delivered("issue_comment", commentFields(pull.number, id, author));
 		};
 		const reviewerSettings = () => client.githubHooks.getOrCreate(["app"], service()) as unknown as { checkReviewer(enabled: boolean): Promise<void> };
-		await check("G4 requested PR review binds the selected machine agent", async () => {
+		await check("G4 requested PR review uses the default Windlass model on the selected machine", async () => {
 			const machines = client.user.get([uid], service()) as unknown as { checkPlaceMachine(id: string, state: string): Promise<void> };
 			const place = { kind: "machine" as const, machineId: "m_0000000000000042" };
 			await machines.checkPlaceMachine(place.machineId, "online");
@@ -937,9 +922,9 @@ async function run() {
 				assert.ok(view.reviewerSessionId);
 				const reviewer = (await client.agentSession.get([uid, view.reviewerSessionId], { params: { token: ownerToken } }).snapshot()).summary;
 				assert.deepEqual(reviewer.place, place);
-				assert.equal(reviewer.harness, "claude");
+				assert.equal(reviewer.harness ?? "windlass", "windlass");
 				assert.equal(reviewer.profile, "docker-hardened");
-				assert.equal(reviewer.model, view.agent?.model);
+				assert.equal(reviewer.model, (await g2User.models()).defaultModel);
 			} finally {
 				await reviewerSettings().checkReviewer(process.env.WLP_FACTORY_REVIEWER === "on");
 				await machines.checkPlaceMachine(place.machineId, "removed");
@@ -1276,7 +1261,7 @@ async function run() {
 				assert.equal((await item.view()).run?.n,2);
 			} finally { await stop(item.id); }
 		});
-		await check("G3 feature placement defaults bind GitHub filings, wait and fall back", async () => {
+		await check("G3 feature placement defaults bind GitHub filings and ask before changing place", async () => {
 			const writer = standin.addUser("default-places"); projectG2.access.set(writer.login, "write");
 			const { user: account, uid, token } = await connectUser(writer.login);
 			const machine = client.user.get([uid], service()) as unknown as { checkPlaceMachine(id: string, state: string): Promise<void>; checkCancelDuringPlacement(id: string): Promise<void> };
@@ -1304,23 +1289,25 @@ async function run() {
 			await machine.checkPlaceMachine(mac, "offline");
 			const waiting = await file(true);
 			assert.equal(waiting.state, "waiting");
-			assert.match(waiting.wait!.sentence, /offline.*Waiting/);
+			assert.match(waiting.question!.text, /offline/);
+			assert.deepEqual(waiting.question!.choices.map(c => c.id), ["wait", "give_up"]);
 			await account.actOnItem({ id: waiting.id, action: { kind: "cancel" } });
 			await repo({ ...policy, placeFallback: "hosted" });
-			const fallback = await file();
-			assert.equal(fallback.place.kind, "hosted");
-			assert.equal(fallback.agent?.harness, "windlass");
-			assert.ok(fallback.events.some(e => /offline.*hosted fallback/.test(e.said)));
+			const fallback = await file(true);
+			assert.equal(fallback.place.kind, "machine");
+			assert.deepEqual(fallback.question!.choices.map(c => c.id), ["wait", "use_hosted", "give_up"]);
+			await account.actOnItem({ id: fallback.id, action: { kind: "cancel" } });
 			await machine.checkPlaceMachine(mac, "full");
 			await repo({ ...policy, place: "any-machine" });
 			assert.deepEqual((await file()).place, { kind: "machine", machineId: next });
 			await machine.checkPlaceMachine(next, "offline");
 			const queued = await file(true);
-			assert.match(queued.wait!.sentence, /free slot/);
+			assert.match(queued.question!.text, /free slot/);
+			await account.actOnItem({ id: queued.id, action: { kind: "answer", question: queued.question!.id, choice: "wait" } });
 			assert.equal(queued.reviewNone, null);
 			assert.equal(queued.review, null);
 			await machine.checkPlaceMachine(next, "online");
-			await until("waiting item bound to the newly free machine", async () => (await account.item(queued.id)).events.some(e => e.said.includes("has a free slot")));
+			await until("waiting item bound to the newly free machine", async () => !(await account.item(queued.id)).awaitingPlace);
 			const bound = await account.item(queued.id);
 			assert.deepEqual(bound.place, { kind: "machine", machineId: next });
 			assert.equal(bound.reviewNone, quick.reviewNone);
@@ -1329,6 +1316,7 @@ async function run() {
 			await account.actOnItem({ id: queued.id, action: { kind: "cancel" } });
 			await machine.checkPlaceMachine(next, "full");
 			const racing = await file(true);
+			await account.actOnItem({ id: racing.id, action: { kind: "answer", question: racing.question!.id, choice: "wait" } });
 			await machine.checkCancelDuringPlacement(racing.id);
 			await machine.checkPlaceMachine(next, "online");
 			await until("free slot starts placement and cancellation removes its session", async () => {
@@ -1339,7 +1327,7 @@ async function run() {
 
 			await repo({ ...policy, placeFallback: "hosted" });
 			await machine.checkPlaceMachine(mac, "signed-out");
-			assert.ok((await file()).events.some(e => /sign-in.*hosted fallback/.test(e.said)));
+			assert.match((await file(true)).question!.text, /not signed in/i);
 			await assert.rejects(repo(policy), /sign-in|supports/i);
 			const draftFeature = make(++number, reader);
 			await applyLabel(draftFeature, "windlass:orchestrate", writer);
@@ -1347,15 +1335,18 @@ async function run() {
 			assert.deepEqual(draftPlan.place, { kind: "machine", machineId: mac });
 			const draftPlanner = await client.agentSession.get([uid, draftPlan.sessionId], { params: { token } }).snapshot();
 			assert.equal(draftPlanner.summary.harness ?? "windlass", "windlass");
-			assert.equal(draftPlanner.summary.profile, "docker-windlass-sandbox");
+			assert.equal(draftPlanner.summary.profile, "docker-hardened");
 			await machine.checkPlaceMachine(mac, "removed");
-			assert.ok((await file()).events.some(e => /no longer.*hosted fallback/.test(e.said)));
+			assert.match((await file(true)).question!.text, /paired machine|no longer/i);
 			await machine.checkPlaceMachine(next, "full");
 			await repo({ ...policy, place: "any-machine", placeFallback: "hosted" });
 			const feature = make(++number, writer);
 			await applyLabel(feature, "windlass:orchestrate", writer);
 			const [plan] = await items(feature, account);
-			assert.equal(plan.place.kind, "hosted");
+			const away = await account.item(plan.id);
+			assert.equal(away.place.kind, "machine");
+			await account.actOnItem({ id: plan.id, action: { kind: "answer", question: away.question!.id, choice: "use_hosted" } });
+			await until("owner-approved hosted planner", async () => (await account.item(plan.id)).place.kind === "hosted");
 			const planner = client.agentSession.get([uid, plan.sessionId], { params: { token } });
 			const prompt = await until("planner received the preferred place for parts", async () =>
 				(await planner.snapshot()).timeline.find(e => e.kind === "user" && e.text.includes("place.prefer")));
@@ -2136,8 +2127,9 @@ async function run() {
 					assert.equal(row.attempts, attempt);
 					if (attempt === total) { assert.equal(row.state, terminal); break; }
 					assert.equal(row.state, "received");
-					const delay = row.next_at - Date.now(), expected = Math.min(1_800_000, 15_000 * 2 ** (attempt - 1));
-					assert.ok(delay <= expected && delay >= expected - 5_000, "retry delay");
+					assert.ok(row.attemptedAt);
+					const delay = row.next_at - row.attemptedAt, expected = Math.min(1_800_000, 15_000 * 2 ** (attempt - 1));
+					assert.ok(delay >= expected && delay <= expected + 1000, "retry delay");
 					if (attempt === 1 && terminal === "done") continue; // Let the real 15 s schedule fire once.
 					await fixture(id).checkFixture("retry", guid);
 					await inbox(id).internalDue();

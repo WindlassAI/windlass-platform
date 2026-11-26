@@ -1,5 +1,5 @@
 import { filingSource, originIssue } from "../lib/origin";
-import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemSummary, type ItemView, type SessionSummary, type StepKind, type Verdict } from "@contract";
+import { MAX_NOTE_CHARS, type ChoiceId, type ItemAction, type ItemBudget, type ItemEvent, type ItemQuestion, type ItemReport, type ItemSummary, type ItemView, type PartScreenshots, type SessionSummary, type StepKind, type Verdict } from "@contract";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { hasReason, PlatformError } from "../api/client";
 import { ITEM_MODE_WORDS } from "../lib/feature";
@@ -14,7 +14,7 @@ import { InlineMarkdown, Output } from "../components/Blocks";
 import { LongText } from "../components/Fold";
 import { CheckIcon, ChevronIcon, ExternalIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { ReviewBlocks } from "../components/ReviewBlocks";
-import { useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
+import { Screenshots, useScreenshotLinks, type ScreenshotLinks } from "../components/Screenshots";
 import { ItemNetwork } from "../components/ItemNetwork";
 import type { AllowHostContext } from "../components/BlockedNetwork";
 import { reviewShots } from "../components/SecondReview";
@@ -28,7 +28,7 @@ import { ItemGlyph, ItemRow, ItemStages, STATE_WORD } from "./Items";
 import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
 import { AgentGlyph } from "../components/ui/Pill";
-import { childrenBehind } from "../lib/subtasks";
+import { childrenBehind, partName, REPAIR_WHY, repairKind } from "../lib/subtasks";
 import { partOf, showsSubtasks, SubtasksBlock, SubtaskStrip } from "./Subtasks";
 
 const STEP_WORD: Record<StepKind, string> = {
@@ -647,6 +647,57 @@ function Report({ view, report, links, now }: { view: ItemView; report: ItemRepo
 	);
 }
 
+/** A feature's parts' screenshot sets, grouped by part: the part with the newest set first, and in each part its newest set first. */
+export function groupPartScreenshots(sets: readonly PartScreenshots[]): PartScreenshots[][] {
+	const groups = new Map<string, PartScreenshots[]>();
+	for (const set of [...sets].sort((a, b) => b.at - a.at)) groups.set(set.itemId, [...(groups.get(set.itemId) ?? []), set]);
+	return [...groups.values()];
+}
+
+/** One part's screenshots on its feature's page, their links asked on the part's own item. */
+function PartShots({ plan, sets, now }: { plan: ItemView["plan"]; sets: PartScreenshots[]; now: number }) {
+	const [latest] = sets;
+	const links = useScreenshotLinks(latest!.itemId, sets.flatMap((set) => set.screenshots));
+	return (
+		<article className="item-verdict-block">
+			<p className="item-verdict-head">
+				<a className="item-report-title" {...linkProps({ name: "item", id: latest!.itemId })}>
+					{partName(plan, latest!.key, latest!.title)}
+				</a>
+				<span className="agent-meta">
+					<span>
+						latest filed <When at={latest!.at} now={now} />
+					</span>
+					{sets.length > 1 ? <span>{plural(sets.length, "set")}</span> : null}
+				</span>
+			</p>
+			{sets.map((set, index) => (
+				<Screenshots key={`${set.by}:${set.at}`} by={set.by} head={set.head} shots={set.screenshots} links={links} label={sets.length === 1 ? "Screenshots" : index === 0 ? "Latest" : <>Earlier, filed <When at={set.at} now={now} /></>} />
+			))}
+		</article>
+	);
+}
+
+/** Every part's screenshots on the feature's page, so none has to be looked for on its part's own page. */
+function PartScreenshotsSection({ view, now }: { view: ItemView; now: number }) {
+	const groups = groupPartScreenshots(view.partScreenshots ?? []);
+	if (groups.length === 0) return null;
+	return (
+		<section className="usage-section" aria-labelledby="item-part-shots">
+			<h2 className="usage-title" id="item-part-shots">
+				Screenshots from the parts
+				<span className="usage-count">{plural(groups.reduce((sum, sets) => sum + sets.reduce((n, set) => n + set.screenshots.length, 0), 0), "screenshot")}</span>
+			</h2>
+			<p className="usage-lede">Filed by each part's agents with their reports and reviews. The part that filed last comes first.</p>
+			<div className="item-part-shots">
+				{groups.map((sets) => (
+					<PartShots key={sets[0]!.itemId} plan={view.plan} sets={sets} now={now} />
+				))}
+			</div>
+		</section>
+	);
+}
+
 function spendFacts(view: ItemView): { label: string; value: string }[] {
 	return [
 		{ label: "Turns", value: plural(view.spent.turns, "turn") },
@@ -951,20 +1002,19 @@ export function Item({ page }: { page: ItemPage }) {
 	const reading = readFirst(view);
 	// A subtask's place in its feature's plan, once the feature is read: "Part 2 of 5 of <feature>".
 	const part = view.parent && feature.view?.plan ? partOf(feature.view.plan, view.parent.key) : null;
+	const repair = view.parent ? repairKind(view.parent.key) : null;
 
 	const noteTargets = view.mode === "orchestrate"
 		? (view.children ?? []).filter(child => TAKES_NOTES.has(child.state)).map(child => {
-			const n = view.plan && child.parent ? partOf(view.plan, child.parent.key)?.n : undefined;
-			return { id: child.id, label: `${n ? `Part ${n}` : "The part"}: ${child.title}` };
+			const name = child.parent ? partName(view.plan, child.parent.key, child.title) : child.title;
+			return { id: child.id, label: name === child.title ? `The part: ${child.title}` : name };
 		})
 		: TAKES_NOTES.has(view.state) ? [{ id: view.id, label: view.parent ? "Note to this part" : "Note to the agent" }] : [];
 	const moreActions: MenuItem[] = [];
 	if (view.canUpdateFeature && !view.question?.choices.some(choice => choice.id === "update_feature")) {
 		moreActions.push({ id: "update_feature", label: `Update the feature from ${view.task.base}`, onSelect: () => acting.act({ kind: "update_feature" }) });
 	}
-	if (view.mode !== "orchestrate" && view.state === "review" && machine !== null) {
-		moreActions.push({ id: "send_back", label: "Send back…", onSelect: () => setDialog("send_back") });
-	}
+	const canSendBack = view.mode !== "orchestrate" && view.state === "review" && machine !== null;
 	if (!ended) moreActions.push({ id: "cancel", label: "Cancel…", onSelect: () => setDialog("cancel") });
 
 	return (
@@ -982,6 +1032,11 @@ export function Item({ page }: { page: ItemPage }) {
 					) : null}
 					{view.reviewerSessionId ? (
 						<a className="button button-outline button-small" {...linkProps({ name: "session", id: view.reviewerSessionId })}>Code review</a>
+					) : null}
+					{canSendBack ? (
+						<button type="button" className="button button-outline button-small" onClick={() => setDialog("send_back")} disabled={busy} title="Send it back to the agent with what to change">
+							Send back
+						</button>
 					) : null}
 					{view.state === "draft" && !reading ? (
 						<button type="button" className="button button-outline button-small" onClick={() => acting.act({ kind: "start" })} disabled={busy}>
@@ -1012,7 +1067,7 @@ export function Item({ page }: { page: ItemPage }) {
 					{view.endedAt !== undefined ? <time dateTime={new Date(view.endedAt).toISOString()} title={absoluteTime(view.endedAt)}>ended {relativeTime(view.endedAt, now)}</time> : null}
 					{view.parent ? (
 						<span>
-							{part ? `Part ${part.n} of ${part.of} of` : "subtask of"}{" "}
+							{part ? `Part ${part.n} of ${part.of} of` : repair ? "a repair the factory added to" : "subtask of"}{" "}
 							<a {...linkProps({ name: "item", id: view.parent.itemId })}>{view.parent.title}</a>
 						</span>
 					) : (
@@ -1021,6 +1076,7 @@ export function Item({ page }: { page: ItemPage }) {
 					{view.awaitingPlace ? <span>awaiting machine placement</span> : view.place.kind === "machine" ? <span>{machine === null ? "on a machine that was removed" : machine ? `on your machine “${machineLabel(machine)}”` : "on your machine"}</span> : view.placement ? <span>runs on {view.placement.name}</span> : null}
 					<ValidatedEnvironment environment={sessions?.find((s) => s.id === view.sessionId)?.environment} now={now} />
 				</p>
+				{repair ? <p className="usage-lede item-repair-why">{REPAIR_WHY[repair]}</p> : null}
 				{view.parent && feature.view?.plan ? <SubtaskStrip plan={feature.view.plan} children={feature.view.children ?? []} jobs={feature.view.subtasks} current={view.parent.key} /> : null}
 			</header>
 
@@ -1077,7 +1133,7 @@ export function Item({ page }: { page: ItemPage }) {
 				) : view.question ? (
 					<Question key={view.question.id} view={view} question={view.question} acting={acting} now={now} />
 				) : showsSubtasks(view) ? (
-					<SubtasksBlock plan={view.plan!} children={view.children ?? []} jobs={view.subtasks} now={now} />
+					<SubtasksBlock plan={view.plan!} children={view.children ?? []} jobs={view.subtasks} wait={view.wait} now={now} />
 				) : (
 					<Now view={view} now={now} />
 				)}
@@ -1100,6 +1156,7 @@ export function Item({ page }: { page: ItemPage }) {
 				</section>
 			) : null}
 			{reading ? <ReadFirst view={view} acting={acting} /> : null}
+			<PartScreenshotsSection view={view} now={now} />
 
 			<ItemChecks view={view} links={links} when={(at) => <When at={at} now={now} />} />
 

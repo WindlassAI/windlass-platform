@@ -30,7 +30,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, forgetLastStart, readAccountDefaults, readLastStart, recordLastStart, saveAccountDefaults } from "../server/src/account-defaults.js";
+import { DEFAULTS_TABLE, readAccountDefaults, saveAccountDefaults } from "../server/src/repository-defaults.js";
+import { LAST_START_TABLE, forgetLastStart, readLastStart, recordLastStart } from "../server/src/account-defaults.js";
 import {
 	ACCOUNT_SECRETS_TABLE,
 	ACCOUNT_SECRET_PROJECT,
@@ -82,7 +83,7 @@ const UNKNOWN = profile("e2b", { commandNetwork: true, commandsCanReadAccessToke
 /** A database whose every statement waits a moment first: whoever started another call meanwhile gets a turn. */
 function database(): { db: DefaultsDb; all(query: string): Array<Record<string, unknown>> } {
 	const sqlite = new DatabaseSync(":memory:");
-	for (const table of [ACCOUNT_DEFAULTS_TABLE, LAST_START_TABLE, PERSONAL_SERVERS_TABLE, ACCOUNT_SECRETS_TABLE]) sqlite.exec(table);
+	for (const table of [DEFAULTS_TABLE, LAST_START_TABLE, PERSONAL_SERVERS_TABLE, ACCOUNT_SECRETS_TABLE]) sqlite.exec(table);
 	const db: DefaultsDb = {
 		async execute<Row extends Record<string, unknown>>(query: string, ...args: unknown[]): Promise<Row[]> {
 			for (let waits = Math.floor(Math.random() * 4); waits >= 0; waits -= 1) await new Promise<void>((done) => setImmediate(done));
@@ -98,13 +99,13 @@ const ROUNDS = 200;
 
 {
 	const { db, all } = database();
-	expect("nothing is kept until something is saved", plain(await readAccountDefaults(db)) === plain({ profile: null, model: null, updatedAt: null }) && all("SELECT * FROM account_defaults").length === 0);
+	expect("nothing is kept until something is saved", (await readAccountDefaults(db)).updatedAt === null && all("SELECT * FROM repository_defaults").length === 0);
 	const first = await saveAccountDefaults(db, { profile: "docker-hardened" }, 10);
 	const second = await saveAccountDefaults(db, { model: "gpt-6-luna" }, 20);
 	expect("a sandbox saved alone leaves the model as none, and a model saved after it leaves the sandbox", plain([first.profile, first.model, first.updatedAt]) === plain(["docker-hardened", null, 10]) && plain([second.profile, second.model, second.updatedAt]) === plain(["docker-hardened", "gpt-6-luna", 20]));
 	await saveAccountDefaults(db, { profile: null }, 30);
 	const gone = await saveAccountDefaults(db, { model: null }, 40);
-	expect("clearing the last field leaves no row", plain(gone) === plain({ profile: null, model: null, updatedAt: null }) && all("SELECT * FROM account_defaults").length === 0);
+	expect("clearing the last field leaves no row", gone.profile === null && gone.model === null && gone.updatedAt === null && all("SELECT * FROM repository_defaults").length === 0);
 
 	let both = 0;
 	for (let round = 0; round < ROUNDS; round += 1) {
@@ -126,7 +127,7 @@ const ROUNDS = 200;
 	await recordLastStart(db, { place: { kind: "machine", machineId: "m_nas" }, harness: "claude", mode: "plan", startedAt: 10 });
 	const mine = await readLastStart(db);
 	expect("a start is remembered with its machine, agent and mode", plain(mine) === plain({ place: { kind: "machine", machineId: "m_nas" }, harness: "claude", mode: "plan", startedAt: 10 }));
-	expect("remembering a start leaves the saved defaults and their time alone", plain(await readAccountDefaults(db)) === plain({ profile: null, model: "gpt-6-luna", updatedAt: 5 }));
+	expect("remembering a start leaves the saved defaults and their time alone", (await readAccountDefaults(db)).updatedAt === 5 && (await readAccountDefaults(db)).model === "gpt-6-luna");
 	await recordLastStart(db, { place: { kind: "hosted" }, harness: "windlass", mode: "auto", startedAt: 20 });
 	await recordLastStart(db, { place: { kind: "machine", machineId: "m_old" }, harness: "opencode", mode: "build", startedAt: 15 });
 	expect("an older start that lands later does not replace a newer one", plain(await readLastStart(db)) === plain({ place: { kind: "hosted" }, harness: "windlass", mode: "auto", startedAt: 20 }) && all("SELECT * FROM account_last_start").length === 1);

@@ -24,6 +24,7 @@ import { mergeCandidate, requiredCiBranches } from "../factory/autonomy.js";
 import { PlanError, unattendedKeys } from "../factory/feature-plan.js";
 import { criticSessionId } from "../factory/feature-ids.js";
 import { getLayer } from "../layer.js";
+import { resolveRun } from "../factory/resolve-run.js";
 import { limitApplies, type PlacementInventory } from "../factory/placement.js";
 import { hasPushCiAt, repositoryAdmission } from "../github/feature-ci.js";
 import { authorOf } from "../github/publish.js";
@@ -37,7 +38,7 @@ import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine }
 import type { CheckRunUpdate } from "../github/checks.js";
 import type { GithubUser } from "../github/app.js";
 import { hostedCatalog } from "../sandbox/harnesses.js";
-import type { ItemReview, ModelList } from "../contract.js";
+import type { ItemReview, ModelList, PartScreenshots } from "../contract.js";
 import { itemAgent, ledgerSeconds, retryAt } from "../factory/budget.js";
 import type { ReviewDelivery } from "./session-inbox.js";
 import { actor, UserError } from "rivetkit";
@@ -45,14 +46,14 @@ import { db, type RawAccess } from "rivetkit/db";
 import { clientError, describeError, requireService, requireServiceFor, serviceParams } from "../auth.js";
 import { config, githubConfig } from "../config.js";
 import { githubId } from "../github/ids.js";
-import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SessionRepository, type Verdict } from "../contract.js";
+import { type GithubId, type ItemAction, type ItemEvent, type ItemReport, type ItemSummary, type ItemView, MAX_NOTE_CHARS, type SandboxPlace, type SessionRepository, type Verdict } from "../contract.js";
 import { MAX_SECRET_REQUESTS, secretRequestLimit } from "../repo-secrets.js";
-import { RULES, activeJob, advance, personAdds, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, plannerCapacityText, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
+import { RULES, activeJob, advance, rerunKey, personAdds, featureCiBranch, watchingParts, canRetry, canUpdateFeature, featureCiQuestion, featureUpdateChoice, completedKeys, currentKey, requestedDelivery, plannerCapacityText, nextPrPoll, prPollKey, singlePlanAlternative, turnCheckEffect, upgradeSubtaskQuestion } from "../factory/blueprint.js";
 import { feedbackComment, itemComment, requestedReviewBody, reportBlocks, REVIEW_OFF_REASON } from "../factory/review.js";
 import type { Effect as BlueprintEffect, Fact, FactoryItem, RequestedReview, JoinResult, VerifiedCheckEffect } from "../factory/types.js";
 import { type GithubApp, githubApp, GithubError } from "../github/app.js";
 import { checkBaseFailures } from "../github/ci-base.js";
-import { CI_POLLING, ciState, readCi, rerunJobs, workflowOverdue } from "../github/ci.js";
+import { CI_POLLING, ciState, readCi, rerunJobs, rerunnableJobs, workflowOverdue } from "../github/ci.js";
 import { resolveBoundRepository, resolveRepository, type StoredConnection } from "../github/repos.js";
 import { type RequestedSecretSave, secretsActor, grantIsValid, isSessionGone, itemActor, sessionActor, userActor } from "./internal.js";
 import type { ItemFacts } from "./user-items.js";
@@ -63,7 +64,6 @@ export interface ItemMeta {
 	flaky?: boolean;
 	ciCodeFailure?: boolean;
 	mergedDifferentHead?: true;
-	defaultPlace?: import("../contract.js").ItemPlaceDefaults;
 	pendingBuilder?: import("./user-items.js").DefaultBuilder;
 	/** Sealed by the requesting session. Kept with the claim until the save is settled. */
 	pendingSecret?: RequestedSecretSave;
@@ -189,6 +189,7 @@ function summaryOf({ item, meta }: Stored): ItemSummary {
 		repository: { provider: repository.provider, id: repository.id, owner: repository.owner, name: repository.name, branch: repository.branch, private: repository.private, url: repository.url },
 		...(crossRepo(item) && { repositories: repoViews(item), integration: integrationView(item) }),
 		place: item.place,
+		resolved: item.resolved, ranWith: item.ranWith,
 		...(item.awaitingPlace && { awaitingPlace: true }),
 		...(item.placement && { placement: item.placement }),
 		source: meta.source,
@@ -476,8 +477,8 @@ async function take(c: Ctx, fact: Fact | CheckReceipt | { kind: "issue_note"; at
 	if (fact.kind === "turn_ended" && fact.changes) stored.meta.taskKind = fact.taskKind;
 	if (fact.kind === "ci_read" && fact.reading.kind === "read" && fact.head === fact.reading.head) {
 		const failed = fact.reading.runs.filter(r => r.state === "failed");
-		const retry = outcome.effects.find(e => e.kind === "rerun_ci") ?? before.ciReruns?.[fact.head];
-		if (failed.some(r => r.baseResult === "failed" && !retry?.jobs.some(j => j.flaky && j.jobId === r.jobId))) stored.meta.flaky = true;
+		const retry = outcome.effects.find(e => e.kind === "rerun_ci") ?? before.ciReruns?.[rerunKey(fact)];
+		if (failed.some(r => r.baseResult === "failed" && !retry?.jobs.some(j => j.failed && j.jobId === r.jobId))) stored.meta.flaky = true;
 		if (failed.length && before.run?.step.kind === "ci") stored.meta.ciCodeFailure = failed.some(r => !r.environment && !r.baseResult);
 	}
 	if (outcome.item.run?.step.kind === "plan_review") stored.meta.criticSessionId = criticSessionId(outcome.item.id);
@@ -950,15 +951,10 @@ async function reconcileFeedback(c: Ctx, meta: ItemMeta, hub: Awaited<ReturnType
 
 /** `featureModel`: the feature's Windlass model, which a Windlass subtask choosing only an effort runs. */
 async function placementInventory(c: Ctx, uid: string, featureModel: string | undefined, snapshotRepository?: GithubId): Promise<PlacementInventory & { hostedCapacity: number }> {
-	const user = userActor(c, uid);
-	const [hostedKeys, capacity, limited, dailyTokenWait, models, snapshotPlaces] = await Promise.all([user.internalHostedProviders(), user.internalPlannerCapacity(), user.internalLimitedAccounts(), user.internalDailyTokenWait(), user.internalAgentModels(),
-		// Only a hint for ranking places: a failure leaves it out.
-		snapshotRepository === undefined ? undefined : user.internalSnapshotPlaces(snapshotRepository).catch(() => undefined)]);
-	const { sandboxes } = await getLayer();
-	const profiles = sandboxes.profiles().filter(p => p.available);
-	const hostedProfiles = profiles.map(p => p.id);
-	const keyProfiles = profiles.filter(p => p.platformKeys).map(p => p.id);
-	return { ...capacity, hostedKeys, keyProfiles, hostedProfiles, hostedEgress: sandboxes.egress?.(), limited, dailyTokenWait, models, ...(featureModel && { featureModel }), ...(snapshotPlaces?.length && { snapshotPlaces }) };
+	const { item, meta } = c.vars.stored!;
+	const repositories = Object.fromEntries((item.repos ?? []).map(repo => [repo.alias, repo.repositoryId]));
+	repositories[""] = meta.repository.id;
+	return { ...await userActor(c, uid).internalPlacementInventory(repositories, snapshotRepository), featureModel };
 }
 
 async function planCiBranches(c: Ctx, { item, meta }: Stored, repo?: FeatureRepoState) {
@@ -1334,7 +1330,9 @@ export function live(item: FactoryItem, effect: Effect): boolean {
 		case "publish":
 			return effect.key === key && run.step.kind === "publish" && item.question?.kind !== "turn_refused";
 		case "rerun_ci":
-			return effect.key === key && run.step.kind === "ci" && !item.question;
+			if (item.question || (run.step.kind !== "subtasks" && run.step.kind !== "ci")) return false;
+			// Reruns belong to the same feature head and repository as their poll.
+			// falls through
 		case "poll_ci":
 			if (run.step.kind === "subtasks") {
 				const branch = featureCiBranch(item, effect.repo);
@@ -1520,7 +1518,7 @@ async function dispatchFeature(c: Ctx, { item, meta }: Stored, effect: Extract<E
 		return true;
 	}
 	if (effect.kind === "dispatch" && item.pr && job) {
-		if (job.route && !job.placement && job.state === "draft" && !job.cancelRequested) {
+		if (!job.placement && job.state === "draft" && !job.cancelRequested) {
 			await take(c, { kind: "place_child", child: job.id, key, inventory: await placementInventory(c, meta.uid, item.agent?.model, crossRepo(item) ? undefined : meta.repository.id), at: Date.now() });
 			return true;
 		}
@@ -1586,28 +1584,36 @@ async function pollCi(c: Ctx, stored: Stored, effect: Extract<Effect, { kind: "p
 		const head = reading.kind === "read" && !/^[0-9a-f]{40}$/.test(effect.head) ? reading.head : effect.head;
 		const itemCi = item.run?.step.kind === "ci" && item.mode !== "orchestrate" && (!pull?.headSha || pull.headSha === head);
 		const mergeCheck = autoMergeSingles && pull?.state === "open" && pull.base === item.task.base && pull.headSha === effect.head;
+		const progress = branch.featureCi ?? ci;
+		const baseRef = repo?.baseRef ?? item.task.base;
 		const needsPaths = !!branch.featureCi && state === "failed" && pull?.headSha === head && !item.jobs?.some(j => j.ciFix && activeJob(j));
-		const compare = needsPaths || mergeCheck || itemCi && /^[0-9a-f]{40}$/.test(head) && (state === "failed" || state === "cancelled" || timedOut || noChildCi);
+		const compare = needsPaths || mergeCheck || !!(item.parent && progress?.waitForBase) || itemCi && /^[0-9a-f]{40}$/.test(head) && (state === "failed" || state === "cancelled" || timedOut || noChildCi);
 		const comparison = compare ? await hub.app.withToken(hub.installationId, { repositoryId: target.repositoryId, permissions: { metadata: "read", contents: "read" } },
 			token => compareBranches(hub.app, token, hub.owner, hub.name, needsPaths ? branch.seed! : item.task.base, head), { reuse: true }).catch(() => null) : null;
-		if (itemCi && state === "failed" && reading.kind === "read" && reading.head === head) {
-			const base = comparison?.base ?? (pull?.base === item.task.base ? pull.baseSha : null);
-			if (base) await checkBaseFailures(hub.app, { ...target, head: base }, reading, tests =>
-				session.internalBaseTests({ head, base, tests }).catch(() => "unknown"));
-			else for (const check of reading.runs) if (check.state === "failed" && !check.environment) check.baseResult = "pending";
+		// The feature seed is for the diff. The PR's current base SHA is the one whose checks count.
+		const prBase = pull?.base === baseRef ? pull.baseSha : undefined;
+		const baseTip = needsPaths ? prBase : comparison?.base ?? prBase;
+		let basePassed;
+		if (progress?.waitForBase) {
+			if (baseTip && baseTip !== progress.waitForBase) {
+				const base = await readCi(hub.app, { ...target, head: baseTip });
+				basePassed = base.kind === "read" && base.head === baseTip && ciState(base) === "passed";
+			}
+		} else if ((itemCi || needsPaths) && state === "failed" && reading.kind === "read" && reading.head === head) {
+			const willRetry = !reading.truncated && (item.parent || pull?.headSha === head) && !item.ciReruns?.[rerunKey(effect)] && rerunnableJobs(reading, false).length > 0;
+			if (!willRetry && baseTip) await checkBaseFailures(hub.app, { ...target, head: baseTip }, reading, branch.featureCi ? undefined : tests =>
+				session.internalBaseTests({ head, base: baseTip, tests }).catch(() => "unknown"));
+			else if (!baseTip) for (const check of reading.runs) if (check.state === "failed" && !check.environment) check.baseResult = "pending";
 		}
 		const paths = needsPaths ? comparison?.files?.map(f => f.filename) : undefined;
-		return { reading, featureHead, paths, baseAhead: comparison?.behind, baseTip: comparison?.base, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
+		return { reading, featureHead, paths, baseAhead: comparison?.behind, baseTip: baseTip ?? undefined, basePassed, baseSha: pull?.base === meta.repository.branch ? pull.baseSha : null, mergeable: pull?.mergeable ?? null, prHead: pull?.headSha || null };
 	};
-	const { reading, featureHead, paths, baseAhead, baseTip, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, featureHead: undefined, paths: undefined, baseAhead: 0, baseTip: undefined, mergeable: null, prHead: null, baseSha: null }));
-	const flakyJobs = item.pr && item.run?.step.kind === "ci" && item.mode !== "orchestrate" && prHead === effect.head &&
-		!item.ciReruns?.[effect.head] && ciState(reading) === "failed"
-		? await userActor(c, meta.uid).internalFlakyJobs(meta.repository.id) : undefined;
+	const { reading, featureHead, paths, baseAhead, baseTip, basePassed, mergeable, prHead, baseSha } = await read().catch((error: unknown) => ({ reading: { kind: "failed" as const, said: describeError(error) }, featureHead: undefined, paths: undefined, baseAhead: 0, baseTip: undefined, basePassed: undefined, mergeable: null, prHead: null, baseSha: null }));
 	const target = item.run?.step.kind === "ci" && (item.parent || item.mode === "orchestrate") && (ciState(reading) !== "passed" || mergeable === false)
 		? await targetStatus(c, stored).catch(() => null) : null;
 	const featureTarget = target?.available && target.value > 0 ? target.branch : undefined;
 	const openItems = item.run?.step.kind === "handoff" ? 0 : (await factsOf(c, meta)).openItems;
-	await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, repo: effect.repo, featureHead, paths, reading, flakyJobs, autoMergeSingles, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
+	await take(c, { kind: "ci_read", at: Date.now(), key: effect.key, head: effect.head, repo: effect.repo, featureHead, paths, reading, basePassed, autoMergeSingles, baseAhead, baseTip, featureTarget, featureTargetHead: featureTarget ? target?.head : undefined, mergeable, prHead, openItems, webhooks: githubConfig().pollFallback }, { baseSha, nudged: row.due_at < effect.at });
 	return true;
 }
 
@@ -1651,13 +1657,13 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			return true;
 		case "resolve_default_place": {
 			if (!meta.pendingBuilder) return false;
-			const result = await userActor(c, meta.uid).internalDefaultBuilder({ id: item.id, job: meta.pendingBuilder });
+			const result = await userActor(c, meta.uid).internalDefaultBuilder({ id: item.id, job: item.useHosted ? { ...meta.pendingBuilder, context: { ...meta.pendingBuilder.context, item: { ...meta.pendingBuilder.context.item, place: "hosted" } } } : meta.pendingBuilder });
 			if (!result || !c.vars.stored || !live(c.vars.stored.item, effect)) return false;
-			if (!("session" in result)) await take(c, { kind: "default_place_wait", at: Date.now(), sentence: result.wait });
+			if (!("session" in result)) await take(c, { kind: "default_place_wait", at: Date.now(), sentence: result.wait, reviewer: result.reviewer });
 			else {
 				const session = result.session;
 				await take(c, { kind: "default_place_ready", at: Date.now(), place: session.place, reviewer: result.reviewer, reviewerSessionId: result.reviewerSessionId,
-					agent: newAgent(session.harness ?? "windlass", session.model, meta.pendingBuilder.effort, session.item?.signIn) });
+					agent: newAgent(session.harness ?? "windlass", session.model, resolveRun(meta.pendingBuilder.context, meta.pendingBuilder.role).effort, session.item?.signIn) });
 			}
 			return true;
 		}
@@ -1786,9 +1792,10 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "merge_feature_target": {
 			let result: Extract<Fact, { kind: "feature_updated" }>["result"];
 			try {
-				const hub = await github(c, meta, "write");
-				const head = await hub.app.withToken(hub.installationId, { repositoryId: meta.repository.id, permissions: { metadata: "read", contents: "write" } },
-					token => mergeIntoFeature(hub.app, token, hub.owner, hub.name, item.id, effect.target, "Update the feature from " + item.task.base));
+				const repo = effect.repo ? repoOf(item, effect.repo) : undefined;
+				const hub = await github(c, meta, "write", repo);
+				const head = await hub.app.withToken(hub.installationId, { repositoryId: hub.repository.id, permissions: { metadata: "read", contents: "write" } },
+					token => mergeIntoFeature(hub.app, token, hub.owner, hub.name, item.id, effect.target, "Update the feature from " + (repo?.baseRef ?? item.task.base)));
 				result = { head };
 			} catch (error) {
 				if (error instanceof GithubError && error.status === 409) {
@@ -1856,9 +1863,9 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 		case "deliver": {
 			if (effect.to === "critic") {
 				try {
-					await userActor(c, meta.uid).internalPlanCritic(meta.sessionId);
-				} catch {
-					await take(c, { kind: "review_ended", key: effect.key, at: Date.now(), outcome: "error", said: null, refused: "The reviewer session could not be started.",
+					await userActor(c, meta.uid).internalPlanCritic(meta.sessionId, item.context!);
+				} catch (error) {
+					await take(c, { kind: "review_ended", key: effect.key, at: Date.now(), outcome: "error", said: null, refused: describeError(error),
 						review: null, spend: { tokens: 0, hostedSeconds: item.spent.hostedSeconds } });
 					return true;
 				}
@@ -1897,22 +1904,19 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					limited: inventory.limited?.filter(a => limitApplies(a, machineId)).map(({ harness, limitedUntil }) => ({ harness, limitedUntil })) }));
 				const parent = item.place;
 				const parentName = parent.kind === "hosted" ? "hosted" : inventory.machines.find(m => m.machineId === parent.machineId)?.name;
-				const preferred = meta.defaultPlace;
-				const selected = preferred?.place;
-				const defaultPlace = selected && typeof selected === "object" ? { kind: "machine" as const, machineId: selected.machine }
-					: selected === "hosted" ? { kind: "hosted" as const } : parent;
+				const run = resolveRun(item.context!, "part");
+				const selected = run.place;
+				const defaultPlace: SandboxPlace = typeof selected === "object" ? { kind: "machine", machineId: selected.machine }
+					: selected === "hosted" ? { kind: "hosted" } : parent;
 				if (await autoApprovePlans(c, stored)) text += "\nThis repository auto-approves small plans. Ask only questions whose answers change the work and state the obvious defaults in the spec.";
 				text += plannerReadiness(await userActor(c, meta.uid).internalReadinessLevel(meta.repository.id));
 				text += "\n" + plannerCapacityText(defaultPlace, inventory.machines, inventory.hostedCapacity);
-				if (preferred?.place) {
-					const chosen = preferred.place;
-					// A hosted fallback runs this planner only. Its parts still prefer a compatible machine.
-					const prefer = typeof chosen === "object" ? inventory.machines.find(m => m.machineId === chosen.machine)?.name
-						: chosen === "hosted" ? "hosted" : parent.kind === "machine" ? parentName : undefined;
-					text += "\nWhen a part fits the owner's preferred place, use it as place.prefer. Choose a different place or agent when that part requires it. Owner preference (data): " +
-						JSON.stringify({ prefer, selection: preferred.place === "any-machine" ? "any compatible machine" : undefined, harness: preferred.harness ?? "windlass", profile: preferred.machineProfile, model: preferred.machineModel ?? undefined, effort: preferred.machineEffort ?? undefined });
-				}
-				text += "\n\nCurrent runners do not support sizing beyond one slot." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (Small 1 vCPU, 1 GiB; Medium 2 vCPU, 4 GiB, the default; Large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than Medium (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, hostedKeys: inventory.hostedKeys?.map(k => k.provider), hostedModels, keyProfiles: inventory.keyProfiles, hostedEgress: inventory.hostedEgress, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
+				// A hosted fallback runs this planner only. Its parts still prefer a compatible machine.
+				const prefer = typeof selected === "object" ? inventory.machines.find(m => m.machineId === selected.machine)?.name
+					: selected === "hosted" ? "hosted" : parent.kind === "machine" ? parentName : undefined;
+				text += "\nOmit place and agent to inherit the owner’s settings. Use place.prefer or agent for a part that requires a different choice. Owner preference (data): " +
+					JSON.stringify({ prefer, selection: selected === "any-machine" ? "any compatible machine" : undefined, harness: run.agent, profile: run.profile, model: run.model ?? undefined, effort: run.effort ?? undefined });
+				text += "\n\nRunners reporting slots can allocate up to four slots within their reported capacity." + (inventory.hostedSizes ? " Hosted sandboxes come in sizes (Small 1 vCPU, 1 GiB; Medium 2 vCPU, 4 GiB, the default; Large 4 vCPU, 8 GiB): name cpus or memoryGiB in a hosted subtask's needs only when it needs more than Medium (a large build or test suite)." : "") + "\nPlacement inventory (read-only data): " + JSON.stringify({ parent: parentName, screenshotsEnabled: inventory.screenshotsEnabled, repositoryScreenshots: inventory.repositoryScreenshots, hostedKeys: inventory.hostedKeys?.map(k => k.provider), hostedModels, keyProfiles: inventory.keyProfiles, hostedEgress: inventory.hostedEgress, hostedProfiles: inventory.hostedProfiles, ...(inventory.hostedSizes && { hostedSizes: inventory.hostedSizes }), windlassModels: listed(inventory.models?.windlass), featureModel: item.agent?.model, machines: places });
 				// The budget figures are the planning turn's own text (blueprint.ts `plannerBudgetText`).
 			}
 			await session.internalDeliver({ key: effect.key, itemId: item.id, title: item.task.title, text, checkout, agent: effect.agent, maxSteps: effect.maxSteps, fetchBase: effect.fetchBase, startsRun: startsRun(effect.key), untrusted: effect.untrusted ?? [], ...(effect.unsandboxed && { unsandboxed: true }), ...(effect.fresh && { fresh: effect.fresh }), ...(effect.asksLeft !== undefined && { asksLeft: effect.asksLeft }) }).catch(onGone);
@@ -1929,7 +1933,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				await take(c, { kind: "sandbox_resize_refused", key: effect.key, at: Date.now(), plan: effect.plan, size: result.sizeUnavailable });
 				return true;
 			}
-			await take(c, { kind: "sandbox_freed", key: effect.key, at: Date.now(), plan: effect.plan });
+			await take(c, { kind: "sandbox_freed", key: effect.key, at: Date.now(), plan: effect.plan, hostedSize: effect.hostedSize });
 			return true;
 		}
 		case "withdraw":
@@ -1994,12 +1998,12 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			if (!await take(c, { ...effect, kind: "ci_rerun_started", at: Date.now() })) return false;
 			let result;
 			try {
-				const hub = await github(c, meta, "write");
-				result = await rerunJobs(hub.app, { installationId: hub.installationId, repositoryId: meta.repository.id, owner: hub.owner, name: hub.name, head: effect.head }, effect.jobs);
+				const hub = await github(c, meta, "write", effect.repo ? repoOf(item, effect.repo) : undefined);
+				result = await rerunJobs(hub.app, { installationId: hub.installationId, repositoryId: hub.repository.id, owner: hub.owner, name: hub.name, head: effect.head }, effect.jobs);
 			} catch (error) {
 				result = { accepted: [], said: `Could not request a CI rerun: ${describeError(error)}.` };
 			}
-			await take(c, { kind: "ci_rerun_result", at: Date.now(), head: effect.head, ...result });
+			await take(c, { kind: "ci_rerun_result", repo: effect.repo, at: Date.now(), head: effect.head, ...result });
 			return true;
 		}
 		case "poll_ci":
@@ -2289,7 +2293,7 @@ export const workItem = actor({
 			const reports = completed.filter(j => job.task.dependsOn.includes(j.task.key)).map(j => j.report);
 			// A cross-repo feature's child is made in its subtask's repository, from that repository's feature branch.
 			const repo = crossRepo(s.item) ? repoOf(s.item, job.task.repo) : null;
-			return { paused: !!s.item.featureUpdate || s.item.question?.kind === "feature_update", job: { ...job, start: repo?.head ?? s.item.head, dispatchKey: job.dispatchKey ?? currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
+			return { settings: s.item.context!, paused: !!s.item.featureUpdate || s.item.question?.kind === "feature_update", job: { ...job, start: repo?.head ?? s.item.head, dispatchKey: job.dispatchKey ?? currentKey(s.item)! }, sessionId: s.meta.sessionId, feature: summaryOf(s),
 				repository: repo && { id: repo.repositoryId, base: repo.baseRef, alias: repo.alias },
 				joinOnGate: !!(repo ?? s.item).featureCi, featureBody: s.item.task.body, context: JSON.stringify({ spec: s.item.featurePlan.spec, answers: s.item.featurePlan.questions.map(({ text, answer }) => ({ text, answer })), reports }),
 				previous: previous && { head: previous.head, report: previous.report, place: previous.placement?.place },
@@ -2300,13 +2304,10 @@ export const workItem = actor({
 		},
 		internalFilePlan: async (c, input: { key: string; plan: unknown }): Promise<string> => {
 			requireService(c);
-			// A part on the owner's saved machine agent starts on its saved model and effort where the planner named none.
-			const saved = c.vars.stored?.meta.defaultPlace;
-			const parts = (input.plan as { subtasks?: { agent?: { harness?: string; model?: string; effort?: string } }[] } | null)?.subtasks;
-			if (saved?.machineModel && Array.isArray(parts)) for (const agent of parts.map(part => part?.agent))
-				if (agent && agent.harness === saved.harness && !agent.model) Object.assign(agent, { model: saved.machineModel, ...(saved.machineEffort && !agent.effort && { effort: saved.machineEffort }) });
 			try {
-				return await take(c, { ...input, kind: "file_plan", at: Date.now() }) ? "Plan filed. End your turn." : "This planning turn ended.";
+				const { item, meta } = c.vars.stored!;
+				const inventory = await placementInventory(c, meta.uid, item.agent?.model);
+				return await take(c, { ...input, inventory, kind: "file_plan", at: Date.now() }) ? "Plan filed. End your turn." : "This planning turn ended.";
 			} catch (error) { return describeError(error); }
 		},
 		internalSummary: async (c): Promise<ItemSummary> => {
@@ -2335,6 +2336,15 @@ export const workItem = actor({
 			requireService(c);
 			if (!c.vars.stored) throw new UserError("That item does not exist.", { code: "item_not_found" });
 			return await viewOf(c);
+		},
+
+		internalScreenshotSets: async (c): Promise<Omit<PartScreenshots, "itemId" | "key" | "title">[]> => {
+			requireService(c);
+			const filed = [
+				...(await c.db.execute<{ data: string }>("SELECT data FROM reports ORDER BY at DESC LIMIT 20")).map(row => JSON.parse(row.data) as ItemReport),
+				...(await c.db.execute<{ data: string }>("SELECT data FROM reviews ORDER BY at DESC LIMIT 20")).map(row => ({ ...JSON.parse(row.data) as ItemReview, by: "reviewer" as const })),
+			];
+			return filed.filter(one => one.screenshots.length > 0).map(one => ({ by: one.by, head: one.head, at: one.at, screenshots: one.screenshots })).sort((a, b) => b.at - a.at);
 		},
 
 		internalSecretRequestLimit: async (c, key: string, name: string): Promise<string | null> => {
@@ -2367,22 +2377,23 @@ export const workItem = actor({
 			try {
 				if (fact.kind === "update_feature" || (fact.kind === "answer" && fact.choice === "update_feature")) {
 					let branch: string | undefined;
+					const repo = stored.item.question?.updateRepo ? repoOf(stored.item, stored.item.question.updateRepo) : undefined;
 					if (fact.kind === "update_feature" && canUpdateFeature(stored.item)) branch = stored.item.task.base;
 					else if (fact.kind === "answer" && stored.item.question?.id === fact.question) {
-						if (stored.item.question.kind === "feature_update") branch = stored.item.task.base;
+						if (stored.item.question.kind === "feature_update") branch = repo?.baseRef ?? stored.item.task.base;
 						else if (featureCiQuestion(stored.item)) {
 							const target = await targetStatus(c, stored);
 							if (target?.available && target.value > 0) branch = target.branch;
 						}
 					}
 					if (branch) {
-						const hub = await github(c, stored.meta);
-						fact.target = await hub.app.withToken(hub.installationId, { repositoryId: stored.meta.repository.id, permissions: { metadata: "read", contents: "read" } },
+						const hub = await github(c, stored.meta, "read", repo);
+						fact.target = await hub.app.withToken(hub.installationId, { repositoryId: hub.repository.id, permissions: { metadata: "read", contents: "read" } },
 							token => refHead(hub.app, token, hub.owner, hub.name, branch), { reuse: true });
 					}
 				}
 				if (fact.kind === "note") fact.steered = await steerNote(c, stored, fact.note);
-				if (fact.kind === "set_subtask_agent") fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
+				if (fact.kind === "set_subtask_agent" || fact.kind === "edit_plan") fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
 				const approving = stored.item.featurePlan?.status === "proposed" && (fact.kind === "approve_plan" || (fact.kind === "answer" && fact.choice === "approve"));
 				if (approving && (fact.kind === "approve_plan" || fact.kind === "answer")) {
 					fact.inventory = await placementInventory(c, stored.meta.uid, stored.item.agent?.model);
@@ -2428,7 +2439,7 @@ export const workItem = actor({
 			requireServiceFor(c, "call");
 			await queued(c, async () => {
 				const item = c.vars.stored?.item;
-				if (!item?.awaitingPlace || item.state !== "waiting") return;
+				if (!item?.awaitingPlace || item.question || item.state !== "waiting") return;
 				await c.db.execute("UPDATE effects SET due_at=0 WHERE id=?", "resolve_default_place:" + item.wait?.retryAt);
 				await armDueInQueue(c);
 			});
