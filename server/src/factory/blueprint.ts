@@ -1468,13 +1468,17 @@ function conflictPlan(base: string): TurnPlan {
 		charge: "conflict", fingerprint: `conflict:${base}`, fetchBase: base };
 }
 
+const HANDOFF_READS = 4;
+
 function updateFromBase(c: Change): boolean {
 	const { item, run } = c;
 	const head = run.ci?.head;
 	if (!head || !isSha(head) || head !== item.head || run.ci?.moved || item.mode === "orchestrate") return false;
 	const fingerprint = `conflict:${item.task.base}`;
 	const previous = failuresOf(run);
-	if (previous.includes(fingerprint) && !newerPartBase(item, run.ci!)) return false;
+	// Main can move again while an earlier update runs; follow it a few times.
+	const movedAgain = !item.parent && run.updatedBaseTip && run.ci?.baseTip !== run.updatedBaseTip && run.rounds.conflict < 3;
+	if (previous.includes(fingerprint) && !newerPartBase(item, run.ci!) && !movedAgain) return false;
 	run.updatedBaseTip = run.ci?.baseTip;
 	if (!previous.includes(fingerprint)) run.failures = [...previous, fingerprint];
 	run.lastFailure = fingerprint;
@@ -1546,8 +1550,14 @@ function decideCi(c: Change, fact: Extract<Fact, { kind: "ci_read" }>): void {
 	// One read settles a handoff even if CI is still pending.
 	if (run.step.kind === "handoff") {
 		const review = ci.moved ? skippedReview(MOVED) : ci.secondReview ?? skippedReview("this item was handed over before second reviews were available");
-		if (c.item.state !== "review" && fact.autoMergeSingles && fact.prHead === ci.head && mergeCandidate(c.item, review) && verdictAt(c, ci).verdict.result === "pass") {
-			if (fact.baseAhead !== undefined && fact.baseAhead > 0 && updateFromBase(c)) return;
+		const wouldMerge = c.item.state !== "review" && fact.autoMergeSingles && fact.prHead === ci.head && verdictAt(c, ci).verdict.result === "pass";
+		// GitHub computes mergeability and the base comparison lazily after main moves: read again before handing over.
+		if (wouldMerge && (fact.mergeable === null || fact.baseAhead === undefined) && c.run.step.attempt < HANDOFF_READS && mergeCandidate(c.item, review, true)) return waitForReading();
+		if (wouldMerge && mergeCandidate(c.item, review)) {
+			if (fact.baseAhead !== undefined && fact.baseAhead > 0) {
+				ci.baseTip = fact.baseTip;
+				if (updateFromBase(c)) return;
+			}
 			if (fact.baseAhead === 0 && fact.baseTip) {
 				handoff(c, review, true);
 				ci.autoMergeKey = c.key;

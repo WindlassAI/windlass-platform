@@ -1954,7 +1954,33 @@ const pushedRun = (head: string) => [{ kind: "start" }, { kind: "turn_started" }
 	assert.equal(refused.item.state, "review");
 	assert.ok(effect(refused.last, "handoff") && refused.last.events.some(e => e.said.includes("Required approving review")));
 	assert.ok(!effect(walk(refused.item, [receipt]).last, "auto_merge"));
-	for (const change of [{ autoMergeSingles: false }, { baseTip: undefined }, { baseAhead: undefined }, { mergeable: false }, { mergeable: null }, { prHead: H(2) },
+	for (const change of [{ baseAhead: undefined }, { mergeable: null }]) {
+		let item = waiting;
+		for (let read = 1; read < 3; read++) {
+			const again = walk(item, [{ ...handoff, ...change }]);
+			assert.ok(effect(again.last, "poll_ci") && !effect(again.last, "handoff"));
+			item = again.item;
+		}
+		const settled = walk(item, [handoff]);
+		assert.ok(effect(settled.last, "auto_merge"));
+		const unsettled = walk(item, [{ ...handoff, ...change }]);
+		assert.ok(effect(unsettled.last, "handoff") && !effect(unsettled.last, "auto_merge"));
+	}
+	expect("a handoff reads GitHub again while mergeability or the base comparison is still unknown", true);
+	const updatedOnce = (rounds: number) => {
+		const item = structuredClone(waiting);
+		item.run!.failures = [`conflict:${item.task.base}`];
+		item.run!.updatedBaseTip = H(3);
+		item.run!.rounds.conflict = rounds;
+		return item;
+	};
+	assert.ok(effect(walk(updatedOnce(1), [{ ...handoff, baseAhead: 1, baseTip: H(4) }]).last, "publish"));
+	for (const [rounds, tip] of [[1, H(3)], [3, H(4)]] as const) {
+		const fallback = walk(updatedOnce(rounds), [{ ...handoff, baseAhead: 1, baseTip: tip }]);
+		assert.ok(effect(fallback.last, "handoff") && !effect(fallback.last, "publish"));
+	}
+	expect("a single updated from main follows main again when it moves during handoff, at most three times", true);
+	for (const change of [{ autoMergeSingles: false }, { baseTip: undefined }, { mergeable: false }, { prHead: H(2) },
 		{ prHead: null }, { reading: { ...passedCi, head: H(2) } }, { reading: emptyCi }]) {
 		const fallback = walk(waiting, [{ ...handoff, ...change }]);
 		assert.ok(effect(fallback.last, "handoff") && !effect(fallback.last, "auto_merge"));

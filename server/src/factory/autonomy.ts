@@ -57,10 +57,10 @@ export function criticPrompt(item: FactoryItem, budget: string): string {
 	].join("\n\n");
 }
 
-export function mergeCandidate(item: FactoryItem, handoff: HandoffReview): boolean {
+export function mergeCandidate(item: FactoryItem, handoff: HandoffReview, mergeablePending = false): boolean {
 	const ci = item.run?.ci, review = item.run?.review, filed = review?.filed;
 	return (item.mode ?? "single") === "single" && !item.parent && !item.question && !item.foreignPush &&
 		!thirdParty(item.untrusted).length && !item.feedback?.othersRuns && !item.feedback?.held && !item.feedback?.awaiting &&
-		!!ci && ci.moved === null && ci.head === item.head && ci.last?.state === "passed" && ci.mergeable === true &&
+		!!ci && ci.moved === null && ci.head === item.head && ci.last?.state === "passed" && (ci.mergeable === true || mergeablePending && ci.mergeable === null) &&
 		!!review && review.head === ci.head && filed?.trustedApproval === true && filed.id === handoff.review && filed.recommendation === "approve" && filed.blocking === 0;
 }
