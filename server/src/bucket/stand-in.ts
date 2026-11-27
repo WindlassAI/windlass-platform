@@ -66,6 +66,17 @@ export class StandInObjectStore implements ObjectStore {
 		else rmSync(join(this.dir, key), { force: true });
 	}
 
+	async copy(fromKey: string, toKey: string): Promise<boolean> {
+		checkKey(toKey);
+		const found = this.read(checkKey(fromKey));
+		if (found === null) return false;
+		const type = this.types.get(fromKey);
+		if (type === undefined) this.types.delete(toKey);
+		else this.types.set(toKey, type);
+		this.write(toKey, Buffer.from(found));
+		return true;
+	}
+
 	/** What a sandbox does with a link: uploads `body` with it, or downloads. The status is a store's own. */
 	use(url: string, method: "PUT", body: Uint8Array, headers?: HeadersInit): { status: number };
 	use(url: string, method: "GET"): { status: number; body?: Buffer; headers?: Headers };

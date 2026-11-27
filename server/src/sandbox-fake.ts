@@ -400,12 +400,16 @@ export class FakeHandle implements SandboxHandle {
 	/**
 	 * A step of sandbox/backup.ts, played without a shell: the same environment in, the same one line
 	 * out. The archive is the sandbox's Windlass sessions as a line of JSON, and after it as many bytes
-	 * as the sessions are padded by.
+	 * as the sessions are padded by. As the scripts, pack and restore end with no answer for a session id
+	 * that is not of the agent's own pattern (`WLP_BACKUP_ID`), and a restore's proof is the session named.
 	 */
 	private backupStep(step: string, env: Record<string, string>, stdin: string): ExecResult {
 		const sandbox = this.sandbox;
 		const link = /^url = "(.*)"$/m.exec(stdin)?.[1] ?? "";
 		const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+		const session = env[BACKUP_ENV.session] ?? "";
+		if ((step === "pack" || step === "restore") && !new RegExp(env[BACKUP_ENV.id] ?? "^$").test(session))
+			return { exitCode: 2, timedOut: false, aborted: false, stdout: "", stderr: "" };
 		if (step === "pack") {
 			sandbox.packed = null;
 			if (sandbox.windlass.size === 0) return ok("empty\n");
@@ -441,7 +445,7 @@ export class FakeHandle implements SandboxHandle {
 				return ok("unpack\n");
 			}
 			for (const [id, session] of sessions) sandbox.windlass.set(id, session);
-			return ok(sandbox.windlass.has(env[BACKUP_ENV.session] ?? "") ? "restored\n" : "no_session\n");
+			return ok(sandbox.windlass.has(session) ? "restored\n" : "no_session\n");
 		}
 		return { exitCode: 2, timedOut: false, aborted: false, stdout: "", stderr: `unknown backup step: ${step}\n` };
 	}
