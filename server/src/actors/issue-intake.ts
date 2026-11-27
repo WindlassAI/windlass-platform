@@ -35,8 +35,8 @@ import { untrustedWords } from "../factory/untrusted.js";
 import { githubApp } from "../github/app.js";
 import { isGithubId } from "../github/ids.js";
 import { GithubProblem, problemOf, resolveBoundRepository, resolveRepository } from "../github/repos.js";
-import { CONNECTORS } from "../sources/registry.js";
-import { SOURCE_IDS } from "../sources/types.js";
+import { sourceCaps } from "../sources/registry.js";
+import { SOURCE_IDS, type SourceId } from "../sources/types.js";
 import { accountLimits } from "../user-limits.js";
 import { gitlabAccess, isActorGone, itemActor } from "./internal.js";
 import type { ItemsCtx, ItemsState } from "./user-items.js";
@@ -138,11 +138,12 @@ export async function fileTrackerIssue(
 	c: ItemsCtx,
 	f: LinearFiling | SiteJiraFiling,
 	itemId: (uid: string, key: string) => string,
-	file: (profile: UserProfile, input: CreateItemInput, intake: Intake) => Promise<ItemSummary>,
+	file: (profile: UserProfile, input: CreateItemInput, source: SourceId, intake: Intake) => Promise<ItemSummary>,
 ): Promise<TrackerFiled> {
 	const { profile } = c.vars,
 		{ issue, trigger } = f;
 	const jira = "project" in f ? f : null,
+		sourceId: SourceId = jira ? "jira" : "linear",
 		tracker = jira ? "Jira" : "Linear";
 	if ("team" in f) {
 		const { team, owner } = f;
@@ -218,12 +219,7 @@ export async function fileTrackerIssue(
 		mode,
 		reason: modeReason,
 		refusal,
-	} = issueMode(
-		"",
-		labels,
-		process.env.WLP_FACTORY_ORCHESTRATE !== "0",
-		CONNECTORS[jira ? "jira" : "linear"].caps.quickLabels,
-	);
+	} = issueMode("", labels, process.env.WLP_FACTORY_ORCHESTRATE !== "0", sourceCaps(sourceId).quickLabels);
 	const resumed = resuming && (await existingItem(c, uid, resuming.id));
 	if (refusal) return { kind: "refused", reason: refusal };
 	const cap = resumed ? null : await quotaRefusal(c, resuming?.id, tracker);
@@ -264,7 +260,7 @@ export async function fileTrackerIssue(
 				origin: { linear: { ...source, trusted }, sender },
 			},
 		};
-	const item = await file(profile, input, intake);
+	const item = await file(profile, input, sourceId, intake);
 	return { kind: "filed", itemId: item.id, state: item.state };
 }
 
