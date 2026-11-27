@@ -100,11 +100,11 @@ On GitHub, removing the label cancels a draft. Closing the issue cancels an item
 
 ### From a GitLab issue
 
-After [connecting GitLab in Settings](/docs/settings#gitlab), use the connected account to add the `windlass` label to an open issue in the selected project, or write an issue note beginning with `/windlass`. Windlass re-reads the issue and any command note, then files a **Quick** item. It acknowledges the filing with a 👀 reaction on the issue for a label, or on the note for a command. Redelivering the event does not file another item.
+After [connecting GitLab in Settings](/docs/settings#gitlab), use the connected account to add the `windlass` label to an open issue in the selected project, or write an issue note beginning with `/windlass`. Windlass re-reads the issue and any command note, then files a **Quick** item. It acknowledges the filing with a 👀 reaction on the issue for a label, or on the note for a command. Redelivering the event, or labelling the issue again while its item is open, does not file another item. Once that item is done, failed or cancelled, the next label or command files a new one.
 
 Your own issue starts immediately; an issue someone else wrote starts as a draft. In both cases the issue and note are quoted as untrusted input.
 
-The item opens a merge request against the project’s default branch and polls GitLab for pipeline and job results. Pipeline and merge request events also prompt it to check again. Once it hands over a passing result, review the MR and select **Merge…** on the item. Windlass rechecks the reviewed commit, target branch and pipeline before merging.
+The item opens a merge request against the project’s default branch and polls GitLab for pipeline and job results. It counts the newest pipeline that ran its commit: a branch pipeline, the merge request’s own pipeline, or a merged-results pipeline built from it. Pipeline and merge request events also prompt it to check again. Once it hands over a passing result, review the MR and select **Merge…** on the item. Windlass rechecks the reviewed commit, target branch and pipeline before merging.
 
 GitLab supports single items only. Plan-first features, cross-repository work, integration workflows, Linear team mappings and the `windlass/verified` check remain GitHub-only.
 
