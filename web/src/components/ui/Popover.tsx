@@ -12,6 +12,7 @@
 import { createContext, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { place, type Align, type Side } from "./position";
+import { FOCUSABLE } from "./focus";
 
 export type CloseReason = "escape" | "outside" | "select" | "trigger" | "tab" | "back";
 
@@ -55,8 +56,6 @@ export interface PopoverProps {
 	dismissable?: boolean;
 	children: ReactNode;
 }
-
-const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 export function Popover({ open, ...props }: PopoverProps) {
 	if (!open || typeof document === "undefined") return null;

@@ -7,7 +7,7 @@ import type { ItemSummary, StepKind } from "@contract";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it } from "vitest";
-import { ItemStages } from "./Items";
+import { ItemStages } from "../components/ItemRow";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -60,7 +60,7 @@ it("fills built once the item is past it", () => {
 
 describe("partTrack", () => {
 	it("gives a part its own way into the feature, without CI, review or hand-over", async () => {
-		const { partTrack } = await import("./Items");
+		const { partTrack } = await import("../components/ItemRow");
 		expect(partTrack({ state: "working", wait: null }, "implement")).toMatchObject({ stages: ["built", "checked", "in the feature"], at: 1, now: true, word: "building" });
 		expect(partTrack({ state: "working", wait: null }, "run_checks")).toMatchObject({ at: 2, word: "checking" });
 		expect(partTrack({ state: "done", wait: null }, null)).toMatchObject({ at: 3, now: false });

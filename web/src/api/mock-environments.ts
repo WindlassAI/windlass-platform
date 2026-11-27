@@ -3,8 +3,8 @@
  * Rebuild runs for a few seconds and passes. Records last as long as the page is open.
  */
 import type { EnvironmentBuild, EnvironmentPlace, EnvironmentSchedule, GithubId, RepositoryEnvironment, RepositoryEnvironments } from "@contract";
+import { HOUR } from "./mock-time";
 
-const HOUR = 3_600_000;
 const COMMIT = "4f1c2a9e8b7d6c5f4e3d2c1b0a9f8e7d6c5b4a39";
 const passed = (name: string, durationMs: number) => ({ name, status: "passed" as const, exitCode: 0, durationMs, environment: null });
 

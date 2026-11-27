@@ -16,13 +16,19 @@ import { windlassModes } from "../../../server/src/sandbox/profiles.js";
 /** What Claude Code is launched in unless chosen otherwise (server/src/sandbox/acp-harness.ts). */
 export const CLAUDE_DEFAULT_MODE = "auto";
 
+type LaunchProfile = (Pick<SandboxProfile, "approval"> & { id?: SandboxProfile["id"] }) | null;
+type LaunchModes = { modes: SessionMode[]; default: string };
+
+const LAUNCH_MODES: Record<HarnessId, (profile: LaunchProfile) => LaunchModes | null> = {
+	claude: () => ({ modes: [...CLAUDE_LAUNCH_MODES], default: CLAUDE_DEFAULT_MODE }),
+	codex: (profile) => ({ modes: [], default: codexDefaultMode(profile?.id) }),
+	opencode: () => ({ modes: [], default: "build" }),
+	windlass: (profile) => profile === null ? null : { modes: windlassModes(profile.approval), default: profile.approval },
+};
+
 /** The modes a new agent is offered in a sandbox profile, and the one it starts on. */
-export function launchModes(harness: HarnessId, profile: (Pick<SandboxProfile, "approval"> & { id?: SandboxProfile["id"] }) | null): { modes: SessionMode[]; default: string } | null {
-	if (harness === "claude") return { modes: [...CLAUDE_LAUNCH_MODES], default: CLAUDE_DEFAULT_MODE };
-	if (harness === "codex") return { modes: [], default: codexDefaultMode(profile?.id) };
-	if (harness === "opencode") return { modes: [], default: "build" };
-	if (profile === null) return null;
-	return { modes: windlassModes(profile.approval), default: profile.approval };
+export function launchModes(harness: HarnessId, profile: LaunchProfile): LaunchModes | null {
+	return LAUNCH_MODES[harness](profile);
 }
 
 /** The modes a session can be put in: the ones it reported, or before that the ones its agent is launched with. */
@@ -36,9 +42,17 @@ export function currentMode(summary: Pick<SessionSummary, "harness" | "available
 	return sessionModes(summary, profile).find((mode) => mode.id === summary.mode) ?? { id: summary.mode, name: summary.mode, description: null };
 }
 
+/** Every mode an agent has, in any profile; OpenCode's are its own report's. */
+const KNOWN_MODES: Record<HarnessId, () => readonly SessionMode[]> = {
+	codex: () => allCodexModes,
+	claude: () => CLAUDE_LAUNCH_MODES,
+	windlass: () => [...windlassModes("auto"), ...windlassModes("full")],
+	opencode: () => [],
+};
+
 /** A mode by its name, for a line that names one outside a session: "Plan", "Auto"; an id no list has is shown as it is. */
 export function modeName(harness: HarnessId, id: string): string {
-	const known = harness === "codex" ? allCodexModes : harness === "claude" ? CLAUDE_LAUNCH_MODES : harness === "windlass" ? [...windlassModes("auto"), ...windlassModes("full")] : [];
+	const known = KNOWN_MODES[harness]();
 	return known.find((mode) => mode.id === id)?.name ?? (id.charAt(0).toUpperCase() + id.slice(1));
 }
 

@@ -7,8 +7,10 @@ import { machineLabel } from "../lib/machines";
 import type { FeedFilters } from "../lib/repositories";
 import { linkProps, useHistoryState } from "../lib/router";
 import { itemDoing, subtaskState } from "../lib/subtasks";
-import { EndedFoot, ItemStanding, questionLine, useEndedPages } from "./Items";
-import { useMachines } from "./Machines";
+import { EndedFoot, useEndedPages } from "./Items";
+import { ItemStanding } from "../components/ItemRow";
+import { questionLine } from "../lib/items";
+import { useMachines } from "../state/machines";
 
 const COLUMN_LIMIT = 8;
 

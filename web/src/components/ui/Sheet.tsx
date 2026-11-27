@@ -10,6 +10,7 @@
 import { useEffect, useId, useRef, useState, type PointerEvent as ReactPointerEvent, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeftIcon } from "../Icons";
+import { FOCUSABLE } from "./focus";
 
 export interface SheetProps {
 	open: boolean;
@@ -29,8 +30,6 @@ export interface SheetProps {
 	id?: string;
 	children: ReactNode;
 }
-
-const FOCUSABLE = 'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
 /** How far the sheet is dragged down before letting go closes it. */
 const DISMISS_PX = 96;

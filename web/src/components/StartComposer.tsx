@@ -7,9 +7,9 @@ import { monthReset, monthState } from "../lib/hosted";
 import { isHarnessId, MACHINE_HARNESS_IDS, MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_PROMPT_CHARS, MAX_TITLE_CHARS, USAGE_LOW_SHARE, type CreateItemInput, type GithubId, type HostedSize, type ItemMode, type ItemSummary, type HarnessId, type HarnessOptions, type MachineSummary, type RepositoryDefaults, type SandboxProfile, type SandboxProfileId, type SessionMode, type SessionSummary, type UsageNumbers } from "@contract";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { hasReason } from "../api/client";
-import { isLimitRefusal } from "../api/errors";
+import { isLimitRefusal, MACHINE_REFUSALS } from "../api/errors";
 import { HARNESS_NAMES } from "../lib/acp";
-import { count, localTime, sandboxTime } from "../lib/format";
+import { clockTime, count, localTime, sandboxTime } from "../lib/format";
 import { MODEL_SOURCES, SOURCE_NAMES, cleanModelName, effortsOf, harnessOptions, modelLabel, modelName, modelsNote, modelsBySource, type ModelSource } from "../lib/models";
 import { safeStorage } from "../lib/workspace";
 import { OPEN_MODES, launchModes } from "../lib/modes";
@@ -17,7 +17,7 @@ import { itemOf, lastRepository, layerChoices, repositoryName, startingChoices, 
 import { linkProps, navigate } from "../lib/router";
 import { submissionOf, type Submission } from "../lib/submission";
 import { perHour, sizeName, sizeSpec, startingSize } from "../lib/sizes";
-import { clockTime, useMachines } from "../screens/Machines";
+import { useMachines } from "../state/machines";
 import { useApp, useAuth } from "../state/app";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
@@ -26,7 +26,7 @@ import { agentModelsOf } from "../lib/subtask-agents";
 import { ArrowUpIcon, CheckIcon, CloudIcon, MachineIcon, PlusIcon, RepoIcon, SlidersIcon, WarnIcon } from "./Icons";
 import { modeMenu } from "./Modes";
 import { codexModes } from "../../../server/src/sandbox/codex-modes.js";
-import { hostedAgentProblem, capabilitiesOf, subtaskHarnessProblem } from "../../../server/src/sandbox/harnesses.js";
+import { hostedAgentProblem, capabilitiesOf, subtaskHarnessProblem, usesAccountModels } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_PROFILE, itemHarnesses, itemProfilesHere, machineUnusable, offeredHarnesses, onPullRequest } from "./PlaceChoice";
 import { repositoryMenu, useBranches, useRepositorySearch, type PickedRepository } from "./RepositoryMenu";
 import { SecretsField } from "./Secrets";
@@ -157,8 +157,6 @@ export interface StartComposerProps {
 }
 
 export type StartKind = "agent" | "item";
-
-const MACHINE_REFUSALS = ["machine_not_found", "machine_not_connected", "runner_outdated", "bad_profile"] as const;
 
 export function StartComposer({ sessions, repositoryId, autoFocus = false, kind: kindChoice = "agent", items, hostedNotice = false }: StartComposerProps) {
 	const { client, platform, explain } = useApp();
@@ -295,8 +293,8 @@ export function StartComposer({ sessions, repositoryId, autoFocus = false, kind:
 	const defaultRun = runOf(itemLayers);
 	const itemAgent = item ? runOf({ ...itemLayers, item: { ...itemPlace, harness: harnessChoice } }, itemRole).agent : "windlass";
 	const selectedLayers = { ...itemLayers, item: { ...itemPlace, harness: harnessChoice, hostedSize: sizeChoice, profile: profileChoice, machineProfile: profileChoice,
-		...(modelChoice && (itemAgent === "windlass" ? { model: modelChoice } : { machineModel: modelChoice })),
-		...(effortChoice && effortChoice !== "default" && (itemAgent === "windlass" ? { effort: effortChoice } : { machineEffort: effortChoice })) } };
+		...(modelChoice && (usesAccountModels(itemAgent) ? { model: modelChoice } : { machineModel: modelChoice })),
+		...(effortChoice && effortChoice !== "default" && (usesAccountModels(itemAgent) ? { effort: effortChoice } : { machineEffort: effortChoice })) } };
 	const itemRun = item ? runOf(selectedLayers, itemRole) : null;
 	const planning = item && itemRole === "part" ? runOf(selectedLayers, "planner") : null;
 	const machineCatalogs = useCatalogs(item && !machinesReading ? mine : null);

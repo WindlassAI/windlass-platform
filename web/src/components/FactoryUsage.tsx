@@ -1,7 +1,7 @@
 import { byteSize, compact, count, plural, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { FoldRows } from "./Fold";
-import { useItems } from "../screens/Items";
+import { useItems } from "../state/items";
 import type { FactoryLimits } from "@contract";
 
 function Of({ spent, budget, spell }: { spent: number; budget: number; spell(value: number): string }) {

@@ -28,8 +28,8 @@ import { filterCount, loadFilters, railOf, saveFilters, type Filters, type Rail,
 import { useApp } from "../state/app";
 import { useFactoryLimits, useSessions } from "../state/hooks";
 import { Home, useSavedRepositories } from "./Home";
-import type { ItemsState } from "./Items";
-import { useMachines } from "./Machines";
+import type { ItemsState } from "../state/items";
+import { useMachines } from "../state/machines";
 import { RepositoryPane, useRepository } from "./Repository";
 
 /** What the right side shows. */

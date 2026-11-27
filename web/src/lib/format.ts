@@ -53,6 +53,10 @@ export function plural(value: number, one: string, many = `${one}s`): string {
 	return `${count(value)} ${value === 1 ? one : many}`;
 }
 
+const ORDINALS = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
+/** "first" to "tenth" spelled, then "11th". */
+export const ordinal = (n: number): string => ORDINALS[n - 1] ?? `${n}th`;
+
 const UNITS: Array<[limit: number, size: number, name: string]> = [
 	[60_000, 1000, "s"],
 	[3_600_000, 60_000, "m"],

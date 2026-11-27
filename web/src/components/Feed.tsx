@@ -12,7 +12,7 @@ import { ITEM_MODE_WORDS } from "../lib/feature";
 import { feedKey, type FeedEntry } from "../lib/feed";
 import { absoluteTime, count, plural, relativeTime } from "../lib/format";
 import { linkProps, type Route } from "../lib/router";
-import { STATE_WORD } from "../screens/Items";
+import { STATE_WORD } from "../lib/items";
 import { LongText } from "./Fold";
 import { ChevronRightIcon, CrossIcon, Mark, MergedIcon, PullRequestIcon } from "./Icons";
 import { RepoTile } from "./RepoTile";

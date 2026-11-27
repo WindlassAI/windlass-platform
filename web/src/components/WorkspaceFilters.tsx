@@ -4,9 +4,9 @@
  * stand beside it as chips, each with the way to take it off.
  */
 import type { HarnessId, MachineSummary } from "@contract";
-import { HARNESS_NAMES } from "../lib/acp";
+import { HARNESS_DISPLAY_ORDER, HARNESS_NAMES } from "../lib/acp";
 import { machineLabel } from "../lib/machines";
-import { AGENT_FILTERS, KIND_FILTERS, KIND_FILTER_WORD, NO_FILTERS, STATUS_FILTERS, STATUS_FILTER_WORD, filterCount, toggleFilter, type Filters } from "../lib/workspace";
+import { KIND_FILTERS, KIND_FILTER_WORD, NO_FILTERS, STATUS_FILTERS, STATUS_FILTER_WORD, filterCount, toggleFilter, type Filters } from "../lib/workspace";
 import { CrossIcon, SlidersIcon } from "./Icons";
 import { Menu, type MenuGroup, type MenuSpec } from "./ui/Menu";
 
@@ -38,7 +38,7 @@ function filterSpec({ filters, onChange, machines }: FilterProps): MenuSpec {
 	for (const place of filters.place) if (!places.includes(place)) places.push(place);
 	const groups: MenuGroup[] = [
 		{ id: "status", label: "Status", items: STATUS_FILTERS.map((status) => check("status", status, STATUS_FILTER_WORD[status])) },
-		{ id: "agent", label: "Agent", items: AGENT_FILTERS.map((agent) => check("agent", agent, HARNESS_NAMES[agent])) },
+		{ id: "agent", label: "Agent", items: HARNESS_DISPLAY_ORDER.map((agent) => check("agent", agent, HARNESS_NAMES[agent])) },
 		{ id: "place", label: "Runs on", items: places.map((place) => check("place", place, placeWord(place, machines))) },
 		{ id: "kind", label: "Kind", items: KIND_FILTERS.map((kind) => check("kind", kind, KIND_FILTER_WORD[kind])) },
 	];

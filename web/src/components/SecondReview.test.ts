@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockClient, type MockClient } from "../api/mock";
 import { saveAuth } from "../lib/authStore";
 import { Item } from "../screens/Item";
-import { ReviewWord } from "../screens/Items";
+import { ReviewWord } from "./ItemRow";
 import { ScreenshotsSetting } from "../screens/RepositorySettings";
 import { AppProvider } from "../state/app";
 import { RECOMMENDATION_WORD, reviewOrder, SecondReview } from "./SecondReview";

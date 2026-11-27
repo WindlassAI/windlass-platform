@@ -12,7 +12,7 @@
  */
 import type { HarnessId, MachineSummary, ModelList, PlanSubtask, SubtaskAgent } from "@contract";
 import type { AgentModels } from "../../../server/src/factory/placement.js";
-import { hostedAgentProblem, machineHarness, worksWithoutAsking } from "../../../server/src/sandbox/harnesses.js";
+import { hostedAgentProblem, machineHarness, usesAccountModels, worksWithoutAsking } from "../../../server/src/sandbox/harnesses.js";
 import { HARNESS_NAMES } from "./acp";
 import { machineLabel } from "./machines";
 import { cleanModelName, harnessOptions, modelName, type ReportedOptions } from "./models";
@@ -63,7 +63,7 @@ export type Catalogs = Record<string, Partial<Record<HarnessId, ReportedOptions>
 
 /** The model list an agent offers at a machine (`harnessOptions`); null where it reported none yet. */
 export function machineModels(machine: MachineSummary | null, harness: HarnessId, catalogs: Catalogs): ModelList | null {
-	if (!machine || harness === "windlass") return null;
+	if (!machine || usesAccountModels(harness)) return null;
 	return harnessOptions(machine, harness, catalogs[machine.machineId]?.[harness]).models;
 }
 

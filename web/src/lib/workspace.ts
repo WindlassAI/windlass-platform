@@ -10,6 +10,7 @@
  */
 import type { GithubId, HarnessId, ItemFeed, ItemSummary, SandboxPlace, SavedRepository, SessionSummary } from "@contract";
 import { ownAgents } from "./repositories";
+import { HARNESS_DISPLAY_ORDER } from "./acp";
 
 // ---- the filters -----------------------------------------------------------------------------------
 
@@ -20,7 +21,6 @@ export type PlaceFilter = string;
 
 export const STATUS_FILTERS: readonly StatusFilter[] = ["running", "needs", "done", "failed"];
 export const STATUS_FILTER_WORD: Record<StatusFilter, string> = { running: "Running", needs: "Needs you", done: "Done", failed: "Failed" };
-export const AGENT_FILTERS: readonly HarnessId[] = ["windlass", "claude", "codex", "opencode"];
 export const KIND_FILTERS: readonly KindFilter[] = ["agent", "item"];
 export const KIND_FILTER_WORD: Record<KindFilter, string> = { agent: "Agent sessions", item: "Work items" };
 
@@ -103,7 +103,7 @@ export function loadFilters(storage: Pick<Storage, "getItem"> | null = safeStora
 		const value = JSON.parse(text) as Partial<Record<keyof Filters, unknown>>;
 		return {
 			status: only(value.status, (one): one is StatusFilter => (STATUS_FILTERS as readonly string[]).includes(one)),
-			agent: only(value.agent, (one): one is HarnessId => (AGENT_FILTERS as readonly string[]).includes(one)),
+			agent: only(value.agent, (one): one is HarnessId => (HARNESS_DISPLAY_ORDER as readonly string[]).includes(one)),
 			place: only(value.place, (one): one is PlaceFilter => one === "hosted" || /^machine:.+/.test(one)),
 			kind: only(value.kind, (one): one is KindFilter => (KIND_FILTERS as readonly string[]).includes(one)),
 		};

@@ -1,4 +1,4 @@
-import { MAX_MACHINES, type CredentialSource, type MachineClaim, type MachineSandbox, type MachineSummary, type MachineWarning, type MachinesInfo, type ModelProvider } from "@contract";
+import { MAX_MACHINES, type CredentialSource, type MachineClaim, type MachineSummary, type MachineWarning, type MachinesInfo, type ModelProvider } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { hasReason } from "../api/client";
 import { CopyButton } from "../components/Copy";
@@ -6,22 +6,20 @@ import { Command } from "../components/Command";
 import { Dialog } from "../components/Dialog";
 import { CheckIcon, ChevronIcon, InfoIcon, MachineIcon, Mark, PencilIcon, PlusIcon, TrashIcon, WarnIcon } from "../components/Icons";
 import { RowsSkeleton } from "../components/Skeleton";
-import { SandboxState } from "../components/Status";
 import { HARNESS_NAMES, loginCommand, signInWords, type ReportedHarness } from "../lib/acp";
 import { absoluteTime, clockTime, plural, relativeTime, spelledDuration } from "../lib/format";
-import { linkProps, navigate } from "../lib/router";
+import { navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useAccount, useHostedProviders, useNow } from "../state/hooks";
 import { DefaultPlace } from "../components/RunSettings";
 import { SOURCE_NAMES } from "../lib/models";
 import { anyOf } from "../../../server/src/sandbox/harnesses.js";
-import { MAX_WHEN_TO_USE, machineDetailsProblem, machineHostNote, machineLabel, tagsOf } from "../lib/machines";
+import { MAX_WHEN_TO_USE, diskSize, machineDetailsProblem, machineHostNote, machineLabel, sandboxLimit, settingsKeyUpgrade, storeLimits, tagsOf } from "../lib/machines";
+import { MachineState, SandboxLine } from "../components/MachineState";
+import { useMachines } from "../state/machines";
 import { ORCHESTRATOR_CHOICES, orchestratorNote, orchestratorOf, type Orchestrator } from "../lib/placement";
 import { Check } from "../components/ui/Check";
 import { AgentGlyph } from "../components/ui/Pill";
-import { readTwice } from "../lib/retry";
-
-export { clockTime };
 
 /** The command that starts the runner on a machine, as `MachinesInfo` describes it; null while no runner image is published. */
 function installCommand(info: MachinesInfo, agents: { claude?: boolean; openCode?: boolean; codex?: boolean; windlassSandbox?: boolean } = {}, setup?: { importKeys: boolean }): string | null {
@@ -41,102 +39,10 @@ export function oneLineInstall(info: MachinesInfo): string | null {
 	return info.runnerImage === null ? null : `curl -fsSL ${info.platformUrl}/install.sh | sh`;
 }
 
-/** Free disk in a sentence: "61 GB", "3.2 GB", "820 MB". */
-function diskSize(bytes: number): string {
-	if (bytes >= 1e12) return `${(bytes / 1e12).toFixed(1).replace(/\.0$/, "")} TB`;
-	if (bytes >= 1e9) return `${bytes >= 1e10 ? Math.round(bytes / 1e9) : (bytes / 1e9).toFixed(1).replace(/\.0$/, "")} GB`;
-	return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
-}
-
-/** The snapshot and Git mirror limits in force on a machine (`MachineSummary.storeLimits`). */
-export function storeLimits(limits: NonNullable<MachineSummary["storeLimits"]>): string {
-	return `${diskSize(limits.machine)} in all, ${diskSize(limits.user)} per user, keeps ${limits.free === 0 ? "no disk" : diskSize(limits.free)} free`;
-}
-
 /** A code as it is typed: the eight characters the runner printed, in two groups of four. */
 function formatCode(typed: string): string {
 	const characters = typed.toUpperCase().replace(/[^0-9A-Z]/g, "").slice(0, 8);
 	return characters.length > 4 ? `${characters.slice(0, 4)}-${characters.slice(4)}` : characters;
-}
-
-export interface MachinesState {
-	/** Null until it was read, and when it could not be. */
-	list: MachineSummary[] | null;
-	/** Why it could not be read the last time it was asked for. */
-	error: string | null;
-	reload(): void;
-	/** Takes the list as an action answered it. */
-	replace(list: MachineSummary[]): void;
-}
-
-/**
- * The user's machines: read when the screen opens, then as the user's actor sends them, and again
- * after the live feed was down. `enabled` false asks nothing: for a deployment that offers no machines,
- * and for a screen that needs them only sometimes (a session on a machine).
- */
-export function useMachines(enabled = true): MachinesState {
-	const { client, explain } = useApp();
-	const auth = useAuth();
-	const [state, setState] = useState<{ list: MachineSummary[] | null; error: string | null }>({ list: null, error: null });
-	const asked = useRef(0);
-	const samplesDuringReload = useRef<Map<string, MachineSummary["host"]> | null>(null);
-
-	const reload = useCallback(() => {
-		const mine = ++asked.current;
-		const samples = new Map<string, MachineSummary["host"]>();
-		samplesDuringReload.current = samples;
-		readTwice(() => client.user(auth).machines())
-			.then(
-				(list) => mine === asked.current && setState({ list: list.map(machine =>
-					samples.has(machine.machineId) ? { ...machine, host: samples.get(machine.machineId) } : machine), error: null }),
-				(failure: unknown) => mine === asked.current && setState((now) => ({ list: now.list, error: explain(failure) })),
-			).finally(() => { if (samplesDuringReload.current === samples) samplesDuringReload.current = null; });
-	}, [client, auth, explain]);
-
-	const replace = useCallback((list: MachineSummary[]) => {
-		asked.current += 1;
-		setState({ list, error: null });
-	}, []);
-
-	useEffect(() => {
-		if (!enabled) return;
-		reload();
-		let connected = false;
-		const close = client.user(auth).watch({
-			onSessions: () => undefined,
-			onMachines: replace,
-			onMachineHost: ({ machineId, host }) => {
-				samplesDuringReload.current?.set(machineId, host ?? undefined);
-				setState(now => ({ ...now, list: now.list?.map(machine =>
-					machine.machineId === machineId ? { ...machine, host: host ?? undefined } : machine) ?? null }));
-			},
-			onConnection: (connection) => {
-				if (connection !== "connected") return;
-				// What the actor sent while the feed was down is lost: the list is read again when it is back.
-				if (connected) reload();
-				connected = true;
-			},
-		});
-		return () => {
-			asked.current += 1;
-			close();
-		};
-	}, [client, auth, reload, replace, enabled]);
-
-	return { ...state, reload, replace };
-}
-
-/** Where a machine is, as a dot and a few words. A runner that is too old is refused, so that is what it says. */
-export function MachineState({ machine, now }: { machine: MachineSummary; now: number }) {
-	const outdated = machine.warnings.some((warning) => warning.kind === "outdated");
-	const kind = outdated ? "outdated" : machine.status;
-	const word = outdated ? "Needs an update" : machine.status === "online" ? "Online" : machine.status === "offline" ? `Offline since ${clockTime(machine.since, now)}` : "Waiting for the runner";
-	return (
-		<span className={`sandbox-state machine-state machine-state-${kind}`} title={machine.status === "offline" ? absoluteTime(machine.since) : undefined}>
-			<span className="sandbox-state-dot" aria-hidden="true" />
-			{word}
-		</span>
-	);
 }
 
 /** What the runner reported that needs the user, each only while it holds. */
@@ -282,12 +188,6 @@ function PlacementPolicy({ machine, onChanged }: { machine: MachineSummary; onCh
 	);
 }
 
-/** How many sandboxes the machine's runner may run and keep, as its owner started it: "no limit" unless a cap is set. */
-export function sandboxLimit(machine: MachineSummary): string {
-	const caps = [machine.maxRunning === undefined ? null : `at most ${machine.maxRunning} running at once`, machine.maxSandboxes === undefined ? null : `at most ${machine.maxSandboxes} kept`].filter((cap) => cap !== null);
-	return caps.length === 0 ? "no limit" : caps.join(", ");
-}
-
 function machineCapacity({ slots, turns, host }: MachineSummary) {
 	const parts: string[] = [];
 	if (slots) {
@@ -302,29 +202,6 @@ function machineCapacity({ slots, turns, host }: MachineSummary) {
 		parts.push(`${cpus}, ${diskSize(host.memoryFreeBytes)} of ${diskSize(host.memoryBytes)} memory free`);
 	}
 	return parts.join(" · ");
-}
-
-export function SandboxLine({ sandbox, now, offlineSince = null }: { sandbox: MachineSandbox; now: number; offlineSince?: number | null }) {
-	return (
-		<li>
-			{sandbox.title === null ? (
-				<span className="tone-dim">an agent that was deleted</span>
-			) : (
-				<a className="usage-agent" {...linkProps({ name: "session", id: sandbox.sessionId })}>
-					{sandbox.title}
-				</a>
-			)}
-			<SandboxState state={sandbox.state} asOf={offlineSince === null ? undefined : `Reported before the machine went offline, ${absoluteTime(offlineSince)}.`} />
-			{sandbox.resizePending && <span>resized at next restart</span>}
-			<span className="machine-used" title={absoluteTime(sandbox.usedAt)}>
-				used {relativeTime(sandbox.usedAt, now)}
-			</span>
-		</li>
-	);
-}
-
-export function settingsKeyUpgrade(machine: MachineSummary) {
-	return machine.harnesses?.some(h => !h.keyRelay) ? "Update the machine software to use your API keys here." : null;
 }
 
 function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChanged(list: MachineSummary[]): void }) {

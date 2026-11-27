@@ -13,22 +13,13 @@ import { CopyButton } from "./Copy";
 import { Dialog } from "./Dialog";
 import { WarnIcon } from "./Icons";
 import { Check } from "./ui/Check";
+import { Failure } from "./ui/Failure";
 
 const SCOPES: Array<{ scope: ApiTokenScope; name: string; means: string }> = [
 	{ scope: "items:create", name: "File work items", means: "POST /api/items: on your repositories, as you would from a repository's page." },
 	{ scope: "items:read", name: "Read work items", means: "GET /api/items/<id>: where an item is, its verdict and its cost." },
 ];
 const scopeWords = (scopes: ApiTokenScope[]) => scopes.map((scope) => (scope === "items:create" ? "files items" : "reads items")).join(", ");
-
-function Failure({ error }: { error: string | null }) {
-	if (!error) return null;
-	return (
-		<p className="callout callout-bad" role="alert">
-			<WarnIcon />
-			<span>{error}</span>
-		</p>
-	);
-}
 
 /** Making a token: its name and what it may do; then its value, this once. */
 function NewTokenDialog({ onClose, onMade }: { onClose(): void; onMade(token: ApiToken): void }) {

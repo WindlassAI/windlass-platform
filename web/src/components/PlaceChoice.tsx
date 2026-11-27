@@ -2,7 +2,7 @@ import type { HarnessId, MachineSummary, SandboxProfileId } from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { HARNESS_NAMES, type ReportedHarness } from "../lib/acp";
 import { linkProps } from "../lib/router";
-import { MachineState } from "../screens/Machines";
+import { MachineState } from "./MachineState";
 import { machineLabel } from "../lib/machines";
 import { capabilitiesOf, checksSentence, itemModeOf, itemProfiles, machineHarness, worksWithoutAsking } from "../../../server/src/sandbox/harnesses.js";
 

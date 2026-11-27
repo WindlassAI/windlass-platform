@@ -1,6 +1,8 @@
 import { useNow } from "../state/hooks";
 import { linkProps } from "../lib/router";
-import { MachineState, SandboxLine, sandboxLimit, storeLimits, useMachines } from "../screens/Machines";
+import { MachineState, SandboxLine } from "./MachineState";
+import { sandboxLimit, storeLimits } from "../lib/machines";
+import { useMachines } from "../state/machines";
 import { machineLabel } from "../lib/machines";
 
 export function MachineUsage() {

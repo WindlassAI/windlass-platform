@@ -36,7 +36,8 @@ import { filterCount, itemStatus, matchesItem, matchesSession, sessionStatus, ty
 import { useApp, useAuth } from "../state/app";
 import { useGithub, type Github } from "../state/github";
 import { useNow, useSessions } from "../state/hooks";
-import { RepositoryItems, type ItemsState } from "./Items";
+import { RepositoryItems } from "./Items";
+import { type ItemsState } from "../state/items";
 import { offered } from "../../../server/src/factory/readiness-track";
 import { RepositorySetupChecks } from "../components/RepositorySetupChecks";
 import { RepositorySettings } from "./RepositorySettings";

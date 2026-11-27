@@ -13,7 +13,7 @@ import { saveAuth } from "../lib/authStore";
 import { AppProvider } from "../state/app";
 import { Item, useItem } from "./Item";
 import { RepositoryPane, useRepository } from "./Repository";
-import { useItems } from "./Items";
+import { useItems } from "../state/items";
 import { NO_FILTERS } from "../lib/workspace";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

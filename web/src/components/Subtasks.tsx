@@ -15,26 +15,13 @@
  */
 import type { FeaturePlan, ItemSummary, ItemView } from "@contract";
 import { useId, useState, type ReactNode } from "react";
-import { FoldToggle, LongText } from "../components/Fold";
+import { FoldToggle, LongText } from "./Fold";
 import { absoluteTime, compact, plural } from "../lib/format";
 import { linkProps } from "../lib/router";
-import { activeSubtasks, doingNow, elapsed, groupSubtasks, plannedSubtasks, REPAIR_WHY, subtaskState, tallyParts, type PlannedSubtask, type SubtaskLine, type SubtaskState, type SubtaskTally } from "../lib/subtasks";
-import { ItemGlyph } from "./Items";
+import { activeSubtasks, doingNow, elapsed, groupSubtasks, plannedSubtasks, REPAIR_WHY, subtaskState, type PlannedSubtask, type SubtaskLine, type SubtaskState } from "../lib/subtasks";
+import { ItemGlyph } from "./ItemRow";
 
 const STATE_LABEL: Record<SubtaskState, string> = { running: "running", asks: "asks you", done: "done", stopped: "stopped", to_go: "not started" };
-
-/** The tally in a line, each count in ink and its word dim; asking in its hue. */
-export function Tally({ tally }: { tally: SubtaskTally }) {
-	return (
-		<span className="subtask-tally">
-			{tallyParts(tally).map((part) => (
-				<span key={part.tone} className={`subtask-tally-part subtask-tally-${part.tone}`}>
-					<strong>{part.n}</strong> {part.word}
-				</span>
-			))}
-		</span>
-	);
-}
 
 /** One segment a subtask, in plan order, coloured by where it is. */
 export function SegmentBar({ states }: { states: SubtaskState[] }) {

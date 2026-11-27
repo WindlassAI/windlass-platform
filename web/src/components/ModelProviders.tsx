@@ -12,6 +12,7 @@ import { ChatgptPlan } from "./ChatgptPlan";
 import { Dialog } from "./Dialog";
 import { AnthropicLogo, GeminiLogo, OpenAILogo, OpenRouterLogo } from "./AgentLogos";
 import { ExternalIcon, WarnIcon } from "./Icons";
+import { Failure } from "./ui/Failure";
 
 const PROVIDERS: Record<ModelProvider, { name: string; placeholder: string; keysUrl: string; logo?: ReactNode }> = {
 	openai: { name: "OpenAI", placeholder: "sk-proj-…", keysUrl: "https://platform.openai.com/api-keys", logo: <OpenAILogo /> },
@@ -37,16 +38,6 @@ function GetKey({ provider }: { provider: ModelProvider }) {
 			Get a key<span className="visually-hidden"> from {name} (opens in a new tab)</span>
 			<ExternalIcon size={11} />
 		</a>
-	);
-}
-
-function Failure({ error }: { error: string | null }) {
-	if (!error) return null;
-	return (
-		<p className="callout callout-bad" role="alert">
-			<WarnIcon />
-			<span>{error}</span>
-		</p>
 	);
 }
 

@@ -25,7 +25,8 @@ import type { ScreenshotLinks } from "../components/Screenshots";
 import { noneLine, RECOMMENDATION_WORD, SecondReview, shownReview } from "../components/SecondReview";
 import { plural } from "../lib/format";
 import { linkProps } from "../lib/router";
-import { inSecondReview, ReviewWord, VerdictWord } from "./Items";
+import { inSecondReview } from "../lib/items";
+import { ReviewWord, VerdictWord } from "../components/ItemRow";
 
 // ---- what it says -------------------------------------------------------------------------------
 

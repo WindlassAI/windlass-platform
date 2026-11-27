@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 /**
- * A feature's subtasks as they run (lib/subtasks.ts, Subtasks.tsx), read from the mock's long state
+ * A feature's subtasks as they run (lib/subtasks.ts, components/Subtasks.tsx), read from the mock's long state
  * (`items: "features"`, `long`): six subtasks, one merged, two running, one asking, two not started.
  * The tally counts them; each row says what its subtask is doing from its step, where it runs, what it
  * spent and links its session; the asking one shows its question and Answer. A subtask's strip says
@@ -14,8 +14,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createMockClient } from "../api/mock";
 import { childrenBehind, doingNow, doneKeys, elapsed, groupSubtasks, PARALLEL_SUBTASKS, plannedSubtasks, sharesPaths, tallyLine, tallyOf, type DispatchedSubtask } from "../lib/subtasks";
 import { progressCount } from "./Factory";
-import { questionLine } from "./Items";
-import { doneWords, FactorySubtasks, partOf, showsSubtasks, SubtasksBlock, SubtaskStrip } from "./Subtasks";
+import { questionLine } from "../lib/items";
+import { doneWords, FactorySubtasks, partOf, showsSubtasks, SubtasksBlock, SubtaskStrip } from "../components/Subtasks";
 
 const auth = { token: "mock:user:u_subtasks:ada@example.com", profile: { uid: "u_subtasks", email: "ada@example.com", demo: false } };
 

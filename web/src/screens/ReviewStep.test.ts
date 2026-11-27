@@ -19,7 +19,8 @@ import { ZERO_USAGE, type TurnView } from "../lib/timeline";
 import { AppProvider } from "../state/app";
 import { useSession } from "../state/hooks";
 import { Item } from "./Item";
-import { inSecondReview, ItemRow } from "./Items";
+import { inSecondReview } from "../lib/items";
+import { ItemRow } from "../components/ItemRow";
 import { Session, useSessionMachine } from "./Session";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

@@ -9,6 +9,7 @@
  */
 import { absolute, SITE_NAME, SITE_URL } from "./config";
 import { ONE_LINER } from "./content";
+import { escapeHtml } from "../docs/render";
 import { DEFAULT_IMAGE, type PublicPage } from "./pages";
 
 /** What the build of the app produced that a public page links to. */
@@ -20,9 +21,6 @@ export interface AppAssets {
 	/** Font files worth preloading for the first paint, as `href`s. */
 	fonts: string[];
 }
-
-const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
-export const escapeHtml = (text: string): string => text.replace(/[&<>"']/g, (char) => ESCAPES[char] ?? char);
 
 /** JSON for inside a `<script>` element: nothing in it can close the element or open a comment. */
 export function scriptJson(value: unknown): string {

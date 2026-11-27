@@ -18,6 +18,7 @@ import { linkProps } from "../lib/router";
 import { FOLD_WORDS, FoldToggle } from "./Fold";
 import { BlockRows, blobLink, ReviewText, type LinkTo } from "./ReviewBlocks";
 import { Screenshots, type ScreenshotLinks } from "./Screenshots";
+import { ordinal } from "../lib/format";
 
 export type ReviewState = NonNullable<ItemSummary["review"]>["state"];
 
@@ -26,9 +27,6 @@ export const RECOMMENDATION_WORD: Record<ReviewRecommendation, string> = { appro
 
 /** The cut-offs a review step is tried again after (server/src/factory/blueprint.ts, `RULES.interruptions`). */
 const INTERRUPTIONS = 3;
-
-const ORDINAL = ["first", "second", "third", "fourth", "fifth"];
-const ordinal = (n: number) => ORDINAL[n - 1] ?? `${n}th`;
 
 /** A review's screenshots, the item's records of them (`ItemReview.screenshots`). */
 export function reviewShots(review: ItemReview): ItemAttachment[] {

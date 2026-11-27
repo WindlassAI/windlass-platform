@@ -11,7 +11,7 @@ import { useId } from "react";
 import { acpHarnessName, sessionModelWords } from "../lib/acp";
 import { absoluteTime, plural, relativeTime } from "../lib/format";
 import { linkProps } from "../lib/router";
-import { asking, questionLine } from "../screens/Items";
+import { asking, questionLine } from "../lib/items";
 import { LongText } from "./Fold";
 import { ChevronRightIcon } from "./Icons";
 import { AgentGlyph } from "./ui/Pill";

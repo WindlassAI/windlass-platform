@@ -10,7 +10,7 @@ import { ITEM_MODE_WORDS } from "../lib/feature";
 import { absoluteTime, relativeTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { itemStatus } from "../lib/workspace";
-import { STATE_WORD } from "../screens/Items";
+import { STATE_WORD } from "../lib/items";
 import { CheckIcon, MergedIcon, PullRequestIcon } from "./Icons";
 import { AgentGlyph } from "./ui/Pill";
 

@@ -69,3 +69,26 @@ export function hardenedItemNote(machine: MachineSummary): string {
 	if (machine.profiles.find(profile => profile.available)?.id !== "docker-hardened") return "";
 	return " It runs in Open isolation: commands run freely. " + workspaceNetwork(machine.egress, false, machine.egressDomains);
 }
+
+/** Free disk in a sentence: "61 GB", "3.2 GB", "820 MB". */
+export function diskSize(bytes: number): string {
+	if (bytes >= 1e12) return `${(bytes / 1e12).toFixed(1).replace(/\.0$/, "")} TB`;
+	if (bytes >= 1e9) return `${bytes >= 1e10 ? Math.round(bytes / 1e9) : (bytes / 1e9).toFixed(1).replace(/\.0$/, "")} GB`;
+	return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+}
+
+/** The snapshot and Git mirror limits in force on a machine (`MachineSummary.storeLimits`). */
+export function storeLimits(limits: NonNullable<MachineSummary["storeLimits"]>): string {
+	return `${diskSize(limits.machine)} in all, ${diskSize(limits.user)} per user, keeps ${limits.free === 0 ? "no disk" : diskSize(limits.free)} free`;
+}
+
+/** How many sandboxes the machine's runner may run and keep, as its owner started it: "no limit" unless a cap is set. */
+export function sandboxLimit(machine: MachineSummary): string {
+	const caps = [machine.maxRunning === undefined ? null : `at most ${machine.maxRunning} running at once`, machine.maxSandboxes === undefined ? null : `at most ${machine.maxSandboxes} kept`].filter((cap) => cap !== null);
+	return caps.length === 0 ? "no limit" : caps.join(", ");
+}
+
+/** Why the machine cannot relay the user's API keys yet, or null when it can. */
+export function settingsKeyUpgrade(machine: MachineSummary) {
+	return machine.harnesses?.some(h => !h.keyRelay) ? "Update the machine software to use your API keys here." : null;
+}

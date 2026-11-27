@@ -44,7 +44,8 @@ import { useApp, useAuth } from "../state/app";
 import { takeHandover } from "../state/handover";
 import { allowanceState, useAllowance, useHostedProviders, useModels, useNow, type useSession } from "../state/hooks";
 import { requestPublish, setPanelHidden, setPublishFeedback, usePanelHidden, usePublishFeedback } from "../state/sessionChrome";
-import { clockTime, useMachines } from "./Machines";
+import { clockTime } from "../lib/format";
+import { useMachines } from "../state/machines";
 import { machineLabel } from "../lib/machines";
 
 /** How long a turn waits for a machine that stopped answering before it ends: the grace of the runner's channel on the server. */

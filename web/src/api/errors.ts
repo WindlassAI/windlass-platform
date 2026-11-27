@@ -24,6 +24,9 @@ const ACTOR_RESTART_CODES = new Set(["restarting", "stopping", "stopped"]);
 /** What the proxy answers while the server behind it is down. */
 const PROXY_RESTART_STATUSES = new Set([502, 503, 504]);
 
+/** The refusals of a machine that the list of machines may be behind on: a screen that meets one reads that list again. */
+export const MACHINE_REFUSALS = ["machine_not_found", "machine_not_connected", "runner_outdated", "bad_profile"] as const;
+
 export const RESTARTING_MESSAGE = "The platform is restarting. Trying again…";
 export const RESTARTED_MESSAGE = "The platform is restarting. Try again in a moment.";
 

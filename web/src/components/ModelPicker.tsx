@@ -10,6 +10,7 @@ import type { HarnessId, ModelList } from "@contract";
 import { useId, type ReactNode } from "react";
 import type { ReportedHarness } from "../lib/acp";
 import { HARNESS_NAMES } from "../lib/acp";
+import { usesAccountModels } from "../../../server/src/sandbox/harnesses.js";
 import { MODEL_SOURCES, SOURCE_NAMES, cleanModelName, credentialWords, effortChoices, modelsBySource, modelsNote, saysDefault, sourceOf, type ModelSource } from "../lib/models";
 import { ProviderLogo } from "./AgentLogos";
 import { effortGroup, EffortBars } from "./TrayControls";
@@ -27,7 +28,7 @@ export function ProviderGlyph({ source }: { source: ModelSource }) {
 
 /** A model's name as every picker shows it: an agent's own name for it where it gave one, its id in words otherwise. */
 export function modelDisplay(harness: HarnessId, list: ModelList | null, id: string): string {
-	const reported = harness === "windlass" ? null : (list?.models.find((model) => model.id === id)?.name ?? null);
+	const reported = usesAccountModels(harness) ? null : (list?.models.find((model) => model.id === id)?.name ?? null);
 	return cleanModelName(id, reported);
 }
 
@@ -98,7 +99,7 @@ export function modelGroups({ harness, list, chosen, onChoose, inherit, entry = 
 /** The whole menu, for a picker that has nothing of its own around the rows. */
 export function modelMenu(options: ModelGroupsOptions & { label?: string; header?: ReactNode; footer?: ReactNode }): MenuSpec {
 	const { list, harness } = options;
-	const standIn = harness === "windlass" && list !== null && list.source !== "account" ? <p className="ui-menu-note">{modelsNote(list)}</p> : null;
+	const standIn = usesAccountModels(harness) && list !== null && list.source !== "account" ? <p className="ui-menu-note">{modelsNote(list)}</p> : null;
 	return {
 		label: options.label ?? "Model",
 		width: 320,

@@ -7,6 +7,7 @@ import { machineLabel, type AccountDefaults, type HostedSizeOption, type Machine
 import { deploymentSize, machinePayers, resolveRun, type ResolvedRun, type RunRole, type RunSettings } from "../../../server/src/factory/resolve-run";
 import { HARNESS_NAMES } from "./acp";
 import { cleanModelName } from "./models";
+import { usesAccountModels } from "../../../server/src/sandbox/harnesses.js";
 
 export type RunSource = ResolvedRun["sources"]["place"];
 const ORDER: RunSource[] = ["deployment", "account", "repository", "item"];
@@ -45,9 +46,9 @@ export function placeName(place: ResolvedRun["place"], machines: readonly Machin
 
 /** The model's name; an unset one is the agent's own default. */
 export function runModelName(run: Pick<ResolvedRun, "agent" | "model">, list: ModelList | null): string {
-	const id = run.model ?? (run.agent === "windlass" ? list?.defaultModel : null);
+	const id = run.model ?? (usesAccountModels(run.agent) ? list?.defaultModel : null);
 	if (!id) return "its default model";
-	return cleanModelName(id, run.agent === "windlass" ? null : (list?.models.find((m) => m.id === id)?.name ?? null));
+	return cleanModelName(id, usesAccountModels(run.agent) ? null : (list?.models.find((m) => m.id === id)?.name ?? null));
 }
 
 /** "mac · Codex · Astra · high". */

@@ -20,16 +20,18 @@ import type { AllowHostContext } from "../components/BlockedNetwork";
 import { reviewShots } from "../components/SecondReview";
 import { SecretAsk, withoutValue } from "../components/SecretAsk";
 import { ItemChecks } from "./ItemChecks";
-import { absoluteTime, clockTime, compact, plural, relativeTime, sandboxTime } from "../lib/format";
+import { absoluteTime, clockTime, compact, ordinal, plural, relativeTime, sandboxTime } from "../lib/format";
 import { linkProps } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
 import { useNow, useSessions } from "../state/hooks";
-import { ItemGlyph, ItemRow, ItemStages, PartStages, STATE_WORD } from "./Items";
+import { ItemGlyph, ItemRow, ItemStages, PartStages } from "../components/ItemRow";
+import { STATE_WORD } from "../lib/items";
 import { useSessionMachine } from "./Session";
 import { machineLabel } from "../lib/machines";
 import { AgentGlyph } from "../components/ui/Pill";
+import { Failure } from "../components/ui/Failure";
 import { childrenBehind, partName, REPAIR_WHY, repairKind } from "../lib/subtasks";
-import { partOf, showsSubtasks, SubtasksBlock, SubtaskStrip } from "./Subtasks";
+import { partOf, showsSubtasks, SubtasksBlock, SubtaskStrip } from "../components/Subtasks";
 
 const STEP_WORD: Record<StepKind, string> = {
 	subtasks: "Subtasks", integration: "Testing the repositories together", summary: "Feature summary",
@@ -61,9 +63,6 @@ const STEP_DOING: Partial<Record<StepKind, string>> = {
 
 /** Steps that are a turn of the agent, or a push: a second attempt of one is worth saying. Waits on GitHub count every poll as an attempt, which is not. */
 const TRIED: ReadonlySet<StepKind> = new Set(["refine", "implement", "ci_fix", "conflict", "publish", "review", "review_fix"]);
-
-const ORDINAL = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
-const ordinal = (n: number) => ORDINAL[n - 1] ?? `${n}th`;
 
 function When({ at, now }: { at: number; now: number }) {
 	return (
@@ -173,16 +172,6 @@ function useActing(id: string, onDone: (view: ItemView) => void, onRefresh?: (ki
 		}
 	};
 	return { busy, error, failed, act };
-}
-
-function Failure({ error }: { error: string | null }) {
-	if (!error) return null;
-	return (
-		<p className="callout callout-bad" role="alert">
-			<WarnIcon />
-			<span>{error}</span>
-		</p>
-	);
 }
 
 function CancelDialog({ view, acting, onClose }: { view: ItemView; acting: Acting; onClose(): void }) {

@@ -13,7 +13,7 @@ import { loadAuth, saveAuth } from "../lib/authStore";
 import { AppProvider } from "../state/app";
 import { Item, useItem } from "./Item";
 import { RepositoryPane, useRepository } from "./Repository";
-import { useItems } from "./Items";
+import { useItems } from "../state/items";
 import { NO_FILTERS } from "../lib/workspace";
 import type { RepositoryPaneView } from "../lib/router";
 import { Workspace } from "./Workspace";

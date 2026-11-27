@@ -4,10 +4,11 @@ import { modelWords } from "../lib/models";
 import { HOSTED_SIZE_NAMES, MAX_NOTE_CHARS, type FeaturePlan, type HarnessId, type ItemBudget, type SubtaskBudget, type ItemQuestion, type ItemSummary, type ItemView, type MachineSummary, type ModelList, type PlanSubtask, type SubtaskAgent, type Waiting } from "@contract";
 import { useId, useState, type CSSProperties, type ReactNode } from "react";
 import { singleAfterPlanning, subtaskHarness } from "../../../server/src/factory/feature-plan.js";
+import { usesAccountModels } from "../../../server/src/sandbox/harnesses.js";
 import { ArrowDownIcon, ChevronIcon, InfoIcon, WarnIcon } from "../components/Icons";
 import { ItemSpend } from "../components/ItemSpend";
 import { FOLD_WORDS, FoldList, FoldToggle, LongText, PathList } from "../components/Fold";
-import { showsSubtasks } from "./Subtasks";
+import { showsSubtasks } from "../components/Subtasks";
 import { Menu, type MenuItem, type MenuSpec } from "../components/ui/Menu";
 import { AgentGlyph, Pill } from "../components/ui/Pill";
 import { machineLabel } from "../lib/machines";
@@ -25,7 +26,8 @@ import { agentChanged, agentChoices, agentParts, cleanAgent, machineModels, pref
 import { subtaskFloor, sumBudgets } from "../lib/feature";
 import type { PlanActing, PlanReview } from "./usePlanReview";
 import { linkProps } from "../lib/router";
-import { ItemGlyph, ItemTrack, itemTrack, STATE_WORD } from "./Items";
+import { ItemGlyph, ItemTrack, itemTrack } from "../components/ItemRow";
+import { STATE_WORD } from "../lib/items";
 import { Check } from "../components/ui/Check";
 import { Tooltip } from "../components/ui/Tooltip";
 import { useDefaults } from "../components/StartComposer";
@@ -390,7 +392,7 @@ function PlanBody({ view, review, acting, pool }: { view: ItemView; review: Plan
 			editable: (editing && !done.has(task.key)) || later,
 			machine,
 			hostedKeys: review.hostedKeys, keyProfile: review.keyProfile,
-			list: harness === "windlass" ? review.accountModels : harnessOptions(machine, harness, machine ? review.catalogs[machine.machineId]?.[harness] : undefined, review.hostedKeys).models,
+			list: usesAccountModels(harness) ? review.accountModels : harnessOptions(machine, harness, machine ? review.catalogs[machine.machineId]?.[harness] : undefined, review.hostedKeys).models,
 			onAgent: (agent) => (later ? void acting.act({ kind: "set_subtask_agent", key: task.key, agent }) : review.setAgent(task.key, agent)),
 		};
 	};
@@ -836,7 +838,7 @@ function agentMenu(row: AgentRow, title: string): MenuSpec {
 		groups: [
 			{
 				id: "default",
-				items: [{ id: "default", label: "The default", description: inherited ? `${HARNESS_NAMES[inherited.agent]} · ${runModelName(inherited, inherited.agent === "windlass" ? row.list : null)}, ${SOURCE_WORDS[sourceOf(inherited, ["agent", "model"])]}.` : "What the feature runs with.", wrap: true, checked: current === null, onSelect: () => row.onAgent(null) }],
+				items: [{ id: "default", label: "The default", description: inherited ? `${HARNESS_NAMES[inherited.agent]} · ${runModelName(inherited, usesAccountModels(inherited.agent) ? row.list : null)}, ${SOURCE_WORDS[sourceOf(inherited, ["agent", "model"])]}.` : "What the feature runs with.", wrap: true, checked: current === null, onSelect: () => row.onAgent(null) }],
 			},
 			{
 				id: "agents",
@@ -862,10 +864,10 @@ function modelMenu(row: AgentRow, harness: HarnessId): MenuSpec {
 		harness,
 		list: row.list,
 		chosen: row.draft?.model ?? "",
-		inherit: { label: harness === "windlass" ? "The feature's model" : "Its default model" },
+		inherit: { label: usesAccountModels(harness) ? "The feature's model" : "Its default model" },
 		entry,
 		machine: row.machine ? machineLabel(row.machine) : null,
-		onChoose: (model) => (model ? row.onAgent({ harness, model }) : row.onAgent(harness === "windlass" ? (row.draft?.effort ? { harness, effort: row.draft.effort } : null) : { harness })),
+		onChoose: (model) => (model ? row.onAgent({ harness, model }) : row.onAgent(usesAccountModels(harness) ? (row.draft?.effort ? { harness, effort: row.draft.effort } : null) : { harness })),
 	});
 }
 
@@ -902,7 +904,7 @@ function SubtaskAgentFact({ title, child, row, editing, disabled }: { title: str
 	const list = row.list;
 	const model = shown?.model ?? list?.defaultModel ?? "";
 	const own = effortsOf(list, model);
-	const efforts = own.length > 0 || harness === "windlass" ? own : [...new Set((list?.models ?? []).flatMap((one) => one.efforts))];
+	const efforts = own.length > 0 || usesAccountModels(harness) ? own : [...new Set((list?.models ?? []).flatMap((one) => one.efforts))];
 	return (
 		<div className="plan-agent">
 			<dt>agent</dt>
@@ -1006,7 +1008,7 @@ function PlanRoutes({ view, plan, machines, catalogs, accountModels, refusal }: 
 					const problem = refusalFor(task, refusal) ?? task.placementProblem;
 					const wait = !problem && task.placementWait;
 					const harness = subtaskHarness(task);
-					const agent = agentParts(task.resolved ? runAgent(task.resolved) : task.agent, harness === "windlass" ? accountModels : machineModels(preferredMachine(task, parent, machines), harness, catalogs));
+					const agent = agentParts(task.resolved ? runAgent(task.resolved) : task.agent, usesAccountModels(harness) ? accountModels : machineModels(preferredMachine(task, parent, machines), harness, catalogs));
 					return (
 						<li key={task.key} className="plan-route">
 							<span className="plan-route-n" aria-hidden="true">

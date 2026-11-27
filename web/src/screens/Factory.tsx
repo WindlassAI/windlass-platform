@@ -34,7 +34,10 @@ import { useFactoryLimits, useNow, useSessions } from "../state/hooks";
 import { BOARD_QUERY } from "../lib/board";
 import { FactoryBoard } from "./FactoryBoard";
 import { useSavedRepositories } from "./Home";
-import { asking, EndedFoot, endedWords, ItemRow, questionLine, useEndedPages, type ItemsState } from "./Items";
+import { EndedFoot, endedWords, useEndedPages } from "./Items";
+import { asking, questionLine } from "../lib/items";
+import { ItemRow } from "../components/ItemRow";
+import { type ItemsState } from "../state/items";
 
 /** How an item was filed, in the filter's words. */
 export const SOURCE_WORD: Record<ItemSource, string> = { web: "web", api: "API", github: "GitHub issue", linear: "Linear issue" };

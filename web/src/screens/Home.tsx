@@ -29,7 +29,7 @@ import { ownAgents, workingCounts, workingWords } from "../lib/repositories";
 import { linkProps } from "../lib/router";
 import { filterCount, type Filters } from "../lib/workspace";
 import { useApp, useAuth } from "../state/app";
-import { asking } from "./Items";
+import { asking } from "../lib/items";
 import { allowanceState, useChatgpt, useFactoryLimits, useNow, type SessionsState } from "../state/hooks";
 
 /** The repositories something is saved for: asked when the screen opens and when a session is added or deleted. Empty until they arrive, or where they could not be read. */

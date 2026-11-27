@@ -58,6 +58,7 @@ import { FACTORY_DEFAULTS } from "../../../server/src/factory/budget";
 import { finishedItem } from "../../../server/src/factory/readiness-track";
 import { type CleanPage, ItemPageProblem, cleanItemPage, itemFeed, itemPage } from "../../../server/src/item-pages";
 import { PlatformError, type UserApi, type UserFeed } from "./client";
+import { HOUR, MINUTE } from "./mock-time";
 
 /**
  * How the user's work items stand when the page loads (`?items=`): "all" (the default: every state,
@@ -110,10 +111,6 @@ export interface MockItemsDeps {
 
 /** The deployment's limits (server/src/factory/budget.ts, `FACTORY_DEFAULTS`), its owner having raised the hosted sandboxes at once to 6: the seeded agents at work leave room for more. */
 export const MOCK_FACTORY_LIMITS: FactoryLimits = { ...structuredClone(FACTORY_DEFAULTS), hostedRunning: 6 };
-
-
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
 
 const repository = (id: number, owner: string, name: string, isPrivate: boolean): SessionRepository => ({ provider: "github", id, owner, name, branch: "main", private: isPrivate, url: `https://github.com/${owner}/${name}` });
 /** Repositories of the mock's GitHub connection (mock.ts). Each item has an agent session of its own, made with the seeded items (`seededSession`). */

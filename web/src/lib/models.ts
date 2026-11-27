@@ -1,5 +1,5 @@
 import { MODEL_PROVIDERS, isModelProvider, type HarnessId, type MachineSummary, type ModelChoice, type ModelList, type ModelProvider, type SessionMode } from "@contract";
-import { hostedCatalog, windlassProvider, type CheckedProvider } from "../../../server/src/sandbox/harnesses.js";
+import { hostedCatalog, keyProviders, usesAccountModels, windlassProvider, type CheckedProvider } from "../../../server/src/sandbox/harnesses.js";
 import type { ReportedHarness } from "./acp";
 import { localTime } from "./format";
 
@@ -42,7 +42,7 @@ export interface ReportedOptions {
  * Without a catalog the agent starts on its own default.
  */
 export function harnessOptions(machine: MachineSummary | null, harness: HarnessId, catalog?: ReportedOptions, providers?: readonly CheckedProvider[] | null): { models: ModelList | null; modes: SessionMode[] | null } {
-	if (harness === "windlass") return { models: null, modes: null };
+	if (usesAccountModels(harness)) return { models: null, modes: null };
 	const entry = machine?.harnesses?.find(entry => entry.id === harness);
 	const reported = machine ? catalog ?? entry?.options : hostedCatalog(harness, providers ?? []);
 	const modes = reported?.modes && reported.modes.length > 0 ? reported.modes : null;
@@ -74,9 +74,10 @@ export const SOURCE_NAMES: Record<ModelSource, string> = { chatgpt: "ChatGPT", o
 
 /** Who serves a model an agent offers; null for an agent's own unnamed default. */
 export function sourceOf(harness: HarnessId, id: string): ModelSource | null {
-	if (harness === "windlass") return windlassProvider(id) ?? "chatgpt";
-	if (harness === "claude") return "anthropic";
-	if (harness === "codex") return "openai";
+	if (usesAccountModels(harness)) return windlassProvider(id) ?? "chatgpt";
+	// An agent on one provider's key: every model is that provider's.
+	const providers = keyProviders(harness);
+	if (providers.length === 1) return providers[0]!;
 	if (id === "default") return null;
 	const [provider] = id.split("/", 1);
 	return provider === "opencode" || isModelProvider(provider) ? provider : "other";

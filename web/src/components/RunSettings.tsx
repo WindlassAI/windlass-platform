@@ -6,22 +6,21 @@
 import type { AccountDefaultsPatch, HarnessId, MachineSummary, ModelList, RepositoryDefaults, SandboxProfileId } from "@contract";
 import { useId, useState, type ReactNode } from "react";
 import { profilesForItems } from "../../../server/src/factory/default-place";
-import { hostedAgentProblem, itemProfiles } from "../../../server/src/sandbox/harnesses.js";
+import { hostedAgentProblem, itemProfiles, usesAccountModels } from "../../../server/src/sandbox/harnesses.js";
 import type { ResolvedRun, RunSettings } from "../../../server/src/factory/resolve-run";
-import { HARNESS_NAMES } from "../lib/acp";
+import { HARNESS_DISPLAY_ORDER, HARNESS_NAMES } from "../lib/acp";
 import { machineLabel, machineProfileName } from "../lib/machines";
 import { effortsOf, harnessOptions } from "../lib/models";
 import { SOURCE_WORDS, payerWords, placeName, runModelName, runOf, runWords, sourceOf, type RunSource } from "../lib/run";
 import { sizeLabel, sizeName } from "../lib/sizes";
 import { linkProps } from "../lib/router";
-import { useMachines } from "../screens/Machines";
+import { useMachines } from "../state/machines";
 import { useApp, useAuth } from "../state/app";
 import { useCatalogs, useHostedProviders, useModels, type AccountState } from "../state/hooks";
 import { CloudIcon, MachineIcon } from "./Icons";
 import { EffortSelect, ModelSelect } from "./ModelPicker";
 import { AgentGlyph } from "./ui/Pill";
 
-const AGENTS: HarnessId[] = ["windlass", "claude", "codex", "opencode"];
 
 type Said = { tone: "good" | "bad"; text: string } | null;
 
@@ -62,7 +61,7 @@ function useRunInputs() {
 	const keyProfile = !!info?.profiles.some((p) => p.available && p.platformKeys);
 	const sizes = info?.hostedSizes ?? [];
 	const modelsOf = (run: Pick<ResolvedRun, "agent" | "place">): ModelList | null => {
-		if (run.agent === "windlass") return models.list;
+		if (usesAccountModels(run.agent)) return models.list;
 		const place = run.place;
 		const at = typeof place === "object" ? list?.find((m) => m.machineId === place.machine) : null;
 		const host = run.place === "hosted" ? null : at ?? list?.find((m) => harnessOptions(m, run.agent, catalogs[m.machineId]?.[run.agent]).models) ?? null;
@@ -172,7 +171,7 @@ function AgentFields({ run, inputs, disabled, onChange, review }: { run: Resolve
 				{!review ? <div className="field">
 					<label className="label" htmlFor={id}>Agent</label>
 					<select id={id} className="select" value={run.agent} disabled={disabled} onChange={(e) => onChange({ harness: e.target.value as HarnessId })}>
-						{AGENTS.map((agent) => {
+						{HARNESS_DISPLAY_ORDER.map((agent) => {
 							const profiles = run.place !== "hosted" && agent !== "windlass" ? itemProfiles(agent) : [];
 							return <option key={agent} value={agent}>{HARNESS_NAMES[agent]}{profiles.length === 1 ? ` (requires ${machineProfileName(profiles[0]!)})` : ""}</option>;
 						})}

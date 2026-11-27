@@ -143,6 +143,7 @@ import { cleanServerName, cleanServerDefinition, definitionReads, ServerProblem 
 import { sandboxTime } from "../lib/format";
 import { dayOf, reportedModelUsage, usesPlatformModel } from "../../../server/src/usage";
 import { createMockItems, MOCK_FACTORY_LIMITS, type MockItemsState } from "./mock-items";
+import { HOUR, MINUTE } from "./mock-time";
 
 /** The mock GitHub picture: drawn here, so nothing leaves the page. */
 const MOCK_AVATAR = "data:image/svg+xml," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect width="40" height="40" fill="#2f6f5e"/><circle cx="20" cy="16" r="7" fill="#f3d9b1"/><path d="M6 40c2-9 8-13 14-13s12 4 14 13z" fill="#f3d9b1"/><path d="M12 15c0-7 5-10 8-10s9 2 9 10c-2-3-6-5-9-5s-6 2-8 5z" fill="#3b2a20"/></svg>');
@@ -473,8 +474,6 @@ const REDIRECT_PREFIX = "http://127.0.0.1:1455/auth/callback";
 export const ITEM_SESSION_PROMPT = "This agent works for a work item, whose steps send its prompts. Answer the item, or send its work back with a note.";
 
 const SERVER_FILE = "/workspace/.windlass/config.json";
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
 
 /** What an approval is remembered for, as server/src/server-approvals.ts names it: the session's repository, or the session itself. */
 export interface MockProject {

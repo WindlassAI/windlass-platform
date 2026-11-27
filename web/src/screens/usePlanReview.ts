@@ -5,7 +5,7 @@ import { placeChanged, placeDraftOf, withPlace, type PlaceDraft } from "../lib/p
 import { agentChanged, cleanAgent, withAgent } from "../lib/subtask-agents";
 import { useApp } from "../state/app";
 import { useCatalogs, useHostedProviders, useModels } from "../state/hooks";
-import { useMachines } from "./Machines";
+import { useMachines } from "../state/machines";
 
 export interface PlanActing {
 	busy: string | null;

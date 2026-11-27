@@ -10,7 +10,8 @@ import { navigate, pageFrom, rememberAppPage, usePageLabel, useRoute, type Route
 import { useTheme } from "./lib/theme";
 import { Factory } from "./screens/Factory";
 import { Item, useItem } from "./screens/Item";
-import { asking, useItems, type ItemsState } from "./screens/Items";
+import { asking } from "./lib/items";
+import { useItems, type ItemsState } from "./state/items";
 import { Machines } from "./screens/Machines";
 import { NewAgent } from "./screens/NewAgent";
 import { Session, SessionCrumb, useSessionMachine } from "./screens/Session";
