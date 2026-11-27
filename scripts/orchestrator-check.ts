@@ -2819,7 +2819,10 @@ test("5c.2 unknown resets back off per login, and only a successful real probe c
 		transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db),
 	} as Db;
 	await machineTables(db);
-	raw.exec("CREATE TABLE model_plan(provider TEXT, generation TEXT); INSERT INTO model_plan VALUES('openai','1')");
+	for (const table of (await import("../server/src/credentials/plans.js")).MODEL_PLAN_TABLES) raw.exec(table);
+	raw.exec(
+		"INSERT INTO model_plan (provider, sealed, generation, added_at, check_ok) VALUES ('openai', 'x', '1', 0, 1)",
+	);
 	assert.ok(
 		raw.prepare("SELECT 1 FROM sqlite_master WHERE name='provider_usage'").get(),
 		"the user has no account cooldown ledger",
@@ -2859,7 +2862,10 @@ test("legacy Windlass rows retain the longest cooldown for the latest sign-in on
 		typeof machineTables
 	>[0];
 	raw.exec(PROVIDER_TABLE);
-	raw.exec("CREATE TABLE model_plan(provider TEXT, generation TEXT); INSERT INTO model_plan VALUES('openai','2')");
+	for (const table of (await import("../server/src/credentials/plans.js")).MODEL_PLAN_TABLES) raw.exec(table);
+	raw.exec(
+		"INSERT INTO model_plan (provider, sealed, generation, added_at, check_ok) VALUES ('openai', 'x', '2', 0, 1)",
+	);
 	for (const [place, generation, until] of [
 		[macId, "1", 900],
 		["hosted", "2", 200],
@@ -2895,6 +2901,7 @@ test("5c.7 new machine login ignores a stale refusal; page and stored reading co
 		transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db),
 	} as Db;
 	await machineTables(db);
+	for (const table of (await import("../server/src/credentials/plans.js")).MODEL_PLAN_TABLES) raw.exec(table);
 	const generation = "a".repeat(32),
 		next = "b".repeat(32),
 		at = Date.now();

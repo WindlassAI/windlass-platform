@@ -39,6 +39,8 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 			calls.push("keys");
 			return keys;
 		},
+		// Pay with is decided by the user actor; with no stored choice it leaves the resolver to plan-first.
+		internalTurnPayer: async () => null,
 		internalHostedCredentials: async () => {
 			calls.push("keys");
 			return [...keys, ...plans];
