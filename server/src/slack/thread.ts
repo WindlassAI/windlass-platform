@@ -1,9 +1,9 @@
 import type { RawAccess } from "rivetkit/db";
 import { config } from "../config.js";
 import type { ItemQuestion, ItemView } from "../contract.js";
-import { currentKey } from "../factory/blueprint.js";
 import type { SlackBinding } from "../factory/intake.js";
-import type { FactoryItem } from "../factory/types.js";
+import { sourceCaps } from "../sources/registry.js";
+import { resolution, type Resolution } from "../sources/updates.js";
 import { escapeText, planPost, questionPost, resolvedMessage, type SlackMessage, type SlackPost } from "./blocks.js";
 
 const messages = {
@@ -18,50 +18,20 @@ const messages = {
 type Event = keyof typeof messages | "resolved";
 export type SlackEffect = { kind: "slack_write"; key: string; event: Event; question?: string; line?: string };
 
-/** How a question closed, as mrkdwn. A Slack press passes the presser's Slack user id, which the signature covers. */
-export function resolvedLine(question: ItemQuestion, fact: { kind: string }, slackUser?: string): string {
-	const f = fact as { kind: string; by?: unknown; choice?: unknown; question?: unknown };
-	const approved = f.kind === "approve_plan" || (f.kind === "answer" && f.choice === "approve");
-	const choice =
-		f.kind === "answer" && f.question === question.id
-			? question.choices.find(c => c.id === f.choice)?.label
-			: undefined;
-	const label = approved ? "Approve" : choice && escapeText(choice);
-	if (!label || typeof f.by !== "string" || !f.by.startsWith("person:")) return "This question is no longer open.";
-	if (slackUser)
-		return approved ? `Approved by <@${slackUser}> in Slack` : `Answered by <@${slackUser}> in Slack: ${label}`;
-	return approved ? "Approved on the web" : `Answered on the web: ${label}`;
+/** How a question closed, as mrkdwn. */
+export function resolvedText(how: Resolution): string {
+	if (how === "closed") return "This question is no longer open.";
+	const label = how.approved ? "Approve" : escapeText(how.choice ?? "");
+	if (how.by !== "web") {
+		const by = `<@${how.by.person}> in ${sourceCaps(how.by.source).displayName}`;
+		return how.approved ? `Approved by ${by}` : `Answered by ${by}: ${label}`;
+	}
+	return how.approved ? "Approved on the web" : `Answered on the web: ${label}`;
 }
 
-export function slackEffects(
-	before: FactoryItem | null,
-	next: FactoryItem,
-	fact?: { kind: string },
-	slackUser?: string,
-): SlackEffect[] {
-	const effects: SlackEffect[] = [];
-	function add(event: Event, identity = "", extra: Partial<SlackEffect> = {}) {
-		effects.push({ kind: "slack_write", event, key: [next.id, event, identity].join(":"), ...extra });
-	}
-	if (!before) add("started");
-	const closed = before?.question;
-	if (closed && closed.id !== next.question?.id)
-		add("resolved", closed.id, {
-			question: closed.id,
-			line: fact ? resolvedLine(closed, fact, slackUser) : "This question is no longer open.",
-		});
-	if (next.question && next.question.id !== before?.question?.id) {
-		const plan =
-			next.featurePlan?.status === "proposed" &&
-			next.filedTurn === currentKey(next) &&
-			["plan_approval", "replan_approval"].includes(next.question.kind);
-		add(plan ? "plan" : "question", next.question.id, { question: next.question.id });
-	}
-	if (next.pr && next.pr.number !== before?.pr?.number) add("pr", String(next.pr.number));
-	if (before?.state !== next.state && (next.state === "failed" || next.state === "done" || next.state === "cancelled"))
-		add(next.state, String(next.revision));
-	return effects;
-}
+/** How `question` closed by `fact`, as mrkdwn. A Slack press passes the presser's Slack user id, which the signature covers. */
+export const resolvedLine = (question: ItemQuestion, fact: { kind: string }, slackUser?: string): string =>
+	resolvedText(resolution(question, fact, slackUser ? { source: "slack", person: slackUser } : undefined));
 
 // Separate from the versioned item snapshot: a concurrent blueprint commit cannot overwrite the root.
 export const SLACK_RECEIPTS =
