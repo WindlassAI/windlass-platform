@@ -10,7 +10,7 @@
 
 import type { HoldReport } from "../usage.js";
 import { UserError } from "rivetkit";
-import type { CreateSandboxInput } from "../sandbox/api.js";
+import type { CreateSandboxInput, SavedBackup } from "../sandbox/api.js";
 import type {
 	EnvironmentBuild,
 	GithubId,
@@ -95,6 +95,72 @@ export interface SessionCreateInput {
 	};
 	/** Set for a session that only builds the repository's prepared environment at its place (user-environments.ts). */
 	environmentBuild?: EnvironmentBuildOrigin;
+	/** A person's session: the effort its turns run at unless a prompt names another. */
+	effort?: string | null;
+	/** Set for a session made to continue another (`continueSession`). */
+	continuation?: Continuation;
+}
+
+/** What a continuing session's agent is told of the session it continues, once (workspace.ts, `platformNotes`). */
+export interface ContinuedFrom {
+	id: string;
+	title: string;
+	/** The earlier session's pull request, if it had one. */
+	pull: number | null;
+	/** The branch the new workspace starts from. */
+	base: string;
+	/** True when `base` is the earlier session's pushed branch. */
+	stacked: boolean;
+}
+
+/** An account of an earlier session for an agent without its memory (turn-resume.ts, `sessionHandoff`), and the sources of what it quotes. */
+export interface Handoff {
+	text: string;
+	untrusted: string[];
+}
+
+/** What a session made by `continueSession` starts with, beside the settings `makeSession` takes. */
+export interface Continuation {
+	from: ContinuedFrom;
+	/** The earlier agent session, copied to this session's name in the backup store: its first sandbox restores it. */
+	copy: { windlassSessionId: string; backup: SavedBackup } | null;
+	/**
+	 * On a machine: the earlier agent session's copy, for this session to copy to its own name on the machine
+	 * when its first sandbox is made. The runner takes a copy only over the new session's own connection.
+	 */
+	machineCopy?: MachineCopy | null;
+	handoff: Handoff | null;
+	tainted: boolean;
+	secretRequestBlocked: boolean;
+}
+
+/** The earlier session's copy on a machine, still to be copied to the continuing session's name (`Continuation.machineCopy`). */
+export interface MachineCopy {
+	from: string;
+	windlassSessionId: string;
+	backup: SavedBackup;
+}
+
+/** What the session being continued tells `user` (`internalForkSource`). */
+export interface ForkSource {
+	title: string;
+	harness?: HarnessId;
+	model: string;
+	effort: string | null;
+	mode: string;
+	place: SandboxPlace;
+	size?: number;
+	hostedSize?: HostedSize;
+	profile: SandboxProfileId;
+	repo: StoredRepository;
+	/** The branch the session pushed to, once it has pushed. */
+	pushedBranch: string | null;
+	pull: number | null;
+	tainted: boolean;
+	secretRequestBlocked: boolean;
+	/** The agent's session and its saved copy, when the copy is of that session and up to date. */
+	copy: { windlassSessionId: string; backup: SavedBackup } | null;
+	handoff: Handoff | null;
 }
 
 /** What a build session reports: its build, without what the user actor set when it started it. */
@@ -221,8 +287,11 @@ export interface UserInternal {
 	): Promise<import("../factory/placement.js").PlacementInventory & { hostedCapacity: number }>;
 
 	internalSessionChanged(summary: SessionSummary): Promise<void>;
-	/** Takes over removing a deleted session's copy from the bucket, which the session could not do itself. */
-	internalRemoveBackupLater(sessionId: string): Promise<void>;
+	/**
+	 * Takes over removing a deleted session's copy, which the session could not do itself: from the
+	 * bucket, or, with `machineId`, by recording it with that machine's actor (machine-backups.ts).
+	 */
+	internalRemoveBackupLater(sessionId: string, machineId?: string): Promise<void>;
 	/** Counts the session as running if the user's hosted sessions at work are below their ceiling (`FactoryLimits.runningTurns`); one on a machine of theirs always is. */
 	internalAcquireRun(
 		sessionId: string,
@@ -357,6 +426,8 @@ export interface SessionInternal {
 	internalAssessRepository(prompt: string, continuation?: NonNullable<SessionCreateInput["readiness"]>): Promise<void>;
 	internalDisconnectRevoked(generation: number): Promise<void>;
 	internalSummary(): Promise<SessionSummary>;
+	/** What a new session continuing this one starts from. Refused (`UserError`) while a turn runs, and for a session that cannot be continued. */
+	internalForkSource(): Promise<ForkSource>;
 	internalRename(title: string): Promise<SessionSummary>;
 	/** A build session's one turn: clone, setup, every saved check, and a saved image only when all passed. Answers once it is accepted. */
 	internalBuildEnvironment(): Promise<void>;

@@ -16,6 +16,7 @@ import { deploymentSize, resolveRun, type RunContext } from "../factory/resolve-
 import { checkRunPlace, changesPlace, changedPlace, hasRoom, placeProblem } from "../factory/default-place.js";
 import type {
 	AccountDefaultsPatch,
+	ContinueSessionInput,
 	CredentialSource,
 	ItemPlaceDefaults,
 	RepositoryDefaultsPatch,
@@ -75,6 +76,8 @@ import { randomBytes } from "node:crypto";
 import { actor, event, UserError, type ActorCron } from "rivetkit";
 import { db, type RawAccess } from "rivetkit/db";
 import { serviceParams } from "../auth.js";
+import { MACHINE_ID } from "../runner/control.js";
+import { machineActor } from "../sandbox/runner-layer.js";
 import {
 	assertOrigin,
 	disconnectRevoked,
@@ -317,7 +320,17 @@ import {
 	wakeEnvironments,
 	type EnvironmentHost,
 } from "./user-environments.js";
-import type { EnvironmentBuildOrigin, EnvironmentBuildReport, SessionCreateInput, ActorClient } from "./internal.js";
+import type {
+	Continuation,
+	ContinuedFrom,
+	EnvironmentBuildOrigin,
+	EnvironmentBuildReport,
+	ForkSource,
+	SessionCreateInput,
+	ActorClient,
+} from "./internal.js";
+import { continuedInput, copyAgentSession } from "./continue-session.js";
+import { errorText } from "../util.js";
 import { AccountCheckout, billingTables, readBilling } from "../billing/account.js";
 import { billing } from "../billing/config.js";
 import { hostedSizesForPlan, planAllowsSize } from "../billing/plans.js";
@@ -416,15 +429,22 @@ interface BackupRemovalCtx {
 }
 
 // Schedule the retry before recording it so wake can repair an interrupted write.
-async function armBackupRemoval(c: BackupRemovalCtx, session: string, tries: number): Promise<void> {
+// `machine`: the session was on that machine, whose actor records the removal (machine-backups.ts); null: the bucket's.
+async function armBackupRemoval(
+	c: BackupRemovalCtx,
+	session: string,
+	tries: number,
+	machine: string | null = null,
+): Promise<void> {
 	const at = Date.now() + BACKUP_REMOVE_FIRST_MS * 2 ** tries;
 	const id = await c.schedule.at(at, "internalRemoveBackup", session);
 	await c.db.execute(
-		"INSERT OR REPLACE INTO backup_removal (session, tries, due_at, schedule_id) VALUES (?, ?, ?, ?)",
+		"INSERT OR REPLACE INTO backup_removal (session, tries, due_at, schedule_id, machine) VALUES (?, ?, ?, ?, ?)",
 		session,
 		tries,
 		at,
 		id,
+		machine,
 	);
 }
 
@@ -1067,13 +1087,93 @@ async function sessionHostedSize(
 	return selected ?? deploymentSize(offered, item ? ITEM_HOSTED_SIZE : SESSION_HOSTED_SIZE);
 }
 
+/** What `continueSession` hands `makeSession` beside the settings: the new session's id, made first for the copy's key, and what it carries over. */
+interface ContinuedSession {
+	sessionId: string;
+	effort: string | null;
+	continuation: Omit<Continuation, "from"> & { from: Omit<ContinuedFrom, "base"> };
+}
+
+/** `continueSession`: a new session with the earlier one's settings and memory, on a new branch from `base`. */
+async function continueFrom(
+	c: CreateCtx,
+	profile: UserProfile,
+	input: ContinueSessionInput,
+	submission: Submission | null,
+): Promise<SessionSummary> {
+	const parent = c.vars.sessions.get(input.id);
+	if (!parent) throw new UserError("That agent does not exist.", { code: "session_not_found" });
+	if (parent.item || parent.readiness || parent.environmentBuild)
+		throw (
+			itemSessionRefusal(c, parent) ??
+			new UserError("Only your own agents can be continued in a new pull request.", { code: "item_session" })
+		);
+	if (!parent.repository)
+		throw new UserError(
+			"This agent has no repository from your GitHub connection, so there is no pull request to continue.",
+			{
+				code: "no_repository",
+			},
+		);
+	let source: ForkSource;
+	try {
+		// The actor is the caller's own: its key holds the caller's uid.
+		source = await sessionActor(c, profile.uid, parent.id).internalForkSource();
+	} catch (error) {
+		if (isSessionGone(error)) throw new UserError("That agent does not exist any more.", { code: "session_not_found" });
+		const { group, code, message } = (typeof error === "object" && error !== null ? error : {}) as {
+			group?: unknown;
+			code?: unknown;
+			message?: unknown;
+		};
+		if (group === "user" && typeof code === "string" && typeof message === "string")
+			throw new UserError(message, { code });
+		throw clientError(c.log, error, "The agent could not be continued. Try again.");
+	}
+	const stacked = input.stack === true;
+	if (stacked && !source.pushedBranch)
+		throw new UserError("This agent has not pushed a branch yet, so there is nothing to stack on.", {
+			code: "not_pushed",
+		});
+	const sessionId = `s_${randomBytes(8).toString("hex")}`;
+	const copy = await copyAgentSession(await getLayer(), profile.uid, parent.id, sessionId, source);
+	try {
+		return await makeSession(c, profile, continuedInput(source, stacked), submission, undefined, {
+			continued: {
+				sessionId,
+				effort: source.effort,
+				continuation: {
+					from: { id: parent.id, title: source.title, pull: source.pull, stacked },
+					copy,
+					// A machine's copy is made by the new session itself, over its own connection to the runner.
+					machineCopy: source.place.kind === "machine" && source.copy ? { from: parent.id, ...source.copy } : null,
+					// Kept beside a copy: should the copy not come back in the new sandbox, the agent still learns what came before.
+					handoff: source.handoff,
+					tainted: source.tainted,
+					secretRequestBlocked: source.secretRequestBlocked,
+				},
+			},
+		});
+	} catch (error) {
+		if (copy)
+			await (await getLayer()).backups
+				?.remove({ uid: profile.uid, sessionId })
+				.catch(removal => console.warn(`[wlp] backup.remove_failed session=${sessionId}: ${errorText(removal)}`));
+		throw error;
+	}
+}
+
 async function makeSession(
 	c: CreateCtx,
 	profile: UserProfile,
 	input: CreateSessionInput,
 	submission: Submission | null,
 	item?: ItemSessionInput,
-	{ build, readiness }: { build?: EnvironmentBuildOrigin; readiness?: SessionCreateInput["readiness"] } = {},
+	{
+		build,
+		readiness,
+		continued,
+	}: { build?: EnvironmentBuildOrigin; readiness?: SessionCreateInput["readiness"]; continued?: ContinuedSession } = {},
 ): Promise<SessionSummary> {
 	const place = launchPlace(input.place);
 	if (input.size !== undefined && ![1, 2, 4].includes(input.size))
@@ -1247,7 +1347,7 @@ async function makeSession(
 			...(item.planCritic && { planCritic: true as const }),
 		};
 		summary = {
-			id: readiness?.attempt ?? item?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
+			id: readiness?.attempt ?? item?.sessionId ?? continued?.sessionId ?? `s_${randomBytes(8).toString("hex")}`,
 			title,
 			place,
 			harness,
@@ -1282,6 +1382,10 @@ async function makeSession(
 			...(item ? { item: { id: item.itemId, ...itemRole, ...(itemSignIn && { signIn: itemSignIn }) } } : {}),
 			...(build && { environmentBuild: true as const }),
 			...(readiness && { readiness: true as const }),
+			...(continued && {
+				effort: continued.effort,
+				continuedFrom: { id: continued.continuation.from.id, title: continued.continuation.from.title },
+			}),
 		};
 		await createSessionActor(c, profile.uid, summary.id, {
 			...(item
@@ -1309,6 +1413,15 @@ async function makeSession(
 			...(build && { environmentBuild: build }),
 			...(readiness && { readiness }),
 			...(hostedSize && { hostedSize }),
+			// The clone and the pull request's base follow `repo.branch`: the default branch, or the stacked-on session's.
+			...(continued &&
+				repo && {
+					effort: continued.effort,
+					continuation: {
+						...continued.continuation,
+						from: { ...continued.continuation.from, base: repo.branch },
+					},
+				}),
 			title: summary.title,
 			titleIsTyped: !item && (givenTitle !== null || !!readiness || !!build),
 			place: summary.place,
@@ -1967,9 +2080,14 @@ export const user = actor({
 					session TEXT PRIMARY KEY,
 					tries INTEGER NOT NULL,
 					due_at INTEGER NOT NULL,
-					schedule_id TEXT NOT NULL
+					schedule_id TEXT NOT NULL,
+					machine TEXT
 				)
 			`);
+			// A machine session's copy is on its machine: the removal is recorded with that machine's actor.
+			const removalColumns = await db.execute<{ name: string }>("PRAGMA table_info(backup_removal)");
+			if (!removalColumns.some(found => found.name === "machine"))
+				await db.execute("ALTER TABLE backup_removal ADD COLUMN machine TEXT");
 			// A unique hold makes settlement idempotent.
 			await db.execute(`
 				CREATE TABLE IF NOT EXISTS usage_entry (
@@ -2065,11 +2183,11 @@ export const user = actor({
 		await notifyProviderWaits(c, c.vars.items.items.values());
 		// A try whose next schedule was set and not stored, because the server stopped in between, is set again.
 		try {
-			const late = await c.db.execute<{ session: string; tries: number }>(
-				"SELECT session, tries FROM backup_removal WHERE due_at < ?",
+			const late = await c.db.execute<{ session: string; tries: number; machine: string | null }>(
+				"SELECT session, tries, machine FROM backup_removal WHERE due_at < ?",
 				Date.now() - BACKUP_REMOVE_LATE_MS,
 			);
-			for (const { session, tries } of late) await armBackupRemoval(c, session, tries);
+			for (const { session, tries, machine } of late) await armBackupRemoval(c, session, tries, machine);
 		} catch (error) {
 			c.log.warn({ msg: "could not set the removal of deleted sessions' copies again", error: String(error) });
 		}
@@ -2336,6 +2454,27 @@ export const user = actor({
 				if (session) return session;
 				// Being decided, or new: every attempt that arrives until the session is made or refused ends as this one does.
 				attempt = c.vars.creating.run(submission, KEYED, () => makeSession(c, profile, input, submission));
+			} catch (error) {
+				if (error instanceof SubmissionProblem) throw new UserError(error.message, { code: error.code });
+				throw error;
+			}
+			return await attempt;
+		},
+
+		continueSession: async (c, input: ContinueSessionInput): Promise<SessionSummary> => {
+			const profile = requireUser(c);
+			if (typeof input !== "object" || input === null || typeof input.id !== "string")
+				throw new UserError("Choose the agent to continue.", { code: "bad_input" });
+			if (input.stack !== undefined && input.stack !== null && typeof input.stack !== "boolean")
+				throw new UserError("Say whether to start from the agent's branch.", { code: "bad_input" });
+			let attempt: Promise<SessionSummary>;
+			try {
+				const submission = submissionOf(input.idempotencyKey, { continue: input.id, stack: input.stack === true });
+				if (submission === null) return await continueFrom(c, profile, input, null);
+				const made = c.vars.created.get(submission.key);
+				const session = made && isRepeat(made, submission, KEYED) ? c.vars.sessions.get(made.id) : undefined;
+				if (session) return session;
+				attempt = c.vars.creating.run(submission, KEYED, () => continueFrom(c, profile, input, submission));
 			} catch (error) {
 				if (error instanceof SubmissionProblem) throw new UserError(error.message, { code: error.code });
 				throw error;
@@ -3822,20 +3961,25 @@ export const user = actor({
 		internalRemoveBackup: async (c, sessionId: string): Promise<void> => {
 			// RivetKit sets `scheduledFire` on the context of a call its schedule makes; a client cannot.
 			if (!c.scheduledFire) throw new UserError("This action is internal.", { code: "forbidden" });
-			const [row] = await c.db.execute<{ tries: number; schedule_id: string }>(
-				"SELECT tries, schedule_id FROM backup_removal WHERE session = ?",
+			const [row] = await c.db.execute<{ tries: number; schedule_id: string; machine: string | null }>(
+				"SELECT tries, schedule_id, machine FROM backup_removal WHERE session = ?",
 				sessionId,
 			);
 			if (!row || row.schedule_id !== c.scheduledFire.id) return;
 			const owner = { uid: c.key[0]!, sessionId };
 			const tries = row.tries + 1;
-			let object = `sessions/${owner.uid}/${sessionId}.tgz`;
+			let object = row.machine ? `machine ${row.machine}` : `sessions/${owner.uid}/${sessionId}.tgz`;
 			try {
-				const { backups } = await getLayer();
-				if (!backups) throw new Error("the server has no bucket configured");
-				object = backups.keyOf(owner);
-				// An object that is gone already counts as removed: the store answers a delete of it as done.
-				await backups.remove(owner);
+				if (row.machine) {
+					// Recorded with the machine's actor, which has its runner remove it when it is next connected.
+					await machineActor(() => c.client(), owner.uid, row.machine).removeBackup(sessionId);
+				} else {
+					const { backups } = await getLayer();
+					if (!backups) throw new Error("the server has no bucket configured");
+					object = backups.keyOf(owner);
+					// An object that is gone already counts as removed: the store answers a delete of it as done.
+					await backups.remove(owner);
+				}
 				await c.db.execute("DELETE FROM backup_removal WHERE session = ?", sessionId);
 				console.log(`[wlp] backup.removed session=${sessionId} tries=${tries}`);
 			} catch (error) {
@@ -3843,12 +3987,12 @@ export const user = actor({
 					console.warn(
 						`[wlp] backup.remove_retry uid=${owner.uid} session=${sessionId} try=${tries}: ${String(error)}`,
 					);
-					await armBackupRemoval(c, sessionId, tries);
+					await armBackupRemoval(c, sessionId, tries, row.machine);
 					return;
 				}
 				await c.db.execute("DELETE FROM backup_removal WHERE session = ?", sessionId);
 				console.error(
-					`[wlp] backup.remove_failed uid=${owner.uid} session=${sessionId} object=${object}: gave up after ${tries} tries; the copy of this deleted session's Windlass data may still be in the bucket (${String(error)})`,
+					`[wlp] backup.remove_failed uid=${owner.uid} session=${sessionId} object=${object}: gave up after ${tries} tries; the copy of this deleted session's agent data may still be ${row.machine ? "on its machine" : "in the bucket"} (${String(error)})`,
 				);
 			}
 		},
@@ -3860,16 +4004,18 @@ export const user = actor({
 			if (c.vars.sessions.get(summary.id)?.status === "idle") queueChanged(c);
 		},
 
-		internalRemoveBackupLater: async (c, sessionId: string): Promise<void> => {
+		internalRemoveBackupLater: async (c, sessionId: string, machineId?: string): Promise<void> => {
 			requireService(c);
 			if (typeof sessionId !== "string" || sessionId === "")
 				throw new UserError("A session id is needed.", { code: "bad_request" });
+			if (machineId !== undefined && (typeof machineId !== "string" || !MACHINE_ID.test(machineId)))
+				throw new UserError("That machine id is not one.", { code: "bad_request" });
 			const [pending] = await c.db.execute<{ session: string }>(
 				"SELECT session FROM backup_removal WHERE session = ?",
 				sessionId,
 			);
 			if (pending) return;
-			await armBackupRemoval(c, sessionId, 0);
+			await armBackupRemoval(c, sessionId, 0, machineId ?? null);
 			console.log(
 				`[wlp] backup.remove_deferred uid=${c.key[0]} session=${sessionId}: tried again in ${BACKUP_REMOVE_FIRST_MS / 1000} s`,
 			);

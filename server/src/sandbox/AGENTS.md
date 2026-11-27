@@ -64,8 +64,10 @@ Credentials, network and data
 - `./hosted-network.ts` holds the hosted allow-list rules (`MAX_HOSTS`, `isHostName`, presets).
 - `./hosted-settings.ts` reads the `WLP_HOSTED_` settings, falling back to the older `WLP_E2B_` names (`hostedName`).
 - `./backup.ts` copies an agent's session data to an object store for providers that can run a shell command; it knows no agent's paths.
+- `./backup-scripts.ts` holds what every copy is made and checked with: the pack and restore scripts, their one answer line, `backupStep` and the name checks. It imports no server configuration; the runner imports it.
+- `./machine-backups.ts` keeps a machine session's copies on that machine (`MachineSessionBackups`), through its runner over the session's socket, when the runner reports `session-backups`.
 - `./session-files.ts` describes, per agent whose record has `backups`, which files make up one session (`SessionFiles`, `sessionFilesOf`).
-- `./session-data.ts` decides whether a session's Windlass data lives and dies with its sandbox.
+- `./session-data.ts` decides whether a session's agent data lives and dies with its sandbox (only Windlass's can be on a Docker volume).
 - `./setup.ts` runs a repository's setup command beside Windlass, outside its command sandbox.
 - `./attach.ts` moves private screenshot copies and single objects out of a sandbox.
 - `./e2b/` is the E2B provider ([guide](./e2b/AGENTS.md)); `./daytona/` is Daytona (`./daytona/provider.ts`, `./daytona/guest.ts`, `./daytona/config.ts`), which reuses `HostedGuest` from `./e2b/sandboxes.ts`.

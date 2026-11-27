@@ -61,7 +61,10 @@ export interface HarnessCapabilities {
 	models: "account" | "harness";
 	/** Which credential sources can supply this harness. */
 	signIn: readonly ("chatgpt" | "machine" | "platform-key")[];
-	/** Whether its session is copied out of a sandbox that may be lost (`SandboxLayer.backups`). */
+	/**
+	 * Whether its session is copied out of a sandbox that may be lost (`SandboxLayer.backups`), as its
+	 * description of its session files says (session-files.ts). A machine's sandboxes have no copies.
+	 */
 	backups: boolean;
 	/**
 	 * Who holds a turn to a step limit (`RunTurnInput.maxSteps`): the engine itself (Windlass's model steps), the
@@ -242,7 +245,7 @@ export const CLAUDE: AcpProfile = {
 	items: true,
 	subtasks: true,
 	// Its adapter takes the platform's MCP server itself (platform-tools.ts).
-	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, modes: "launch" }),
+	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, modes: "launch", backups: true }),
 	keyProviders: ["anthropic"],
 	planProviders: ["anthropic"],
 	reportedCost: "turn",
@@ -263,7 +266,7 @@ export const OPENCODE: AcpProfile = {
 	items: true,
 	subtasks: true,
 	// Its image's wlp-acp-mcp serves it the platform's MCP server.
-	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
+	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, backups: true }),
 	keyProviders: MODEL_PROVIDERS,
 	planProviders: [],
 	// OpenCode 1.19.6 retries a 429 three times, logs this, and never answers the prompt (wlp-opencode-acp prints its errors).
@@ -290,7 +293,7 @@ export const CODEX: AcpProfile = {
 	// Its image's wlp-acp-mcp serves the platform's MCP server on the one URL its requirements.toml allows; an older
 	// image without it says so, and the turn runs without the tools (acp-harness.ts). Its collaboration plan mode is
 	// chosen per prompt. Its modes are the profile's (codex-modes.ts).
-	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, planMode: true, modes: "profile" }),
+	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, planMode: true, modes: "profile", backups: true }),
 	keyProviders: ["openai"],
 	planProviders: ["openai"],
 };

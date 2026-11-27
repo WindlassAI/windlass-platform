@@ -13,7 +13,8 @@ const initialize = {
 		mcpCapabilities: { http: true, sse: true, acp: true },
 		sessionCapabilities: { options: {}, resume: {}, close: {}, list: {}, fork: {}, additionalDirectories: {} },
 	},
-	_meta: { steering: { supported: true } },
+	// No title of its own comes after a turn, so the platform does not wait for one (acp-harness.ts `titleWaitMs`).
+	_meta: { steering: { supported: true }, "windlass-platform/noTitles": true },
 	authMethods: [{
 		id: "claude-login", name: "Log in with Claude", description: "Run `claude /login` in the terminal",
 		type: "terminal", args: ["--cli"],

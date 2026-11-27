@@ -52,7 +52,8 @@
         "scripts/e2b-network-standin.mjs",
         "server/src/billing/**",
         "scripts/dodo-fake.ts",
-        "scripts/{access,account,billing,cost,attachments,backup,connection,harness,models,model-providers,model-plans,plan-relay,stored-data,network,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing,git-config,untrusted,model-relay-route,start-times,install-script,runner-wizard,pay-with,usage-summary}-check.ts",
+        "scripts/{access,account,billing,attachments,backup,machine-backup,connection,continue-session,harness,models,model-providers,stored-data,network,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing,git-config,untrusted,session-title,model-relay-route,start-times,install-script,runner-wizard,cost,model-plans,plan-relay,pay-with,usage-summary}-check.ts",
+        "server/src/actors/continue-session.ts",
         "server/src/factory/untrusted.ts",
         "server/src/factory/cost.ts",
         "server/src/factory/usage-summary.ts",
@@ -67,6 +68,7 @@
         "server/src/snapshot-places.ts",
         "scripts/workflow-lint.ts",
         "scripts/runner-signin-check.ts",
+        "runner/src/session-backups.ts",
         "cli/**"
       ],
       "checks": {
@@ -74,7 +76,9 @@
         "account": "tsx ../scripts/account-check.ts",
         "attachments": "tsx ../scripts/attachments-check.ts",
         "backup": "tsx ../scripts/backup-check.ts",
+        "machine-backup": "tsx ../scripts/machine-backup-check.ts",
         "connection": "tsx ../scripts/connection-check.ts",
+        "continue-session": "tsx ../scripts/continue-session-check.ts",
         "harness": "tsx ../scripts/harness-check.ts",
         "models": "tsx ../scripts/models-check.ts",
         "model-providers": "tsx ../scripts/model-providers-check.ts",
@@ -95,6 +99,7 @@
         "environment": "tsx ../scripts/environment-check.ts",
         "git-config": "tsx ../scripts/git-config-check.ts",
         "untrusted": "tsx ../scripts/untrusted-check.ts",
+        "session-title": "tsx ../scripts/session-title-check.ts",
         "usage": "tsx ../scripts/usage-check.ts",
         "billing": "tsx ../scripts/billing-check.ts",
         "cost": "tsx --test ../scripts/cost-check.ts",
@@ -436,13 +441,15 @@
         "scripts/check-image.ts",
         "scripts/check-listeners.ts",
         "scripts/{claude-relay,opencode}-docker-check.mjs",
+        "scripts/machine-backup-check.ts",
+        "server/src/sandbox/{backup-scripts,machine-backups,session-files}.ts",
         "scripts/opencode-provider-registry.mjs"
       ],
       "shards": {
         "runner": { "only": ["runner"], "images": ["base"] },
         "outages": { "only": ["runner-outages"], "images": ["base"] },
         "suites": { "only": ["runner-profiles", "runner-harness", "runner-sizing", "runner-snapshots", "runner-screenshots", "opencode-docker"], "images": ["base", "shots", "opencode"], "history": true },
-        "harness": { "only": ["claude-relay-docker", "runner-egress-live", "runner-session-egress"], "images": ["base", "claude"] }
+        "harness": { "only": ["claude-relay-docker", "runner-egress-live", "runner-session-egress", "machine-backup-docker"], "images": ["base", "claude"] }
       },
       "checks": {
         "runner": "tsx ../scripts/runner-check.ts --service-only",
@@ -455,7 +462,8 @@
         "claude-relay-docker": "tsx ../scripts/claude-relay-docker-check.mjs \"$WLP_CI_CLAUDE_IMAGE\"",
         "opencode-docker": "tsx ../scripts/opencode-docker-check.mjs \"$WLP_CI_OPENCODE_IMAGE\"",
         "runner-egress-live": "tsx ../scripts/runner-egress-live.ts \"$WLP_CI_BASE_IMAGE\" \"$WLP_CI_CLAUDE_IMAGE\"",
-        "runner-session-egress": "tsx ../scripts/runner-e2e.ts egress \"$WLP_CI_BASE_IMAGE\" \"$WLP_CI_CLAUDE_IMAGE\""
+        "runner-session-egress": "tsx ../scripts/runner-e2e.ts egress \"$WLP_CI_BASE_IMAGE\" \"$WLP_CI_CLAUDE_IMAGE\"",
+        "machine-backup-docker": "tsx ../scripts/machine-backup-check.ts --docker=claude \"$WLP_CI_CLAUDE_IMAGE\""
       }
     },
     "codex-docker": {

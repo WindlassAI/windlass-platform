@@ -90,6 +90,7 @@ import {
 	type AccountSettings,
 	type AuthResult,
 	type ChatgptStatus,
+	type ContinueSessionInput,
 	type CreateSessionInput,
 	type GithubId,
 	type GithubAccount,
@@ -5683,6 +5684,65 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				}
 				setSummary(world(), session, {});
 				if (key !== null) world().created.set(key, { content: JSON.stringify(input), answer: session.summary.id });
+				return session.summary;
+			},
+			async continueSession({ id, stack, idempotencyKey }: ContinueSessionInput) {
+				await latency(260);
+				const key = keyOf(idempotencyKey);
+				const content = JSON.stringify({ continue: id, stack: stack === true });
+				const made = world().sessions.get(takenUnder(world().created, key, content, "agent") ?? "");
+				if (made) return made.summary;
+				const parent = world().sessions.get(id);
+				if (!parent)
+					throw new PlatformError("not_found", "That agent no longer exists.", { reason: "session_not_found" });
+				const was = parent.summary;
+				if (was.item || was.readiness || was.environmentBuild)
+					throw new PlatformError("user", "Only your own agents can be continued in a new pull request.", {
+						reason: "item_session",
+					});
+				if (!was.repository)
+					throw new PlatformError(
+						"user",
+						"This agent has no repository from your GitHub connection, so there is no pull request to continue.",
+						{ reason: "no_repository" },
+					);
+				if (parent.run || was.status !== "idle")
+					throw new PlatformError(
+						"user",
+						"The agent is working. Continue it in a new pull request once its turn has ended.",
+						{
+							reason: "turn_running",
+						},
+					);
+				if (stack && !parent.pushed)
+					throw new PlatformError("user", "This agent has not pushed a branch yet, so there is nothing to stack on.", {
+						reason: "not_pushed",
+					});
+				const found = GITHUB_REPOSITORIES.find(candidate => candidate.id === was.repository?.id);
+				const base = stack
+					? (was.pullRequest?.branch ?? branchFor(parent))
+					: (found?.defaultBranch ?? was.repository.branch);
+				const session = addSession(world(), {
+					id: hex(10),
+					title: "New agent",
+					titled: false,
+					profile: was.profile,
+					harness: was.harness,
+					modes: { mode: was.mode, availableModes: was.availableModes },
+					model: was.model,
+					repoUrl: was.repoUrl,
+					repository: { ...was.repository, branch: base },
+				});
+				session.summary = {
+					...session.summary,
+					place: was.place,
+					effort: was.effort ?? null,
+					...(was.hostedSize && { hostedSize: was.hostedSize }),
+					...(was.harnessModels !== undefined && { harnessModels: was.harnessModels }),
+					continuedFrom: { id: was.id, title: was.title },
+				};
+				setSummary(world(), session, {});
+				if (key !== null) world().created.set(key, { content, answer: session.summary.id });
 				return session.summary;
 			},
 			async renameSession(id: string, title: string) {

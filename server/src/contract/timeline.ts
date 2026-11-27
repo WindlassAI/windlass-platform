@@ -113,7 +113,12 @@ export function generatedSessionTitle(
 		.trim();
 	// Removing controls can join fragments of a secret. Redact the whole line before cutting it.
 	const safe = redactor?.text(line) ?? line;
-	return safe.match(/^.{1,200}/u)?.[0].trimEnd();
+	const chars = [...safe];
+	if (chars.length <= MAX_TITLE_CHARS) return safe || undefined;
+	// Too long for a title: cut at the last word that fits, as the start composer does (`titleOf`).
+	const cut = chars.slice(0, MAX_TITLE_CHARS - 1).join("");
+	const space = cut.lastIndexOf(" ");
+	return `${(space > MAX_TITLE_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
 }
 
 /** Session sequence numbers are dense and independent of Windlass event sequence numbers. */

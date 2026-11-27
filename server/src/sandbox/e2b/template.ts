@@ -18,6 +18,11 @@
  *   the size E2B sets CPUs and memory when the template is built, not when a sandbox is made
  *            (https://docs.e2b.dev/template/build.md): `cpuCount`, `memoryMB` below.
  *
+ * E2B's builder also provisions a base system of its own before these steps (systemd, an OpenSSH server that lets
+ * root in, rpcbind, and the accounts `root` and `user` with empty passwords), so one last step, as root, takes that
+ * away again (guest-hardening.ts). The provider runs the same script at every create and resume as well, for
+ * templates built before it and as a second line.
+ *
  * E2B's microVMs are x86_64, so the context must hold the x86_64 Windlass (sandbox/e2b/build.sh sees to
  * it). Nothing here talks to E2B but `buildSandboxTemplate`.
  */
@@ -26,6 +31,13 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Template, type TemplateClass, defaultBuildLogger } from "e2b";
 import { DEFAULT_CPU_COUNT, DEFAULT_MEMORY_MB, DEFAULT_TEMPLATE } from "./config.js";
+import { GUEST_HARDENING_SCRIPT } from "./guest-hardening.js";
+
+/**
+ * The last step of every template: E2B's SSH server and empty passwords taken away, as root, after its provisioning.
+ * On one line, as base64, so that the builder's RUN needs no quoting of a script of many lines.
+ */
+const HARDENING_STEP = `echo ${Buffer.from(GUEST_HARDENING_SCRIPT).toString("base64")} | base64 -d | sh`;
 
 /** The Dockerfile as E2B's builder gets it: without the line that only a container needs. */
 export function templateDockerfile(dockerfile: string, shots = false): string {
@@ -43,10 +55,15 @@ export function templateDockerfile(dockerfile: string, shots = false): string {
  * binary as `windlass`, which is what sandbox/build.sh makes for `docker build` too.
  */
 export function sandboxTemplate(context: string, shots = false, image?: string): TemplateClass {
-	if (image) return Template().fromImage(image).setUser("agent").setWorkdir("/workspace");
-	return Template({ fileContextPath: context }).fromDockerfile(
-		templateDockerfile(readFileSync(join(context, "Dockerfile"), "utf8"), shots),
-	);
+	if (image)
+		return Template()
+			.fromImage(image)
+			.runCmd(HARDENING_STEP, { user: "root" })
+			.setUser("agent")
+			.setWorkdir("/workspace");
+	return Template({ fileContextPath: context })
+		.fromDockerfile(templateDockerfile(readFileSync(join(context, "Dockerfile"), "utf8"), shots))
+		.runCmd(HARDENING_STEP, { user: "root" });
 }
 
 /** What E2B would be asked to build, as a Dockerfile again: for looking at it without an account. */

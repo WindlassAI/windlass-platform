@@ -5,9 +5,12 @@ import type { SandboxHandle, SandboxLayer } from "../../sandbox/api.js";
 import { setupNote } from "../../setup-command.js";
 import { userActor } from "../internal.js";
 import { privateSessionData } from "../../sandbox/session-data.js";
+import { machineHarness } from "../../sandbox/harnesses.js";
+import { isTurnSandbox } from "../../sandbox/provider.js";
 import { note } from "./timeline.js";
 import type { SessionMeta, Ctx, WorkspaceCopy } from "./state.js";
 import { layerOf } from "./runner.js";
+import { continuationNote } from "./continuation.js";
 
 function megabytes(bytes: number): string {
 	const mb = bytes / (1024 * 1024);
@@ -20,17 +23,23 @@ const FRESH_WORKSPACE =
 // Clear a one-shot note only after the agent receives the prompt it was attached to.
 export function platformNotes(meta: SessionMeta, reviewer: boolean): { text: string; told(): void } {
 	const prepared = meta.snapshotCommit ?? null;
+	// A continuing session's note says the workspace is new in its own words.
+	const continued = continuationNote(meta);
 	const fresh = !reviewer && meta.freshWorkspace === true;
 	const unfinished = reviewer ? null : (meta.setupUnfinished ?? null);
 	const onBase = reviewer ? null : (meta.setupOnBase ?? null);
 	return {
 		text:
 			(prepared ? snapshotPrompt(prepared) : "") +
-			(fresh ? FRESH_WORKSPACE : "") +
+			(continued || (fresh ? FRESH_WORKSPACE : "")) +
 			(unfinished ? setupNote(unfinished) : "") +
 			(onBase ? setupOnBaseNote(onBase) : ""),
 		told() {
 			if (fresh) meta.freshWorkspace = false;
+			if (continued && meta.continuedFrom) {
+				meta.continuedFrom.told = true;
+				meta.handoff = null;
+			}
 			if (unfinished && meta.setupUnfinished === unfinished) meta.setupUnfinished = null;
 			if (prepared && meta.snapshotCommit === prepared) meta.snapshotCommit = null;
 			if (onBase && meta.setupOnBase === onBase) meta.setupOnBase = null;
@@ -48,11 +57,18 @@ export async function restoreBackup(
 	const backups = layer.backups;
 	const saved = meta.backup;
 	const session = meta.windlassSessionId;
-	// Without a bucket nothing was ever copied, and nothing is said of it.
+	// Without a bucket nothing was ever copied, and nothing is said of it; nor on a machine whose runner keeps no copies.
 	if (!backups || !session) return false;
+	if (backups.available && !(await backups.available())) {
+		if (saved?.windlassSessionId === session)
+			console.log(
+				`[wlp] backup.unavailable session=${meta.sessionId} turn=${turn}: the machine's runner keeps no copies now`,
+			);
+		return false;
+	}
 	if (!saved || saved.windlassSessionId !== session) {
 		console.log(
-			`[wlp] backup.none session=${meta.sessionId} turn=${turn}: ${saved ? "the copy is of an earlier Windlass session" : "no copy of the session was saved"}`,
+			`[wlp] backup.none session=${meta.sessionId} turn=${turn}: ${saved ? "the copy is of an earlier session of the agent" : "no copy of the session was saved"}`,
 		);
 		return false;
 	}
@@ -72,7 +88,7 @@ export async function restoreBackup(
 		);
 	} catch (error) {
 		c.log.warn({
-			msg: "could not restore the copy of Windlass's session",
+			msg: "could not restore the copy of the agent's session",
 			session: meta.sessionId,
 			error: describeError(error),
 		});
@@ -94,6 +110,17 @@ export async function restoreBackup(
 	return true;
 }
 
+/**
+ * Stops what a lost turn of an ACP agent left running in the sandbox, so that nothing writes to its
+ * session while it is packed: the agent's turn does the same only when the next one starts
+ * (acp-harness.ts). Windlass's turn leaves none (turn.ts). Only a handle that can start processes can
+ * have any. Throws when they could not be stopped, and the session is then not packed.
+ */
+async function stopAgentLeftovers(meta: SessionMeta, sandbox: SandboxHandle): Promise<void> {
+	const profile = machineHarness(meta.harness);
+	if (profile && isTurnSandbox(sandbox)) await sandbox.stopLeftovers(profile.leftovers);
+}
+
 // Copy after the process exits. Retry a failed backup at the next turn end without waking an idle sandbox.
 export async function saveBackup(
 	c: Ctx,
@@ -105,14 +132,24 @@ export async function saveBackup(
 	const backups = layer.backups;
 	const session = meta.windlassSessionId;
 	if (!backups || !(await privateSessionData(meta, layer.sandboxes, sandbox.id)) || !session) return;
+	// A machine whose runner keeps no copies (an older runner): nothing is saved, and the turn is not counted as missed.
+	if (backups.available && !(await backups.available())) return;
 	// Until a copy is saved below, the one there is, if any, is behind this turn.
 	meta.memoryTurn = turn;
 	// A session that is going away needs no copy, and an actor that is stopping has no time for one.
 	if (c.vars.stopping || c.vars.destroying) return;
 	const stopped = meta.backupStopped;
-	// Windlass's log only grows: what was too large is not packed again to find that out.
+	// An agent's session only grows: what was too large is not packed again to find that out.
 	if (stopped && backups.maxBytes <= stopped.limit) return;
 	try {
+		try {
+			await stopAgentLeftovers(meta, sandbox);
+		} catch (error) {
+			console.warn(
+				`[wlp] backup.save_failed session=${meta.sessionId} turn=${turn}: what an earlier turn left running could not be stopped (${describeError(error)})`,
+			);
+			return;
+		}
 		const saved = await backups.save(
 			sandbox,
 			{ uid: meta.uid, sessionId: meta.sessionId },
@@ -143,7 +180,7 @@ export async function saveBackup(
 		}
 	} catch (error) {
 		c.log.warn({
-			msg: "could not copy Windlass's session out of the sandbox",
+			msg: "could not copy the agent's session out of the sandbox",
 			session: meta.sessionId,
 			error: describeError(error),
 		});
@@ -176,11 +213,14 @@ export async function removeBackup(c: Ctx, meta: SessionMeta): Promise<void> {
 				await new Promise(resolve => setTimeout(resolve, 1_000));
 			}
 		}
-		await userActor(c, meta.uid).internalRemoveBackupLater(meta.sessionId);
+		await userActor(c, meta.uid).internalRemoveBackupLater(
+			meta.sessionId,
+			meta.place.kind === "machine" ? meta.place.machineId : undefined,
+		);
 		backupRemoved.add(meta);
 	} catch (error) {
 		console.error(
-			`[wlp] backup.remove_failed uid=${meta.uid} session=${meta.sessionId}: the copy of this deleted session's Windlass data may still be in the bucket (${describeError(error)})`,
+			`[wlp] backup.remove_failed uid=${meta.uid} session=${meta.sessionId}: the copy of this deleted session's agent data may still be ${meta.place.kind === "machine" ? "on its machine" : "in the bucket"} (${describeError(error)})`,
 		);
 	}
 }

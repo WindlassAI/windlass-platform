@@ -177,6 +177,17 @@ It ends by saying that it is not a review. A push the agent makes during its tur
 
 For a session on one of your machines, the section adds that the checks ran on that machine, and that this is what the machine reported.
 
+### Continue in a new pull request
+
+An agent works on one branch and one pull request. To take the work further in a separate pull request, choose **Continue in a new PR** in the side panel's **Pull request** section once the agent's turn has ended. A new agent starts with the same repository, agent, model, effort, mode, place and sandbox, in a new workspace on a branch of its own. The first agent and its pull request stay as they are.
+
+The dialog asks where the new branch starts:
+
+- **Start from** the repository's default branch, with none of the first agent's unmerged work.
+- **Stack on #N**, offered once the first agent's work is on GitHub: the new branch starts from that pull request's branch, and the new pull request is based on it.
+
+The new agent starts with a copy of the first agent's memory of the conversation when one is kept: in the platform's storage on a hosted sandbox, or on the same machine when its runner keeps copies. Otherwise its first prompt includes an account of the first agent's turns, which the platform reconstructs from the timeline. Text from someone else that the first agent saw stays marked as untrusted in the new one. The side panel's **Agent** section links the two agents with **continued from** and **continued in**, and the agent list marks the new one **continued**.
+
 ## The repository's setup command
 
 Where the repository has a [setup command](/docs/settings#setup-command), it normally runs once in each new sandbox, after the clone and before the agent's first turn there. The timeline shows the command, what it prints as it runs, how it ended and how long it took. **Stop** stops it, and the turn with it.

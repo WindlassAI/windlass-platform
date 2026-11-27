@@ -51,6 +51,7 @@ Helpers inside the `user` actor:
 - `./github-item.ts` applies issue edits and closes to filed items.
 - `./provider-accounts.ts` tracks model-provider usage and refusals per account location; a plan's go to its own row, keyed as the plan.
 - `./user-payer.ts` applies Pay with at a hosted turn's start, for the turn queue and `internalTurnPayer`: plan or key, an item's wait for its plan, the plan's parallel-turn cap and "Use my key now" (`pay_once`).
+- `./continue-session.ts` holds `continueSession`'s settings for the new session and the copy of the agent's session in the backup store.
 
 Helpers inside `agentSession` (`./agent-session/`):
 
@@ -68,6 +69,7 @@ Helpers inside `agentSession` (`./agent-session/`):
 - `./agent-session/runner.ts` links the session to its machine's runner.
 - `./agent-session/summary.ts` builds `SessionSummary` and pushes it to `user`, collapsing bursts.
 - `./agent-session/workspace.ts` saves, restores and removes workspace backups and one-shot platform notes.
+- `./agent-session/continuation.ts` is a session's side of "Continue in a new PR": what it hands over (`forkSource`), what the new one starts with and its one-time note.
 - `./session-inbox.ts` owns the session's inbox and outbox tables: deliveries from the item, facts and releases back.
 - `./turn-resume.ts` is pure: what a paused turn stores and what the agent is told on resume.
 - `./acp-item.ts` bounds ACP timeline items to `ACP_ITEM_LIMIT`.
