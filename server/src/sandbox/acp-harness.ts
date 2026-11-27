@@ -329,6 +329,13 @@ interface AcpQuirks {
 	errorInfo: boolean;
 	/** Whether it wraps provider messages as JSON-RPC internal errors ("Internal error: ...") without the HTTP status: shown without the prefix. */
 	wrapsProviderErrors: boolean;
+	/**
+	 * How long a turn that ended well waits, before the process is closed, for the title the adapter generates
+	 * (`RunTurnInput.wantsTitle`). codex-acp names the thread only after the turn, with a model call of its own
+	 * (`TitleGenerator.onTurnCompleted`, fire and forget); claude-agent-acp asks at the prompt when it is ten
+	 * characters or more, and at the turn's end otherwise. Closing at once loses either. OpenCode sends no title.
+	 */
+	titleWaitMs?: number;
 }
 
 const QUIRKS: Record<AcpProfile["id"], AcpQuirks> = {
@@ -337,6 +344,7 @@ const QUIRKS: Record<AcpProfile["id"], AcpQuirks> = {
 		errorInfo: false,
 		wrapsProviderErrors: false,
 		rateLimit: (meta, at) => claudeLimit(meta["_claude/rateLimit"], at),
+		titleWaitMs: 15_000,
 	},
 	opencode: { mcpNeedsBridge: false, errorInfo: false, wrapsProviderErrors: true },
 	codex: {
@@ -358,6 +366,7 @@ const QUIRKS: Record<AcpProfile["id"], AcpQuirks> = {
 		modelError: codexModelError,
 		errorInfo: true,
 		wrapsProviderErrors: false,
+		titleWaitMs: 25_000,
 	},
 };
 
@@ -460,7 +469,20 @@ export class AcpHarness implements Harness {
 					said => input.onAcpNote?.(said),
 				)
 			: null;
-		const stream = updateStream(redactor, update => input.onAcpUpdate?.(update));
+		// The adapter's generated title, which a turn that wants one waits for at its end (`AcpQuirks.titleWaitMs`).
+		let titled = false;
+		let noTitles = false;
+		let resolveTitled = () => {};
+		const titleSeen = new Promise<void>(resolve => {
+			resolveTitled = resolve;
+		});
+		const stream = updateStream(redactor, update => {
+			if (update.sessionUpdate === "session_info_update" && typeof update.title === "string" && update.title.trim()) {
+				titled = true;
+				resolveTitled();
+			}
+			input.onAcpUpdate?.(update);
+		});
 		const stderr = new RedactingStream(redactor);
 		let errorLines = "";
 		const keepError = (piece: string) => {
@@ -490,7 +512,7 @@ export class AcpHarness implements Harness {
 		let run: SandboxProcess | undefined;
 		let cancelDeadline: ReturnType<typeof setTimeout> | undefined;
 		// "checking": a prompt was answered with `end_turn` and the platform runs the repository's checks (platform-checks.ts), maybe to prompt again.
-		let phase: "setup" | "running" | "checking" | "ended" = "setup";
+		let phase: "setup" | "running" | "checking" | "titling" | "ended" = "setup";
 		const steps = new StepCounter(input.maxSteps);
 		const gate = new PlatformChecks(handle, input.checks ?? [], (event, note) => input.onChecks?.(event, note), {
 			agent: profile.name,
@@ -533,6 +555,8 @@ export class AcpHarness implements Harness {
 						return;
 					const update = object(params.update);
 					if (typeof update.sessionUpdate !== "string") return;
+					// After the turn, only the title it is waited for.
+					if (phase === "titling" && update.sessionUpdate !== "session_info_update") return;
 					if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
 						const id = text(update.toolCallId);
 						if (update.status === "completed" || update.status === "failed") openCalls.delete(id);
@@ -619,7 +643,7 @@ export class AcpHarness implements Harness {
 					if (phase === "running" && steps.count(update)) stopAtLimit();
 				},
 				request: async (method, params, withdrawn) => {
-					if (method === "mcp/message" && mcp && phase !== "ended" && phase !== "checking")
+					if (method === "mcp/message" && mcp && phase !== "ended" && phase !== "checking" && phase !== "titling")
 						return mcp.handle(params, AbortSignal.any([questions.signal, withdrawn]));
 					if (method !== "session/request_permission") throw new MethodNotFound(method);
 					if (phase !== "running" || params.sessionId !== result.windlassSessionId)
@@ -733,6 +757,8 @@ export class AcpHarness implements Harness {
 			if (quirks.setup) await request(quirks.setup.method, quirks.setup.params);
 			const caps = object(init.agentCapabilities);
 			const canSteer = object(object(init._meta).steering).supported === true;
+			// An agent that says it titles nothing after a turn is not waited for (the test fixture).
+			noTitles = object(init._meta)["windlass-platform/noTitles"] === true;
 			// An adapter that takes no `acp` server gets none: the turn runs without the tools, and says so (`AcpQuirks.mcpNeedsBridge`).
 			const bridged = !quirks.mcpNeedsBridge || object(init._meta)["windlass-platform/acpMcp"] === 1;
 			const served = mcp !== null && bridged && object(caps.mcpCapabilities).acp === true;
@@ -931,6 +957,25 @@ export class AcpHarness implements Harness {
 			}
 			acp.checks = gate.ended;
 			if (gate.ended === null) await gate.close();
+			// The process lives on a little for the title it is still generating, then is closed as usual.
+			if (
+				input.wantsTitle &&
+				quirks.titleWaitMs &&
+				!noTitles &&
+				!titled &&
+				acp.stopReason === "end_turn" &&
+				result.failure === null &&
+				!input.signal?.aborted
+			) {
+				phase = "titling";
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				const stop = new Promise<void>(resolve => {
+					timer = setTimeout(resolve, quirks.titleWaitMs);
+					input.signal?.addEventListener("abort", () => resolve(), { once: true });
+				});
+				await Promise.race([titleSeen, stop, run?.ended]);
+				clearTimeout(timer);
+			}
 		} catch (error) {
 			if (!input.signal?.aborted) {
 				const info = quirks.errorInfo && error instanceof AcpError ? error.codexErrorInfo : undefined;

@@ -898,6 +898,7 @@ export async function turnTools(c: Ctx, t: TurnScope, opened: OpenedTurn): Promi
 			...(active.reattach && { reattach: active.reattach }),
 		}),
 		onStartMark: (point, ms) => t.clock?.mark(point, ms),
+		wantsTitle: !meta.titleIsTyped && !meta.origin && !meta.titleGenerated,
 		onAcpUpdate: update => {
 			if (!t.open) return;
 			prompted(c, t);
@@ -908,8 +909,10 @@ export async function turnTools(c: Ctx, t: TurnScope, opened: OpenedTurn): Promi
 				{ typed: meta.titleIsTyped, item: meta.origin },
 				active.secrets?.redactor,
 			);
-			if (title && title !== meta.title) meta.title = title;
-			else if (
+			if (title && (title !== meta.title || !meta.titleGenerated)) {
+				meta.title = title;
+				meta.titleGenerated = true;
+			} else if (
 				update.sessionUpdate === "current_mode_update" &&
 				!active.modeQueued &&
 				meta.mode !== update.currentModeId
