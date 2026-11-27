@@ -109,7 +109,6 @@ import {
 import { capabilitiesOf } from "../sandbox/harness.js";
 import { privateSessionData } from "../sandbox/session-data.js";
 import type { ItemPublishAnswer } from "./work-item.js";
-import { fetchBase } from "../github/publish.js";
 import {
 	CRASHES_ALLOWED,
 	type TurnRun,
