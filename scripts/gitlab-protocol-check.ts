@@ -2,6 +2,7 @@
  * Run: cd server && npx tsx ../scripts/gitlab-protocol-check.ts
  */
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -107,6 +108,8 @@ try {
 	Object.assign(process.env, { WLP_GITLAB_CLIENT_ID: app.settings.clientId, WLP_GITLAB_CLIENT_SECRET: fixture.clientSecret, WLP_GITLAB_BASE_URL: fixture.url });
 	const head = await host.withToken(target, "push", t => pushBranch({ project: { provider: "gitlab", id: projectId, owner, name, branch: project.defaultBranch, private: true, url: host.cloneUrl(owner, name).slice(0, -4) }, viewer: String(fixture.user.id), token: t }, branch));
 	assert.equal(fixture.branchHead(project, branch), head);
+	const author = execFileSync("git", ["log", "-1", "--format=%an <%ae>", head], { cwd: project.path, encoding: "utf8" }).trim();
+	assert.equal(author, `${fixture.user.username} <${fixture.user.id}-${fixture.user.username}@users.noreply.127.0.0.1>`);
 	console.log("ok  paged project discovery, large project ID, project access and authenticated smart HTTP clone/push");
 
 	const input = { title: "Add guide", body: "A new guide", head: branch, base: project.defaultBranch };

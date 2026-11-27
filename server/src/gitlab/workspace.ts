@@ -17,7 +17,7 @@ async function remote(access: GitlabAccess, repo: StoredRepository) {
 	const project = record((await app.call({ path: root, token })).body);
 	const parts = text(project.path_with_namespace).split("/"), name = parts.pop();
 	if (String(project.id) !== String(repo.id) || !name || !parts.length) throw new Error("GitLab project unavailable.");
-	return { url: app.cloneUrl(parts.join("/"), name), name, async base() {
+	return { url: app.cloneUrl(parts.join("/"), name), name, viewer: () => app.viewer(token), async base() {
 		const ref = record((await app.call({ path: `${root}/repository/branches/${encodeURIComponent(repo.branch)}`, token })).body);
 		const sha = text(record(ref.commit).id);
 		if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("GitLab did not confirm the repository base.");
@@ -53,7 +53,10 @@ export async function fetchGitlab(access: GitlabAccess, repo: StoredRepository, 
 export async function pushGitlab(access: GitlabAccess, input: Omit<PushInput, "app" | "connection">, message: string, update?: { head: string; at: number; baseTip?: string }) {
 	const { repository, branch, sandbox } = input;
 	const dest = await remote(access, repository);
-	const author = { name: `GitLab user ${access.viewer}`, email: `${access.viewer}@users.noreply.${new URL(dest.url).hostname}` };
+	const user = await dest.viewer();
+	if (String(user.id) !== access.viewer) throw new Error("The GitLab account changed.");
+	// GitLab's private commit email: <id>-<username>@users.noreply.<host>.
+	const author = { name: user.login, email: `${user.id}-${user.login}@users.noreply.${new URL(dest.url).hostname}` };
 	let expected: string | undefined;
 	if (update) {
 		if (!await fetchGitlab(access, repository, sandbox, branch) || !repository.baseSha) throw new Error("GitLab did not confirm the branch and its base.");
