@@ -13,7 +13,7 @@ import { isTriggerLabel, JIRA_WEBHOOK_PATH, type JiraDelivery, type JiraDispatch
 import { signedPayload } from "../signatures.js";
 import { openSecret, sealSecret } from "../repo-secrets.js";
 import { serverSealer } from "../signin/seal.js";
-import type { JiraItemWrite } from "./internal.js";
+import type { ActorClient, JiraItemWrite } from "./internal.js";
 import type { SiteJiraFiling } from "./issue-intake.js";
 import type { JiraGeneration, Registration } from "./jira-site.js";
 
@@ -23,7 +23,7 @@ export const JIRA_TABLES = [
 ];
 type Ctx = Parameters<typeof requireUser>[0] & {
 	db: RawAccess; vars: { github: StoredConnection | null }; conn: { state?: unknown };
-	client(): any; schedule: { at(at: number, action: "internalJiraRenew"): Promise<string> }; log: { warn(entry: unknown): void };
+	client(): ActorClient; schedule: { at(at: number, action: "internalJiraRenew"): Promise<string> }; log: { warn(entry: unknown): void };
 };
 const requestOrigin = (c: Ctx) => (c.conn.state as { origin: string | null } | undefined)?.origin;
 const problem = (message: string, code: string) => new UserError(message, { code });

@@ -10,13 +10,13 @@ import { isJoinedChannel, listChannels, openView, postMessage, postPrivate, revo
 import { escapeText, revisionModal, type SlackMessage, type SlackPost } from "../slack/blocks.js";
 import type { SlackInteraction } from "../slack/interactions.js";
 import type { SlackDelivery } from "../slack/webhook.js";
-import { userActor } from "./internal.js";
+import { type ActorClient, userActor } from "./internal.js";
 
 type Install = { owner: string; name: string; bot: string; sealed: string };
 type Mapping = { id: string; name: string; repository: string; generation: string; details: number };
 /** The thread an item posts into, recorded with its first message. */
 type Thread = { uid: string; item: string; generation: string };
-type Ctx = { db: RawAccess; key: string[]; vars: { queue: Promise<unknown> }; client(): any };
+type Ctx = { db: RawAccess; key: string[]; vars: { queue: Promise<unknown> }; client(): ActorClient };
 const unavailable = () => new UserError("This Slack connection is no longer available.", { code: "slack_unavailable" });
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 

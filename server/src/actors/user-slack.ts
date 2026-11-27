@@ -11,14 +11,14 @@ import { serverSealer } from "../signin/seal.js";
 import { exchangeCode } from "../slack/app.js";
 import { authorizeSlack } from "../slack/connect.js";
 
-import { isActorGone } from "./internal.js";
+import { type ActorClient, isActorGone } from "./internal.js";
 
 export const SLACK_TABLES = [
 	"CREATE TABLE IF NOT EXISTS slack_connect (id INTEGER PRIMARY KEY CHECK(id=1), nonce TEXT, expires INTEGER)",
 	"CREATE TABLE IF NOT EXISTS slack_owner (id INTEGER PRIMARY KEY CHECK(id=1), team TEXT)",
 	"CREATE TABLE IF NOT EXISTS slack_links (team TEXT PRIMARY KEY)",
 ];
-type Ctx = Parameters<typeof requireUser>[0] & { key: string[]; db: RawAccess; vars: { github: StoredConnection | null }; client(): any };
+type Ctx = Parameters<typeof requireUser>[0] & { key: string[]; db: RawAccess; vars: { github: StoredConnection | null }; client(): ActorClient };
 const queues = new WeakMap<object, Promise<unknown>>();
 function action<A extends unknown[], R>(fn: (c: Ctx, ...args: A) => Promise<R>) {
 	return (c: Ctx, ...args: A) => {
