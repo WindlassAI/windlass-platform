@@ -1121,6 +1121,8 @@ async function continueFrom(
 				continuation: {
 					from: { id: parent.id, title: source.title, pull: source.pull, stacked },
 					copy,
+					// A machine's copy is made by the new session itself, over its own connection to the runner.
+					machineCopy: source.place.kind === "machine" && source.copy ? { from: parent.id, ...source.copy } : null,
 					// Kept beside a copy: should the copy not come back in the new sandbox, the agent still learns what came before.
 					handoff: source.handoff,
 					tainted: source.tainted,

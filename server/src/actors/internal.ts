@@ -125,9 +125,21 @@ export interface Continuation {
 	from: ContinuedFrom;
 	/** The earlier agent session, copied to this session's name in the backup store: its first sandbox restores it. */
 	copy: { windlassSessionId: string; backup: SavedBackup } | null;
+	/**
+	 * On a machine: the earlier agent session's copy, for this session to copy to its own name on the machine
+	 * when its first sandbox is made. The runner takes a copy only over the new session's own connection.
+	 */
+	machineCopy?: MachineCopy | null;
 	handoff: Handoff | null;
 	tainted: boolean;
 	secretRequestBlocked: boolean;
+}
+
+/** The earlier session's copy on a machine, still to be copied to the continuing session's name (`Continuation.machineCopy`). */
+export interface MachineCopy {
+	from: string;
+	windlassSessionId: string;
+	backup: SavedBackup;
 }
 
 /** What the session being continued tells `user` (`internalForkSource`). */
