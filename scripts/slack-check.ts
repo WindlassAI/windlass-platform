@@ -238,7 +238,9 @@ async function run() {
 		const root = await receipt(quick.id, "Work item filed");
 		assert.equal(root.thread, null);
 		assert.equal((await receipt(quick.id, "Pull request opened")).thread, root.ts);
-		const pull = github.pulls.find(pr => pr.repository === repo.id)!;
+		// The cancelled plan item may have opened its feature PR first: merge the quick item's own PR.
+		const number = (await member.item(quick.id)).pullRequest!.number;
+		const pull = github.pulls.find(pr => pr.repository === repo.id && pr.number === number)!;
 		pull.state = "closed";
 		pull.merged = true;
 		assert.equal((await receipt(quick.id, "Work item finished")).thread, root.ts);
