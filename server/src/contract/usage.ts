@@ -1,4 +1,5 @@
-import type { FactoryLimits, ModelProvider } from "../contract.js";
+import type { ModelProvider } from "./account.js";
+import type { FactoryLimits } from "./items.js";
 import type { HostedSize, HostedSizeOption } from "./hosted-sizes.js";
 
 /** Hosted running time by UTC day. Paused sandboxes consume none. Unused held seconds return on stop. */
