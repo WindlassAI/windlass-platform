@@ -55,3 +55,28 @@ test("each recorded transition makes the same effect rows as before", () => {
 	for (const [i, r] of recorded.entries())
 		assert.deepEqual(rows(effectsOf(r)), rows(r.effects), `transition ${i} (${r.where}, ${r.fact?.kind ?? "-"})`);
 });
+
+test("a cross-repo feature is handed over when its run reaches merged, without the hand-off flag", () => {
+	const pr = { number: 1, url: "https://github.com/o/a/pull/1" };
+	const step = (kind: string, n: number) => ({ n: 1, step: { n, attempt: 1, kind }, ci: {} });
+	const repos = [{ alias: "a" }, { alias: "b" }];
+	const before = { id: "i_x", revision: 4, state: "waiting", question: null, pr, run: step("ci", 4), repos };
+	const next = { ...before, revision: 5, state: "review", run: step("merged", 6) };
+	const effects = (b: object, n: object) =>
+		rows(
+			sourceEffects(
+				{ linear: {} },
+				itemUpdates(b as FactoryItem, n as FactoryItem, { kind: "ci_read" }),
+				n as FactoryItem,
+				{
+					url: "https://windlass.example/items/i_x",
+				},
+			),
+		);
+	assert.deepEqual(effects(before, next), [
+		{ kind: "linear_write", key: "handed over", commentId: "*", pr: pr.url },
+		{ kind: "linear_write", key: "review_handover" },
+	]);
+	assert.deepEqual(effects({ ...before, repos: [repos[0]] }, { ...next, repos: [repos[0]] }), [], "one repository");
+	assert.deepEqual(effects(next, { ...next, revision: 6 }), [], "already merged");
+});
