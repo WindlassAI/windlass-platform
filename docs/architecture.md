@@ -465,12 +465,13 @@ stand-in.
 ## The agent's memory outlives its sandbox
 
 A session has two histories. The timeline, which the user reads, is in the session's actor. What the model
-remembers of the conversation is Windlass's own session, in Windlass's data directory, which on E2B is on the
-sandbox's disk and goes with it: when an idle sandbox is removed after seven days, or when E2B loses one. With
-a bucket configured, a copy of that data is kept outside the sandbox and put back into the one that replaces
-it, so the agent continues the same Windlass session there (`session/resume`). Without a bucket nothing
-changes: the agent then starts without its memory, and the timeline says so. On Docker there is nothing to
-do, since the data directory is a volume that outlives every sandbox.
+remembers of the conversation is the agent's own session: Windlass's in Windlass's data directory, Claude
+Code's, Codex's and OpenCode's in theirs. On a hosted sandbox that is on the sandbox's disk and goes with it:
+when an idle sandbox is removed after seven days, or when E2B loses one. With a bucket configured, a copy of
+that data is kept outside the sandbox and put back into the one that replaces it, so the agent continues the
+same session there (`session/resume`). Without a bucket nothing changes: the agent then starts without its
+memory, and the timeline says so. On Docker, Windlass's data directory is a volume that outlives every
+sandbox, so only the other agents' sessions are copied there. A machine's sessions are never copied.
 
 - **What is copied.** Windlass keeps one SQLite database per session, in WAL mode
   (`sessions/<id>.db`), and that file is all a `session/resume` needs, with its write-ahead log
@@ -478,9 +479,15 @@ do, since the data directory is a volume that outlives every sandbox.
   the last turn. Copied with them are the media the messages refer to (`blobs/`) and Windlass's notes
   (`memory/`). Everything else stays in the sandbox, because only what is named is copied: the turn's access
   token file, anything of a sign-in, the wake-ups' database (it holds webhook secrets), locks, caches, and the
-  snapshots of the workspace. `server/src/sandbox/backup.ts` has the whole list and the reasons.
-- **When.** After every turn in which Windlass ran, while the turn is being closed: its process is gone by
-  then, so nothing has the files open and a plain `tar` of them is whole. It is one object per session,
+  snapshots of the workspace. Claude Code's copy is the session's transcript (`projects/*/<id>.jsonl`),
+  its subagents' and its long tool output; Codex's is the thread's rollout
+  (`sessions/YYYY/MM/DD/rollout-*-<id>.jsonl`), from which it rebuilds its databases; OpenCode keeps every
+  session and its sign-ins in one database, so its session is exported (`opencode export`), checked, copied,
+  and imported into the new sandbox. No sign-in, settings file or shell environment of any of them is copied.
+  `server/src/sandbox/session-files.ts` has each agent's whole list and the reasons.
+- **When.** After every turn in which the agent ran, while the turn is being closed: its process is gone by
+  then (for Claude Code, Codex and OpenCode, what a lost turn left running is stopped first), so nothing has
+  the files open and a plain `tar` of them is whole. It is one object per session,
   `sessions/<uid>/<session>.tgz`, replaced each time. A restore happens once, before the first turn in a
   sandbox that was made in place of a lost one.
 - **The bytes never pass through a server.** The server signs a link, good for five minutes, for one

@@ -250,7 +250,8 @@ E2B's SDK (`e2b` 2.63.0, loaded only by a server on E2B) needs Node 22.19 or lat
   in which file locks can hang, and Windlass keeps SQLite databases there). A session's Windlass session lives
   and ends with its sandbox, and no session sees another's files, also not the token file of the same user's
   other turn. A pause keeps it. When a sandbox is gone (killed, or lost), the session gets a new one with an
-  empty workspace. With a bucket configured, the copy of Windlass's session is put into the new sandbox and
+  empty workspace. With a bucket configured, the copy of the agent's session (Windlass's, Claude Code's,
+  Codex's or OpenCode's) is put into the new sandbox and
   the agent goes on where it was ([The agent's memory outlives its sandbox](architecture.md#the-agents-memory-outlives-its-sandbox) below); without one it starts a
   new Windlass session, and the timeline says so. On Docker the data directory is a volume of the user's and
   outlives a sandbox.
