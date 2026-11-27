@@ -35,7 +35,8 @@ const LAUNCH_MODES: Record<HarnessId, (profile: LaunchProfile) => LaunchModes | 
 
 /** The modes a new agent is offered in a sandbox profile, and the one it starts on. */
 export function launchModes(harness: HarnessId, profile: LaunchProfile): LaunchModes | null {
-	return LAUNCH_MODES[harness](profile);
+	// A harness this build does not know (a newer server) gets Windlass's modes, as before the table.
+	return (Object.hasOwn(LAUNCH_MODES, harness) ? LAUNCH_MODES[harness] : LAUNCH_MODES.windlass)(profile);
 }
 
 /** The modes a session can be put in: the ones it reported, or before that the ones its agent is launched with. */
@@ -71,7 +72,7 @@ const KNOWN_MODES: Record<HarnessId, () => readonly SessionMode[]> = {
 
 /** A mode by its name, for a line that names one outside a session: "Plan", "Auto"; an id no list has is shown as it is. */
 export function modeName(harness: HarnessId, id: string): string {
-	const known = KNOWN_MODES[harness]();
+	const known = Object.hasOwn(KNOWN_MODES, harness) ? KNOWN_MODES[harness]() : [];
 	return known.find(mode => mode.id === id)?.name ?? id.charAt(0).toUpperCase() + id.slice(1);
 }
 
