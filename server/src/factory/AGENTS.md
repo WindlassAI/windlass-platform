@@ -12,7 +12,12 @@ Run one command from the repository root.
 
 ## Key files
 
-- `./blueprint.ts` holds `advance(item, fact)` and the rules for waits, questions and retries.
+- `./blueprint.ts` holds `advance(item, fact)`, `apply`, the step facts and the answers to questions.
+- `./change.ts` holds the `Change` a fact makes and the shared steps: `ask`, `nextTurn`, `stop`, feedback and budgets.
+- `./ci-flow.ts` publishes the branch and decides what CI means; `./ci-reading.ts` holds CI reruns and repairs shared with features.
+- `./review-flow.ts` runs the second agent's review, the handoff verdict and pull request reads.
+- `./feature-flow.ts` dispatches a feature's parts, follows the feature branch's CI and approves the plan.
+- Imports go one way: `change` ← `ci-reading` ← `feature-flow` ← `review-flow` ← `ci-flow` ← `blueprint`. `ask` reaches `takeChoice` through `Change`, so keep new shared helpers low.
 - `./types.ts` defines the stored item, incoming facts, outgoing effects and decision result.
 - `./feature-plan.ts` validates the planner's proposed subtasks and dependencies.
 - `./untrusted.ts` names the sources to carry with text supplied to a turn.
