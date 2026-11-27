@@ -24,6 +24,7 @@ import { Machines } from "./screens/Machines";
 import { NewAgent } from "./screens/NewAgent";
 import { Session, SessionCrumb, useSessionMachine } from "./screens/Session";
 import { Connect } from "./screens/Connect";
+import { Connections } from "./screens/Connections";
 import { Settings } from "./screens/Settings";
 import { Plans } from "./screens/Plans";
 import { LinkCallback, SignIn } from "./screens/SignIn";
@@ -183,6 +184,7 @@ export function App() {
 		route.name === "settings" ||
 		route.name === "plans" ||
 		route.name === "machines" ||
+		route.name === "connections" ||
 		route.name === "session" ||
 		route.name === "item" ||
 		route.name === "repository" ||
@@ -230,9 +232,11 @@ export function App() {
 										? "Plans · Windlass"
 										: route.name === "machines"
 											? "Machines · Windlass"
-											: route.name === "new"
-												? "New agent · Windlass"
-												: "Agents · Windlass";
+											: route.name === "connections"
+												? "Connections · Windlass"
+												: route.name === "new"
+													? "New agent · Windlass"
+													: "Agents · Windlass";
 	}, [route.name, repositoryId, noMachines, noItems]);
 
 	useEffect(() => {
@@ -315,6 +319,15 @@ export function App() {
 			<div className="app">
 				<TopBar {...bar} current="machines" />
 				<Machines adding={route.add === true} />
+			</div>
+		);
+	}
+
+	if (route.name === "connections") {
+		return (
+			<div className="app">
+				<TopBar {...bar} current="connections" />
+				<Connections />
 			</div>
 		);
 	}

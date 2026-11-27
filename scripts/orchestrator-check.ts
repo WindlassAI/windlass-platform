@@ -2314,7 +2314,7 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 		{ preferred: { kind: "hosted" }, alternatives: [] },
 		{ machines: [], hostedProfiles: ["docker-hardened"] },
 	);
-	assert.match(String(hosted.refused), /Add an Anthropic key in Settings to run Claude Code here/);
+	assert.match(String(hosted.refused), /Add an Anthropic key on the Connections page to run Claude Code here/);
 	const keyed = choosePlacement(
 		task({ harness: "claude" }),
 		{ preferred: { kind: "hosted" }, alternatives: [] },

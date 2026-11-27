@@ -456,7 +456,7 @@ export function hostedKeyMessage(id: HarnessId, model?: string): string {
 	const key = provider
 		? { openai: "an OpenAI", anthropic: "an Anthropic", google: "a Google", openrouter: "an OpenRouter" }[provider]
 		: "an OpenAI, Anthropic, Google or OpenRouter";
-	return `Add ${key} key in Settings to run ${harnessName(id)} here.`;
+	return `Add ${key} key on the Connections page to run ${harnessName(id)} here.`;
 }
 
 export type CheckedProvider = Pick<ModelProviderStatus, "provider" | "checkedAt" | "models" | "windlassModels">;

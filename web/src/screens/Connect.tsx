@@ -122,8 +122,8 @@ export function Connect({
 						</p>
 					) : null}
 					{outcome || !wellFormed || !plan ? (
-						<a className="link" {...linkProps({ name: "settings", section: "settings-models" })}>
-							Go to Settings
+						<a className="link" {...linkProps({ name: "connections", section: plan ? `plan-${plan}` : undefined })}>
+							Go to Connections
 						</a>
 					) : null}
 				</section>

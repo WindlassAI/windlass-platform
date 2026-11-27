@@ -20,7 +20,7 @@ import { createSessionStore, type SessionState } from "./sessionStore";
 /** Refresh the checked model catalogs when returning from Settings. */
 export const PROVIDERS_CHANGED = "wlp-model-providers-changed";
 
-function watchModelChanges(read: (isCurrent: () => boolean) => void) {
+export function watchModelChanges(read: (isCurrent: () => boolean) => void) {
 	// Ignore replies superseded by a refresh or by unmounting.
 	let version = 0;
 	const refresh = () => {

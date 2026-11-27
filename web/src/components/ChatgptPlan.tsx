@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useApp, useAuth } from "../state/app";
 import { PROVIDERS_CHANGED, useChatgpt } from "../state/hooks";
-import { PlanCommand, usePlanConnect } from "./PlanConnect";
+import { CONNECT_NOTES, PlanCommand, usePlanConnect } from "./PlanConnect";
 
 /**
  * The ChatGPT plan row, for any signed-in user: the command that, on the user's own computer, asks them to approve its
@@ -51,7 +51,7 @@ export function ChatgptPlan() {
 
 	const connected = Boolean(status?.connected);
 	return (
-		<li className="usage-kept-row provider-row chatgpt-plan" data-provider="chatgpt">
+		<li className="usage-kept-row provider-row chatgpt-plan" id="plan-openai" data-provider="chatgpt">
 			<div className="usage-kept-main">
 				<span className="usage-kept-title">ChatGPT plan</span>
 				<p className="agent-meta">
@@ -81,12 +81,7 @@ export function ChatgptPlan() {
 						</button>
 					</p>
 				)}
-				{waiting ? (
-					<PlanCommand provider="openai">
-						Run this in a terminal on your computer. It opens a page here to approve, then signs in with ChatGPT in your
-						browser through Windlass on your computer.
-					</PlanCommand>
-				) : null}
+				{waiting ? <PlanCommand provider="openai">{CONNECT_NOTES.openai}</PlanCommand> : null}
 				{(error || statusError) && (
 					<p className="field-note tone-bad" role="alert">
 						{error || statusError}

@@ -184,7 +184,7 @@ test("hosted turns pay with the plan first, and only Claude Code takes a Claude 
 	);
 	assert.equal(hostedCatalog("opencode", [plan]), undefined);
 	assert.equal(hostedAgentProblem("claude", [plan], true), null);
-	assert.match(hostedAgentProblem("opencode", [plan], true) ?? "", /key in Settings/);
+	assert.match(hostedAgentProblem("opencode", [plan], true) ?? "", /key on the Connections page/);
 });
 
 /**

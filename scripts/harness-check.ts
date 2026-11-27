@@ -73,7 +73,7 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	source = "key";
 	await assert.rejects(resolve(machine, "default"), /relay/);
 	assert.deepEqual(await resolve(machine, "default", true), { model: "google/gemini", key: keys[1] });
-	await assert.rejects(resolve(machine, "opencode/free", true), /key in Settings/);
+	await assert.rejects(resolve(machine, "opencode/free", true), /key on the Connections page/);
 	const claude = (signIn: "token" | "none", payer?: "key" | "machine") =>
 		turnCredential(
 			ctx as never,
@@ -90,7 +90,7 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	await assert.rejects(resolve(machine, "openai/gpt", true), /Sign in/);
 	source = "key";
 	keys.length = 0;
-	await assert.rejects(claude("token", "key"), /key in Settings/);
+	await assert.rejects(claude("token", "key"), /key on the Connections page/);
 	// Hosted Claude Code pays with the connected plan first, then the key; a machine turn never takes the plan.
 	const hostedClaude = () =>
 		turnCredential(ctx as never, { place: hosted, uid: "owner", harness: "claude" } as never, undefined, "opus");
@@ -143,7 +143,7 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 				turnCredential(ctx as never, meta, undefined, model, undefined, pinned),
 				/changed or was removed/,
 			);
-			await assert.rejects(turnCredential(ctx as never, meta, undefined, model), /key in Settings/);
+			await assert.rejects(turnCredential(ctx as never, meta, undefined, model), /key on the Connections page/);
 		}
 	}
 	console.log(

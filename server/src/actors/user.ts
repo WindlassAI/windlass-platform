@@ -92,6 +92,9 @@ import {
 	type AccountSettings,
 	type CreateSessionInput,
 	type GithubBranchList,
+	type PayWithChoice,
+	type PayWithPatch,
+	type StarterIssue,
 	type GithubRepository,
 	type GithubRepositoryList,
 	type GithubStatus,
@@ -157,6 +160,7 @@ import {
 	type StoredConnection,
 	listBranches,
 	listRepositories,
+	listStarterIssues,
 	resolveBoundRepository,
 	resolveRepository,
 } from "../github/repos.js";
@@ -192,6 +196,7 @@ import {
 import { AccountModels, MODELS_TABLE, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
 import { modelProviderActions } from "../credentials/keys.js";
 import { CREDENTIAL_TABLES, credentialActions, hostedCredentials } from "../credentials/index.js";
+import { PAY_WITH_TABLE, PayWithProblem, payWithPatchOf, readPayWith, savePayWith } from "../pay-with.js";
 import { MODEL_PLAN_COLUMNS, moveSignInToPlan } from "../credentials/plans.js";
 import {
 	ACCOUNT_SECRETS_TABLE,
@@ -1900,6 +1905,7 @@ export const user = actor({
 			await db.execute(PERSONAL_SERVERS_TABLE);
 			await db.execute(ACCOUNT_SECRETS_TABLE);
 			for (const table of CREDENTIAL_TABLES) await db.execute(table);
+			await db.execute(PAY_WITH_TABLE);
 			await db.execute(
 				"CREATE TABLE IF NOT EXISTS requested_secret_receipt (session_id TEXT PRIMARY KEY, request_id TEXT NOT NULL)",
 			);
@@ -2506,6 +2512,19 @@ export const user = actor({
 				return await listBranches(app, connection, repositoryId);
 			} catch (error) {
 				throw githubError(c.log, error, "The repository's branches could not be listed. Try again.");
+			}
+		},
+
+		githubStarterIssues: async (c, repositoryId: GithubId): Promise<StarterIssue[]> => {
+			requireUser(c);
+			const app = requireGithub();
+			const connection = requireConnection(c);
+			if (!isGithubId(repositoryId))
+				throw new UserError("Choose one of the listed repositories.", { code: "bad_input" });
+			try {
+				return await listStarterIssues(app, connection, repositoryId);
+			} catch (error) {
+				throw githubError(c.log, error, "The repository's issues could not be listed. Try again.");
 			}
 		},
 
@@ -3591,6 +3610,30 @@ export const user = actor({
 			const plan = await credentialActions.internalConnectPlan(c, provider, digest, sealed, chatgptPlan(c));
 			await credentialsChanged(c);
 			return plan;
+		},
+
+		payWith: async (c): Promise<PayWithChoice[]> => {
+			requireUser(c);
+			return readPayWith(c.db);
+		},
+		savePayWith: async (c, input: PayWithPatch): Promise<PayWithChoice[]> => {
+			const profile = requireUser(c);
+			let patch: PayWithPatch;
+			try {
+				patch = payWithPatchOf(input);
+			} catch (error) {
+				if (error instanceof PayWithProblem) throw new UserError(error.message, { code: "bad_input" });
+				throw error;
+			}
+			try {
+				const saved = await savePayWith(c.db, patch);
+				console.log(
+					`[wlp] paywith.saved uid=${profile.uid} harness=${patch.harness} pay=${patch.payWith} limited=${patch.whenLimited ?? "default"}`,
+				);
+				return saved;
+			} catch (error) {
+				throw clientError(c.log, error, "Your choice could not be saved. Try again.");
+			}
 		},
 
 		accountSecrets: async (c, input: { profile: string }): Promise<AccountSecrets> => {

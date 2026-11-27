@@ -66,7 +66,7 @@ const noAnswer = () => new PlatformError("network", "The server at http://localh
 
 describe("the composer's submissions", () => {
 	it("keeps a hosted draft and disables Send while its selected provider key is missing", async () => {
-		const reason = "Add an Anthropic key in Settings to run Claude Code here.";
+		const reason = "Add an Anthropic key on the Connections page to run Claude Code here.";
 		show({ modelProblem: () => reason });
 		write("Review the parser");
 		await send();

@@ -7,14 +7,28 @@ Choose **Settings** in the top bar (in the account menu on a phone). What you sa
 Three places choose what runs, each saving as soon as you change it:
 
 - **Machines → Where work runs**: the default place, Hosted or one of your machines. For a machine, its isolation and what happens when it is offline: **Wait for it**, or **Offer Hosted**, where the item asks you before it moves. Nothing moves to another place, payer or sandbox without asking. See [Where work runs](/docs/machines#where-work-runs).
+- **Connections**: what pays for each agent, hosted and on each of your machines: your plans, your API keys, and each machine's own sign-in. See [Connections](#connections).
 - **Settings → Models** has two choices. **Builds with** sets the agent, model and effort. **Plans & reviews with** sets the Windlass model and effort for planning, review and summaries. **Same as building** uses the usual Windlass model.
 - **A repository's Overrides**: a different place, build agent, planning model or hosted sandbox for that repository only.
 
 An item's own choice comes first, then the repository's, then yours, then the deployment's. The composer, the **New work item** form and each part of a plan show one line of what will run and where it comes from, for example "nas · Codex · Astra — your default", with **Change** for that item only.
 
+### Connections
+
+Choose **Connections** in the top bar (in the account menu on a phone). The grid has a row for each agent (Windlass, Claude Code, Codex, OpenCode) and a column for **Hosted** and for each paired machine. Each cell says what pays for that agent there now: a plan, one of your API keys, the machine's own sign-in, or **Not connected**. A cell that is not connected has one button that leads to the right connect: the plan's command, the key's entry, or the Machines page. Where a machine's agent is signed in there and one of your keys could also pay for it, its cell has the choice between the two; only the chosen one is used.
+
+Hosted uses a connected plan first, then a key. **Who pays** has, for Claude Code and Codex, two choices that are saved now and that hosted turns start following in an upcoming release:
+
+- **Pay with**: **Plan first, then key** (the default), **Plan only**, or **Key only**.
+- **When limited**: what a turn does when the plan hits its limit: **Wait for the reset**, **Use my key**, or **Ask me**. By default work items wait and your own sessions ask. Without a saved key a limited plan always waits.
+
+A plan pays only for your own work, never a teammate's.
+
+When a hosted agent in the composer is not connected, it says so and links to its cell.
+
 ### Model providers
 
-**Connect**, on the ChatGPT plan row under Models, shows a command to run in a terminal on your own computer (Node 18 or later):
+**Connect**, on the ChatGPT plan row under **Connections → Plans**, shows a command to run in a terminal on your own computer (Node 18 or later):
 
 ```sh
 npx @windlassai/cli connect codex
@@ -26,7 +40,7 @@ This connection is your **ChatGPT plan**. Windlass's ChatGPT models run on it. W
 
 ### Connect your Claude plan
 
-Where the platform offers it, the **Claude plan** row under Models lets hosted Claude Code run on your Claude Pro or Max plan instead of an API key. Choose **Connect**, then run the command it shows in a terminal on your own computer:
+Where the platform offers it, the **Claude plan** row under **Connections → Plans** lets hosted Claude Code run on your Claude Pro or Max plan instead of an API key. Choose **Connect**, then run the command it shows in a terminal on your own computer:
 
 ```sh
 npx @windlassai/cli connect claude
@@ -38,9 +52,9 @@ Claude Code's models on the plan are the ones it offers in its first turn on the
 
 For a self-hosted platform, add `--platform https://your-platform` to the command.
 
-In **Settings → Model keys**, choose **Add key…** for OpenAI, Anthropic, Google (Gemini) or OpenRouter. You can save one key per provider. Windlass stores it encrypted, checks it with the provider and shows its last four characters and the number of models found. Use **Check**, **Replace…** or **Remove…** to manage it later.
+In **Connections → API keys**, choose **Add key…** for OpenAI, Anthropic, Google (Gemini) or OpenRouter. You can save one key per provider. Windlass stores it encrypted, checks it with the provider and shows its last four characters and the number of models found. Use **Check**, **Replace…** or **Remove…** to manage it later.
 
-These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and uses a per-turn relay to keep the key outside the sandbox. Removing or replacing a key stops new requests through leases for the old key. Hosted sandboxes always use these keys: Claude Code your Anthropic key, Codex your OpenAI key, and OpenCode the key for the selected provider. On a paired machine, an agent signed in there (a Claude subscription, a ChatGPT plan for Codex, an OpenCode provider login) uses that sign-in first, and a key only for providers the machine is not signed in to. To have it use your key instead, choose “Use your … key” under the agent on the Machines page. Windlass uses your API key for the models listed under that provider, and your ChatGPT sign-in for your plan's models.
+These keys authorize model requests on your behalf. The platform stores them encrypted, shows only the last four characters, and uses a per-turn relay to keep the key outside the sandbox. Removing or replacing a key stops new requests through leases for the old key. Hosted sandboxes use these keys where no connected plan pays: Claude Code your Anthropic key, Codex your OpenAI key, and OpenCode the key for the selected provider. On a paired machine, an agent signed in there (a Claude subscription, a ChatGPT plan for Codex, an OpenCode provider login) uses that sign-in first, and a key only for providers the machine is not signed in to. To have it use your key instead, choose “Use your … key” in that agent's cell for the machine on **Connections**. Windlass uses your API key for the models listed under that provider, and your ChatGPT sign-in for your plan's models.
 
 ### MCP servers
 

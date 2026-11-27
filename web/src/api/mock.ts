@@ -7,6 +7,7 @@ import { modelRefusal, turnEffort } from "../../../server/src/account-models.js"
 import { cleanDefaults, DefaultsProblem } from "../../../server/src/repository-defaults";
 import { changedPlace, changesPlace, placeProblem, savedPlace } from "../../../server/src/factory/default-place";
 import { machinePayers } from "../lib/run";
+import { PAY_WITH_HARNESSES, payWithPatchOf, PayWithProblem } from "../../../server/src/pay-with.js";
 import { withoutUnofferedModels } from "../../../server/src/factory/resolve-run.js";
 import type { AccountDefaultsPatch, RepositoryDefaultsPatch } from "@contract";
 import { shiftMonths } from "../../../server/src/billing/meter.js";
@@ -79,6 +80,9 @@ import {
 	type ModelProvider,
 	type ModelProviderStatus,
 	type ModelPlanStatus,
+	type PayWithChoice,
+	type PayWithPatch,
+	type StarterIssue,
 	type PlanProvider,
 	type AccountSecrets,
 	type AccountSettings,
@@ -248,6 +252,11 @@ export interface MockOptions {
 	resume?: boolean;
 	/** False plays a deployment with screenshots turned off (WLP_FACTORY_SCREENSHOTS=off): platform info says so. Default true. */
 	screenshots?: boolean;
+	/**
+	 * True plays a new account (`?fresh=1`): GitHub not connected, no agent, key or plan, no sessions. With
+	 * `items: "none"` and `machine: "none"` (main.tsx sets both) it is the account the first-run setup opens for.
+	 */
+	fresh?: boolean;
 }
 
 /**
@@ -1079,6 +1088,8 @@ interface World {
 	modelTokens: Map<number, number>;
 	/** The agents that were created with a key, by that key: what was asked for, and the agent's id. */
 	created: Map<string, Taken<string>>;
+	/** The Pay-with choices saved on the Connections page, by agent (server/src/pay-with.ts). */
+	payWith: Map<HarnessId, PayWithChoice>;
 }
 
 interface Step {
@@ -1320,6 +1331,19 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		}
 	}
 
+	/** Each plan agent's Pay-with choice, the defaults where none was saved, as the server's `readPayWith`. */
+	function payWithOf(world: World): PayWithChoice[] {
+		return PAY_WITH_HARNESSES.map(
+			harness =>
+				structuredClone(world.payWith.get(harness)) ?? {
+					harness,
+					payWith: "plan-then-key",
+					whenLimited: null,
+					updatedAt: null,
+				},
+		);
+	}
+
 	/** The account's plans: those connected by code, and its ChatGPT sign-in as the ChatGPT plan. */
 	function plansOf(world: World): ModelPlanStatus[] {
 		const plans = [...world.account.plans.values()];
@@ -1383,7 +1407,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				secrets: new Map(),
 				defaults: new Map(),
 				autonomy: new Map(),
-				screenshotsEnabled: new Map(MOCK_SCREENSHOTS.map(id => [id, realNow() - 3 * 24 * HOUR])),
+				screenshotsEnabled: new Map(options.fresh ? [] : MOCK_SCREENSHOTS.map(id => [id, realNow() - 3 * 24 * HOUR])),
 				names: new Map(),
 				account: {
 					providers: new Map(),
@@ -1396,13 +1420,15 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				spent: new Map(Object.entries(MOCK_SPENT)),
 				modelTokens: new Map(),
 				created: new Map(),
+				payWith: new Map(),
 			};
-			// The seeded user starts connected; the demo user connects by hand. A choice made since is kept.
+			// The seeded user starts connected; the demo user and a new account connect by hand. A choice made since is kept.
 			const kept = recall(`wlp.mock.github.${uid}`);
-			if (githubOn && (kept === "1" || (kept === null && kind === "user"))) world.github = connectionFor(world.profile);
+			if (githubOn && (kept === "1" || (kept === null && kind === "user" && !options.fresh)))
+				world.github = connectionFor(world.profile);
 			worlds.set(uid, world);
 			if (options.keys && kind === "user") seedKeys(world);
-			seed(world);
+			if (!options.fresh) seed(world);
 			// The items, each with its agent session, are there with the agents (`seedItemSession`).
 			items.prepare(auth);
 		}
@@ -6121,6 +6147,23 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				await latency(400);
 				return structuredClone(plansOf(world()).find(p => p.provider === provider) ?? null);
 			},
+			async payWith() {
+				await latency(160);
+				return payWithOf(world());
+			},
+			async savePayWith(input) {
+				await latency(240);
+				let patch: PayWithPatch;
+				try {
+					patch = payWithPatchOf(input);
+				} catch (problem) {
+					if (problem instanceof PayWithProblem)
+						throw new PlatformError("user", problem.message, { reason: "bad_input" });
+					throw problem;
+				}
+				world().payWith.set(patch.harness, { ...patch, updatedAt: now() });
+				return payWithOf(world());
+			},
 			async accountSecrets(profile: SandboxProfileId): Promise<AccountSecrets> {
 				await latency(200);
 				return accountSecretsOf(world(), profile);
@@ -6248,6 +6291,20 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					`${repository.owner}/${repository.name}`.toLowerCase().includes(wanted),
 				).sort((a, b) => rank(a) - rank(b) || a.pushedHoursAgo - b.pushedHoursAgo);
 				return { repositories: matching.map(describeRepository), more: false, incomplete: false };
+			},
+			async githubStarterIssues(repositoryId: GithubId): Promise<StarterIssue[]> {
+				await latency(380);
+				requireGithub(world());
+				const found = GITHUB_REPOSITORIES.find(repository => repository.id === repositoryId);
+				if (!found) return [];
+				const url = `${GITHUB.url}/${found.owner}/${found.name}/issues/`;
+				// Only the first repository has open bugs, so the generic starter tasks show for the others.
+				return found.id === GITHUB_REPOSITORIES[0]!.id
+					? [
+							{ number: 142, title: "Tide table shows yesterday after midnight UTC", url: `${url}142` },
+							{ number: 157, title: "Harbor map pins overlap on small screens", url: `${url}157` },
+						]
+					: [];
 			},
 			async githubBranches(repositoryId: GithubId): Promise<GithubBranchList> {
 				await latency(320);

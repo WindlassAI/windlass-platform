@@ -33,6 +33,8 @@ Run one command from the repository root.
 - `./connect-code.ts` makes a connect request's two secrets: the user code the terminal shows and the page approves, and the request secret only the terminal holds. `server/src/actors/connect-codes.ts` keeps their digests and each request's state; `server/src/connect-route.ts` serves the command (`cli/`).
 - `./transit.ts` seals a secret for one relay request, bound to user, credential and request nonce, for a minute; `openSavedCredential` opens it at a pinned generation.
 
+Which of a plan and a key pays (Connections → Pay with) is kept outside this folder, in `server/src/pay-with.ts`.
+
 ## Invariants and pitfalls
 
 - Seal before anything crosses the Rivet engine: a token is sealed under `transit` between the connect route and the actor, and under `model-plan` at rest.

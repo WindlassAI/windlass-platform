@@ -1,11 +1,22 @@
 // @vitest-environment jsdom
-import { act, createElement } from "react";
+import { act, createElement, Fragment } from "react";
 import { createRoot } from "react-dom/client";
 import { expect, it } from "vitest";
 import { createMockClient } from "../api/mock";
 import { saveAuth } from "../lib/authStore";
 import { AppProvider } from "../state/app";
+import { ChatgptPlan } from "./ChatgptPlan";
+import { ClaudePlan } from "./ClaudePlan";
 import { ModelProviders } from "./ModelProviders";
+
+/** The keys and the plans' rows, as the Connections page has them. */
+const Rows = () =>
+	createElement(
+		Fragment,
+		null,
+		createElement("ul", null, createElement(ChatgptPlan), createElement(ClaudePlan)),
+		createElement(ModelProviders),
+	);
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -46,7 +57,7 @@ it("adds, checks, replaces and removes a provider key", async () => {
 		await press(document.querySelector("dialog")!, "Save key");
 	};
 	try {
-		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(ModelProviders) })));
+		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Rows) })));
 		await settle();
 		expect(host.querySelectorAll(".provider-row:not(.chatgpt-plan):not(.claude-plan)")).toHaveLength(4);
 		expect(host.querySelector(".provider-row.chatgpt-plan")?.textContent).toContain("ChatGPT plan");
@@ -125,7 +136,7 @@ it("connects the ChatGPT plan from a terminal, and shows its Codex line only whe
 	};
 	const row = () => host.querySelector<HTMLElement>(".provider-row.chatgpt-plan")!;
 	const render = async () => {
-		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(ModelProviders) })));
+		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(Rows) })));
 		await settle();
 	};
 	const state = () => row().querySelector(".machine-used")?.textContent;
@@ -152,9 +163,7 @@ it("connects the ChatGPT plan from a terminal, and shows its Codex line only whe
 		act(() => root.unmount());
 		allowed = false;
 		const again = createRoot(host);
-		await act(async () =>
-			again.render(createElement(AppProvider, { client, children: createElement(ModelProviders) })),
-		);
+		await act(async () => again.render(createElement(AppProvider, { client, children: createElement(Rows) })));
 		await settle();
 		expect(row().textContent).toContain("Connected as ada@example.com · Plus");
 		expect(row().textContent).not.toContain("hosted Codex");

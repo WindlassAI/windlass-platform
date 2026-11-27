@@ -279,7 +279,7 @@ try {
 	}
 	for (provider of MODEL_PROVIDERS) {
 		const input = { prompt: "Say Hello.", model: provider + "/" + models[provider] };
-		await assert.rejects(agent.runTurn(handle, input), /key in Settings/);
+		await assert.rejects(agent.runTurn(handle, input), /key (?:in Settings|on the Connections page)/);
 		const spending: number[] = [];
 		const receipts: string[] = [];
 		const result = await agent.runTurn(handle, {

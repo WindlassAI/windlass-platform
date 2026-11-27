@@ -52,7 +52,7 @@
         "scripts/e2b-network-standin.mjs",
         "server/src/billing/**",
         "scripts/dodo-fake.ts",
-        "scripts/{access,account,billing,cost,attachments,backup,connection,harness,models,model-providers,model-plans,plan-relay,stored-data,network,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing,git-config,untrusted,model-relay-route,start-times,install-script,runner-wizard}-check.ts",
+        "scripts/{access,account,billing,cost,attachments,backup,connection,harness,models,model-providers,model-plans,plan-relay,stored-data,network,repository,review,reviewer-task,runner-control,runner-protocol,secrets,setup,usage,verified,web-files,github,shot,sizing,git-config,untrusted,model-relay-route,start-times,install-script,runner-wizard,pay-with}-check.ts",
         "server/src/factory/untrusted.ts",
         "server/src/factory/cost.ts",
         "server/src/actors/session-inbox.ts",
@@ -109,6 +109,7 @@
         "start-times": "tsx ../scripts/start-times-check.ts",
         "install-script": "tsx --test ../scripts/install-script-check.ts",
         "runner-wizard": "tsx --test ../scripts/runner-wizard-check.ts",
+        "pay-with": "tsx --test ../scripts/pay-with-check.ts",
         "workflow-lint": "node ../scripts/workflow-lint.ts ../.github/workflows/ci-heavy.yml"
       }
     },

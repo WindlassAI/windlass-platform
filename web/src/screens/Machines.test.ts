@@ -64,7 +64,7 @@ const button = (name: string) =>
 		| HTMLButtonElement
 		| undefined;
 
-it.each(["/machines", "/settings"])("shows the Settings key upgrade on %s for runner 0.3.8", async path => {
+it.each(["/machines", "/connections"])("shows the Settings key upgrade on %s for runner 0.3.8", async path => {
 	history.replaceState(null, "", path);
 	client = createMockClient({ pace: 0, machine: "online" });
 	const user = client.user.bind(client);
@@ -142,16 +142,16 @@ describe("adding a machine", () => {
 	});
 });
 
-it("chooses whose credential an agent uses where the machine's sign-in and a Settings key both could", async () => {
-	history.replaceState(null, "", "/machines");
+it("chooses whose credential an agent uses on Connections, and Machines says which one and links there", async () => {
+	history.replaceState(null, "", "/connections");
 	client = createMockClient({ pace: 0, machine: "sources", keys: true });
 	saveAuth("mock", ada);
 	root = createRoot(host);
 	act(() => root.render(createElement(AppProvider, { client, children: createElement(App) })));
 	await settle();
-	const choice = host.querySelector(
-		'[role="radiogroup"][aria-labelledby]:has(label[data-source="key"])',
-	) as HTMLElement;
+	const [first] = await client.user(ada).machines();
+	const cell = host.querySelector<HTMLElement>(`#claude-${first!.machineId}`)!;
+	const choice = cell.querySelector('[role="radiogroup"]:has(label[data-source="key"])') as HTMLElement;
 	expect(choice.textContent).toContain("Use this Mac's Claude subscription");
 	expect(choice.querySelector<HTMLInputElement>('label[data-source="machine"] input')?.checked).toBe(true);
 	await act(async () => choice.querySelector<HTMLInputElement>('label[data-source="key"] input')!.click());
@@ -162,11 +162,18 @@ it("chooses whose credential an agent uses where the machine's sign-in and a Set
 		platformKeys: ["anthropic"],
 		method: "api-key",
 	});
-	expect(choice.querySelector<HTMLInputElement>('label[data-source="key"] input')?.checked).toBe(true);
-	const codex = [...host.querySelectorAll<HTMLElement>(".machine-agent")].find(row =>
-		row.textContent?.includes("this Mac's ChatGPT plan"),
-	)!;
-	await act(async () => codex.querySelector<HTMLInputElement>('label[data-source="key"] input')!.click());
-	await settle();
+	expect(host.querySelector(`#claude-${mac!.machineId} .conn-state`)?.textContent).toBe("Your key");
+	const codex = host.querySelector<HTMLElement>(`#codex-${mac!.machineId}`)!;
 	expect(codex.textContent).toContain("Use this Mac's ChatGPT plan");
+
+	// The Machines page no longer chooses: it says who pays and links to the cell.
+	act(() => root.unmount());
+	history.replaceState(null, "", "/machines");
+	root = createRoot(host);
+	act(() => root.render(createElement(AppProvider, { client, children: createElement(App) })));
+	await settle();
+	expect(host.querySelector('label[data-source="key"]')).toBeNull();
+	const paid = [...host.querySelectorAll<HTMLElement>(".machine-agent-paid")];
+	expect(paid.map(line => line.textContent)).toContain("Paid by your key · Change on Connections");
+	expect(paid[0]?.querySelector("a")?.getAttribute("href")).toMatch(/^\/connections\?mock=|^\/connections#/);
 });

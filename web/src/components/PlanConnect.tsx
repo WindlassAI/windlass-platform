@@ -20,6 +20,8 @@ export function usePlanConnect(provider: PlanProvider, refresh?: unknown) {
 	const auth = useAuth();
 	const [allowed, setAllowed] = useState(false);
 	const [plan, setPlan] = useState<ModelPlanStatus | null>(null);
+	/** Whether the plans were read once: before that `plan` is null whether one is connected or not. */
+	const [loaded, setLoaded] = useState(false);
 	/** Set by `wait`: the plan's `addedAt` then. */
 	const [waiting, setWaiting] = useState<{ since: number | null } | null>(null);
 
@@ -34,6 +36,7 @@ export function usePlanConnect(provider: PlanProvider, refresh?: unknown) {
 						if (!live) return;
 						setAllowed(found.allowed);
 						setPlan(found.plans.find(p => p.provider === provider) ?? null);
+						setLoaded(true);
 					},
 					() => undefined,
 				);
@@ -55,12 +58,44 @@ export function usePlanConnect(provider: PlanProvider, refresh?: unknown) {
 
 	return {
 		allowed,
+		loaded,
 		plan,
 		setPlan,
 		waiting: waiting !== null,
 		wait: () => setWaiting({ since: plan?.addedAt ?? null }),
 		cancel: () => setWaiting(null),
 	};
+}
+
+/** What the command does, said beside it. */
+export const CONNECT_NOTES: Record<PlanProvider, ReactNode> = {
+	anthropic: (
+		<>
+			Run this in a terminal on your computer. It opens a page here to approve, then runs{" "}
+			<code>claude setup-token</code>.
+		</>
+	),
+	openai:
+		"Run this in a terminal on your computer. It opens a page here to approve, then signs in with ChatGPT in your browser through Windlass on your computer.",
+};
+
+/**
+ * A plan's connect on its own, outside its row (a Connections cell's dialog, the first-run setup): the command,
+ * waiting for the plan from the moment it is shown. `onConnected` is told once a new or replaced plan arrives.
+ */
+export function PlanWait({ provider, onConnected }: { provider: PlanProvider; onConnected?(): void }) {
+	const { loaded, waiting, wait } = usePlanConnect(provider);
+	const [started, setStarted] = useState(false);
+	useEffect(() => {
+		if (!loaded || started) return;
+		setStarted(true);
+		wait();
+	}, [loaded, started, wait]);
+	useEffect(() => {
+		if (started && !waiting) onConnected?.();
+	}, [started, waiting, onConnected]);
+	if (started && !waiting) return null;
+	return <PlanCommand provider={provider}>{CONNECT_NOTES[provider]}</PlanCommand>;
 }
 
 /** The command to run for a plan, with a copy button, while its row waits for the plan. `children` says what it does. */

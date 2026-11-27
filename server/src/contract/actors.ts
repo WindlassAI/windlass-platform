@@ -26,10 +26,13 @@ import type {
 	ModelProviderStatus,
 	ModelPlans,
 	ModelPlanStatus,
+	PayWithChoice,
+	PayWithPatch,
 	RepositoryDefaultsPatch,
 } from "./account.js";
 import type { PlanProvider } from "./connect.js";
 import type {
+	StarterIssue,
 	GithubBranchList,
 	GithubId,
 	GithubRepository,
@@ -118,6 +121,8 @@ export interface UserActions {
 	/** Search owner/name, newest push first. Use fresh after changing an installation's repository access. */
 	githubRepositories(query: string, fresh?: boolean): Promise<GithubRepositoryList>;
 	githubBranches(repositoryId: GithubId): Promise<GithubBranchList>;
+	/** Up to three of the repository's oldest open issues labelled "bug", for the first item's starter tasks. */
+	githubStarterIssues(repositoryId: GithubId): Promise<StarterIssue[]>;
 	/** The setup command the user saved for a repository, by GitHub's id for it. Asks GitHub nothing. */
 	repositorySetup(repositoryId: GithubId): Promise<RepositorySetup>;
 	/**
@@ -238,6 +243,10 @@ export interface UserActions {
 	removeModelPlan(provider: PlanProvider): Promise<void>;
 	/** Asks the plan's provider again whose it is and, for the ChatGPT plan, which models it offers. */
 	recheckModelPlan(provider: PlanProvider): Promise<ModelPlanStatus | null>;
+	/** Each plan agent's Pay-with choice, the defaults where none was saved (server/src/pay-with.ts). */
+	payWith(): Promise<PayWithChoice[]>;
+	/** Saves one agent's choice; answers with every agent's. Throws with reason `bad_input` for an agent or choice there is none of. */
+	savePayWith(input: PayWithPatch): Promise<PayWithChoice[]>;
 	/** The names and times of the account's secrets, and what each reaches in a sandbox of `profile` made now. No value. */
 	accountSecrets(input: { profile: SandboxProfileId }): Promise<AccountSecrets>;
 	/**

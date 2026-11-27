@@ -29,6 +29,11 @@ export type Route =
 	| { name: "settings"; section?: "settings-models" | "settings-github" }
 	/** Free and Pro side by side, with the way to upgrade: where the deployment has billing (`PlatformInfo.billing`). */
 	| { name: "plans" }
+	/**
+	 * Each agent and every place it can run, and what pays for it: plans, keys and machines' own sign-ins. `section`
+	 * names one agent's cell or card as the fragment (`connectionCell`), which the page scrolls to and marks.
+	 */
+	| { name: "connections"; section?: string }
 	/** The user's own machines. With `add`, the dialog that pairs one is open: the address a runner prints with its code. */
 	| { name: "machines"; add?: boolean }
 	| { name: "signin" }
@@ -87,6 +92,7 @@ export function parseRoute(pathname: string, search = ""): Route {
 	if (path === "/usage") return { name: "usage" };
 	if (path === "/settings") return { name: "settings" };
 	if (path === "/plans") return { name: "plans" };
+	if (path === "/connections") return { name: "connections" };
 	if (path === "/machines") return { name: "machines" };
 	if (path === "/machines/add") return { name: "machines", add: true };
 	if (path === "/signin") return { name: "signin" };
@@ -133,6 +139,8 @@ function pathOf(route: Route): string {
 			return "/settings";
 		case "plans":
 			return "/plans";
+		case "connections":
+			return "/connections";
 		case "machines":
 			return route.add ? "/machines/add" : "/machines";
 		case "signin":
@@ -161,7 +169,11 @@ export function href(route: Route): string {
 	if (route.name === "connect" && route.plan) query.set("plan", route.plan);
 	if (mock !== null) query.set("mock", mock);
 	const fragment =
-		(route.name === "repository" || route.name === "docs" || route.name === "settings") && route.section
+		(route.name === "repository" ||
+			route.name === "docs" ||
+			route.name === "settings" ||
+			route.name === "connections") &&
+		route.section
 			? `#${route.section}`
 			: "";
 	const search = query.toString();

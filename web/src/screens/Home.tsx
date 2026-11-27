@@ -27,6 +27,7 @@ import {
 import { useEffect, useState } from "react";
 import { FeedSection } from "../components/Feed";
 import { Mark, WarnIcon } from "../components/Icons";
+import { OnboardingGate } from "../components/Onboarding";
 import { StartComposer } from "../components/StartComposer";
 import { FilterBar } from "../components/WorkspaceFilters";
 import { useIdentity } from "../lib/identity";
@@ -85,7 +86,7 @@ function AccountLine() {
 			) : (
 				<span className="tone-faint">
 					ChatGPT not connected ·{" "}
-					<a className="link" href="/settings#settings-models">
+					<a className="link" {...linkProps({ name: "connections", section: "plan-openai" })}>
 						Connect
 					</a>
 				</span>
@@ -317,12 +318,19 @@ export function Home({ state, items, usage, scope = "all", filters, onFilters, m
 					))}
 				</ul>
 			) : empty ? (
-				<div className="state state-empty home-empty">
-					<Mark size={56} />
-					<h2>No agents yet</h2>
-					<p>Say what it should do and press Enter. Where it runs and the repository are under the field.</p>
-					<StartComposer sessions={sessions} autoFocus hostedNotice />
-				</div>
+				<OnboardingGate
+					// The setup opens on "Everything" only, never on the agents on no repository.
+					sessions={scope === "none" ? 1 : (agents?.length ?? null)}
+					items={items === null ? null : items.length}
+					machines={machines}
+				>
+					<div className="state state-empty home-empty">
+						<Mark size={56} />
+						<h2>No agents yet</h2>
+						<p>Say what it should do and press Enter. Where it runs and the repository are under the field.</p>
+						<StartComposer sessions={sessions} autoFocus hostedNotice />
+					</div>
+				</OnboardingGate>
 			) : (
 				<div className="home-feed">
 					<FeedSection title="Needs you" tone="needs" entries={feed.needs} now={now} />

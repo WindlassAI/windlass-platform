@@ -1,6 +1,6 @@
 /** The account's settings, secrets, model providers and API tokens. */
 
-import type { SandboxProfileId } from "../contract.js";
+import type { HarnessId, SandboxProfileId } from "../contract.js";
 import type { PlanProvider } from "./connect.js";
 import type { RepositoryAutonomy, RepositoryDefaults, SecretReach, SecretScope } from "./repository.js";
 
@@ -127,6 +127,35 @@ export interface CredentialRef {
 	generation: string;
 	plan?: true;
 }
+
+/**
+ * What pays for an agent's hosted turns where a connected plan and a saved key both could (Connections → Pay with):
+ * the plan, then the key once the plan cannot; only the plan; or only the key.
+ */
+export const PAY_WITH = ["plan-then-key", "plan", "key"] as const;
+export type PayWith = (typeof PAY_WITH)[number];
+
+/** What a turn does when the plan paying for it is limited: wait for the reset, switch to the saved key, or ask. */
+export const WHEN_LIMITED = ["wait", "key", "ask"] as const;
+export type WhenLimited = (typeof WHEN_LIMITED)[number];
+
+/** Where a turn comes from, which decides `WhenLimited` when the user chose none. */
+export type TurnOrigin = "item" | "interactive";
+
+/** The owner's defaults: a work item waits for the reset, an interactive session asks. */
+export const WHEN_LIMITED_DEFAULTS: Record<TurnOrigin, WhenLimited> = { item: "wait", interactive: "ask" };
+
+/** One agent's Pay-with choice, for each agent that can pay with a plan. */
+export interface PayWithChoice {
+	harness: HarnessId;
+	payWith: PayWith;
+	/** Null keeps the defaults by origin (`WHEN_LIMITED_DEFAULTS`). */
+	whenLimited: WhenLimited | null;
+	/** When it was saved, ms since the epoch; null for an agent still on the defaults. */
+	updatedAt: number | null;
+}
+
+export type PayWithPatch = Pick<PayWithChoice, "harness" | "payWith" | "whenLimited">;
 
 export interface AccountSecrets {
 	secrets: AccountSecret[];

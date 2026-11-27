@@ -1,11 +1,9 @@
 import {
 	MAX_MACHINES,
-	type CredentialSource,
 	type MachineClaim,
 	type MachineSummary,
 	type MachineWarning,
 	type MachinesInfo,
-	type ModelProvider,
 } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { hasReason } from "../api/client";
@@ -24,14 +22,14 @@ import {
 	WarnIcon,
 } from "../components/Icons";
 import { RowsSkeleton } from "../components/Skeleton";
-import { HARNESS_NAMES, loginCommand, signInWords, type ReportedHarness } from "../lib/acp";
+import { HARNESS_NAMES, loginCommand, signInWords } from "../lib/acp";
 import { absoluteTime, clockTime, plural, relativeTime, spelledDuration } from "../lib/format";
-import { navigate } from "../lib/router";
+import { linkProps, navigate } from "../lib/router";
+import { cellId } from "../lib/connections";
 import { useApp, useAuth } from "../state/app";
 import { useAccount, useHostedCredentials, useNow } from "../state/hooks";
 import { DefaultPlace } from "../components/RunSettings";
 import { SOURCE_NAMES } from "../lib/models";
-import { anyOf } from "../../../server/src/sandbox/harnesses.js";
 import {
 	MAX_WHEN_TO_USE,
 	diskSize,
@@ -293,7 +291,7 @@ function machineCapacity({ slots, turns, host }: MachineSummary) {
 	return parts.join(" · ");
 }
 
-function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChanged(list: MachineSummary[]): void }) {
+function MachineAgents({ machine }: { machine: MachineSummary }) {
 	const harnesses = machine.harnesses ?? [];
 	const saved = useHostedCredentials(harnesses.some(harness => harness.machineSignIns?.length));
 	if (harnesses.length === 0) return null;
@@ -335,97 +333,20 @@ function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChan
 							</span>
 						)}
 						{both.length > 0 ? (
-							<CredentialChoice machine={machine} harness={harness} providers={both} onChanged={onChanged} />
+							<span className="machine-agent-paid">
+								Paid by {harness.source === "key" ? "your key" : "its own sign-in"} ·{" "}
+								<a
+									className="link"
+									{...linkProps({ name: "connections", section: cellId(harness.id, machine.machineId) })}
+								>
+									Change on Connections
+								</a>
+							</span>
 						) : null}
 					</li>
 				);
 			})}
 		</ul>
-	);
-}
-
-function CredentialChoice({
-	machine,
-	harness,
-	providers,
-	onChanged,
-}: {
-	machine: MachineSummary;
-	harness: ReportedHarness;
-	providers: ModelProvider[];
-	onChanged(list: MachineSummary[]): void;
-}) {
-	const { client, explain } = useApp();
-	const auth = useAuth();
-	const [busy, setBusy] = useState<CredentialSource | null>(null);
-	const [error, setError] = useState<string | null>(null);
-	const label = useId();
-	const saved: CredentialSource = harness.source ?? "machine";
-	const shown = busy ?? saved;
-	const here =
-		machine.os.toLowerCase().startsWith("mac") || machine.os === "Darwin" ? "this Mac" : `“${machineLabel(machine)}”`;
-	const keys = anyOf(providers.map(provider => SOURCE_NAMES[provider]));
-	const plan =
-		harness.id === "claude"
-			? "Claude subscription"
-			: harness.machineMethod === "chatgpt" ||
-					(providers.includes("openai") && harness.machineProviders?.includes("chatgpt"))
-				? "ChatGPT plan"
-				: `${keys} login${providers.length > 1 ? "s" : ""}`;
-	const choices: Array<{ id: CredentialSource; label: string }> = [
-		{ id: "machine", label: `Use ${here}'s ${plan}` },
-		{ id: "key", label: `Use your ${keys} key${providers.length > 1 ? "s" : ""}` },
-	];
-	const set = (source: CredentialSource) => {
-		if (source === saved || busy) return;
-		setBusy(source);
-		setError(null);
-		client
-			.user(auth)
-			.setCredentialSource({ machineId: machine.machineId, harness: harness.id, source })
-			.then(
-				list => {
-					onChanged(list);
-					setBusy(null);
-				},
-				(failure: unknown) => {
-					setError(explain(failure));
-					setBusy(null);
-				},
-			);
-	};
-	return (
-		<div className="machine-credential">
-			<span className="label" id={label}>
-				Paid by
-			</span>
-			<div className="segmented machine-credential-choice" role="radiogroup" aria-labelledby={label}>
-				{choices.map(choice => (
-					<label
-						key={choice.id}
-						className={`segment${shown === choice.id ? " segment-chosen" : ""}`}
-						data-source={choice.id}
-					>
-						<input
-							className="segment-radio"
-							type="radio"
-							name={label}
-							value={choice.id}
-							checked={shown === choice.id}
-							disabled={busy !== null}
-							onChange={() => set(choice.id)}
-						/>
-						{choice.label}
-					</label>
-				))}
-			</div>
-			<p className="field-note">Only this one is used. If it can't be, the item stops and asks.</p>
-			{error && (
-				<p className="field-note tone-bad" role="alert">
-					{error}
-				</p>
-			)}
-		</div>
 	);
 }
 
@@ -626,7 +547,7 @@ function MachineRow({
 			</div>
 			{machine.harnesses?.length || upgrade || limited.length > 0 ? (
 				<div className="machine-part">
-					<MachineAgents machine={machine} onChanged={onChanged} />
+					<MachineAgents machine={machine} />
 					{upgrade && <p className="field-note">{upgrade}</p>}
 					{limited.map(a => (
 						<p className="field-note" key={a.key}>

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useApp, useAuth } from "../state/app";
 import { PROVIDERS_CHANGED } from "../state/hooks";
-import { PlanCommand, usePlanConnect } from "./PlanConnect";
+import { CONNECT_NOTES, PlanCommand, usePlanConnect } from "./PlanConnect";
 
 /**
  * The Claude plan row: the command that, on the user's own computer, asks them to approve its code here and then
@@ -37,7 +37,7 @@ export function ClaudePlan() {
 
 	const connected = plan?.ok === true;
 	return (
-		<li className="usage-kept-row provider-row claude-plan" data-provider="claude-plan">
+		<li className="usage-kept-row provider-row claude-plan" id="plan-anthropic" data-provider="claude-plan">
 			<div className="usage-kept-main">
 				<span className="usage-kept-title">Claude plan</span>
 				<p className="agent-meta">
@@ -45,12 +45,7 @@ export function ClaudePlan() {
 						{connected ? `Connected as ${plan.account ?? "your Claude account"}` : "Use your Claude Pro or Max plan"}
 					</span>
 				</p>
-				{waiting ? (
-					<PlanCommand provider="anthropic">
-						Run this in a terminal on your computer. It opens a page here to approve, then runs{" "}
-						<code>claude setup-token</code>.
-					</PlanCommand>
-				) : null}
+				{waiting ? <PlanCommand provider="anthropic">{CONNECT_NOTES.anthropic}</PlanCommand> : null}
 				{error && (
 					<p className="field-note tone-bad" role="alert">
 						{error}
