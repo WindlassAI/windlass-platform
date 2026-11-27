@@ -111,6 +111,7 @@ import {
 	type CreateItemInput,
 	type CreateSessionInput,
 	type FactoryLimits,
+	type FinishedItems,
 	type ItemAction,
 	type ItemSummary,
 	type ItemView,
@@ -123,12 +124,15 @@ import {
 	MAX_TITLE_CHARS,
 	type SandboxProfileId,
 	type SessionSummary,
+	SUMMARY_DAYS,
+	type SummaryDays,
 	USAGE_HISTORY_DAYS,
 	type UserProfile,
 	type Wait,
 	isHostedSize,
 } from "../contract.js";
 import { createItem, RULES } from "../factory/blueprint.js";
+import { finishedItems } from "../factory/usage-summary.js";
 import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
 import {
 	keptFull,
@@ -437,6 +441,9 @@ function summaryFields(item: ItemSummary): ItemSummary {
 		budget,
 		spent,
 		...(item.partsUsage && { partsUsage: item.partsUsage }),
+		...(item.partsRetryUsage && { partsRetryUsage: item.partsRetryUsage }),
+		...(item.workType && { workType: item.workType }),
+		...(item.startedAt !== undefined && { startedAt: item.startedAt }),
 		sessionId,
 		createdAt,
 		updatedAt,
@@ -2133,6 +2140,14 @@ export const itemActions = {
 		requireUser(c);
 		enabled();
 		return feedOf(c.vars.items);
+	},
+	finishedItems: (c: ItemsCtx, days: unknown): FinishedItems => {
+		requireUser(c);
+		enabled();
+		if (!SUMMARY_DAYS.includes(days as SummaryDays))
+			throw new UserError("Choose 7, 30 or 90 days.", { code: "bad_input" });
+		const since = Date.now() - (days as SummaryDays) * 86_400_000;
+		return { days: days as SummaryDays, since, items: finishedItems(c.vars.items.items.values(), since) };
 	},
 
 	item: async (c: ItemsCtx, id: string): Promise<ItemView> => {

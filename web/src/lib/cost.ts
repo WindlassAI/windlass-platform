@@ -3,8 +3,9 @@
  * hosted sandbox paid, "on your Claude plan" for what a subscription carried, and "cost unknown" where the
  * platform could not price a part. Token counts are only details.
  */
-import type { CostRates, ItemSummary, ModelProvider } from "@contract";
+import type { CostRates, ItemSize, ItemSummary, ModelProvider, WorkType } from "@contract";
 import { type CostLine, type ItemCost, itemCost, mergeUsage } from "../../../server/src/factory/cost.js";
+import { SMALL_PLAN_LIMIT } from "../../../server/src/factory/feature-plan.js";
 
 /** "$1.23", "$0.004" under a cent, "$0.00" for nothing. */
 export function usd(amount: number): string {
@@ -62,3 +63,19 @@ export function lineWords(line: CostLine): string {
 
 /** Who paid a line, in words: "your API key". */
 export const payerWords = (line: Pick<CostLine, "payer">): string => PAYER_WORDS[line.payer];
+
+/** The Usage summary's sizes in words, with what each is. */
+export const SIZE_WORDS: Record<ItemSize, { name: string; what: string }> = {
+	small: { name: "Small", what: "one item" },
+	medium: { name: "Medium", what: `a feature of up to ${SMALL_PLAN_LIMIT} parts` },
+	large: { name: "Large", what: `a feature of ${SMALL_PLAN_LIMIT + 1} parts or more` },
+};
+
+/** The Usage summary's types in words, with what each is. */
+export const TYPE_WORDS: Record<WorkType, { name: string; what: string }> = {
+	docs: { name: "Docs", what: "only documentation" },
+	tests: { name: "Tests", what: "only tests" },
+	deps: { name: "Dependencies", what: "only manifests and lockfiles" },
+	feature: { name: "Features and fixes", what: "source code changed" },
+	other: { name: "Other", what: "config, CI, assets or no change" },
+};

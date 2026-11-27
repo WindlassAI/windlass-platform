@@ -5,7 +5,7 @@
  * account.ts (settings, model providers, API tokens), connect.ts (connected plans, the connect command),
  * machines.ts, items.ts (work items), reviews.ts, timeline.ts (Windlass/ACP events, timeline), questions.ts
  * (questions, MCP servers), actors.ts (actor actions/events, snapshot), limits.ts (endpoints, paths, size limits),
- * usage.ts, hosted-sizes.ts, isolation.ts, cost.ts (what an item's turns used and what prices it).
+ * usage.ts, hosted-sizes.ts, isolation.ts, cost.ts (what an item used, its prices, the Usage summary's items).
  */
 
 import type { GithubId, PullRequestInfo, SessionRepository } from "./contract/github.js";

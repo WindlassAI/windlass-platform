@@ -17,6 +17,8 @@ import type {
 	AuthResult,
 	ChatgptStatus,
 	CostRates,
+	FinishedItems,
+	SummaryDays,
 	CreateItemInput,
 	CreateSessionInput,
 	FactoryLimits,
@@ -339,6 +341,8 @@ export interface UserApi
 	factoryLimits(): Promise<FactoryLimits>;
 	/** What prices items' usage: the model catalog's prices and the hosted sandbox rates (`CostRates`). */
 	costRates(): Promise<CostRates>;
+	/** The items that ended in the last 7, 30 or 90 days with what each used, for the Usage summary (`FinishedItems`). */
+	finishedItems(days: SummaryDays): Promise<FinishedItems>;
 	/** The Linear connection (`LinearStatus`): `off` where the deployment has no Linear client. */
 	linear(): Promise<LinearStatus>;
 	/** Begins connecting a workspace: the address at Linear to send the browser to. The page comes back with `#linear=<ticket>` or `#linear-error=<code>`. */

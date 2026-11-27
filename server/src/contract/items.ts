@@ -169,6 +169,8 @@ export interface ItemSpend extends ItemBudget {
 	activeSeconds: number;
 	/** What the item's own turns used, by model, payer and sandbox size: what its cost is priced from (factory/cost.ts). */
 	usage?: import("./cost.js").SpendUsage;
+	/** The part of `usage` spent retrying: turns of a run the person started again, and turns fixing a failed CI. */
+	retryUsage?: import("./cost.js").SpendUsage;
 }
 
 /** A subtask's budget in a feature's plan: one token figure. At dispatch its token share also determines its share of hosted time. */
@@ -453,6 +455,12 @@ export interface ItemSummary {
 	spent: ItemSpend;
 	/** A feature's: what all its parts used, retries among them. Its own turns are in `spent.usage`. */
 	partsUsage?: import("./cost.js").SpendUsage;
+	/** A feature's: the part of `partsUsage` spent retrying (factory/usage-summary.ts `partsRetryUsage`). */
+	partsRetryUsage?: import("./cost.js").SpendUsage;
+	/** What its changes are, from the paths its latest turn with changes left changed (factory/usage-summary.ts `workType`). Absent before any. */
+	workType?: WorkType;
+	/** When its first run began. Absent on a draft. */
+	startedAt?: number;
 	/** The item's agent session, among the user's sessions. */
 	sessionId: string;
 	createdAt: number;
@@ -575,6 +583,9 @@ export interface ItemView extends ItemSummary {
 }
 
 export type ItemMode = "single" | "orchestrate";
+
+/** What an item's changes are: only docs, only tests, only dependency manifests and lockfiles, any other code, or the rest (config, CI, assets). */
+export type WorkType = "docs" | "tests" | "deps" | "feature" | "other";
 
 export interface PlacementNeeds {
 	hostedSize?: HostedSize;

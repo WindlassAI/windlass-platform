@@ -2211,6 +2211,7 @@ export const user = actor({
 		internalApiItemAttachment: itemActions.internalApiItemAttachment,
 		listItems: (c, page?: ItemListPage): ItemSummary[] => itemActions.listItems(c, page),
 		itemFeed: itemActions.itemFeed,
+		finishedItems: itemActions.finishedItems,
 		item: itemActions.item,
 		internalSessionForPull: (
 			c,

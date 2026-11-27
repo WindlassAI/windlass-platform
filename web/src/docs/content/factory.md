@@ -329,6 +329,17 @@ Each item shows what it cost in dollars: on its page (the total, the models' and
 
 Where a part cannot be priced, for example a model the catalog does not list, or a turn on a key that reported no tokens, it says "cost unknown" next to what is known, and never guesses. Prices are estimates: the catalog's base price is used even where a provider charges more for a very long context, and writing to the prompt cache is priced as input. Token counts stay as details under **By model**.
 
+### What finished work costs
+
+The **Summary** tab on **Usage** looks back over the items that ended in the last 7, 30 or 90 days. Its two tables group the done items, one by size and one by type. Each row gives how many items are in the group, the median and p90 cost (the cost that 9 in 10 of them stayed under), the median and p90 time from an item's first start to its end, and the group's dollars split into API keys and hosted sandbox time.
+
+- **Size.** Small is one item. Medium is a feature of up to 3 parts, the most an automatically approved plan may have. Large is a feature of 4 parts or more. A part that a revised plan filed again counts once.
+- **Type.** The type comes from the files the item's work changed, as git lists them at its latest turn with changes. Docs means only documentation files (`.md`, `.mdx`, `.rst`). Tests means only test files. Dependencies means only package manifests and lockfiles. Features and fixes means any other source code changed. Other is the rest: config, CI, assets, docs together with tests, or no change at all. A feature takes its parts' type where they agree. If any part changed source code, the feature counts as Features and fixes. Otherwise it counts as Other.
+
+Above the tables, **Retries** is what was spent after a failed attempt: turns in a run you started again with **Retry**, turns fixing a failed CI, and a feature's parts that ran again for either reason. It counts model turns; the sandbox time of a retried run stays in the item's total. **Not finished** is everything that items cancelled, given up or failed used. **On your plan** counts the turns that ran on a Claude or ChatGPT plan.
+
+Turns on a plan are never given dollars. An item with any such turns is counted as "on your plan" and left out of the median and p90, and so is an item with a part that could not be priced. The figures are worked out with today's prices, as each item's cost is.
+
 ### When a check can't run
 
 Sometimes a check fails because the sandbox can't run its command, not because of the agent's code. The item retries the step once. If the environment still prevents the check, it asks you, under **It asks you**, with the check's command, the first line that shows why, and the end of what the check printed.

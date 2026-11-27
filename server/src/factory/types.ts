@@ -102,6 +102,8 @@ export interface CiProgress extends BaseFailureDecision {
 }
 
 export interface Run extends ItemRun {
+	/** The person started this run again after one that failed or was given up (Retry): what it uses is retry spend. */
+	retry?: true;
 	/** The PR summaries were published in this run. A retry can inherit a passing integration on the same heads. */
 	confirmFeatureCi?: true;
 	/** Read CI once before the owner takes the branch. */
@@ -239,6 +241,8 @@ export interface FeatureJob {
 	placement?: ChildPlacement;
 	failure?: string | null;
 	cancelRequested?: boolean;
+	/** Dispatched in a run the person started again: all it uses is retry spend. */
+	retry?: true;
 	id: string;
 	task: import("../contract.js").PlanSubtask;
 	state: import("../contract.js").ItemState;
@@ -385,6 +389,8 @@ export interface FactoryItem {
 	workingSince: number | null;
 	/** When it last entered done, failed or cancelled; absent while it is not ended, and on items that ended before this was kept. */
 	endedAt?: number;
+	/** When its first run began. */
+	startedAt?: number;
 	run: Run | null;
 	pr: { number: number; url: string } | null;
 	/** The commit pushed last. */
@@ -694,6 +700,8 @@ export type StepFact =
 	| {
 			kind: "turn_ended";
 			taskKind?: import("./readiness-track.js").TaskKind;
+			/** What the work's changed paths are (usage-summary.ts `workType`); absent where git named none. */
+			workType?: import("../contract.js").WorkType;
 			autoApprovePlans?: boolean;
 			at: number;
 			key: string;

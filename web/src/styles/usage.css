@@ -370,6 +370,41 @@
 	white-space: nowrap;
 }
 
+/* The Usage summary (components/CostSummary.tsx): the period beside the lede, the callouts, then a table by size and by type. */
+.cost-summary-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px 16px;
+}
+.cost-summary-head .usage-lede {
+	margin-top: 0;
+}
+.cost-summary-facts > div {
+	grid-template-columns: 96px minmax(132px, max-content) minmax(0, 1fr);
+}
+.cost-summary-table {
+	margin-top: 22px;
+}
+.cost-summary-caption {
+	padding-bottom: 8px;
+	caption-side: top;
+	text-align: left;
+	font-size: var(--text-13);
+	font-weight: var(--weight-medium);
+	color: var(--ink-dim);
+}
+.cost-summary-name {
+	display: block;
+}
+.cost-summary-what {
+	display: block;
+	font-family: var(--font-text);
+	font-size: var(--text-12);
+	white-space: normal;
+}
+
 @media (max-width: 760px) {
 	/* What each agent's sandbox holds is in the day's figures above; a narrow table leaves it out. */
 	.usage-wide {

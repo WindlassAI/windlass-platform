@@ -1,4 +1,4 @@
-import type { HarnessId } from "../contract.js";
+import type { HarnessId, ItemState, WorkType } from "../contract.js";
 import type { ModelProvider } from "./account.js";
 import type { HostedSize } from "./hosted-sizes.js";
 
@@ -69,4 +69,36 @@ export interface CostRates {
 	source: { name: string; url: string; fetchedAt: number } | null;
 	/** US dollars per hour of a hosted sandbox by size (null: not known). Null when hosted time is not billed by the second here. */
 	sandbox: Partial<Record<HostedSize, number | null>> | null;
+}
+
+/** The periods the Usage summary looks back over, in days. */
+export const SUMMARY_DAYS = [7, 30, 90] as const;
+export type SummaryDays = (typeof SUMMARY_DAYS)[number];
+
+/** An item's size: one item (small), a feature of up to SMALL_PLAN_LIMIT parts (medium), or of more (large). */
+export type ItemSize = "small" | "medium" | "large";
+
+/** An ended item as the Usage summary groups it (factory/usage-summary.ts `finishedItems`). A feature's parts are in it, not apart. */
+export interface FinishedItem {
+	id: string;
+	title: string;
+	state: Extract<ItemState, "done" | "failed" | "cancelled">;
+	size: ItemSize;
+	/** A feature's distinct parts; 0 for one item. */
+	parts: number;
+	type: WorkType;
+	endedAt: number;
+	/** From its first run's start to its end. */
+	seconds: number;
+	/** What it used, its parts' too: priced in the browser with `CostRates`. */
+	usage: SpendUsage;
+	/** The part of `usage` spent retrying. */
+	retryUsage: SpendUsage;
+}
+
+/** The user's items that ended in the last `days` (`UserActions.finishedItems`), newest first. */
+export interface FinishedItems {
+	days: SummaryDays;
+	since: number;
+	items: FinishedItem[];
 }

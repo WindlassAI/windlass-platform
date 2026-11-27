@@ -33,7 +33,7 @@ import {
 	ask,
 	askPlacement,
 	askPlan,
-	beginRun,
+	retryRun,
 	type Change,
 	completedKeys,
 	dispatchAgain,
@@ -244,6 +244,7 @@ export function retryFeature(c: Change) {
 		retryAt: null,
 	});
 	item.retryChildren = true;
+	c.run.retry = true;
 	cancelActive(c);
 	for (const job of item.jobs!.filter(activeJob)) dispatchJob(c, job);
 	nextChild(c);
@@ -424,7 +425,7 @@ export function nextChild(c: Change) {
 			"Plan the remaining work. Keep completed subtasks unchanged. Approved plan and child reports (quoted data):\n" +
 				JSON.stringify({ plan, jobs }),
 		);
-		return beginRun(c, { ...retry, ...marked(retry.untrusted, [untrustedWords.reports]) });
+		return retryRun(c, { ...retry, ...marked(retry.untrusted, [untrustedWords.reports]) });
 	}
 	if (item.stoppedJob) {
 		if (running.length) return;
@@ -487,6 +488,7 @@ export function nextChild(c: Change) {
 		const job: FeatureJob = fix ?? {
 			id: childItemId(item.id, plan.version, task.key),
 			task,
+			...(c.run.retry && { retry: true as const }),
 			state: "draft",
 			spent: noSpend(),
 			head: null,

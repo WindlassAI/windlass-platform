@@ -89,6 +89,7 @@ import {
 	automatic,
 	backstopTurns,
 	beginRun,
+	retryRun,
 	Change,
 	chargeTurn,
 	checkTurn,
@@ -694,7 +695,7 @@ function apply(c: Change, fact: Fact): boolean {
 			if (!canRetry(item)) return false;
 			c.say("Started again.");
 			if (item.jobs?.length) retryFeature(c);
-			else beginRun(c, firstPlan(item, null));
+			else retryRun(c, firstPlan(item, null));
 			return true;
 		case "send_back":
 			return sendBack(c, fact.note);
@@ -1867,9 +1868,12 @@ function chargeChild(
 		changed = true;
 	}
 	// A part's usage is its own record, taken whole: the feature sums its parts' when it is shown (`partsUsage`).
-	if (observed.usage && JSON.stringify(observed.usage) !== JSON.stringify(job.spent.usage)) {
-		job.spent.usage = observed.usage;
-		changed = true;
+	for (const figure of ["usage", "retryUsage"] as const) {
+		const usage = observed[figure];
+		if (usage && JSON.stringify(usage) !== JSON.stringify(job.spent[figure])) {
+			job.spent[figure] = usage;
+			changed = true;
+		}
 	}
 	if (budget) {
 		const old = job.budget ?? {
@@ -2250,7 +2254,7 @@ function takeChoice(
 		case "retry":
 			run.stopReason = "retried";
 			run.endedAt = c.at;
-			beginRun(c, firstPlan(item, note));
+			retryRun(c, firstPlan(item, note));
 			break;
 		case "wait":
 			if (question.kind === "machine_away") {

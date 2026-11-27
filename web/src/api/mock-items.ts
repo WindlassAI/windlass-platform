@@ -28,6 +28,7 @@ import {
 } from "../../../server/src/factory/feature-plan.js";
 import { newAgent, slotWait as slotWaitSentence } from "../../../server/src/factory/budget.js";
 import { addSandbox, addTurn, mergeUsage, noUsage, tokensUsd, turnMeter } from "../../../server/src/factory/cost.js";
+import { finishedItems, itemSize } from "../../../server/src/factory/usage-summary.js";
 import { withAgent } from "../lib/subtask-agents";
 import { harnessName, knownHarness, subtaskHarnessProblem } from "../../../server/src/sandbox/harnesses.js";
 import { checkItemEffort } from "../../../server/src/account-models.js";
@@ -50,7 +51,11 @@ import {
 	type ApiTokenScope,
 	type AuthResult,
 	type CostRates,
+	type FinishedItem,
+	SUMMARY_DAYS,
 	type SpendUsage,
+	type SummaryDays,
+	type WorkType,
 	type ChoiceId,
 	type CreateItemInput,
 	type CreateSessionInput,
@@ -4074,17 +4079,100 @@ function seededUsage(item: ItemView, index: number, parts: readonly ItemView[]):
 	return usage;
 }
 
+/** What a seeded item's changes would be, from its title's words, as a turn's changed paths would say. */
+function seededWorkType(title: string): WorkType {
+	if (/\b(?:readme|docs?|document)/i.test(title)) return "docs";
+	if (/\btests?\b/i.test(title)) return "tests";
+	if (/\b(?:bump|upgrade|dependenc)/i.test(title)) return "deps";
+	return "feature";
+}
+
 /** Gives the seeded items their usage, and each feature its parts'. */
 function withSeededUsage(items: readonly ItemView[]): void {
 	const byId = new Map(items.map(item => [item.id, item]));
 	items.forEach((item, index) => {
 		const parts = (item.children ?? []).flatMap(child => byId.get(child.id) ?? []);
 		item.spent.usage ??= seededUsage(item, index, parts);
+		if (item.mode !== "orchestrate") item.workType ??= seededWorkType(item.title);
 	});
 	for (const item of items) {
 		const parts = (item.children ?? []).flatMap(child => byId.get(child.id) ?? []);
 		if (parts.length) item.partsUsage = mergeUsage(parts.map(part => part.spent.usage));
 	}
+}
+
+/** The kinds of finished work the seeded history draws from, with how often each comes, its tokens and minutes. */
+const HISTORY_TYPES: { type: WorkType; weight: number; tokens: number; minutes: number; title: string }[] = [
+	{ type: "docs", weight: 3, tokens: 400_000, minutes: 9, title: "Document the setup steps" },
+	{ type: "tests", weight: 3, tokens: 900_000, minutes: 16, title: "Cover the parser's edge cases" },
+	{ type: "deps", weight: 2, tokens: 300_000, minutes: 7, title: "Bump the test runner" },
+	{ type: "feature", weight: 7, tokens: 2_400_000, minutes: 38, title: "Add retry to the webhook client" },
+	{ type: "other", weight: 2, tokens: 700_000, minutes: 12, title: "Tidy the CI workflow" },
+];
+
+/**
+ * Ninety days of ended items for the Usage summary, the same on every load: mostly single items, some features,
+ * one in five not finished; one in three on the ChatGPT plan, a few retried.
+ */
+function seededHistory(at: number): FinishedItem[] {
+	let seed = 20261127;
+	const next = () => {
+		seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+		return seed / 2_147_483_648;
+	};
+	const weights = HISTORY_TYPES.reduce((sum, kind) => sum + kind.weight, 0);
+	const pick = () => {
+		let roll = next() * weights;
+		return HISTORY_TYPES.find(kind => (roll -= kind.weight) < 0) ?? HISTORY_TYPES[0]!;
+	};
+	const items: FinishedItem[] = [];
+	for (let n = 0; n < 72; n++) {
+		const kind = pick();
+		const sizeRoll = next();
+		const parts = sizeRoll < 0.78 ? 0 : sizeRoll < 0.93 ? 2 + Math.floor(next() * 2) : 4 + Math.floor(next() * 3);
+		const scale = (parts || 1) * (0.5 + next() * 1.4);
+		const stateRoll = next();
+		const state = stateRoll < 0.8 ? "done" : stateRoll < 0.9 ? "cancelled" : "failed";
+		const onPlan = next() < 0.33;
+		const turns = Math.max(1, Math.round(scale * 4));
+		const usage = noUsage();
+		const retryUsage = noUsage();
+		const retried = state !== "cancelled" && next() < 0.22;
+		const perTurn = Math.round((kind.tokens * scale * (state === "done" ? 1 : 0.6)) / turns);
+		for (let turn = 0; turn < turns; turn++) {
+			const input = Math.round(perTurn * 0.95);
+			const meter = turnMeter({
+				harness: "windlass",
+				model: onPlan ? "gpt-5.3-codex" : SEEDED_KEY_MODEL,
+				key: onPlan ? undefined : { provider: "anthropic", generation: "mock" },
+				usage: {
+					inputTokens: input,
+					cachedInputTokens: Math.round(input * 0.85),
+					outputTokens: perTurn - input,
+					reasoningTokens: 0,
+				},
+				size: "standard",
+			});
+			addTurn(usage, meter);
+			if (retried && turn >= turns - Math.max(1, Math.round(turns / 3))) addTurn(retryUsage, meter);
+		}
+		const seconds = Math.round(kind.minutes * 60 * scale * (0.7 + next() * 0.8));
+		addSandbox(usage, "standard", Math.round(seconds * 0.6));
+		const endedAt = at - Math.round(next() * 90 * 24 * HOUR);
+		items.push({
+			id: `i_history${String(n).padStart(3, "0")}`,
+			title: parts ? `${kind.title}, in ${parts} parts` : kind.title,
+			state,
+			size: itemSize(parts ? "orchestrate" : "single", parts),
+			parts,
+			type: kind.type,
+			endedAt,
+			seconds,
+			usage,
+			retryUsage,
+		});
+	}
+	return items;
 }
 
 const summaryOf = ({
@@ -5164,6 +5252,7 @@ export function createMockItems(deps: MockItemsDeps) {
 		UserApi,
 		| "listItems"
 		| "itemFeed"
+		| "finishedItems"
 		| "item"
 		| "itemAttachmentLinks"
 		| "createItem"
@@ -5190,6 +5279,19 @@ export function createMockItems(deps: MockItemsDeps) {
 			async itemFeed() {
 				await answer(240);
 				return itemFeed(listedItems(auth), keptOf(auth).items.map(summaryOf));
+			},
+			async finishedItems(days: SummaryDays) {
+				await answer(260);
+				if (!SUMMARY_DAYS.includes(days))
+					throw new PlatformError("user", "Choose 7, 30 or 90 days.", { reason: "bad_input" });
+				const at = deps.now();
+				const since = at - days * 24 * HOUR;
+				const history = ["all", "many", "full", "features"].includes(state) ? seededHistory(at) : [];
+				const items = [
+					...finishedItems(keptOf(auth).items.map(summaryOf), since),
+					...history.filter(item => item.endedAt >= since),
+				].sort((a, b) => b.endedAt - a.endedAt);
+				return { days, since, items };
 			},
 			async item(id) {
 				await answer(220);

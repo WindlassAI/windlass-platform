@@ -251,6 +251,7 @@ Where the platform's sandboxes are billed by the second, as on E2B, the page sho
 - **Today by agent**: the day's time, agent by agent.
 - **On your machines**: agents on your machines. They are not counted against your daily sandbox time, running agents or kept sandboxes.
 - **Work items**: what the Factory may run for you at once, and what each item may spend.
+- **Summary**: what finished work cost over the last 7, 30 or 90 days, by size and by type, with what was spent on retries and on items that did not finish. See [What finished work costs](/docs/factory#what-finished-work-costs).
 - **The last 14 days**.
 
 ## Limits

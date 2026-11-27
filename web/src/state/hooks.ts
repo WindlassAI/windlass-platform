@@ -5,9 +5,11 @@ import type {
 	ChatgptStatus,
 	CostRates,
 	FactoryLimits,
+	FinishedItems,
 	MachineSummary,
 	ModelList,
 	SessionSummary,
+	SummaryDays,
 	UsageNumbers,
 } from "@contract";
 import type { HarnessOptions } from "@contract";
@@ -235,6 +237,28 @@ export function useFactoryLimits(enabled = true): { value: FactoryLimits | null;
 		};
 	}, [client, auth, explain, enabled]);
 	return limits;
+}
+
+/** The items that ended in the last `days`, read whenever the period changes (`FinishedItems`). Null until read. */
+export function useFinishedItems(days: SummaryDays): { value: FinishedItems | null; error: string | null } {
+	const { client, explain } = useApp();
+	const auth = useAuth();
+	const [read, setRead] = useState<{ value: FinishedItems | null; error: string | null }>({ value: null, error: null });
+	useEffect(() => {
+		let current = true;
+		setRead(held => (held.value?.days === days ? held : { value: null, error: null }));
+		client
+			.user(auth)
+			.finishedItems(days)
+			.then(
+				value => current && setRead({ value, error: null }),
+				(failure: unknown) => current && setRead({ value: null, error: explain(failure) }),
+			);
+		return () => {
+			current = false;
+		};
+	}, [client, auth, explain, days]);
+	return read;
 }
 
 const RATES_FRESH_MS = 3_600_000;

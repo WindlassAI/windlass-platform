@@ -345,9 +345,16 @@ export function beginRun(c: Change, plan: TurnPlan): void {
 	nextTurn(c, plan);
 }
 
+/** Begins a run the person started again after a failed one: what it uses is counted as retry spend. */
+export function retryRun(c: Change, plan: TurnPlan): void {
+	beginRun(c, plan);
+	c.run.retry = true;
+}
+
 export function resetRun(c: Change, kind: StepKind): void {
 	const { item } = c;
 	const before = item.run;
+	item.startedAt ??= c.at;
 	if (before !== null && before.endedAt === null) {
 		before.endedAt = c.at;
 		before.stopReason = "retried";
@@ -757,7 +764,12 @@ export function chargeTurn(item: FactoryItem, spend: TurnSpend): void {
 	item.spent.rawTokens = (item.spent.rawTokens ?? item.spent.tokens) + (spend.rawTokens ?? spend.tokens);
 	item.spent.tokens += spend.tokens;
 	if (spend.agent) noteAgentTurn(item, spend.agent);
-	if (spend.meter) addTurn((item.spent.usage ??= noUsage()), spend.meter);
+	if (spend.meter) {
+		addTurn((item.spent.usage ??= noUsage()), spend.meter);
+		// A turn after a failed attempt: in a run started again, or fixing a failed CI.
+		if (item.run?.retry || item.run?.step.kind === "ci_fix")
+			addTurn((item.spent.retryUsage ??= noUsage()), spend.meter);
+	}
 	item.spent.turns += 1;
 	if (item.place.kind === "hosted") item.spent.hostedSeconds = Math.max(item.spent.hostedSeconds, spend.hostedSeconds);
 	noteHostedTime(item);

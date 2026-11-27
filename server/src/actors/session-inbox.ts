@@ -34,6 +34,7 @@ import type { SandboxHandle } from "../sandbox/api.js";
 import { workFlags } from "../verified.js";
 import { itemActor, userActor, type ActorClient } from "./internal.js";
 import { taskKind } from "../factory/readiness-track.js";
+import { workType } from "../factory/usage-summary.js";
 import type { ItemPublishAnswer } from "./work-item.js";
 
 export const INBOX_TABLES = [
@@ -560,6 +561,7 @@ export async function turnChanges(
 	const paths = work.files.flatMap(f => (f.to ? [f.path, f.to] : [f.path]));
 	return {
 		taskKind: paths.length ? taskKind(paths) : undefined,
+		workType: paths.length ? workType(paths) : undefined,
 		flags: workFlags(
 			work,
 			[...checks, ...(verified?.run?.checks ?? [])],

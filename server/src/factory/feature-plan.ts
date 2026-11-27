@@ -22,6 +22,12 @@ import {
 } from "../sandbox/harnesses.js";
 import { MAX_ACCEPTANCE_CRITERIA, MAX_ITEM_BODY_CHARS, MAX_NOTE_CHARS, MAX_TITLE_CHARS } from "../contract.js";
 
+/**
+ * A small plan: three ordinary item allowances bound both the number of work packages and the total exposure,
+ * including the feature's own planning, summary and review allowance (autonomy.ts). The Usage summary's medium size too.
+ */
+export const SMALL_PLAN_LIMIT = 3;
+
 /** The figures a budget has (`ItemBudget`). A subtask's plan budget has `tokens` only. */
 export const dimensions = ["tokens", "hostedSeconds"] as const;
 

@@ -5691,9 +5691,14 @@ const pushedRun = (head: string) => [
 		},
 	} as Parameters<typeof turnChanges>[0];
 	const removed = { kind: "tests_removed", where: ["test/old.test.ts"] };
-	assert.deepEqual(await turnChanges(sandbox, H(1), [], null, []), { taskKind: "other", flags: [removed] });
+	assert.deepEqual(await turnChanges(sandbox, H(1), [], null, []), {
+		taskKind: "other",
+		workType: "feature",
+		flags: [removed],
+	});
 	assert.deepEqual(await turnChanges(sandbox, H(1), [], null, ["src"]), {
 		taskKind: "other",
+		workType: "feature",
 		flags: [removed, { kind: "outside_scope", where: ["test/old.test.ts"] }],
 	});
 	expect("empty owns skips the scope warning and keeps other review flags", true);
