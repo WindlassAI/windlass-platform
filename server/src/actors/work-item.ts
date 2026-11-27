@@ -1732,6 +1732,7 @@ async function appHost(c: Ctx, meta: ItemMeta, access: "read" | "write" = "read"
 	return appOf(await hostOf(c, meta, access, repo));
 }
 
+/** The bound host with its GitHub App; refuses a host without one, as GitLab is. */
 function appOf(bound: BoundHost): AppHost {
 	if (!bound.github) throw new Error("This operation requires a GitHub repository.");
 	return { ...bound, ...bound.github };
@@ -4129,6 +4130,8 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 			const hub = await hostOf(c, meta);
 			const pull = await hub.pull(effect.pr);
 			const ci = item.run?.ci;
+			// Only the GitHub App reads outside pushes and reconciles feedback so far: a host whose caps turn these on
+			// must have the App behind it (`appOf`) until `observePush` and `reconcileFeedback` move behind the bound host.
 			if (
 				(pull.state === "open" || pull.state === "draft") &&
 				hub.caps.pushEvents &&
