@@ -9,7 +9,7 @@
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { HarnessId } from "../contract.js";
-import type { KeyWire } from "../../../sandbox/relay/wires.cjs";
+import { type KeyWire, wires } from "../../../sandbox/relay/wires.cjs";
 import type { KeyTurnRelay, SandboxProcess, StartOptions, TakeRelayRequest } from "./provider.js";
 
 /** The image's Node (sandbox/Dockerfile), by its full path: the transport user's PATH does not name /usr/local/bin. */
@@ -173,10 +173,11 @@ export async function startPlanRelay(
 				: port.error?.message || said || `it exited (${port.code ?? port.signal})`;
 		throw new Error(`the plan's relay could not be started in the sandbox: ${why}`);
 	}
-	const base = `http://127.0.0.1:${port}`;
+	const origin = `http://127.0.0.1:${port}`;
 	return {
 		placeholder,
-		env: { WINDLASS_MODEL_BASE_URL: base, WINDLASS_MODEL_ALLOWED_ORIGIN: base },
+		// The wire's API base, as the platform relay's: `/v1` for a ChatGPT plan, where Codex and Windlass append their routes.
+		env: { WINDLASS_MODEL_BASE_URL: origin + wires[options.wire].base, WINDLASS_MODEL_ALLOWED_ORIGIN: origin },
 		hand: async next => {
 			if (closing || running.hasEnded) throw new Error("This relay has ended.");
 			const done = new Promise<void>((resolve, reject) => handed.push({ resolve, reject }));

@@ -296,6 +296,14 @@ export function keyProviders(harness: HarnessId | undefined): readonly ModelProv
 	return harness === "windlass" ? WINDLASS_KEY_PROVIDERS : (machineHarness(harness)?.keyProviders ?? []);
 }
 
+/** Windlass's counterpart of `AcpProfile.planProviders`: hosted, its unqualified models run on the ChatGPT plan. */
+export const WINDLASS_PLAN_PROVIDERS: readonly PlanProvider[] = ["openai"];
+
+/** The providers whose subscription plan a hosted harness runs on; none without a harness. */
+export function planProviders(harness: HarnessId | undefined): readonly PlanProvider[] {
+	return harness === "windlass" ? WINDLASS_PLAN_PROVIDERS : (machineHarness(harness)?.planProviders ?? []);
+}
+
 /** Whether its models come from the account (Windlass's), not from the agent itself. */
 export const usesAccountModels = (harness: HarnessId | undefined): boolean =>
 	capabilitiesOf(harness).models === "account";

@@ -1587,19 +1587,22 @@ async function main(): Promise<void> {
 				String((unknownModel as Error | null)?.message),
 			);
 
-			// ---- a turn on the server is handed the same token, by way of the same actor
+			// ---- a hosted turn pays with the ChatGPT plan, which WLP_PLAN_USERS (unset on this server) leaves this user out of
 			const profiles = (await (await fetch(`http://127.0.0.1:${httpPort}/platform/info`)).json()) as {
 				profiles?: Array<{ id: string; available: boolean }>;
 			};
 			const profile = profiles.profiles?.find(entry => entry.available)?.id ?? "docker-windlass-sandbox";
 			const session = await user.createSession({ profile: profile as never });
 			const sessionHandle = client.agentSession.get([uid, session.id], { params: { token: auth.token } });
-			await sessionHandle.prompt({ text: "hello" });
-			const ended = await until(() => linesOf("token.handed", uid).length === 1, 30_000);
+			const refused = (await caught(sessionHandle.prompt({ text: "hello" }))) as (Error & { code?: string }) | null;
+			await wait(500);
 			expect(
-				"a turn of that user on the server is handed a token without another refresh",
-				ended && standin.count("refresh_token") === 1,
-				`${linesOf("token.handed", uid).length} hand-over, ${standin.count("refresh_token")} refresh`,
+				"a hosted Windlass turn of a user WLP_PLAN_USERS leaves out is refused with the plan's sentence, and is handed no token",
+				refused?.code === "harness_signed_out" &&
+					/ChatGPT plan isn't enabled for hosted runs on this account/.test(refused.message) &&
+					linesOf("token.handed", uid).length === 0 &&
+					standin.count("refresh_token") === 1,
+				`${refused?.code}: ${refused?.message}; ${linesOf("token.handed", uid).length} hand-over, ${standin.count("refresh_token")} refresh`,
 			);
 			await wait(1_000);
 			await user.deleteSession(session.id).catch(() => undefined);

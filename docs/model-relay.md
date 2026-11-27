@@ -1,21 +1,40 @@
 # Windlass's model relay
 
 Windlass 0.7.1 routes ChatGPT and Settings-key models through the relay. For ChatGPT, the host starts
-`windlass acp` with `WINDLASS_MODEL_BASE_URL` and a `WINDLASS_ACCESS_TOKEN_FILE` that holds a
-placeholder, not a ChatGPT access token. A relay outside loopback also needs
+`windlass acp` with `WINDLASS_PROVIDER=chatgpt`, `WINDLASS_MODEL_BASE_URL` and a `WINDLASS_ACCESS_TOKEN_FILE`
+that holds a placeholder, not a ChatGPT access token. A relay outside loopback also needs
 `WINDLASS_MODEL_ALLOWED_ORIGIN` set to its exact origin. Windlass sends the file's bearer on
 `GET <base>/models` and `POST <base>/responses`, refuses redirects, and reads the file again before
 each request.
 
-With the relay on, a session's sandbox never holds the user's ChatGPT access token on any profile. The
-token stays outside the sandbox, in a place the session's processes cannot reach. That place is the
-platform server, a relay container, or the machine's relay container. Commands, setup leftovers and
-approved MCP servers in the sandbox can still make model requests through the relay while a turn runs.
-They cannot take a bearer elsewhere.
+One mechanism pays for every plan-paid hosted turn: the turn pins a `CredentialRef` with `plan: true`, at its
+generation, and a plan relay sends its requests with the plan's current token. Hosted Windlass on an unqualified
+(ChatGPT) model pins `{ provider: "openai", plan: true }`, the ChatGPT plan, exactly as hosted Codex does
+(`turnCredential` in `server/src/actors/agent-session.ts`). The plan is the user's ChatGPT sign-in, so its
+generation is the sign-in's: Windlass's ChatGPT model list and the daily ChatGPT allowance stay keyed and counted
+as before (`usesPlatformModel`). `WLP_PLAN_USERS` gates it like every plan: a user it leaves out gets "Your ChatGPT
+plan isn't enabled for hosted runs on this account" for a hosted Windlass turn on a ChatGPT model, while Settings-key
+models and machines still work. Where the plan's requests go:
 
-Without the relay, a ChatGPT turn's real access token is written into the sandbox (`token-file.ts`). The
-`docker-hardened` and `e2b-open` profiles let commands read it, and setup leftovers can read it on
-every profile.
+- **Hosted Docker**: the platform relay route, through the Docker relay's forwarding hop, as a Settings key; the
+  route asks the user's actor for the plan's current access token at every request.
+- **E2B and Daytona**: a relay inside the sandbox, run as another user than the agent's
+  ([Plan requests from the sandbox](#plan-requests-from-the-sandbox)), handed the token at the turn's start and a
+  fresh one before it expires.
+
+A paired machine's Windlass still uses the machine-side mechanism: the user's ChatGPT access token handed per turn
+to the machine's relay container (`TokenFile` in `server/src/sandbox/token-file.ts`, the runner's
+`wlp-model-relay-<machine>`), or, on a runner without the relay, written into the sandbox. That is what remains of
+the access-token path; nothing hosted uses it.
+
+A session's sandbox never holds the user's ChatGPT access token on a hosted profile. The token stays where the
+session's processes cannot reach it: the platform server, or the transport user's relay process inside a microVM.
+On a machine with the relay, the machine's relay container. Commands, setup leftovers and approved MCP servers in
+the sandbox can still make model requests through the relay while a turn runs. They cannot take a bearer elsewhere.
+
+Only on a machine without the relay is a ChatGPT turn's real access token written into the sandbox (`TokenFile`).
+The `docker-hardened` profile lets commands read it, and setup leftovers can read it on every profile. A hosted
+microVM refuses such a file outright.
 
 ## Settings keys in Windlass
 
@@ -30,23 +49,23 @@ A qualified picker ID selects the owner’s saved key generation before a turn s
 
 E2B adds the suffix to the relay origin and `/model-relay`. Docker and paired machines add it to the loopback forwarder origin. Catalog pagination and automatic titles use the same lease. The platform checks the machine pairing and proof for forwarded requests. Only the platform relay resolves the saved key. Removing or replacing the key invalidates its generation. Stopping the turn revokes its lease. Hosted leases share the configured per-turn request cap across server processes.
 
-Reported requests are receipted against the selected provider and key generation. The daily ChatGPT allowance applies to unprefixed models. A missing Settings key, an unavailable key relay or a sandbox running Windlass before 0.7.1 refuses a key-backed turn.
+Reported requests are receipted against the selected provider and key generation. The daily ChatGPT allowance applies to unprefixed models, also when the ChatGPT plan pays for them hosted. A missing Settings key, an unavailable key relay or a sandbox running Windlass before 0.7.1 refuses a key-backed turn; a ChatGPT plan turn needs Windlass 0.6.0, which reads the relay's address.
 
 ## Where the relay runs
 
-| Place | Relay | How the sandbox reaches it | Base URL Windlass gets |
+| Place | Relay | How the sandbox reaches it | Base URL Windlass gets (ChatGPT) |
 | --- | --- | --- | --- |
-| Hosted Docker | One relay container per Docker daemon, `wlp-model-relay` | A forwarder container in the session container's network namespace (`--network container:<session>`) listens on `127.0.0.1:17893`. It connects to the relay's Unix socket, writes the turn's 32-character nonce, then pipes the bytes. | `http://127.0.0.1:17893/v1` |
-| A user's machine (runner) | One relay container per machine, `wlp-model-relay-<machine id>`, made by the runner | As hosted Docker, with the runner's helpers | `http://127.0.0.1:17893/v1` |
-| Hosted E2B | The platform server itself: `POST /model-relay/v1/responses` and `GET /model-relay/v1/models` on `WLP_MODEL_RELAY_URL`, a hostname of the relay's own | Over the internet. In `restricted` and `none` E2B allows that hostname in place of `api.openai.com`, and never the platform's public host | `<WLP_MODEL_RELAY_URL>/model-relay/v1`, with `WINDLASS_MODEL_ALLOWED_ORIGIN=<WLP_MODEL_RELAY_URL>` |
+| Hosted Docker | One relay container per Docker daemon, `wlp-model-relay`, which forwards key and plan leases to the platform route on `WLP_MODEL_RELAY_URL` | A forwarder container in the session container's network namespace (`--network container:<session>`) listens on `127.0.0.1:17893`. It connects to the relay's Unix socket, writes the turn's 32-character nonce, then pipes the bytes. | `http://127.0.0.1:17893/v1` |
+| A user's machine (runner) | One relay container per machine, `wlp-model-relay-<machine id>`, made by the runner. It holds a ChatGPT turn's access token itself, and forwards Settings keys to the platform route | As hosted Docker, with the runner's helpers | `http://127.0.0.1:17893/v1` |
+| Hosted E2B and Daytona | ChatGPT plan: a relay inside the sandbox (`sandbox/relay/plan.cjs`). Settings keys: the platform route on `WLP_MODEL_RELAY_URL`, a hostname of the relay's own | Loopback for the plan relay; it reaches `api.openai.com` itself. The route over the internet: in `restricted` and `none` E2B allows that hostname, and never the platform's public host | `http://127.0.0.1:<port>/v1` |
 
 ### Settings keys
 
 Resolve the turn’s provider from the model and the owner’s current key generations.
-A caller opens a key-backed turn with `openModelKeyRelay(sandbox, sessionId, { provider, generation, harness }, signal)`
+A caller opens a key- or plan-backed turn with `openModelKeyRelay(sandbox, sessionId, { provider, generation, plan?, harness }, signal, takeRequest, openSecret)`
 in `sandbox/token-file.ts`. Start the client with the returned base URL and placeholder in the provider's
-usual credential header or as a Bearer token. Close the lease when the turn ends. Opening fails if the sandbox
-has no key relay. The ChatGPT access-token file fallback is specific to ChatGPT.
+usual credential header or as a Bearer token (Windlass on the ChatGPT plan: in its token file, `windlassPlanEnv` and
+`writePlanPlaceholder`). Close the lease when the turn ends. Opening fails if the sandbox has no relay for it.
 
 The platform lease holds the harness, provider and generation saved by the user actor. For each admitted
 request the platform relay calls B1's `internalModelKey` as `model-key/<uid>` with a fresh nonce,
@@ -59,11 +78,11 @@ the relay root and append their own API version.
 
 | Lease | GET | POST | Upstream credential |
 | --- | --- | --- | --- |
-| ChatGPT | `/v1/models` | `/v1/responses` | Bearer at `api.openai.com` |
+| ChatGPT (a machine's relay, the `chatgpt` wire) | `/v1/models` | `/v1/responses` | Bearer (the access token handed to the machine's relay) at `api.openai.com` |
 | OpenAI | `/v1/models` | `/v1/responses`, `/v1/chat/completions` | Bearer at `api.openai.com` |
 | Anthropic | `/v1/models` | `/v1/messages` | `x-api-key` at `api.anthropic.com`, version `2023-06-01` |
 | Claude plan | `/v1/models` | `/v1/messages` | Bearer (the `claude setup-token` token) at `api.anthropic.com`, version `2023-06-01`, Claude Code only |
-| ChatGPT plan | `/v1/models?client_version=…` (Codex's own catalog request) | `/v1/responses` | Bearer (the plan's current access token) at `api.openai.com`, Codex and Windlass only |
+| ChatGPT plan | Codex: `/v1/models?client_version=…` (its own catalog request). Windlass: `/v1/models` | `/v1/responses` | Bearer (the plan's current access token) at `api.openai.com`, Codex and Windlass only |
 | Google | `/v1beta/models` | `/v1beta/models/{model}:generateContent`, `:streamGenerateContent` | `x-goog-api-key` at `generativelanguage.googleapis.com` |
 | OpenRouter | `/api/v1/models` | `/api/v1/chat/completions` | Bearer at `openrouter.ai` |
 
@@ -72,13 +91,16 @@ beta. A Claude plan lease uses its own wire, `claude-plan` (`credentialWire` in 
 Claude Code sends its placeholder from `CLAUDE_CODE_OAUTH_TOKEN` as a bearer, and the route sends the plan's
 token as a bearer with the `oauth-2025-04-20` beta allowed. Hosted Docker forwards it with `provider: "claude-plan"`.
 A ChatGPT plan lease uses the `chatgpt-plan` wire: the `chatgpt` wire's routes and headers, with Codex's
-compressed bodies allowed. Codex sends its placeholder as a bearer (below); the route asks the user's actor for the
-plan's current access token at every request (`ChatgptPlan.token`, `server/src/actors/user/signin.ts`), so a token
-the sign-in holder refreshed is the next request's. codex-acp's bare `GET /v1/models` is refused: it narrows its list
-by a `data[]` that ChatGPT's catalog (`models[]`) may not have, and a refusal leaves Codex's list as it is.
-On E2B and Daytona a plan's requests do not go through the route: they leave from the sandbox
-([Plan requests from the sandbox](#plan-requests-from-the-sandbox)). Machines refuse a plan for now. Each route selects its upstream and permitted headers from the lease. Caller-supplied OpenRouter
-attribution, credentials in query strings, and redirects are refused.
+compressed bodies allowed. Codex sends its placeholder as a bearer, Windlass from its token file; the route asks the
+user's actor for the plan's current access token at every request (`ChatgptPlan.token`,
+`server/src/actors/user/signin.ts`), so a token the sign-in holder refreshed is the next request's. Each agent gets
+only its own routes (`harnessMethod` in `sandbox/relay/wires.cjs`): Windlass `GET /v1/models` and `POST /v1/responses`;
+Codex `POST /v1/responses` and its catalog request with `client_version`. codex-acp's bare `GET /v1/models` is
+refused for Codex: it narrows its list by a `data[]` that ChatGPT's catalog (`models[]`) may not have, and a refusal
+leaves Codex's list as it is. On E2B and Daytona a plan's requests do not go through the route: they leave from the
+sandbox ([Plan requests from the sandbox](#plan-requests-from-the-sandbox)). Machines refuse a plan for now; a
+machine's Windlass uses the user's sign-in through the machine's relay. Each route selects its upstream and permitted
+headers from the lease. Caller-supplied OpenRouter attribution, credentials in query strings, and redirects are refused.
 
 Hosted Docker and paired machines forward key-backed requests to `WLP_MODEL_RELAY_URL`, which must
 be configured and reachable from the relay container. The container holds a second placeholder for
@@ -92,7 +114,8 @@ The Docker relay is the program `sandbox/relay/windlass.cjs`, on the shared `cre
 runs from the pinned base image as `agent`, read-only, with every capability dropped, rotated Docker logs on machines,
 192 MiB (`RELAY_MEMORY`) and 48 processes. The Docker check runs 64 streams at once through it, each with a
 1 MiB request body and a 2 MiB answer, and fails if the relay comes near that memory. Its only network is the Docker bridge, which reaches
-OpenAI for ChatGPT leases and the platform relay for Settings keys. The forwarder is `wlp-model-forward` in `runner/src/egress-proxy.mjs`, beside
+OpenAI for a machine's ChatGPT leases and the platform relay for Settings keys and plans (hosted Docker forwards
+every lease). The forwarder is `wlp-model-forward` in `runner/src/egress-proxy.mjs`, beside
 the machine's other forwarders. Only the relay and the forwarders mount the socket volume
 (`wlp-model-socket[-<machine id>]`), and the forwarders mount it read-only.
 
@@ -104,15 +127,16 @@ relay, cutting its turns' model requests. Give each server its own Docker daemon
 `WLP_MODEL_RELAY=off` or on the fake layer. Runner relays are per machine and are not affected.
 
 E2B's microVMs reach the platform only over the internet, so there is no namespace to put a forwarder
-in, and the relay is a route of the server. The server also holds the sign-in, so the token never
-leaves it.
+in, and the Settings-key relay is a route of the server, which opens the key per request. A plan's requests leave
+from the microVM itself instead.
 
 The route has a hostname of its own, `WLP_MODEL_RELAY_URL` (for example
 `https://windlass-relay.example.com`), routed to the same server as `WLP_PUBLIC_URL`. When a request's
 `Host` is that name, the server answers the relay's model routes and refuses everything else with a 404. No
 other host serves the relay's paths. So E2B's allow list opens only the relay to a sandbox, and not the
-web app, the API or the runner routes. Without `WLP_MODEL_RELAY_URL`, E2B turns get today's token file,
-the server says so once at startup, and the platform's public host is never allowed in its place.
+web app, the API or the runner routes. Without `WLP_MODEL_RELAY_URL`, E2B offers no Settings keys (the server says
+so once at startup), and the platform's public host is never allowed in its place. Hosted Docker needs it for plans
+too: its relay forwards a ChatGPT or Claude plan lease to the route.
 
 The operator routes the name to the server. With the self-hosted Cloudflare Tunnel, add an ingress rule
 for the hostname before the final `http_status:404` rule, pointing at the same loopback port as the web
@@ -123,9 +147,10 @@ Elsewhere, point a DNS name at whatever serves `WLP_PUBLIC_URL`, with a certific
 ### Plan requests from the sandbox
 
 Through the route, every user's plan requests would reach the provider from the platform server's one address.
-E2B and Daytona sandboxes have addresses of their own, so there a plan turn runs the relay inside the
-sandbox (`server/src/sandbox/plan-relay.ts`, the program `sandbox/relay/plan.cjs` on the shared `createRelay`
-and the plan's wire, `claude-plan` or `chatgpt-plan`). Hosted Docker sandboxes share the server's address and keep the route.
+E2B and Daytona sandboxes have addresses of their own, so there a plan turn (Claude Code, Codex, or Windlass on
+the ChatGPT plan) runs the relay inside the sandbox (`server/src/sandbox/plan-relay.ts`, the program
+`sandbox/relay/plan.cjs` on the shared `createRelay` and the plan's wire, `claude-plan` or `chatgpt-plan`). Hosted
+Docker sandboxes share the server's address and keep the route.
 
 - **Who runs it.** The transport user (`nobody`, the user Git transport and its GitHub tokens run as), never
   `agent`. The agent has no sudo, so it cannot read that process's memory, standard input or `/proc` files, nor
@@ -139,7 +164,8 @@ and the plan's wire, `claude-plan` or `chatgpt-plan`). Hosted Docker sandboxes s
   against the turn's limit (`{take}`/`{took}`). Stdin closing ends it.
 - **A ChatGPT plan's token expires.** It is opened with at least 20 minutes left (the sign-in holder's promise),
   and when 10 are left the turn asks the user's actor for the current one, which the holder refreshes, and hands
-  it over stdin (`rotatePlanToken` in `server/src/sandbox/token-file.ts`, `TokenFile`'s schedule). A failed try
+  it over stdin (`rotatePlanToken` in `server/src/sandbox/token-file.ts`, on the schedule a machine's token file
+  keeps). A failed try
   is tried again every 20 s. A plan reconnected or removed meanwhile gives no token: the relay keeps the one it
   has until it expires. The refresh token never leaves the user's actor.
 - **What it accepts.** It listens on `127.0.0.1` on a port the kernel picks. It accepts only
@@ -149,7 +175,10 @@ and the plan's wire, `claude-plan` or `chatgpt-plan`). Hosted Docker sandboxes s
   from every answer. On a Claude plan it answers `HEAD /api/hello` itself. An upstream error,
   a 401 included, keeps its status with the provider's scrubbed error code, type and message. Claude Code gets
   `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` and `CLAUDE_CODE_OAUTH_TOKEN=<placeholder>`; Codex gets `WLP_CODEX_BASE_URL=http://127.0.0.1:<port>/v1`
-  and `WLP_SESSION_BEARER=<placeholder>`. The placeholder is redacted from the turn like a key lease's.
+  and `WLP_SESSION_BEARER=<placeholder>`; Windlass gets `WINDLASS_MODEL_BASE_URL=http://127.0.0.1:<port>/v1`, the
+  origin as `WINDLASS_MODEL_ALLOWED_ORIGIN`, and its token file with the placeholder ([The placeholder](#the-placeholder)).
+  The base is the wire's (`/v1` for a ChatGPT plan, none for a Claude plan). The placeholder is redacted from the
+  turn like a key lease's.
 - **Lifetime.** The relay starts with the turn and is stopped (stdin closed, then its process group killed) when
   the turn ends or is aborted, so a paused or snapshotted sandbox keeps no token. If it cannot start or listen,
   the turn fails; the token is never put in the sandbox instead. A relay whose server died mid-turn stops itself
@@ -158,8 +187,10 @@ and the plan's wire, `claude-plan` or `chatgpt-plan`). Hosted Docker sandboxes s
   at the turn's start. A reconnected or removed plan, or `WLP_PLAN_USERS` turned off, takes effect at the next
   turn, not mid-turn.
 - **E2B network.** Out of `open`, a Claude Code sandbox (its `wlp_harness` metadata) may also reach
-  `api.anthropic.com`, and a Codex sandbox `api.openai.com`, at create and at every connect (`withPlanHosts` in
-  `server/src/sandbox/e2b/network.ts`), whether or not its owner has a plan. Other agents' sandboxes may not. The relay's host stays allowed: Settings keys still use the route. Daytona runs open only.
+  `api.anthropic.com`, and a Codex or Windlass sandbox (no `wlp_harness`) `api.openai.com`, at create and at every
+  connect (`withPlanHosts` in `server/src/sandbox/e2b/network.ts`, `planProviders` in
+  `server/src/sandbox/harnesses.ts`), whether or not its owner has a plan. OpenCode's sandboxes may not. The relay's
+  host stays allowed: Settings keys still use the route. Daytona runs open only.
 
 Anything that can run as the transport user can read the token while a turn runs, as it can a GitHub token
 during a push. On E2B that rests on the agent having no sudo and on envd's API not running commands for
@@ -168,11 +199,18 @@ the agent.
 
 ## The placeholder
 
-Each turn gets a lease of its own when its token file is first written, and the lease ends when the turn
-ends.
+Each turn gets a lease of its own when it starts, and the lease ends when the turn ends.
 
-- **Docker and machines.** The lease is a random 32-character nonce and a random 32-character secret.
-  The placeholder in the sandbox's token file is `wlp-model.<secret>`. The nonce is a forwarder argument,
+- **Hosted Windlass on the ChatGPT plan.** The turn writes its token file (`turnTokenFilePath`: Docker's private
+  `/dev/shm`, Windlass's data directory on a microVM) with `writePlanPlaceholder` in `server/src/sandbox/token-file.ts`:
+  `{"accessToken": "<placeholder>", "expiresAt": <ms>}`, the form of a handed-in token, mode 0600, the content on
+  standard input. The expiry is the turn's longest run plus 15 minutes (`WLP_TURN_TIMEOUT_MS` + 15 min), not the
+  token's hour: Windlass checks it before sending, and the relay ends the placeholder with the turn whatever the file
+  says. The placeholder is the plan relay's: `wlp-model.<secret>` of the turn's forwarder on hosted Docker, or a
+  fresh `wlp-plan.<secret>` that only the sandbox's own plan relay takes on E2B and Daytona. The file is removed when
+  the turn ends, with the turn's other files.
+- **Docker and machines.** The forwarder's lease is a random 32-character nonce and a random 32-character secret.
+  The placeholder in the sandbox is `wlp-model.<secret>`. The nonce is a forwarder argument,
   outside every mount namespace the session has. The relay accepts a request only when its connection
   came through that turn's forwarder (the nonce) and its bearer is that turn's placeholder. Another
   session's placeholder is refused on this session's connection, and a placeholder taken out of the
@@ -180,56 +218,56 @@ ends.
   forwarder is removed. The forwarder writes that it holds `127.0.0.1:17893` into a tmpfs of its own,
   which the session cannot reach. If a process of the session took that port first, the forwarder exits.
   The turn then fails with "the model relay's forwarder ... a process in the sandbox may be holding that
-  port", and nothing is handed to it.
-- **E2B.** The placeholder is signed by the server (`signatures.ts`, purpose `model-relay`). It names the
-  user, the session and the turn's nonce. Its signature counts for the longest turn plus 15 minutes
-  (`WLP_TURN_TIMEOUT_MS` + 15 min, `E2bProvider.relayLeaseMs`), not for the token's hour. The file
-  beside it states the token's expiry, which Windlass checks. The lease itself ends with the turn, well
-  before the signature does. The route checks the signature and the expiry, then asks the turn's live
-  lease for the token. This is a lookup in the server's process, or in the session's actor
-  (`internalModelRelay`) when another server process took the request. A lease that ended (the turn is
-  over) is refused, whatever its signature says. Its nonce is then remembered as ended until the
-  signature expires, so a placeholder of a finished turn that keeps being sent costs no actor call. The
-  placeholder works from anywhere on the internet while the turn runs, but only for model requests at
-  this relay, under the caps below.
+  port", and nothing is handed to it. On hosted Docker the relay holds a second, platform placeholder for the
+  lease and forwards to the route; on a machine's ChatGPT turn it holds the access token itself.
+- **The platform route (E2B Settings keys, and every lease hosted Docker or a machine forwards).** The placeholder
+  is signed by the server (`signatures.ts`, purpose `model-relay`). It names the user, the session and the turn's
+  nonce. Its signature counts for the longest turn (plus a minute for a forwarded one), and the lease itself ends
+  with the turn, before the signature does. The lease holds the turn's credential reference, never a secret. The
+  route checks the signature and the expiry, then asks the turn's live lease for that reference. This is a lookup in
+  the server's process, or in the session's actor (`internalModelRelay`) when another server process took the
+  request. It then opens the secret for that one request (`internalCredential`, sealed for the request's nonce for a
+  minute) at the pinned generation. A lease that ended (the turn is over) is refused, whatever its signature says. Its
+  nonce is then remembered as ended until the signature expires, so a placeholder of a finished turn that keeps being
+  sent costs no actor call. An E2B key placeholder works from anywhere on the internet while the turn runs, but only
+  for model requests at this relay, under the caps below.
 
-The placeholder file has the same form as a handed-in token, `{"accessToken": "<placeholder>",
-"expiresAt": <ms>}`, with the expiry of the ChatGPT token behind it. Windlass then refuses an expired
-placeholder before it sends anything, and the platform's existing failures (`handed_in_expired`,
-`handedInFailure`) keep their meaning.
+On a machine the placeholder file has the same form, `{"accessToken": "<placeholder>", "expiresAt": <ms>}`, with the
+expiry of the ChatGPT token behind it. Windlass then refuses an expired placeholder before it sends anything, and the
+platform's existing failures (`handed_in_expired`, `handedInFailure`) keep their meaning. On the ChatGPT plan a
+`handed_in_rejected` is the provider turning the plan's token down (`auth_required`), and the relay's own refusal is
+`token_unavailable` as everywhere (below).
 
 ## Refresh and rotation
 
-The token's schedule is unchanged (`token-file.ts`). The turn's `TokenFile` gets a token good for at
-least 20 more minutes, and replaces it when 10 minutes are left. With the relay, each new token goes to
-the relay first, and then the placeholder file is rewritten with the new expiry. The lease stays the same.
+Only the user's actor ever refreshes the ChatGPT sign-in, and no relay holds a refresh token. The holder answers the
+access token it keeps while it has more than 20 minutes left, else refreshes once for everyone asking.
 
-- On Docker and machines, the token is written into the relay container's private tmpfs
-  (`/run/wlp-model/tokens/<nonce>.json`, mode 0600). This uses `docker exec` with the content on
-  standard input, as `writeSecretFile` does. The relay reads that file on every request, so a request
-  that starts after a replacement uses the new token. A request already streaming keeps the token it
-  started with.
-- A ChatGPT plan lease (hosted Codex) holds no token: the route asks the user's actor per request, and the
-  holder answers the token it keeps while it has more than 20 minutes left, else refreshes once for everyone
-  asking. A relay inside an E2B or Daytona sandbox is handed a new one on the schedule above.
-- On E2B, the turn's lease holds the current token in memory. The route reads it on every request,
-  cached for at most 5 seconds when it came from another process. The session actor seals that
-  ChatGPT token for the requesting relay, bound to user, session, lease and request nonce. The transit
-  blob expires after 60 seconds.
+- **Hosted Docker (the route).** A plan lease holds no token: the route asks the user's actor at every request, so a
+  refreshed token is the next request's, on the same lease.
+- **E2B and Daytona (the relay in the sandbox).** The token opened at the turn's start has at least 20 minutes left;
+  when it has 10 left the turn asks for the current one and hands it to the relay on its standard input
+  (`rotatePlanToken`). A failed try is tried again every 20 s. Requests that start after it carry the new token.
+- **Machines.** The turn's `TokenFile` gets a token good for at least 20 more minutes, and replaces it when 10 minutes
+  are left (`token-file.ts`). With the machine's relay, each new token goes to the relay first, and then the
+  placeholder file is rewritten with the new expiry. The lease stays the same. The token is written into the relay
+  container's private tmpfs (`/run/wlp-model/tokens/<nonce>.json`, mode 0600), with `docker exec` and the content on
+  standard input, as `writeSecretFile` does. The relay reads that file on every request, so a request that starts
+  after a replacement uses the new token. A request already streaming keeps the token it started with.
 
 ### When the lease ends
 
-`close` ends the turn's requests still running, on both relays, not only the next ones:
+`close` ends the turn's requests still running, on every relay, not only the next ones:
 
-- On Docker and machines, `close` removes the turn's file first, then the forwarder. The relay looks at
+- On Docker and machines, `close` removes the turn's file in the relay first, then the forwarder. The relay looks at
   the leases of its running requests when its token directory changes and once a second, and stops every
   request of a lease whose file is gone or whose token has expired.
-- On E2B, `close` aborts the lease's requests in the process that holds it. A request that another server
-  process carries is looked at every 5 seconds and aborted once the session's actor says the lease is
-  gone.
+- At the route, `close` aborts the lease's requests in the process that holds it. A request that another server
+  process carries is looked at every 5 seconds and aborted once the session's actor says the lease is gone.
+- A relay in a microVM is stopped: its standard input closed, then its process group killed.
 
-A request that waited for a slot while its turn ended is answered 401 when its turn's token is looked up
-again. It is never sent with the token it was first looked up with.
+A request that waited for a slot while its turn ended is answered 401 when its turn's lease is looked up
+again. It is never sent with the credential it was first looked up with.
 
 ### What a stopped process leaves
 
@@ -239,9 +277,8 @@ and every file in its relay's token store, because none of their leases can stil
 one server process per Docker daemon, as hosted Docker has (`WLP_ALLOW_DOCKER_HOSTED`), and one runner
 per machine. The relay itself deletes, once a minute, every file whose `expiresAt` has passed or that is
 no record. On the hosted server and on a runner, suspending or removing a sandbox ends its lease too: its
-file in the relay, its forwarder, and on a runner the conversation's `relays` entry.
-
-Only the user's actor ever refreshes, as before. No relay holds a refresh token.
+file in the relay, its forwarder, and on a runner the conversation's `relays` entry. A relay in a microVM stops
+itself at the turn's limit plus a minute, by the wall clock.
 
 ## Limits
 
@@ -250,9 +287,12 @@ waiting per session (turn), and the relay's whole in-flight ceiling, with a FIFO
 before a 503 with `retry-after`. A session's connections past 32 are refused. The ceiling for the whole
 relay is 24 on a machine, which serves one user. A hosted relay serves every user of the deployment, so
 it uses `WLP_MODEL_RELAY_REQUESTS` (default 64), and 16 in flight per user (`HOSTED_RELAY_USER_REQUESTS`,
-counted by the user each turn's file names). The E2B route applies the same per-turn numbers, the same
-deployment ceiling and 16 in flight per user. Key-backed turns on every backend go through this route,
-so the platform's 16 in-flight requests per user is the effective per-user limit. It also has:
+counted by the user each turn's file names). The platform route applies the same per-turn numbers, the same
+deployment ceiling and 16 in flight per user. Key-backed turns on every backend, and plan-backed turns on hosted
+Docker, go through this route, so the platform's 16 in-flight requests per user is the effective per-user limit
+there. A relay in a microVM serves one turn: 8 in flight and 32 waiting. Every key- or plan-backed hosted turn also
+counts its requests against `WLP_MODEL_RELAY_TURN_REQUESTS` (300 by default), shared across server processes. The
+route also has:
 
 - 300 requests a minute per user, after a burst of 100, counted from the placeholder's signed user before
   any lookup. Past it the answer is a 503 with `retry-after`.
@@ -269,14 +309,15 @@ so the platform's 16 in-flight requests per user is the effective per-user limit
   The server logs failed status codes, elapsed time and fixed upstream diagnostics. The log limit is
   60 lines a minute. Provider text, request IDs and user-supplied paths stay out of diagnostics.
 
-The E2B route's limits are those of one server process. A deployment of several processes has each limit
+The route's limits are those of one server process. A deployment of several processes has each limit
 once per process, so its real ceilings are that many times higher. The per-user limits bound how many
 requests a user has in flight, not what they spend: a user's turns can still use the plan's whole quota
 through the relay while they run.
 
-The ChatGPT lease accepts only `GET /v1/models` and `POST /v1/responses`, with `Host: 127.0.0.1:17893` on
-Docker. It sends them to `https://api.openai.com/v1/...` with the real bearer, and passes on only
-`content-type`, `accept`, `session-id` and `user-agent`. A redirect is a 502. Every token the relay
+Windlass's ChatGPT leases, a machine's `chatgpt` wire and the hosted `chatgpt-plan` wire alike, accept only
+`GET /v1/models` and `POST /v1/responses`, with `Host: 127.0.0.1:17893` on Docker. They send them to
+`https://api.openai.com/v1/...` with the real bearer, and pass on only `content-type`, `accept`, `session-id` and
+`user-agent`. A redirect is a 502. Every token the relay
 has used is removed from the response stream. An error reply keeps the provider's `error.code`,
 `error.type` and a scrubbed, shortened message, so Windlass still tells a usage limit, a rate limit and a
 context overflow apart. Nothing that names the account or the request is passed on.
@@ -288,14 +329,16 @@ message. The platform maps a `relay_lease_ended` there to `token_unavailable` ("
 
 ## Rollout, and what happens when the relay is unavailable
 
-| Where | When the relay is used | Otherwise |
+| Where | Windlass on ChatGPT | Without it |
 | --- | --- | --- |
-| Hosted Docker | `WLP_MODEL_RELAY` is not `off` (default on), and the sandbox image's Windlass, as `windlass.problem()` reads it, is 0.6.0 or later | today's token file, and the server says so at startup |
-| Machines | the server names `model-relay` in its welcome, and the runner says `modelRelay` in its report and its `connect` answer. ChatGPT requires Windlass 0.6.0 or later. Settings keys require Windlass 0.7.1 and a runner that negotiates `windlass-key-relay`. | today's token file, as on those runners now |
-| Hosted E2B | `WLP_MODEL_RELAY` is not `off`, `WLP_MODEL_RELAY_URL` is set, and `WLP_E2B_WINDLASS_VERSION` is 0.6.0 or later | today's token file, and the server says which of these is missing at startup |
+| Hosted Docker | the ChatGPT plan through the platform route: `WLP_MODEL_RELAY` is not `off`, `WLP_MODEL_RELAY_URL` is set and reachable from the relay container, and the image's Windlass, as `windlass.problem()` reads it, is 0.6.0 or later | the turn is refused; the server says at startup what is missing |
+| Hosted E2B and Daytona | the ChatGPT plan through a relay in the sandbox, whatever the route's settings; the template's Windlass must be 0.6.0 or later (asked at each turn) | the turn is refused |
+| Machines | the user's sign-in through the machine's relay: the server names `model-relay` in its welcome, and the runner says `modelRelay` in its report and its `connect` answer. ChatGPT requires Windlass 0.6.0 or later. Settings keys require Windlass 0.7.1 and a runner that negotiates `windlass-key-relay`. | the access token in the sandbox's token file, as on those runners now |
 
-The token-file fallback above applies only to ChatGPT. Windlass 0.7.x sessions cannot be opened by 0.6.0. While the relay is on for E2B, `api.openai.com`
-is not in E2B's allow list: the sandbox has no token it would take.
+Everywhere hosted, the plan needs `WLP_PLAN_USERS` to name the user (or `*`). The token-file fallback applies only to
+a machine's ChatGPT turns. Windlass 0.7.x sessions cannot be opened by 0.6.0. While the route is on for E2B, the
+deployment's allow list names the relay's host; a Windlass, Codex or Claude Code sandbox adds its plan's API host
+for its own relay, which alone holds a token that host would take.
 
 Each profile says per sandbox which applies. A profile with the relay has `modelRelay: true`, and its
 summary is written from both flags. `commandsCanReadAccessToken` keeps its meaning, "can read the token
@@ -304,9 +347,9 @@ placeholder for this turn. With it they can make model requests on your ChatGPT 
 while the turn runs (8 at once, 32 waiting). The access token never enters the container" (or microVM).
 
 **Fail closed.** Once a turn is to use the relay, it never falls back to handing the real token to the
-sandbox. If the relay cannot be started or reached, or it refuses the token, the turn fails with "the
-engine could not be started in the sandbox: the model relay could not be started: …", and nothing is
-written into the sandbox. A quiet fallback would make what the side panel says depend on a race, and a
+sandbox. If the relay cannot be started or reached, or it refuses the token, the turn fails, and nothing is
+written into the sandbox. A hosted microVM refuses a token file outright (`TokenFile`), and a hosted Windlass turn
+paused before this change pins the plan when it resumes. A quiet fallback would make what the side panel says depend on a race, and a
 failed turn can be tried again. The fallbacks in the table are decided before the turn, from what the
 deployment and the runner say, and the panel shows which one applies.
 
@@ -318,7 +361,8 @@ To roll out 0.7.1, rebuild the Docker image with `sandbox/build.sh` and publish 
 
 - `scripts/windlass-key-docker-check.ts` runs the released ACP binary against four fake providers on an isolated loopback network. It checks model listing, generation, key refusal and the live sandbox environment and files.
 
-- `scripts/windlass-relay-check.mjs` (in `pnpm test`): the relay program with a recording upstream.
+- `scripts/windlass-relay-check.mjs` (in `pnpm test`): the Docker relay program (a machine's, and hosted Docker's
+  forwarding hop) with a recording upstream.
   It covers bearer replacement, another session's placeholder on this connection, an ended lease, a token
   replaced while a request streams, caps and waiting, the ceiling per user, error codes kept, the relay's
   own `relay_lease_ended`, a lease's end stopping its running requests, expired files deleted, tokens
@@ -326,23 +370,29 @@ To roll out 0.7.1, rebuild the Docker image with `sandbox/build.sh` and publish 
 - `scripts/plan-relay-check.ts` (CI heavy `rules`): the in-sandbox plan relay as a local process with a recording
   upstream: bearer swapped, another placeholder, host or route refused, `HEAD /api/hello` answered locally, the
   token scrubbed from streams and error bodies, a 401 kept, a replaced token used next, the turn's request limit,
-  close, abort and expiry, and no start without a token on stdin. `scripts/e2b-provider-test.ts` ("a plan's relay
-  in the sandbox") and `scripts/daytona-provider-test.ts` cover how each provider starts and stops it and the E2B
-  allow list.
-- `scripts/model-relay-route-check.ts` (CI heavy `rules`): the E2B route, with signed, expired, forged and
-  ended leases, refresh, caps, a queued request whose turn ended, bodies sent whole and capped, the rate per
-  user, ended leases remembered, `close` aborting running requests here and in another process, the
-  relay's own hostname, the version gates, the E2B network with the relay's host and without
-  `api.openai.com`, an E2B sandbox with no session, and the mapping of the relay's refusals.
+  close, abort and expiry, no start without a token on stdin, and Windlass on the ChatGPT plan: its two routes at the
+  `/v1` base and a token rotated by `rotatePlanToken`. `scripts/e2b-provider-test.ts` ("a plan's relay in the
+  sandbox", Windlass's included, with its placeholder file) and `scripts/daytona-provider-test.ts` cover how each
+  provider starts and stops it, that a microVM refuses a token file, and the E2B allow list.
+- `scripts/model-relay-route-check.ts` (CI heavy `rules`): the platform route with hosted Windlass's ChatGPT plan
+  lease (its env, the placeholder swapped for the plan's current token, a refreshed token used next, only its two
+  routes) and Settings keys, with signed, expired, forged and ended leases, caps, a queued request whose turn ended,
+  bodies sent whole and capped, the rate per user, ended leases remembered, `close` aborting running requests here
+  and in another process, the relay's own hostname, the version gates, the E2B network with the relay's host and a
+  Windlass sandbox's plan host, an E2B sandbox with no session, a microVM refusing a token file, and the mapping of
+  the relay's refusals. A machine's token file on a relayed sandbox is checked there too.
+- `scripts/model-plans-check.ts`: hosted Windlass pins the ChatGPT plan, `WLP_PLAN_USERS` refuses it with its
+  sentence, a prefixed `openai/…` model still takes the key, and a turn paused before pins the plan on resume.
 - `scripts/model-relay-e2b-check.ts` (by hand: it needs an E2B key and a real access token): one real
-  model request from an E2B sandbox through a relay hostname to `api.openai.com`. It starts the server in
-  its own process on ports and storage of its own, behind a Cloudflare quick tunnel, makes one sandbox under
-  `restricted`, and runs one real turn through the platform's turn code: "Reply with exactly: relay ok".
-  It checks the answer, that the model call reached `api.openai.com` and was answered, that the relay
-  logged no failure, and that the token is nowhere in the sandbox. Nothing in CI makes a real model
-  request, so run it before turning the relay on for E2B and after changing the route.
-- `scripts/model-relay-docker-check.ts` (CI heavy `sandbox-docker`): the hosted relay with real
-  containers. It repeats the experiments of the token-exposure note in a hardened session container: a
+  model request of hosted Windlass on the ChatGPT plan from an E2B sandbox, through the relay inside it, to
+  `api.openai.com`. It starts the server in its own process on ports and storage of its own, behind a Cloudflare
+  quick tunnel (the route Settings keys use), makes one sandbox under `restricted`, and runs one real turn through
+  the platform's turn code: "Reply with exactly: relay ok". It checks the answer, that nothing of it went through the
+  server's route, that the relay logged no failure, and that the token is nowhere in the sandbox. Nothing in CI makes
+  a real model request, so run it after changing the plan relay.
+- `scripts/model-relay-docker-check.ts` (CI heavy `sandbox-docker`): the Docker relay with real
+  containers, a machine's access-token lease opened on it as a runner does (`--hosted-keys`: hosted Docker's
+  forwarded leases). It repeats the experiments of the token-exposure note in a hardened session container: a
   scan of the files, of `/proc/*/environ` and `/dev/shm`, and a process left over from setup. The real
   token is nowhere in the container. It also runs `windlass --models` through the relay, replaces the
   token while requests run, applies the caps, and shows that the forwarder is gone after the turn. It
@@ -359,7 +409,7 @@ refuses to start Codex if one is in `CODEX_HOME`. Its models are the plan's, fro
 
 On hosted Docker the guest receives a local bearer. A separate forwarder listens on loopback in that container’s network namespace and prefixes its connections to the relay socket with the turn’s nonce. The relay matches both nonce and bearer. A different container’s forwarder supplies a different nonce. Only the relay and the forwarders mount the socket volume. The platform placeholder stays in the relay’s private tmpfs.
 
-On E2B the guest receives the platform placeholder directly. Anyone who copies it can use it from outside the microVM and spend the owner’s quota until the turn ends. The lease is bound to the owner, session, turn, one provider generation and the harness’s allowed routes. Its signature expires after at most the configured turn timeout. The session’s lease owner enforces a shared per-turn cap of 300 requests by default (`WLP_MODEL_RELAY_TURN_REQUESTS`), including requests received by another platform process. Each accepted request can still consume provider tokens.
+On E2B, with a Settings key, the guest receives the platform placeholder directly (on a plan it gets the placeholder of the relay inside its microVM, good only on that loopback port). Anyone who copies a platform placeholder can use it from outside the microVM and spend the owner’s quota until the turn ends. The lease is bound to the owner, session, turn, one provider generation and the harness’s allowed routes. Its signature expires after at most the configured turn timeout. The session’s lease owner enforces a shared per-turn cap of 300 requests by default (`WLP_MODEL_RELAY_TURN_REQUESTS`), including requests received by another platform process. Each accepted request can still consume provider tokens.
 
 Set `WLP_MODEL_RELAY_URL` to the dedicated relay hostname. E2B also requires `WLP_E2B_OPEN_PROFILE=1` and the template’s Windlass version as described above. Agent commands run directly as the guest’s non-root user.
 

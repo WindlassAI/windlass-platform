@@ -1,6 +1,8 @@
 /**
- * The access token file of one turn: how a turn that is not scripted gets to use its user's ChatGPT
- * sign-in without the sandbox ever holding it.
+ * The access token file of one turn on a paired machine: how a Windlass turn there gets to use its user's
+ * ChatGPT sign-in without the sandbox ever holding it. Hosted turns pay with the ChatGPT plan instead
+ * (`openModelKeyRelay` with a plan reference): their file holds only the plan relay's placeholder
+ * (`writePlanPlaceholder`), and its token is resolved per request or rotated in the sandbox's own relay.
  *
  *   where   Docker's per-container /dev/shm tmpfs, or Windlass's data directory on E2B's private disk.
  *           Bubblewrap mounts a fresh /dev and hides the data directory, so neither path is visible
@@ -44,7 +46,7 @@
 
 import { type AccessToken, type AccessTokens, SandboxUserError } from "./api.js";
 import { TOKEN_REPLACE_LEAD_MS, TOKEN_REPLACE_RETRY_MS, type TokenFileState, tokenFileContent } from "./handoff.js";
-import { readsModelRelay, SETTINGS_KEY_WINDLASS } from "../model-relay-url.js";
+import { MODEL_RELAY_WINDLASS, readsModelRelay, SETTINGS_KEY_WINDLASS } from "../model-relay-url.js";
 import {
 	DATA_DIR,
 	type KeyReference,
@@ -70,6 +72,12 @@ export function tokenFilePath(
 ): string {
 	if (!/^[A-Za-z0-9_-]+$/.test(sandboxId)) throw new Error("invalid sandbox id");
 	return `${directory}/${TOKEN_FILE_PREFIX}${sandboxId}.json`;
+}
+
+/** Where a turn's token file goes in this sandbox: Docker's private tmpfs, or Windlass's data directory on a microVM's private disk. */
+export function turnTokenFilePath(sandbox: Pick<TurnSandbox, "id" | "profile">): string {
+	const hosted = sandbox.profile === "daytona" || sandbox.profile.startsWith("e2b");
+	return tokenFilePath(sandbox.id, hosted ? DATA_DIR : DOCKER_TOKEN_DIR);
 }
 
 /**
@@ -106,7 +114,8 @@ export class TokenFileError extends Error {
  * Settings-key turns get only a relay address and placeholder. A plan on a sandbox with an address of its own
  * gets the relay inside it (`TurnSandbox.localPlanRelay`), so the plan's requests leave from there; the token,
  * opened here for this turn, goes to that relay and nowhere the agent can read. A token that expires (a ChatGPT
- * plan's) is replaced in that relay on a token file's schedule (`rotatePlanToken`).
+ * plan's) is replaced in that relay on a token file's schedule (`rotatePlanToken`). Elsewhere (hosted Docker) a
+ * plan goes through the platform relay like a key, which resolves the plan's current token at every request.
  */
 export async function openModelKeyRelay(
 	sandbox: TurnSandbox,
@@ -116,11 +125,25 @@ export async function openModelKeyRelay(
 	takeRequest?: TakeRelayRequest,
 	openSecret?: () => Promise<PlanSecret | null>,
 ): Promise<KeyTurnRelay> {
+	if (key.harness === "windlass") {
+		if (!key.plan && sandbox.windlassKeyProblem) throw new TokenFileError(sandbox.windlassKeyProblem);
+		// A connected runner or restored snapshot can have an older binary than its current image.
+		const minimum = key.plan ? MODEL_RELAY_WINDLASS : SETTINGS_KEY_WINDLASS;
+		const version = await sandbox.ask(["windlass", "--version"], { timeoutMs: 10_000 });
+		if (version?.code !== 0 || !readsModelRelay(/^Windlass\s+(\S+)/.exec(version.stdout.trim())?.[1], minimum))
+			throw new TokenFileError(
+				`Windlass needs ${minimum} to use ${key.plan ? "your ChatGPT plan" : "Settings keys"} in this sandbox.`,
+			);
+		signal?.throwIfAborted();
+	}
 	if (key.plan && sandbox.localPlanRelay) {
 		if (!openSecret) throw new Error("A plan turn on this sandbox needs its secret opened for the turn.");
 		const opened = await openSecret();
 		signal?.throwIfAborted();
-		if (!opened) throw new SandboxUserError("The plan for this turn changed or was removed. Start a new turn.");
+		if (!opened)
+			throw new SandboxUserError(
+				"The plan for this turn changed, was removed, or its sign-in is no longer accepted. Reconnect it if needed, then send the prompt again.",
+			);
 		const relay = await sandbox.localPlanRelay(opened.secret, {
 			signal,
 			takeRequest,
@@ -129,18 +152,31 @@ export async function openModelKeyRelay(
 		});
 		return opened.expiresAt === undefined ? relay : rotatePlanToken(relay, opened.expiresAt, openSecret);
 	}
-	if (key.harness === "windlass" && sandbox.windlassKeyProblem) throw new TokenFileError(sandbox.windlassKeyProblem);
-	if (!sandbox.modelKeyRelay) throw new TokenFileError("A saved provider key requires a model relay for this sandbox.");
-	if (key.harness === "windlass") {
-		// A connected runner or restored snapshot can have an older binary than its current image.
-		const version = await sandbox.ask(["windlass", "--version"], { timeoutMs: 10_000 });
-		if (
-			version?.code !== 0 ||
-			!readsModelRelay(/^Windlass\s+(\S+)/.exec(version.stdout.trim())?.[1], SETTINGS_KEY_WINDLASS)
-		)
-			throw new TokenFileError(`Windlass needs ${SETTINGS_KEY_WINDLASS} to use Settings keys in this sandbox.`);
-	}
+	if (!sandbox.modelKeyRelay)
+		throw new TokenFileError(
+			key.plan
+				? "A plan requires the platform's model relay (WLP_MODEL_RELAY_URL) for this sandbox."
+				: "A saved provider key requires a model relay for this sandbox.",
+		);
 	return sandbox.modelKeyRelay(sessionId, key, signal, takeRequest);
+}
+
+/**
+ * Windlass on the ChatGPT plan reads its bearer from an access token file, as it reads a handed-in token: the file
+ * holds the plan relay's placeholder for this turn, with an expiry past the turn's end (Windlass refuses an expired
+ * one before it sends anything). The relay ends the placeholder with the turn, whatever the file says.
+ */
+export async function writePlanPlaceholder(
+	sandbox: TurnSandbox,
+	path: string,
+	placeholder: string,
+	expiresAt: number,
+): Promise<void> {
+	await sandbox
+		.writeSecretFile(path, tokenFileContent({ accessToken: placeholder, expiresAt }))
+		.catch((error: unknown) => {
+			throw new TokenFileError(errorText(error));
+		});
 }
 
 /** When a token is replaced: once it has `leadMs` left, or, one that has no more than that already, once half of what it has is gone. */
@@ -243,10 +279,7 @@ export class TokenFile {
 		private readonly tokens: AccessTokens,
 		options: TokenFileOptions = {},
 	) {
-		this.path = tokenFilePath(
-			sandbox.id,
-			sandbox.profile === "daytona" || sandbox.profile.startsWith("e2b") ? DATA_DIR : DOCKER_TOKEN_DIR,
-		);
+		this.path = turnTokenFilePath(sandbox);
 		this.leadMs = options.leadMs ?? TOKEN_REPLACE_LEAD_MS;
 		this.retryMs = options.retryMs ?? TOKEN_REPLACE_RETRY_MS;
 		this.log =
@@ -355,8 +388,10 @@ export class TokenFile {
 			for (const form of [token.accessToken, JSON.stringify(token.accessToken).slice(1, -1)]) this.handed.add(form);
 		const relay = this.relay;
 		if (relay !== null) this.handed.add(relay.placeholder);
+		// A hosted microVM never takes the token: its turns pay with the ChatGPT plan through a relay.
+		if (relay === null && this.path.startsWith(`${DATA_DIR}/`))
+			throw new TokenFileError("A hosted sandbox takes no access token: its turns run on the ChatGPT plan's relay.");
 		// With a relay: the token goes there first, then the file gets the placeholder with the token's expiry.
-		if (relay === null && this.sandbox.profile === "daytona") throw new TokenFileError("Daytona requires a turn relay");
 		const writing =
 			relay === null
 				? this.sandbox.writeSecretFile(this.path, tokenFileContent(token))

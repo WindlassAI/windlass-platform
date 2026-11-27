@@ -1,6 +1,7 @@
 import { SecretRedactor, type Redactor } from "../repo-secrets.js";
 import type { CredentialRef, HarnessId, ModelProvider } from "../contract.js";
 import type { KeyTurnRelay } from "./provider.js";
+import { ACCESS_TOKEN_FILE_ENV } from "./handoff.js";
 
 type KeyEnv = (ref: Omit<CredentialRef, "generation">, base: string, placeholder: string) => Record<string, string>;
 
@@ -50,6 +51,20 @@ export function hostedKeyEnv(
 	lease: KeyTurnRelay,
 ): Record<string, string> {
 	return KEY_ENV[id](ref, lease.env.WINDLASS_MODEL_BASE_URL!, lease.placeholder);
+}
+
+/**
+ * Windlass on the ChatGPT plan: its ChatGPT provider, sent to the plan's relay, with the bearer read from an
+ * access token file that holds the turn's placeholder (`writePlanPlaceholder`), as Windlass reads a handed-in token.
+ */
+export function windlassPlanEnv(lease: KeyTurnRelay, tokenFile: string): Record<string, string> {
+	const base = lease.env.WINDLASS_MODEL_BASE_URL!;
+	return {
+		WINDLASS_PROVIDER: "chatgpt",
+		WINDLASS_MODEL_BASE_URL: base,
+		WINDLASS_MODEL_ALLOWED_ORIGIN: new URL(base).origin,
+		[ACCESS_TOKEN_FILE_ENV]: tokenFile,
+	};
 }
 
 export function redactKeyLease(secrets: Redactor, placeholder: string): Redactor {

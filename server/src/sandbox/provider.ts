@@ -125,7 +125,11 @@ export interface TurnSandbox extends SandboxHandle {
 	removeFiles(paths: string[]): Promise<void>;
 	/** Keep the sandbox running until the returned release is called. May reject if the lease cannot be maintained. */
 	holdForTurn(): Promise<() => Promise<void>>;
-	/** A relay lease replaces the token with a per-turn placeholder. Failure must abort the turn before any credential is written. */
+	/**
+	 * A paired machine's relay for Windlass on the user's ChatGPT sign-in: a lease replaces the token with a per-turn
+	 * placeholder. Hosted sandboxes have none: their ChatGPT turns pay with the plan (`modelKeyRelay`,
+	 * `localPlanRelay`). Failure must abort the turn before any credential is written.
+	 */
 	modelRelay?(): Promise<TurnModelRelay>;
 	readonly windlassKeyProblem?: string;
 	modelKeyRelay?(

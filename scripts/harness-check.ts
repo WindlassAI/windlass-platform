@@ -117,7 +117,13 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	calls.length = 0;
 	for (const place of [hosted, machine]) {
 		const meta = { place, uid: "owner", harness: "windlass" } as never;
-		assert.deepEqual(await turnCredential(ctx as never, meta, undefined, "gpt-5"), { model: "gpt-5" });
+		// Hosted, an unqualified model pays with the ChatGPT plan, which WLP_PLAN_USERS (unset here) turns off.
+		if (place === hosted)
+			await assert.rejects(
+				turnCredential(ctx as never, meta, undefined, "gpt-5"),
+				/ChatGPT plan isn't enabled for hosted runs/,
+			);
+		else assert.deepEqual(await turnCredential(ctx as never, meta, undefined, "gpt-5"), { model: "gpt-5" });
 		for (const provider of MODEL_PROVIDERS) {
 			const model = provider + "/vendor/model";
 			const key = { provider, generation: provider + "-generation" };

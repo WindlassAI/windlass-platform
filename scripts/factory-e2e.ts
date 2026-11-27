@@ -124,6 +124,10 @@ class Server {
 			...process.env,
 			WLP_DEMO: "1",
 			WLP_SANDBOX: "fake",
+			// Hosted Windlass's ChatGPT models pay with the ChatGPT plan, which WLP_PLAN_USERS gates. Its catalog check at
+			// connect is refused locally: no check sends a fake token to OpenAI.
+			WLP_PLAN_USERS: process.env.WLP_PLAN_USERS ?? "*",
+			WLP_OPENAI_BASE_URL: process.env.WLP_OPENAI_BASE_URL ?? "http://127.0.0.1:9",
 			WLP_SECRET: this.secret,
 			RIVETKIT_STORAGE_PATH: this.storage,
 			RIVET_RUN_ENGINE_PORT: String(ENGINE_PORT),

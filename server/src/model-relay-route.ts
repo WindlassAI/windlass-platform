@@ -1,4 +1,4 @@
-/** The platform credential boundary for E2B and forwarded Docker requests (docs/model-relay.md). */
+/** The platform credential boundary for E2B Settings keys and forwarded Docker requests (docs/model-relay.md). */
 import { createRequire } from "node:module";
 import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
@@ -7,9 +7,7 @@ import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import * as zlib from "node:zlib";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { createClient } from "rivetkit/client";
-import { randomBytes } from "node:crypto";
 import { openSavedCredential } from "./credentials/transit.js";
-import { serverSealer } from "./signin/seal.js";
 import { isModelProvider, type CredentialRef } from "./contract.js";
 import { credentialWire, harnessMethod, proofHeader, type Wire } from "../../sandbox/relay/wires.cjs";
 import { isActorGone, modelKeyActor } from "./actors/internal.js";
@@ -20,9 +18,7 @@ import type { Registry } from "./registry.js";
 import {
 	BodyBudget,
 	RELAY_PREFIX,
-	relayTransitSubject,
 	type RemoteLease,
-	type RelayToken,
 	type Placeholder,
 	verifiedMachine,
 	revokeMachineLeases,
@@ -36,6 +32,7 @@ import {
 	readPlaceholder,
 	trackRequest,
 } from "./sandbox/relay-leases.js";
+import type { KeyReference } from "./sandbox/provider.js";
 
 const require = createRequire(import.meta.url);
 const { scrubStream, limitHeaders } = require("../../sandbox/relay/server.cjs") as {
@@ -64,8 +61,8 @@ const DECODERS = new Map<string, () => NodeJS.ReadWriteStream>([
 		? [["zstd", (zlib as unknown as { createZstdDecompress: () => NodeJS.ReadWriteStream }).createZstdDecompress]]
 		: []) as [string, () => NodeJS.ReadWriteStream][]),
 ]);
-/** Remote leases share a token-cache and revocation-poll interval. */
-const REMOTE_CACHE_MS = 5_000;
+/** How often a lease another process holds is looked at while its requests run here. */
+const REMOTE_POLL_MS = 5_000;
 const UPSTREAM_TIMEOUT_MS = 600_000;
 
 function refusal(
@@ -95,14 +92,8 @@ export interface RelayRouteDeps {
 	paired(uid: string, machine: string): Promise<boolean>;
 	/** Returns the sealed secret behind `ref` (a Settings key or a plan), bound to this request nonce. */
 	credential(uid: string, ref: Omit<CredentialRef, "generation">, request: string): Promise<string | null>;
-	/** The session actor returns a sealed token or a key reference. */
-	remote(
-		uid: string,
-		sessionId: string,
-		nonce: string,
-		request: string,
-		consume?: boolean,
-	): Promise<RemoteLease | null>;
+	/** The session actor answers its lease's credential reference. */
+	remote(uid: string, sessionId: string, nonce: string, consume?: boolean): Promise<RemoteLease | null>;
 	fetch: typeof fetch;
 	limiter: RelayLimiter;
 	rate: UserRate;
@@ -124,11 +115,11 @@ const defaults: RelayRouteDeps = {
 		}
 	},
 	credential: (uid, ref, request) => modelKeyActor({ client: engine }, uid).internalCredential(ref, request),
-	remote: async (uid, sessionId, nonce, request, consume) => {
+	remote: async (uid, sessionId, nonce, consume) => {
 		try {
 			return await engine()
 				.agentSession.get([uid, sessionId], { params: serviceParams() })
-				.internalModelRelay({ nonce, request, consume });
+				.internalModelRelay({ nonce, consume });
 		} catch (error) {
 			if (isActorGone(error)) return null;
 			throw error;
@@ -177,15 +168,13 @@ export function upstreamFetch(url: string, init: RequestInit): Promise<Response>
 	});
 }
 
-const cached = new Map<string, { token: Extract<RelayToken, { kind: "access" }>; until: number }>();
-
 /** Revoked nonces stay invalid until their placeholders expire. */
 async function tokenFor(
 	deps: RelayRouteDeps,
 	placeholder: Placeholder,
 	machine: string | undefined,
 	consume = false,
-): Promise<RelayToken | "limit" | null> {
+): Promise<KeyReference | "limit" | null> {
 	const { uid, sessionId, nonce, expiresAt: placeholderExpires } = placeholder;
 	if (machine !== placeholder.machine) return null;
 	const now = deps.now();
@@ -197,54 +186,30 @@ async function tokenFor(
 	}
 	// This process runs the turn: what it holds is the answer, and a lease it no longer holds has ended.
 	if (holdsLease(nonce)) return leaseToken(nonce, uid, sessionId, now, consume);
-	const hit = cached.get(nonce);
-	if (hit && hit.until > now && hit.token.expiresAt > now) return hit.token;
-	const request = randomBytes(16).toString("hex");
-	const answer = await deps.remote(uid, sessionId, nonce, request, consume);
-	if (cached.size > 4096) cached.clear();
+	const answer = await deps.remote(uid, sessionId, nonce, consume);
 	if (answer === null || !answer.held) {
 		// Ended: refused from now on without asking the actor again.
-		cached.delete(nonce);
 		endLease(nonce, placeholderExpires, now);
 		return null;
 	}
 	if (answer.limited) return "limit";
-	if (answer.token === null) {
-		cached.delete(nonce);
-		return null;
-	}
-	if (typeof answer.token !== "string") {
-		const { provider, generation, harness, plan } = answer.token;
-		return isModelProvider(provider) && typeof generation === "string"
-			? { kind: "key", provider, generation, harness, ...(plan === true && { plan }) }
-			: null;
-	}
-	const token = JSON.parse(
-		serverSealer().open("transit", relayTransitSubject(uid, sessionId, nonce, request), answer.token),
-	);
-	if (
-		!Number.isSafeInteger(token.exp) ||
-		token.exp <= deps.now() ||
-		!Number.isSafeInteger(token.expiresAt) ||
-		token.expiresAt <= deps.now() ||
-		typeof token.accessToken !== "string"
-	)
-		return null;
-	const access = { kind: "access" as const, accessToken: token.accessToken, expiresAt: token.expiresAt };
-	cached.set(nonce, { token: access, until: Math.min(token.exp, now + REMOTE_CACHE_MS) });
-	return access;
+	if (answer.token === null) return null;
+	const { provider, generation, harness, plan } = answer.token;
+	return isModelProvider(provider) && typeof generation === "string"
+		? { provider, generation, harness, ...(plan === true && { plan }) }
+		: null;
 }
 
 /** A remote owner cannot abort local requests directly. Poll its lease while requests are active. */
 const watched = new Map<
 	string,
-	{ lookup: () => Promise<RelayToken | null>; expires: number; requests: Set<AbortController> }
+	{ lookup: () => Promise<KeyReference | null>; expires: number; requests: Set<AbortController> }
 >();
 let watching: NodeJS.Timeout | null = null;
 function watchRemote(
 	nonce: string,
 	expires: number,
-	lookup: () => Promise<RelayToken | null>,
+	lookup: () => Promise<KeyReference | null>,
 	controller: AbortController,
 ): () => void {
 	let entry = watched.get(nonce);
@@ -260,7 +225,7 @@ function watchRemote(
 				() => undefined,
 			);
 		}
-	}, REMOTE_CACHE_MS);
+	}, REMOTE_POLL_MS);
 	watching.unref?.();
 	const mine = entry;
 	return () => {
@@ -387,7 +352,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 		const current = await tokenFor(deps, placeholder, machine);
 		return current === "limit" ? null : current;
 	};
-	let token: RelayToken | null;
+	let token: KeyReference | null;
 	try {
 		const admission = await tokenFor(deps, placeholder, machine, method !== "HEAD");
 		if (admission === "limit") return refusal(429, "This turn reached its model request limit.");
@@ -397,7 +362,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 	}
 	if (token === null) return leaseEnded();
 	// Claude Code's reachability check, for an Anthropic key or a Claude plan.
-	if (method === "HEAD" && !(token.kind === "key" && token.harness === "claude" && token.provider === "anthropic"))
+	if (method === "HEAD" && !(token.harness === "claude" && token.provider === "anthropic"))
 		return refusal(403, "This request is not allowed by the relay.");
 	const maxBody = deps.bodyBytes ?? ROUTE_LIMITS.bodyBytes;
 	const declared = Number(request.headers.get("content-length") ?? 0);
@@ -437,24 +402,23 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 		}
 		// After reading the body and waiting for a slot, resolve the lease and the saved generation afresh.
 		let secret: string | null = null;
-		let wire: Wire = "chatgpt";
+		let wire: Wire | null = null;
 		try {
 			token = await lookup();
-			if (token?.kind === "key") {
-				const keyWire = credentialWire(token);
-				wire = keyWire;
-				if (method !== "HEAD" && harnessMethod(token.harness, keyWire, path) !== method) {
+			if (token) {
+				wire = credentialWire(token);
+				if (method !== "HEAD" && harnessMethod(token.harness, wire, path) !== method) {
 					note(`refused for ${token.harness ?? "windlass"}: ${method} ${url.pathname.slice(0, 80)}`);
 					release();
 					return refusal(403, "This request is not allowed by the relay.");
 				}
 				secret = (await openSavedCredential(placeholder.uid, token, deps.credential))?.secret ?? null;
-			} else if (token) secret = token.accessToken;
+			}
 		} catch {
 			release();
 			return refusal(503, "The relay could not resolve the credential. Try again.", { "retry-after": "1" });
 		}
-		if (!secret || ended.signal.aborted) {
+		if (!secret || !wire || ended.signal.aborted) {
 			release();
 			return leaseEnded();
 		}

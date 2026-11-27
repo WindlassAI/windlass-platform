@@ -18,8 +18,7 @@ import { META } from "../server/src/sandbox/e2b/sandboxes.js";
 import { HostedSandboxes } from "../server/src/sandbox/hosted.js";
 import { DATA_DIR, shellQuote } from "../server/src/sandbox/provider.js";
 import { GUEST_NODE } from "../server/src/sandbox/plan-relay.js";
-import { leaseToken, readPlaceholder } from "../server/src/sandbox/relay-leases.js";
-import { TokenFile } from "../server/src/sandbox/token-file.js";
+import { TokenFile, turnTokenFilePath, writePlanPlaceholder } from "../server/src/sandbox/token-file.js";
 
 type CreateSandbox = Parameters<DaytonaClient["create"]>[0];
 
@@ -202,31 +201,24 @@ try {
 	assert.equal(fake.activity, 2);
 	await guest.writeTextFile("nested/file", "disk contents");
 	const token = "stand-in-real-access-token";
-	const file = new TokenFile(
+	// Windlass here pays with the ChatGPT plan: the sandbox is never handed an access token, only a placeholder file.
+	const refused = await new TokenFile(
 		guest,
 		{ current: async () => ({ accessToken: token, expiresAt: Date.now() + 3_600_000 }) },
 		{ log() {} },
-	);
-	let nonce = "";
-	try {
-		await file.start();
-		const stored = JSON.parse(await guest.readTextFile(file.path));
-		const placeholder = readPlaceholder(stored.accessToken);
-		assert.equal(placeholder?.sessionId, "test");
-		nonce = placeholder!.nonce;
-		const leased = await leaseToken(nonce, "alice", "test");
-		assert.ok(leased && leased !== "limit" && leased.kind === "access" && leased.accessToken === token);
-		assert.notEqual(stored.accessToken, token);
-		assert.equal((await stat(resolve(disk, file.path.split("/").at(-1)!))).mode & 0o777, 0o600);
-		assert.ok(!inputs.join("").includes(token) && !inputs.join("").includes(Buffer.from(token).toString("base64")));
-	} finally {
-		await file.stop();
-	}
-	assert.equal(await leaseToken(nonce, "alice", "test"), null);
-	await assert.rejects(
-		new TokenFile(guest, { current: async () => ({ accessToken: token, expiresAt: Date.now() + 1e6 }) }).resume(null),
-		/requires a turn relay/,
-	);
+	)
+		.start()
+		.then(
+			() => null,
+			(error: unknown) => error,
+		);
+	assert.ok(refused instanceof Error && /takes no access token/.test(refused.message));
+	assert.ok(!inputs.join("").includes(token) && !inputs.join("").includes(Buffer.from(token).toString("base64")));
+	const file = { path: turnTokenFilePath(guest) };
+	await writePlanPlaceholder(guest, file.path, "wlp-plan." + "p".repeat(43), Date.now() + 3_600_000);
+	const stored = JSON.parse(await guest.readTextFile(file.path));
+	assert.equal(stored.accessToken, "wlp-plan." + "p".repeat(43));
+	assert.equal((await stat(resolve(disk, file.path.split("/").at(-1)!))).mode & 0o777, 0o600);
 	let out = "",
 		err = "",
 		gotLine!: () => void;

@@ -101,9 +101,15 @@ import {
 	randomId,
 	shellQuote,
 } from "../server/src/sandbox/provider.js";
-import { openModelKeyRelay, rotatePlanToken, tokenFilePath } from "../server/src/sandbox/token-file.js";
+import {
+	openModelKeyRelay,
+	rotatePlanToken,
+	tokenFilePath,
+	turnTokenFilePath,
+	writePlanPlaceholder,
+} from "../server/src/sandbox/token-file.js";
 import { GUEST_NODE, planRelaySources } from "../server/src/sandbox/plan-relay.js";
-import { hostedKeyEnv, redactKeyLease } from "../server/src/sandbox/hosted-keys.js";
+import { hostedKeyEnv, redactKeyLease, windlassPlanEnv } from "../server/src/sandbox/hosted-keys.js";
 import { sleep } from "./check-wait.js";
 import { Report } from "./check-report.js";
 import { matchesSection } from "./check-sections.js";
@@ -1500,7 +1506,7 @@ await section("a plan's relay in the sandbox", async () => {
 	const relayOrigin = "https://relay.example.com";
 	const machines: PlanRelayMachine[] = [];
 	const w = world(
-		{ openProfile: true, modelRelayOrigin: relayOrigin },
+		{ openProfile: true, modelRelayOrigin: relayOrigin, maxRunning: 3 },
 		{
 			machine: () => {
 				const machine = new PlanRelayMachine();
@@ -1652,6 +1658,41 @@ await section("a plan's relay in the sandbox", async () => {
 	await rotated.close();
 	expect("the turn's end stops the relay", rotatingStarted.ended === true);
 
+	// Hosted Windlass on the ChatGPT plan: the same relay in the sandbox, on Windlass's routes, its file only the placeholder.
+	const windlassId = await w.sandboxes.create({ uid: "u1", sessionId: "s3", profile: "e2b" });
+	const windlassHandle = (await w.sandboxes.connect(windlassId)) as E2bSandboxHandle;
+	const windlassMachine = machines.at(-1)!;
+	const windlassRelay = await openModelKeyRelay(
+		windlassHandle,
+		"s3",
+		{ provider: "openai", plan: true, generation: "g1", harness: "windlass" },
+		undefined,
+		undefined,
+		async () => ({ secret: firstAccess, expiresAt: Date.now() + 30 * 60_000 }),
+	);
+	const windlassStarted = windlassMachine.relays.at(-1)!;
+	const windlassHanded = JSON.parse(windlassStarted.stdin.split("\n")[1] ?? "{}");
+	const planFile = turnTokenFilePath(windlassHandle);
+	await writePlanPlaceholder(windlassHandle, planFile, windlassRelay.placeholder, Date.now() + 3_600_000);
+	const fileWrite = windlassMachine.commands.find(c => c.command.includes(planFile) && c.stdin.includes("accessToken"));
+	const windlassEnv = windlassPlanEnv(windlassRelay, planFile);
+	expect(
+		"Windlass on the ChatGPT plan starts the relay in its sandbox on the chatgpt-plan wire for Windlass, at the /v1 base, and its token file holds only the placeholder",
+		windlassHanded.wire === "chatgpt-plan" &&
+			windlassHanded.harness === "windlass" &&
+			windlassHanded.token === firstAccess &&
+			windlassEnv.WINDLASS_MODEL_BASE_URL === "http://127.0.0.1:40123/v1" &&
+			windlassEnv.WINDLASS_PROVIDER === "chatgpt" &&
+			windlassEnv.WINDLASS_ACCESS_TOKEN_FILE === planFile &&
+			planFile.startsWith(DATA_DIR) &&
+			!!fileWrite &&
+			fileWrite.stdin.includes(windlassRelay.placeholder) &&
+			!windlassMachine.commands.some(c => c.stdin.includes(firstAccess) || c.command.includes(firstAccess)),
+		JSON.stringify({ wire: windlassHanded.wire, env: windlassEnv, file: !!fileWrite }),
+	);
+	await windlassRelay.close();
+	expect("the turn's end stops Windlass's plan relay", windlassStarted.ended === true);
+
 	const keyLease = await openModelKeyRelay(handle, "s1", {
 		provider: "anthropic",
 		generation: "g1",
@@ -1700,12 +1741,12 @@ await section("a plan's relay in the sandbox", async () => {
 			others.every(o => !o.made1.includes("api.anthropic.com") && !o.made2.includes("api.anthropic.com")) &&
 				others[2]!.meta[META.harness] === undefined,
 		);
+		const windlass = others[2]!;
 		expect(
-			`${mode}: a Codex sandbox may reach api.openai.com for a ChatGPT plan's relay, and no other agent's may`,
-			codex.made1.includes("api.openai.com") &&
-				codex.made2.includes("api.openai.com") &&
-				[claude, ...others.slice(1)].every(o => !o.made1.includes("api.openai.com")),
-			codex.made2.join(","),
+			`${mode}: a Codex or Windlass sandbox may reach api.openai.com for a ChatGPT plan's relay, and no other agent's may`,
+			[codex, windlass].every(o => o.made1.includes("api.openai.com") && o.made2.includes("api.openai.com")) &&
+				[claude, others[1]!].every(o => !o.made1.includes("api.openai.com")),
+			`${codex.made2.join(",")} | windlass: ${windlass.made2.join(",")}`,
 		);
 	}
 });

@@ -684,7 +684,8 @@ export async function takeCredential(
 	const credential =
 		active.credential ??
 		(await t.hooks.turnCredential(c, meta, offered, meta.model, signal, run?.credential).catch(error => {
-			if (!(error instanceof UserError) || error.code !== "harness_signed_out") throw error;
+			if (!(error instanceof UserError) || !["harness_signed_out", "chatgpt_required"].includes(String(error.code)))
+				throw error;
 			return refuseItemPolicy(active.item, error.message);
 		}));
 	const { key } = credential;
@@ -757,8 +758,9 @@ export async function checkHarness(
 ): Promise<Pick<OpenedTurn, "harness" | "caps" | "profile" | "platformTool">> {
 	const { meta, active, account, reviewer, critic, checkout, turn, effort } = t;
 	const { key } = credential;
-	// What the turn is handed goes by what the session's harness can do, asked of this sandbox's.
-	account.provider = key?.provider;
+	// What the turn is handed goes by what the session's harness can do, asked of this sandbox's. Windlass's ChatGPT
+	// models are the platform's on the plan too: limited and counted as the ChatGPT sign-in, whose generation the plan's is.
+	account.provider = usesPlatformModel(meta.harness, credential.model) ? undefined : key?.provider;
 	t.generation =
 		key?.generation ??
 		(await userActor(c, meta.uid)
@@ -1564,8 +1566,10 @@ function windlassInputOf(
 		browser,
 		repoTools,
 		platformTool,
-		credential: { key },
+		credential,
 	} = l;
+	// Receipted against the Settings key it names; the ChatGPT plan's tokens count against the daily allowance, as before.
+	const key = usesPlatformModel(meta.harness, credential.model) ? undefined : credential.key;
 	return {
 		...launchInput(t, l),
 		// Windlass gets the secrets that keep to their scope in this sandbox, the repository's and the account's, with the names its commands are and are not to have; every saved value is taken out of what it says.

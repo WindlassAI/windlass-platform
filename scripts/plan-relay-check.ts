@@ -16,6 +16,7 @@ import {
 	startPlanRelay,
 	type PlanRelayOptions,
 } from "../server/src/sandbox/plan-relay.js";
+import { rotatePlanToken } from "../server/src/sandbox/token-file.js";
 
 const TOKEN = "sk-ant-oat01-" + "t".repeat(60);
 const NEXT = "sk-ant-oat01-" + "n".repeat(60);
@@ -295,6 +296,52 @@ test("on a ChatGPT plan it takes Codex's routes to api.openai.com with the curre
 	assert.equal((await codex("/api/hello", "HEAD")).status, 403, "only Claude Code's check is answered locally");
 	assert.equal((await codex("/v1/responses", "POST", ACCESS)).status, 401);
 	assert.equal(seen.length, count);
+});
+
+test("on a ChatGPT plan it takes Windlass's two routes, at the /v1 base Windlass appends them to, and a rotated token is the next request's", async t => {
+	const ACCESS = "chatgpt-access-" + "w".repeat(40);
+	const ROTATED = "chatgpt-access-" + "r".repeat(40);
+	const { seen, send, relay } = await stack(
+		t,
+		(_seen, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end('{"models":[]}');
+		},
+		{ token: ACCESS, wire: "chatgpt-plan", harness: "windlass" },
+	);
+	assert.equal(new URL(relay.env.WINDLASS_MODEL_BASE_URL!).pathname, "/v1");
+	assert.equal(relay.env.WINDLASS_MODEL_ALLOWED_ORIGIN, new URL(relay.env.WINDLASS_MODEL_BASE_URL!).origin);
+	const windlass = (path: string, method = "POST", bearer = relay.placeholder) =>
+		send(
+			method,
+			path,
+			{ authorization: `Bearer ${bearer}`, "content-type": "application/json", "user-agent": "Windlass/0.7.1" },
+			method === "POST" ? "{}" : "",
+		);
+	assert.equal((await windlass("/v1/models", "GET")).status, 200);
+	assert.equal(seen.at(-1)!.url, "/v1/models");
+	assert.equal(seen.at(-1)!.headers.authorization, `Bearer ${ACCESS}`);
+	// The turn's schedule (`rotatePlanToken`): when the token nears its end, the current one is asked for and handed.
+	let asked = 0;
+	const rotating = rotatePlanToken(
+		relay,
+		Date.now() + 1_000,
+		async () => {
+			asked += 1;
+			return { secret: ROTATED, expiresAt: Date.now() + 3_600_000 };
+		},
+		{ leadMs: 900, retryMs: 50, log: () => {} },
+	);
+	for (let i = 0; i < 100 && asked === 0; i++) await new Promise(r => setTimeout(r, 20));
+	await new Promise(r => setTimeout(r, 100));
+	assert.equal((await windlass("/v1/responses")).status, 200);
+	assert.equal(seen.at(-1)!.headers.authorization, `Bearer ${ROTATED}`, "the rotated token is the next request's");
+	const count = seen.length;
+	assert.equal((await windlass("/v1/models?client_version=0.171.0", "GET")).status, 403, "Codex's catalog form");
+	assert.equal((await windlass("/v1/chat/completions")).status, 403);
+	assert.equal((await windlass("/v1/responses", "POST", ROTATED)).status, 401);
+	assert.equal(seen.length, count);
+	await rotating.close();
 });
 
 test("it does not start without a token on standard input", async () => {

@@ -10,8 +10,9 @@ an expiring one (a ChatGPT plan's) is handed again before it runs out (`rotatePl
 Plans, one `model_plan` row each:
 
 - `anthropic`, the Claude plan: the token `claude setup-token` prints, sealed here. Hosted Claude Code pays with it.
-- `openai`, the ChatGPT plan: the user's ChatGPT sign-in. Windlass's unqualified models run on it for everyone, as
-  before; hosted Codex pays with it where `WLP_PLAN_USERS` allows. Its `sealed` and `short_noted` columns belong to
+- `openai`, the ChatGPT plan: the user's ChatGPT sign-in. Hosted, Windlass's unqualified models and Codex pay with it
+  as a pinned plan (`turnCredential` in `server/src/actors/agent-session.ts`) where `WLP_PLAN_USERS` allows; on a
+  paired machine Windlass uses it as the sign-in, ungated (its token handed per turn, `TokenFile`). Its `sealed` and `short_noted` columns belong to
   the user actor's `SignInHolder` (`server/src/signin/holder.ts`), which alone opens it, refreshes it one at a time
   and keeps the refresh token. It is connected with the CLI's `connect codex` (`cli/`): Windlass signs in on the
   user's computer and the command uploads its files (`SignInUpload`), which the holder adopts under a new generation. A relay asks for its current access token (the `token` of a `ChatgptPlan`, `./index.ts`).
@@ -20,7 +21,7 @@ Plans, one `model_plan` row each:
 
 Run one command from the repository root.
 
-- `cd server && npx tsx --test ../scripts/model-plans-check.ts` checks plan connect, refusal, sealing, generations, `WLP_PLAN_USERS`, the ChatGPT plan (its token per request, connecting it with an uploaded sign-in, the `signin` table's copy), plan models and names, and the connect request lifecycle.
+- `cd server && npx tsx --test ../scripts/model-plans-check.ts` checks plan connect, refusal, sealing, generations, `WLP_PLAN_USERS`, the ChatGPT plan (its token per request, connecting it with an uploaded sign-in, the `signin` table's copy, hosted Windlass pinning it), plan models and names, and the connect request lifecycle.
 - `cd server && npx tsx --test --test-name-pattern="keep keys sealed" ../scripts/model-providers-check.ts` checks Settings keys.
 
 ## Module map
@@ -36,7 +37,8 @@ Run one command from the repository root.
 
 - Seal before anything crosses the Rivet engine: a token is sealed under `transit` between the connect route and the actor, and under `model-plan` at rest.
 - A new connect replaces the generation, so every lease of the old token ends at its next request. A refresh of the ChatGPT plan never changes it.
-- `WLP_PLAN_USERS` unset turns plans off at once: no Claude plan requests, approving or connect, and `savedPlan`/`planGeneration` answer null. The ChatGPT sign-in stays Windlass's for everyone, so any signed-in (non-demo) user may connect it with the command; only paying for hosted Codex with it is gated.
+- `WLP_PLAN_USERS` unset turns plans off at once: no Claude plan requests, approving or connect, and `savedPlan`/`planGeneration` answer null. Any signed-in (non-demo) user may still connect the ChatGPT sign-in with the command, for Windlass on their machines; paying for any hosted turn with it (Windlass's ChatGPT models, Codex) is gated, and a user left out gets `CHATGPT_PLAN_OFF` ("Your ChatGPT plan isn't enabled for hosted runs on this account").
+- The ChatGPT plan's generation is the sign-in's, so Windlass's ChatGPT model list (`server/src/account-models.ts`) and the daily ChatGPT allowance stay keyed and counted as the sign-in's when the plan pays a hosted Windlass turn: its tokens are receipted against the allowance, not as a key's (`usesPlatformModel`).
 - Approving names the plan (`approvePlanConnect(code, provider)`, from the page's `plan`): a code for another plan approves nothing. An upload that is not a finished sign-in (`uploadedSignIn`) is refused before the request is taken.
 - A plan's models are never hard-coded: without a report a plan offers only the agent's default.
 - A connect request is taken once, and only after its user approved it (`approvePlanConnect`). A wrong code counts against the user who typed it, so a signed-in stranger cannot guess a live code and receive someone else's token.

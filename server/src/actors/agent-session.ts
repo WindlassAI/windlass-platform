@@ -90,6 +90,7 @@ import { recentSubject } from "../factory/intake.js";
 import { untrustedWords } from "../factory/untrusted.js";
 import type { Fact } from "../factory/types.js";
 import { remoteLease, type RemoteLease } from "../sandbox/relay-leases.js";
+import { plansAllowed } from "../credentials/plans.js";
 import { AcpPromptRequired } from "../sandbox/acp-harness.js";
 import { initialSessionModes } from "../sandbox/profiles.js";
 import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
@@ -304,6 +305,26 @@ function liveMeta(c: Ctx): SessionMeta {
 	return meta;
 }
 
+/** `WLP_PLAN_USERS` leaves this user out: hosted Windlass on the ChatGPT plan is refused. */
+export const CHATGPT_PLAN_OFF =
+	"Your ChatGPT plan isn't enabled for hosted runs on this account. Run this agent on your own machine, or choose a model of a Settings key (such as openai/…).";
+const CHATGPT_PLAN_MISSING =
+	"Connect your ChatGPT plan to run Windlass here: run npx @windlassai/cli connect codex, or choose a model of a Settings key (such as openai/…).";
+
+/**
+ * Hosted Windlass's unqualified models run on the ChatGPT plan, pinned like any plan and behind the same kill switch
+ * (`WLP_PLAN_USERS`, which `internalCredentialGeneration` applies too). A demo calls no model, and an environment
+ * build runs no agent: neither pins one.
+ */
+async function chatgptPlanCredential(c: Ctx, meta: SessionMeta, model: string): Promise<TurnCredential> {
+	if (meta.demo || meta.environmentBuild) return { model };
+	if (!plansAllowed(meta.uid)) throw new UserError(CHATGPT_PLAN_OFF, { code: "harness_signed_out" });
+	const ref = { provider: "openai", plan: true } as const;
+	const generation = await modelKeyActor(c, meta.uid).internalCredentialGeneration(ref);
+	if (!generation) throw new UserError(CHATGPT_PLAN_MISSING, { code: "chatgpt_required" });
+	return { model, key: { ...ref, generation } };
+}
+
 export async function turnCredential(
 	c: Ctx,
 	meta: SessionMeta,
@@ -312,6 +333,11 @@ export async function turnCredential(
 	signal?: AbortSignal,
 	pinned?: TurnCredential,
 ): Promise<TurnCredential> {
+	const hosted = meta.place.kind === "hosted";
+	const harness = meta.harness ?? "windlass";
+	// A hosted Windlass turn paused before it paid with the ChatGPT plan pinned nothing: it pins the plan now.
+	if (pinned && !pinned.key && hosted && harness === "windlass" && !windlassProvider(pinned.model))
+		return chatgptPlanCredential(c, meta, pinned.model);
 	if (pinned) {
 		const key = pinned.key;
 		if (key && meta.place.kind === "machine" && machineHarness(meta.harness) && !offered?.keyRelay)
@@ -321,17 +347,16 @@ export async function turnCredential(
 		if (key) {
 			const ref = { provider: key.provider, ...(key.plan && { plan: true as const }) };
 			if ((await modelKeyActor(c, meta.uid).internalCredentialGeneration(ref)) !== key.generation)
-				throw new UserError("The Settings key for this turn changed or was removed. Start a new turn.", {
-					code: "harness_signed_out",
-				});
+				throw new UserError(
+					`The ${key.plan ? "plan" : "Settings key"} for this turn changed or was removed. Start a new turn.`,
+					{ code: "harness_signed_out" },
+				);
 		}
 		return pinned;
 	}
-	const hosted = meta.place.kind === "hosted";
-	const harness = meta.harness ?? "windlass";
 	if (harness === "windlass") {
 		const provider = windlassProvider(model);
-		if (!provider) return { model };
+		if (!provider) return hosted ? chatgptPlanCredential(c, meta, model) : { model };
 		const generation = await modelKeyActor(c, meta.uid).internalCredentialGeneration({ provider });
 		if (!generation) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		return { model, key: { provider, generation } };
@@ -1111,7 +1136,8 @@ async function startPrompt(
 		let model = meta.model;
 		const requested = input.model || model;
 		let credential: ActiveTurn["credential"];
-		if (caps.events === "windlass" && windlassProvider(requested))
+		// A Settings key, or hosted the ChatGPT plan: refused here, before anything is taken.
+		if (caps.events === "windlass" && (windlassProvider(requested) || meta.place.kind === "hosted"))
 			credential = await turnCredential(c, meta, undefined, requested);
 		if (
 			caps.events === "windlass" &&
@@ -1629,7 +1655,13 @@ async function itemTurnStarted(
 			effort,
 			profile: meta.profile,
 			size: meta.place.kind === "machine" ? (meta.origin?.size ?? 1) : (meta.hostedSize ?? null),
-			payer: credential.key ? "key" : meta.harness && meta.harness !== "windlass" ? "machine" : "windlass",
+			// Windlass's ChatGPT models are the platform's, whether a machine's sign-in or the hosted plan pays.
+			payer:
+				credential.key && !usesPlatformModel(meta.harness, credential.model)
+					? "key"
+					: meta.harness && meta.harness !== "windlass"
+						? "machine"
+						: "windlass",
 			payerSource: meta.origin?.payerSource,
 		},
 	};
@@ -2996,11 +3028,11 @@ export const agentSession = actor({
 			}
 		},
 
-		/** Whether this actor's process holds a turn's relay lease, and its current token: not held, the turn has ended. */
-		internalModelRelay: (c, input: { nonce: string; request: string; consume?: boolean }): Promise<RemoteLease> => {
+		/** Whether this actor's process holds a turn's relay lease, and its credential reference: not held, the turn has ended. */
+		internalModelRelay: (c, input: { nonce: string; consume?: boolean }): Promise<RemoteLease> => {
 			requireService(c);
 			const nonce = typeof input?.nonce === "string" ? input.nonce : "";
-			return remoteLease(nonce, c.key[0], c.key[1], input.request, input.consume);
+			return remoteLease(nonce, c.key[0], c.key[1], input.consume);
 		},
 
 		internalGrant: (c, input: { key: string; slot: string }): void => {

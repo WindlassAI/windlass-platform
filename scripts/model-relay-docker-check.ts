@@ -1,7 +1,8 @@
 /**
- * Windlass's model relay on hosted Docker with real containers (docs/model-relay.md). It repeats the
- * experiments of the token-exposure note in a hardened session container, where commands run directly
- * as the user Windlass runs as:
+ * The Docker model relay with real containers (docs/model-relay.md): the program a paired machine's relay runs for
+ * Windlass on the user's ChatGPT sign-in, opened here on the layer's relay as a runner opens it (hosted Windlass
+ * pays with the ChatGPT plan through the platform relay instead, `--hosted-keys`). It repeats the experiments of the
+ * token-exposure note in a hardened session container, where commands run directly as the user Windlass runs as:
  *
  *   1. what a command can read: the token file, /dev/shm, Windlass's data directory, /tmp, the
  *      workspace, every /proc/<pid>/environ and cmdline. The real token is in none of them.
@@ -35,7 +36,7 @@ import type { DockerSandboxHandle } from "../server/src/sandbox/sandboxes.js";
 import { TokenFile, openModelKeyRelay } from "../server/src/sandbox/token-file.js";
 import type { AccessToken } from "../server/src/sandbox/api.js";
 import { DATA_DIR } from "../server/src/sandbox/provider.js";
-import { DockerModelRelay, RELAY_MEMORY } from "../server/src/sandbox/model-relay.js";
+import { DockerModelRelay, type DockerTurnRelay, RELAY_MEMORY } from "../server/src/sandbox/model-relay.js";
 import { imageId } from "./check-image.js";
 import { sleep } from "./check-wait.js";
 
@@ -196,11 +197,16 @@ async function check() {
 		if (!box) throw new Error("the sandbox could not be connected");
 		return box;
 	};
-	const a = await make("s-relay-a");
-	const b = await make("s-relay-b");
+	/** The access-token lease a runner opens for a machine's ChatGPT turn (runner/src/session.ts), on this layer's relay. */
+	const machineStyle = (box: DockerSandboxHandle) =>
+		Object.assign(Object.create(box) as DockerSandboxHandle & { modelRelay: () => Promise<DockerTurnRelay> }, {
+			modelRelay: () => layer.modelRelay!.open(box.container, box.id, box.uid),
+		});
+	const a = machineStyle(await make("s-relay-a"));
+	const b = machineStyle(await make("s-relay-b"));
 	expect(
-		"the hosted sandbox offers its relay",
-		keyOnly ? typeof a.modelKeyRelay === "function" : typeof a.modelRelay === "function",
+		"the hosted sandbox offers only its key and plan relay, no access-token relay",
+		typeof a.modelKeyRelay === "function" && !Object.hasOwn(Object.getPrototypeOf(a), "modelRelay"),
 	);
 	const foreignSession = await openModelKeyRelay(a, "s-relay-b", {
 		provider: "google",

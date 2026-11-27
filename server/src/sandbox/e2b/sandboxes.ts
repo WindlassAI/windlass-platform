@@ -32,7 +32,6 @@ import {
 	SWEEP_SCRIPT,
 	type SandboxProcess,
 	type StartOptions,
-	type TurnModelRelay,
 	type TurnSandbox,
 	WORKSPACE,
 	assertEnvNames,
@@ -228,9 +227,8 @@ export abstract class HostedGuest implements TurnSandbox {
 					throw new Error(
 						"this sandbox names no session (its wlp_session is empty), so its turns cannot use the model relay",
 					);
-				return { uid, sessionId: session, origin: relay, ttlMs: relaySettings.turnLimitMs + 15 * 60_000 };
+				return { uid, sessionId: session, origin: relay };
 			};
-			this.modelRelay = async () => openRelayLease(leaseInput());
 			this.modelKeyRelay = async (sessionId, key, signal, takeRequest) => {
 				if (sessionId !== session) throw new Error("This model relay belongs to another session.");
 				return openRelayLease({
@@ -245,7 +243,6 @@ export abstract class HostedGuest implements TurnSandbox {
 		}
 	}
 
-	readonly modelRelay?: () => Promise<TurnModelRelay>;
 	readonly windlassKeyProblem?: string;
 	readonly modelKeyRelay?: TurnSandbox["modelKeyRelay"];
 
@@ -666,8 +663,8 @@ export class E2bProvider implements HostedSandboxProvider {
 		}
 		this.log(
 			settings.modelRelayOrigin
-				? `[wlp] e2b.model_relay: Windlass's model requests go through ${settings.modelRelayOrigin}/model-relay/v1, and sandboxes may reach that host instead of api.openai.com; they never hold the access token`
-				: `[wlp] e2b.model_relay: off (${settings.modelRelayOff ?? "not configured"}): each turn's access token is written into its sandbox`,
+				? `[wlp] e2b.model_relay: Settings-key requests go through ${settings.modelRelayOrigin}/model-relay; plan requests leave from a relay inside each sandbox, which never holds a credential the agent can read`
+				: `[wlp] e2b.model_relay: off (${settings.modelRelayOff ?? "not configured"}): Settings keys are unavailable; plan requests leave from a relay inside each sandbox`,
 		);
 	}
 

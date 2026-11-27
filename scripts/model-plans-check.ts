@@ -617,6 +617,81 @@ test("a ChatGPT plan is the sign-in: generation kept across refreshes, the curre
 	});
 });
 
+test("hosted Windlass pays for its ChatGPT models with the plan, behind WLP_PLAN_USERS; a prefixed model still takes its key", async t => {
+	const { turnCredential, CHATGPT_PLAN_OFF } = await import("../server/src/actors/agent-session.js");
+	const { writeChatgptSignIn } = await import("../server/src/credentials/plans.js");
+	const a = account("plan-check-a"),
+		off = account("plan-check-off");
+	t.after(() => {
+		a.sql.close();
+		off.sql.close();
+	});
+	for (const { sql } of [a, off])
+		sql
+			.prepare(
+				"INSERT INTO model_provider(provider, sealed, generation, last4, added_at, check_ok) VALUES ('openai', 'x', 'key-g', 'abcd', 1, 1)",
+			)
+			.run();
+	/** The session's resolver over this account's real credential actions, as the user actor serves them. */
+	const resolver = (who: ReturnType<typeof account>, uid: string) => {
+		const actor = {
+			internalCredentialGeneration: (ref: unknown) => credentials.internalCredentialGeneration(who.relay, ref),
+		};
+		const ctx = { client: () => ({ user: { get: () => actor } }), vars: {} };
+		return (model: string, extra: object = {}, pinned?: object) =>
+			turnCredential(
+				ctx as never,
+				{ place: { kind: "hosted" }, uid, harness: "windlass", ...extra } as never,
+				undefined,
+				model,
+				undefined,
+				pinned as never,
+			);
+	};
+	const turn = resolver(a, "plan-check-a");
+	await assert.rejects(
+		turn("gpt-5.5"),
+		(error: Error & { code?: string }) =>
+			/Connect your ChatGPT plan/.test(error.message) && error.code === "chatgpt_required",
+		"no plan connected",
+	);
+	await writeChatgptSignIn(a.context.db, { sealed: "sealed-1", generation: "g1", shortNoted: false });
+	const plan = { provider: "openai", plan: true, generation: "g1" };
+	assert.deepEqual(await turn("gpt-5.5"), { model: "gpt-5.5", key: plan });
+	assert.deepEqual(await turn("openai/gpt-5.5"), {
+		model: "openai/gpt-5.5",
+		key: { provider: "openai", generation: "key-g" },
+	});
+	// A turn paused before this pinned nothing: it pins the plan when it resumes.
+	assert.deepEqual(await turn("gpt-5.5", {}, { model: "gpt-5.5" }), { model: "gpt-5.5", key: plan });
+	assert.deepEqual(await turn("gpt-5.5", {}, { model: "gpt-5.5", key: plan }), { model: "gpt-5.5", key: plan });
+	// A demo calls no model and an environment build runs no agent; a machine's Windlass uses the machine's sign-in.
+	assert.deepEqual(await turn("gpt-5.5", { demo: true }), { model: "gpt-5.5" });
+	assert.deepEqual(await turn("gpt-5.5", { environmentBuild: true }), { model: "gpt-5.5" });
+	assert.deepEqual(await turn("gpt-5.5", { place: { kind: "machine", machineId: "desk" } }), { model: "gpt-5.5" });
+	await writeChatgptSignIn(a.context.db, { sealed: "sealed-2", generation: "g2", shortNoted: false });
+	await assert.rejects(
+		turn("gpt-5.5", {}, { model: "gpt-5.5", key: plan }),
+		/The plan for this turn changed or was removed/,
+	);
+
+	// Off for an account: its sign-in is still there, but no hosted Windlass turn pays with it; its key still does.
+	await writeChatgptSignIn(off.context.db, { sealed: "sealed-off", generation: "g1", shortNoted: false });
+	const offTurn = resolver(off, "plan-check-off");
+	await assert.rejects(offTurn("gpt-5.5"), (error: Error & { code?: string }) => {
+		assert.equal(error.message, CHATGPT_PLAN_OFF);
+		assert.equal(error.code, "harness_signed_out");
+		return true;
+	});
+	assert.match(CHATGPT_PLAN_OFF, /ChatGPT plan isn't enabled for hosted runs on this account/);
+	await assert.rejects(offTurn("gpt-5.5", {}, { model: "gpt-5.5" }), /isn't enabled for hosted runs/);
+	assert.deepEqual(await offTurn("openai/gpt-5.5"), {
+		model: "openai/gpt-5.5",
+		key: { provider: "openai", generation: "key-g" },
+	});
+	assert.deepEqual(await offTurn("gpt-5.5", { place: { kind: "machine", machineId: "desk" } }), { model: "gpt-5.5" });
+});
+
 test("the ChatGPT sign-in's old table is copied into the plan once, keeping its generation", async t => {
 	const { moveSignInToPlan, loadChatgptSignIn } = await import("../server/src/credentials/plans.js");
 	const a = account("plan-check-a");

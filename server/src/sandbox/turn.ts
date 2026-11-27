@@ -65,9 +65,17 @@ import {
 	isTurnSandbox,
 	randomId,
 } from "./provider.js";
-import { hostedKeyEnv, redactKeyLease } from "./hosted-keys.js";
+import { hostedKeyEnv, redactKeyLease, windlassPlanEnv } from "./hosted-keys.js";
 import { hostedKeyMessage, windlassProvider } from "./harnesses.js";
-import { openModelKeyRelay, TokenFile, TokenFileError, type TokenFileOptions } from "./token-file.js";
+import {
+	openModelKeyRelay,
+	TokenFile,
+	TokenFileError,
+	type TokenFileOptions,
+	turnTokenFilePath,
+	writePlanPlaceholder,
+} from "./token-file.js";
+import { config } from "../config.js";
 import { errorText, sleep } from "../util.js";
 
 export const turnHostTools = (input: RunTurnInput) => turnPlatformTools(input);
@@ -201,7 +209,10 @@ export class SandboxWindlass implements Windlass {
 				failure: null,
 			};
 		const provider = windlassProvider(input.model);
-		if (provider !== input.modelKey?.key.provider) throw new Error(hostedKeyMessage("windlass", input.model));
+		// A qualified model runs on its provider's Settings key; an unqualified one on the ChatGPT plan, or on a machine's sign-in.
+		const key = input.modelKey?.key;
+		if (provider !== (key?.plan ? undefined : key?.provider) || (key?.plan && key.provider !== "openai"))
+			throw new Error(hostedKeyMessage("windlass", input.model));
 		if (provider) input = { ...input, model: input.model!.slice(provider.length + 1) };
 		return new Turn(sandbox, input, this.options, this.tokens).run();
 	}
@@ -491,10 +502,13 @@ class Turn {
 		const tokenFile = this.tokenFile;
 		const configHome = this.reviewerAgent && `/tmp/${this.reviewerAgent}`;
 		const agentFile = configHome && `${configHome}/windlass/agents/${this.reviewerAgent}.md`;
+		// A ChatGPT plan turn's file holds only its relay's placeholder.
+		const planFile = input.modelKey?.key.plan ? turnTokenFilePath(sandbox) : null;
 		// What the turn leaves in the sandbox besides its processes.
 		const files = [
 			...(scriptPath === null ? [] : [scriptPath]),
 			...(tokenFile === null ? [] : tokenFile.files),
+			...(planFile === null ? [] : [planFile, `${planFile}.tmp`]),
 			...(agentFile ? [agentFile] : []),
 		];
 		const onAbort = () => this.abort();
@@ -548,10 +562,17 @@ class Turn {
 						{ ...ref.key, harness: "windlass" },
 						input.signal,
 						ref.takeRequest,
+						ref.openSecret,
 					);
 					input.signal?.throwIfAborted();
-					keyEnv = hostedKeyEnv("windlass", ref.key, keyLease);
 					this.redactor = redactKeyLease(this.redactor, keyLease.placeholder);
+					if (planFile !== null) {
+						// Past the turn's end: the relay ends the placeholder with the turn, whatever the file says.
+						const expiresAt = Date.now() + config.turnTimeoutMs + 15 * 60_000;
+						await writePlanPlaceholder(sandbox, planFile, keyLease.placeholder, expiresAt);
+						input.signal?.throwIfAborted();
+						keyEnv = windlassPlanEnv(keyLease, planFile);
+					} else keyEnv = hostedKeyEnv("windlass", ref.key, keyLease);
 				}
 				const lines = this.lines;
 				const env = {
@@ -646,7 +667,13 @@ class Turn {
 		// The relay's own refusal of the turn's placeholder: never the user's sign-in.
 		if ((tokenFile?.relayed || this.input.modelKey) && relayRefused(code, failure.message, this.stepFailureMessage))
 			return { ...RELAY_REFUSED };
-		if (tokenFile === null) return failure;
+		if (tokenFile === null) {
+			// On the ChatGPT plan the file holds a placeholder that outlasts the turn: a handed-in failure is the file's,
+			// or the provider turning down the plan's token.
+			const planProblem = this.input.modelKey?.key.plan && code !== null ? handedInProblem(code) : null;
+			if (planProblem === null) return failure;
+			return handedInFailure(planProblem, { expiresAt: Number.POSITIVE_INFINITY, problem: null, lapsed: false });
+		}
 		const problem = code === null ? null : handedInProblem(code);
 		if (problem === null) return failure;
 		let state = tokenFile.state;
@@ -677,7 +704,9 @@ class Turn {
 			// Finish both cleanup steps before starting any file writer or requesting a token.
 			try {
 				await stopping;
-				await sweepSessionProcesses(this.sandbox, this.tokenFile?.path);
+				const tokenPath =
+					this.tokenFile?.path ?? (this.input.modelKey?.key.plan ? turnTokenFilePath(this.sandbox) : undefined);
+				await sweepSessionProcesses(this.sandbox, tokenPath);
 				if (this.abortRequested) return false;
 			} catch (error) {
 				this.failure = {
