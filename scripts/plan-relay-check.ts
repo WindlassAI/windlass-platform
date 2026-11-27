@@ -1,4 +1,4 @@
-// The Claude plan relay that runs inside an E2B or Daytona sandbox (sandbox/relay/plan.cjs, started by
+// The plan relay that runs inside an E2B or Daytona sandbox (sandbox/relay/plan.cjs, started by
 // server/src/sandbox/plan-relay.ts), here as a local process with a recording upstream: the placeholder is
 // swapped for the plan's token, another bearer and other routes are refused, the token never comes back,
 // a replaced token is the next request's, the turn's request limit holds, and it starts only with a token.
@@ -74,7 +74,7 @@ interface Seen {
 async function stack(
 	t: TestContext,
 	reply?: (seen: Seen, res: import("node:http").ServerResponse) => void,
-	options: Partial<PlanRelayOptions> = {},
+	options: Partial<PlanRelayOptions> & { token?: string } = {},
 ) {
 	const seen: Seen[] = [];
 	const origin = createServer((req, res) => {
@@ -94,8 +94,10 @@ async function stack(
 	await once(origin, "listening");
 	t.after(() => origin.close());
 	const started: Array<{ argv: string[]; options: StartOptions; stdin: string }> = [];
-	const relay = await startPlanRelay(localStart(started), TOKEN, {
+	const relay = await startPlanRelay(localStart(started), options.token ?? TOKEN, {
 		expiresAt: Date.now() + 60_000,
+		wire: "claude-plan",
+		harness: "claude",
 		upstream: `http://127.0.0.1:${(origin.address() as { port: number }).port}`,
 		...options,
 	});
@@ -256,11 +258,52 @@ async function bare(
 	return { code, stderr, stdout };
 }
 
+test("on a ChatGPT plan it takes Codex's routes to api.openai.com with the current access token, and nothing else", async t => {
+	const ACCESS = "chatgpt-access-" + "a".repeat(40);
+	const REFRESHED = "chatgpt-access-" + "b".repeat(40);
+	const { seen, send, relay } = await stack(
+		t,
+		(_seen, res) => {
+			res.writeHead(200, { "content-type": "text/event-stream" });
+			res.end('data: {"type":"response.completed"}\n\n');
+		},
+		{ token: ACCESS, wire: "chatgpt-plan", harness: "codex" },
+	);
+	const codex = (path: string, method = "POST", bearer = relay.placeholder) =>
+		send(
+			method,
+			path,
+			{
+				authorization: `Bearer ${bearer}`,
+				"content-type": "application/json",
+				accept: "text/event-stream",
+				originator: "codex",
+			},
+			method === "POST" ? "{}" : "",
+		);
+	assert.equal((await codex("/v1/responses")).status, 200);
+	assert.equal(seen.at(-1)!.headers.authorization, `Bearer ${ACCESS}`);
+	assert.equal(seen.at(-1)!.headers.originator, undefined, "Codex's own headers stay here");
+	await relay.hand(REFRESHED);
+	assert.equal((await codex("/v1/responses")).status, 200);
+	assert.equal(seen.at(-1)!.headers.authorization, `Bearer ${REFRESHED}`, "a handed token is the next request's");
+	assert.equal((await codex("/v1/models?client_version=0.171.0", "GET")).status, 200);
+	assert.equal(seen.at(-1)!.url, "/v1/models");
+	const count = seen.length;
+	assert.equal((await codex("/v1/models", "GET")).status, 403);
+	assert.equal((await codex("/v1/messages")).status, 403);
+	assert.equal((await codex("/api/hello", "HEAD")).status, 403, "only Claude Code's check is answered locally");
+	assert.equal((await codex("/v1/responses", "POST", ACCESS)).status, 401);
+	assert.equal(seen.length, count);
+});
+
 test("it does not start without a token on standard input", async () => {
 	const sources = planRelaySources() + "\n";
 	const placeholder = "wlp-plan." + "p".repeat(43);
 	const expiresAt = Date.now() + 60_000;
-	const none = await bare(sources + JSON.stringify({ placeholder, expiresAt }) + "\n");
+	const none = await bare(
+		sources + JSON.stringify({ placeholder, expiresAt, wire: "claude-plan", harness: "claude" }) + "\n",
+	);
 	assert.equal(none.code, 2);
 	assert.match(none.stderr, /no token/);
 	assert.equal(none.stdout, "");
@@ -269,6 +312,9 @@ test("it does not start without a token on standard input", async () => {
 	const expired = await bare(sources + JSON.stringify({ token: TOKEN, placeholder, expiresAt: Date.now() - 1 }) + "\n");
 	assert.equal(expired.code, 2);
 	assert.ok(!expired.stderr.includes(TOKEN));
+	const unwired = await bare(sources + JSON.stringify({ token: TOKEN, placeholder, expiresAt, wire: "openai" }) + "\n");
+	assert.equal(unwired.code, 2, "no plan's wire, no relay: a key's wire is never this relay's");
+	assert.match(unwired.stderr, /no plan wire/);
 	// Standard input closing before a token: it ends, never listening.
 	const closed = await bare(sources);
 	assert.equal(closed.stdout, "");

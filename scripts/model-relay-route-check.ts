@@ -149,7 +149,7 @@ async function machineKeyChecks() {
 					},
 					{
 						paired: async (owner, id) => paired && owner === uid && id === machine,
-						credential: async (user, ref, n) => sealCredentialTransit(user, ref, n, "fixture", generation),
+						credential: async (user, ref, n) => sealCredentialTransit(user, ref, n, { secret: "fixture", generation }),
 					},
 				);
 				const send = (path: string, method: string) =>
@@ -234,10 +234,12 @@ async function machineKeyChecks() {
 if (process.argv.includes("--key-wires")) {
 	for (const provider of MODEL_PROVIDERS) await keyWireCheck(provider);
 	await planWireCheck();
+	await chatgptPlanWireCheck();
 	process.exit(0);
 }
 if (process.argv.includes("--plan-wire")) {
 	await planWireCheck();
+	await chatgptPlanWireCheck();
 	process.exit(0);
 }
 await machineKeyChecks();
@@ -1234,6 +1236,7 @@ const code = async (res: Response) =>
 }
 for (const provider of MODEL_PROVIDERS) await keyWireCheck(provider);
 await planWireCheck();
+await chatgptPlanWireCheck();
 async function keyWireCheck(provider: (typeof MODEL_PROVIDERS)[number]) {
 	const hosts = {
 		openai: "api.openai.com",
@@ -1758,7 +1761,7 @@ async function planWireCheck() {
 		credential: async (user, saved, nonce) => {
 			assert.equal(user, uid);
 			assert.deepEqual(saved, { provider: "anthropic", plan: true });
-			return sealCredentialTransit(user, saved, nonce, token, current);
+			return sealCredentialTransit(user, saved, nonce, { secret: token, generation: current });
 		},
 	});
 	const send = (placeholder: string, path: string, headers: Record<string, string> = {}, method = "POST") =>
@@ -1911,6 +1914,97 @@ async function planWireCheck() {
 	assert.equal(up.seen.length, sent + 1);
 	await claude.close();
 	console.log("ok    claude-plan lease ends when the plan's generation changes");
+}
+
+/**
+ * A ChatGPT plan: Codex's bearer placeholder becomes the plan's CURRENT access token, which the user actor's
+ * sign-in holder answers per request (refreshing it when due), for Codex and Windlass only.
+ */
+async function chatgptPlanWireCheck() {
+	const uid = "relay-chatgpt-plan",
+		sessionId = "session";
+	let access = "chatgpt-access-" + randomBytes(24).toString("hex");
+	let current = randomBytes(16).toString("hex");
+	const ref = { provider: "openai" as const, generation: current, plan: true as const };
+	const origin = "https://relay.example.com";
+	const e2b = await relayGuest(uid, sessionId);
+	// Hosted Docker's way, and a sandbox without a relay of its own: the route's lease (E2B's own is e2b-provider-test's).
+	(e2b as { localPlanRelay?: unknown }).localPlanRelay = undefined;
+	// Its own helpers: `--plan-wire` runs it before the module's are made.
+	const up = upstream(() => new Response("data: {}\n\n", { headers: { "content-type": "text/event-stream" } }));
+	const call = (placeholder: string, path = "/model-relay/v1/responses", init: RequestInit = {}) =>
+		new Request(origin + path, {
+			method: "POST",
+			body: init.method === "GET" ? undefined : "{}",
+			...init,
+			headers: {
+				authorization: `Bearer ${placeholder}`,
+				"content-type": "application/json",
+				accept: "text/event-stream",
+				"session-id": "s1",
+				cookie: "c=1",
+			},
+		});
+	let asked = 0;
+	const d = deps(up.fetch, {
+		credential: async (user, saved, nonce) => {
+			assert.deepEqual(saved, { provider: "openai", plan: true });
+			asked += 1;
+			return sealCredentialTransit(user, saved, nonce, {
+				secret: access,
+				generation: current,
+				expiresAt: Date.now() + 30 * 60_000,
+			});
+		},
+	});
+	const codex = await openModelKeyRelay(e2b, sessionId, { ...ref, harness: "codex" });
+	const env = hostedKeyEnv("codex", ref, codex);
+	assert.equal(env.WLP_CODEX_BASE_URL, origin + "/model-relay/v1");
+	assert.equal(env.WLP_SESSION_BEARER, codex.placeholder);
+	const send = async (path: string, method = "POST") => {
+		const reply = await modelRelayResponse(call(codex.placeholder, "/model-relay" + path, { method }), d);
+		await reply.text();
+		return reply.status;
+	};
+	assert.equal(await send("/v1/responses"), 200);
+	assert.equal(up.seen.at(-1)!.url, "https://api.openai.com/v1/responses");
+	assert.equal(up.seen.at(-1)!.authorization, "Bearer " + access, "the plan's access token as the upstream bearer");
+	assert.equal(up.seen.at(-1)!.headers.get("cookie"), null);
+	// The holder refreshed the sign-in: the next request carries the new access token, on the same lease.
+	const before = access;
+	access = "chatgpt-access-" + randomBytes(24).toString("hex");
+	assert.equal(await send("/v1/responses"), 200);
+	assert.equal(up.seen.at(-1)!.authorization, "Bearer " + access);
+	assert.notEqual(access, before);
+	assert.equal(asked, 2, "the token is asked for per request");
+	console.log("ok    chatgpt-plan bearer swapped for the plan's current access token, a refreshed one used next");
+
+	const seen = up.seen.length;
+	assert.equal(await send("/v1/models?client_version=0.171.0", "GET"), 200, "Codex's own catalog request");
+	assert.equal(up.seen.at(-1)!.url, "https://api.openai.com/v1/models");
+	assert.equal(
+		await send("/v1/models", "GET"),
+		403,
+		"codex-acp's bare listing is refused: it leaves the list unnarrowed",
+	);
+	assert.equal(await send("/v1/chat/completions"), 403);
+	assert.equal(up.seen.length, seen + 1);
+	for (const harness of ["claude", "opencode"] as const) {
+		const other = await openModelKeyRelay(e2b, sessionId, { ...ref, harness });
+		const reply = await modelRelayResponse(call(other.placeholder), d);
+		assert.equal(reply.status, 403, harness);
+		await other.close();
+	}
+	assert.equal(up.seen.length, seen + 1);
+	console.log("ok    chatgpt-plan: only Codex's routes, refused for Claude Code and OpenCode leases");
+
+	// Reconnecting or removing the ChatGPT plan replaces its generation; a refresh never does.
+	current = randomBytes(16).toString("hex");
+	const stale = await modelRelayResponse(call(codex.placeholder), d);
+	assert.equal(stale.status, 401);
+	assert.equal(((await stale.json()) as { error: { code: string } }).error.code, "relay_lease_ended");
+	await codex.close();
+	console.log("ok    chatgpt-plan lease ends when the plan's generation changes");
 }
 
 // ---- the E2B network ----------------------------------------------------------------------------

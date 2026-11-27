@@ -18,7 +18,8 @@ import {
 	hostedCatalog,
 	hostedKeyMessage,
 	hostedProfiles,
-	hostedProvider,
+	hostedPayer,
+	type HostedCredential,
 	initialHarnessModels,
 	sessionCapabilities,
 } from "../../../server/src/sandbox/harnesses.js";
@@ -1213,14 +1214,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		hosted: auth => ({
 			hostedSizes: options.sizes === "one" ? undefined : MOCK_SIZES.map(s => s.id),
 			hostedRates: Object.fromEntries(MOCK_SIZES.map(s => [s.id, s.usdPerHour])),
-			hostedCredentials: [
-				...worldOf(auth).account.providers.values(),
-				...[...worldOf(auth).account.plans.values()].map(p => ({
-					provider: p.provider,
-					plan: true as const,
-					checkedAt: p.checkedAt,
-				})),
-			],
+			hostedCredentials: hostedCredentialsOf(worldOf(auth)),
 			hostedProfiles: profiles.filter(p => p.available).map(p => p.id),
 			keyProfiles: profiles.filter(p => p.available && p.platformKeys).map(p => p.id),
 		}),
@@ -1248,7 +1242,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				? machinesOf(auth)
 						.list.find(one => one.machineId === machineId)
 						?.harnesses?.find(entry => entry.id === harness)?.options
-				: hostedCatalog(harness, [...worldOf(auth).account.providers.values()]);
+				: hostedCatalog(harness, hostedCredentialsOf(worldOf(auth)));
 			return initialHarnessModels(options);
 		},
 		discardSession: (auth, id) => userApi(auth).deleteSession(id),
@@ -1323,6 +1317,36 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				windlassModels: models[provider],
 			});
 		}
+	}
+
+	/** The account's plans: those connected by code, and its ChatGPT sign-in as the ChatGPT plan. */
+	function plansOf(world: World): ModelPlanStatus[] {
+		const plans = [...world.account.plans.values()];
+		if (!world.planConnected || world.profile.demo) return plans;
+		return [
+			...plans,
+			{
+				provider: "openai",
+				account: `${world.profile.email ?? "you@example.com"} · Plus`,
+				addedAt: 0,
+				checkedAt: realNow() - 5 * MINUTE,
+				ok: true,
+				models: ["gpt-5.5-codex", "gpt-5.5-codex-mini"],
+			},
+		];
+	}
+
+	/** What hosted agents can pay with: the saved keys and the connected plans, as the server's `hostedCredentials`. */
+	function hostedCredentialsOf(world: World): HostedCredential[] {
+		return [
+			...world.account.providers.values(),
+			...plansOf(world).map(p => ({
+				provider: p.provider,
+				plan: true as const,
+				checkedAt: p.checkedAt,
+				models: p.models,
+			})),
+		];
 	}
 
 	function worldOf(auth: AuthResult): World {
@@ -5541,10 +5565,10 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				const harness: HarnessId = input.harness ?? "windlass";
 				const options =
 					!machine && harness !== "windlass"
-						? hostedCatalog(harness, [...world().account.providers.values()])
+						? hostedCatalog(harness, hostedCredentialsOf(world()))
 						: machine?.harnesses?.find(entry => entry.id === harness)?.options;
 				if (harness !== "windlass") {
-					if (!machine && !hostedProvider(harness, input.model, [...world().account.providers.keys()]))
+					if (!machine && !hostedPayer(harness, input.model, hostedCredentialsOf(world())))
 						throw new PlatformError("user", hostedKeyMessage(harness), { reason: "harness_signed_out" });
 					if (machine ? input.profile !== "docker-hardened" : !profile.platformKeys)
 						throw new PlatformError(
@@ -6086,7 +6110,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				machinesChanged(auth);
 			},
 			async modelPlans() {
-				return { allowed: true, plans: structuredClone([...world().account.plans.values()]) };
+				return { allowed: true, plans: structuredClone(plansOf(world())) };
 			},
 			// The mock has no terminal: approving a code connects the plan a few seconds later, as the command would.
 			async approvePlanConnect(userCode) {
@@ -6110,8 +6134,13 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				mockConnectCode(userCode);
 			},
 			async removeModelPlan(provider) {
-				world().account.plans.delete(provider);
+				if (provider === "openai") await userApi(auth).forgetChatgpt();
+				else world().account.plans.delete(provider);
 				machinesChanged(auth);
+			},
+			async recheckModelPlan(provider) {
+				await latency(400);
+				return structuredClone(plansOf(world()).find(p => p.provider === provider) ?? null);
 			},
 			async accountSecrets(profile: SandboxProfileId): Promise<AccountSecrets> {
 				await latency(200);
@@ -6506,10 +6535,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 					const machine =
 						place.kind === "machine" ? machinesView(auth).find(one => one.machineId === place.machineId) : undefined;
 					const offered = machine?.harnesses?.find(one => one.id === harness);
-					if (
-						hosted &&
-						!hostedProvider(harness, input.model ?? session.summary.model, [...world.account.providers.keys()])
-					)
+					if (hosted && !hostedPayer(harness, input.model ?? session.summary.model, hostedCredentialsOf(world)))
 						throw new PlatformError("user", hostedKeyMessage(harness), { reason: "harness_signed_out" });
 					if (!hosted && unreachable === null && !offered)
 						throw new PlatformError("user", `This machine does not offer ${name}.`, { reason: "bad_input" });

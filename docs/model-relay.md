@@ -63,6 +63,7 @@ the relay root and append their own API version.
 | OpenAI | `/v1/models` | `/v1/responses`, `/v1/chat/completions` | Bearer at `api.openai.com` |
 | Anthropic | `/v1/models` | `/v1/messages` | `x-api-key` at `api.anthropic.com`, version `2023-06-01` |
 | Claude plan | `/v1/models` | `/v1/messages` | Bearer (the `claude setup-token` token) at `api.anthropic.com`, version `2023-06-01`, Claude Code only |
+| ChatGPT plan | `/v1/models?client_version=…` (Codex's own catalog request) | `/v1/responses` | Bearer (the plan's current access token) at `api.openai.com`, Codex and Windlass only |
 | Google | `/v1beta/models` | `/v1beta/models/{model}:generateContent`, `:streamGenerateContent` | `x-goog-api-key` at `generativelanguage.googleapis.com` |
 | OpenRouter | `/api/v1/models` | `/api/v1/chat/completions` | Bearer at `openrouter.ai` |
 
@@ -70,6 +71,11 @@ Gemini streaming accepts `?alt=sse`. Anthropic Messages accepts the `interleaved
 beta. A Claude plan lease uses its own wire, `claude-plan` (`credentialWire` in `sandbox/relay/wires.cjs`):
 Claude Code sends its placeholder from `CLAUDE_CODE_OAUTH_TOKEN` as a bearer, and the route sends the plan's
 token as a bearer with the `oauth-2025-04-20` beta allowed. Hosted Docker forwards it with `provider: "claude-plan"`.
+A ChatGPT plan lease uses the `chatgpt-plan` wire: the `chatgpt` wire's routes and headers, with Codex's
+compressed bodies allowed. Codex sends its placeholder as a bearer (below); the route asks the user's actor for the
+plan's current access token at every request (`ChatgptPlan.token`, `server/src/actors/user/signin.ts`), so a token
+the sign-in holder refreshed is the next request's. codex-acp's bare `GET /v1/models` is refused: it narrows its list
+by a `data[]` that ChatGPT's catalog (`models[]`) may not have, and a refusal leaves Codex's list as it is.
 On E2B and Daytona a plan's requests do not go through the route: they leave from the sandbox
 ([Plan requests from the sandbox](#plan-requests-from-the-sandbox)). Machines refuse a plan for now. Each route selects its upstream and permitted headers from the lease. Caller-supplied OpenRouter
 attribution, credentials in query strings, and redirects are refused.
@@ -116,28 +122,34 @@ Elsewhere, point a DNS name at whatever serves `WLP_PUBLIC_URL`, with a certific
 
 ### Plan requests from the sandbox
 
-Through the route, every user's plan requests would reach Anthropic from the platform server's one address.
+Through the route, every user's plan requests would reach the provider from the platform server's one address.
 E2B and Daytona sandboxes have addresses of their own, so there a plan turn runs the relay inside the
 sandbox (`server/src/sandbox/plan-relay.ts`, the program `sandbox/relay/plan.cjs` on the shared `createRelay`
-and the `claude-plan` wire). Hosted Docker sandboxes share the server's address and keep the route.
+and the plan's wire, `claude-plan` or `chatgpt-plan`). Hosted Docker sandboxes share the server's address and keep the route.
 
 - **Who runs it.** The transport user (`nobody`, the user Git transport and its GitHub tokens run as), never
   `agent`. The agent has no sudo, so it cannot read that process's memory, standard input or `/proc` files, nor
   signal it. Node is `/usr/local/bin/node` of the image; no template rebuild is needed.
 - **What it gets.** At the turn's start the session opens the plan's token through the user actor
   (`internalCredential`, `openSavedCredential` in `server/src/credentials/transit.ts`) and checks the turn's pinned
-  generation. The relay's source and then `{token, placeholder, expiresAt}` go to its standard input, one JSON
-  line each. Nothing is written to the sandbox's disk and nothing secret is on a command line or in an
+  generation. The relay's source and then `{token, placeholder, expiresAt, wire, harness}` go to its standard
+  input, one JSON line each. Nothing is written to the sandbox's disk and nothing secret is on a command line or in an
   environment. Stdin stays open as the control channel: a later `{token}` replaces the token (requests that start
   after it carry the new one, running ones keep theirs), and the relay asks the platform to count each request
   against the turn's limit (`{take}`/`{took}`). Stdin closing ends it.
+- **A ChatGPT plan's token expires.** It is opened with at least 20 minutes left (the sign-in holder's promise),
+  and when 10 are left the turn asks the user's actor for the current one, which the holder refreshes, and hands
+  it over stdin (`rotatePlanToken` in `server/src/sandbox/token-file.ts`, `TokenFile`'s schedule). A failed try
+  is tried again every 20 s. A plan reconnected or removed meanwhile gives no token: the relay keeps the one it
+  has until it expires. The refresh token never leaves the user's actor.
 - **What it accepts.** It listens on `127.0.0.1` on a port the kernel picks. It accepts only
-  `Authorization: Bearer <placeholder>`, a fresh `wlp-plan.` placeholder for each turn, and only Claude Code's
-  `claude-plan` routes with that wire's headers and betas. It sends them to `https://api.anthropic.com` with the
-  real bearer and removes the token from every answer. It answers `HEAD /api/hello` itself. An upstream error,
+  `Authorization: Bearer <placeholder>`, a fresh `wlp-plan.` placeholder for each turn, and only the turn's agent's
+  routes on the plan's wire with that wire's headers (and betas). It sends them to the wire's host
+  (`https://api.anthropic.com`, `https://api.openai.com`) with the real bearer and removes every token it was handed
+  from every answer. On a Claude plan it answers `HEAD /api/hello` itself. An upstream error,
   a 401 included, keeps its status with the provider's scrubbed error code, type and message. Claude Code gets
-  `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` and `CLAUDE_CODE_OAUTH_TOKEN=<placeholder>`; the placeholder is
-  redacted from the turn like a key lease's.
+  `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` and `CLAUDE_CODE_OAUTH_TOKEN=<placeholder>`; Codex gets `WLP_CODEX_BASE_URL=http://127.0.0.1:<port>/v1`
+  and `WLP_SESSION_BEARER=<placeholder>`. The placeholder is redacted from the turn like a key lease's.
 - **Lifetime.** The relay starts with the turn and is stopped (stdin closed, then its process group killed) when
   the turn ends or is aborted, so a paused or snapshotted sandbox keeps no token. If it cannot start or listen,
   the turn fails; the token is never put in the sandbox instead. A relay whose server died mid-turn stops itself
@@ -146,8 +158,8 @@ and the `claude-plan` wire). Hosted Docker sandboxes share the server's address 
   at the turn's start. A reconnected or removed plan, or `WLP_PLAN_USERS` turned off, takes effect at the next
   turn, not mid-turn.
 - **E2B network.** Out of `open`, a Claude Code sandbox (its `wlp_harness` metadata) may also reach
-  `api.anthropic.com`, at create and at every connect (`withPlanHosts` in `server/src/sandbox/e2b/network.ts`). Other
-  agents' sandboxes may not. The relay's host stays allowed: Settings keys still use the route. Daytona runs open only.
+  `api.anthropic.com`, and a Codex sandbox `api.openai.com`, at create and at every connect (`withPlanHosts` in
+  `server/src/sandbox/e2b/network.ts`), whether or not its owner has a plan. Other agents' sandboxes may not. The relay's host stays allowed: Settings keys still use the route. Daytona runs open only.
 
 Anything that can run as the transport user can read the token while a turn runs, as it can a GitHub token
 during a push. On E2B that rests on the agent having no sudo and on envd's API not running commands for
@@ -197,6 +209,9 @@ the relay first, and then the placeholder file is rewritten with the new expiry.
   standard input, as `writeSecretFile` does. The relay reads that file on every request, so a request
   that starts after a replacement uses the new token. A request already streaming keeps the token it
   started with.
+- A ChatGPT plan lease (hosted Codex) holds no token: the route asks the user's actor per request, and the
+  holder answers the token it keeps while it has more than 20 minutes left, else refreshes once for everyone
+  asking. A relay inside an E2B or Daytona sandbox is handed a new one on the schedule above.
 - On E2B, the turn's lease holds the current token in memory. The route reads it on every request,
   cached for at most 5 seconds when it came from another process. The session actor seals that
   ChatGPT token for the requesting relay, bound to user, session, lease and request nonce. The transit
@@ -336,7 +351,11 @@ To roll out 0.7.1, rebuild the Docker image with `sandbox/build.sh` and publish 
 
 ## Hosted ACP agents
 
-Claude Code uses Anthropic. Codex can list OpenAI models and call Responses. OpenCode receives only the provider for its selected model. Before OpenCode has reported a catalog, its default uses the first saved provider in this order: OpenAI, Anthropic, Google, OpenRouter. The adapter chooses a model from that provider. Each turn pins one key generation before provisioning. Reported tokens are attributed to that provider. Cancellation revokes the platform lease immediately, including while the Docker forwarder is starting.
+Claude Code uses Anthropic. Codex can list OpenAI models and call Responses. On a ChatGPT plan (where
+`WLP_PLAN_USERS` allows; the plan pays before an OpenAI key) Codex gets the same environment as on a key:
+`wlp-codex-acp` hands codex-acp a custom provider (`providers/set`: base URL `WLP_CODEX_BASE_URL`, the placeholder
+`WLP_SESSION_BEARER` as its bearer, `wire_api = "responses"`), and no `auth.json` is written; `wlp-codex-app-server`
+refuses to start Codex if one is in `CODEX_HOME`. Its models are the plan's, from ChatGPT's catalog. OpenCode receives only the provider for its selected model. Before OpenCode has reported a catalog, its default uses the first saved provider in this order: OpenAI, Anthropic, Google, OpenRouter. The adapter chooses a model from that provider. Each turn pins one key generation before provisioning. Reported tokens are attributed to that provider. Cancellation revokes the platform lease immediately, including while the Docker forwarder is starting.
 
 On hosted Docker the guest receives a local bearer. A separate forwarder listens on loopback in that container’s network namespace and prefixes its connections to the relay socket with the turn’s nonce. The relay matches both nonce and bearer. A different container’s forwarder supplies a different nonce. Only the relay and the forwarders mount the socket volume. The platform placeholder stays in the relay’s private tmpfs.
 

@@ -395,7 +395,7 @@ export class AcpHarness implements Harness {
 			return this.run(handle, input);
 		}
 		if (ref.key.plan && this.machine)
-			throw new SandboxUserError("A Claude plan runs hosted only for now; machines use their own sign-in.");
+			throw new SandboxUserError("A plan runs hosted only for now; machines use their own sign-in.");
 		if (!isTurnSandbox(handle)) throw new Error("A Settings key requires a turn sandbox.");
 		input.signal?.throwIfAborted();
 		const release = await handle.holdForTurn();

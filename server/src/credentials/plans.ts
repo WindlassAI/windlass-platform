@@ -1,7 +1,15 @@
 /**
- * A user's connected subscription plans: today a Claude plan, connected with the long-lived token
- * `claude setup-token` prints. The token is sealed here and never leaves the platform: hosted Claude Code
- * turns get a relay placeholder, and the relay route opens the token per request (credentials/index.ts).
+ * A user's connected subscription plans, one row each in `model_plan`.
+ *
+ *   anthropic  the long-lived token `claude setup-token` prints, sealed here (`model-plan`). It never leaves the
+ *              platform but for a turn's relay: hosted Claude Code gets a placeholder (credentials/index.ts).
+ *   openai     the user's ChatGPT sign-in: Windlass's sign-in files, sealed and refreshed only by the user actor's
+ *              `SignInHolder` (signin/holder.ts, actors/user/signin.ts), which owns `sealed` and `short_noted`.
+ *              Nothing here opens it; whoever needs it asks the holder for an access token.
+ *
+ * `generation` changes when a plan is connected, reconnected or removed, never when its token is refreshed: a
+ * turn pins it, and every lease of an older one ends at its next request. `models` is what the plan offers,
+ * as its provider lists it (ChatGPT) or its agent reported it (Claude Code); none until then.
  */
 
 import { randomUUID } from "node:crypto";
@@ -10,13 +18,22 @@ import { config } from "../config.js";
 import { isPlanProvider, validPlanToken, PLAN_NAMES, type ModelPlanStatus, type PlanProvider } from "../contract.js";
 import type { DefaultsDb } from "../repository-defaults.js";
 import { serverSealer } from "../signin/seal.js";
+import { safeModelId } from "./keys.js";
+import { accountLabel, claudePlanLabel } from "./plan-labels.js";
 
 export const MODEL_PLAN_TABLES = [
 	`CREATE TABLE IF NOT EXISTS model_plan (
 		provider TEXT PRIMARY KEY, sealed TEXT NOT NULL, generation TEXT NOT NULL, account TEXT,
-		added_at INTEGER NOT NULL, checked_at INTEGER, check_ok INTEGER NOT NULL DEFAULT 0
+		added_at INTEGER NOT NULL, checked_at INTEGER, check_ok INTEGER NOT NULL DEFAULT 0,
+		models TEXT, short_noted INTEGER NOT NULL DEFAULT 0
 	)`,
 ];
+
+/** Columns a table made before them lacks: the user actor adds them. */
+export const MODEL_PLAN_COLUMNS = [
+	["model_plan", "models", "TEXT"],
+	["model_plan", "short_noted", "INTEGER NOT NULL DEFAULT 0"],
+] as const;
 
 type PlanRow = {
 	provider: PlanProvider;
@@ -24,8 +41,9 @@ type PlanRow = {
 	added_at: number;
 	checked_at: number | null;
 	check_ok: number;
+	models: string | null;
 };
-const STATUS_COLUMNS = "provider, account, added_at, checked_at, check_ok";
+const STATUS_COLUMNS = "provider, account, added_at, checked_at, check_ok, models";
 
 const status = (row: PlanRow): ModelPlanStatus => ({
 	provider: row.provider,
@@ -33,11 +51,12 @@ const status = (row: PlanRow): ModelPlanStatus => ({
 	addedAt: row.added_at,
 	checkedAt: row.checked_at,
 	ok: !!row.check_ok,
+	...(row.models !== null && { models: JSON.parse(row.models) as string[] }),
 });
 
 const subject = (uid: string, provider: PlanProvider) => JSON.stringify([uid, provider]);
 
-/** Whether this user may connect plans and run turns on them (WLP_PLAN_USERS). */
+/** Whether this user may connect plans and run turns on them (WLP_PLAN_USERS). Windlass's own ChatGPT sign-in is not gated. */
 export function plansAllowed(uid: string): boolean {
 	return config.plans === "all" || config.plans.has(uid);
 }
@@ -47,12 +66,11 @@ export function planProviderOf(raw: unknown): PlanProvider {
 	return raw;
 }
 
-const PLAN_TIERS: Record<string, string> = {
-	claude_max: "Max",
-	claude_pro: "Pro",
-	claude_team: "Team",
-	claude_enterprise: "Enterprise",
-};
+/** The most models a plan keeps. */
+const MAX_PLAN_MODELS = 32;
+
+/** Where a plan's models come from: the provider's own catalog, or what its agent reports at a session's start. */
+const MODELS_FROM: Record<PlanProvider, "provider" | "agent"> = { anthropic: "agent", openai: "provider" };
 
 /**
  * Asks Anthropic whose plan the token is, the way Claude Code reads its own profile. Null when Anthropic
@@ -78,10 +96,8 @@ async function claudeAccount(token: string): Promise<string | null> {
 		account?: { email?: unknown };
 		organization?: { organization_type?: unknown };
 	};
-	const email = typeof body.account?.email === "string" ? body.account.email.slice(0, 200) : null;
-	const type = body.organization?.organization_type;
-	const tier = typeof type === "string" ? PLAN_TIERS[type] : undefined;
-	return [email, tier].filter(Boolean).join(" · ") || PLAN_NAMES.anthropic;
+	const email = typeof body.account?.email === "string" ? body.account.email : null;
+	return accountLabel(email, claudePlanLabel(body.organization?.organization_type)) ?? PLAN_NAMES.anthropic;
 }
 
 export class PlanProblem extends Error {
@@ -101,7 +117,7 @@ export async function connectPlan(
 	token: unknown,
 ): Promise<ModelPlanStatus> {
 	if (!plansAllowed(uid)) throw new PlanProblem("Connecting a plan is not available on this account.", "plans_off");
-	if (!validPlanToken(provider, token))
+	if (provider !== "anthropic" || !validPlanToken(provider, token))
 		throw new PlanProblem("That's not a setup token. It starts with sk-ant-oat01-.", "bad_plan_token");
 	let account: string | null;
 	try {
@@ -113,10 +129,10 @@ export async function connectPlan(
 		throw new PlanProblem("Anthropic did not accept that token. Run claude setup-token again.", "plan_refused");
 	const now = Date.now();
 	const [row] = await db.execute<PlanRow>(
-		`INSERT INTO model_plan (provider, sealed, generation, account, added_at, checked_at, check_ok)
-		VALUES (?, ?, ?, ?, ?, ?, 1)
+		`INSERT INTO model_plan (provider, sealed, generation, account, added_at, checked_at, check_ok, models)
+		VALUES (?, ?, ?, ?, ?, ?, 1, NULL)
 		ON CONFLICT(provider) DO UPDATE SET sealed=excluded.sealed, generation=excluded.generation, account=excluded.account,
-		added_at=excluded.added_at, checked_at=excluded.checked_at, check_ok=1 RETURNING ${STATUS_COLUMNS}`,
+		added_at=excluded.added_at, checked_at=excluded.checked_at, check_ok=1, models=NULL RETURNING ${STATUS_COLUMNS}`,
 		provider,
 		serverSealer().seal("model-plan", subject(uid, provider), token),
 		randomUUID(),
@@ -127,11 +143,30 @@ export async function connectPlan(
 	return status(row!);
 }
 
+/** Asks Anthropic again whose the saved Claude plan is: a token it no longer accepts makes the plan unusable. */
+export async function claudePlanCheck(db: DefaultsDb, uid: string): Promise<void> {
+	const saved = await savedPlan(db, uid, "anthropic");
+	if (!saved) return;
+	let account: string | null;
+	try {
+		account = await claudeAccount(saved.secret);
+	} catch {
+		throw new PlanProblem("Anthropic could not be reached to check the plan. Try again.", "plan_check_unavailable");
+	}
+	await db.execute(
+		"UPDATE model_plan SET account = COALESCE(?, account), check_ok = ? WHERE provider = 'anthropic' AND generation = ?",
+		account,
+		account === null ? 0 : 1,
+		saved.generation,
+	);
+}
+
 export async function planStatuses(db: DefaultsDb): Promise<ModelPlanStatus[]> {
 	return (await db.execute<PlanRow>(`SELECT ${STATUS_COLUMNS} FROM model_plan ORDER BY provider`)).map(status);
 }
 
-export async function removePlan(db: DefaultsDb, provider: PlanProvider): Promise<void> {
+/** Removes a token plan. A ChatGPT plan is removed by forgetting the sign-in (`SignInHolder.logout`). */
+export async function removePlan(db: DefaultsDb, provider: Exclude<PlanProvider, "openai">): Promise<void> {
 	await db.execute("DELETE FROM model_plan WHERE provider = ?", provider);
 }
 
@@ -151,8 +186,12 @@ export async function planRefs(db: DefaultsDb, uid: string): Promise<{ provider:
 	return db.execute("SELECT provider, generation FROM model_plan WHERE check_ok=1 ORDER BY provider");
 }
 
-/** The plan's token and generation, resealed under the current key when it was sealed with an older one. */
+/**
+ * A token plan's token and generation, resealed under the current key when it was sealed with an older one. A
+ * ChatGPT plan has no token to open here: its access token comes from the user's sign-in holder.
+ */
 export async function savedPlan(db: DefaultsDb, uid: string, provider: PlanProvider) {
+	if (provider === "openai") throw new Error("A ChatGPT plan's access token comes from the sign-in holder");
 	if (!plansAllowed(uid)) return null;
 	const [row] = await db.execute<{ sealed: string; generation: string }>(
 		"SELECT sealed, generation FROM model_plan WHERE provider = ? AND check_ok=1",
@@ -171,4 +210,150 @@ export async function savedPlan(db: DefaultsDb, uid: string, provider: PlanProvi
 		);
 	}
 	return { secret: token, generation: row.generation };
+}
+
+/** The ids among `ids` a plan may keep: model-id shaped, none holding a piece of `secret`, at most `MAX_PLAN_MODELS`. */
+function planModelIds(ids: readonly unknown[], secret = ""): string[] {
+	const kept = new Set<string>();
+	for (const id of ids) {
+		if (kept.size === MAX_PLAN_MODELS) break;
+		if (safeModelId(id, secret)) kept.add(id);
+	}
+	return [...kept];
+}
+
+/**
+ * Keeps the models a plan's agent reported at a session's start, for a plan whose provider lists none (Claude Code
+ * on a Claude plan). Only while the plan is still at `generation`: a list from a turn of an older connection is not
+ * this one's. False when nothing was kept.
+ */
+export async function recordAgentModels(
+	db: DefaultsDb,
+	provider: PlanProvider,
+	generation: string,
+	ids: readonly unknown[],
+): Promise<boolean> {
+	if (MODELS_FROM[provider] !== "agent") return false;
+	const models = planModelIds(ids.filter(id => id !== "default"));
+	if (!models.length) return false;
+	const kept = await db.execute(
+		"UPDATE model_plan SET models = ?, checked_at = ? WHERE provider = ? AND generation = ? AND check_ok = 1 RETURNING provider",
+		JSON.stringify(models),
+		Date.now(),
+		provider,
+		generation,
+	);
+	return kept.length > 0;
+}
+
+/**
+ * The models of ChatGPT's catalog (`GET /v1/models` with a ChatGPT access token answers `{models: [{slug,
+ * visibility, ...}]}`) that it lists for people to pick, in its order. A slug that holds a piece of the token is
+ * left out: an answer may echo it.
+ */
+export function chatgptCatalogModels(body: unknown, token: string): string[] {
+	const models = (body as { models?: unknown } | null)?.models;
+	if (!Array.isArray(models)) return [];
+	const listed = models.filter(
+		(m): m is { slug: unknown } =>
+			!!m && typeof m === "object" && (m as { visibility?: unknown }).visibility === "list",
+	);
+	return planModelIds(
+		listed.map(m => m.slug),
+		token,
+	);
+}
+
+/** Asks OpenAI which models the ChatGPT plan of `token` offers. Throws when it could not be asked or did not answer. */
+export async function chatgptPlanModels(token: string): Promise<string[]> {
+	const origin = (process.env.WLP_OPENAI_BASE_URL ?? "https://api.openai.com").replace(/\/+$/, "");
+	const res = await fetch(origin + "/v1/models", {
+		headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+		redirect: "error",
+		signal: AbortSignal.timeout(8_000),
+	});
+	if (!res.ok) {
+		await res.body?.cancel();
+		throw new Error(`ChatGPT's model catalog answered ${res.status}`);
+	}
+	return chatgptCatalogModels(await res.json(), token);
+}
+
+/** Saves what a check of the ChatGPT plan learned, while the plan is still at `generation`. Null models: the catalog did not answer. */
+export async function saveChatgptCheck(
+	db: DefaultsDb,
+	generation: string,
+	found: { account: string | null; models: string[] | null },
+): Promise<void> {
+	if (found.models === null) {
+		await db.execute(
+			"UPDATE model_plan SET account = ? WHERE provider = 'openai' AND generation = ?",
+			found.account,
+			generation,
+		);
+		return;
+	}
+	await db.execute(
+		"UPDATE model_plan SET account = ?, models = ?, checked_at = ? WHERE provider = 'openai' AND generation = ?",
+		found.account,
+		JSON.stringify(found.models),
+		Date.now(),
+		generation,
+	);
+}
+
+/** The ChatGPT plan's row as the sign-in holder keeps it (`StoredSignIn`); null when there is none. */
+export async function loadChatgptSignIn(db: DefaultsDb) {
+	const [row] = await db.execute<{ sealed: string; generation: string; short_noted: number }>(
+		"SELECT sealed, generation, short_noted FROM model_plan WHERE provider = 'openai'",
+	);
+	return row ? { sealed: row.sealed, generation: row.generation, shortNoted: row.short_noted === 1 } : null;
+}
+
+/**
+ * Writes the holder's sign-in as the ChatGPT plan. No sign-in removes the plan. Another generation is a new
+ * connection: what was learned about the old one (account, models) goes. The same generation is a refresh or a
+ * reseal: only the sealed sign-in and its note change.
+ */
+export async function writeChatgptSignIn(
+	db: DefaultsDb,
+	row: { sealed: string | null; generation: string; shortNoted: boolean },
+): Promise<void> {
+	if (row.sealed === null) {
+		await db.execute("DELETE FROM model_plan WHERE provider = 'openai'");
+		return;
+	}
+	const now = Date.now();
+	const same = "model_plan.generation = excluded.generation";
+	await db.execute(
+		`INSERT INTO model_plan (provider, sealed, generation, account, added_at, checked_at, check_ok, models, short_noted)
+		VALUES ('openai', ?, ?, NULL, ?, ?, 1, NULL, ?)
+		ON CONFLICT(provider) DO UPDATE SET sealed = excluded.sealed, short_noted = excluded.short_noted,
+		generation = excluded.generation, check_ok = 1,
+		account = CASE WHEN ${same} THEN model_plan.account END,
+		models = CASE WHEN ${same} THEN model_plan.models END,
+		added_at = CASE WHEN ${same} THEN model_plan.added_at ELSE excluded.added_at END,
+		checked_at = CASE WHEN ${same} THEN model_plan.checked_at ELSE excluded.checked_at END`,
+		row.sealed,
+		row.generation,
+		now,
+		now,
+		row.shortNoted ? 1 : 0,
+	);
+}
+
+/**
+ * The ChatGPT sign-in used to have a table of its own (`signin`); it is the ChatGPT plan now. A user actor copies
+ * its row here once and drops the table. Its generation is kept, so usage recorded and models listed under it stay
+ * the sign-in's.
+ */
+export async function moveSignInToPlan(db: DefaultsDb): Promise<void> {
+	const [legacy] = await db.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'signin'");
+	if (!legacy) return;
+	await db.execute(
+		`INSERT OR IGNORE INTO model_plan (provider, sealed, generation, account, added_at, checked_at, check_ok, short_noted)
+		SELECT 'openai', sealed, CAST(generation AS TEXT), NULL, updated_at, updated_at, 1, short_noted
+		FROM signin WHERE id = 1 AND sealed IS NOT NULL`,
+	);
+	await db.execute("DROP TABLE signin");
 }

@@ -57,9 +57,9 @@ Docker provider
 
 Credentials, network and data
 
-- `./token-file.ts` writes a turn's access-token file (`TokenFile`) and opens Settings-key relays.
+- `./token-file.ts` writes a turn's access-token file (`TokenFile`), opens Settings-key and plan relays, and keeps a ChatGPT plan's token fresh in a relay in the sandbox (`rotatePlanToken`).
 - `./relay-leases.ts` holds E2B and machine relay leases, signed placeholders and route limits (`RelayLimiter`).
-- `./plan-relay.ts` starts a Claude plan's relay inside an E2B or Daytona sandbox as the transport user, its source and token on stdin (`localPlanRelay` of `TurnSandbox`).
+- `./plan-relay.ts` starts a plan's relay (Claude or ChatGPT) inside an E2B or Daytona sandbox as the transport user, its source and token on stdin (`localPlanRelay` of `TurnSandbox`).
 - `./handoff.ts` describes the ChatGPT sign-in hand-off in words and numbers.
 - `./hosted-network.ts` holds the hosted allow-list rules (`MAX_HOSTS`, `isHostName`, presets).
 - `./hosted-settings.ts` reads the `WLP_HOSTED_` settings, falling back to the older `WLP_E2B_` names (`hostedName`).

@@ -31,6 +31,7 @@
  * rather than waited for.
  */
 
+import { randomUUID } from "node:crypto";
 import { type AccessToken, type ChatgptAccount, SandboxUserError } from "../sandbox/api.js";
 import { NOT_SIGNED_IN, TOKEN_VALID_FOR_MS, windlassDuration } from "../sandbox/handoff.js";
 import type { SignInCommands, TokenAnswer } from "./commands.js";
@@ -42,8 +43,8 @@ import { errorText } from "../util.js";
 export interface StoredSignIn {
 	/** The sign-in, sealed for this user; null when there is none (never signed in, or forgotten). */
 	sealed: string | null;
-	/** Counts the times the sign-in itself changed (adopted or forgotten): not its refreshes. */
-	generation: number;
+	/** Changes when the sign-in itself does (adopted or forgotten), never at a refresh: a turn pins it (credentials/plans.ts). */
+	generation: string;
 	/** Whether it was already said that the service issues tokens shorter than the platform asks for. */
 	shortNoted: boolean;
 }
@@ -73,7 +74,7 @@ export interface SignInHolderOptions {
 export const SIGN_IN_UNREADABLE =
 	"Your saved ChatGPT sign-in can no longer be read by this server. Sign in with ChatGPT again, then send the prompt once more.";
 
-const NOTHING: StoredSignIn = { sealed: null, generation: 0, shortNoted: false };
+const NOTHING: StoredSignIn = { sealed: null, generation: "", shortNoted: false };
 
 /** A token as it is kept for the user's other requests, and until when. */
 interface Kept {
@@ -166,9 +167,8 @@ export class SignInHolder {
 		if (account === null) throw new SandboxUserError("This sign-in is not finished yet.");
 		this.running?.abort();
 		await this.exclusive(async () => {
-			const row = (await this.options.store.load()) ?? NOTHING;
 			await this.options.store.save(
-				{ sealed: this.seal(material), generation: row.generation + 1, shortNoted: false },
+				{ sealed: this.seal(material), generation: randomUUID(), shortNoted: false },
 				pendingId,
 			);
 			this.unsaved = null;
@@ -187,7 +187,7 @@ export class SignInHolder {
 				this.unsaved = null;
 				const row = (await this.options.store.load()) ?? NOTHING;
 				if (row.sealed !== null)
-					await this.options.store.save({ sealed: null, generation: row.generation + 1, shortNoted: false });
+					await this.options.store.save({ sealed: null, generation: randomUUID(), shortNoted: false });
 			} finally {
 				this.kept = null;
 			}

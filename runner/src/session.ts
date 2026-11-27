@@ -329,7 +329,8 @@ class Conversation {
 					if (!box.harness && forward && !o.windlassKeyRelays)
 						throw new Refusal("Windlass Settings keys were not negotiated.");
 					// The server runs a Claude plan hosted only for now; machines use their own sign-in.
-					if (forward?.provider === "claude-plan") throw new Refusal("A Claude plan runs hosted only for now.");
+					if (forward?.provider === "claude-plan" || forward?.provider === "chatgpt-plan")
+						throw new Refusal("A plan runs hosted only for now.");
 					const relay = box.harness
 						? await o.openTurnKey(box.raw, box.harness, forward!)
 						: await o.modelRelay.open(containerName(box.raw), box.raw, undefined, forward);

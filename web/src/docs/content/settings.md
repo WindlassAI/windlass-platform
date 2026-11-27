@@ -16,6 +16,8 @@ An item's own choice comes first, then the repository's, then yours, then the de
 
 **Connect**, on the ChatGPT plan row under Models, opens a model connection for your signed-in Windlass account. Follow **Authorize your plan at OpenAI**, approve it, then copy the full loopback address from the page that fails to load. Paste it into Settings and choose **Finish connecting** within ten minutes. **Disconnect** removes this model connection. Your platform login and sessions stay with your GitHub or Google identity.
 
+This connection is your **ChatGPT plan**. Windlass's ChatGPT models run on it. Where the platform offers plans, hosted Codex runs on it too, before an OpenAI key, and the row says "Also pays for hosted Codex". Codex's models on the plan come from ChatGPT's own list, read when you connect; **Check again** reads it anew. Until it has been read, Codex offers only **Agent default**. The plan's tokens never enter a sandbox, and turns already running on an old connection stop when you reconnect or disconnect.
+
 ### Connect your Claude plan
 
 Where the platform offers it, the **Claude plan** row under Models lets hosted Claude Code run on your Claude Pro or Max plan instead of an API key. Choose **Connect**, then run the command it shows in a terminal on your own computer:
@@ -25,6 +27,8 @@ npx @windlassai/cli connect claude
 ```
 
 The command shows a code and opens a Windlass page in your browser. Check that the page shows the same code, then choose **Approve**; choose **Deny** if you did not just run the command yourself. After you approve, the command runs `claude setup-token` (installing Claude Code through npx if needed). Sign in to Claude there, and the command hands the token it prints to your account. Windlass checks it with Anthropic, keeps it encrypted, and shows the account it belongs to, for example "Connected as a@b.com · Max". The token never enters a sandbox, and the command does not save it. Codes expire after ten minutes. **Reconnect** replaces the token and **Disconnect** removes it; turns already running on the old one stop at their next model request.
+
+Claude Code's models on the plan are the ones it offers in its first turn on the plan; until then it offers only **Agent default**.
 
 For a self-hosted platform, add `--platform https://your-platform` to the command.
 

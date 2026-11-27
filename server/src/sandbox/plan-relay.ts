@@ -1,5 +1,5 @@
 /**
- * A Claude plan's relay inside a hosted sandbox with an address of its own (E2B, Daytona), so the plan's
+ * A plan's relay inside a hosted sandbox with an address of its own (E2B, Daytona), so the plan's
  * requests leave from there and not from the platform's one address (docs/model-relay.md, "Plan requests
  * from the sandbox"). The program (sandbox/relay/plan.cjs, on the shared relay) runs as the transport user,
  * not as `agent`: the agent cannot read its memory, its standard input or its /proc files, nor signal it.
@@ -8,6 +8,8 @@
  */
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
+import type { HarnessId } from "../contract.js";
+import type { KeyWire } from "../../../sandbox/relay/wires.cjs";
 import type { KeyTurnRelay, SandboxProcess, StartOptions, TakeRelayRequest } from "./provider.js";
 
 /** The image's Node (sandbox/Dockerfile), by its full path: the transport user's PATH does not name /usr/local/bin. */
@@ -41,14 +43,21 @@ export interface LocalModelRelay extends KeyTurnRelay {
 	hand(token: string): Promise<void>;
 }
 
-export interface PlanRelayOptions {
+/** What a turn asks of `TurnSandbox.localPlanRelay`: the plan's wire, the agent whose routes it allows, the turn's limits. */
+export interface LocalPlanRelayOptions {
+	/** The plan's wire (`credentialWire`): plan.cjs refuses any but a plan's. */
+	wire: KeyWire;
+	harness: HarnessId;
+	signal?: AbortSignal;
+	takeRequest?: TakeRelayRequest;
+}
+
+export interface PlanRelayOptions extends LocalPlanRelayOptions {
 	/** When the relay stops by itself, whatever the platform does: a server that died mid-turn leaves no token behind past it. */
 	expiresAt: number;
-	signal?: AbortSignal;
-	/** Counts one model request against the turn's limit; without it the relay counts `requestLimit` itself here. */
-	takeRequest?: TakeRelayRequest;
+	/** Without `takeRequest`, the relay counts this many requests itself here. */
 	requestLimit?: number;
-	/** The relay's checks only: where it sends requests in place of api.anthropic.com. */
+	/** The relay's checks only: where it sends requests in place of the wire's API host. */
 	upstream?: string;
 	startMs?: number;
 }
@@ -142,7 +151,7 @@ export async function startPlanRelay(
 	options.signal?.addEventListener("abort", onAbort, { once: true });
 	running.write(`${planRelaySources()}\n`);
 	running.write(
-		`${JSON.stringify({ token, placeholder, expiresAt: options.expiresAt, upstream: options.upstream })}\n`,
+		`${JSON.stringify({ token, placeholder, expiresAt: options.expiresAt, wire: options.wire, harness: options.harness, upstream: options.upstream })}\n`,
 	);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const port = await Promise.race([
@@ -162,7 +171,7 @@ export async function startPlanRelay(
 			port === "timeout"
 				? "it did not start in time"
 				: port.error?.message || said || `it exited (${port.code ?? port.signal})`;
-		throw new Error(`the Claude plan relay could not be started in the sandbox: ${why}`);
+		throw new Error(`the plan's relay could not be started in the sandbox: ${why}`);
 	}
 	const base = `http://127.0.0.1:${port}`;
 	return {

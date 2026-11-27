@@ -25,6 +25,8 @@ import {
 	largerHostedSize,
 	type HostedSize,
 	outOfMemoryWords,
+	type CredentialRef,
+	type ModelList,
 } from "../../contract.js";
 import { billing } from "../../billing/config.js";
 import { GithubError, githubApp, type InstallationToken } from "../../github/app.js";
@@ -2050,6 +2052,28 @@ async function closeReviewerSandbox(c: Ctx, t: TurnScope, layer: SandboxLayer, s
 	}
 }
 
+/**
+ * A hosted turn paid by a plan whose provider lists no models (a Claude plan) keeps what its agent offered at the
+ * session's start on the plan, for the pickers (credentials/plans.ts `recordAgentModels`). Best effort: a list that
+ * does not arrive leaves the plan as it was.
+ */
+async function keepPlanModels(
+	c: Ctx,
+	meta: SessionMeta,
+	key: CredentialRef | undefined,
+	models: ModelList | null | undefined,
+): Promise<void> {
+	if (!key?.plan || meta.place.kind !== "hosted" || !models?.models.length) return;
+	try {
+		await modelKeyActor(c, meta.uid).internalPlanModels(
+			key,
+			models.models.map(m => m.id),
+		);
+	} catch (error) {
+		c.log.warn({ msg: "could not keep the models the plan's agent reported", error: describeError(error) });
+	}
+}
+
 /** Records the turn's outcome, saves its workspace, appends `turn.ended` and returns the session to idle, whatever goes wrong. */
 export async function closeTurn(
 	c: Ctx,
@@ -2071,6 +2095,7 @@ export async function closeTurn(
 		}
 		const decided = turnOutcome(c, t, caps, summary);
 		const { outcome, stepLimit } = decided;
+		await keepPlanModels(c, meta, run?.credential?.key, result?.acp?.models);
 		const message = await noteProviderOutcome(c, t, outcome, decided.message);
 		if (result?.windlassSessionId && (result.acp || outcome !== "error"))
 			meta.windlassSessionId = result.windlassSessionId;

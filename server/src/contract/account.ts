@@ -105,8 +105,11 @@ export interface ModelPlanStatus {
 	/** The account the plan belongs to, as the provider names it ("a@b.com · Max"); never the token. */
 	account: string | null;
 	addedAt: number;
+	/** When `models` was last learned; a plan without a check offers only the agent's default. */
 	checkedAt: number | null;
 	ok: boolean;
+	/** The models the plan offers, as its provider or agent reported them: none until one did. */
+	models?: string[];
 }
 
 export interface ModelPlans {

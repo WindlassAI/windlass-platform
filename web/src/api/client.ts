@@ -181,6 +181,7 @@ export interface UserApi
 		| "approvePlanConnect"
 		| "denyPlanConnect"
 		| "removeModelPlan"
+		| "recheckModelPlan"
 		| "addSetupNotes"
 		| "deleteSetupNote"
 		| "setGuideCheck"

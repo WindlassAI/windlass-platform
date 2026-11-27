@@ -3,18 +3,28 @@
  * module on its own, so it stays dependency-free and browser-safe.
  */
 
-/** Subscription plans a user can connect, by the provider that serves them: a Claude plan for now. */
-export const PLAN_PROVIDERS = ["anthropic"] as const;
+/**
+ * Subscription plans a user can connect, by the provider that serves them. The ChatGPT plan is the user's ChatGPT
+ * sign-in (Windlass's own login), the one Windlass's unqualified models already run on.
+ */
+export const PLAN_PROVIDERS = ["anthropic", "openai"] as const;
 export type PlanProvider = (typeof PLAN_PROVIDERS)[number];
-export const PLAN_NAMES: Record<PlanProvider, string> = { anthropic: "Claude plan" };
+export const PLAN_NAMES: Record<PlanProvider, string> = { anthropic: "Claude plan", openai: "ChatGPT plan" };
 
 export function isPlanProvider(value: unknown): value is PlanProvider {
 	return (PLAN_PROVIDERS as readonly unknown[]).includes(value);
 }
 
-/** A Claude plan is connected with the long-lived token `claude setup-token` prints. */
+/** A Claude plan is connected with the long-lived token `claude setup-token` prints. A ChatGPT plan has no such token: it is a sign-in. */
+const PLAN_TOKEN_SHAPES: Partial<Record<PlanProvider, RegExp>> = { anthropic: /^sk-ant-oat01-[A-Za-z0-9_-]{20,400}$/ };
+
+/** Whether the connect command can connect this plan: only a plan with a token to hand over. */
+export function connectsWithToken(provider: PlanProvider): boolean {
+	return PLAN_TOKEN_SHAPES[provider] !== undefined;
+}
+
 export function validPlanToken(provider: PlanProvider, token: unknown): token is string {
-	return typeof token === "string" && { anthropic: /^sk-ant-oat01-[A-Za-z0-9_-]{20,400}$/ }[provider].test(token);
+	return typeof token === "string" && (PLAN_TOKEN_SHAPES[provider]?.test(token) ?? false);
 }
 
 /**

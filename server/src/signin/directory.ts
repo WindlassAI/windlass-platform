@@ -16,7 +16,7 @@
  * server made up), so an answer cannot be replayed as the answer to another request or another user.
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { createClient } from "rivetkit/client";
 import { isActorGone } from "../actors/internal.js";
 import { serviceParams } from "../auth.js";
@@ -229,10 +229,9 @@ export class MemorySignInDirectory implements SignInDirectory {
 	 * dropped: `forget` does that. For checks, with made-up material.
 	 */
 	put(uid: string, material: SignInMaterial): void {
-		const row = this.rows.get(uid);
 		this.rows.set(uid, {
 			sealed: this.options.sealer.seal("user", uid, JSON.stringify(signInOnly(material))),
-			generation: (row?.generation ?? 0) + 1,
+			generation: randomUUID(),
 			shortNoted: false,
 		});
 	}

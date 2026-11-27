@@ -1,8 +1,10 @@
-// A Claude plan's relay inside an E2B or Daytona sandbox, run as another user than the agent's
+// A plan's relay inside an E2B or Daytona sandbox, run as another user than the agent's
 // (server/src/sandbox/plan-relay.ts, docs/model-relay.md "Plan requests from the sandbox").
 // Everything it is given comes on standard input, one JSON object per line, so nothing of it is in its
 // arguments, its environment or a file the agent could read:
-//   {token, placeholder, expiresAt}   first: the token, the bearer it accepts in its place, and when it stops
+//   {token, placeholder, expiresAt, wire, harness}
+//                                     first: the token, the bearer it accepts in its place, when it stops, the
+//                                     plan's wire (claude-plan, chatgpt-plan) and the agent whose routes it allows
 //   {token}                           later: replaces the token; requests that start after it carry the new one
 //   {took, ok}                        the platform's answer to a request it was asked to count
 // It writes {listening: port} once it can take requests, {take: n} for each request to count, and
@@ -15,7 +17,7 @@ const { createRelay, scrubStream } = require("./server.cjs");
 const { harnessMethod } = require("./wires.cjs");
 const { wireTarget, errorBody, placeholderOf, LEASE_ENDED } = require("./windlass.cjs");
 
-const WIRE = "claude-plan";
+const WIRES = ["claude-plan", "chatgpt-plan"];
 // The shared relay counts by a connection's nonce. This relay has one session, so every connection carries the same.
 const NONCE = "0".repeat(32);
 const TOKEN = /^[\x21-\x7e]{16,4096}$/;
@@ -29,20 +31,23 @@ function same(a, b) {
 	return x.length === y.length && timingSafeEqual(x, y);
 }
 
-/** The relay's provider (server.cjs `createRelay`): only Claude Code's plan routes, only with the turn's placeholder. */
+/** The relay's provider (server.cjs `createRelay`): only the agent's routes on the plan's wire, only with the turn's placeholder. */
 function planProvider(state, { upstream, take, now = Date.now }) {
 	const live = () => state.expiresAt > now();
+	const { wire, harness } = state;
+	// Claude Code asks whether its API is there before it starts.
+	const hello = wire === "claude-plan";
 	return {
-		methodFor: url => (url === "/api/hello" ? "HEAD" : harnessMethod("claude", WIRE, url) || undefined),
+		methodFor: url => (hello && url === "/api/hello" ? "HEAD" : harnessMethod(harness, wire, url) || undefined),
 		bearer: placeholderOf,
 		unauthorizedCode: LEASE_ENDED,
 		authorize: bearer => live() && typeof bearer === "string" && same(bearer, state.placeholder),
-		answersLocally: (method, url) => method === "HEAD" && url === "/api/hello",
+		answersLocally: (method, url) => hello && method === "HEAD" && url === "/api/hello",
 		async target(url, headers) {
 			if (!live()) return;
 			// The token as it is now: one replaced while this request runs is not this request's.
 			const token = state.token;
-			const target = wireTarget(WIRE, url, headers, token);
+			const target = wireTarget(wire, url, headers, token);
 			if (!target) return { refused: true };
 			const counted = await take();
 			if (counted === "limit")
@@ -119,12 +124,13 @@ function main(input = process.stdin, output = process.stdout, rest = "") {
 		}
 		if (!value || typeof value !== "object") return fail("unreadable control message");
 		if (!state) {
-			const { token, placeholder, expiresAt } = value;
+			const { token, placeholder, expiresAt, wire, harness } = value;
 			if (typeof token !== "string" || !TOKEN.test(token)) return fail("no token on standard input");
 			if (typeof placeholder !== "string" || !PLACEHOLDER.test(placeholder)) return fail("no placeholder");
 			if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) return fail("no expiry");
+			if (!WIRES.includes(wire) || typeof harness !== "string") return fail("no plan wire");
 			clearTimeout(first);
-			state = { token, placeholder, expiresAt, used: new Set([token]) };
+			state = { token, placeholder, expiresAt, wire, harness, used: new Set([token]) };
 			return listen(value);
 		}
 		if (typeof value.token === "string") {

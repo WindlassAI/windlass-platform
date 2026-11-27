@@ -131,7 +131,7 @@ const deps: RelayRouteDeps = {
 	credential: async (owner, ref, nonce) => {
 		assert.equal(owner, uid);
 		assert.deepEqual(ref, { provider });
-		return sealCredentialTransit(uid, ref, nonce, keys[ref.provider], "first");
+		return sealCredentialTransit(uid, ref, nonce, { secret: keys[ref.provider], generation: "first" });
 	},
 	fetch: async (input, init) => {
 		const url = String(input);

@@ -2786,9 +2786,7 @@ test("5c.5 a Windlass limit still gates every approved machine at child creation
 	for (const overflow of [false, true]) {
 		const { raw, create, delivered, facts } = await childCreation(t, overflow);
 		const until = Date.now() + 3600_000;
-		raw.exec(
-			"CREATE TABLE machines(id TEXT PRIMARY KEY, facts TEXT, expires INTEGER); CREATE TABLE signin(id INTEGER, generation INTEGER)",
-		);
+		raw.exec("CREATE TABLE machines(id TEXT PRIMARY KEY, facts TEXT, expires INTEGER)");
 		raw.prepare("INSERT INTO machines VALUES(?, '{}', NULL)").run(macId);
 		raw.exec(
 			"CREATE TABLE IF NOT EXISTS provider_usage(place TEXT,harness TEXT,generation TEXT,data TEXT,PRIMARY KEY(place,harness))",
@@ -2821,7 +2819,7 @@ test("5c.2 unknown resets back off per login, and only a successful real probe c
 		transaction: async <T>(work: (tx: Db) => Promise<T>) => work(db),
 	} as Db;
 	await machineTables(db);
-	raw.exec("CREATE TABLE signin(id INTEGER, generation INTEGER); INSERT INTO signin VALUES(1,1)");
+	raw.exec("CREATE TABLE model_plan(provider TEXT, generation TEXT); INSERT INTO model_plan VALUES('openai','1')");
 	assert.ok(
 		raw.prepare("SELECT 1 FROM sqlite_master WHERE name='provider_usage'").get(),
 		"the user has no account cooldown ledger",
@@ -2861,7 +2859,7 @@ test("legacy Windlass rows retain the longest cooldown for the latest sign-in on
 		typeof machineTables
 	>[0];
 	raw.exec(PROVIDER_TABLE);
-	raw.exec("CREATE TABLE signin(id INTEGER, generation INTEGER); INSERT INTO signin VALUES(1,2)");
+	raw.exec("CREATE TABLE model_plan(provider TEXT, generation TEXT); INSERT INTO model_plan VALUES('openai','2')");
 	for (const [place, generation, until] of [
 		[macId, "1", 900],
 		["hosted", "2", 200],

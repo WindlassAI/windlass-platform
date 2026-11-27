@@ -1,5 +1,5 @@
-import type { LoginStart } from "@contract";
-import { useState } from "react";
+import type { LoginStart, ModelPlanStatus } from "@contract";
+import { useEffect, useState } from "react";
 import { useApp, useAuth } from "../state/app";
 import { PROVIDERS_CHANGED, useChatgpt } from "../state/hooks";
 
@@ -11,6 +11,39 @@ export function ChatgptPlan() {
 	const [callback, setCallback] = useState("");
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	/** The sign-in as the ChatGPT plan: its account label, and whether it also pays for hosted Codex here (WLP_PLAN_USERS). */
+	const [plan, setPlan] = useState<ModelPlanStatus | null>(null);
+	const [allowed, setAllowed] = useState(false);
+	const [checking, setChecking] = useState(false);
+
+	useEffect(() => {
+		let live = true;
+		client
+			.user(auth)
+			.modelPlans()
+			.then(
+				found => {
+					if (!live) return;
+					setAllowed(found.allowed);
+					setPlan(found.plans.find(p => p.provider === "openai") ?? null);
+				},
+				() => undefined,
+			);
+		return () => void (live = false);
+	}, [client, auth, status]);
+
+	async function checkAgain() {
+		setChecking(true);
+		setError(null);
+		try {
+			setPlan(await client.user(auth).recheckModelPlan("openai"));
+			window.dispatchEvent(new Event(PROVIDERS_CHANGED));
+		} catch (failure) {
+			setError(explain(failure));
+		} finally {
+			setChecking(false);
+		}
+	}
 
 	async function change(action: "start" | "finish" | "disconnect") {
 		setBusy(true);
@@ -42,12 +75,30 @@ export function ChatgptPlan() {
 				<p className="agent-meta">
 					<span>
 						{connected
-							? status?.email
-								? `Connected as ${status.email}`
-								: "Connected"
+							? plan?.account
+								? `Connected as ${plan.account}`
+								: status?.email
+									? `Connected as ${status.email}`
+									: "Connected"
 							: "Use your ChatGPT subscription"}
 					</span>
 				</p>
+				{connected && allowed && (
+					<p className="agent-meta chatgpt-plan-codex">
+						<span>
+							Also pays for hosted Codex
+							{plan?.models?.length ? ` · ${plan.models.length} models` : " · Agent default until its models are read"}
+						</span>
+						<button
+							type="button"
+							className="button button-quiet button-small"
+							disabled={checking}
+							onClick={() => void checkAgain()}
+						>
+							{checking ? "Checking…" : "Check again"}
+						</button>
+					</p>
+				)}
 				{attempt ? (
 					<form
 						className="chatgpt-plan-form"

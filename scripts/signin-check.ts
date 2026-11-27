@@ -749,7 +749,7 @@ async function main(): Promise<void> {
 				rows.row?.sealed != null &&
 					!SECRET.test(rows.row.sealed) &&
 					!rows.row.sealed.includes("fake-sub-a") &&
-					rows.row.generation === 1,
+					/^[0-9a-f-]{36}$/.test(rows.row.generation),
 			);
 			const account = await holder.status();
 			expect(
@@ -781,6 +781,7 @@ async function main(): Promise<void> {
 			const commands = new ScriptedCommands();
 			const holder = make(rows, commands);
 			await holder.adopt(seal(fakeMaterial("fake-sub-b", Date.now() + 12 * 60_000, 1)));
+			const adopted = rows.row!.generation;
 			rows.events.length = 0;
 			let release = () => {};
 			commands.hold = new Promise<void>(done => (release = done));
@@ -804,11 +805,11 @@ async function main(): Promise<void> {
 				`${commands.asked} request to Windlass, ${commands.issued} refresh`,
 			);
 			expect(
-				"the refreshed sign-in is in the store before the token is returned: saved first, with the new refresh token",
+				"the refreshed sign-in is in the store before the token is returned: saved first, with the new refresh token, at the same generation",
 				order.join(", ") === "saved, returned, returned" &&
 					now.refreshToken === "FAKE-REFRESH-TOKEN-101-not-a-real-token" &&
 					now.accessToken === one.accessToken &&
-					rows.row!.generation === 1,
+					rows.row!.generation === adopted,
 				order.join(", "),
 			);
 			commands.hold = null;
@@ -862,14 +863,16 @@ async function main(): Promise<void> {
 			const revoked: string[] = [];
 			const holder = make(rows, commands, { revoke: async user => void revoked.push(user) });
 			await holder.adopt(seal(fakeMaterial("fake-sub-d", Date.now() + 3_600_000, 1)));
+			const first = rows.row!.generation;
 			const old = await holder.accessToken();
 			await holder.adopt(seal(fakeMaterial("fake-sub-d", Date.now() + 3_600_001, 2)));
+			const second = rows.row!.generation;
 			const replaced = await holder.accessToken();
 			expect(
 				"after a new sign-in is adopted the old one's token is not handed out again, though it was fresh: the new one's is",
 				old.accessToken === "FAKE-ACCESS-TOKEN-1-not-a-real-token" &&
 					replaced.accessToken === "FAKE-ACCESS-TOKEN-2-not-a-real-token" &&
-					rows.row!.generation === 2,
+					second !== first,
 			);
 			const asked = commands.asked;
 			await holder.logout();
@@ -879,7 +882,7 @@ async function main(): Promise<void> {
 				gone instanceof SandboxUserError &&
 					gone.message === NOT_SIGNED_IN &&
 					rows.row!.sealed === null &&
-					rows.row!.generation === 3 &&
+					rows.row!.generation !== second &&
 					(await holder.status()) === null &&
 					commands.asked === asked &&
 					revoked.join(",") === uid,

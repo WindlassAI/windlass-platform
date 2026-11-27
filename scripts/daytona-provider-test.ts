@@ -263,7 +263,7 @@ try {
 	const planToken = "sk-ant-oat01-FAKE-DAYTONA-PLAN-" + "q".repeat(30);
 	const launched = launchers.length,
 		sent = inputs.length;
-	const relay = await guest.localPlanRelay!(planToken, {});
+	const relay = await guest.localPlanRelay!(planToken, { wire: "claude-plan", harness: "claude" });
 	assert.equal(launchers.length, launched + 1);
 	assert.match(launchers.at(-1)!, /-u nobody --/);
 	const request = JSON.parse(inputs[sent]!);

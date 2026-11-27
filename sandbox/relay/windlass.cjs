@@ -75,8 +75,7 @@ function wireTarget(provider, path, incoming, credential) {
 		const values = allowedBetas(beta, wire.betas);
 		if (values) headers["anthropic-beta"] = values;
 	}
-	if (provider === "openai" && method === "POST" && incoming["content-encoding"] === "zstd")
-		headers["content-encoding"] = "zstd";
+	if (wire.zstd && method === "POST" && incoming["content-encoding"] === "zstd") headers["content-encoding"] = "zstd";
 	for (const [name, value] of Object.entries(incoming)) {
 		if (
 			(name === "accept" ||

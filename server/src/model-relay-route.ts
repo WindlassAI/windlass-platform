@@ -448,7 +448,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 					release();
 					return refusal(403, "This request is not allowed by the relay.");
 				}
-				secret = await openSavedCredential(placeholder.uid, token, deps.credential);
+				secret = (await openSavedCredential(placeholder.uid, token, deps.credential))?.secret ?? null;
 			} else if (token) secret = token.accessToken;
 		} catch {
 			release();

@@ -15,6 +15,7 @@ const wires = {
 		models: "/v1/models",
 		posts: ["/v1/responses", "/v1/chat/completions"],
 		passed: ["session-id"],
+		zstd: true,
 		drop: [
 			"openai-organization",
 			"openai-project",
@@ -83,18 +84,28 @@ wires["claude-plan"] = {
 	betas: [...wires.anthropic.betas, "oauth-2025-04-20"],
 };
 
-/** The wire a saved credential's requests take: a Claude plan has its own, a Settings key its provider's. */
+// A ChatGPT plan's access token, the one Windlass's own sign-in refreshes. OpenAI takes it as a bearer at
+// api.openai.com for Responses and for its model catalog, as it does for Windlass's ChatGPT models. Codex sends
+// headers of its own besides; only the chatgpt wire's are passed on.
+wires["chatgpt-plan"] = { ...wires.chatgpt, zstd: true };
+
+const PLAN_WIRES = { anthropic: "claude-plan", openai: "chatgpt-plan" };
+
+/** The wire a saved credential's requests take: a plan has its own, a Settings key its provider's. */
 function credentialWire(ref) {
 	if (!ref.plan) return ref.provider;
 	// A plan's token must never go out the way an API key does.
-	if (ref.provider !== "anthropic") throw new Error(`No relay wire for a ${ref.provider} plan`);
-	return "claude-plan";
+	const wire = PLAN_WIRES[ref.provider];
+	if (!wire) throw new Error(`No relay wire for a ${ref.provider} plan`);
+	return wire;
 }
+
+const CODEX_CATALOG = /^\/v1\/models\?client_version=\d{1,4}\.\d{1,4}\.\d{1,4}$/;
 
 // Codex adds its client version when listing models. OpenAI gets the canonical models route.
 function wirePath(provider, path) {
-	return provider === "openai" && /^\/v1\/models\?client_version=\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(path)
-		? wires.openai.models
+	return (provider === "openai" || provider === "chatgpt-plan") && CODEX_CATALOG.test(path)
+		? wires[provider].models
 		: path;
 }
 
@@ -122,17 +133,29 @@ function wireMethod(provider, path) {
 }
 
 function harnessMethod(harness, provider, path) {
-	// Only Claude Code signs in with a Claude plan.
+	// Only Claude Code runs on a Claude plan, and only Codex and Windlass on a ChatGPT plan.
 	if (provider === "claude-plan" && harness !== "claude") return;
+	if (provider === "chatgpt-plan" && harness !== "codex" && harness !== "windlass") return;
 	if (harness === "windlass") {
 		if (path === wires[provider].models || catalogPage(provider, path)) return "GET";
 		if (provider === "google")
 			return wires.google.postPattern.test(path) && path.endsWith(":streamGenerateContent?alt=sse") && "POST";
-		const generation = { openai: "/v1/responses", anthropic: "/v1/messages", openrouter: "/api/v1/chat/completions" };
+		const generation = {
+			openai: "/v1/responses",
+			"chatgpt-plan": "/v1/responses",
+			anthropic: "/v1/messages",
+			openrouter: "/api/v1/chat/completions",
+		};
 		return path === generation[provider] && "POST";
 	}
 	if (catalogPage(provider, path)) return;
-	if (harness === "codex") return provider === "openai" && wireMethod("chatgpt", wirePath(provider, path));
+	if (harness === "codex") {
+		if (provider === "openai") return wireMethod("chatgpt", wirePath(provider, path));
+		// codex-acp narrows its models by the bare listing's `data[]`, which ChatGPT's catalog (`models[]`) may not have:
+		// refused, codex-acp leaves the list as Codex has it. Codex's own catalog request carries its client version.
+		if (provider === "chatgpt-plan") return CODEX_CATALOG.test(path) ? "GET" : path === "/v1/responses" && "POST";
+		return;
+	}
 	if (harness === "claude")
 		return (provider === "anthropic" || provider === "claude-plan") && wireMethod(provider, path);
 	if (harness === "opencode") return wireMethod(provider, path);

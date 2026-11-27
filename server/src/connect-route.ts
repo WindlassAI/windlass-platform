@@ -15,6 +15,7 @@ import {
 	CONNECT_PATHS,
 	type ConnectRequestState,
 	type ConnectStart,
+	connectsWithToken,
 	isPlanProvider,
 	PLAN_PROVIDERS,
 	type PlanProvider,
@@ -84,7 +85,7 @@ export async function connectResponse(request: Request, engine: Engine = ownEngi
 }
 
 async function start(engine: Engine, provider: unknown): Promise<Response> {
-	if (!isPlanProvider(provider)) return json(400, { code: "bad_input" });
+	if (!isPlanProvider(provider) || !connectsWithToken(provider)) return json(400, { code: "bad_input" });
 	if (plansOff())
 		return json(404, { code: "plans_off", message: "Connecting a plan is not available on this platform." });
 	const opened = newConnectRequest();

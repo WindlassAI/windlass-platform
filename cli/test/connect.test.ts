@@ -143,7 +143,9 @@ test("no token in the output and no terminal to paste into: it says how to finis
 });
 
 test("usage, planned commands and platform addresses", async () => {
-	assert.equal((await cli(["connect", "codex"], {})).code, 2);
+	const codex = await cli(["connect", "codex"], { WINDLASS_PLATFORM: "https://windlass.example.com" });
+	assert.equal(codex.code, 2);
+	assert.match(codex.stderr, /signing in with ChatGPT on the platform.*https:\/\/windlass\.example\.com\/settings/);
 	assert.match((await cli(["connect", "--machine"], {})).stderr, /not available yet/);
 	const plain = await cli(["connect", "claude"], { WINDLASS_PLATFORM: "http://example.com" });
 	assert.match(plain.stderr, /must start with https:\/\//);

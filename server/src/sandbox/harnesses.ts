@@ -208,7 +208,7 @@ export interface AcpProfile {
 	capabilities: HarnessCapabilities;
 	/** The providers whose Settings keys it can run on (`keyProviders`). */
 	keyProviders: readonly ModelProvider[];
-	/** The providers whose subscription plan it can run on, hosted, through the relay: Claude Code on a Claude plan. */
+	/** The providers whose subscription plan it can run on, hosted, through the relay: Claude Code on a Claude plan, Codex on a ChatGPT plan. */
 	planProviders: readonly PlanProvider[];
 	/**
 	 * A line of the agent's own error log (stderr) saying it gave up on the provider's usage or rate limit, where
@@ -285,7 +285,7 @@ export const CODEX: AcpProfile = {
 	// chosen per prompt. Its modes are the profile's (codex-modes.ts).
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, planMode: true, modes: "profile" }),
 	keyProviders: ["openai"],
-	planProviders: [],
+	planProviders: ["openai"],
 };
 
 /** Windlass's counterpart of `AcpProfile.keyProviders`. */
@@ -449,9 +449,6 @@ export type CheckedProvider = Pick<ModelProviderStatus, "provider" | "checkedAt"
 /** What a hosted turn can pay with, as pickers and the resolver see it: checked Settings keys and, with `plan`, connected plans. */
 export type HostedCredential = CheckedProvider & { plan?: true };
 
-/** A plan lists no models, so each plan agent offers a fixed set on it. */
-const PLAN_MODELS: Partial<Record<HarnessId, readonly string[]>> = { claude: ["sonnet", "opus", "haiku", "fable"] };
-
 /** Any agent runs on a key of its providers; only a plan agent runs on a plan. */
 function canPayWith(harness: HarnessId, credential: HostedCredential): boolean {
 	if (!credential.plan) return keyProviders(harness).includes(credential.provider);
@@ -491,7 +488,7 @@ function codexModels(ids: string[]) {
 	);
 }
 
-/** Map the saved key checks to the model ids each hosted ACP adapter takes at launch. */
+/** Map the saved key checks and connected plans to the model ids each hosted ACP adapter takes at launch. */
 export function hostedCatalog(
 	harness: HarnessId,
 	credentials: readonly HostedCredential[],
@@ -501,9 +498,10 @@ export function hostedCatalog(
 	for (const credential of credentials) {
 		const { provider, models: offered, windlassModels, checkedAt: at } = credential;
 		if (!canPayWith(harness, credential) || at === null) continue;
+		// A plan offers what its provider or agent reported (credentials/plans.ts); before that, the agent's default.
 		if (credential.plan) {
 			checkedAt = Math.max(checkedAt ?? at, at);
-			for (const model of PLAN_MODELS[harness] ?? []) ids.add(model);
+			for (const model of offered ?? []) ids.add(model);
 			continue;
 		}
 		if (!offered?.length) continue;

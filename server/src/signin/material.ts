@@ -62,14 +62,14 @@ export function signInOnly(material: SignInMaterial): SignInMaterial {
 }
 
 /**
- * Who the material's sign-in is for and when its access token expires: `account.sub`, `account.email`
- * and `expiresAt` of `auth.json`, and nothing else of it. Null when there is no sign-in in it, or its
- * `auth.json` names no account.
+ * Who the material's sign-in is for, on which ChatGPT plan, and when its access token expires: `account.sub`,
+ * `account.email`, `expiresAt` and the plan type among the ID token's claims, and nothing else of it. Null when
+ * there is no sign-in in it, or its `auth.json` names no account.
  */
 export function accountOf(material: SignInMaterial): ChatgptAccount | null {
 	const text = material.files["auth.json"];
 	if (text === undefined) return null;
-	let parsed: { account?: { sub?: unknown; email?: unknown }; expiresAt?: unknown };
+	let parsed: { account?: { sub?: unknown; email?: unknown }; expiresAt?: unknown; idToken?: unknown };
 	try {
 		parsed = JSON.parse(text) as typeof parsed;
 	} catch {
@@ -83,7 +83,26 @@ export function accountOf(material: SignInMaterial): ChatgptAccount | null {
 		sub,
 		email: typeof email === "string" ? email : null,
 		accessExpiresAt: typeof expiresAt === "number" && Number.isFinite(expiresAt) ? expiresAt : null,
+		planType: planTypeOf(parsed.idToken),
 	};
+}
+
+/**
+ * `chatgpt_plan_type` of OpenAI's auth claims in an ID token ("plus"); null when it names none. Windlass checked the
+ * token's signature when it signed in; this only reads a label from it.
+ */
+function planTypeOf(idToken: unknown): string | null {
+	if (typeof idToken !== "string") return null;
+	try {
+		const claims = JSON.parse(Buffer.from(idToken.split(".")[1] ?? "", "base64url").toString("utf8")) as Record<
+			string,
+			{ chatgpt_plan_type?: unknown } | undefined
+		>;
+		const type = claims["https://api.openai.com/auth"]?.chatgpt_plan_type;
+		return typeof type === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(type) ? type : null;
+	} catch {
+		return null;
+	}
 }
 
 /** User ids and attempt ids name things at the providers and in a sealed blob's binding: letters, digits, `_` and `-`, starting with a letter or digit, at most 64. */

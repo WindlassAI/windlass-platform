@@ -26,6 +26,7 @@ import type {
 	ModelProviderCheck,
 	ModelProviderStatus,
 	ModelPlans,
+	ModelPlanStatus,
 	RepositoryDefaultsPatch,
 } from "./account.js";
 import type { PlanProvider } from "./connect.js";
@@ -235,7 +236,10 @@ export interface UserActions {
 	 */
 	approvePlanConnect(userCode: string): Promise<void>;
 	denyPlanConnect(userCode: string): Promise<void>;
+	/** Forgets a plan; the ChatGPT plan is the ChatGPT sign-in, so this is `forgetChatgpt` for it. */
 	removeModelPlan(provider: PlanProvider): Promise<void>;
+	/** Asks the plan's provider again whose it is and, for the ChatGPT plan, which models it offers. */
+	recheckModelPlan(provider: PlanProvider): Promise<ModelPlanStatus | null>;
 	/** The names and times of the account's secrets, and what each reaches in a sandbox of `profile` made now. No value. */
 	accountSecrets(input: { profile: SandboxProfileId }): Promise<AccountSecrets>;
 	/**

@@ -51,7 +51,12 @@ export function useHostedCredentials(enabled = true) {
 					const connected = plans.allowed ? plans.plans.filter(p => p.ok) : [];
 					setCredentials([
 						...keys,
-						...connected.map(p => ({ provider: p.provider, plan: true as const, checkedAt: p.checkedAt })),
+						...connected.map(p => ({
+							provider: p.provider,
+							plan: true as const,
+							checkedAt: p.checkedAt,
+							models: p.models,
+						})),
 					]);
 				},
 				() => {

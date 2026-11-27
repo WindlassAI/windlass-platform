@@ -16,8 +16,8 @@ import { openBrowser, printable, readHidden, say } from "./terminal.ts";
 
 /**
  * What `connect <name>` connects: the plan's provider on the platform and how this computer gets its token.
- * `connect codex` (a ChatGPT plan) joins here with its own provider and token source; connecting a machine
- * (`connect --machine`) is its own flow beside this one.
+ * A ChatGPT plan has no token to hand over (it is a sign-in the platform refreshes), so `connect codex` is not one;
+ * connecting a machine (`connect --machine`) is its own flow beside this one.
  */
 export interface PlanSource {
 	provider: PlanProvider;

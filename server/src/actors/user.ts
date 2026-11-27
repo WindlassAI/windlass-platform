@@ -192,6 +192,7 @@ import {
 import { AccountModels, MODELS_TABLE, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
 import { modelProviderActions } from "../credentials/keys.js";
 import { CREDENTIAL_TABLES, credentialActions, hostedCredentials } from "../credentials/index.js";
+import { MODEL_PLAN_COLUMNS, moveSignInToPlan } from "../credentials/plans.js";
 import {
 	ACCOUNT_SECRETS_TABLE,
 	ACCOUNT_SECRET_PROJECT,
@@ -324,7 +325,7 @@ import {
 	sessionActor,
 } from "./internal.js";
 import { boundedText, type UserVars, type UserCtx } from "./user/state.js";
-import { modelInput, modelsOf, signinActions, writeActorProfile, type ModelsCtx } from "./user/signin.js";
+import { chatgptPlan, modelInput, modelsOf, signinActions, writeActorProfile, type ModelsCtx } from "./user/signin.js";
 import { readUsage, sizesOf, queueOverageReport, usageActions } from "./user/usage.js";
 export { itemSharing, readUsage } from "./user/usage.js";
 
@@ -1776,7 +1777,7 @@ async function loadUserState(c: { key: string[]; db: RawAccess }): Promise<UserV
 		if (key !== null && sent !== null) created.set(key, { key, sent, id: parsed.id });
 	}
 	// An actor that holds a sign-in is a user's, also before that user's own token was seen here.
-	const [held] = await c.db.execute<{ id: number }>("SELECT id FROM signin WHERE id = 1");
+	const [held] = await c.db.execute<{ provider: string }>("SELECT provider FROM model_plan WHERE provider = 'openai'");
 	const [connected] = await c.db.execute<{ connection: string }>("SELECT connection FROM github WHERE id = 1");
 	const github = connected ? (JSON.parse(connected.connection) as StoredConnection) : null;
 	const approvals = new ApprovalBook(await readApprovals(c.db), config.serverApprovalTtlMs);
@@ -1835,15 +1836,6 @@ export const user = actor({
 					sent TEXT,
 					launch_until INTEGER,
 					launch_claim INTEGER
-				)
-			`);
-			await db.execute(`
-				CREATE TABLE IF NOT EXISTS signin (
-					id INTEGER PRIMARY KEY CHECK (id = 1),
-					sealed TEXT,
-					generation INTEGER NOT NULL,
-					short_noted INTEGER NOT NULL,
-					updated_at INTEGER NOT NULL
 				)
 			`);
 			await db.execute(
@@ -1931,6 +1923,7 @@ export const user = actor({
 				["sessions", "launch_claim", "INTEGER"],
 				["setup_command", "snapshot_connection", "INTEGER"],
 				["model_provider", "windlass_models", "TEXT"],
+				...MODEL_PLAN_COLUMNS,
 			] as const) {
 				const columns = await db.execute<{ name: string }>(`PRAGMA table_info(${table})`);
 				if (columns.some(found => found.name === column)) continue;
@@ -1942,6 +1935,7 @@ export const user = actor({
 					);
 				}
 			}
+			await moveSignInToPlan(db);
 			// Where a post-setup snapshot of a project was last saved (`internalSnapshotSaved`), for placement's snapshot bonus.
 			await db.execute(
 				"CREATE TABLE IF NOT EXISTS snapshot_place (project TEXT NOT NULL, place TEXT NOT NULL, saved_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, connected_at INTEGER NOT NULL, PRIMARY KEY (project, place))",
@@ -3581,15 +3575,22 @@ export const user = actor({
 		},
 		internalHostedCredentials: c => credentialActions.internalHostedCredentials(c),
 		internalCredentialGeneration: (c, ref: unknown) => credentialActions.internalCredentialGeneration(c, ref),
-		internalCredential: (c, ref: unknown, nonce: string) => credentialActions.internalCredential(c, ref, nonce),
+		internalCredential: (c, ref: unknown, nonce: string) =>
+			credentialActions.internalCredential(c, ref, nonce, chatgptPlan(c)),
 
 		modelPlans: c => credentialActions.modelPlans(c),
 		approvePlanConnect: (c, userCode: string) => credentialActions.approvePlanConnect(c, userCode),
 		denyPlanConnect: (c, userCode: string) => credentialActions.denyPlanConnect(c, userCode),
 		removeModelPlan: async (c, provider: PlanProvider) => {
-			await credentialActions.removeModelPlan(c, provider);
+			await credentialActions.removeModelPlan(c, provider, chatgptPlan(c));
 			await credentialsChanged(c);
 		},
+		recheckModelPlan: async (c, provider: PlanProvider) => {
+			const plan = await credentialActions.recheckModelPlan(c, provider, chatgptPlan(c));
+			await credentialsChanged(c);
+			return plan;
+		},
+		internalPlanModels: (c, ref: unknown, ids: unknown) => credentialActions.internalPlanModels(c, ref, ids),
 		internalConnectPlan: async (c, provider: PlanProvider, digest: string, sealed: string) => {
 			const plan = await credentialActions.internalConnectPlan(c, provider, digest, sealed);
 			await credentialsChanged(c);

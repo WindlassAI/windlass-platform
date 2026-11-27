@@ -130,7 +130,7 @@ export async function savedKey(db: DefaultsDb, uid: string, provider: ModelProvi
 }
 
 // A model ID echoed by a provider must not disclose key material, even in truncated form.
-function safeModelId(id: unknown, key: string): id is string {
+export function safeModelId(id: unknown, key: string): id is string {
 	if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/.test(id)) return false;
 	for (let i = 0; i + 5 <= id.length; i++) {
 		if (key.includes(id.slice(i, i + 5))) return false;

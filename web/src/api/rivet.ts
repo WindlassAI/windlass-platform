@@ -500,6 +500,7 @@ export function createRivetClient(
 			approvePlanConnect: userCode => act("approvePlanConnect", userCode),
 			denyPlanConnect: userCode => act("denyPlanConnect", userCode),
 			removeModelPlan: provider => act("removeModelPlan", provider),
+			recheckModelPlan: provider => act("recheckModelPlan", provider),
 			accountSecrets: profile => act("accountSecrets", { profile }),
 			saveAccountSecret: (profile, secret) => act("saveAccountSecret", { profile, ...secret }),
 			deleteAccountSecret: (profile, name) => act("deleteAccountSecret", { profile, name }),

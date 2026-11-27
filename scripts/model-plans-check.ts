@@ -126,9 +126,10 @@ test("a connected Claude plan is checked, sealed and opened only for the relay",
 		"a key's subject",
 	);
 	assert.throws(() => openCredentialTransit("plan-check-a", ref, hex(), sealed), "another request");
-	await assert.rejects(
-		credentials.internalCredential(a.relay, { provider: "openai", plan: true }, nonce),
-		/Unknown plan/,
+	assert.equal(
+		await credentials.internalCredential(a.relay, { provider: "openai", plan: true }, nonce),
+		null,
+		"no ChatGPT plan without the user's sign-in holder",
 	);
 
 	// Connecting again replaces the generation, so every lease of the old one ends.
@@ -150,7 +151,9 @@ test("a connected Claude plan is checked, sealed and opened only for the relay",
 		/not available/,
 	);
 	off.sql
-		.prepare("INSERT INTO model_plan VALUES ('anthropic', ?, 'g', 'x', 0, 0, 1)")
+		.prepare(
+			"INSERT INTO model_plan (provider, sealed, generation, account, added_at, checked_at, check_ok) VALUES ('anthropic', ?, 'g', 'x', 0, 0, 1)",
+		)
 		.run(serverSealer().seal("model-plan", JSON.stringify(["plan-check-off", "anthropic"]), tokens.good));
 	assert.equal(await credentials.internalCredentialGeneration(off.relay, ref), null);
 	assert.equal(await credentials.internalCredential(off.relay, ref, nonce), null);
@@ -169,10 +172,14 @@ test("hosted turns pay with the plan first, and only Claude Code takes a Claude 
 	assert.equal(hostedPayer("opencode", "anthropic/claude-haiku-5-5", [plan]), null);
 	assert.deepEqual(hostedPayer("opencode", "anthropic/claude-haiku-5-5", [key, plan]), { provider: "anthropic" });
 	assert.equal(hostedPayer("codex", "default", [plan]), null);
-	// A plan lists no models: Claude Code offers its fixed families on it.
+	// Until its agent reported models, a plan offers only the agent's default; then what was reported.
 	assert.deepEqual(
 		hostedCatalog("claude", [plan])?.models.map(m => m.id),
-		["default", "sonnet", "opus", "haiku", "fable"],
+		["default"],
+	);
+	assert.deepEqual(
+		hostedCatalog("claude", [{ ...plan, models: ["opus", "sonnet"] }])?.models.map(m => m.id),
+		["default", "opus", "sonnet"],
 	);
 	assert.equal(hostedCatalog("opencode", [plan]), undefined);
 	assert.equal(hostedAgentProblem("claude", [plan], true), null);
@@ -339,4 +346,239 @@ test("a terminal connects a plan only after its user approves the code, once", a
 	const limited = await world.post(start, { provider: "anthropic" }, busy);
 	assert.equal(limited.status, 429);
 	assert.equal((await world.post(poll, { request: guessed.request }, busy)).status, 200);
+});
+
+test("hosted Codex pays with the ChatGPT plan first, an OpenAI key otherwise, and the plans never cross", async () => {
+	const { hostedPayer, hostedCatalog, hostedAgentProblem } = await import("../server/src/sandbox/harnesses.js");
+	const key = { provider: "openai" as const, checkedAt: 1, models: ["gpt-5.5", "text-embedding-3-large"] };
+	const chatgpt = { provider: "openai" as const, plan: true as const, checkedAt: 2, models: ["gpt-5.5-codex"] };
+	const claude = { provider: "anthropic" as const, plan: true as const, checkedAt: 2 };
+	assert.deepEqual(hostedPayer("codex", "gpt-5.5", [key, chatgpt]), { provider: "openai", plan: true });
+	assert.deepEqual(hostedPayer("codex", "default", [chatgpt]), { provider: "openai", plan: true });
+	assert.deepEqual(hostedPayer("codex", "gpt-5.5", [key]), { provider: "openai" });
+	assert.equal(hostedPayer("codex", "default", [claude]), null, "a Claude plan never pays for Codex");
+	assert.equal(hostedPayer("claude", "default", [chatgpt]), null, "a ChatGPT plan never pays for Claude Code");
+	assert.equal(hostedPayer("opencode", "openai/gpt-5.5", [chatgpt]), null);
+	assert.deepEqual(
+		hostedCatalog("codex", [chatgpt])?.models.map(m => m.id),
+		["default", "gpt-5.5-codex"],
+	);
+	assert.deepEqual(
+		hostedCatalog("codex", [{ ...chatgpt, models: undefined }])?.models.map(m => m.id),
+		["default"],
+	);
+	assert.equal(hostedCatalog("claude", [chatgpt]), undefined);
+	assert.equal(hostedAgentProblem("codex", [chatgpt], true), null);
+	// Windlass runs on the ChatGPT sign-in its own way: the plan adds nothing to its Settings-key models.
+	assert.equal(hostedCatalog("windlass", [chatgpt]), undefined);
+});
+
+test("a ChatGPT plan is the sign-in: generation kept across refreshes, the current access token per request, behind WLP_PLAN_USERS", async t => {
+	const { writeChatgptSignIn, loadChatgptSignIn, saveChatgptCheck } = await import(
+		"../server/src/credentials/plans.js"
+	);
+	const a = account("plan-check-a"),
+		off = account("plan-check-off");
+	t.after(() => {
+		a.sql.close();
+		off.sql.close();
+	});
+	await writeChatgptSignIn(a.context.db, { sealed: "sealed-1", generation: "g1", shortNoted: false });
+	const [first] = (await credentials.modelPlans(a.context)).plans;
+	assert.deepEqual(
+		{ provider: first?.provider, ok: first?.ok, account: first?.account },
+		{
+			provider: "openai",
+			ok: true,
+			account: null,
+		},
+	);
+	await saveChatgptCheck(a.context.db, "g1", { account: "a@b.com · Plus", models: ["gpt-5.5-codex"] });
+	// A refresh writes a new sealed sign-in at the same generation: what was learned stays.
+	await writeChatgptSignIn(a.context.db, { sealed: "sealed-2", generation: "g1", shortNoted: true });
+	const ref = { provider: "openai" as const, plan: true as const };
+	assert.equal(await credentials.internalCredentialGeneration(a.relay, ref), "g1");
+	const [refreshed] = (await credentials.modelPlans(a.context)).plans;
+	assert.deepEqual(
+		{ account: refreshed?.account, models: refreshed?.models },
+		{
+			account: "a@b.com · Plus",
+			models: ["gpt-5.5-codex"],
+		},
+	);
+	assert.deepEqual(await loadChatgptSignIn(a.context.db), { sealed: "sealed-2", generation: "g1", shortNoted: true });
+
+	// The relay's request gets the holder's current access token, sealed for it, with its expiry.
+	let access = "chatgpt-access-one-" + hex();
+	const expiresAt = Date.now() + 40 * 60_000;
+	const holder = {
+		token: async () => ({ secret: access, generation: "g1", expiresAt }),
+		check: async () => {},
+		forget: async () => {},
+	};
+	const nonce = hex();
+	const sealed = (await credentials.internalCredential(a.relay, ref, nonce, holder))!;
+	assert.ok(!sealed.includes(access));
+	assert.deepEqual(openCredentialTransit("plan-check-a", ref, nonce, sealed), {
+		secret: access,
+		generation: "g1",
+		expiresAt,
+	});
+	access = "chatgpt-access-two-" + hex();
+	const next = hex();
+	const again = (await credentials.internalCredential(a.relay, ref, next, holder))!;
+	assert.equal(openCredentialTransit("plan-check-a", ref, next, again).secret, access, "the refreshed token next");
+	const hosted = await credentials.internalHostedCredentials(a.relay);
+	assert.ok(hosted.some(c => c.plan && c.provider === "openai" && c.generation === "g1"));
+
+	// Another connection is another generation: the old one's learned facts go.
+	await writeChatgptSignIn(a.context.db, { sealed: "sealed-3", generation: "g2", shortNoted: false });
+	const [reconnected] = (await credentials.modelPlans(a.context)).plans;
+	assert.deepEqual(
+		{ account: reconnected?.account, models: reconnected?.models },
+		{ account: null, models: undefined },
+	);
+	assert.equal(await credentials.internalCredentialGeneration(a.relay, ref), "g2");
+	// Removing it is forgetting the sign-in; no sign-in is no plan.
+	let forgot = 0;
+	await credentials.removeModelPlan(a.context, "openai", { ...holder, forget: async () => void forgot++ });
+	assert.equal(forgot, 1);
+	await writeChatgptSignIn(a.context.db, { sealed: null, generation: "g3", shortNoted: false });
+	assert.deepEqual((await credentials.modelPlans(a.context)).plans, []);
+
+	// Off for an account: Windlass keeps its sign-in, but no turn pays with it as a plan.
+	await writeChatgptSignIn(off.context.db, { sealed: "sealed-off", generation: "g1", shortNoted: false });
+	assert.equal(await credentials.internalCredentialGeneration(off.relay, ref), null);
+	assert.equal(await credentials.internalCredential(off.relay, ref, hex(), holder), null);
+	assert.ok(!(await credentials.internalHostedCredentials(off.relay)).some(c => c.plan));
+	assert.deepEqual(await loadChatgptSignIn(off.context.db), {
+		sealed: "sealed-off",
+		generation: "g1",
+		shortNoted: false,
+	});
+});
+
+test("the ChatGPT sign-in's old table is copied into the plan once, keeping its generation", async t => {
+	const { moveSignInToPlan, loadChatgptSignIn } = await import("../server/src/credentials/plans.js");
+	const a = account("plan-check-a");
+	t.after(() => a.sql.close());
+	a.sql.exec(`CREATE TABLE signin (id INTEGER PRIMARY KEY CHECK (id = 1), sealed TEXT, generation INTEGER NOT NULL,
+		short_noted INTEGER NOT NULL, updated_at INTEGER NOT NULL); INSERT INTO signin VALUES (1, 'wlps1.legacy', 4, 1, 5)`);
+	await moveSignInToPlan(a.context.db);
+	assert.deepEqual(await loadChatgptSignIn(a.context.db), {
+		sealed: "wlps1.legacy",
+		generation: "4",
+		shortNoted: true,
+	});
+	const [plan] = (await credentials.modelPlans(a.context)).plans;
+	assert.deepEqual(
+		{ provider: plan?.provider, ok: plan?.ok, addedAt: plan?.addedAt },
+		{ provider: "openai", ok: true, addedAt: 5 },
+	);
+	assert.equal(a.sql.prepare("SELECT name FROM sqlite_master WHERE name = 'signin'").all().length, 0);
+	await moveSignInToPlan(a.context.db);
+	assert.equal((await credentials.modelPlans(a.context)).plans.length, 1, "a second start finds nothing to copy");
+	// A signed-out row is not a plan.
+	const b = account("plan-check-c");
+	t.after(() => b.sql.close());
+	b.sql.exec(`CREATE TABLE signin (id INTEGER PRIMARY KEY, sealed TEXT, generation INTEGER NOT NULL,
+		short_noted INTEGER NOT NULL, updated_at INTEGER NOT NULL); INSERT INTO signin VALUES (1, NULL, 2, 0, 5)`);
+	await moveSignInToPlan(b.context.db);
+	assert.deepEqual((await credentials.modelPlans(b.context)).plans, []);
+});
+
+test("a plan's models: ChatGPT's listed catalog, a Claude plan's from its agent at the current generation", async t => {
+	const { chatgptCatalogModels, recordAgentModels, writeChatgptSignIn } = await import(
+		"../server/src/credentials/plans.js"
+	);
+	const token = "chatgpt-access-" + "Zx9Qw".repeat(8);
+	assert.deepEqual(
+		chatgptCatalogModels(
+			{
+				models: [
+					{ slug: "gpt-5.5-codex", visibility: "list", display_name: "GPT-5.5 Codex" },
+					{ slug: "gpt-5.5-internal", visibility: "hide" },
+					{ slug: "bad slug", visibility: "list" },
+					{ slug: "x-Zx9Qw-y", visibility: "list" },
+					{ slug: 7, visibility: "list" },
+					{ slug: "gpt-5.5-mini", visibility: "list" },
+				],
+			},
+			token,
+		),
+		["gpt-5.5-codex", "gpt-5.5-mini"],
+	);
+	assert.deepEqual(chatgptCatalogModels({ data: [{ id: "gpt-5.5" }] }, token), []);
+	assert.equal(
+		chatgptCatalogModels(
+			{ models: Array.from({ length: 50 }, (_, i) => ({ slug: `m-${i}`, visibility: "list" })) },
+			token,
+		).length,
+		32,
+	);
+
+	const a = account("plan-check-a");
+	t.after(() => a.sql.close());
+	a.sql
+		.prepare(
+			"INSERT INTO model_plan (provider, sealed, generation, account, added_at, checked_at, check_ok) VALUES ('anthropic', 's', 'g1', 'x', 0, 0, 1)",
+		)
+		.run();
+	assert.equal(
+		await recordAgentModels(a.context.db, "anthropic", "g0", ["opus"]),
+		false,
+		"a turn of an older connection",
+	);
+	assert.equal(await recordAgentModels(a.context.db, "anthropic", "g1", ["default", "opus", "sonnet", "no way"]), true);
+	const claude = (await credentials.modelPlans(a.context)).plans.find(p => p.provider === "anthropic");
+	assert.deepEqual(claude?.models, ["opus", "sonnet"]);
+	await writeChatgptSignIn(a.context.db, { sealed: "s", generation: "g1", shortNoted: false });
+	assert.equal(
+		await recordAgentModels(a.context.db, "openai", "g1", ["gpt-x"]),
+		false,
+		"ChatGPT's come from its catalog",
+	);
+	// Only a turn's own plan reaches the actor's action, and only as the relay's caller.
+	await assert.rejects(
+		credentials.internalPlanModels(a.context, { provider: "anthropic", plan: true, generation: "g1" }, ["x"]),
+		/internal/,
+	);
+	assert.equal(
+		await credentials.internalPlanModels(a.relay, { provider: "anthropic", generation: "g1" }, ["x"]),
+		false,
+	);
+});
+
+test("plan names come from the account, and an unknown one is shown as it came", async () => {
+	const { claudePlanLabel, chatgptPlanLabel, accountLabel } = await import("../server/src/credentials/plan-labels.js");
+	assert.equal(claudePlanLabel("claude_max"), "Max");
+	assert.equal(claudePlanLabel("Claude Max 20x subscription"), "Ultra");
+	assert.equal(claudePlanLabel("max5"), "Max");
+	assert.equal(claudePlanLabel("claude_pro"), "Pro");
+	assert.equal(claudePlanLabel("claude_team"), "Team");
+	assert.equal(claudePlanLabel("claude_enterprise"), "Enterprise");
+	assert.equal(claudePlanLabel("free"), "Free");
+	assert.equal(claudePlanLabel("claude_galaxy_brain"), "Claude Galaxy Brain");
+	assert.equal(claudePlanLabel(undefined), null);
+	assert.equal(chatgptPlanLabel("plus"), "Plus");
+	assert.equal(chatgptPlanLabel("pro"), "Pro");
+	assert.equal(chatgptPlanLabel("go"), "Go");
+	assert.equal(chatgptPlanLabel("team"), "Business");
+	assert.equal(chatgptPlanLabel("edu_plus"), "Edu");
+	assert.equal(chatgptPlanLabel("enterprise_cbp_usage_based"), "Enterprise");
+	assert.equal(chatgptPlanLabel("unknown"), null);
+	assert.equal(chatgptPlanLabel("super_duper"), "Super Duper");
+	assert.equal(accountLabel("a@b.com", "Plus"), "a@b.com · Plus");
+	assert.equal(accountLabel(null, null), null);
+
+	const { accountOf } = await import("../server/src/signin/material.js");
+	const claims = Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_plan_type: "plus" } })).toString(
+		"base64url",
+	);
+	const auth = (idToken: unknown) => ({
+		files: { "auth.json": JSON.stringify({ account: { sub: "s", email: "a@b.com" }, expiresAt: 1, idToken }) },
+	});
+	assert.equal(accountOf(auth(`h.${claims}.sig`))?.planType, "plus");
+	assert.equal(accountOf(auth("not-a-jwt"))?.planType, null);
+	assert.equal(accountOf(auth(undefined))?.sub, "s");
 });

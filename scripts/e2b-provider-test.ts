@@ -101,7 +101,7 @@ import {
 	randomId,
 	shellQuote,
 } from "../server/src/sandbox/provider.js";
-import { openModelKeyRelay, tokenFilePath } from "../server/src/sandbox/token-file.js";
+import { openModelKeyRelay, rotatePlanToken, tokenFilePath } from "../server/src/sandbox/token-file.js";
 import { GUEST_NODE, planRelaySources } from "../server/src/sandbox/plan-relay.js";
 import { hostedKeyEnv, redactKeyLease } from "../server/src/sandbox/hosted-keys.js";
 import { sleep } from "./check-wait.js";
@@ -1470,7 +1470,10 @@ class PlanRelayMachine extends ScriptedMachine {
 			pid: 99,
 			sendStdin: async data => {
 				relay.stdin += data;
-				if (relay.stdin.split("\n").length === 3) {
+				const lines = relay.stdin.split("\n").length;
+				// A replaced token after the first two lines: the relay answers it was handed.
+				if (lines > 3 && data.includes('"token"')) options.onStdout?.('{"handed":true}\n');
+				if (lines === 3) {
 					if (this.listens) options.onStdout?.('{"listening":40123}\n');
 					else {
 						options.onStderr?.("[wlp-plan-relay] cannot listen: EACCES\n");
@@ -1510,7 +1513,8 @@ await section("a plan's relay in the sandbox", async () => {
 	const handle = (await w.sandboxes.connect(id)) as E2bSandboxHandle;
 	const machine = machines.at(-1)!;
 	const before = machine.commands.length;
-	const relay = await handle.localPlanRelay(PLAN_TOKEN);
+	const CLAUDE_PLAN = { wire: "claude-plan", harness: "claude" } as const;
+	const relay = await handle.localPlanRelay(PLAN_TOKEN, CLAUDE_PLAN);
 	const started = machine.relays[0];
 	expect(
 		"it runs as the transport user (nobody), started from the image's Node, with a clean environment",
@@ -1527,7 +1531,11 @@ await section("a plan's relay in the sandbox", async () => {
 	const handed = lines[1] ? JSON.parse(lines[1]) : {};
 	expect(
 		"its program and then the token and a fresh placeholder arrive on its standard input",
-		lines[0] === planRelaySources() && handed.token === PLAN_TOKEN && handed.placeholder === relay.placeholder,
+		lines[0] === planRelaySources() &&
+			handed.token === PLAN_TOKEN &&
+			handed.placeholder === relay.placeholder &&
+			handed.wire === "claude-plan" &&
+			handed.harness === "claude",
 	);
 	const agentVisible = machine.commands.slice(before).filter(entry => !entry.command.includes(GUEST_NODE));
 	const everywhere = [
@@ -1561,7 +1569,7 @@ await section("a plan's relay in the sandbox", async () => {
 	await expectRejects(() => relay.hand("sk-ant-oat01-another-token-0000"), /ended/, "a closed relay takes no token");
 
 	const controller = new AbortController();
-	const second = await handle.localPlanRelay(PLAN_TOKEN, { signal: controller.signal });
+	const second = await handle.localPlanRelay(PLAN_TOKEN, { ...CLAUDE_PLAN, signal: controller.signal });
 	controller.abort();
 	await sleep(20);
 	expect("the turn's abort stops it", machine.relays[1]?.ended === true);
@@ -1569,7 +1577,7 @@ await section("a plan's relay in the sandbox", async () => {
 	const early = new AbortController();
 	early.abort();
 	await expectRejects(
-		() => handle.localPlanRelay(PLAN_TOKEN, { signal: early.signal }),
+		() => handle.localPlanRelay(PLAN_TOKEN, { ...CLAUDE_PLAN, signal: early.signal }),
 		/abort/i,
 		"an aborted turn starts none",
 	);
@@ -1584,14 +1592,65 @@ await section("a plan's relay in the sandbox", async () => {
 	});
 	const brokenHandle = (await broken.sandboxes.connect(brokenId)) as E2bSandboxHandle;
 	await expectRejects(
-		() => brokenHandle.localPlanRelay(PLAN_TOKEN),
-		/plan relay could not be started in the sandbox: \[wlp-plan-relay\] cannot listen/,
+		() => brokenHandle.localPlanRelay(PLAN_TOKEN, CLAUDE_PLAN),
+		/plan's relay could not be started in the sandbox: \[wlp-plan-relay\] cannot listen/,
 		"a relay that cannot listen fails the turn, with nothing left running",
 	);
 	expect(
 		"and it was stopped",
 		failing.relays.every(one => one.ended),
 	);
+
+	// A ChatGPT plan's access token expires within the hour: the turn hands its relay the current one before then.
+	const codexId = await w.sandboxes.create({ uid: "u1", sessionId: "s2", profile: "e2b-open", harness: "codex" });
+	const codexHandle = (await w.sandboxes.connect(codexId)) as E2bSandboxHandle;
+	const codexMachine = machines.at(-1)!;
+	const firstAccess = "chatgpt-access-FAKE-1-" + "a".repeat(24);
+	const nextAccess = "chatgpt-access-FAKE-2-" + "b".repeat(24);
+	let asked = 0;
+	let plan: { secret: string; expiresAt: number } | null = { secret: nextAccess, expiresAt: Date.now() + 3_600_000 };
+	const codexRelay = await openModelKeyRelay(
+		codexHandle,
+		"s2",
+		{ provider: "openai", plan: true, generation: "g1", harness: "codex" },
+		undefined,
+		undefined,
+		async () => (asked++ === 0 ? { secret: firstAccess, expiresAt: Date.now() + 20 * 60_000 } : plan),
+	);
+	const codexStarted = codexMachine.relays.at(-1)!;
+	const codexHanded = JSON.parse(codexStarted.stdin.split("\n")[1] ?? "{}");
+	expect(
+		"a ChatGPT plan's relay is started on its own wire for Codex, with the access token the turn opened",
+		codexHanded.wire === "chatgpt-plan" && codexHanded.harness === "codex" && codexHanded.token === firstAccess,
+	);
+	await codexRelay.close();
+	// The next token is due again soon too, so the plan's change below is asked about while the check waits.
+	plan = { secret: nextAccess, expiresAt: Date.now() + 60_100 };
+	const rotating = await codexHandle.localPlanRelay(firstAccess, { wire: "chatgpt-plan", harness: "codex" });
+	const rotated = rotatePlanToken(
+		rotating,
+		Date.now() + 60_000,
+		async () => {
+			const answer = plan;
+			plan = null;
+			return answer;
+		},
+		{ leadMs: 59_950, retryMs: 10, log: () => undefined },
+	);
+	await sleep(400);
+	const rotatingStarted = codexMachine.relays.at(-1)!;
+	const replaced = rotatingStarted.stdin.split("\n").filter(line => line.includes(nextAccess));
+	expect(
+		"when the token has the lead left, the current one is asked for and handed on the relay's standard input, once",
+		replaced.length === 1 && JSON.parse(replaced[0]!).token === nextAccess,
+		rotatingStarted.stdin.slice(-200),
+	);
+	expect(
+		"a plan that changed meanwhile gives no token, and nothing more is handed",
+		rotatingStarted.stdin.split("\n").filter(line => line.includes('"token"')).length === 2,
+	);
+	await rotated.close();
+	expect("the turn's end stops the relay", rotatingStarted.ended === true);
 
 	const keyLease = await openModelKeyRelay(handle, "s1", {
 		provider: "anthropic",
@@ -1634,11 +1693,19 @@ await section("a plan's relay in the sandbox", async () => {
 				claude.meta[META.harness] === "claude",
 			claude.made2.join(","),
 		);
-		const others = [await allowed("codex"), await allowed("opencode"), await allowed()];
+		const codex = await allowed("codex");
+		const others = [codex, await allowed("opencode"), await allowed()];
 		expect(
 			`${mode}: no other agent's sandbox may`,
 			others.every(o => !o.made1.includes("api.anthropic.com") && !o.made2.includes("api.anthropic.com")) &&
 				others[2]!.meta[META.harness] === undefined,
+		);
+		expect(
+			`${mode}: a Codex sandbox may reach api.openai.com for a ChatGPT plan's relay, and no other agent's may`,
+			codex.made1.includes("api.openai.com") &&
+				codex.made2.includes("api.openai.com") &&
+				[claude, ...others.slice(1)].every(o => !o.made1.includes("api.openai.com")),
+			codex.made2.join(","),
 		);
 	}
 });

@@ -46,8 +46,9 @@ export async function loginGeneration(db: Db, { place, harness, provider }: Acco
 		const entry = entries?.find(h => h.id === harness);
 		return entry && entry.signIn !== "none" ? (entry.loginGeneration ?? "legacy") : null;
 	}
-	const [row] = await db.execute<{ generation: number }>("SELECT generation FROM signin WHERE id=1");
-	return String(row?.generation ?? 0);
+	// Windlass's ChatGPT sign-in is the ChatGPT plan's row.
+	const [row] = await db.execute<{ generation: string }>("SELECT generation FROM model_plan WHERE provider='openai'");
+	return row?.generation ?? "0";
 }
 
 export async function recordProviderUsage(

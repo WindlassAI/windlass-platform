@@ -85,8 +85,8 @@ const harness = optional(oneOf(...MACHINE_HARNESS_IDS));
 const sandbox = { id };
 const relayLease = is<string>(v => typeof v === "string" && /^[a-f0-9]{32}$/.test(v));
 const forwardKey = object({
-	// The relay wire (`credentialWire`): a provider, or a Claude plan's `claude-plan`.
-	provider: oneOf(...MODEL_PROVIDERS, "claude-plan"),
+	// The relay wire (`credentialWire`): a provider, or a plan's `claude-plan` or `chatgpt-plan`.
+	provider: oneOf(...MODEL_PROVIDERS, "claude-plan", "chatgpt-plan"),
 	host: forwardHost,
 	placeholder: forwardPlaceholder,
 	proofKey: optional(validProofKey),

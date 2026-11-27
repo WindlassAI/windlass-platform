@@ -14,7 +14,7 @@ Run one command from the repository root.
 
 ## Module map
 
-- `./src/main.ts` parses the command line; `connect codex` and `connect --machine` are named but not built.
+- `./src/main.ts` parses the command line. `connect codex` points at Settings: a ChatGPT plan is a sign-in through Windlass's login on the platform, with no token to hand over. `connect --machine` is named but not built.
 - `./src/connect.ts` runs `connect <plan>`: start, browser approval, poll, token, hand-over (`PLAN_SOURCES`).
 - `./src/setup-token.ts` runs `claude setup-token` under `script` and keeps its output in memory.
 - `./src/token.ts` reads the token off terminal output and scrubs secrets out of messages.

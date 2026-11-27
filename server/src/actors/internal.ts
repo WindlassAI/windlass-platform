@@ -550,6 +550,8 @@ export function modelKeyActor(
 		ref: Omit<import("../contract.js").CredentialRef, "generation">,
 		nonce: string,
 	): Promise<string | null>;
+	/** The models the agent of a turn paid by the plan `ref` reported, kept for that plan while it is at that generation. */
+	internalPlanModels(ref: import("../contract.js").CredentialRef, ids: string[]): Promise<boolean>;
 } {
 	return c.client().user.get([uid], { params: { token: issueServiceToken(modelKeyCaller(uid)) } });
 }

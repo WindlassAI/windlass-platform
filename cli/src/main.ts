@@ -1,6 +1,8 @@
 /**
  * `windlassai` (`npx @windlassai/cli`): connects what a user has on their own computer to Windlass.
- * Today `connect claude`; `connect codex` and `connect --machine` are planned beside it.
+ * Today `connect claude`. `connect codex` points at Settings: a ChatGPT plan is a sign-in the platform keeps and
+ * refreshes itself, through Windlass's own login, so this computer has no token to hand over. `connect --machine`
+ * is planned.
  */
 import { parseArgs } from "node:util";
 import { connectPlan, PLAN_SOURCES } from "./connect.ts";
@@ -42,16 +44,18 @@ async function main(argv: string[]): Promise<number> {
 		console.error("Connecting a machine from here is not available yet. Use windlass-runner pair for now.");
 		return 2;
 	}
-	const source = target === undefined ? undefined : PLAN_SOURCES[target];
-	if (!source) {
+	const platform = platformOrigin(values.platform ?? process.env.WINDLASS_PLATFORM);
+	if (target === "codex") {
 		console.error(
-			target === "codex"
-				? "Connecting a ChatGPT plan from here is not available yet. Use Settings → Models on the platform."
-				: USAGE,
+			`A ChatGPT plan is connected by signing in with ChatGPT on the platform, not from here: ${platform}/settings (Models).`,
 		);
 		return 2;
 	}
-	const platform = platformOrigin(values.platform ?? process.env.WINDLASS_PLATFORM);
+	const source = target === undefined ? undefined : PLAN_SOURCES[target];
+	if (!source) {
+		console.error(USAGE);
+		return 2;
+	}
 	const token = values["token-stdin"] ? await readStdin() : undefined;
 	await connectPlan(source, { platform, token, browser: !values["no-browser"] });
 	return 0;

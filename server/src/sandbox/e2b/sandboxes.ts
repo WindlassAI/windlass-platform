@@ -32,7 +32,6 @@ import {
 	SWEEP_SCRIPT,
 	type SandboxProcess,
 	type StartOptions,
-	type TakeRelayRequest,
 	type TurnModelRelay,
 	type TurnSandbox,
 	WORKSPACE,
@@ -47,7 +46,7 @@ import {
 import { tokenFilePath, tokenFilePaths } from "../token-file.js";
 import { config } from "../../config.js";
 import { openRelayLease } from "../relay-leases.js";
-import { startPlanRelay } from "../plan-relay.js";
+import { type LocalPlanRelayOptions, startPlanRelay } from "../plan-relay.js";
 import {
 	E2bBusyError,
 	type E2bClient,
@@ -251,7 +250,7 @@ export abstract class HostedGuest implements TurnSandbox {
 	readonly modelKeyRelay?: TurnSandbox["modelKeyRelay"];
 
 	/** The relay runs as the transport user (`gitUser`), which `agent` cannot read or signal; it ends by itself after the turn's limit. */
-	localPlanRelay(token: string, options: { signal?: AbortSignal; takeRequest?: TakeRelayRequest } = {}) {
+	localPlanRelay(token: string, options: LocalPlanRelayOptions) {
 		return startPlanRelay((argv, start) => this.start(argv, start), token, {
 			...options,
 			expiresAt: Date.now() + this.turnLimitMs + 60_000,

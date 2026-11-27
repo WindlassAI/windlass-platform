@@ -97,3 +97,64 @@ it("adds, checks, replaces and removes a provider key", async () => {
 		localStorage.clear();
 	}
 }, 15_000);
+
+it("shows the ChatGPT sign-in as the ChatGPT plan, and its Codex line only where plans are on", async () => {
+	const base = createMockClient({ pace: 0 });
+	const auth = {
+		token: "mock:user:u_chatgpt:ada@example.com",
+		profile: { uid: "u_chatgpt", email: "ada@example.com", demo: false },
+	};
+	saveAuth("mock", auth);
+	const user = base.user(auth);
+	const started = await user.startChatgpt();
+	const state = new URL(started.url).searchParams.get("state")!;
+	await user.finishChatgpt(`${started.redirectPrefix}?code=mock_code&state=${state}`);
+	let allowed = true;
+	let rechecked = 0;
+	const client = {
+		...base,
+		user: (a: typeof auth) => ({
+			...base.user(a),
+			modelPlans: async () => ({ ...(await base.user(a).modelPlans()), allowed }),
+			recheckModelPlan: async (provider: "openai" | "anthropic") => {
+				rechecked++;
+				return base.user(a).recheckModelPlan(provider);
+			},
+		}),
+	} as typeof base;
+	const host = document.body.appendChild(document.createElement("div"));
+	const root = createRoot(host);
+	const settle = async () => {
+		for (let i = 0; i < 6; i++) await act(async () => void (await new Promise(r => setTimeout(r, 2))));
+	};
+	const row = () => host.querySelector<HTMLElement>(".provider-row.chatgpt-plan")!;
+	const render = async () => {
+		await act(async () => root.render(createElement(AppProvider, { client, children: createElement(ModelProviders) })));
+		await settle();
+	};
+	try {
+		await render();
+		expect(row().textContent).toContain("Connected as ada@example.com · Plus");
+		expect(row().textContent).toContain("Also pays for hosted Codex · 2 models");
+		const check = [...row().querySelectorAll("button")].find(b => b.textContent === "Check again")!;
+		await act(async () => check.click());
+		await settle();
+		expect(rechecked).toBe(1);
+
+		act(() => root.unmount());
+		allowed = false;
+		const again = createRoot(host);
+		await act(async () =>
+			again.render(createElement(AppProvider, { client, children: createElement(ModelProviders) })),
+		);
+		await settle();
+		expect(row().textContent).toContain("Connected as ada@example.com · Plus");
+		expect(row().textContent).not.toContain("hosted Codex");
+		expect(row().textContent).not.toContain("Check again");
+		act(() => again.unmount());
+	} finally {
+		host.remove();
+		base.dispose();
+		localStorage.clear();
+	}
+}, 15_000);

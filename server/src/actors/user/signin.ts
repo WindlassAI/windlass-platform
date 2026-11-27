@@ -1,4 +1,5 @@
 // All sessions for one user share this sign-in holder. It persists a refreshed credential before returning a token sealed for the caller.
+// The sign-in is the user's ChatGPT plan: the holder keeps it in the plan's `model_plan` row (credentials/plans.ts).
 
 import { randomBytes } from "node:crypto";
 import { changed as machinesChanged, logoutMachines } from "../user-machines.js";
@@ -10,7 +11,17 @@ import type { ChatgptStatus, LinkedLogin, LoginProvider, ModelList, UserProfile 
 import { windlassModels } from "../../sandbox/harnesses.js";
 import { ModelProblem, standInModels } from "../../account-models.js";
 import { providerStatuses } from "../../credentials/keys.js";
-import { SandboxUserError, type ChatgptAccount } from "../../sandbox/api.js";
+import {
+	chatgptPlanModels,
+	loadChatgptSignIn,
+	plansAllowed,
+	saveChatgptCheck,
+	writeChatgptSignIn,
+} from "../../credentials/plans.js";
+import { accountLabel, chatgptPlanLabel } from "../../credentials/plan-labels.js";
+import type { ChatgptPlan } from "../../credentials/index.js";
+import { errorText } from "../../util.js";
+import { SandboxUserError, type AccessToken, type ChatgptAccount } from "../../sandbox/api.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../../signin/directory.js";
 import { SignInHolder, type StoredSignIn } from "../../signin/holder.js";
 import { getSignIns } from "../../signin/index.js";
@@ -24,18 +35,9 @@ interface SignInCtx {
 	key: string[];
 }
 
-type SignInRow = { sealed: string | null; generation: number; short_noted: number };
-
 /** Consume the pending authorization in the same transaction that commits the credential. */
 export async function saveModelSignIn(db: RawAccess, row: StoredSignIn, attemptId?: string): Promise<void> {
-	const write = (sql: RawAccess) =>
-		sql.execute(
-			"INSERT INTO signin (id, sealed, generation, short_noted, updated_at) VALUES (1, ?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET sealed=excluded.sealed, generation=excluded.generation, short_noted=excluded.short_noted, updated_at=excluded.updated_at",
-			row.sealed,
-			row.generation,
-			row.shortNoted ? 1 : 0,
-			Date.now(),
-		);
+	const write = (sql: RawAccess) => writeChatgptSignIn(sql, row);
 	if (attemptId === undefined) {
 		await write(db);
 		return;
@@ -67,12 +69,7 @@ function signIn(c: SignInCtx): Promise<SignInHolder> {
 					sealer,
 					revoke: hooks.revoke,
 					store: {
-						load: async (): Promise<StoredSignIn | null> => {
-							const [row] = await db().execute<SignInRow>(
-								"SELECT sealed, generation, short_noted FROM signin WHERE id = 1",
-							);
-							return row ? { sealed: row.sealed, generation: row.generation, shortNoted: row.short_noted === 1 } : null;
-						},
+						load: () => loadChatgptSignIn(db()),
 						save: (row, attemptId) => saveModelSignIn(db(), row, attemptId),
 					},
 				}),
@@ -106,16 +103,70 @@ export async function modelsOf(c: ModelsCtx, demo: boolean): Promise<ModelList> 
 	if (demo) return standInModels("demo");
 	const account = await c.vars.models.current({
 		db: c.db,
-		generation: async () => {
-			const [row] = await c.db.execute<{ generation: number }>(
-				"SELECT generation FROM signin WHERE id = 1 AND sealed IS NOT NULL",
-			);
-			return row?.generation ?? null;
-		},
+		generation: async () => (await loadChatgptSignIn(c.db))?.generation ?? null,
 		list: () =>
 			c.keepAwake((async () => (await getSignIns()).commands.models(await (await signIn(c)).accessToken()))()),
 	});
 	return windlassModels(account, await providerStatuses(c.db));
+}
+
+/**
+ * The ChatGPT plan's current access token and its generation, for a relay request or a turn's relay: the holder
+ * refreshes it when it has less than twenty minutes left. Null when there is no sign-in, or it was replaced while
+ * the token was asked for. The refresh token never leaves the holder.
+ */
+export async function chatgptPlanToken(
+	c: ModelsCtx,
+): Promise<{ secret: string; generation: string; expiresAt: number } | null> {
+	const before = await loadChatgptSignIn(c.db);
+	if (!before) return null;
+	let token: AccessToken;
+	try {
+		token = await c.keepAwake((await signIn(c)).accessToken());
+	} catch (error) {
+		if (error instanceof SandboxUserError) return null;
+		throw error;
+	}
+	const after = await loadChatgptSignIn(c.db);
+	if (after?.generation !== before.generation) return null;
+	return { secret: token.accessToken, generation: before.generation, expiresAt: token.expiresAt };
+}
+
+/**
+ * Learns the ChatGPT plan's account label ("a@b.com · Plus") from the saved sign-in and, where plans are on for the
+ * user (only hosted Codex uses them), the models its catalog lists, with a current access token, server-side.
+ * Without plans no token is asked for, so connecting ChatGPT for Windlass costs no extra request. A catalog that
+ * does not answer keeps the models known before; never throws.
+ */
+export async function checkChatgptPlan(c: ModelsCtx): Promise<void> {
+	const uid = c.key[0]!;
+	try {
+		const account = await (await signIn(c)).status();
+		const row = await loadChatgptSignIn(c.db);
+		if (!account || !row) return;
+		const label = accountLabel(account.email, chatgptPlanLabel(account.planType));
+		let models: string[] | null = null;
+		if (plansAllowed(uid)) {
+			const token = await chatgptPlanToken(c);
+			if (token?.generation !== row.generation) return;
+			models = await chatgptPlanModels(token.secret).catch((error: unknown) => {
+				console.warn(`[wlp] plan.check_failed uid=${uid} provider=openai: ${errorText(error)}`);
+				return null;
+			});
+		}
+		await saveChatgptCheck(c.db, row.generation, { account: label, models });
+	} catch (error) {
+		console.warn(`[wlp] plan.check_failed uid=${uid} provider=openai: ${errorText(error)}`);
+	}
+}
+
+/** The ChatGPT plan as credentials/index.ts reaches it. Forgetting it is forgetting the sign-in: Windlass and hosted Codex both stop using it. */
+export function chatgptPlan(c: SignInActionCtx): ChatgptPlan {
+	return {
+		token: () => chatgptPlanToken(c),
+		check: () => checkChatgptPlan(c),
+		forget: () => forgetSignIn(c, c.key[0]!),
+	};
 }
 
 export function modelInput<T>(pick: () => T, refusalCode?: "bad_input"): T {
@@ -127,7 +178,7 @@ export function modelInput<T>(pick: () => T, refusalCode?: "bad_input"): T {
 	}
 }
 
-type SignInActionCtx = ModelsCtx & ItemsCtx;
+export type SignInActionCtx = ModelsCtx & ItemsCtx;
 
 /** API-token admission and background work use this actor-local profile. Only a new login may update it. */
 export async function writeActorProfile(c: UserCtx, profile: UserProfile, atLogin: boolean): Promise<void> {
@@ -264,6 +315,7 @@ export const signinActions = {
 		requireService(c);
 		return answered(c, async () => {
 			await (await signIn(c)).adopt(sealed, attemptId);
+			await checkChatgptPlan(c);
 			if (c.vars.machines.size) await machinesChanged(c);
 			queueChanged(c);
 			await notifyProviderWaits(c, c.vars.items.items.values(), "adopted");
