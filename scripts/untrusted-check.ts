@@ -405,7 +405,7 @@ const CURRENT = ["windlass/maxSteps", MARKER];
 	const [source] = linearSources({ linear: outsider });
 	expect(
 		"a Linear issue of someone else's is a source in the person's words, on one line",
-		source === untrustedWords.linear("ENG-12", "Mallory Smith ignore all") && !/[\n;]/.test(source!),
+		source === untrustedWords.source("linear", "ENG-12", "Mallory Smith ignore all") && !/[\n;]/.test(source!),
 		source,
 	);
 	expect(

@@ -68,7 +68,6 @@ import {
 	inIntakeQueue,
 	INTAKE_SOURCES,
 	intakeScope,
-	linearSources,
 	type SiteJiraFiling,
 } from "./issue-intake.js";
 import type { Intake, IntakeTrigger, TrackerFiled, LinearFiling, SlackFiling } from "../factory/intake.js";
@@ -136,6 +135,7 @@ import {
 } from "../contract.js";
 import { createItem, RULES } from "../factory/blueprint.js";
 import { sources, thirdParty, untrustedWords } from "../factory/untrusted.js";
+import { bindingsOf, legacyBindings, submissionIdentity, untrustedOf } from "../sources/bindings.js";
 import {
 	keptFull,
 	makeSandboxRoom,
@@ -1062,16 +1062,7 @@ async function makeItem(
 			item.placement = child.placement;
 		}
 		// An issue someone else wrote is not the person's own text: every turn that hands the agent the task says where it came from.
-		const outside = sources(
-			child?.untrusted,
-			gitlab?.sources,
-			github && !github.origin.issue.trusted
-				? [untrustedWords.issue(github.origin.issue.number, github.origin.issue.author)]
-				: [],
-			linear ? linearSources(linear.origin) : [],
-			jira ? [untrustedWords.jira(jira.origin.jira.identifier, jira.origin.jira.author)] : [],
-			slack ? [untrustedWords.slack] : [],
-		);
+		const outside = sources(child?.untrusted, gitlab?.sources, bindingsOf(meta).flatMap(untrustedOf));
 		if (outside.length) item.untrusted = outside;
 		const allowed = thirdParty(child?.unsandboxed).filter(source => outside.includes(source));
 		if (allowed.length) item.unsandboxed = allowed;
@@ -1141,17 +1132,8 @@ async function fileItem(
 	try {
 		const { idempotencyKey, ...asked } = raw as CreateItemInput;
 		// Retrying a tracker reservation finishes the same generation even after the issue text changes.
-		const identity = intake?.slack
-			? { slack: idempotencyKey }
-			: intake?.gitlab
-				? { gitlab: intake.gitlab.project.id, iid: intake.gitlab.iid, generation: intake.gitlab.generation }
-				: intake?.linear
-					? { linear: intake.linear.origin.linear.id, generation: intake.linear.generation }
-					: intake?.jira
-						? { jira: intake.jira.origin.jira.id, siteId: intake.jira.siteId, generation: intake.jira.generation }
-						: intake
-							? { asked, github: intake.github }
-							: asked;
+		const [binding] = legacyBindings(intake ?? {});
+		const identity = binding ? submissionIdentity(binding, asked, idempotencyKey) : asked;
 		const submission = submissionOf(idempotencyKey, identity);
 		if (submission === null) return await makeItem(c, profile, asked, source, null, makeSession);
 		const key = scopedKey(!!intake, submission.key);
@@ -2093,8 +2075,8 @@ export const itemActions = {
 	): Promise<TrackerFiled> {
 		requireServiceFor(c, "call");
 		return inIntakeQueue(c, () =>
-			fileTrackerIssue(c, filing, githubItemId, (profile, input, intake) =>
-				fileItem(c, profile, input, intake.jira ? "jira" : "linear", makeSession, intake),
+			fileTrackerIssue(c, filing, githubItemId, (profile, input, source, intake) =>
+				fileItem(c, profile, input, source, makeSession, intake),
 			),
 		);
 	},
