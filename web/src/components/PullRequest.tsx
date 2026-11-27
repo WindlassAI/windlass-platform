@@ -26,6 +26,7 @@ import {
 	type SessionSummary,
 } from "@contract";
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { BranchName } from "./BranchName";
 import { acpHarnessName } from "../lib/acp";
 import { relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
@@ -300,7 +301,7 @@ function PublishDialog({
 						{repository.owner}/{repository.name}
 					</span>
 					<span className="gh-route-branches">
-						<code className="plain-code">{state.branch}</code>
+						<BranchName branch={state.branch} />
 						<span aria-hidden="true"> → </span>
 						<span className="visually-hidden"> into </span>
 						<code className="plain-code">{repository.branch}</code>
@@ -549,9 +550,9 @@ export function PullRequestSection({
 						<PullState state={pull.state} />
 						<time dateTime={new Date(pull.pushedAt).toISOString()}>pushed {relativeTime(pull.pushedAt, now)}</time>
 					</p>
-					<p className="gh-pull-branch" title={`The branch the work is on: ${pull.branch}`}>
+					<p className="gh-pull-branch">
 						<BranchIcon size={12} />
-						<span>{pull.branch}</span>
+						<BranchName branch={pull.branch} />
 					</p>
 				</div>
 			) : null}
