@@ -41,7 +41,8 @@ test("keys keep the forms stored rows already have", () => {
 test("a repository on another instance has the instance in its key", () => {
 	const ref = { host: "gitlab" as const, instance: "https://GitLab.example.com:8443/gitlab/", id: "12" };
 	assert.equal(repoKey(ref), "gitlab:gitlab.example.com:8443/gitlab:12");
-	assert.equal(readRepoKey(repoKey(ref)), "gitlab:gitlab.example.com:8443/gitlab:12");
+	// Nothing writes an instance yet, so no caller or row may name one.
+	assert.equal(readRepoKey(repoKey(ref)), null);
 	assert.equal(keyOf({ ...gitlab, instance: ref.instance }), "gitlab:gitlab.example.com:8443/gitlab:7101");
 	assert.equal(repoAddress({ ...github, instance: "https://ghe.example.com" }), "github:ghe.example.com:7101");
 });
@@ -55,6 +56,8 @@ test("old keys read as the one form", () => {
 	assert.equal(setupProjectKey(7101), "github:7101");
 	assert.equal(setupProjectKey("gitlab:7101"), "gitlab:7101");
 	assert.equal(setupProjectKey("7101"), null);
+	for (const bad of ["github:x:1", "gitlab:a b/../c:12", `gitlab:${"x".repeat(10_000)}:1`, "github:7101:"])
+		assert.equal(setupProjectKey(bad), null, bad.slice(0, 40));
 });
 
 test("addresses keep GitHub's bare id and give other hosts their key", () => {
