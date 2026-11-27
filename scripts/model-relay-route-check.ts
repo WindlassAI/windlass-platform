@@ -1808,7 +1808,7 @@ async function planWireCheck() {
 		openModelKeyRelay(ownRelay, sessionId, { ...ref, generation: "old", harness: "claude" }, undefined, undefined, () =>
 			openSavedCredential(uid, { ...ref, generation: "old" }, d.credential),
 		),
-		/changed or was removed/,
+		/changed, was removed/,
 	);
 	assert.deepEqual(local, [token]);
 	console.log("ok    claude-plan on a sandbox with its own relay: the token opened for the turn, at its generation");
