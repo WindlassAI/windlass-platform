@@ -82,7 +82,15 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      # The complete checkout includes the PR commits. No PR API access is needed.
-      - uses: gacts/gitleaks@4fd785dcdaf557fda64e05b0ae033b8f7d82fb81 # v1.3.3
+      # Installed only: by default gitleaks scans every branch, so one branch's finding would fail every PR.
+      - id: gitleaks
+        uses: gacts/gitleaks@4fd785dcdaf557fda64e05b0ae033b8f7d82fb81 # v1.3.3
         with:
           version: '8.28.0'
+          run: 'false'
+      # A PR scans its own commits; a push or manual run scans the history its commit reaches.
+      - name: Scan for secrets
+        env:
+          GITLEAKS: ${{ steps.gitleaks.outputs.gitleaks-bin }}
+          RANGE: ${{ github.event_name == 'pull_request' && format('{0}..{1}', github.event.pull_request.base.sha, github.event.pull_request.head.sha) || github.sha }}
+        run: '"$GITLEAKS" git --log-opts="$RANGE" --redact --verbose .'
