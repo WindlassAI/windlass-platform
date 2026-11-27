@@ -4,6 +4,7 @@ import { test } from "node:test";
 import type { GitlabBinding, IssueBinding, JiraBinding, LinearBinding, SlackBinding } from "../factory/intake.js";
 import { submissionOf } from "../submissions.js";
 import {
+	bindingTo,
 	bindingsOf,
 	filingNote,
 	issueBindingOf,
@@ -189,8 +190,8 @@ test("ItemSummary.origin is unchanged for every shape", () => {
 });
 
 test("a GitHub binding reads back as the issue binding it came from", () => {
-	assert.deepEqual(issueBindingOf(bindingsOf({ github })[0]!), github);
-	assert.deepEqual(issueBindingOf(bindingsOf({ github: githubOld })[0]!), githubOld);
+	assert.deepEqual(issueBindingOf(bindingTo({ github }, "github")!), github);
+	assert.deepEqual(issueBindingOf(bindingTo({ github: githubOld }, "github")!), githubOld);
 });
 
 test("the first log line is the same", () => {
@@ -200,6 +201,19 @@ test("the first log line is the same", () => {
 	assert.equal(note({ linear }), "Filed from Linear issue ENG-12, written by Mallory Smith. Filed by Ada Lovelace.");
 	assert.equal(note({ jira }), "Filed from Jira issue PROJ-7, written and filed by Ada.");
 	assert.equal(note({ slack }), "Filed from Slack.");
+});
+
+test("the first log line leaves out names the source keeps none of", () => {
+	const [binding] = bindingsOf({ gitlab });
+	assert.equal(filingNote(binding!), "Filed from GitLab issue #5.");
+	assert.equal(
+		filingNote({ ...binding!, origin: { ...binding!.origin, sender: "ada" } }),
+		"Filed from GitLab issue #5. Filed by @ada.",
+	);
+	assert.equal(
+		filingNote({ ...binding!, origin: { ...binding!.origin, author: "mallory" } }),
+		"Filed from GitLab issue #5, written by @mallory.",
+	);
 });
 
 test("someone else's filing is the same untrusted source", () => {

@@ -180,7 +180,14 @@ export interface ItemMeta {
 	pendingSecret?: RequestedSecretSave;
 	/** Latest cumulative receipt for each session. A retry or an older receipt adds nothing. */
 	blockedSessions?: Record<string, NetworkReceipt>;
-	/** Its bindings to work sources (sources/bindings.ts); items so far keep a field per source instead, read by `bindingsOf`. */
+	/**
+	 * Its bindings to work sources (sources/bindings.ts); items so far keep a field per source instead, read by
+	 * `bindingsOf`. Never write it yet: these still read the per-source fields directly and would lose an item stored
+	 * with only `bindings` until they go through `bindingTo`: `updateDirectory` (register/forget, `github_binding`),
+	 * `queueIssueCheck` and `checkIssue`, the "Closes #n" lines in `crossOpenOrDescribe`, `dispatchFeature` and the
+	 * `publish` effect, `onCreate` (Jira activation, `github_binding`), the Jira retry in `internalAct`, and
+	 * `internalGithubRetry` / `internalGithubIssue`.
+	 */
 	bindings?: SourceBinding[];
 	/** The GitHub issue the item was filed from: what its polling, issue comment and "Closes #n" are made from. Only set for a GitHub item. */
 	github?: IssueBinding;

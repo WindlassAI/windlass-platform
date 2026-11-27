@@ -9,7 +9,7 @@ import type { FactoryItem } from "../factory/types.js";
 import type { LinearWrite } from "../linear/app.js";
 import { resolvedText, type SlackEffect } from "../slack/thread.js";
 import { bindingsOf, type StoredBindings } from "./bindings.js";
-import type { SourceBinding, SourceId } from "./types.js";
+import type { BindingOf, SourceId } from "./types.js";
 import { isEndedState, type ItemUpdate } from "./updates.js";
 
 export type LinearEffect = { kind: "linear_write" } & LinearWrite;
@@ -119,15 +119,16 @@ export function sourceEffects(
 	{ url, issueGone = false }: { url: string; issueGone?: boolean },
 ): SourceEffect[] {
 	const rendering = { updates, next, url };
-	return bindingsOf(meta).flatMap(binding => RENDERERS[binding.ref.source](rendering, binding, issueGone));
+	return bindingsOf(meta).flatMap(binding => render(binding.ref.source, rendering, binding, issueGone));
 }
 
-const RENDERERS: Record<
-	SourceId,
-	(rendering: Rendering, binding: SourceBinding, issueGone: boolean) => SourceEffect[]
-> = {
-	github: (rendering, binding, issueGone) =>
-		issueEffects(rendering, binding.extra?.reactionTarget as string | undefined, issueGone),
+const render = <S extends SourceId>(source: S, rendering: Rendering, binding: BindingOf<S>, issueGone: boolean) =>
+	RENDERERS[source](rendering, binding, issueGone);
+
+const RENDERERS: {
+	[S in SourceId]: (rendering: Rendering, binding: BindingOf<S>, issueGone: boolean) => SourceEffect[];
+} = {
+	github: (rendering, binding, issueGone) => issueEffects(rendering, binding.extra.reactionTarget, issueGone),
 	/** GitLab items post nothing back yet. */
 	gitlab: () => [],
 	linear: linearEffects,

@@ -3,7 +3,7 @@
  * (every item so far) as one field per source, which `legacyBindings` reads as the same list. Nothing here writes.
  */
 
-import type { GithubId, ItemOrigin } from "../contract.js";
+import type { ItemOrigin } from "../contract.js";
 import {
 	filedFrom,
 	type GitlabBinding,
@@ -13,8 +13,8 @@ import {
 	type SlackBinding,
 } from "../factory/intake.js";
 import { untrustedWords } from "../factory/untrusted.js";
-import { CONNECTORS } from "./registry.js";
-import type { SourceBinding, SourceId } from "./types.js";
+import { sourceCaps } from "./registry.js";
+import type { BindingOf, SourceBinding, SourceId } from "./types.js";
 
 /** Where an item's (or a filing's) bindings are stored: the list, or a field per source. */
 export interface StoredBindings {
@@ -27,6 +27,13 @@ export interface StoredBindings {
 }
 
 export const bindingsOf = (meta: StoredBindings): SourceBinding[] => meta.bindings ?? legacyBindings(meta);
+
+/** A Linear or Jira binding as `legacyBindings` reads it. */
+type Tracker = (LinearBinding | JiraBinding) & {
+	tenant: string;
+	scope: string;
+	issue: { id: string; identifier: string; url: string; author: string; trusted: boolean };
+};
 
 /** The bindings a field per source stands for, losing nothing a reader needs. */
 export function legacyBindings(meta: StoredBindings): SourceBinding[] {
@@ -76,27 +83,28 @@ export function legacyBindings(meta: StoredBindings): SourceBinding[] {
 			trigger: null,
 			extra: { projectId: gitlab.project.id },
 		});
-	for (const [source, tracker] of [
-		["linear", linear && { ...linear, tenant: linear.workspaceId, scope: linear.teamId, issue: linear.origin.linear }],
-		["jira", jira && { ...jira, tenant: jira.siteId, scope: jira.projectId, issue: jira.origin.jira }],
-	] as const)
-		if (tracker)
-			list.push({
-				ref: {
-					source,
-					tenant: tracker.tenant,
-					scope: tracker.scope,
-					id: tracker.issue.id,
-					display: tracker.issue.identifier,
-					url: tracker.issue.url,
-				},
-				role: "origin",
-				generation: tracker.generation,
-				mappingGeneration: null,
-				origin: { author: tracker.issue.author, sender: tracker.origin.sender, trusted: tracker.issue.trusted },
-				trigger: { via: tracker.via, at: tracker.triggeredAt, senderId: tracker.senderId },
-				...("modeReason" in tracker && { modeReason: tracker.modeReason }),
-			});
+	const tracker = (t: Tracker) => ({
+		ref: { tenant: t.tenant, scope: t.scope, id: t.issue.id, display: t.issue.identifier, url: t.issue.url },
+		role: "origin" as const,
+		generation: t.generation,
+		mappingGeneration: null,
+		origin: { author: t.issue.author, sender: t.origin.sender, trusted: t.issue.trusted },
+		trigger: { via: t.via, at: t.triggeredAt, senderId: t.senderId },
+		...("modeReason" in t && { modeReason: t.modeReason }),
+	});
+	if (linear) {
+		const binding = tracker({
+			...linear,
+			tenant: linear.workspaceId,
+			scope: linear.teamId,
+			issue: linear.origin.linear,
+		});
+		list.push({ ...binding, ref: { source: "linear", ...binding.ref } });
+	}
+	if (jira) {
+		const binding = tracker({ ...jira, tenant: jira.siteId, scope: jira.projectId, issue: jira.origin.jira });
+		list.push({ ...binding, ref: { source: "jira", ...binding.ref } });
+	}
 	if (slack)
 		list.push({
 			ref: {
@@ -119,31 +127,34 @@ export function legacyBindings(meta: StoredBindings): SourceBinding[] {
 /** The binding an item was filed from, if any. */
 export const originBinding = (meta: StoredBindings) => bindingsOf(meta).find(binding => binding.role === "origin");
 
-/** The binding to `source`, which an effect of that source posts through. */
-export const bindingTo = (meta: StoredBindings, source: SourceId) =>
-	bindingsOf(meta).find(binding => binding.ref.source === source);
+/** Whether `binding` is `source`'s, which makes its `extra` that source's. */
+export const isFrom = <S extends SourceId>(binding: SourceBinding, source: S): binding is BindingOf<S> =>
+	binding.ref.source === source;
 
-const extra = (binding: SourceBinding, name: string) => binding.extra?.[name];
+/** The binding to `source`, which an effect of that source posts through. */
+export const bindingTo = <S extends SourceId>(meta: StoredBindings, source: S) =>
+	bindingsOf(meta).find((binding): binding is BindingOf<S> => isFrom(binding, source));
 
 /** A GitHub issue's binding as the issue code takes it. */
-export function issueBindingOf(binding: SourceBinding): IssueBinding {
+export function issueBindingOf(binding: BindingOf<"github">): IssueBinding {
+	const { extra } = binding;
 	return {
 		...(binding.modeReason !== undefined && { modeReason: binding.modeReason }),
-		...(extra(binding, "triggerLabel") !== undefined && { triggerLabel: String(extra(binding, "triggerLabel")) }),
-		...(extra(binding, "reactionTarget") !== undefined && { reactionTarget: String(extra(binding, "reactionTarget")) }),
+		...(extra.triggerLabel !== undefined && { triggerLabel: extra.triggerLabel }),
+		...(extra.reactionTarget !== undefined && { reactionTarget: extra.reactionTarget }),
 		origin: githubOrigin(binding),
-		installationId: extra(binding, "installationId") as GithubId,
+		installationId: extra.installationId,
 		issueId: binding.ref.id,
-		senderId: extra(binding, "senderId") as GithubId,
+		senderId: extra.senderId,
 		generation: binding.generation as number,
 		triggeredAt: binding.trigger?.at ?? 0,
-		contentDigest: String(extra(binding, "contentDigest")),
+		contentDigest: extra.contentDigest,
 	};
 }
 
-const githubOrigin = (binding: SourceBinding) => ({
+const githubOrigin = (binding: BindingOf<"github">) => ({
 	issue: {
-		number: extra(binding, "number") as number,
+		number: binding.extra.number,
 		url: binding.ref.url ?? "",
 		author: binding.origin.author,
 		trusted: binding.origin.trusted,
@@ -159,20 +170,19 @@ const tracker = (binding: SourceBinding) => ({
 });
 
 /** What each source keeps of its wire forms until items carry `bindings`: the page's origin and a filing's submission identity. */
-const LEGACY: Record<
-	SourceId,
-	{
-		origin(binding: SourceBinding): ItemOrigin | null;
-		identity(binding: SourceBinding, asked: unknown, key: unknown): unknown;
-	}
-> = {
+const LEGACY: {
+	[S in SourceId]: {
+		origin(binding: BindingOf<S>): ItemOrigin | null;
+		identity(binding: BindingOf<S>, asked: unknown, key: unknown): unknown;
+	};
+} = {
 	github: {
 		origin: githubOrigin,
 		identity: (binding, asked) => ({ asked, github: issueBindingOf(binding) }),
 	},
 	gitlab: {
 		origin: () => null,
-		identity: binding => ({ gitlab: extra(binding, "projectId"), iid: binding.ref.id, generation: binding.generation }),
+		identity: binding => ({ gitlab: binding.extra.projectId, iid: binding.ref.id, generation: binding.generation }),
 	},
 	linear: {
 		origin: binding => ({
@@ -194,24 +204,29 @@ const LEGACY: Record<
 /** The issue an item was filed from, as `ItemSummary.origin` has always carried it. */
 export function originOf(meta: StoredBindings): ItemOrigin | null {
 	const binding = originBinding(meta);
-	return binding ? LEGACY[binding.ref.source].origin(binding) : null;
+	return binding ? legacyOrigin(binding.ref.source, binding) : null;
 }
+
+const legacyOrigin = <S extends SourceId>(source: S, binding: BindingOf<S>) => LEGACY[source].origin(binding);
 
 /** What a repeated filing must match to be the same filing (`submissionOf`): the source's own key, never the issue text. */
 export function submissionIdentity(binding: SourceBinding, asked: unknown, key: unknown): unknown {
-	return LEGACY[binding.ref.source].identity(binding, asked, key);
+	return legacyIdentity(binding.ref.source, binding, asked, key);
 }
 
-/** The item's first log line about where it came from, or null when it came from no source. */
+const legacyIdentity = <S extends SourceId>(source: S, binding: BindingOf<S>, asked: unknown, key: unknown) =>
+	LEGACY[source].identity(binding, asked, key);
+
+/** The item's first log line about where it came from. A name the source keeps none of (GitLab's) is left out. */
 export function filingNote(binding: SourceBinding): string {
-	const { caps } = CONNECTORS[binding.ref.source];
+	const caps = sourceCaps(binding.ref.source);
 	if (caps.noun === "message") return `Filed from ${caps.displayName}.`;
-	const person = (name: string) => caps.handle + name;
-	return filedFrom(
-		`${caps.displayName} ${caps.noun} ${binding.ref.display}`,
-		person(binding.origin.author),
-		person(binding.origin.sender),
-	);
+	const what = `${caps.displayName} ${caps.noun} ${binding.ref.display}`;
+	const author = binding.origin.author && caps.handle + binding.origin.author,
+		sender = binding.origin.sender && caps.handle + binding.origin.sender;
+	if (author && sender) return filedFrom(what, author, sender);
+	if (author) return `Filed from ${what}, written by ${author}.`;
+	return sender ? `Filed from ${what}. Filed by ${sender}.` : `Filed from ${what}.`;
 }
 
 /** The binding's filing as an untrusted source of the item's text, when it is someone else's. */
