@@ -2,11 +2,11 @@
 // Commit the revision, events and keyed effects together before any I/O. Wake retries pending effects under the same keys.
 // Creation requires the user actor’s grant for this item.
 
-import { randomUUID } from "node:crypto";
-import { performSlackWrite, slackEffects, SLACK_QUESTIONS, SLACK_RECEIPTS, type SlackEffect } from "../slack/thread.js";
+import { performSlackWrite, SLACK_QUESTIONS, SLACK_RECEIPTS } from "../slack/thread.js";
+import { sourceEffects, type SourceEffect } from "../sources/effects.js";
+import { itemUpdates } from "../sources/updates.js";
 import { slackMayAnswer } from "../slack/blocks.js";
 import type { SlackBinding } from "../factory/intake.js";
-import type { LinearWrite } from "../linear/app.js";
 import { finishedItem, mergeKindAllowed, type TaskKind } from "../factory/readiness-track.js";
 import { environmentFailure } from "../factory/check-environment.js";
 import { plannerReadiness } from "../factory/readiness.js";
@@ -85,7 +85,6 @@ import {
 	recentSubject,
 	type IssueBinding,
 	type JiraBinding,
-	type JiraCommentAction,
 	type LinearBinding,
 } from "../factory/intake.js";
 import { CHECK_DENIED, checkConclusion, checkSummary, checkTitle, evidenceLine } from "../factory/verified-check.js";
@@ -282,19 +281,14 @@ type FeedbackEffect =
 	| { kind: "feedback_ready"; key: "pending"; at: number }
 	| { kind: "feedback_ack"; key: string }
 	| { kind: "feedback_comment"; key: string; run: number; who: string };
-type JiraEffect = { kind: "jira_comment" } & JiraCommentAction;
 /** `register`'s `repo`: a cross-repo feature's other repository, by alias, registered with that repository's directory. */
 type Effect =
 	| { kind: "review_comment"; key: string; pr: number; parts?: { id: string; label: string }[] }
-	| JiraEffect
-	| SlackEffect
+	| SourceEffect
 	| { kind: "poll_branch"; key: string; at: number; repo?: string }
-	| ({ kind: "linear_write" } & LinearWrite)
 	| BlueprintEffect
 	| FeedbackEffect
 	| IssueCheck
-	| { kind: "issue_comment"; key: string; revision: number }
-	| { kind: "register_issue"; key: string }
 	| { kind: "register"; key: string; pr: number; head: string; repo?: string }
 	| { kind: "forget"; key: string };
 /** A CI nudge with `pr` came from that pull request's own pipeline, which may have run a merge commit rather than the head. */
@@ -772,49 +766,6 @@ async function takeSessionFact(c: Ctx, stored: Stored, fact: Fact): Promise<void
 	}
 }
 
-function linearEffects(
-	before: FactoryItem,
-	next: FactoryItem,
-	handoff: boolean,
-): Array<{ kind: "linear_write" } & LinearWrite> {
-	const writes: LinearWrite[] = [];
-	const pr = next.pr?.url ?? null;
-	const comment = (key: Extract<LinearWrite, { pr: string | null; commentId: string }>["key"]) =>
-		writes.push({ key, commentId: randomUUID(), pr });
-	if (before.state === "draft" && next.state !== "draft" && !ENDED.has(next.state)) writes.push({ key: "start" });
-	if (next.question && next.question.id !== before.question?.id) {
-		const plan =
-			next.featurePlan?.status === "proposed" &&
-			next.filedTurn === currentKey(next) &&
-			(next.question.kind === "plan_approval" || next.question.kind === "replan_approval");
-		writes.push({
-			key: "owner_needed",
-			questionId: next.question.id,
-			commentId: randomUUID(),
-			itemUrl: itemUrl(next.id),
-			plan,
-		});
-	}
-	if (!before.pr && pr) {
-		comment("opened");
-		writes.push({ key: "attachment", pr }, { key: "review_opened" });
-	}
-	if (
-		(handoff && !next.run?.ci?.autoMergeKey) ||
-		(crossRepo(next) && next.run?.step.kind === "merged" && before.run?.step.kind !== "merged")
-	) {
-		comment("handed over");
-		writes.push({ key: "review_handover" });
-	}
-	if (before.state !== next.state) {
-		if (next.state === "done") {
-			comment("merged");
-			writes.push({ key: "complete" });
-		} else if (next.state === "failed" || next.state === "cancelled") comment(next.state);
-	}
-	return writes.map(write => ({ kind: "linear_write", ...write }));
-}
-
 function filingNote(meta: ItemMeta) {
 	if (meta.github) return filedFromIssue(meta.github.origin);
 	if (meta.linear) return filedFromLinear(meta.linear.origin);
@@ -970,24 +921,13 @@ async function take(
 	}
 	if (stored.meta.reviewerSessionId && handoff?.continuedIn)
 		effects.push({ kind: "release_review", key: String(handoff.verdict.run), run: handoff.verdict.run, to: "review" });
-	if (stored.meta.github) {
-		if (
-			issue?.subject !== "gone" &&
-			(before.pr?.number !== next.pr?.number || ENDED.has(before.state) !== ENDED.has(next.state))
-		)
-			effects.push({ kind: "issue_comment", key: "link", revision: next.revision });
-		if (before.state === "failed" && !ENDED.has(next.state))
-			effects.push({ kind: "register_issue", key: String(next.revision) });
-	}
-	if (stored.meta.linear) effects.push(...linearEffects(before, next, !!handoff));
-	if (stored.meta.jira) {
-		const pr = next.pr?.url,
-			url = itemUrl(next.id);
-		if (!before.pr && pr) effects.push({ kind: "jira_comment", key: "opened", itemUrl: url, pr });
-		if (before.state !== next.state && (next.state === "done" || next.state === "failed" || next.state === "cancelled"))
-			effects.push({ kind: "jira_comment", key: next.state, itemUrl: url, pr });
-	}
-	if (stored.meta.slack) effects.push(...slackEffects(before, next, fact, slackUser));
+	const updates = itemUpdates(before, next, fact, {
+		handoff: !!handoff,
+		...(slackUser && { by: { source: "slack", person: slackUser } }),
+	});
+	effects.push(
+		...sourceEffects(stored.meta, updates, next, { url: itemUrl(next.id), issueGone: issue?.subject === "gone" }),
+	);
 	const sibling =
 		fact.kind === "feature_ready" && fact.repo && crossRepo(next) && repoOf(next, fact.repo) !== next.repos![0]
 			? fact.repo
@@ -4495,21 +4435,15 @@ export const workItem = actor({
 				events.push(...started.events);
 				effects = started.effects;
 				scheduleBranchPolls(effects, input.item, item, input.meta.createdAt);
-				if (input.meta.linear) effects.push(...linearEffects(input.item, item, false));
 			}
-			if (input.meta.jira) {
-				await activateJiraIssue(c, input.meta.uid, item.id, input.meta.jira);
-				effects.push({ kind: "jira_comment", key: "filed", itemUrl: itemUrl(item.id) });
-			}
-			if (input.meta.slack) effects.push(...slackEffects(null, item));
+			if (input.meta.jira) await activateJiraIssue(c, input.meta.uid, item.id, input.meta.jira);
+			// Filing, then starting: a source hears of both, and of nothing else the new item has not done.
+			const updates = [...itemUpdates(null, input.item), ...itemUpdates(input.item, item)];
+			effects.push(...sourceEffects(input.meta, updates, item, { url: itemUrl(item.id) }));
 			await c.db.transaction(
 				async tx => {
-					if (input.meta.github) {
+					if (input.meta.github)
 						await tx.execute("INSERT INTO github_binding VALUES(1,?)", String(input.meta.github.installationId));
-						if (input.meta.github.reactionTarget)
-							effects.push({ kind: "feedback_ack", key: input.meta.github.reactionTarget });
-						effects.push({ kind: "issue_comment", key: "link", revision: item.revision });
-					}
 					await tx.execute(
 						"INSERT INTO item (id, revision, data) VALUES (1, ?, ?)",
 						item.revision,
