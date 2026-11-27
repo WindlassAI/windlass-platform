@@ -38,7 +38,12 @@ function requiredId(value: unknown): string {
 function projectRoot(project: Project): string {
 	const id = decimalId(project);
 	if (id) return `/projects/${id}`;
-	if (typeof project !== "string" || !project.includes("/") || project.split("/").some(p => !/^[a-zA-Z0-9_.-]+$/.test(p) || p === "." || p === "..")) throw new Error("Invalid GitLab project path");
+	if (
+		typeof project !== "string" ||
+		!project.includes("/") ||
+		project.split("/").some(p => !/^[a-zA-Z0-9_.-]+$/.test(p) || p === "." || p === "..")
+	)
+		throw new Error("Invalid GitLab project path");
 	return `/projects/${encodeURIComponent(project)}`;
 }
 
@@ -52,17 +57,27 @@ export const GITLAB_SCOPES = ["api"] as const;
 export const newVerifier = () => randomBytes(32).toString("base64url");
 export const challengeOf = (verifier: string) => createHash("sha256").update(verifier).digest("base64url");
 export const record = (value: unknown): Record<string, unknown> => (isRecord(value) ? value : {});
-export const text = (value: unknown): string => typeof value === "string" ? value : "";
+export const text = (value: unknown): string => (typeof value === "string" ? value : "");
 
 /** Provider diagnostics may echo the request (including OAuth credentials). Keep only the status and retry time. */
 export class GitlabError extends Error {
-	constructor(readonly status: number, readonly said: string, readonly retryAt = 0) {
+	constructor(
+		readonly status: number,
+		readonly said: string,
+		readonly retryAt = 0,
+	) {
 		super(`GitLab: ${said}`);
 		this.name = "GitlabError";
 	}
-	get rateLimited() { return this.status === 429; }
-	get unauthorized() { return this.status === 401; }
-	get unreachable() { return this.status === 0 || this.status >= 500; }
+	get rateLimited() {
+		return this.status === 429;
+	}
+	get unauthorized() {
+		return this.status === 401;
+	}
+	get unreachable() {
+		return this.status === 0 || this.status >= 500;
+	}
 }
 
 async function json(response: Response): Promise<unknown> {
@@ -93,8 +108,15 @@ async function json(response: Response): Promise<unknown> {
 /** Plain HTTP is for local stand-ins only. */
 function endpoint(raw: string): URL {
 	const url = URL.parse(raw);
-	if (!url || url.username || url.password || /[?#]/.test(url.href) || (url.protocol !== "https:" &&
-		!(url.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)))) throw new Error("Invalid GitLab endpoint");
+	if (
+		!url ||
+		url.username ||
+		url.password ||
+		/[?#]/.test(url.href) ||
+		(url.protocol !== "https:" &&
+			!(url.protocol === "http:" && ["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)))
+	)
+		throw new Error("Invalid GitLab endpoint");
 	return url;
 }
 
@@ -116,57 +138,113 @@ async function request(url: string, init: RequestInit): Promise<Response> {
 
 /** A project as GitLab describes it to this token, or null. Only provider-confirmed path segments are kept. */
 export function projectAccess(value: unknown) {
-	const p = record(value), id = gitlabId(p.id), parts = text(p.path_with_namespace).split("/");
-	if (!id || parts.length < 2 || parts.some(part => !/^[a-zA-Z0-9_.-]+$/.test(part) || part === "." || part === "..")) return null;
-	const name = parts.pop()!, permissions = record(p.permissions), last = Date.parse(text(p.last_activity_at));
-	const level = Math.max(Number(record(permissions.project_access).access_level ?? 0), Number(record(permissions.group_access).access_level ?? 0));
-	return { id, owner: parts.join("/"), name, defaultBranch: text(p.default_branch), private: p.visibility !== "public",
+	const p = record(value),
+		id = gitlabId(p.id),
+		parts = text(p.path_with_namespace).split("/");
+	if (!id || parts.length < 2 || parts.some(part => !/^[a-zA-Z0-9_.-]+$/.test(part) || part === "." || part === ".."))
+		return null;
+	const name = parts.pop()!,
+		permissions = record(p.permissions),
+		last = Date.parse(text(p.last_activity_at));
+	const level = Math.max(
+		Number(record(permissions.project_access).access_level ?? 0),
+		Number(record(permissions.group_access).access_level ?? 0),
+	);
+	return {
+		id,
+		owner: parts.join("/"),
+		name,
+		defaultBranch: text(p.default_branch),
+		private: p.visibility !== "public",
 		/** Developer (30) or above on a project that is not archived. */
-		writable: !p.archived && level >= 30, pushedAt: Number.isFinite(last) ? last : null };
+		writable: !p.archived && level >= 30,
+		pushedAt: Number.isFinite(last) ? last : null,
+	};
 }
 
 export class GitlabApp {
 	readonly settings: Readonly<GitlabAppSettings>;
 
-	constructor(settings: GitlabAppSettings, private readonly secrets: { clientSecret: () => string | null }) {
+	constructor(
+		settings: GitlabAppSettings,
+		private readonly secrets: { clientSecret: () => string | null },
+	) {
 		const baseUrl = endpoint(settings.baseUrl).href.replace(/\/+$/, "");
-		this.settings = Object.freeze({ clientId: settings.clientId, baseUrl, redirectUrl: endpoint(settings.redirectUrl).href, webhookUrl: endpoint(settings.webhookUrl).href });
+		this.settings = Object.freeze({
+			clientId: settings.clientId,
+			baseUrl,
+			redirectUrl: endpoint(settings.redirectUrl).href,
+			webhookUrl: endpoint(settings.webhookUrl).href,
+		});
 	}
 
 	cloneUrl(owner: string, name: string): string {
 		const parts = [...owner.split("/"), name];
-		if (parts.some(p => !p || p === "." || p === ".." || /[/\\\x00-\x1f]/.test(p))) throw new Error("Invalid GitLab project path");
+		if (parts.some(p => !p || p === "." || p === ".." || /[/\\\x00-\x1f]/.test(p)))
+			throw new Error("Invalid GitLab project path");
 		return `${this.settings.baseUrl}/${parts.map(encodeURIComponent).join("/")}.git`;
 	}
 
 	authorizeUrl(state: string, codeChallenge: string): string {
-		const params = new URLSearchParams({ client_id: this.settings.clientId, redirect_uri: this.settings.redirectUrl, response_type: "code",
-			scope: GITLAB_SCOPES.join(" "), state, code_challenge: codeChallenge, code_challenge_method: "S256" });
+		const params = new URLSearchParams({
+			client_id: this.settings.clientId,
+			redirect_uri: this.settings.redirectUrl,
+			response_type: "code",
+			scope: GITLAB_SCOPES.join(" "),
+			state,
+			code_challenge: codeChallenge,
+			code_challenge_method: "S256",
+		});
 		return `${this.settings.baseUrl}/oauth/authorize?${params}`;
 	}
 
 	private async oauth(action: "token" | "revoke", form: Record<string, string>): Promise<unknown> {
 		const secret = this.secrets.clientSecret();
 		if (!secret) throw new Error("GitLab OAuth client secret is not set");
-		return json(await request(`${this.settings.baseUrl}/oauth/${action}`, {
-			method: "POST", headers: { accept: "application/json" }, body: new URLSearchParams({ ...form, client_id: this.settings.clientId, client_secret: secret }),
-		}));
+		return json(
+			await request(`${this.settings.baseUrl}/oauth/${action}`, {
+				method: "POST",
+				headers: { accept: "application/json" },
+				body: new URLSearchParams({ ...form, client_id: this.settings.clientId, client_secret: secret }),
+			}),
+		);
 	}
 
 	private async token(form: Record<string, string>): Promise<GitlabToken> {
 		const result = record(await this.oauth("token", form));
 		const accessToken = text(result.access_token);
-		if (!accessToken || /\s/.test(accessToken) || (result.token_type && text(result.token_type).toLowerCase() !== "bearer")) throw new GitlabError(502, "invalid token response");
+		if (
+			!accessToken ||
+			/\s/.test(accessToken) ||
+			(result.token_type && text(result.token_type).toLowerCase() !== "bearer")
+		)
+			throw new GitlabError(502, "invalid token response");
 		const expires = result.expires_in;
-		return { accessToken, refreshToken: text(result.refresh_token) || null, scopes: text(result.scope).split(/\s+/).filter(Boolean),
-			expiresAt: typeof expires === "number" && Number.isSafeInteger(expires) && expires > 0 ? Date.now() + expires * 1000 : null };
+		return {
+			accessToken,
+			refreshToken: text(result.refresh_token) || null,
+			scopes: text(result.scope).split(/\s+/).filter(Boolean),
+			expiresAt:
+				typeof expires === "number" && Number.isSafeInteger(expires) && expires > 0
+					? Date.now() + expires * 1000
+					: null,
+		};
 	}
 
 	exchangeCode(code: string, verifier: string): Promise<GitlabToken> {
-		return this.token({ grant_type: "authorization_code", code, code_verifier: verifier, redirect_uri: this.settings.redirectUrl });
+		return this.token({
+			grant_type: "authorization_code",
+			code,
+			code_verifier: verifier,
+			redirect_uri: this.settings.redirectUrl,
+		});
 	}
 	refresh(refreshToken: string): Promise<GitlabToken> {
-		return this.token({ grant_type: "refresh_token", refresh_token: refreshToken, redirect_uri: this.settings.redirectUrl });
+		return this.token({
+			grant_type: "refresh_token",
+			refresh_token: refreshToken,
+			redirect_uri: this.settings.redirectUrl,
+		});
 	}
 	async revoke(token: string): Promise<void> {
 		await this.oauth("revoke", { token });
@@ -175,9 +253,24 @@ export class GitlabApp {
 	private api(call: GitlabCall): Promise<Response> {
 		const base = `${this.settings.baseUrl}/api/v4`;
 		const url = URL.parse(base + call.path);
-		if (!call.path.startsWith("/") || call.path.startsWith("//") || !url || !url.href.startsWith(`${base}/`) || url.hash || /[\\\x00-\x1f]/.test(call.path)) throw new Error("Invalid GitLab API path");
-		return request(url.href, { method: call.method ?? "GET", headers: { accept: "application/json", authorization: `Bearer ${call.token}`,
-			...(call.body && { "content-type": "application/json" }) }, ...(call.body && { body: JSON.stringify(call.body) }) });
+		if (
+			!call.path.startsWith("/") ||
+			call.path.startsWith("//") ||
+			!url ||
+			!url.href.startsWith(`${base}/`) ||
+			url.hash ||
+			/[\\\x00-\x1f]/.test(call.path)
+		)
+			throw new Error("Invalid GitLab API path");
+		return request(url.href, {
+			method: call.method ?? "GET",
+			headers: {
+				accept: "application/json",
+				authorization: `Bearer ${call.token}`,
+				...(call.body && { "content-type": "application/json" }),
+			},
+			...(call.body && { body: JSON.stringify(call.body) }),
+		});
 	}
 
 	async call(call: GitlabCall): Promise<{ body: unknown; headers: Headers; status: number }> {
@@ -199,7 +292,8 @@ export class GitlabApp {
 			items.push(...body);
 			// Never follow a URL from Link: reconstruct the next numbered page on the configured instance.
 			const next = headers.get("x-next-page");
-			if (next === "" || (next === null && !/rel="next"/.test(headers.get("link") ?? "") && body.length < 100)) return { items, truncated: false };
+			if (next === "" || (next === null && !/rel="next"/.test(headers.get("link") ?? "") && body.length < 100))
+				return { items, truncated: false };
 			if (next && next !== String(page + 1)) throw new GitlabError(502, "invalid pagination");
 		}
 		return { items, truncated: true };
@@ -223,13 +317,22 @@ export class GitlabApp {
 	}
 
 	async mergeMr(token: string, project: Project, iid: number, head: string, title: string) {
-		return (await this.call({ token, method: "PUT", path: `${subject(project, "merge_requests", iid)}/merge`,
-			body: { sha: head, squash: true, squash_commit_message: title } })).body;
+		return (
+			await this.call({
+				token,
+				method: "PUT",
+				path: `${subject(project, "merge_requests", iid)}/merge`,
+				body: { sha: head, squash: true, squash_commit_message: title },
+			})
+		).body;
 	}
 
 	/** The commit a branch points at now. */
 	async branchHead(token: string, project: Project, branch: string): Promise<string> {
-		const ref = record((await this.call({ token, path: `${projectRoot(project)}/repository/branches/${encodeURIComponent(branch)}` })).body);
+		const ref = record(
+			(await this.call({ token, path: `${projectRoot(project)}/repository/branches/${encodeURIComponent(branch)}` }))
+				.body,
+		);
 		const sha = text(record(ref.commit).id);
 		if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("GitLab did not identify the branch head.");
 		return sha;
@@ -239,12 +342,17 @@ export class GitlabApp {
 	async changedPaths(token: string, project: Project, from: string, to: string): Promise<string[] | null> {
 		if (![from, to].every(sha => /^[0-9a-f]{40,64}$/i.test(sha))) throw new Error("Invalid GitLab commit");
 		const params = new URLSearchParams({ from, to, straight: "false" });
-		const body = record((await this.call({ token, path: `${projectRoot(project)}/repository/compare?${params}` })).body);
+		const body = record(
+			(await this.call({ token, path: `${projectRoot(project)}/repository/compare?${params}` })).body,
+		);
 		if (body.compare_timeout === true || !Array.isArray(body.diffs)) return null;
-		return body.diffs.flatMap(diff => {
-			const d = record(diff), paths = [text(d.old_path), text(d.new_path)];
-			return paths[0] === paths[1] ? [paths[0]] : paths;
-		}).filter(Boolean);
+		return body.diffs
+			.flatMap(diff => {
+				const d = record(diff),
+					paths = [text(d.old_path), text(d.new_path)];
+				return paths[0] === paths[1] ? [paths[0]] : paths;
+			})
+			.filter(Boolean);
 	}
 
 	/** GitLab returns a list: request only the newest pipeline for this commit, on any ref. */
@@ -270,11 +378,15 @@ export class GitlabApp {
 
 	pipelineJobs(token: string, project: Project, pipelineId: string, limit: number) {
 		if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Invalid GitLab job page size");
-		return this.call({ token, path: `${projectRoot(project)}/pipelines/${requiredId(pipelineId)}/jobs?per_page=${limit}` });
+		return this.call({
+			token,
+			path: `${projectRoot(project)}/pipelines/${requiredId(pipelineId)}/jobs?per_page=${limit}`,
+		});
 	}
 
 	async retryJob(token: string, project: Project, jobId: string) {
-		return (await this.call({ token, method: "POST", path: `${projectRoot(project)}/jobs/${requiredId(jobId)}/retry` })).body;
+		return (await this.call({ token, method: "POST", path: `${projectRoot(project)}/jobs/${requiredId(jobId)}/retry` }))
+			.body;
 	}
 
 	notes(token: string, project: Project, kind: NoteParent, iid: number | string) {
@@ -282,11 +394,24 @@ export class GitlabApp {
 	}
 
 	async createNote(token: string, project: Project, kind: NoteParent, iid: number | string, body: string) {
-		return (await this.call({ token, method: "POST", path: `${subject(project, kind, iid)}/notes`, body: { body } })).body;
+		return (await this.call({ token, method: "POST", path: `${subject(project, kind, iid)}/notes`, body: { body } }))
+			.body;
 	}
 
-	async updateNote(token: string, project: Project, kind: NoteParent, iid: number | string, noteId: string, body: string) {
-		await this.call({ token, method: "PUT", path: `${subject(project, kind, iid)}/notes/${requiredId(noteId)}`, body: { body } });
+	async updateNote(
+		token: string,
+		project: Project,
+		kind: NoteParent,
+		iid: number | string,
+		noteId: string,
+		body: string,
+	) {
+		await this.call({
+			token,
+			method: "PUT",
+			path: `${subject(project, kind, iid)}/notes/${requiredId(noteId)}`,
+			body: { body },
+		});
 	}
 
 	async eyes(token: string, project: Project, kind: NoteParent, iid: number | string, noteId?: string) {
@@ -297,7 +422,8 @@ export class GitlabApp {
 
 	async viewer(token: string) {
 		const user = record((await this.call({ token, path: "/user" })).body);
-		const id = gitlabId(user.id), login = text(user.username);
+		const id = gitlabId(user.id),
+			login = text(user.username);
 		if (id === null || !login) throw new GitlabError(502, "invalid user response");
 		return { id, login, name: text(user.name) };
 	}
@@ -307,10 +433,22 @@ export class GitlabApp {
 		const project = projectRoot(projectId);
 		const target = endpoint(url);
 		if (!secret) throw new Error("GitLab webhook secret is not set");
-		const { body } = await this.call({ method: "POST", token, path: `${project}/hooks`, body: {
-			name: "Windlass", url: target.href, token: secret, enable_ssl_verification: true,
-			merge_requests_events: true, pipeline_events: true, push_events: false, issues_events: true, note_events: true,
-		} });
+		const { body } = await this.call({
+			method: "POST",
+			token,
+			path: `${project}/hooks`,
+			body: {
+				name: "Windlass",
+				url: target.href,
+				token: secret,
+				enable_ssl_verification: true,
+				merge_requests_events: true,
+				pipeline_events: true,
+				push_events: false,
+				issues_events: true,
+				note_events: true,
+			},
+		});
 		const id = decimalId(record(body).id);
 		if (!id) throw new GitlabError(502, "invalid project hook response");
 		return id;

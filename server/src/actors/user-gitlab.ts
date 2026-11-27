@@ -23,7 +23,10 @@ function configured() {
 	return app;
 }
 interface Context {
-	key: string[]; db: RawAccess; conn?: { params: unknown } | null; vars: { queue: Promise<void> };
+	key: string[];
+	db: RawAccess;
+	conn?: { params: unknown } | null;
+	vars: { queue: Promise<void> };
 	client(): unknown; // Avoid a circular registry type, as in internal.ts.
 }
 function checkKey(key: string[]) {
@@ -39,28 +42,48 @@ async function owner(c: Context) {
 /** A refresh token rotates; never refresh, replace or disconnect the grant concurrently. */
 function serialized<T>(c: Context, job: () => Promise<T>) {
 	const next = c.vars.queue.then(job);
-	c.vars.queue = next.then(() => {}, () => {});
+	c.vars.queue = next.then(
+		() => {},
+		() => {},
+	);
 	return next;
 }
-type Grant = { issuer: string; viewer: string; sealed: string; project: string | null; hook_id: string | null; hook_sealed: string | null };
+type Grant = {
+	issuer: string;
+	viewer: string;
+	sealed: string;
+	project: string | null;
+	hook_id: string | null;
+	hook_sealed: string | null;
+};
 
 /** A removed binding rejects further deliveries even if the GitLab hook could not be deleted. */
 async function removeHook(app: GitlabApp, token: string, project: string | null, hook: string | null) {
 	const projectId = project && decimalId(JSON.parse(project).id);
 	const hookId = decimalId(hook);
 	if (!projectId || !hookId) return;
-	try { await app.call({ method: "DELETE", path: `/projects/${projectId}/hooks/${hookId}`, token }); }
-	catch { /* stale provider hook: no local binding */ }
+	try {
+		await app.call({ method: "DELETE", path: `/projects/${projectId}/hooks/${hookId}`, token });
+	} catch {
+		/* stale provider hook: no local binding */
+	}
 }
 async function grant(c: Context, app: GitlabApp) {
-	return (await c.db.execute<Grant>("SELECT issuer, viewer, sealed, project, hook_id, hook_sealed FROM grant_record WHERE id=1 AND issuer=?", issuerOf(app)))[0];
+	return (
+		await c.db.execute<Grant>(
+			"SELECT issuer, viewer, sealed, project, hook_id, hook_sealed FROM grant_record WHERE id=1 AND issuer=?",
+			issuerOf(app),
+		)
+	)[0];
 }
 const tokenScope = (issuer: string, viewer: string) => JSON.stringify(["gitlab", issuer, viewer]);
 function seal(c: Context, issuer: string, viewer: string, token: GitlabToken) {
 	return sealSecret(serverSealer(), c.key[0]!, tokenScope(issuer, viewer), "oauth-token", JSON.stringify(token));
 }
 function open(c: Context, saved: Grant): GitlabToken {
-	return JSON.parse(openSecret(serverSealer(), c.key[0]!, tokenScope(saved.issuer, saved.viewer), "oauth-token", saved.sealed));
+	return JSON.parse(
+		openSecret(serverSealer(), c.key[0]!, tokenScope(saved.issuer, saved.viewer), "oauth-token", saved.sealed),
+	);
 }
 /** Never send an old issuer's credentials to a new instance. Local deletion is authoritative. */
 async function retire(c: Context, app: GitlabApp, saved: Grant, replacement?: { viewer: string; token: GitlabToken }) {
@@ -68,9 +91,15 @@ async function retire(c: Context, app: GitlabApp, saved: Grant, replacement?: { 
 	try {
 		const old = open(c, saved);
 		if (replacement?.viewer !== saved.viewer) await removeHook(app, old.accessToken, saved.project, saved.hook_id);
-		if (old.accessToken === replacement?.token.accessToken || (old.refreshToken && old.refreshToken === replacement?.token.refreshToken)) return;
+		if (
+			old.accessToken === replacement?.token.accessToken ||
+			(old.refreshToken && old.refreshToken === replacement?.token.refreshToken)
+		)
+			return;
 		await app.revoke(old.refreshToken ?? old.accessToken);
-	} catch { /* Remote cleanup is best effort. */ }
+	} catch {
+		/* Remote cleanup is best effort. */
+	}
 }
 async function tokenInQueue(c: Context, app: GitlabApp) {
 	const saved = await grant(c, app);
@@ -96,14 +125,29 @@ async function status(c: Context): Promise<GitlabStatus> {
 	const app = gitlabApp();
 	if (!app) return { state: "off" };
 	const saved = await grant(c, app);
-	if (saved) return { state: "connected", baseUrl: app.settings.baseUrl, project: saved.project ? JSON.parse(saved.project) : null };
-	return (await c.db.execute("SELECT 1 FROM revoked_record")).length ? { state: "disconnected", reconnect: true } : { state: "disconnected" };
+	if (saved)
+		return {
+			state: "connected",
+			baseUrl: app.settings.baseUrl,
+			project: saved.project ? JSON.parse(saved.project) : null,
+		};
+	return (await c.db.execute("SELECT 1 FROM revoked_record")).length
+		? { state: "disconnected", reconnect: true }
+		: { state: "disconnected" };
 }
 /** Use only provider-confirmed paths and construct links on the configured instance. */
 function project(app: GitlabApp, value: unknown): SessionRepository | null {
 	const p = projectAccess(value);
 	if (!p?.defaultBranch || !p.writable) return null;
-	return { provider: "gitlab", id: p.id, owner: p.owner, name: p.name, branch: p.defaultBranch, private: p.private, url: app.cloneUrl(p.owner, p.name).slice(0, -4) };
+	return {
+		provider: "gitlab",
+		id: p.id,
+		owner: p.owner,
+		name: p.name,
+		branch: p.defaultBranch,
+		private: p.private,
+		url: app.cloneUrl(p.owner, p.name).slice(0, -4),
+	};
 }
 const badProject = () => new UserError("Choose a writable GitLab project.", { code: "gitlab_project" });
 
@@ -122,14 +166,25 @@ export const userGitlab = actor({
 		if (caller.kind === "user") checkGeneration(caller, await userActor(c, c.key[0]!).internalTokenGeneration());
 		else requireServiceFor({ key: c.key, conn: { params } }, "call");
 	},
-	db: db({ onMigrate: async db => {
-		await db.execute("CREATE TABLE IF NOT EXISTS grant_record (id INTEGER PRIMARY KEY CHECK(id=1), issuer TEXT NOT NULL, viewer TEXT NOT NULL, sealed TEXT NOT NULL, project TEXT, hook_id TEXT, hook_sealed TEXT)");
-		await db.execute("CREATE TABLE IF NOT EXISTS revoked_record (id INTEGER PRIMARY KEY CHECK(id=1), at INTEGER NOT NULL)");
-		await db.execute("CREATE TABLE IF NOT EXISTS oauth_state (nonce TEXT PRIMARY KEY, issuer TEXT NOT NULL, origin TEXT NOT NULL, verifier TEXT NOT NULL, generation INTEGER NOT NULL, expires_at INTEGER NOT NULL)");
-	} }),
+	db: db({
+		onMigrate: async db => {
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS grant_record (id INTEGER PRIMARY KEY CHECK(id=1), issuer TEXT NOT NULL, viewer TEXT NOT NULL, sealed TEXT NOT NULL, project TEXT, hook_id TEXT, hook_sealed TEXT)",
+			);
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS revoked_record (id INTEGER PRIMARY KEY CHECK(id=1), at INTEGER NOT NULL)",
+			);
+			await db.execute(
+				"CREATE TABLE IF NOT EXISTS oauth_state (nonce TEXT PRIMARY KEY, issuer TEXT NOT NULL, origin TEXT NOT NULL, verifier TEXT NOT NULL, generation INTEGER NOT NULL, expires_at INTEGER NOT NULL)",
+			);
+		},
+	}),
 	createVars: () => ({ queue: Promise.resolve() }),
 	actions: {
-		internalGitlabAccess: async (c, projectId: string): Promise<{ project: SessionRepository; viewer: string; token: string }> => {
+		internalGitlabAccess: async (
+			c,
+			projectId: string,
+		): Promise<{ project: SessionRepository; viewer: string; token: string }> => {
 			requireServiceFor(c, "call");
 			const app = configured();
 			return serialized(c, async () => {
@@ -141,25 +196,55 @@ export const userGitlab = actor({
 		},
 		internalGitlabHook: async c => {
 			requireServiceFor(c, "call");
-			const app = gitlabApp(), saved = app ? await grant(c, app) : undefined;
+			const app = gitlabApp(),
+				saved = app ? await grant(c, app) : undefined;
 			const binding = hookBinding(saved);
 			if (!binding || !saved?.hook_sealed) return null;
-			return { ...binding, secret: openSecret(serverSealer(), c.key[0]!, JSON.stringify(["gitlab-project", saved.issuer, binding.projectId]), "webhook-token", saved.hook_sealed) };
+			return {
+				...binding,
+				secret: openSecret(
+					serverSealer(),
+					c.key[0]!,
+					JSON.stringify(["gitlab-project", saved.issuer, binding.projectId]),
+					"webhook-token",
+					saved.hook_sealed,
+				),
+			};
 		},
 		internalGitlabHookCurrent: async (c, projectId: string, bindingId: string) => {
 			requireServiceFor(c, "call");
-			const app = gitlabApp(), binding = app && hookBinding(await grant(c, app));
+			const app = gitlabApp(),
+				binding = app && hookBinding(await grant(c, app));
 			return !!binding && binding.projectId === projectId && binding.bindingId === bindingId;
 		},
-		gitlab: async c => { await owner(c); return status(c); },
+		gitlab: async c => {
+			await owner(c);
+			return status(c);
+		},
 		gitlabConnect: async (c, input: { origin: string }) => {
-			const { generation } = await owner(c), app = configured(), origin = input?.origin;
-			if (!config.origins.includes(origin)) throw new UserError("Connect from the web app's address.", { code: "origin_not_allowed" });
-			const nonce = newVerifier(), verifier = newVerifier(), exp = Date.now() + STATE_TTL;
+			const { generation } = await owner(c),
+				app = configured(),
+				origin = input?.origin;
+			if (!config.origins.includes(origin))
+				throw new UserError("Connect from the web app's address.", { code: "origin_not_allowed" });
+			const nonce = newVerifier(),
+				verifier = newVerifier(),
+				exp = Date.now() + STATE_TTL;
 			const state = signedPayload("gl1", "github-state", { k: "gitlab-state", uid: c.key[0], nonce, origin, exp });
 			await c.db.transaction(async tx => {
-				await tx.execute("DELETE FROM oauth_state WHERE expires_at <= ? OR nonce NOT IN (SELECT nonce FROM oauth_state ORDER BY expires_at DESC LIMIT 19)", Date.now());
-				await tx.execute("INSERT INTO oauth_state VALUES (?, ?, ?, ?, ?, ?)", nonce, issuerOf(app), origin, verifier, generation, exp);
+				await tx.execute(
+					"DELETE FROM oauth_state WHERE expires_at <= ? OR nonce NOT IN (SELECT nonce FROM oauth_state ORDER BY expires_at DESC LIMIT 19)",
+					Date.now(),
+				);
+				await tx.execute(
+					"INSERT INTO oauth_state VALUES (?, ?, ?, ?, ?, ?)",
+					nonce,
+					issuerOf(app),
+					origin,
+					verifier,
+					generation,
+					exp,
+				);
 			});
 			return { url: app.authorizeUrl(state, challengeOf(verifier)) };
 		},
@@ -167,25 +252,48 @@ export const userGitlab = actor({
 			requireServiceFor(c, "call");
 			checkKey(c.key);
 			if (!/^[A-Za-z0-9_-]{43}$/.test(nonce)) return null;
-			const [row] = await c.db.execute<Claimed>("UPDATE oauth_state SET nonce=?, expires_at=? WHERE nonce=? AND issuer=? AND expires_at>? RETURNING origin, verifier", `ticket:${nonce}`, Date.now() + 300_000, nonce, issuerOf(configured()), Date.now());
+			const [row] = await c.db.execute<Claimed>(
+				"UPDATE oauth_state SET nonce=?, expires_at=? WHERE nonce=? AND issuer=? AND expires_at>? RETURNING origin, verifier",
+				`ticket:${nonce}`,
+				Date.now() + 300_000,
+				nonce,
+				issuerOf(configured()),
+				Date.now(),
+			);
 			return row ?? null;
 		},
 		gitlabComplete: async (c, ticket: string): Promise<GitlabStatus> => {
-			const { generation } = await owner(c), app = configured();
+			const { generation } = await owner(c),
+				app = configured();
 			let confirmed;
-			try { confirmed = openGitlabTicket(c.key[0]!, ticket); } catch { throw invalid(); }
+			try {
+				confirmed = openGitlabTicket(c.key[0]!, ticket);
+			} catch {
+				throw invalid();
+			}
 			const { nonce, issuer, viewerId, token } = confirmed;
 			if (issuer !== issuerOf(app)) throw invalid();
 			return serialized(c, async () => {
 				const previous = await grant(c, app);
 				await c.db.transaction(async tx => {
-					const claimed = await tx.execute("DELETE FROM oauth_state WHERE nonce=? AND generation=? AND issuer=? AND expires_at>? RETURNING nonce", `ticket:${nonce}`, generation, issuer, Date.now());
+					const claimed = await tx.execute(
+						"DELETE FROM oauth_state WHERE nonce=? AND generation=? AND issuer=? AND expires_at>? RETURNING nonce",
+						`ticket:${nonce}`,
+						generation,
+						issuer,
+						Date.now(),
+					);
 					if (!claimed.length) throw invalid();
 					// Reauthorizing the same account keeps its selection and hook, not another account's.
 					await tx.execute("DELETE FROM revoked_record");
 					await tx.execute("DELETE FROM grant_record WHERE issuer != ? OR viewer != ?", issuer, viewerId);
-					await tx.execute(`INSERT INTO grant_record (id, issuer, viewer, sealed) VALUES (1, ?, ?, ?)
-						ON CONFLICT (id) DO UPDATE SET sealed=excluded.sealed`, issuer, viewerId, seal(c, issuer, viewerId, token));
+					await tx.execute(
+						`INSERT INTO grant_record (id, issuer, viewer, sealed) VALUES (1, ?, ?, ?)
+						ON CONFLICT (id) DO UPDATE SET sealed=excluded.sealed`,
+						issuer,
+						viewerId,
+						seal(c, issuer, viewerId, token),
+					);
 				});
 				if (previous) await retire(c, app, previous, { viewer: viewerId, token });
 				return status(c);
@@ -193,7 +301,8 @@ export const userGitlab = actor({
 		},
 		gitlabProjects: async (c, query: string): Promise<GitlabProjectList> => {
 			await owner(c);
-			if (typeof query !== "string" || query.length > 256) throw new UserError("Invalid project search.", { code: "bad_input" });
+			if (typeof query !== "string" || query.length > 256)
+				throw new UserError("Invalid project search.", { code: "bad_input" });
 			const app = configured();
 			return serialized(c, async () => {
 				const page = await app.projects(await tokenInQueue(c, app), query);
@@ -202,7 +311,8 @@ export const userGitlab = actor({
 		},
 		gitlabPickProject: async (c, projectId: string): Promise<GitlabStatus> => {
 			await owner(c);
-			const app = configured(), id = decimalId(projectId);
+			const app = configured(),
+				id = decimalId(projectId);
 			if (!id) throw badProject();
 			return serialized(c, async () => {
 				const token = await tokenInQueue(c, app);
@@ -219,14 +329,28 @@ export const userGitlab = actor({
 				} else {
 					// The suffix locates an existing owner. It is not proof of the binding.
 					const secret = `${newVerifier()}_${Buffer.from(c.key[0]!).toString("base64url")}`;
-					const hookSealed = sealSecret(serverSealer(), c.key[0]!, JSON.stringify(["gitlab-project", issuerOf(app), id]), "webhook-token", secret);
+					const hookSealed = sealSecret(
+						serverSealer(),
+						c.key[0]!,
+						JSON.stringify(["gitlab-project", issuerOf(app), id]),
+						"webhook-token",
+						secret,
+					);
 					const hookId = await app.projectHook(token, id, app.settings.webhookUrl, secret).catch(error => {
-						if (error instanceof GitlabError && error.status === 403) throw new UserError("GitLab requires Maintainer access to register the Windlass project hook.", { code: "gitlab_hook_denied" });
+						if (error instanceof GitlabError && error.status === 403)
+							throw new UserError("GitLab requires Maintainer access to register the Windlass project hook.", {
+								code: "gitlab_hook_denied",
+							});
 						throw error;
 					});
 					const description = JSON.stringify(picked);
 					try {
-						await c.db.execute("UPDATE grant_record SET project=?, hook_id=?, hook_sealed=? WHERE id=1", description, hookId, hookSealed);
+						await c.db.execute(
+							"UPDATE grant_record SET project=?, hook_id=?, hook_sealed=? WHERE id=1",
+							description,
+							hookId,
+							hookSealed,
+						);
 					} catch (error) {
 						await removeHook(app, token, description, hookId);
 						throw error;
@@ -239,7 +363,8 @@ export const userGitlab = actor({
 		gitlabDisconnect: async c => {
 			await owner(c);
 			return serialized(c, async () => {
-				const app = gitlabApp(), saved = app && await grant(c, app);
+				const app = gitlabApp(),
+					saved = app && (await grant(c, app));
 				await c.db.transaction(async tx => {
 					await tx.execute("DELETE FROM oauth_state");
 					await tx.execute("DELETE FROM grant_record");
@@ -253,17 +378,34 @@ export const userGitlab = actor({
 	},
 });
 
-interface CallbackClient { userGitlab: { get(key: string[], options: { params: unknown }): { internalGitlabClaim(nonce: string): Promise<Claimed | null> } } }
+interface CallbackClient {
+	userGitlab: {
+		get(key: string[], options: { params: unknown }): { internalGitlabClaim(nonce: string): Promise<Claimed | null> };
+	};
+}
 let callbackClient: CallbackClient | undefined;
 export const actorGitlabConnectStore: GitlabConnectStore = {
 	async claim(state) {
-		const fields = readSignedPayload(state, "gl1", 8192, k => k === "gitlab-state" ? "github-state" : null);
-		if (!fields || typeof fields.uid !== "string" || !fields.uid || typeof fields.nonce !== "string" || typeof fields.origin !== "string" || !config.origins.includes(fields.origin) || typeof fields.exp !== "number" || fields.exp <= Date.now()) return { ok: false, reason: "state", origin: null };
+		const fields = readSignedPayload(state, "gl1", 8192, k => (k === "gitlab-state" ? "github-state" : null));
+		if (
+			!fields ||
+			typeof fields.uid !== "string" ||
+			!fields.uid ||
+			typeof fields.nonce !== "string" ||
+			typeof fields.origin !== "string" ||
+			!config.origins.includes(fields.origin) ||
+			typeof fields.exp !== "number" ||
+			fields.exp <= Date.now()
+		)
+			return { ok: false, reason: "state", origin: null };
 		callbackClient ??= createClient({ endpoint: ownEngineEndpoint() }) as unknown as CallbackClient;
 		const actor = callbackClient.userGitlab.get([fields.uid], { params: serviceParams() });
 		let claimed;
-		try { claimed = await actor.internalGitlabClaim(fields.nonce); }
-		catch (error) { if (!isActorGone(error)) throw error; }
+		try {
+			claimed = await actor.internalGitlabClaim(fields.nonce);
+		} catch (error) {
+			if (!isActorGone(error)) throw error;
+		}
 		if (!claimed || claimed.origin !== fields.origin) return { ok: false, reason: "used", origin: fields.origin };
 		return { ok: true, uid: fields.uid, nonce: fields.nonce, ...claimed };
 	},

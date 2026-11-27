@@ -41,7 +41,13 @@ import { gitlabAccess, isActorGone, itemActor } from "./internal.js";
 import type { ItemsCtx, ItemsState } from "./user-items.js";
 
 /** The sources of an item filed from an issue: the ones that share the queue, the cap and the reservations. */
-export const INTAKE_SOURCES: ReadonlySet<ItemSummary["source"]> = new Set(["github", "gitlab", "linear", "jira", "slack"]);
+export const INTAKE_SOURCES: ReadonlySet<ItemSummary["source"]> = new Set([
+	"github",
+	"gitlab",
+	"linear",
+	"jira",
+	"slack",
+]);
 
 /** The in-memory scope of an issue-filed creation's key (`ItemsState.created`): apart from the web's and the API's, with one namespace for external intake (their keys differ in form). */
 export const intakeScope = (key: string) => "intake:" + key;

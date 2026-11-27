@@ -16,13 +16,29 @@ async function call(method: string, fields: Record<string, string>, token?: stri
 	const url = new URL(`/api/${method}`, settings().url);
 	if (read) url.search = params.toString();
 	const response = await fetch(url, {
-		method: read ? "GET" : "POST", body: read ? undefined : params, headers: token ? { authorization: `Bearer ${token}` } : {},
-		redirect: "error", signal: AbortSignal.timeout(15_000),
+		method: read ? "GET" : "POST",
+		body: read ? undefined : params,
+		headers: token ? { authorization: `Bearer ${token}` } : {},
+		redirect: "error",
+		signal: AbortSignal.timeout(15_000),
 	});
-	const answer = await response.json().catch(() => { throw new Error(`Slack could not complete ${method}.`); });
+	const answer = await response.json().catch(() => {
+		throw new Error(`Slack could not complete ${method}.`);
+	});
 	if (!response.ok || !answer.ok) {
 		// Slack may echo submitted data. Only expose our own error messages.
-		if (["channel_not_found", "not_in_channel", "is_archived", "invalid_auth", "token_revoked", "account_inactive", "message_not_found", "cant_update_message"].includes(answer.error))
+		if (
+			[
+				"channel_not_found",
+				"not_in_channel",
+				"is_archived",
+				"invalid_auth",
+				"token_revoked",
+				"account_inactive",
+				"message_not_found",
+				"cant_update_message",
+			].includes(answer.error)
+		)
 			throw new UserError("The Slack channel or connection is no longer available.", { code: "slack_unavailable" });
 		throw new Error(`Slack could not complete ${method}.`);
 	}
@@ -31,10 +47,27 @@ async function call(method: string, fields: Record<string, string>, token?: stri
 
 export async function exchangeCode(code: string) {
 	const { clientId, redirectUrl } = settings();
-	const result = await call("oauth.v2.access", { client_id: clientId, client_secret: process.env.WLP_SLACK_CLIENT_SECRET!, code, redirect_uri: redirectUrl });
-	if (result.token_type !== "bot" || !result.access_token || !result.bot_user_id || !result.team?.name || !result.team.id ||
-		!SLACK_SCOPES.every(scope => result.scope?.split(",").includes(scope))) throw new Error("Slack did not grant the requested bot permissions.");
-	return { teamId: String(result.team.id), name: String(result.team.name), bot: String(result.bot_user_id), token: String(result.access_token) };
+	const result = await call("oauth.v2.access", {
+		client_id: clientId,
+		client_secret: process.env.WLP_SLACK_CLIENT_SECRET!,
+		code,
+		redirect_uri: redirectUrl,
+	});
+	if (
+		result.token_type !== "bot" ||
+		!result.access_token ||
+		!result.bot_user_id ||
+		!result.team?.name ||
+		!result.team.id ||
+		!SLACK_SCOPES.every(scope => result.scope?.split(",").includes(scope))
+	)
+		throw new Error("Slack did not grant the requested bot permissions.");
+	return {
+		teamId: String(result.team.id),
+		name: String(result.team.name),
+		bot: String(result.bot_user_id),
+		token: String(result.access_token),
+	};
 }
 
 export async function isJoinedChannel(token: string, id: string): Promise<boolean> {
@@ -46,7 +79,11 @@ export async function listChannels(token: string): Promise<SlackChannel[]> {
 	const channels: SlackChannel[] = [];
 	let cursor = "";
 	do {
-		const page = await call("conversations.list", { types: "public_channel,private_channel", exclude_archived: "true", limit: "200", cursor }, token);
+		const page = await call(
+			"conversations.list",
+			{ types: "public_channel,private_channel", exclude_archived: "true", limit: "200", cursor },
+			token,
+		);
 		for (const channel of page.channels) {
 			if (channel.is_member && !channel.is_archived) channels.push({ id: channel.id, name: channel.name });
 		}
@@ -59,9 +96,27 @@ export const revoke = (token: string) => call("auth.revoke", {}, token);
 export function postPrivate(token: string, channel: string, user: string, text: string, threadTs?: string | null) {
 	return call("chat.postEphemeral", { channel, user, text, ...(threadTs && { thread_ts: threadTs }) }, token);
 }
-const content = (message: SlackMessage) => ({ text: message.text, ...(message.blocks && { blocks: JSON.stringify(message.blocks) }) });
-export async function postMessage(token: string, channel: string, message: SlackMessage, threadTs: string | null): Promise<string> {
-	const result = await call("chat.postMessage", { channel, ...content(message), unfurl_links: "false", unfurl_media: "false", ...(threadTs && { thread_ts: threadTs }) }, token);
+const content = (message: SlackMessage) => ({
+	text: message.text,
+	...(message.blocks && { blocks: JSON.stringify(message.blocks) }),
+});
+export async function postMessage(
+	token: string,
+	channel: string,
+	message: SlackMessage,
+	threadTs: string | null,
+): Promise<string> {
+	const result = await call(
+		"chat.postMessage",
+		{
+			channel,
+			...content(message),
+			unfurl_links: "false",
+			unfurl_media: "false",
+			...(threadTs && { thread_ts: threadTs }),
+		},
+		token,
+	);
 	return result.ts;
 }
 export async function updateMessage(token: string, channel: string, ts: string, message: SlackMessage): Promise<void> {

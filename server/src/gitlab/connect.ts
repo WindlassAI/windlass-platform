@@ -13,9 +13,20 @@ export function gitlabApp(): GitlabApp | null {
 export type GitlabClaim =
 	| { ok: true; uid: string; origin: string; nonce: string; verifier: string }
 	| { ok: false; reason: "state" | "used"; origin: string | null };
-export interface GitlabConnectStore { claim(state: string): Promise<GitlabClaim> }
-export interface GitlabConnectDeps { store: GitlabConnectStore; app?: GitlabApp | null; origins?: string[] }
-interface Ticket { nonce: string; token: GitlabToken; viewerId: string; issuer: string }
+export interface GitlabConnectStore {
+	claim(state: string): Promise<GitlabClaim>;
+}
+export interface GitlabConnectDeps {
+	store: GitlabConnectStore;
+	app?: GitlabApp | null;
+	origins?: string[];
+}
+interface Ticket {
+	nonce: string;
+	token: GitlabToken;
+	viewerId: string;
+	issuer: string;
+}
 export const issuerOf = (app: GitlabApp) => JSON.stringify([app.settings.baseUrl, app.settings.clientId]);
 const subject = (uid: string) => `gitlab-connect\n${uid}`;
 export function openGitlabTicket(uid: string, blob: string): Ticket {
@@ -30,7 +41,16 @@ export async function gitlabCallbackResponse(request: Request, deps: GitlabConne
 	const origins = deps.origins ?? config.origins;
 	const back = (origin: string | null, fragment: string) => {
 		const home = origin && origins.includes(origin) ? origin : origins[0];
-		return home ? new Response(null, { status: 302, headers: { location: `${home}/settings#${fragment}`, "cache-control": "no-store", "referrer-policy": "no-referrer" } }) : new Response(null, { status: 400 });
+		return home
+			? new Response(null, {
+					status: 302,
+					headers: {
+						location: `${home}/settings#${fragment}`,
+						"cache-control": "no-store",
+						"referrer-policy": "no-referrer",
+					},
+				})
+			: new Response(null, { status: 400 });
 	};
 	const params = new URL(request.url).searchParams;
 	const state = params.get("state");
@@ -50,6 +70,9 @@ export async function gitlabCallbackResponse(request: Request, deps: GitlabConne
 		const ticket: Ticket = { nonce: claim.nonce, token, viewerId: String(viewer.id), issuer: issuerOf(app) };
 		return back(origin, `gitlab=${serverSealer().seal("transit", subject(claim.uid), JSON.stringify(ticket))}`);
 	} catch (error) {
-		return back(origin, error instanceof GitlabError && error.status === 0 ? "gitlab-error=unreachable" : "gitlab-error=failed");
+		return back(
+			origin,
+			error instanceof GitlabError && error.status === 0 ? "gitlab-error=unreachable" : "gitlab-error=failed",
+		);
 	}
 }

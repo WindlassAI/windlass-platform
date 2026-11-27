@@ -14,7 +14,10 @@ export interface HostCapabilities {
  * each effect and never persist it: it may hold a grant.
  */
 export interface ItemHost {
-	host: Pick<CodeHost<unknown, unknown, unknown>, "readPull" | "readCi" | "rerunJobs" | "listComments" | "createComment" | "updateComment">;
+	host: Pick<
+		CodeHost<unknown, unknown, unknown>,
+		"readPull" | "readCi" | "rerunJobs" | "listComments" | "createComment" | "updateComment"
+	>;
 	owner: string;
 	name: string;
 	target(head: string): CiTarget;

@@ -104,7 +104,16 @@ export async function cloneConnected(
 		const cloned =
 			repo.provider === "gitlab"
 				? await cloneGitlab(await gitlabAccess(c, meta.uid, String(repo.id)), repo, sandbox, signal, work, pinnedBase)
-				: await cloneRepository(app!, await githubConnection(c, meta), repo, sandbox, signal, work, pinnedBase, meta.uid);
+				: await cloneRepository(
+						app!,
+						await githubConnection(c, meta),
+						repo,
+						sandbox,
+						signal,
+						work,
+						pinnedBase,
+						meta.uid,
+					);
 		if (!cloned || signal.aborted) return false;
 		const directory = /^(?!\.\.$)[A-Za-z0-9._-]+$/.test(cloned.directory) ? cloned.directory : ".";
 		if (cloned.workAt && work) {

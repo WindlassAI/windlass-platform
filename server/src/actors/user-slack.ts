@@ -18,13 +18,21 @@ export const SLACK_TABLES = [
 	"CREATE TABLE IF NOT EXISTS slack_owner (id INTEGER PRIMARY KEY CHECK(id=1), team TEXT)",
 	"CREATE TABLE IF NOT EXISTS slack_links (team TEXT PRIMARY KEY)",
 ];
-type Ctx = Parameters<typeof requireUser>[0] & { key: string[]; db: RawAccess; vars: { github: StoredConnection | null }; client(): ActorClient };
+type Ctx = Parameters<typeof requireUser>[0] & {
+	key: string[];
+	db: RawAccess;
+	vars: { github: StoredConnection | null };
+	client(): ActorClient;
+};
 const queues = new WeakMap<object, Promise<unknown>>();
 function action<A extends unknown[], R>(fn: (c: Ctx, ...args: A) => Promise<R>) {
 	return (c: Ctx, ...args: A) => {
 		requireUser(c);
 		const next = (queues.get(c.vars) ?? Promise.resolve()).then(() => fn(c, ...args));
-		queues.set(c.vars, next.catch(() => {}));
+		queues.set(
+			c.vars,
+			next.catch(() => {}),
+		);
 		return next;
 	};
 }
@@ -37,7 +45,12 @@ async function owner(c: Ctx) {
 	return workspace(c, row.team);
 }
 async function ifPresent<T>(read: Promise<T>): Promise<T | null> {
-	try { return await read; } catch (error) { if (isActorGone(error)) return null; throw error; }
+	try {
+		return await read;
+	} catch (error) {
+		if (isActorGone(error)) return null;
+		throw error;
+	}
 }
 async function status(c: Ctx): Promise<SlackStatus> {
 	if (!slackConfig()) return { state: "off" };
@@ -49,7 +62,9 @@ async function status(c: Ctx): Promise<SlackStatus> {
 	}
 	const [row] = await c.db.execute<{ team: string }>("SELECT team FROM slack_owner");
 	if (row) {
-		const view = await ifPresent<Pick<Extract<SlackStatus, { state: "connected" }>, "workspaceName" | "mappings">>(workspace(c, row.team).internalView(c.key[0]));
+		const view = await ifPresent<Pick<Extract<SlackStatus, { state: "connected" }>, "workspaceName" | "mappings">>(
+			workspace(c, row.team).internalView(c.key[0]),
+		);
 		if (view) return { state: "connected", ...view, links };
 		await c.db.execute("DELETE FROM slack_owner");
 	}
@@ -59,17 +74,33 @@ async function status(c: Ctx): Promise<SlackStatus> {
 export const slackSettingsActions = {
 	slack: action(status),
 	slackConnect: action(async (c, { origin }: { origin: string }) => {
-		if (!config.origins.includes(origin)) throw new UserError("Connect from Windlass Settings.", { code: "origin_not_allowed" });
+		if (!config.origins.includes(origin))
+			throw new UserError("Connect from Windlass Settings.", { code: "origin_not_allowed" });
 		const nonce = randomUUID();
 		await c.db.execute("INSERT OR REPLACE INTO slack_connect VALUES(1,?,?)", nonce, Date.now() + 600_000);
 		return authorizeSlack(c.key[0], nonce, origin);
 	}),
 	slackComplete: action(async (c, ticket: string) => {
-		const uid = c.key[0], invalid = () => new UserError("Start a new Slack connection.", { code: "slack_ticket" });
+		const uid = c.key[0],
+			invalid = () => new UserError("Start a new Slack connection.", { code: "slack_ticket" });
 		let grant: { nonce: string; code: string };
-		try { grant = JSON.parse(serverSealer().open("transit", `slack-code:${uid}`, ticket)); } catch { throw invalid(); }
-		if (!(await c.db.execute("DELETE FROM slack_connect WHERE nonce=? AND expires>? RETURNING id", grant.nonce, Date.now())).length) throw invalid();
-		if ((await status(c)).state === "connected") throw new UserError("Disconnect your workspace first.", { code: "slack_connected" });
+		try {
+			grant = JSON.parse(serverSealer().open("transit", `slack-code:${uid}`, ticket));
+		} catch {
+			throw invalid();
+		}
+		if (
+			!(
+				await c.db.execute(
+					"DELETE FROM slack_connect WHERE nonce=? AND expires>? RETURNING id",
+					grant.nonce,
+					Date.now(),
+				)
+			).length
+		)
+			throw invalid();
+		if ((await status(c)).state === "connected")
+			throw new UserError("Disconnect your workspace first.", { code: "slack_connected" });
 		const { teamId, name, bot, token } = await exchangeCode(grant.code);
 		const ws = c.client().slackWorkspace.getOrCreate([teamId], { params: serviceParams() });
 		const sealed = sealSecret(serverSealer(), uid, `slack:${teamId}`, "bot", token);
@@ -79,9 +110,16 @@ export const slackSettingsActions = {
 	}),
 	slackChannels: action(async (c): Promise<SlackChannel[]> => (await owner(c)).internalChannels(c.key[0])),
 	saveSlackMapping: action(async (c, input: { channelId: string; repositoryId: GithubId }) => {
-		const ws = await owner(c), app = githubApp(), connection = c.vars.github;
+		const ws = await owner(c),
+			app = githubApp(),
+			connection = c.vars.github;
 		if (!connection || !app) throw new UserError("Connect GitHub first.", { code: "github_not_connected" });
-		const { id, owner: login, name, private: hidden } = (await resolveRepository(app, connection, input.repositoryId, "write")).described;
+		const {
+			id,
+			owner: login,
+			name,
+			private: hidden,
+		} = (await resolveRepository(app, connection, input.repositoryId, "write")).described;
 		// A private repository's plans stay out of the channel until the owner allows them.
 		await ws.internalMap(c.key[0], input.channelId, { id, owner: login, name }, !hidden);
 		return status(c);

@@ -809,14 +809,14 @@ export async function agentPush(
 		const described =
 			open && app && repo.provider !== "gitlab"
 				? await describePull({
-					app,
-					connection: await githubConnection(c, meta),
-					repository: repo,
-					sandbox,
-					pull: open,
-					evidence: await evidenceOf(c, meta, turn),
-				})
-			: null;
+						app,
+						connection: await githubConnection(c, meta),
+						repository: repo,
+						sandbox,
+						pull: open,
+						evidence: await evidenceOf(c, meta, turn),
+					})
+				: null;
 		if (described && meta.pull === open) meta.pull = described;
 		c.vars.pullCheckedAt = Date.now();
 		const shown = described ?? open;
@@ -855,7 +855,8 @@ export async function fetchSessionBase(
 	sandbox: SandboxHandle,
 	work: string | null = null,
 ) {
-	if (repo.provider === "gitlab") return fetchGitlab(await gitlabAccess(c, meta.uid, String(repo.id)), repo, sandbox, work);
+	if (repo.provider === "gitlab")
+		return fetchGitlab(await gitlabAccess(c, meta.uid, String(repo.id)), repo, sandbox, work);
 	const app = githubApp();
 	if (!app) throw new Error("GitHub is not configured.");
 	return fetchBase(app, await githubConnection(c, meta), repo, sandbox, work);

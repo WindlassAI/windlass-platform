@@ -13,7 +13,8 @@ try {
 	const host = resolveCodeHost();
 	assert.ok(host, "the configured GitHub App resolves to a code host");
 
-	const owner = "acme", name = "harbor";
+	const owner = "acme",
+		name = "harbor";
 	const installation = standin.addInstallation(owner, "Organization");
 	const repo = standin.addRepository({ owner, name, private: true, installation, defaultBranch: "trunk" });
 	const branch = "feature/docs";
@@ -23,14 +24,21 @@ try {
 	const ci = await host.readCi(target);
 	assert.equal(ci.kind, "read");
 	assert.equal(ci.head, head);
-	assert.deepEqual(ci.runs.map(run => [run.name, run.state]), [["docs/build", "passed"]]);
+	assert.deepEqual(
+		ci.runs.map(run => [run.name, run.state]),
+		[["docs/build", "passed"]],
+	);
 	console.log("ok  read normalized CI results for the pull head");
 
 	// Sign a JSON integer outside the safe range: parsing it as a JS number loses the repository identity.
-	const bytes = Buffer.from(`{ "installation":{"id":${installation.id}}, "repository":{"id":9007199254740993}, "sha":"${head}", "state":"success" }\n`);
+	const bytes = Buffer.from(
+		`{ "installation":{"id":${installation.id}}, "repository":{"id":9007199254740993}, "sha":"${head}", "state":"success" }\n`,
+	);
 	const guid = randomUUID();
 	const headers = new Headers({
-		"content-type": "application/json", "x-github-delivery": guid, "x-github-event": "status",
+		"content-type": "application/json",
+		"x-github-delivery": guid,
+		"x-github-event": "status",
 		"x-github-hook-installation-target-id": standin.appId,
 		"x-hub-signature-256": "sha256=" + createHmac("sha256", secret).update(bytes).digest("hex"),
 	});

@@ -1,7 +1,9 @@
 /** GitLab's database IDs are positive signed 64-bit integers. Never round a numeric ID. */
 export function decimalId(value: unknown): string | null {
 	if (typeof value === "number" && Number.isSafeInteger(value)) value = String(value);
-	return typeof value === "string" && /^[1-9][0-9]{0,18}$/.test(value) && BigInt(value) <= 9223372036854775807n ? value : null;
+	return typeof value === "string" && /^[1-9][0-9]{0,18}$/.test(value) && BigInt(value) <= 9223372036854775807n
+		? value
+		: null;
 }
 
 /** Use the JSON token, not the possibly rounded Number produced by JSON.parse. */

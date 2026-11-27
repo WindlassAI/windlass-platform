@@ -20,7 +20,8 @@ export const CI_POLLING = {
 } as const;
 
 export function ciPollEvery(openItems: number, webhooks = false): number {
-	if (webhooks) return openItems > CI_POLLING.crowdedAbove ? CI_POLLING.webhookCrowdedEveryMs : CI_POLLING.webhookEveryMs;
+	if (webhooks)
+		return openItems > CI_POLLING.crowdedAbove ? CI_POLLING.webhookCrowdedEveryMs : CI_POLLING.webhookEveryMs;
 	return openItems > CI_POLLING.crowdedAbove ? CI_POLLING.crowdedEveryMs : CI_POLLING.everyMs;
 }
 
@@ -56,10 +57,20 @@ export interface CiRun {
 }
 
 /** The end of a failing job's log. Untrusted: what code from the branch printed. */
-export type CiLog = { name: string; untrusted: true; text: string; truncated: boolean } | { name: string; untrusted: true; text: null; why: string };
+export type CiLog =
+	| { name: string; untrusted: true; text: string; truncated: boolean }
+	| { name: string; untrusted: true; text: null; why: string };
 
 export type CiReading =
-	| { kind: "read"; head: string; runs: CiRun[]; truncated: boolean; logs: CiLog[]; state?: "pending" | "incomplete"; inProgressSince?: number }
+	| {
+			kind: "read";
+			head: string;
+			runs: CiRun[];
+			truncated: boolean;
+			logs: CiLog[];
+			state?: "pending" | "incomplete";
+			inProgressSince?: number;
+	  }
 	| { kind: "not_permitted"; said: string }
 	| { kind: "rate_limited"; retryAt: number; said: string }
 	| { kind: "failed"; said: string };
@@ -71,7 +82,17 @@ export type CiReading =
  * finished, none failed and none passed (all skipped or neutral): nothing in it verified the
  * work, which is not the same as no CI. "not_run": GitHub explicitly said a job never started.
  */
-export type CiState = "cancelled" | "passed" | "not_run" | "failed" | "pending" | "none" | "skipped" | "not_permitted" | "incomplete" | "retry";
+export type CiState =
+	| "cancelled"
+	| "passed"
+	| "not_run"
+	| "failed"
+	| "pending"
+	| "none"
+	| "skipped"
+	| "not_permitted"
+	| "incomplete"
+	| "retry";
 
 export function ciState(reading: CiReading): CiState {
 	if (reading.kind === "not_permitted") return "not_permitted";
@@ -80,17 +101,21 @@ export function ciState(reading: CiReading): CiState {
 	// Nothing usable read of a listing cut short is not "no CI": the rest of it was never seen.
 	if (reading.runs.length === 0) return reading.truncated ? "incomplete" : "none";
 	// A failure that was read stands, however much was not.
-	if (reading.runs.some((run) => run.state === "failed")) return "failed";
-	if (reading.runs.some((run) => run.state === "not_run")) return "not_run";
-	if (reading.runs.some((run) => run.state === "pending")) return "pending";
+	if (reading.runs.some(run => run.state === "failed")) return "failed";
+	if (reading.runs.some(run => run.state === "not_run")) return "not_run";
+	if (reading.runs.some(run => run.state === "pending")) return "pending";
 	if (reading.truncated) return "incomplete";
-	if (reading.runs.some((run) => run.state === "cancelled")) return "cancelled";
+	if (reading.runs.some(run => run.state === "cancelled")) return "cancelled";
 	// At least one check must have verified the work.
-	return reading.runs.some((run) => run.state === "passed") ? "passed" : "skipped";
+	return reading.runs.some(run => run.state === "passed") ? "passed" : "skipped";
 }
 
 export function workflowOverdue(reading: CiReading, now: number): boolean {
-	return reading.kind === "read" && reading.inProgressSince !== undefined && now - reading.inProgressSince > CI_POLLING.inProgressLimitMs;
+	return (
+		reading.kind === "read" &&
+		reading.inProgressSince !== undefined &&
+		now - reading.inProgressSince > CI_POLLING.inProgressLimitMs
+	);
 }
 
 /** Strips what a terminal would interpret and anything that is not printable text. */
@@ -102,7 +127,7 @@ export function plain(value: string): string {
 export function logTail(raw: string, cut: boolean): { text: string; truncated: boolean } {
 	const lines = redact(plain(raw.replace(/\r\n?/g, "\n")))
 		.split("\n")
-		.map((line) => line.replace(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/, ""));
+		.map(line => line.replace(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z ?/, ""));
 	while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
 	let truncated = cut || lines.length > LOG_TAIL_LINES;
 	let tail = lines.slice(-LOG_TAIL_LINES).join("\n");
@@ -117,7 +142,10 @@ export function logTail(raw: string, cut: boolean): { text: string; truncated: b
  * The end of a streamed log. Only the end is kept while it streams; a log larger than LOG_MAX_BYTES is
  * not read to its end, and none of it is returned, since its end is what matters.
  */
-export async function readLogTail(body: ReadableStream<Uint8Array>, clean: (text: string) => string = text => text): Promise<{ text: string; truncated: boolean } | { why: string }> {
+export async function readLogTail(
+	body: ReadableStream<Uint8Array>,
+	clean: (text: string) => string = text => text,
+): Promise<{ text: string; truncated: boolean } | { why: string }> {
 	const reader = body.getReader();
 	const decoder = new TextDecoder();
 	let kept = "";
@@ -146,7 +174,14 @@ export async function readLogTail(body: ReadableStream<Uint8Array>, clean: (text
 	return logTail(clean(kept), cut);
 }
 
-const priority: Record<CiRun["state"], number> = { neutral: 0, passed: 1, cancelled: 2, pending: 3, not_run: 4, failed: 5 };
+const priority: Record<CiRun["state"], number> = {
+	neutral: 0,
+	passed: 1,
+	cancelled: 2,
+	pending: 3,
+	not_run: 4,
+	failed: 5,
+};
 
 /** Keep separate Actions workflows, even when they give their jobs the same name. */
 export function distinctChecks(runs: CiRun[]): CiRun[] {
@@ -168,7 +203,10 @@ export interface CiTarget {
 	head: string;
 }
 
-export type RerunnableJob = Pick<CiRun, "name" | "jobId" | "retryRunId" | "environment"> & { failed?: true; passedOnRerun?: true };
+export type RerunnableJob = Pick<CiRun, "name" | "jobId" | "retryRunId" | "environment"> & {
+	failed?: true;
+	passedOnRerun?: true;
+};
 
 export function rerunnableJobs(reading: Extract<CiReading, { kind: "read" }>, infrastructure: boolean) {
 	const jobs: RerunnableJob[] = [];

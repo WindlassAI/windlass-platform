@@ -7,8 +7,13 @@ import type { FactoryItem } from "../factory/types.js";
 import { escapeText, planPost, questionPost, resolvedMessage, type SlackMessage, type SlackPost } from "./blocks.js";
 
 const messages = {
-	started: "Work item filed", plan: "Plan ready for approval", question: "Question ready",
-	pr: "Pull request opened", done: "Work item finished", failed: "Work item failed", cancelled: "Work item cancelled",
+	started: "Work item filed",
+	plan: "Plan ready for approval",
+	question: "Question ready",
+	pr: "Pull request opened",
+	done: "Work item finished",
+	failed: "Work item failed",
+	cancelled: "Work item cancelled",
 };
 type Event = keyof typeof messages | "resolved";
 export type SlackEffect = { kind: "slack_write"; key: string; event: Event; question?: string; line?: string };
@@ -17,14 +22,23 @@ export type SlackEffect = { kind: "slack_write"; key: string; event: Event; ques
 export function resolvedLine(question: ItemQuestion, fact: { kind: string }, slackUser?: string): string {
 	const f = fact as { kind: string; by?: unknown; choice?: unknown; question?: unknown };
 	const approved = f.kind === "approve_plan" || (f.kind === "answer" && f.choice === "approve");
-	const choice = f.kind === "answer" && f.question === question.id ? question.choices.find(c => c.id === f.choice)?.label : undefined;
+	const choice =
+		f.kind === "answer" && f.question === question.id
+			? question.choices.find(c => c.id === f.choice)?.label
+			: undefined;
 	const label = approved ? "Approve" : choice && escapeText(choice);
 	if (!label || typeof f.by !== "string" || !f.by.startsWith("person:")) return "This question is no longer open.";
-	if (slackUser) return approved ? `Approved by <@${slackUser}> in Slack` : `Answered by <@${slackUser}> in Slack: ${label}`;
+	if (slackUser)
+		return approved ? `Approved by <@${slackUser}> in Slack` : `Answered by <@${slackUser}> in Slack: ${label}`;
 	return approved ? "Approved on the web" : `Answered on the web: ${label}`;
 }
 
-export function slackEffects(before: FactoryItem | null, next: FactoryItem, fact?: { kind: string }, slackUser?: string): SlackEffect[] {
+export function slackEffects(
+	before: FactoryItem | null,
+	next: FactoryItem,
+	fact?: { kind: string },
+	slackUser?: string,
+): SlackEffect[] {
 	const effects: SlackEffect[] = [];
 	function add(event: Event, identity = "", extra: Partial<SlackEffect> = {}) {
 		effects.push({ kind: "slack_write", event, key: [next.id, event, identity].join(":"), ...extra });
@@ -32,21 +46,29 @@ export function slackEffects(before: FactoryItem | null, next: FactoryItem, fact
 	if (!before) add("started");
 	const closed = before?.question;
 	if (closed && closed.id !== next.question?.id)
-		add("resolved", closed.id, { question: closed.id, line: fact ? resolvedLine(closed, fact, slackUser) : "This question is no longer open." });
+		add("resolved", closed.id, {
+			question: closed.id,
+			line: fact ? resolvedLine(closed, fact, slackUser) : "This question is no longer open.",
+		});
 	if (next.question && next.question.id !== before?.question?.id) {
-		const plan = next.featurePlan?.status === "proposed" && next.filedTurn === currentKey(next)
-			&& ["plan_approval", "replan_approval"].includes(next.question.kind);
+		const plan =
+			next.featurePlan?.status === "proposed" &&
+			next.filedTurn === currentKey(next) &&
+			["plan_approval", "replan_approval"].includes(next.question.kind);
 		add(plan ? "plan" : "question", next.question.id, { question: next.question.id });
 	}
 	if (next.pr && next.pr.number !== before?.pr?.number) add("pr", String(next.pr.number));
-	if (before?.state !== next.state && (next.state === "failed" || next.state === "done" || next.state === "cancelled")) add(next.state, String(next.revision));
+	if (before?.state !== next.state && (next.state === "failed" || next.state === "done" || next.state === "cancelled"))
+		add(next.state, String(next.revision));
 	return effects;
 }
 
 // Separate from the versioned item snapshot: a concurrent blueprint commit cannot overwrite the root.
-export const SLACK_RECEIPTS = "CREATE TABLE IF NOT EXISTS slack_receipts (key TEXT PRIMARY KEY, event TEXT NOT NULL, thread_ts TEXT)";
+export const SLACK_RECEIPTS =
+	"CREATE TABLE IF NOT EXISTS slack_receipts (key TEXT PRIMARY KEY, event TEXT NOT NULL, thread_ts TEXT)";
 /** The message posted for each question, so that closing it can replace its buttons. */
-export const SLACK_QUESTIONS = "CREATE TABLE IF NOT EXISTS slack_questions (question TEXT PRIMARY KEY, ts TEXT NOT NULL)";
+export const SLACK_QUESTIONS =
+	"CREATE TABLE IF NOT EXISTS slack_questions (question TEXT PRIMARY KEY, ts TEXT NOT NULL)";
 
 type Page = Pick<ItemView, "question" | "plan">;
 export interface SlackIo {
@@ -66,11 +88,19 @@ export function postFor(itemId: string, page: Page | null, effect: SlackEffect, 
 	return line;
 }
 
-export async function performSlackWrite(db: Pick<RawAccess, "execute">, destination: SlackBinding, itemId: string, effect: SlackEffect, io: SlackIo): Promise<void> {
+export async function performSlackWrite(
+	db: Pick<RawAccess, "execute">,
+	destination: SlackBinding,
+	itemId: string,
+	effect: SlackEffect,
+	io: SlackIo,
+): Promise<void> {
 	if ((await db.execute("SELECT 1 FROM slack_receipts WHERE key=?", effect.key)).length) return;
 	let threadTs = destination.threadTs;
 	if (effect.event !== "started") {
-		const [receipt] = await db.execute<{ thread_ts: string | null }>("SELECT thread_ts FROM slack_receipts WHERE event='started'");
+		const [receipt] = await db.execute<{ thread_ts: string | null }>(
+			"SELECT thread_ts FROM slack_receipts WHERE event='started'",
+		);
 		if (!receipt) throw new Error("Slack acknowledgement pending");
 		if (!receipt.thread_ts) return; // The original mapping was already unavailable at acknowledgement.
 		threadTs = receipt.thread_ts;
@@ -78,7 +108,10 @@ export async function performSlackWrite(db: Pick<RawAccess, "execute">, destinat
 	const url = `${config.origins[0]}/items/${itemId}`;
 	try {
 		if (effect.event === "resolved") {
-			const [posted] = await db.execute<{ ts: string }>("SELECT ts FROM slack_questions WHERE question=?", effect.question);
+			const [posted] = await db.execute<{ ts: string }>(
+				"SELECT ts FROM slack_questions WHERE question=?",
+				effect.question,
+			);
 			if (posted) await io.update(posted.ts, resolvedMessage(effect.line!, url));
 		} else {
 			const post = postFor(itemId, effect.question ? await io.read() : null, effect, url);
