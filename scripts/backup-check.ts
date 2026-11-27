@@ -30,7 +30,7 @@
 import { imageId } from "./check-image.js";
 import { spawnSync } from "node:child_process";
 import { createHash, createHmac, randomBytes } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspect } from "node:util";
@@ -642,11 +642,14 @@ async function sessionFiles(): Promise<void> {
 		table.map(row => `${row.id}: ${row.backups ? "copied" : "not copied"}`).join(", "),
 	);
 	expect(
-		"only Windlass's sessions are copied for now",
+		"Windlass's, Claude Code's, Codex's and OpenCode's sessions are copied, each from a data directory of its own",
 		table
 			.filter(row => row.backups)
 			.map(row => row.id)
-			.join(",") === "windlass",
+			.sort()
+			.join(",") === "claude,codex,opencode,windlass" &&
+			new Set(table.map(row => row.files?.root).filter(Boolean)).size === 4,
+		table.map(row => `${row.id}: ${row.files?.root ?? "-"}`).join(", "),
 	);
 	const hostile = [
 		"",
@@ -838,6 +841,501 @@ async function sessionFiles(): Promise<void> {
 	} finally {
 		rmSync(scratch, { recursive: true, force: true });
 	}
+}
+
+// ---------------------------------------------------------------------------------------------
+// Claude Code's, Codex's and OpenCode's copies, with this machine's bash, on realistic directories
+// ---------------------------------------------------------------------------------------------
+
+const CLAUDE_ID = "0b6e4f3a-2c1d-4e5f-9a8b-7c6d5e4f3a2b";
+const CODEX_ID = "01a21dbe-67fa-73e0-9c87-51e223d40b2e";
+const OPENCODE_ID = "ses_de23f80afffeDgTVbjBa8XRj5d";
+const OTHER_UUID = "11111111-2222-7333-8444-555555555555";
+
+/**
+ * An `opencode` for the hooks: `export <id>` prints `$WLP_CHECK_EXPORT` when the id is the session's,
+ * `import <file>` copies the file there (it is the "database"), unless `$WLP_CHECK_IMPORT_FAILS`. Each
+ * call notes the provider's key and settings it was given, and the data directory, in `$WLP_CHECK_LOG`.
+ */
+const FAKE_OPENCODE = [
+	"#!/bin/sh",
+	'printf "%s %s %s\\n" "${OPENCODE_AUTH_CONTENT-unset}" "${OPENCODE_CONFIG_CONTENT-unset}" "$XDG_DATA_HOME" >> "$WLP_CHECK_LOG"',
+	'case "$1" in',
+	'  export) [ "$2" = "$WLP_BACKUP_SESSION" ] && [ -f "${WLP_CHECK_EXPORT:-/nonexistent}" ] && cat "$WLP_CHECK_EXPORT" ;;',
+	'  import) [ -z "${WLP_CHECK_IMPORT_FAILS:-}" ] && cp "$2" "$WLP_CHECK_EXPORT" ;;',
+	"  *) exit 1 ;;",
+	"esac",
+].join("\n");
+
+/** An export of OpenCode 1.19.6's shape (`opencode export`), changed by `change`. */
+interface OpenCodeExport {
+	[key: string]: unknown;
+	info: { [key: string]: unknown; id: string };
+	messages: {
+		info: { [key: string]: unknown; sessionID: string };
+		parts: { [key: string]: unknown; sessionID: string }[];
+	}[];
+}
+
+function openCodeExport(id: string, change: (data: OpenCodeExport) => void = () => {}): string {
+	const data: OpenCodeExport = {
+		info: {
+			id,
+			slug: "silent-star",
+			projectID: "95a41bedf6bf1d734b50af39e3ebf3cdfd71e609",
+			directory: "/workspace",
+			title: "New session",
+			version: "1.19.6",
+			time: { created: 1, updated: 2 },
+		},
+		messages: [
+			{
+				info: { role: "user", id: "msg_1", sessionID: id, time: { created: 1 } },
+				parts: [{ type: "text", text: "say hi", id: "prt_1", sessionID: id, messageID: "msg_1" }],
+			},
+			{
+				info: { role: "assistant", id: "msg_2", sessionID: id, time: { created: 2 } },
+				parts: [
+					{
+						type: "tool",
+						tool: "bash",
+						id: "prt_2",
+						sessionID: id,
+						messageID: "msg_2",
+						state: { status: "completed", input: { command: "ls" }, output: "README.md" },
+					},
+				],
+			},
+		],
+	};
+	change(data);
+	return JSON.stringify(data, null, 2);
+}
+
+async function agentCopies(): Promise<void> {
+	const scratch = mkdtempSync(join(tmpdir(), "wlp-backup-agents-"));
+	try {
+		spawnSync("mkdir", ["-p", join(scratch, "bin")]);
+		writeFileSync(join(scratch, "bin", "curl"), FAKE_CURL, { mode: 0o755 });
+		writeFileSync(join(scratch, "bin", "opencode"), FAKE_OPENCODE, { mode: 0o755 });
+		const data = join(scratch, "data");
+		const log = join(scratch, "opencode.log");
+
+		/** Lays out `data` with `layout` (sh, `$ID` the session's id, `$OTHER` another's) and packs it. */
+		const pack = (harness: HarnessId, id: string, layout: string, extra: Record<string, string> = {}) => {
+			spawnSync("sh", ["-c", `rm -rf data && ${layout}`], {
+				cwd: scratch,
+				env: { ...process.env, ID: id, OTHER: harness === "opencode" ? "ses_AAAAAAAAAAAAAAAAAAAAAAAAAA" : OTHER_UUID },
+			});
+			const described = sessionFilesEnv({ harness, sessionId: id });
+			if (described === null) throw new Error(`${harness}: no description for ${id}`);
+			const archive = join(scratch, `.wlp-backup-${randomId(4)}.tgz`);
+			const answer = bash(
+				packScript(described.files),
+				{
+					...described.env,
+					[BACKUP_ENV.data]: data,
+					[BACKUP_ENV.pack]: archive,
+					[BACKUP_ENV.max]: "1000000",
+					WLP_CHECK_LOG: log,
+					...extra,
+				},
+				scratch,
+			);
+			const packed = answer.startsWith("packed");
+			// Kept under a name the next pack's sweep of `.wlp-backup-*` leaves alone.
+			const kept = join(scratch, `packed-${randomId(4)}.tgz`);
+			if (packed) writeFileSync(kept, readFileSync(archive));
+			const names = packed
+				? spawnSync("tar", ["-tzf", kept], { encoding: "utf8" }).stdout.trim().split("\n").filter(Boolean)
+				: [];
+			return { answer, names, archive: packed ? kept : null };
+		};
+		/** Restores `archive` into a directory that does not exist yet, as a new sandbox's has no session. */
+		const restore = (harness: HarnessId, id: string, archive: string, extra: Record<string, string> = {}) => {
+			const described = sessionFilesEnv({ harness, sessionId: id });
+			if (described === null) throw new Error(`${harness}: no description for ${id}`);
+			const into = join(scratch, `restored-${randomId(4)}`);
+			const bytes = readFileSync(archive);
+			const answer = bash(
+				restoreScript(described.files),
+				{
+					...described.env,
+					[BACKUP_ENV.data]: into,
+					[BACKUP_ENV.pack]: join(scratch, `.wlp-backup-r-${randomId(4)}.tgz`),
+					[BACKUP_ENV.size]: String(bytes.length),
+					[BACKUP_ENV.sha256]: sha256(bytes),
+					[BACKUP_ENV.seconds]: "5",
+					WLP_CHECK_ARCHIVE: archive,
+					WLP_CHECK_LOG: log,
+					...extra,
+				},
+				scratch,
+				'url = "https://example.invalid/x"\n',
+			);
+			return { answer, files: tree(into), into };
+		};
+		/** An archive of the files `make` writes (sh, in a directory of its own), named as listed. */
+		const archiveOf = (id: string, make: string, names: string[]) => {
+			const work = mkdtempSync(join(scratch, "make-"));
+			const archive = join(scratch, `made-${randomId(4)}.tgz`);
+			spawnSync("sh", ["-c", make], { cwd: work, env: { ...process.env, ID: id } });
+			spawnSync("tar", ["-czf", archive, "--no-recursion", ...names], { cwd: work });
+			return archive;
+		};
+
+		// --- Claude Code ---------------------------------------------------------------------
+		const claudeCopied = [
+			`projects/-tmp-wlp-review/${CLAUDE_ID}.jsonl`,
+			`projects/-workspace/${CLAUDE_ID}.jsonl`,
+			`projects/-workspace/${CLAUDE_ID}/subagents/agent-a1b2c3.jsonl`,
+			`projects/-workspace/${CLAUDE_ID}/tool-results/toolu_01.txt`,
+		];
+		const claudeLayout = [
+			"mkdir -p data/projects/-workspace/$ID/subagents/deeper data/projects/-workspace/$ID/tool-results data/projects/-tmp-wlp-review data/projects/-workspace/memory data/projects/plain",
+			"mkdir -p data/backups data/session-env/$ID data/shell-snapshots data/file-history/$ID data/todos data/sessions data/statsig",
+			`echo '{"type":"user","sessionId":"'$ID'"}' > data/projects/-workspace/$ID.jsonl`,
+			"echo sub > data/projects/-workspace/$ID/subagents/agent-a1b2c3.jsonl",
+			"echo out > data/projects/-workspace/$ID/tool-results/toolu_01.txt",
+			"echo review > data/projects/-tmp-wlp-review/$ID.jsonl",
+			// What is never copied: other sessions, other names, credentials, environments, history.
+			"echo x > data/projects/-workspace/$OTHER.jsonl && echo x > data/projects/-workspace/$ID.jsonl.bak && echo x > data/projects/$ID.jsonl && echo x > data/projects/plain/$ID.jsonl",
+			"echo x > data/projects/-workspace/$ID/subagents/notes.txt && echo x > data/projects/-workspace/$ID/subagents/deeper/agent-x.jsonl && echo x > data/projects/-workspace/$ID/tool-results/.partial",
+			"echo x > data/projects/-workspace/memory/MEMORY.md",
+			"echo SECRET > data/.credentials.json && echo SECRET > data/backups/.claude.json.backup.1 && echo SECRET > .claude.json",
+			"echo SECRET > data/session-env/$ID/sessionstart-hook-0.sh && echo SECRET > data/shell-snapshots/snapshot-bash-1.sh",
+			"echo x > data/file-history/$ID/abc@v1 && echo x > data/settings.json && echo x > data/todos/$ID-agent-$ID.json && echo x > data/sessions/42.json && echo x > data/statsig/s",
+			"ln -s ../../../../.credentials.json data/projects/-workspace/$ID/tool-results/link.txt",
+		].join(" && ");
+		const claude = pack("claude", CLAUDE_ID, claudeLayout);
+		expect(
+			"Claude Code: a copy holds the session's transcripts (any project folder), its subagents' and its long tool output, and nothing else: no credentials, no .claude.json, no other session, no environment, no history",
+			claude.answer.endsWith("|0") && claude.names.join(",") === claudeCopied.join(","),
+			`${claude.answer} ${claude.names.join(",")}`,
+		);
+		if (claude.archive !== null) {
+			const back = restore("claude", CLAUDE_ID, claude.archive);
+			expect(
+				"Claude Code: the copy restores into a sandbox that has never seen the session, with exactly those files",
+				back.answer === "restored|0" && back.files === claudeCopied.map(name => `./${name}`).join(","),
+				`${back.answer} [${back.files}]`,
+			);
+		}
+		for (const [name, layout] of Object.entries({
+			"no data directory at all": "true",
+			"a data directory with no session in it":
+				"mkdir -p data/projects/-workspace && echo x > data/settings.json && echo SECRET > data/.credentials.json",
+			"only a subagent's transcript":
+				"mkdir -p data/projects/-workspace/$ID/subagents && echo x > data/projects/-workspace/$ID/subagents/agent-1.jsonl",
+		}))
+			expect(`Claude Code, ${name}: nothing to copy`, pack("claude", CLAUDE_ID, layout).answer === "empty|0");
+		const claudeRestores: Record<string, [string, string[], string]> = {
+			"a copy with the sign-in in it": [
+				"mkdir -p projects/-workspace && echo t > projects/-workspace/$ID.jsonl && echo SECRET > .credentials.json",
+				[`projects/-workspace/${CLAUDE_ID}.jsonl`, ".credentials.json"],
+				"contents|0",
+			],
+			"a copy with another session's transcript": [
+				`mkdir -p projects/-workspace && echo t > projects/-workspace/$ID.jsonl && echo t > projects/-workspace/${OTHER_UUID}.jsonl`,
+				[`projects/-workspace/${CLAUDE_ID}.jsonl`, `projects/-workspace/${OTHER_UUID}.jsonl`],
+				"contents|0",
+			],
+			"a copy with a shell's environment": [
+				"mkdir -p projects/-workspace shell-snapshots && echo t > projects/-workspace/$ID.jsonl && echo SECRET > shell-snapshots/s.sh",
+				[`projects/-workspace/${CLAUDE_ID}.jsonl`, "shell-snapshots/s.sh"],
+				"contents|0",
+			],
+			"a copy whose transcript is empty": [
+				"mkdir -p projects/-workspace && : > projects/-workspace/$ID.jsonl",
+				[`projects/-workspace/${CLAUDE_ID}.jsonl`],
+				"no_session|0",
+			],
+		};
+		for (const [name, [make, names, expected]] of Object.entries(claudeRestores)) {
+			const back = restore("claude", CLAUDE_ID, archiveOf(CLAUDE_ID, make, names));
+			expect(
+				`Claude Code, ${name}: the restore answers ${expected.split("|")[0]}${expected.startsWith("contents") ? " and unpacks nothing" : ""}`,
+				back.answer === expected && (!expected.startsWith("contents") || back.files === ""),
+				`${back.answer} [${back.files}]`,
+			);
+		}
+
+		// --- Codex -----------------------------------------------------------------------------
+		const rollout = `sessions/2026/11/27/rollout-2026-11-27T17-04-31-${CODEX_ID}.jsonl`;
+		const codexLayout = [
+			"D=data/sessions/2026/11/27",
+			"mkdir -p $D/deeper data/sessions/abcd/11/27 data/archived_sessions data/sqlite data/shell_snapshots data/log data/tmp data/thread-writer-locks data/rules",
+			`echo '{"type":"session_meta"}' > $D/rollout-2026-11-27T17-04-31-$ID.jsonl`,
+			// What is never copied: other threads, archived ones, sign-ins, configuration, databases, environments.
+			"echo x > $D/rollout-2026-11-27T17-05-00-$OTHER.jsonl && echo x > $D/rollout-2026-11-27T17-04-31-$ID.jsonl.tmp && echo x > $D/deeper/rollout-x-$ID.jsonl",
+			"echo x > data/sessions/rollout-x-$ID.jsonl && echo x > data/sessions/abcd/11/27/rollout-x-$ID.jsonl && echo x > data/archived_sessions/rollout-2026-11-27T17-04-31-$ID.jsonl",
+			"echo SECRET > data/auth.json && echo 00000000-0000-0000-0000-000000000000 > data/installation_id && echo x > data/config.toml && echo SECRET > data/.env && echo x > data/hooks.json && echo x > data/rules/r",
+			"echo x > data/sqlite/state_5.sqlite && echo x > data/sqlite/state_5.sqlite-wal && echo x > data/sqlite/logs_2.sqlite",
+			"echo SECRET > data/shell_snapshots/s.sh && echo x > data/log/codex.log && echo x > data/tmp/rollout-x-$ID.jsonl && echo x > data/thread-writer-locks/$ID",
+		].join(" && ");
+		const codex = pack("codex", CODEX_ID, codexLayout);
+		expect(
+			"Codex: a copy holds the thread's rollout, and nothing else: no sign-in, no installation id, no configuration, no database, no other or archived thread",
+			codex.answer.endsWith("|0") && codex.names.join(",") === rollout,
+			`${codex.answer} ${codex.names.join(",")}`,
+		);
+		if (codex.archive !== null) {
+			const back = restore("codex", CODEX_ID, codex.archive);
+			expect(
+				"Codex: the copy restores the rollout at its own path into a sandbox that has never seen the thread",
+				back.answer === "restored|0" && back.files === `./${rollout}`,
+				`${back.answer} [${back.files}]`,
+			);
+		}
+		for (const [name, layout] of Object.entries({
+			"no data directory at all": "true",
+			"a data directory with no thread in it":
+				"mkdir -p data/sessions data/sqlite && echo x > data/sqlite/state_5.sqlite && echo SECRET > data/auth.json",
+		}))
+			expect(`Codex, ${name}: nothing to copy`, pack("codex", CODEX_ID, layout).answer === "empty|0");
+		const codexDir = "sessions/2026/11/27";
+		const codexRestores: Record<string, [string, string[], string]> = {
+			"a copy with a sign-in in it": [
+				`mkdir -p ${codexDir} && echo r > ${rollout} && echo SECRET > auth.json`,
+				[rollout, "auth.json"],
+				"contents|0",
+			],
+			"a copy with a database in it": [
+				`mkdir -p ${codexDir} sqlite && echo r > ${rollout} && echo x > sqlite/state_5.sqlite`,
+				[rollout, "sqlite/state_5.sqlite"],
+				"contents|0",
+			],
+			"a copy of an archived rollout": [
+				`mkdir -p archived_sessions && echo r > archived_sessions/rollout-x-$ID.jsonl`,
+				[`archived_sessions/rollout-x-${CODEX_ID}.jsonl`],
+				"contents|0",
+			],
+		};
+		for (const [name, [make, names, expected]] of Object.entries(codexRestores)) {
+			const back = restore("codex", CODEX_ID, archiveOf(CODEX_ID, make, names));
+			expect(
+				`Codex, ${name}: the restore answers ${expected.split("|")[0]} and unpacks nothing`,
+				back.answer === expected && back.files === "",
+				`${back.answer} [${back.files}]`,
+			);
+		}
+		expect(
+			"Codex: only a UUID v7 is a thread's id, and Claude Code's ids are lower-case UUIDs",
+			sessionFilesEnv({ harness: "codex", sessionId: CLAUDE_ID }) === null &&
+				sessionFilesEnv({ harness: "codex", sessionId: CODEX_ID }) !== null &&
+				sessionFilesEnv({ harness: "claude", sessionId: CLAUDE_ID.toUpperCase() }) === null &&
+				sessionFilesEnv({ harness: "claude", sessionId: OPENCODE_ID }) === null,
+		);
+
+		// --- OpenCode --------------------------------------------------------------------------
+		const exported = join(scratch, "export.json");
+		const exportedName = `wlp-backup/${OPENCODE_ID}.json`;
+		const openCodeLayout = [
+			"mkdir -p data/log data/snapshot/x data/repos data/tool-output data/wlp-backup",
+			"echo 'SECRET access_token' > data/opencode.db && echo SECRET > data/opencode.db-wal && echo x > data/opencode.db-shm",
+			"echo SECRET > data/auth.json && echo x > data/log/opencode.log && echo x > data/snapshot/x/HEAD && echo x > data/tool-output/t",
+			"echo stale > data/wlp-backup/$ID.json && echo x > data/wlp-backup/$OTHER.json && echo x > data/wlp-backup/.export",
+		].join(" && ");
+		const withExport = (text: string) => {
+			writeFileSync(exported, text);
+			writeFileSync(log, "");
+			return {
+				WLP_CHECK_EXPORT: exported,
+				OPENCODE_AUTH_CONTENT: "SECRET-AUTH",
+				OPENCODE_CONFIG_CONTENT: "SECRET-CONFIG",
+			};
+		};
+		const good = openCodeExport(OPENCODE_ID);
+		const openCode = pack("opencode", OPENCODE_ID, openCodeLayout, withExport(good));
+		const packedExport =
+			openCode.archive === null
+				? ""
+				: spawnSync("tar", ["-xzOf", openCode.archive, exportedName], { encoding: "utf8" }).stdout;
+		expect(
+			"OpenCode: a copy holds the session's export, made fresh, and nothing else: never the shared database, its WAL, a sign-in, logs or another session's export",
+			openCode.answer.endsWith("|0") && openCode.names.join(",") === exportedName && packedExport === good,
+			`${openCode.answer} ${openCode.names.join(",")}`,
+		);
+		expect(
+			"OpenCode: the export runs without the provider's key and settings, on the agent's own data directory",
+			readFileSync(log, "utf8").trim() === "unset unset /home/agent/.local/share",
+			readFileSync(log, "utf8").trim(),
+		);
+		const refusedExports: Record<string, string> = {
+			"an export with a credential-named key": openCodeExport(OPENCODE_ID, d => {
+				d.info.share = { url: "https://x", secret: "s" };
+			}),
+			"an export with a token in a part": openCodeExport(OPENCODE_ID, d => {
+				d.messages[1].parts[0].state = { status: "completed", input: { refresh_token: "t" } };
+			}),
+			"an export with more than the session and its messages": openCodeExport(OPENCODE_ID, d => {
+				d.credential = [{ value: "k" }];
+			}),
+			"an export of another session": openCodeExport("ses_BBBBBBBBBBBBBBBBBBBBBBBBBB"),
+			"an export with another session's message": openCodeExport(OPENCODE_ID, d => {
+				d.messages[0].info.sessionID = "ses_BBBBBBBBBBBBBBBBBBBBBBBBBB";
+			}),
+			"an export with another session's part": openCodeExport(OPENCODE_ID, d => {
+				d.messages[0].parts[0].sessionID = "ses_BBBBBBBBBBBBBBBBBBBBBBBBBB";
+			}),
+			"an export that is not JSON": "Exporting session...\n{",
+		};
+		for (const [name, text] of Object.entries(refusedExports)) {
+			const result = pack("opencode", OPENCODE_ID, openCodeLayout, withExport(text));
+			expect(
+				`OpenCode, ${name}: packing answers export, and nothing is packed`,
+				result.answer === "export|0" && result.archive === null,
+				result.answer,
+			);
+		}
+		const failed = pack("opencode", OPENCODE_ID, openCodeLayout, { WLP_CHECK_EXPORT: join(scratch, "none.json") });
+		expect("OpenCode: an export that fails answers export", failed.answer === "export|0", failed.answer);
+		for (const [name, layout] of Object.entries({
+			"no data directory at all": "true",
+			"a data directory without a database": "mkdir -p data/log data/repos && echo stale > data/log/x",
+		}))
+			expect(
+				`OpenCode, ${name}: nothing to copy, and nothing is exported`,
+				pack("opencode", OPENCODE_ID, layout, withExport(good)).answer === "empty|0" &&
+					readFileSync(log, "utf8") === "",
+			);
+		if (openCode.archive !== null) {
+			const db = join(scratch, "imported.json");
+			rmSync(db, { force: true });
+			writeFileSync(log, "");
+			const back = restore("opencode", OPENCODE_ID, openCode.archive, {
+				WLP_CHECK_EXPORT: db,
+				OPENCODE_AUTH_CONTENT: "SECRET-AUTH",
+			});
+			expect(
+				"OpenCode: the copy restores by importing the export, without the provider's key, and the exported file is removed after",
+				back.answer === "restored|0" &&
+					back.files === "" &&
+					readFileSync(db, "utf8") === good &&
+					readFileSync(log, "utf8")
+						.trim()
+						.split("\n")
+						.every(line => line === "unset unset /home/agent/.local/share"),
+				`${back.answer} [${back.files}] ${readFileSync(log, "utf8").trim()}`,
+			);
+			const refused = restore("opencode", OPENCODE_ID, openCode.archive, {
+				WLP_CHECK_EXPORT: join(scratch, "never.json"),
+				WLP_CHECK_IMPORT_FAILS: "1",
+			});
+			expect("OpenCode: an import that fails answers import", refused.answer === "import|0", refused.answer);
+		}
+		const openCodeRestores: Record<string, [string, string[], string]> = {
+			"a copy with the database in it": [
+				`mkdir -p wlp-backup && printf '%s' '${good}' > wlp-backup/$ID.json && echo SECRET > opencode.db`,
+				[exportedName, "opencode.db"],
+				"contents|0",
+			],
+			"a copy with another session's export": [
+				"mkdir -p wlp-backup && echo x > wlp-backup/ses_BBBBBBBBBBBBBBBBBBBBBBBBBB.json",
+				["wlp-backup/ses_BBBBBBBBBBBBBBBBBBBBBBBBBB.json"],
+				"contents|0",
+			],
+			"a copy whose export is empty": [
+				"mkdir -p wlp-backup && : > wlp-backup/$ID.json",
+				[exportedName],
+				"no_session|0",
+			],
+			"a copy whose export is of another session": [
+				`mkdir -p wlp-backup && printf '%s' '${openCodeExport("ses_BBBBBBBBBBBBBBBBBBBBBBBBBB")}' > wlp-backup/$ID.json`,
+				[exportedName],
+				"import|0",
+			],
+		};
+		for (const [name, [make, names, expected]] of Object.entries(openCodeRestores)) {
+			const db = join(scratch, `db-${randomId(4)}.json`);
+			const back = restore("opencode", OPENCODE_ID, archiveOf(OPENCODE_ID, make, names), { WLP_CHECK_EXPORT: db });
+			expect(
+				`OpenCode, ${name}: the restore answers ${expected.split("|")[0]}, and nothing is imported`,
+				back.answer === expected && !existsSync(db),
+				`${back.answer} [${back.files}]`,
+			);
+		}
+
+		// --- Every agent, and Windlass as it was ------------------------------------------------
+		const windlassMissing = bash(
+			packScript(WINDLASS_SESSION_FILES),
+			{
+				...(sessionFilesEnv({ harness: "windlass", sessionId: "ses_abc123" })?.env ?? {}),
+				[BACKUP_ENV.data]: join(scratch, "nowhere"),
+				[BACKUP_ENV.pack]: join(scratch, ".wlp-backup-w.tgz"),
+				[BACKUP_ENV.max]: "1000000",
+			},
+			scratch,
+		);
+		expect(
+			"Windlass: a missing data directory still fails the save (its volume is always there), as before",
+			!windlassMissing.startsWith("empty") && !windlassMissing.endsWith("|0"),
+			windlassMissing,
+		);
+		for (const harness of ["claude", "codex", "opencode"] as const) {
+			const files = sessionFilesOf(harness);
+			expect(
+				`${harness}: the pack script refuses a session id that is not the agent's, before it lists or exports anything`,
+				files !== null &&
+					bash(
+						packScript(files),
+						{
+							...(sessionFilesEnv({
+								harness,
+								sessionId: { claude: CLAUDE_ID, codex: CODEX_ID, opencode: OPENCODE_ID }[harness],
+							})?.env ?? {}),
+							[BACKUP_ENV.session]: "ses_$(id)",
+							[BACKUP_ENV.data]: data,
+							[BACKUP_ENV.pack]: join(scratch, ".wlp-backup-x.tgz"),
+							[BACKUP_ENV.max]: "1000000",
+						},
+						scratch,
+					) === "|2",
+			);
+		}
+	} finally {
+		rmSync(scratch, { recursive: true, force: true });
+	}
+
+	// What the server makes of the new answers.
+	const store = new StandInObjectStore();
+	const backups = new SandboxSessionBackups(store, { maxBytes: 1000 });
+	const owner = { uid: "user-1", sessionId: "s_0123456789abcdef" };
+	const exportFails = new ScriptedSandbox(() => ({ stdout: "export\n" }));
+	const saved = await backups.save(exportFails, owner, { harness: "opencode", sessionId: OPENCODE_ID });
+	expect(
+		"a save whose export failed is a failed save that says so, and nothing is uploaded",
+		saved.outcome === "failed" && /OpenCode could not export/.test(saved.reason) && exportFails.asked.length === 1,
+		JSON.stringify(saved),
+	);
+	await store.linkToPut(backups.keyOf(owner), { size: 1, ttlMs: 60_000 });
+	const importFails = new ScriptedSandbox(() => ({ stdout: "import\n" }));
+	const restored = await backups.restore(
+		importFails,
+		owner,
+		{ size: 1, sha256: sha256("x"), at: 0 },
+		{ harness: "opencode", sessionId: OPENCODE_ID },
+	);
+	expect(
+		"a restore whose import failed is a failed restore that says so",
+		restored.outcome === "failed" && /OpenCode could not import/.test(restored.reason),
+		JSON.stringify(restored),
+	);
+	const roots = (["claude", "codex", "opencode"] as const).map(harness => {
+		const sandbox = new ScriptedSandbox(() => ({ stdout: "empty\n" }));
+		return backups
+			.save(sandbox, owner, {
+				harness,
+				sessionId: { claude: CLAUDE_ID, codex: CODEX_ID, opencode: OPENCODE_ID }[harness],
+			})
+			.then(result => `${result.outcome}:${sandbox.asked[0]?.options.env?.[BACKUP_ENV.data]}`);
+	});
+	expect(
+		"each agent's save packs from its own data directory",
+		(await Promise.all(roots)).join(",") ===
+			"empty:/home/agent/.claude,empty:/opt/wlp-codex/home,empty:/home/agent/.local/share/opencode",
+		(await Promise.all(roots)).join(","),
+	);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1275,6 +1773,7 @@ async function main(): Promise<number> {
 	await section("the S3 store, without a network", signer);
 	await section("the backups, on a scripted sandbox", scripted);
 	await section("the agents' session files, and Windlass's copy as before", sessionFiles);
+	await section("Claude Code's, Codex's and OpenCode's copies, on realistic directories", agentCopies);
 
 	const settings = withBucket ? bucketSettings() : null;
 	if (withBucket && settings === null) {

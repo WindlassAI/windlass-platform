@@ -2016,7 +2016,7 @@ async function saveWorkspace(
 	used: SandboxHandle,
 ): Promise<void> {
 	const { meta, turn, reviewer, result } = t;
-	// Windlass's session is copied out of the sandbox meanwhile, when Windlass ran: both only read.
+	// The agent's session is copied out of the sandbox meanwhile, when the agent ran: both only read.
 	const saving = caps.backups && result && t.layer ? saveBackup(c, meta, turn, used, t.layer) : undefined;
 	const copied = reviewer || c.vars.stopping || c.vars.destroying ? null : await copyWorkspace(c, meta, used);
 	if (!copied) await dropWorkspace(c);

@@ -8,12 +8,13 @@
  *
  * ## How
  *
- * After a turn, and before a turn in a sandbox that replaces a lost one. A `windlass acp` process
- * lives for one turn and the turn code leaves none behind (turn.ts), so between turns nothing has the
- * files open, and a plain `tar` of them is a whole copy: no SQLite tool is needed in the image, and
- * none is there. An agent whose files cannot be copied as they lie names a command that exports its
- * session to a file before packing, and one that imports it after unpacking (`beforePack`,
- * `afterUnpack`). The archive is one object per agent session, `<prefix>sessions/<uid>/<session>.tgz`,
+ * After a turn, and before a turn in a sandbox that replaces a lost one. An agent's process lives for
+ * one turn: Windlass's turn code leaves none behind (turn.ts), and before an ACP agent's session is
+ * packed, what a lost turn of it left is stopped (agent-session/workspace.ts, `saveBackup`). So between
+ * turns nothing has the files open, and a plain `tar` of them is a whole copy: no SQLite tool is needed
+ * in the image, and none is there. An agent whose files cannot be copied as they lie (OpenCode's one
+ * database holds every session and its sign-ins) names a command that exports its session to a file
+ * before packing, and one that imports it after unpacking (`beforePack`, `afterUnpack`). The archive is one object per agent session, `<prefix>sessions/<uid>/<session>.tgz`,
  * replaced every time.
  *
  * The commands run through the sandbox's handle, so beside Windlass and not under it: Windlass's
@@ -21,7 +22,8 @@
  * signs a link and the sandbox's curl uses it, so the archive never passes through the server:
  *
  *   save      1. `PACK`: tar and gzip to a file under /tmp, its size and SHA-256 printed. Over the
- *                limit: removed, nothing is uploaded, the earlier copy stays as it was.
+ *                limit: removed, nothing is uploaded, the earlier copy stays as it was. An export
+ *                that fails (`beforePack`) answers `export`, and nothing is uploaded either.
  *             2. the server signs a link to PUT exactly that many bytes, good for five minutes.
  *             3. `UPLOAD`: curl sends the file; the archive is removed whatever happens.
  *             4. the server asks the store for the object's size (a HEAD of its own), so that an
@@ -29,7 +31,8 @@
  *   restore   1. the server signs a link to GET the object.
  *             2. `RESTORE`: curl fetches it; its size and SHA-256 must be the ones the session
  *                recorded when it was saved, and it may hold nothing but what a copy holds; only
- *                then is it unpacked, and the agent's session must be among what came out (`proof`).
+ *                then is it unpacked, and the agent's session must be among what came out (`proof`);
+ *                an import after that (`afterUnpack`) that fails answers `import`.
  *
  * The link is the only secret in this, and it reaches the sandbox on the command's standard input, as
  * a curl config (`-K -`): it is on no command line, in no environment and in no file. The scripts
@@ -127,7 +130,8 @@ const CHECK_SESSION = `[[ "$${BACKUP_ENV.session}" =~ $${BACKUP_ENV.id} ]] || ex
 
 /**
  * Packs what a copy holds into `$WLP_BACKUP_PACK`. Prints `packed <bytes> <sha256>`, `empty` when the
- * agent has no session here (`present`), or `too_large <bytes>`: of the archive, or of the files
+ * agent has no session here (`present`, or no data directory where the agent says that means none),
+ * `export` when its `beforePack` failed, or `too_large <bytes>`: of the archive, or of the files
  * themselves when they are more than ten times the limit, which no compression makes up for and which
  * is then not even tried. The names are sorted and gzip is told to leave out the time, so the same
  * files give the same archive.
@@ -137,9 +141,12 @@ export function packScript(files: SessionFiles): string {
 		"set -euo pipefail",
 		"umask 077",
 		CHECK_SESSION,
+		...(files.missingRootIsEmpty ? ['if [ ! -d "$WLP_BACKUP_DATA" ]; then echo empty; exit 0; fi'] : []),
 		'cd "$WLP_BACKUP_DATA"',
 		"rm -f /tmp/.wlp-backup-*",
-		...(files.beforePack === undefined ? [] : [files.beforePack]),
+		...(files.beforePack === undefined
+			? []
+			: [`if ! { ${files.beforePack}; } >/dev/null 2>&1; then echo export; exit 0; fi`]),
 		'list="$WLP_BACKUP_PACK.list"',
 		"{",
 		...files.copied.map(rule => `  ${findCommand(rule)}`),
@@ -173,7 +180,8 @@ export const UPLOAD_SCRIPT = [
  * which in a sandbox that was just made holds no session. Prints `restored`, or why not: `http
  * <status>` (404: there is no copy), `curl <exit code>`, `size <bytes>` or `hash <sha256>` (it is not
  * the archive that was saved), `contents` (it holds a file a copy never holds: `held`), `unpack`, or
- * `no_session` (the session is not in it: `proof`). Nothing is unpacked before the checks have passed.
+ * `no_session` (the session is not in it: `proof`), or `import` (the agent's `afterUnpack` failed).
+ * Nothing is unpacked before the checks have passed.
  */
 export function restoreScript(files: SessionFiles): string {
 	return [
@@ -193,11 +201,11 @@ export function restoreScript(files: SessionFiles): string {
 		// The proof is a glob of the agent's, without spaces: it is expanded here, and only here.
 		"shopt -s nullglob",
 		"proof=no",
-		'for found in "$WLP_BACKUP_DATA"/$WLP_BACKUP_PROOF; do if [ -f "$found" ]; then proof=yes; break; fi; done',
+		`for found in "$WLP_BACKUP_DATA"/$WLP_BACKUP_PROOF; do if [ -f "$found" ]${files.proofNotEmpty ? ' && [ -s "$found" ]' : ""}; then proof=yes; break; fi; done`,
 		'if [ "$proof" != yes ]; then echo no_session; exit 0; fi',
 		...(files.afterUnpack === undefined
 			? []
-			: [`(cd "$WLP_BACKUP_DATA" && ${files.afterUnpack}) >/dev/null 2>&1 || { echo unpack; exit 0; }`]),
+			: [`(cd "$WLP_BACKUP_DATA" && ${files.afterUnpack}) >/dev/null 2>&1 || { echo import; exit 0; }`]),
 		"echo restored",
 	].join("\n");
 }
@@ -211,7 +219,7 @@ function curlConfig(url: string): string {
 /** The last line a step printed, when it is one of the answers the step can give; null for anything else. */
 function answerOf(stdout: string): string | null {
 	const line = stdout.trim().split("\n").pop()?.trim() ?? "";
-	return /^(packed \d+ [0-9a-f]{64}|empty|too_large \d+|changed|http \d{3}|curl \d+|size \d+|hash [0-9a-f]{64}|contents|unpack|no_session|restored)$/.test(
+	return /^(packed \d+ [0-9a-f]{64}|empty|export|too_large \d+|changed|http \d{3}|curl \d+|size \d+|hash [0-9a-f]{64}|contents|unpack|no_session|import|restored)$/.test(
 		line,
 	)
 		? line
@@ -295,6 +303,11 @@ export class SandboxSessionBackups implements SessionBackups {
 				PACK_TIMEOUT_MS,
 			);
 			if (packed === "empty") return { outcome: "empty" };
+			if (packed === "export")
+				return {
+					outcome: "failed",
+					reason: `${harnessName(session.harness)} could not export its session, or the export is not one to copy`,
+				};
 			const tooLarge = /^too_large (\d+)$/.exec(packed);
 			if (tooLarge !== null) return { outcome: "too_large", size: Number(tooLarge[1]), limit: this.maxBytes };
 			const made = /^packed (\d+) ([0-9a-f]{64})$/.exec(packed);
@@ -363,6 +376,7 @@ export class SandboxSessionBackups implements SessionBackups {
 				contents: "the copy holds a file a copy never holds, so nothing of it was unpacked",
 				unpack: "the copy could not be unpacked",
 				no_session: `the copy does not hold the ${harnessName(session.harness)} session`,
+				import: `${harnessName(session.harness)} could not import the session from the copy`,
 			};
 			if (/^(size|hash) /.test(answer))
 				return {
@@ -439,7 +453,7 @@ export async function backupsFromConfig(
 		const { S3ObjectStore } = await import("../bucket/s3.js");
 		const store = new S3ObjectStore(found.bucket);
 		print(
-			`[wlp] backups: on. Windlass's session data is copied to the bucket after every turn, up to ${Math.round(found.maxBytes / 1024 / 1024)} MiB a session, and restored into a sandbox that replaces a lost one.`,
+			`[wlp] backups: on. The agents' session data is copied to the bucket after every turn of a sandbox that may be lost, up to ${Math.round(found.maxBytes / 1024 / 1024)} MiB a session, and restored into a sandbox that replaces a lost one.`,
 		);
 		// Asked of an object that does not exist: a bucket that takes the key answers that there is none.
 		void store.size(`${found.prefix}sessions/wlp-probe/wlp-probe.tgz`).catch((error: unknown) => {
