@@ -3,6 +3,7 @@ import { ciState, type CiReading } from "../codehost/ci.js";
 import type { SessionRepository } from "../contract.js";
 import { GitlabError, record, text } from "../gitlab/app.js";
 import { gitlabApp } from "../gitlab/connect.js";
+import { mergeKindAllowed, taskKind, type TaskKind } from "../factory/readiness-track.js";
 import { resolveCodeHost } from "../codehost/index.js";
 
 /** Resolve the owner's selected project for each effect. Never persist this object (it holds a grant). */
@@ -44,7 +45,7 @@ export async function gitlabCi(hub: GitlabItemHost, head: string, number: number
 }
 
 /** Never infer a merge from the webhook. Re-read the MR, its target branch and the pipeline at the reviewed head. */
-export async function gitlabMerge(hub: GitlabItemHost, number: number, head: string, base: string, reviewedBase: string | undefined, itemId: string, beforeMerge?: () => void) {
+export async function gitlabMerge(hub: GitlabItemHost, number: number, head: string, base: string, reviewedBase: string | undefined, itemId: string, beforeMerge?: () => void, kinds?: TaskKind[]) {
 	const mr = await hub.pull(number);
 	if (!reviewedBase || mr.state !== "open" || !mr.mergeable || mr.headSha !== head || mr.base !== base || mr.baseSha !== reviewedBase || mr.mergeBaseSha !== reviewedBase || await hub.baseTip(base) !== reviewedBase)
 		throw new Error("The merge request is not mergeable at the reviewed head and base.");
@@ -52,6 +53,11 @@ export async function gitlabMerge(hub: GitlabItemHost, number: number, head: str
 	if (ci.kind !== "read" || ci.head !== head || ci.truncated || ciState(ci) !== "passed") throw new Error("CI no longer passes on the reviewed head.");
 	const notes = await hub.host.listComments(hub.token, hub.owner, hub.name, number, true);
 	if (notes.some(n => String(n.person?.id) !== hub.viewer || !(n.body.startsWith(`<!-- windlass-item:${itemId} -->\n`) || n.body.startsWith(`<!-- windlass-review:${itemId}:`)))) throw new Error("Merge request feedback requires handover.");
+	if (kinds) {
+		// As on GitHub: the kind comes from the change itself, and a partial list cannot authorize a merge.
+		const paths = await hub.app.changedPaths(hub.token, hub.project.id, reviewedBase, head);
+		if (!mergeKindAllowed(kinds, paths?.length && paths.length < 300 ? taskKind(paths) : null)) throw new Error("Automatic merge is off for this kind of change.");
+	}
 	beforeMerge?.();
 	await hub.host.mergePull(hub.token, hub.owner, hub.name, number, head, mr.title);
 }

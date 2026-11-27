@@ -10,6 +10,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ciState } from "../server/src/codehost/ci.js";
+import { kinds } from "../server/src/factory/readiness-track.js";
 import { gitlabConfig } from "../server/src/config.js";
 import { GITLAB_WEBHOOK_PATH, MAX_WEBHOOK_BYTES, type GitlabDelivery } from "../server/src/gitlab/webhook.js";
 
@@ -189,7 +190,10 @@ try {
 	pipe.status = "failed";
 	await assert.rejects(merge(head), /CI no longer passes/);
 	pipe.status = "success";
-	await merge(head);
+	const changed = await app.changedPaths(token, projectId, observed.baseTip!, head);
+	assert.ok(changed?.length && changed.every(path => !path.endsWith("package.json")), "the pushed change is not a dependency bump");
+	await assert.rejects(gitlabMerge(hub, mr.number, head, mr.base, observed.baseTip, "i_protocol", undefined, ["dependency bumps"]), /kind of change/);
+	await gitlabMerge(hub, mr.number, head, mr.base, observed.baseTip, "i_protocol", undefined, [...kinds]);
 	assert.equal((await host.readPull(token, owner, name, mr.number)).state, "merged");
 	const nextBranch = "docs/follow-up";
 	fixture.commit(project, nextBranch, { "follow-up": "x" }, "Follow up", project.defaultBranch);

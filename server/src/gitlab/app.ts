@@ -215,6 +215,18 @@ export class GitlabApp {
 			body: { sha: head, squash: true, squash_commit_message: title } })).body;
 	}
 
+	/** The paths a change touches, or null when GitLab could not list them all. */
+	async changedPaths(token: string, project: Project, from: string, to: string): Promise<string[] | null> {
+		if (![from, to].every(sha => /^[0-9a-f]{40,64}$/i.test(sha))) throw new Error("Invalid GitLab commit");
+		const params = new URLSearchParams({ from, to, straight: "false" });
+		const body = record((await this.call({ token, path: `${projectRoot(project)}/repository/compare?${params}` })).body);
+		if (body.compare_timeout === true || !Array.isArray(body.diffs)) return null;
+		return body.diffs.flatMap(diff => {
+			const d = record(diff), paths = [text(d.old_path), text(d.new_path)];
+			return paths[0] === paths[1] ? [paths[0]] : paths;
+		}).filter(Boolean);
+	}
+
 	/** GitLab returns a list: request only the newest pipeline for this head (and, optionally, ref). */
 	async pipelines(token: string, project: Project, head: string, branch?: string) {
 		const params = new URLSearchParams({ sha: head, order_by: "id", sort: "desc", per_page: "1" });

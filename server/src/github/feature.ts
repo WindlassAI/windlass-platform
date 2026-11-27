@@ -1,4 +1,4 @@
-import { taskKind, type TaskKind } from "../factory/readiness-track.js";
+import { mergeKindAllowed, taskKind, type TaskKind } from "../factory/readiness-track.js";
 import { GithubError, type GithubApp, type Pull } from "./app.js";
 import { ciState, readCi, type CiTarget } from "./ci.js";
 
@@ -14,8 +14,8 @@ export async function mergeReviewedPull(app: GithubApp, token: string, target: C
 	if (kinds) {
 		// GitHub caps comparisons at 300 files. A partial list cannot authorize a merge.
 		const files = compared.files;
-		const kind = files?.length && files.length < 300 && taskKind(files.flatMap(f => f.previous_filename ? [f.previous_filename, f.filename] : [f.filename]));
-		if (!kind || !kinds.includes(kind)) throw new Error("Automatic merge is off for this kind of change.");
+		const kind = files?.length && files.length < 300 ? taskKind(files.flatMap(f => f.previous_filename ? [f.previous_filename, f.filename] : [f.filename])) : null;
+		if (!mergeKindAllowed(kinds, kind)) throw new Error("Automatic merge is off for this kind of change.");
 	}
 	await app.squashMerge(token, target.owner, target.name, pull.number, target.head, pull.title);
 	return "merged";

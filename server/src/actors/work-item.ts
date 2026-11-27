@@ -4,7 +4,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { LinearWrite } from "../linear/app.js";
-import { finishedItem, type TaskKind } from "../factory/readiness-track.js";
+import { finishedItem, mergeKindAllowed, type TaskKind } from "../factory/readiness-track.js";
 import { environmentFailure } from "../factory/check-environment.js";
 import { plannerReadiness } from "../factory/readiness.js";
 import { newAgent } from "../factory/budget.js";
@@ -1729,7 +1729,7 @@ async function pollCi(c: Ctx, stored: Stored, effect: Extract<Effect, { kind: "p
 	const number = branch.pr?.number ?? 0;
 	const settings = item.run?.step.kind === "handoff" && item.mode !== "orchestrate" && !item.parent &&
 		await repositoryAutonomy(c, meta);
-	const autoMergeSingles = !!settings && !!settings.autoMergeSingles && (!settings.mergeKinds || !!meta.taskKind && settings.mergeKinds.includes(meta.taskKind));
+	const autoMergeSingles = !!settings && !!settings.autoMergeSingles && mergeKindAllowed(settings.mergeKinds, meta.taskKind);
 	if (meta.repository.provider === "gitlab") {
 		const snapshot = await gitlabItemHost(c, meta.uid, meta.repository).then(hub => gitlabCi(hub, effect.head, number, item.task.base, autoMergeSingles))
 			.catch(() => ({ reading: { kind: "failed" as const, said: "GitLab CI could not be read." }, mergeable: null, prHead: null, baseSha: null }));
@@ -2185,9 +2185,9 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 					await queued(c, async () => {
 						const latest = c.vars.stored!.item, review = latest.run?.ci?.secondReview;
 						const policy = await repositoryAutonomy(c, meta);
-						if (!live(latest, effect) || !review || !mergeCandidate(latest, review) || !policy.autoMergeSingles || policy.mergeKinds)
+						if (!live(latest, effect) || !review || !mergeCandidate(latest, review) || !policy.autoMergeSingles)
 							throw new Error("Automatic merge is not authorized for this merge request.");
-						await gitlabMerge(hub, effect.pr, effect.head, item.task.base, effect.baseTip, item.id);
+						await gitlabMerge(hub, effect.pr, effect.head, item.task.base, effect.baseTip, item.id, undefined, policy.mergeKinds);
 					});
 				} catch (error) { reason = describeError(error); }
 				await take(c, { kind: "auto_merge_result", key: effect.key, head: effect.head, at: Date.now(), reason, behind: false });

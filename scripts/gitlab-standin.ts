@@ -301,6 +301,15 @@ export class GitlabStandin {
 		if (resource === "repository" && key === "branches" && method === "GET" && action) {
 			const id = this.branchHead(p, action); return id ? json(200, { name: action, commit: { id } }) : missing();
 		}
+		if (resource === "repository" && key === "compare" && method === "GET") {
+			let names: string;
+			try { names = git(["diff", "--name-status", "-M", `${q.get("from")}...${q.get("to")}`], p.path); } catch { return missing(); }
+			const diffs = names.split("\n").filter(Boolean).map(line => {
+				const [, from, to = from] = line.split("\t");
+				return { old_path: from, new_path: to };
+			});
+			return json(200, { commits: [], diffs, compare_timeout: false, compare_same_ref: false });
+		}
 		if (resource === "pipelines" && method === "GET") {
 			if (!key) return page(p.pipelines.filter(x => (!q.has("sha") || x.sha === q.get("sha")) && (!q.has("ref") || x.ref === q.get("ref"))));
 			const pipe = p.pipelines.find(x => String(x.id) === key);
