@@ -1,5 +1,5 @@
 import type { CredentialSource, DefaultPlace, HarnessId, HostedSize, ItemPlaceDefaults, MachineSummary, PlanSubtask, SandboxPlace, SandboxProfileId } from "../contract.js";
-import { windlassProvider } from "../sandbox/harnesses.js";
+import { usesAccountModels, windlassProvider } from "../sandbox/harnesses.js";
 import { ITEM_HOSTED_SIZE } from "../contract/hosted-sizes.js";
 
 export type RunRole = "builder" | "planner" | "part" | "repair" | "reviewer" | "critic" | "summary" | "setup" | "environment";
@@ -93,7 +93,7 @@ const agentLayerOf = (layers: [Source, RunSettings][]) => [...layers].reverse().
 /** Store a filed model and effort under the agent they belong to, including an inherited agent. */
 export function filedAgentSettings(context: RunContext, model: string | null, effort: string | null): RunSettings {
 	const agent = agentLayerOf(runLayers(context))?.[1].harness ?? "windlass";
-	return agent === "windlass" ? { model, effort } : { machineModel: model, machineEffort: effort };
+	return usesAccountModels(agent) ? { model, effort } : { machineModel: model, machineEffort: effort };
 }
 
 /** Model IDs belong to their agent. A planning model at any layer takes precedence over the resolved Windlass build model. */
@@ -101,7 +101,7 @@ export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanS
 	const layers = runLayers(context);
 	if (part) {
 		const { agent, needs } = part;
-		layers.push(["item", { harness: agent?.harness, model: agent?.harness === "windlass" ? agent.model : undefined,
+		layers.push(["item", { harness: agent?.harness, model: agent?.harness && usesAccountModels(agent.harness) ? agent.model : undefined,
 			machineModel: agent?.model, effort: agent?.effort, machineEffort: agent?.effort,
 			hostedSize: needs?.hostedSize, profile: needs?.profile, machineProfile: needs?.profile }]);
 	}
@@ -135,7 +135,7 @@ export function resolveRun(context: RunContext, role: RunRole, part?: Pick<PlanS
 		set("size", layer.hostedSize, source);
 		set("profile", place === "hosted" ? layer.profile : layer.machineProfile, source);
 		if (agent !== "windlass" && place !== "hosted") set("payer", layer.payer, source);
-		if (agent === "windlass") {
+		if (usesAccountModels(agent)) {
 			set("model", layer.model, source);
 			set("effort", planning ? layer.reviewEffort ?? layer.effort : layer.effort, source);
 		} else if (agent === layerAgent) {

@@ -83,11 +83,31 @@ export async function relayNotes(m: MachineDocker, harness: MachineHarness, late
 			note.passedAs !== undefined ? `passed as ${field(note.passedAs)}` : `answered ${field(note.answered)}`].join("  "));
 }
 
+interface RelayKind {
+	/** The agent's name in messages. */
+	name: string;
+	/** The relay's bundled server, read when used: checks swap the globals at run time. */
+	script: () => string;
+	envPrefix: string;
+	/** The login volume it serves. */
+	credentials: (m: MachineDocker) => string;
+	/** Whether a logout leaves a signed-out marker for its sessions. */
+	signedOutMarker: boolean;
+	/** Whether it is given time to save a refresh before removal (RELAY_STOP_SECONDS). */
+	gracefulStop: boolean;
+}
+
+const RELAYS: Record<MachineHarness, RelayKind> = {
+	claude: { name: "Claude Code", script: () => CLAUDE_RELAY_SCRIPT, envPrefix: "WLP_CLAUDE_RELAY_", credentials: m => m.claudeVolume, signedOutMarker: false, gracefulStop: false },
+	codex: { name: "Codex", script: () => CODEX_RELAY_SCRIPT, envPrefix: "WLP_CODEX_RELAY_", credentials: m => m.codexVolume, signedOutMarker: true, gracefulStop: true },
+	opencode: { name: "OpenCode", script: () => OPENCODE_RELAY_SCRIPT, envPrefix: "WLP_OPENCODE_RELAY_", credentials: m => m.opencodeVolume, signedOutMarker: true, gracefulStop: true },
+};
+
 // Call under the login lock, including logout from a standalone runner command.
 /** `signedOut` for a logout: sessions are then told signed out, not to try again (sandbox/relay/server.cjs SIGNED_OUT). */
 export async function removeRelay(m: MachineDocker, harness: MachineHarness = "claude", signedOut = false) {
 	const box = await ownedRelay(m, harness);
-	const mark = signedOut && harness !== "claude";
+	const mark = signedOut && RELAYS[harness].signedOutMarker;
 	// Written by the relay's own user into its socket volume, before the relay stops answering.
 	const marked = mark && box?.State?.Running === true &&
 		(await docker(["exec", box.Id, "touch", SIGNED_OUT_MARKER], { timeoutMs: 15_000 })).code === 0;
@@ -103,7 +123,7 @@ async function markSignedOut(m: MachineDocker, harness: MachineHarness) {
 	const name = tmpName();
 	const result = await runHelper([...helperFlags(name, "none"), ...m.pairingLabelFlags, "--pull", "never", "--user", "1000:1000", "--read-only",
 		"--mount", `type=volume,src=${volume},dst=/workspace,volume-nocopy`], name, ["touch", SIGNED_OUT_MARKER], { image, timeoutMs: 30_000 });
-	if (result.code !== 0) throw new RunnerError(`Could not tell ${harness === "codex" ? "Codex" : "OpenCode"} sessions they are signed out: ${result.stderr.trim() || "exit " + result.code}.`);
+	if (result.code !== 0) throw new RunnerError(`Could not tell ${RELAYS[harness].name} sessions they are signed out: ${result.stderr.trim() || "exit " + result.code}.`);
 }
 /**
  * A relay that refreshes a login saves a refresh already sent before it exits on SIGTERM, since that
@@ -112,7 +132,7 @@ async function markSignedOut(m: MachineDocker, harness: MachineHarness) {
  */
 export const RELAY_STOP_SECONDS = 30;
 async function retireRelay(id: string, harness: MachineHarness) {
-	if (harness !== "claude") await docker(["stop", "-t", String(RELAY_STOP_SECONDS), id], { timeoutMs: (RELAY_STOP_SECONDS + 15) * 1000 });
+	if (RELAYS[harness].gracefulStop) await docker(["stop", "-t", String(RELAY_STOP_SECONDS), id], { timeoutMs: (RELAY_STOP_SECONDS + 15) * 1000 });
 	await docker(["rm", "-f", id], { check: true });
 }
 // The old image gave every session a volume reference. Preserve its workspace, but stop
@@ -126,9 +146,10 @@ export async function stopLegacyClaude(m: MachineDocker) {
 
 /** Caller holds the pairing login lock through credential and relay setup. */
 export async function ensureRelay(m: MachineDocker, login?: ProviderLogin, harness: MachineHarness = login ? login.harness ?? "opencode" : "claude", keys = false) {
-	const script = harness === "codex" ? CODEX_RELAY_SCRIPT : harness === "opencode" ? OPENCODE_RELAY_SCRIPT : CLAUDE_RELAY_SCRIPT;
-	const prefix = harness === "codex" ? "WLP_CODEX_RELAY_" : harness === "opencode" ? "WLP_OPENCODE_RELAY_" : "WLP_CLAUDE_RELAY_";
-	const credentials = harness === "codex" ? m.codexVolume : harness === "opencode" ? m.opencodeVolume : m.claudeVolume;
+	const relay = RELAYS[harness];
+	const script = relay.script();
+	const prefix = relay.envPrefix;
+	const credentials = relay.credentials(m);
 	const pair = loadPair();
 	if (!pair?.key || pair.current.machineId !== m.identity.machineId || pair.current.uid !== m.identity.uid)
 		throw new Refusal("The machine pairing changed while preparing the credential relay.");

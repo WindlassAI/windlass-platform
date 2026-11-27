@@ -130,6 +130,8 @@ export interface AcpProfile {
 	subtasks: boolean;
 	/** What it can do (`HarnessCapabilities`), its own record. */
 	capabilities: HarnessCapabilities;
+	/** The providers whose Settings keys it can run on (`keyProviders`). */
+	keyProviders: readonly ModelProvider[];
 	/**
 	 * A line of the agent's own error log (stderr) saying it gave up on the provider's usage or rate limit, where
 	 * the agent then answers nothing more: the turn is ended at once as a usage limit (acp-harness.ts).
@@ -147,6 +149,7 @@ export const CLAUDE: AcpProfile = {
 	itemModes: { "docker-hardened": "bypassPermissions" }, sandboxedOn: [], itemTokens: "sign-in", itemSignIns: ["subscription", "api-key"], items: true, subtasks: true,
 	// Its adapter takes the platform's MCP server itself (platform-tools.ts).
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
+	keyProviders: ["anthropic"],
 };
 
 export const OPENCODE: AcpProfile = {
@@ -156,6 +159,7 @@ export const OPENCODE: AcpProfile = {
 	itemModes: { "docker-hardened": "build" }, sandboxedOn: [], itemTokens: "budget", items: true, subtasks: true,
 	// Its image's wlp-acp-mcp serves it the platform's MCP server.
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
+	keyProviders: MODEL_PROVIDERS,
 	// OpenCode 1.19.6 retries a 429 three times, logs this, and never answers the prompt (wlp-opencode-acp prints its errors).
 	limitGiveUp: /AI_RetryError: Failed after \d+ attempts\. Last error: The provider's usage or rate limit was reached\./,
 };
@@ -173,16 +177,19 @@ export const CODEX: AcpProfile = {
 	// image without it says so, and the turn runs without the tools (acp-harness.ts). Its collaboration plan mode is
 	// chosen per prompt.
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, planMode: true }),
+	keyProviders: ["openai"],
 };
 
+/** Windlass's counterpart of `AcpProfile.keyProviders`. */
+export const WINDLASS_KEY_PROVIDERS: readonly ModelProvider[] = MODEL_PROVIDERS;
+
+/** The providers whose Settings keys a harness can run on; none without a harness. */
 export function keyProviders(harness: HarnessId | undefined): readonly ModelProvider[] {
-	switch (harness) {
-		case "claude": return ["anthropic"];
-		case "codex": return ["openai"];
-		case "windlass": case "opencode": return MODEL_PROVIDERS;
-		default: return [];
-	}
+	return harness === "windlass" ? WINDLASS_KEY_PROVIDERS : machineHarness(harness)?.keyProviders ?? [];
 }
+
+/** Whether its models come from the account (Windlass's), not from the agent itself. */
+export const usesAccountModels = (harness: HarnessId | undefined): boolean => capabilitiesOf(harness).models === "account";
 
 export function selectedKey(harness: HarnessId | undefined, model: string | undefined, keys: readonly ModelProvider[]) {
 	return keyProviders(harness).find(provider => keys.includes(provider) && ((harness !== "opencode" && harness !== "windlass") || model?.startsWith(provider + "/")));

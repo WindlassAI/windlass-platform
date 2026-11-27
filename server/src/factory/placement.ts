@@ -8,7 +8,7 @@ import { SIZE_WEIGHT } from "../billing/meter.js";
 import { changesMachinePayer, partRun, runAgent, type RunContext } from "./resolve-run.js";
 import { PlanError, subtaskHarness } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
-import { type CheckedProvider, windlassProvider, hostedCatalog, hostedProvider, hostedKeyMessage, initialHarnessModels, selectedKey, machinePayerProblem, harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
+import { type CheckedProvider, usesAccountModels, windlassProvider, hostedCatalog, hostedProvider, hostedKeyMessage, initialHarnessModels, selectedKey, machinePayerProblem, harnessName, machineHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
 import { checkItemEffort, chosenModel, ModelProblem } from "../account-models.js";
 
 /** A machine harness (Claude Code, OpenCode) runs only in the hardened container. */
@@ -177,7 +177,7 @@ function agentFit(machine: Machine, task: PlanSubtask, inventory: PlacementInven
 		if (payer) return payer;
 		if (machine.allowedProfiles && !machine.allowedProfiles.includes(HARNESS_PROFILE)) return `the owner does not allow the ${isolationName(HARNESS_PROFILE)} profile, which ${profile.name} needs`;
 	}
-	const list = harness === "windlass" ? inventory.models?.windlass : inventory.models?.machines?.[machine.machineId]?.[harness];
+	const list = usesAccountModels(harness) ? inventory.models?.windlass : inventory.models?.machines?.[machine.machineId]?.[harness];
 	return agentModelProblem(task.agent, list, inventory.featureModel);
 }
 
@@ -228,7 +228,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 	const reviewed = task.review?.places.find(p => placeKey(p.place) === placeKey(place));
 	if (reviewed && m && reviewed.sendSecrets !== terms.sendSecrets)
 		return { refused: `The repository secrets policy for ‘${m.name}’ changed after approval. Review the placement again.`, permanent: true };
-	const model = task.agent?.model ?? (harness === "windlass" ? inventory.featureModel : inventory.models?.machines?.[placeKey(place)]?.[harness]?.defaultModel);
+	const model = task.agent?.model ?? (usesAccountModels(harness) ? inventory.featureModel : inventory.models?.machines?.[placeKey(place)]?.[harness]?.defaultModel);
 	const tokenWait = usesPlatformModel(harness, model) ? inventory.dailyTokenWait : null;
 	const provider = harness === "windlass" ? windlassProvider(model) : place.kind === "hosted" ? hostedProvider(harness, model, inventory.hostedKeys?.map(k => k.provider) ?? []) : selectedKey(harness, model, keys);
 	const limited = inventory.limited?.find(a => provider ? a.machineId === "settings/" + provider : limitApplies(a, placeKey(place)) && a.harness === harness);
@@ -245,7 +245,7 @@ function candidate(task: PlanSubtask, place: SandboxPlace, inventory: PlacementI
 		const profiles = harness === "windlass" ? inventory.hostedProfiles : inventory.keyProfiles ?? [];
 		if (harness !== "windlass" && !provider)
 			return { refused: hostedKeyMessage(harness, model), permanent: true };
-		const modelProblem = agentModelProblem(task.agent, harness === "windlass" ? inventory.models?.windlass : initialHarnessModels(hostedCatalog(harness, inventory.hostedKeys ?? [])), inventory.featureModel);
+		const modelProblem = agentModelProblem(task.agent, usesAccountModels(harness) ? inventory.models?.windlass : initialHarnessModels(hostedCatalog(harness, inventory.hostedKeys ?? [])), inventory.featureModel);
 		if (modelProblem) return { refused: `hosted: ${modelProblem}.`, permanent: true };
 		if (!profiles.length || (needs.profile && !profiles.includes(needs.profile))) return { refused: "hosted has no available matching profile", permanent: true };
 		if (inventory.hostedEgress === "none") return { refused: "hosted sandboxes have no network for repositories", permanent: true };
