@@ -19,7 +19,10 @@ import type { ForwardedKeyLease } from "../server/src/sandbox/provider.js";
 import { createRequire } from "node:module";
 import { MODEL_PROVIDERS } from "../server/src/contract.js";
 import { modelKeyCaller } from "../server/src/actors/internal.js";
-import { MODEL_PROVIDER_TABLES, modelProviderActions } from "../server/src/model-providers.js";
+import { modelProviderActions } from "../server/src/credentials/keys.js";
+import { CREDENTIAL_TABLES, credentialActions } from "../server/src/credentials/index.js";
+import { sealCredentialTransit } from "../server/src/credentials/transit.js";
+import { hostedKeyEnv } from "../server/src/sandbox/hosted-keys.js";
 import { issueServiceToken, issueUserToken } from "../server/src/tokens.js";
 import { serverSealer } from "../server/src/signin/seal.js";
 import { TokenFile, TokenFileError, openModelKeyRelay } from "../server/src/sandbox/token-file.js";
@@ -146,12 +149,7 @@ async function machineKeyChecks() {
 					},
 					{
 						paired: async (owner, id) => paired && owner === uid && id === machine,
-						key: async (user, p, n) =>
-							serverSealer().seal(
-								"transit",
-								JSON.stringify(["model-key", user, p, n]),
-								JSON.stringify({ key: "fixture", generation, exp: Date.now() + 60_000 }),
-							),
+						credential: async (user, ref, n) => sealCredentialTransit(user, ref, n, "fixture", generation),
 					},
 				);
 				const send = (path: string, method: string) =>
@@ -235,6 +233,11 @@ async function machineKeyChecks() {
 }
 if (process.argv.includes("--key-wires")) {
 	for (const provider of MODEL_PROVIDERS) await keyWireCheck(provider);
+	await planWireCheck();
+	process.exit(0);
+}
+if (process.argv.includes("--plan-wire")) {
+	await planWireCheck();
 	process.exit(0);
 }
 await machineKeyChecks();
@@ -435,7 +438,7 @@ const call = (placeholder: string, path = "/model-relay/v1/responses", init: Req
 function deps(fetch: typeof globalThis.fetch, extra: Partial<RelayRouteDeps> = {}): RelayRouteDeps {
 	return {
 		paired: async () => true,
-		key: async () => null,
+		credential: async () => null,
 		remote: async () => null,
 		fetch,
 		limiter: new RelayLimiter(),
@@ -1230,6 +1233,7 @@ const code = async (res: Response) =>
 	await next.close();
 }
 for (const provider of MODEL_PROVIDERS) await keyWireCheck(provider);
+await planWireCheck();
 async function keyWireCheck(provider: (typeof MODEL_PROVIDERS)[number]) {
 	const hosts = {
 		openai: "api.openai.com",
@@ -1262,7 +1266,7 @@ async function keyWireCheck(provider: (typeof MODEL_PROVIDERS)[number]) {
 	const auth = provider === "anthropic" ? "x-api-key" : provider === "google" ? "x-goog-api-key" : "authorization";
 	const credential = (value: string) => (auth === "authorization" ? "Bearer " + value : value);
 	const sql = new DatabaseSync(":memory:");
-	for (const statement of MODEL_PROVIDER_TABLES) sql.exec(statement);
+	for (const statement of CREDENTIAL_TABLES) sql.exec(statement);
 	sql
 		.prepare(
 			"INSERT INTO model_provider(provider, sealed, generation, last4, added_at, check_ok) VALUES (?, ?, ?, ?, ?, 1)",
@@ -1276,6 +1280,9 @@ async function keyWireCheck(provider: (typeof MODEL_PROVIDERS)[number]) {
 		);
 	const internal = {
 		key: [uid],
+		client: () => {
+			throw new Error("no actor client in this check");
+		},
 		vars: { tokenGen: 0 },
 		conn: { params: { token: issueServiceToken(modelKeyCaller(uid)) } },
 		db: {
@@ -1294,11 +1301,13 @@ async function keyWireCheck(provider: (typeof MODEL_PROVIDERS)[number]) {
 			?.tokens,
 		20,
 	);
-	assert.equal(await modelProviderActions.internalModelKeyGeneration(internal, provider), generation);
+	assert.equal(await credentialActions.internalCredentialGeneration(internal, { provider }), generation);
 	await assert.rejects(
-		modelProviderActions.internalModelKeyGeneration(
+		credentialActions.internalCredentialGeneration(
 			{ ...internal, conn: { params: { token: issueServiceToken() } } },
-			provider,
+			{
+				provider,
+			},
 		),
 	);
 	let mode: "ok" | "error" | "redirect" = "ok";
@@ -1364,10 +1373,10 @@ async function keyWireCheck(provider: (typeof MODEL_PROVIDERS)[number]) {
 			return upstreamFetch(base + url.pathname + url.search, init!);
 		},
 		{
-			key: async (user, p, nonce) => {
+			credential: async (user, ref, nonce) => {
 				assert.equal(user, uid);
-				assert.equal(p, provider);
-				return modelProviderActions.internalModelKey(internal, p, nonce);
+				assert.deepEqual(ref, { provider });
+				return credentialActions.internalCredential(internal, ref, nonce);
 			},
 		},
 	);
@@ -1704,10 +1713,10 @@ async function keyWireCheck(provider: (typeof MODEL_PROVIDERS)[number]) {
 		assert.ok(!halves.some(piece => text.includes(piece)));
 		const expired = await modelRelayResponse(endpoint(models), {
 			...d,
-			key: async (user, p, n) =>
+			credential: async (user, ref, n) =>
 				serverSealer().seal(
 					"transit",
-					JSON.stringify(["model-key", user, p, n]),
+					JSON.stringify(["model-key", user, ref.provider, n]),
 					JSON.stringify({ key, generation, exp: Date.now() - 1 }),
 				),
 		});
@@ -1716,7 +1725,7 @@ async function keyWireCheck(provider: (typeof MODEL_PROVIDERS)[number]) {
 		assert.equal((await modelRelayResponse(endpoint(models), d)).status, 401);
 		const owner = { ...internal, conn: { params: { token: issueUserToken({ uid, email: null, demo: false }, 0) } } };
 		await modelProviderActions.removeModelProvider(owner, provider);
-		assert.equal(await modelProviderActions.internalModelKeyGeneration(internal, provider), null);
+		assert.equal(await credentialActions.internalCredentialGeneration(internal, { provider }), null);
 		assert.equal((await modelRelayResponse(endpoint(models), d)).status, 401);
 		assert.equal(sent, before + 2);
 		assert.ok(!halves.some(piece => JSON.stringify(logs).includes(piece)), "key fragments in relay log");
@@ -1732,6 +1741,140 @@ async function keyWireCheck(provider: (typeof MODEL_PROVIDERS)[number]) {
 		assert.equal(await leaseToken(signed.nonce, uid, sessionId), null);
 	}
 	console.log("ok    " + provider + " hosted and machine key lease, routes, redaction and revocation");
+}
+
+/** A Claude plan: Claude Code's bearer placeholder becomes the plan's token as a bearer, for Claude Code only. */
+async function planWireCheck() {
+	const uid = "relay-plan",
+		sessionId = "session";
+	const token = "sk-ant-oat01-" + randomBytes(24).toString("hex");
+	let current = randomBytes(16).toString("hex");
+	const ref = { provider: "anthropic" as const, generation: current, plan: true as const };
+	const origin = "https://relay.example.com";
+	const e2b = await relayGuest(uid, sessionId);
+	e2b.ask = async () => ({ code: 0, stdout: "Windlass 0.7.1", stderr: "" });
+	const up = upstream(() => Response.json({ type: "message" }));
+	const d = deps(up.fetch, {
+		credential: async (user, saved, nonce) => {
+			assert.equal(user, uid);
+			assert.deepEqual(saved, { provider: "anthropic", plan: true });
+			return sealCredentialTransit(user, saved, nonce, token, current);
+		},
+	});
+	const send = (placeholder: string, path: string, headers: Record<string, string> = {}, method = "POST") =>
+		modelRelayResponse(
+			new Request(origin + "/model-relay" + path, {
+				method,
+				body: method === "POST" ? "{}" : undefined,
+				headers: {
+					authorization: "Bearer " + placeholder,
+					"anthropic-version": "2023-06-01",
+					...(method === "POST" && { "content-type": "application/json" }),
+					...headers,
+				},
+			}),
+			d,
+		);
+	const betas = { "anthropic-beta": "oauth-2025-04-20,claude-code-20250219,unknown-beta-2099-01-01" };
+
+	const claude = await openModelKeyRelay(e2b, sessionId, { ...ref, harness: "claude" });
+	assert.equal(claude.env.WINDLASS_MODEL_BASE_URL, origin + "/model-relay");
+	assert.deepEqual(hostedKeyEnv("claude", ref, claude), {
+		ANTHROPIC_BASE_URL: origin + "/model-relay",
+		CLAUDE_CODE_OAUTH_TOKEN: claude.placeholder,
+	});
+	for (const path of ["/v1/messages?beta=true", "/v1/messages/count_tokens"]) {
+		const reply = await send(claude.placeholder, path, betas);
+		assert.equal(reply.status, 200, path);
+		await reply.text();
+		const seen = up.seen.at(-1)!;
+		assert.equal(seen.url, "https://api.anthropic.com" + path);
+		assert.equal(seen.authorization, "Bearer " + token, "the plan's token as the upstream bearer");
+		assert.equal(seen.headers.get("x-api-key"), null);
+		assert.equal(seen.headers.get("anthropic-version"), "2023-06-01");
+		assert.equal(seen.headers.get("anthropic-beta"), "oauth-2025-04-20,claude-code-20250219");
+	}
+	const models = await send(claude.placeholder, "/v1/models", {}, "GET");
+	assert.equal(models.status, 200);
+	await models.text();
+	const sent = up.seen.length;
+	const hello = await send(claude.placeholder, "/api/hello", {}, "HEAD");
+	assert.equal(hello.status, 200, "Claude Code's HEAD /api/hello on a plan lease");
+	const asKey = await modelRelayResponse(
+		new Request(origin + "/model-relay/v1/messages", {
+			method: "POST",
+			body: "{}",
+			headers: { "x-api-key": claude.placeholder, "anthropic-version": "2023-06-01" },
+		}),
+		d,
+	);
+	assert.equal(asKey.status, 403, "a plan lease takes its placeholder as a bearer only");
+	assert.equal(up.seen.length, sent, "neither reaches the provider");
+	console.log("ok    claude-plan bearer swapped for the plan token, betas filtered, /api/hello allowed");
+
+	for (const harness of ["codex", "opencode", "windlass"] as const) {
+		const other = await openModelKeyRelay(e2b, sessionId, { ...ref, harness });
+		assert.equal((await send(other.placeholder, "/v1/messages", betas)).status, 403, harness);
+		assert.equal((await send(other.placeholder, "/v1/models", {}, "GET")).status, 403, harness);
+		assert.equal((await send(other.placeholder, "/api/hello", {}, "HEAD")).status, 403, harness);
+		await other.close();
+	}
+	assert.equal(up.seen.length, sent);
+	console.log("ok    claude-plan refused for codex, opencode and windlass leases");
+
+	// Hosted Docker: the relay forwards the plan's wire to the route with the platform placeholder as a bearer.
+	const localPlaceholder = "wlp-model." + randomBytes(16).toString("hex");
+	const previousUrl = config.modelRelay.url;
+	config.modelRelay.url = { origin, host: "relay.example.com" };
+	let forward!: ForwardedKeyLease;
+	const forwarded = await forwardKeyLease(uid, sessionId, { ...ref, harness: "claude" }, undefined, async value => {
+		forward = value;
+		return { placeholder: localPlaceholder, env: {}, close: async () => {} };
+	}).finally(() => {
+		config.modelRelay.url = previousUrl;
+	});
+	try {
+		assert.equal(forward.provider, "claude-plan");
+		assert.ok(!JSON.stringify(forward).includes(token));
+		const { windlassProvider } = createRequire(import.meta.url)("../sandbox/relay/windlass.cjs");
+		const relay = windlassProvider({
+			load: async () => ({ lease: localPlaceholder, forward, expiresAt: forward.expiresAt }),
+		});
+		const nonce = randomBytes(16).toString("hex");
+		const local = {
+			authorization: "Bearer " + localPlaceholder,
+			"anthropic-version": "2023-06-01",
+			"content-type": "application/json",
+			...betas,
+		};
+		assert.ok(await relay.authorize(relay.bearer(local), nonce));
+		const target = await relay.target("/v1/messages?beta=true", local, nonce);
+		assert.equal(target.hostname, "relay.example.com");
+		assert.equal(target.path, "/model-relay/v1/messages?beta=true");
+		assert.equal(target.headers.authorization, "Bearer " + forward.placeholder);
+		assert.equal(target.headers["x-api-key"], undefined);
+		const reply = await modelRelayResponse(
+			new Request(origin + target.path, { method: "POST", body: "{}", headers: target.headers }),
+			d,
+		);
+		assert.equal(reply.status, 200);
+		await reply.text();
+		assert.equal(up.seen.at(-1)!.authorization, "Bearer " + token);
+		assert.equal(up.seen.at(-1)!.headers.get("anthropic-beta"), "oauth-2025-04-20,claude-code-20250219");
+		assert.deepEqual(await relay.target("/v1/messages", { "x-api-key": localPlaceholder }, nonce), { refused: true });
+		console.log("ok    claude-plan forwarded from the Docker relay to the route");
+	} finally {
+		await forwarded.close();
+	}
+
+	// Reconnecting the plan replaces its generation: the turn's lease ends.
+	current = randomBytes(16).toString("hex");
+	const stale = await send(claude.placeholder, "/v1/messages", betas);
+	assert.equal(stale.status, 401);
+	assert.equal(((await stale.json()) as { error: { code: string } }).error.code, "relay_lease_ended");
+	assert.equal(up.seen.length, sent + 1);
+	await claude.close();
+	console.log("ok    claude-plan lease ends when the plan's generation changes");
 }
 
 // ---- the E2B network ----------------------------------------------------------------------------

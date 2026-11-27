@@ -9,7 +9,7 @@ import { clientError, requireService, requireServiceFor, requireUser, servicePar
 import type { ChatgptStatus, LinkedLogin, LoginProvider, ModelList, UserProfile } from "../../contract.js";
 import { windlassModels } from "../../sandbox/harnesses.js";
 import { ModelProblem, standInModels } from "../../account-models.js";
-import { providerStatuses } from "../../model-providers.js";
+import { providerStatuses } from "../../credentials/keys.js";
 import { SandboxUserError, type ChatgptAccount } from "../../sandbox/api.js";
 import { type SealedTokenAnswer, type SignInAnswer, problemOf, tokenSubject } from "../../signin/directory.js";
 import { SignInHolder, type StoredSignIn } from "../../signin/holder.js";

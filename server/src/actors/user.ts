@@ -104,6 +104,7 @@ import {
 	MAX_SERVER_DEFINITION_BYTES,
 	MAX_TITLE_CHARS,
 	type ModelProvider,
+	type PlanProvider,
 	MAX_SECRETS_PER_REPOSITORY,
 	type RepositoryApproval,
 	type RepositoryCheck,
@@ -176,7 +177,7 @@ import {
 	hostedCatalog,
 	hostedHarness,
 	hostedKeyMessage,
-	hostedProvider,
+	hostedPayer,
 	availableCatalog,
 	itemHarnessProblem,
 	itemProfileProblem,
@@ -189,7 +190,8 @@ import {
 	sessionCapabilities,
 } from "../sandbox/harnesses.js";
 import { AccountModels, MODELS_TABLE, checkItemEffort, chosenModel, standInModels } from "../account-models.js";
-import { MODEL_PROVIDER_TABLES, modelProviderActions, providerStatuses } from "../model-providers.js";
+import { modelProviderActions } from "../credentials/keys.js";
+import { CREDENTIAL_TABLES, credentialActions, hostedCredentials } from "../credentials/index.js";
 import {
 	ACCOUNT_SECRETS_TABLE,
 	ACCOUNT_SECRET_PROJECT,
@@ -348,6 +350,17 @@ function sessionList(vars: UserVars): SessionSummary[] {
 	return listedSessions([...vars.sessions.values()]).sort(
 		(a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1),
 	);
+}
+
+/** A key or plan was saved or removed: machines, the queue and items waiting on a provider see it. */
+async function credentialsChanged(
+	c: Parameters<typeof machinesChanged>[0] &
+		Parameters<typeof notifyProviderWaits>[0] &
+		Parameters<typeof queueChanged>[0],
+): Promise<void> {
+	await machinesChanged(c);
+	queueChanged(c);
+	await notifyProviderWaits(c, c.vars.items.items.values(), "settings");
 }
 
 function broadcastSessions(c: UserCtx): void {
@@ -1174,13 +1187,9 @@ async function makeSession(
 		if (offered?.optionsDigest && !catalog)
 			throw new UserError("The machine’s current model list could not be read. Try again.", { code: "bad_input" });
 		// A hosted agent's own model list comes from the Settings keys' checks (`hostedCatalog`).
-		const providers = place.kind === "hosted" && caps.models === "harness" ? await providerStatuses(c.db) : undefined;
-		const options = providers
-			? hostedCatalog(
-					harness,
-					providers.filter(p => p.ok),
-				)
-			: availableCatalog(catalog ?? undefined, offered);
+		const credentials =
+			place.kind === "hosted" && caps.models === "harness" ? await hostedCredentials(c.db, c.key[0]!) : undefined;
+		const options = credentials ? hostedCatalog(harness, credentials) : availableCatalog(catalog ?? undefined, offered);
 		// Where its commands run in its own sandbox, the machine must have probed that sandbox's modes.
 		if (profileModes && acp.sandboxedOn.includes(chosen.id) && !offered?.modes?.includes("workspace-write"))
 			throw new UserError(offered?.modeReason ?? innerModesReason, { code: "bad_input" });
@@ -1207,15 +1216,7 @@ async function makeSession(
 					? standInModels("demo")
 					: await modelsOf(c, profile.demo);
 		const model = modelInput(() => chosenModel(models, input.model), options && machine ? "bad_input" : undefined);
-		if (
-			providers &&
-			acp &&
-			!hostedProvider(
-				acp.id,
-				model,
-				providers.filter(p => p.ok).map(p => p.provider),
-			)
-		)
+		if (credentials && acp && !hostedPayer(acp.id, model, credentials))
 			throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		// An item's effort runs every turn, unwatched: only one its agent reported is taken.
 		if (item?.effort !== undefined)
@@ -1907,7 +1908,7 @@ export const user = actor({
 			await db.execute(MODELS_TABLE);
 			await db.execute(PERSONAL_SERVERS_TABLE);
 			await db.execute(ACCOUNT_SECRETS_TABLE);
-			for (const table of MODEL_PROVIDER_TABLES) await db.execute(table);
+			for (const table of CREDENTIAL_TABLES) await db.execute(table);
 			await db.execute(
 				"CREATE TABLE IF NOT EXISTS requested_secret_receipt (session_id TEXT PRIMARY KEY, request_id TEXT NOT NULL)",
 			);
@@ -3565,27 +3566,34 @@ export const user = actor({
 		modelProviders: c => modelProviderActions.modelProviders(c),
 		saveModelProvider: async (c, input: { provider: ModelProvider; key: string }) => {
 			const saved = await modelProviderActions.saveModelProvider(c, input);
-			await machinesChanged(c);
-			queueChanged(c);
-			await notifyProviderWaits(c, c.vars.items.items.values(), "settings");
+			await credentialsChanged(c);
 			return saved;
 		},
 		checkModelProvider: (c, provider: ModelProvider) => modelProviderActions.checkModelProvider(c, provider),
 		removeModelProvider: async (c, provider: ModelProvider) => {
 			await modelProviderActions.removeModelProvider(c, provider);
-			await machinesChanged(c);
-			queueChanged(c);
-			await notifyProviderWaits(c, c.vars.items.items.values(), "settings");
+			await credentialsChanged(c);
 		},
 		internalModelKeys: c => modelProviderActions.internalModelKeys(c),
 		internalCredentialSource: async (c, machineId: string, harness: string): Promise<CredentialSource | null> => {
 			requireServiceFor(c, modelKeyCaller(c.key[0]!));
 			return credentialSource(c.db, machineId, harness);
 		},
-		internalModelKeyGeneration: (c, provider: ModelProvider) =>
-			modelProviderActions.internalModelKeyGeneration(c, provider),
-		internalModelKey: (c, provider: ModelProvider, nonce: string) =>
-			modelProviderActions.internalModelKey(c, provider, nonce),
+		internalHostedCredentials: c => credentialActions.internalHostedCredentials(c),
+		internalCredentialGeneration: (c, ref: unknown) => credentialActions.internalCredentialGeneration(c, ref),
+		internalCredential: (c, ref: unknown, nonce: string) => credentialActions.internalCredential(c, ref, nonce),
+
+		modelPlans: c => credentialActions.modelPlans(c),
+		startPlanConnect: (c, provider: PlanProvider) => credentialActions.startPlanConnect(c, provider),
+		removeModelPlan: async (c, provider: PlanProvider) => {
+			await credentialActions.removeModelPlan(c, provider);
+			await credentialsChanged(c);
+		},
+		internalConnectPlan: async (c, provider: PlanProvider, digest: string, sealed: string) => {
+			const plan = await credentialActions.internalConnectPlan(c, provider, digest, sealed);
+			await credentialsChanged(c);
+			return plan;
+		},
 
 		accountSecrets: async (c, input: { profile: string }): Promise<AccountSecrets> => {
 			requireUser(c);

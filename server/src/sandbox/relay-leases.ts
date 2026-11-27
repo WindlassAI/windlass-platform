@@ -15,7 +15,7 @@
  */
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { forwardProof, wires } from "../../../sandbox/relay/wires.cjs";
+import { credentialWire, forwardProof, wires } from "../../../sandbox/relay/wires.cjs";
 import type { AccessToken } from "./api.js";
 import { config } from "../config.js";
 import { serverSealer } from "../signin/seal.js";
@@ -233,7 +233,8 @@ export function openRelayLease(
 			machine: input.machine,
 		}),
 		env: {
-			WINDLASS_MODEL_BASE_URL: input.origin + RELAY_PREFIX + wires[input.key?.provider ?? "chatgpt"].base,
+			WINDLASS_MODEL_BASE_URL:
+				input.origin + RELAY_PREFIX + wires[input.key ? credentialWire(input.key) : "chatgpt"].base,
 			WINDLASS_MODEL_ALLOWED_ORIGIN: input.origin,
 		},
 		close: async () => close(),
@@ -302,7 +303,7 @@ export async function forwardKeyLease(
 	};
 	try {
 		local = await open({
-			provider: key.provider,
+			provider: credentialWire(key),
 			host: url.host,
 			placeholder: platform.placeholder,
 			expiresAt,

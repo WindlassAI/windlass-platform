@@ -64,7 +64,7 @@ import { useApp, useAuth } from "../state/app";
 import { takeLaunchDraft, useGithub } from "../state/github";
 import { handOver } from "../state/handover";
 import {
-	useHostedProviders,
+	useHostedCredentials,
 	allowanceState,
 	useAccount,
 	useAllowance,
@@ -524,7 +524,7 @@ export function StartComposer({
 			(itemMachineId && !chosenMachine && !machinesReading
 				? "The machine chosen can no longer be used, so this work item runs hosted."
 				: null));
-	const keys = useHostedProviders();
+	const keys = useHostedCredentials();
 	const placeProfiles = chosenMachine ? chosenMachine.profiles : (info?.profiles ?? []);
 	const hardened = placeProfiles.some(candidate => candidate.id === HARNESS_PROFILE && candidate.available);
 	const wantedHarness = harnessChoice ?? (item ? (destination?.harness ?? "windlass") : defaultRun.agent);

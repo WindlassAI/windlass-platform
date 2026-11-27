@@ -28,7 +28,7 @@ import { HARNESS_NAMES, loginCommand, signInWords, type ReportedHarness } from "
 import { absoluteTime, clockTime, plural, relativeTime, spelledDuration } from "../lib/format";
 import { navigate } from "../lib/router";
 import { useApp, useAuth } from "../state/app";
-import { useAccount, useHostedProviders, useNow } from "../state/hooks";
+import { useAccount, useHostedCredentials, useNow } from "../state/hooks";
 import { DefaultPlace } from "../components/RunSettings";
 import { SOURCE_NAMES } from "../lib/models";
 import { anyOf } from "../../../server/src/sandbox/harnesses.js";
@@ -295,7 +295,7 @@ function machineCapacity({ slots, turns, host }: MachineSummary) {
 
 function MachineAgents({ machine, onChanged }: { machine: MachineSummary; onChanged(list: MachineSummary[]): void }) {
 	const harnesses = machine.harnesses ?? [];
-	const saved = useHostedProviders(harnesses.some(harness => harness.machineSignIns?.length));
+	const saved = useHostedCredentials(harnesses.some(harness => harness.machineSignIns?.length));
 	if (harnesses.length === 0) return null;
 	return (
 		<ul className="machine-agents" aria-label="Agents on this machine">

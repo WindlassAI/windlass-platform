@@ -3712,7 +3712,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 				const hostedModels = Object.fromEntries(
 					(["claude", "opencode"] as const).map(id => [
 						id,
-						hostedCatalog(id, inventory.hostedKeys ?? [])?.models.map(m => m.id),
+						hostedCatalog(id, inventory.hostedCredentials ?? [])?.models.map(m => m.id),
 					]),
 				);
 				const places = inventory.machines.map(({ machineId, repositorySecrets, ...description }) => ({
@@ -3769,7 +3769,7 @@ async function perform(c: Ctx, row: EffectRow): Promise<boolean | "deferred"> {
 						parent: parentName,
 						screenshotsEnabled: inventory.screenshotsEnabled,
 						repositoryScreenshots: inventory.repositoryScreenshots,
-						hostedKeys: inventory.hostedKeys?.map(k => k.provider),
+						hostedCredentials: inventory.hostedCredentials?.map(k => (k.plan ? `${k.provider} plan` : k.provider)),
 						hostedModels,
 						keyProfiles: inventory.keyProfiles,
 						hostedEgress: inventory.hostedEgress,

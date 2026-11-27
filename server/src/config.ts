@@ -8,6 +8,9 @@
  *                              the sign-in and at every call, so a removal holds at once (access.ts)
  *   WLP_GOOGLE_CLIENT_ID, WLP_GOOGLE_CLIENT_SECRET
  *                              enable Google platform login when both are configured
+ *   WLP_PLAN_USERS             who may connect a subscription plan (a Claude plan) and run hosted turns on it:
+ *                              user ids (`u_...`), comma-separated, or `*` for everyone. Unset: nobody, and
+ *                              turns stop using connected plans at once (the kill switch)
  *   WLP_ALLOW_DOCKER_HOSTED=1 explicitly allow the Docker sandbox layer with a remote engine
  *   WLP_SANDBOX=docker|e2b|daytona|fake
  *                              the sandbox layer (default docker). docker: containers on this machine, for
@@ -366,6 +369,8 @@ export interface Config {
 	serverApprovalTtlMs: number;
 	/** Windlass's model relay (docs/model-relay.md): WLP_MODEL_RELAY, the hosted relay's ceiling, and WLP_MODEL_RELAY_URL (null when unset). */
 	modelRelay: { on: boolean; requests: number; turnRequests: number; url: ModelRelayUrl | null };
+	/** Who may connect and use subscription plans (WLP_PLAN_USERS): everyone, these user ids, or nobody. */
+	plans: "all" | ReadonlySet<string>;
 	/** A Docker setup must finish successfully and reach this duration to be saved. */
 	snapshots: boolean;
 	/** Selected remote provider settings, without credentials. */
@@ -864,6 +869,7 @@ function readHttpLimits() {
 		loginTotal: perMinute("WLP_LOGIN_TOTAL_PER_MINUTE", 600),
 		runnerPoll: perMinute("WLP_RUNNER_POLLS_PER_MINUTE", 240),
 		runnerConnection: perMinute("WLP_RUNNER_CONNECTIONS_PER_MINUTE", 120),
+		connect: perMinute("WLP_CONNECT_PER_MINUTE", 30),
 	};
 }
 
@@ -976,6 +982,16 @@ function readMachines(httpPort: number): MachinesConfig | null {
 const httpPort = readHttpPort();
 
 const sandbox = readSandboxMode();
+function readPlanUsers(raw: string | undefined): Config["plans"] {
+	if (raw?.trim() === "*") return "all";
+	return new Set(
+		(raw ?? "")
+			.split(",")
+			.map(uid => uid.trim())
+			.filter(uid => uid !== ""),
+	);
+}
+
 export const config: Config = {
 	demo: process.env.WLP_DEMO === "1",
 	machines: readMachines(httpPort),
@@ -1004,6 +1020,7 @@ export const config: Config = {
 	// Never longer than Windlass keeps its own record: a shorter time is for the checks.
 	serverApprovalTtlMs: Math.min(APPROVAL_TTL_MS, readDuration("WLP_SERVER_APPROVAL_TTL_MS", APPROVAL_TTL_MS, 1_000)),
 	modelRelay: readModelRelay(),
+	plans: readPlanUsers(process.env.WLP_PLAN_USERS),
 	snapshots: process.env.WLP_SNAPSHOTS === "on",
 	hosted: sandbox === "e2b" ? readE2bSettings() : sandbox === "daytona" ? readDaytonaSettings() : null,
 	snapshotMinSetupMs: readDuration("WLP_SNAPSHOT_MIN_SETUP_MS", SNAPSHOT_MIN_SETUP_MS, SNAPSHOT_MIN_SETUP_MS),

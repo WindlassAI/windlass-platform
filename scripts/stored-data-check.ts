@@ -8,7 +8,7 @@ import { workItem } from "../server/src/actors/work-item.js";
 import { advance, createItem } from "../server/src/factory/blueprint.js";
 import { checkRunPlace } from "../server/src/factory/default-place.js";
 import { resolveRun } from "../server/src/factory/resolve-run.js";
-import { providerStatuses } from "../server/src/model-providers.js";
+import { providerStatuses } from "../server/src/credentials/keys.js";
 import { cleanDefaults, readAccountDefaults, readDefaults, saveDefaults } from "../server/src/repository-defaults.js";
 import { issueServiceToken } from "../server/src/tokens.js";
 

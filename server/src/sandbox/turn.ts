@@ -550,7 +550,7 @@ class Turn {
 						ref.takeRequest,
 					);
 					input.signal?.throwIfAborted();
-					keyEnv = hostedKeyEnv("windlass", ref.key.provider, keyLease);
+					keyEnv = hostedKeyEnv("windlass", ref.key, keyLease);
 					this.redactor = redactKeyLease(this.redactor, keyLease.placeholder);
 				}
 				const lines = this.lines;

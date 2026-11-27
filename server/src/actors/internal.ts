@@ -22,7 +22,6 @@ import type {
 	ItemView,
 	ModelList,
 	PartScreenshots,
-	ModelProvider,
 	RepositoryAutonomy,
 	RepositoryCheck,
 	RepositorySetup,
@@ -537,15 +536,38 @@ export function modelKeyActor(
 	c: HasClient,
 	uid: string,
 ): {
-	internalModelKeys(): Promise<import("../sandbox/provider.js").ModelKeyLease[]>;
+	internalModelKeys(): Promise<import("../contract.js").CredentialRef[]>;
 	internalCredentialSource(
 		machineId: string,
 		harness: string,
 	): Promise<import("../contract.js").CredentialSource | null>;
-	internalModelKeyGeneration(provider: ModelProvider): Promise<string | null>;
-	internalModelKey(provider: ModelProvider, nonce: string): Promise<string | null>;
+	/** What a hosted turn can pay with: checked keys and usable plans, each with its generation. */
+	internalHostedCredentials(): Promise<import("../contract.js").CredentialRef[]>;
+	/** The saved generation of a key, or with `plan` of the connected plan; null when none is usable. */
+	internalCredentialGeneration(ref: Omit<import("../contract.js").CredentialRef, "generation">): Promise<string | null>;
+	/** The secret behind `ref`, sealed for the relay's request `nonce` (`openCredentialTransit`). */
+	internalCredential(
+		ref: Omit<import("../contract.js").CredentialRef, "generation">,
+		nonce: string,
+	): Promise<string | null>;
 } {
 	return c.client().user.get([uid], { params: { token: issueServiceToken(modelKeyCaller(uid)) } });
+}
+
+export const planConnectCaller = (uid: string) => `plan-connect/${uid}`;
+
+/** The `user` actor as the connect route reaches it to hand over a plan's token (connect-route.ts). */
+export function planConnectActor(
+	c: HasClient,
+	uid: string,
+): {
+	internalConnectPlan(
+		provider: import("../contract.js").PlanProvider,
+		digest: string,
+		sealed: string,
+	): Promise<import("../contract.js").ModelPlanStatus>;
+} {
+	return c.client().user.get([uid], { params: { token: issueServiceToken(planConnectCaller(uid)) } });
 }
 
 /** What the service token of a session that asks for its repository's secrets is made for. */

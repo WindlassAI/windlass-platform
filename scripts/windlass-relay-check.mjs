@@ -16,6 +16,12 @@ import { forward } from "../runner/src/egress-proxy.mjs";
 const hex = c => c.repeat(32);
 const REAL_A = "real-token-of-turn-a-" + "x".repeat(40);
 const REAL_B = "real-token-of-turn-b-" + "y".repeat(40);
+const WINDLASS_HEADERS = {
+	"content-type": "application/json",
+	accept: "text/event-stream",
+	"session-id": "s1",
+	cookie: "c=1",
+};
 
 /** The recorder, the relay on a socket, and one forwarder per turn as the session's namespace has it. */
 async function stack(t, { limits, upstreamReply, providerOptions } = {}) {
@@ -92,7 +98,7 @@ async function stack(t, { limits, upstreamReply, providerOptions } = {}) {
 		forwarders.push(fwd);
 		const agent = new Agent({ keepAlive: true, maxSockets: 64 });
 		agents.push(agent);
-		const call = (method, path, { bearer = lease, body = "{}", host = HOST } = {}) =>
+		const call = (method, path, { bearer = lease, body = "{}", host = HOST, headers = WINDLASS_HEADERS } = {}) =>
 			new Promise((ok, fail) => {
 				const req = request(
 					{
@@ -101,14 +107,7 @@ async function stack(t, { limits, upstreamReply, providerOptions } = {}) {
 						method,
 						path,
 						agent,
-						headers: {
-							host,
-							authorization: "Bearer " + bearer,
-							"content-type": "application/json",
-							accept: "text/event-stream",
-							"session-id": "s1",
-							cookie: "c=1",
-						},
+						headers: { host, ...(bearer && { authorization: "Bearer " + bearer }), ...headers },
 					},
 					res => {
 						let text = "";
@@ -168,6 +167,36 @@ test("the placeholder is swapped for the turn's token on the two routes, and not
 		assert.equal((await a.call(method, path)).status, 403, `${method} ${path}`);
 	assert.equal((await a.call("GET", "/v1/models", { host: "127.0.0.1:17892" })).status, 403);
 	assert.equal(seen.length, 2);
+});
+
+test("a Claude plan's lease forwards Claude Code's bearer to the platform as a bearer, with the OAuth beta", async t => {
+	const { turn, seen, leases } = await stack(t);
+	const a = await turn(hex("c"), REAL_A);
+	const platform = "wlpm1.plan-placeholder";
+	const forward = {
+		provider: "claude-plan",
+		host: "relay.example.com",
+		placeholder: platform,
+		expiresAt: Date.now() + 60_000,
+	};
+	leases.set(a.nonce, { lease: a.lease, expiresAt: Date.now() + 60_000, forward });
+	const claude = {
+		"content-type": "application/json",
+		"anthropic-version": "2023-06-01",
+		"anthropic-beta": "oauth-2025-04-20,claude-code-20250219,unknown-beta-2099-01-01",
+	};
+	const sent = await a.call("POST", "/v1/messages?beta=true", { headers: claude });
+	assert.equal(sent.status, 200, sent.text);
+	assert.ok(!sent.text.includes(platform));
+	assert.equal(seen[0].url, "/model-relay/v1/messages?beta=true");
+	assert.equal(seen[0].authorization, "Bearer " + platform);
+	assert.equal(seen[0].headers["x-api-key"], undefined);
+	assert.equal(seen[0].headers["anthropic-version"], "2023-06-01");
+	assert.equal(seen[0].headers["anthropic-beta"], "oauth-2025-04-20,claude-code-20250219");
+	// The plan's placeholder is a bearer; sent as an API key it is refused before the platform.
+	const asKey = await a.call("POST", "/v1/messages", { bearer: "", headers: { ...claude, "x-api-key": a.lease } });
+	assert.equal(asKey.status, 403);
+	assert.equal(seen.length, 1);
 });
 
 test("a bearer counts only on its own turn's connections, and not after the turn", async t => {

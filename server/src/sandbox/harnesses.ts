@@ -1,9 +1,11 @@
 import {
 	MODEL_PROVIDERS,
 	isModelProvider,
+	type CredentialRef,
 	type CredentialSource,
 	type ModelProvider,
 	type ModelProviderStatus,
+	type PlanProvider,
 } from "../contract.js";
 import type {
 	HarnessOptions,
@@ -206,6 +208,8 @@ export interface AcpProfile {
 	capabilities: HarnessCapabilities;
 	/** The providers whose Settings keys it can run on (`keyProviders`). */
 	keyProviders: readonly ModelProvider[];
+	/** The providers whose subscription plan it can run on, hosted, through the relay: Claude Code on a Claude plan. */
+	planProviders: readonly PlanProvider[];
 	/**
 	 * A line of the agent's own error log (stderr) saying it gave up on the provider's usage or rate limit, where
 	 * the agent then answers nothing more: the turn is ended at once as a usage limit (acp-harness.ts).
@@ -234,6 +238,7 @@ export const CLAUDE: AcpProfile = {
 	// Its adapter takes the platform's MCP server itself (platform-tools.ts).
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, modes: "launch" }),
 	keyProviders: ["anthropic"],
+	planProviders: ["anthropic"],
 };
 
 export const OPENCODE: AcpProfile = {
@@ -253,6 +258,7 @@ export const OPENCODE: AcpProfile = {
 	// Its image's wlp-acp-mcp serves it the platform's MCP server.
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS }),
 	keyProviders: MODEL_PROVIDERS,
+	planProviders: [],
 	// OpenCode 1.19.6 retries a 429 three times, logs this, and never answers the prompt (wlp-opencode-acp prints its errors).
 	limitGiveUp:
 		/AI_RetryError: Failed after \d+ attempts\. Last error: The provider's usage or rate limit was reached\./,
@@ -279,6 +285,7 @@ export const CODEX: AcpProfile = {
 	// chosen per prompt. Its modes are the profile's (codex-modes.ts).
 	capabilities: acpCapabilities({ platformTools: MCP_PLATFORM_TOOLS, planMode: true, modes: "profile" }),
 	keyProviders: ["openai"],
+	planProviders: [],
 };
 
 /** Windlass's counterpart of `AcpProfile.keyProviders`. */
@@ -439,6 +446,38 @@ export function hostedKeyMessage(id: HarnessId, model?: string): string {
 
 export type CheckedProvider = Pick<ModelProviderStatus, "provider" | "checkedAt" | "models" | "windlassModels">;
 
+/** What a hosted turn can pay with, as pickers and the resolver see it: checked Settings keys and, with `plan`, connected plans. */
+export type HostedCredential = CheckedProvider & { plan?: true };
+
+/** A plan lists no models, so each plan agent offers a fixed set on it. */
+const PLAN_MODELS: Partial<Record<HarnessId, readonly string[]>> = { claude: ["sonnet", "opus", "haiku", "fable"] };
+
+/** Any agent runs on a key of its providers; only a plan agent runs on a plan. */
+function canPayWith(harness: HarnessId, credential: HostedCredential): boolean {
+	if (!credential.plan) return keyProviders(harness).includes(credential.provider);
+	return (
+		(machineHarness(harness)?.planProviders as readonly ModelProvider[] | undefined)?.includes(credential.provider) ??
+		false
+	);
+}
+
+/** The providers a hosted agent can pay for: its keys' and its plans'. */
+export function hostedProviders(harness: HarnessId, credentials: readonly HostedCredential[]): ModelProvider[] {
+	return [...new Set(credentials.filter(c => canPayWith(harness, c)).map(c => c.provider))];
+}
+
+/** What pays for a hosted turn of this model: the plan where one is connected, else the key. Null when neither can. */
+export function hostedPayer(
+	harness: AcpProfile["id"],
+	model: string | undefined,
+	credentials: readonly HostedCredential[],
+): Omit<CredentialRef, "generation"> | null {
+	const provider = hostedProvider(harness, model, hostedProviders(harness, credentials));
+	if (!provider) return null;
+	const plan = credentials.some(c => c.plan && c.provider === provider && canPayWith(harness, c));
+	return plan ? { provider, plan: true } : { provider };
+}
+
 // Windlass's public OpenAI catalog hides non-chat models and snapshots whose alias is listed.
 function codexModels(ids: string[]) {
 	const snapshot = /-\d{4}-\d{2}-\d{2}$/;
@@ -453,11 +492,21 @@ function codexModels(ids: string[]) {
 }
 
 /** Map the saved key checks to the model ids each hosted ACP adapter takes at launch. */
-export function hostedCatalog(harness: HarnessId, providers: readonly CheckedProvider[]): HarnessOptions | undefined {
+export function hostedCatalog(
+	harness: HarnessId,
+	credentials: readonly HostedCredential[],
+): HarnessOptions | undefined {
 	const ids = new Set(["default"]);
 	let checkedAt: number | null = null;
-	for (const { provider, models: offered, windlassModels, checkedAt: at } of providers) {
-		if (!keyProviders(harness).includes(provider) || !offered?.length || at === null) continue;
+	for (const credential of credentials) {
+		const { provider, models: offered, windlassModels, checkedAt: at } = credential;
+		if (!canPayWith(harness, credential) || at === null) continue;
+		if (credential.plan) {
+			checkedAt = Math.max(checkedAt ?? at, at);
+			for (const model of PLAN_MODELS[harness] ?? []) ids.add(model);
+			continue;
+		}
+		if (!offered?.length) continue;
 		checkedAt = Math.max(checkedAt ?? at, at);
 		if (harness === "claude") {
 			for (const family of ["sonnet", "opus", "haiku", "fable"]) {
@@ -484,19 +533,12 @@ export function hostedCatalog(harness: HarnessId, providers: readonly CheckedPro
 /** The reason a hosted agent is disabled in a picker. */
 export function hostedAgentProblem(
 	id: AcpProfile["id"],
-	keys: readonly CheckedProvider[] | null,
+	credentials: readonly HostedCredential[] | null,
 	keyProfile: boolean,
 	model?: string,
 ) {
-	if (!keys) return "Reading your Settings keys…";
-	if (
-		!hostedProvider(
-			id,
-			model,
-			keys.map(k => k.provider),
-		)
-	)
-		return hostedKeyMessage(id, model);
+	if (!credentials) return "Reading your Settings keys…";
+	if (!hostedPayer(id, model, credentials)) return hostedKeyMessage(id, model);
 	return keyProfile ? null : "This deployment has no supported hosted profile.";
 }
 

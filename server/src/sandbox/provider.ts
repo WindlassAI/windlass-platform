@@ -2,7 +2,8 @@
 
 import { randomBytes } from "node:crypto";
 import { RUNNER_HTTP_PROXY } from "../runner/egress.js";
-import type { ModelProvider } from "../contract.js";
+import type { CredentialRef, HarnessId } from "../contract.js";
+import type { KeyWire } from "../../../sandbox/relay/wires.cjs";
 import type { AccessToken, ExecResult, SandboxHandle } from "./api.js";
 
 export const DATA_DIR = "/home/agent/.local/share/windlass";
@@ -138,12 +139,8 @@ export interface TurnSandbox extends SandboxHandle {
 
 export type TakeRelayRequest = () => Promise<boolean>;
 
-export type KeyReference = ModelKeyLease & { harness: import("../contract.js").HarnessId };
-
-export interface ModelKeyLease {
-	provider: ModelProvider;
-	generation: string;
-}
+/** What pays for a key-backed turn, and the harness whose routes its lease allows. */
+export type KeyReference = CredentialRef & { harness: HarnessId };
 
 export type KeyTurnRelay = Pick<TurnModelRelay, "env" | "placeholder" | "close">;
 
@@ -151,7 +148,8 @@ export type KeyTurnRelay = Pick<TurnModelRelay, "env" | "placeholder" | "close">
 export interface ForwardedKeyLease {
 	/** Delivered only to the paired machine that signs requests for this turn. */
 	proofKey?: string;
-	provider: ModelProvider;
+	/** The relay wire (`credentialWire`), not only a provider: `claude-plan` forwards a Claude plan. Old runners read this name. */
+	provider: KeyWire;
 	host: string;
 	placeholder: string;
 	expiresAt: number;

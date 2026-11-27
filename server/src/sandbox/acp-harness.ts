@@ -394,6 +394,8 @@ export class AcpHarness implements Harness {
 			if (!this.machine) throw new Error(hostedKeyMessage(this.id, input.model));
 			return this.run(handle, input);
 		}
+		if (ref.key.plan && this.machine)
+			throw new SandboxUserError("A Claude plan runs hosted only for now; machines use their own sign-in.");
 		if (!isTurnSandbox(handle)) throw new Error("A Settings key requires a turn sandbox.");
 		input.signal?.throwIfAborted();
 		const release = await handle.holdForTurn();
@@ -408,9 +410,7 @@ export class AcpHarness implements Harness {
 				ref.takeRequest,
 			);
 			input.signal?.throwIfAborted();
-			const env = this.machine
-				? { WLP_TURN_KEY_LEASES: lease.placeholder }
-				: hostedKeyEnv(this.id, ref.key.provider, lease);
+			const env = this.machine ? { WLP_TURN_KEY_LEASES: lease.placeholder } : hostedKeyEnv(this.id, ref.key, lease);
 			const secrets = input.secrets?.redactor ?? NO_REDACTION;
 			return await this.run(handle, input, env, redactKeyLease(secrets, lease.placeholder));
 		} finally {

@@ -25,6 +25,8 @@ import type {
 	ModelProvider,
 	ModelProviderCheck,
 	ModelProviderStatus,
+	ModelPlans,
+	PlanProvider,
 	RepositoryDefaultsPatch,
 } from "./account.js";
 import type {
@@ -225,6 +227,11 @@ export interface UserActions {
 	saveModelProvider(input: { provider: ModelProvider; key: string }): Promise<ModelProviderCheck>;
 	checkModelProvider(provider: ModelProvider): Promise<ModelProviderCheck>;
 	removeModelProvider(provider: ModelProvider): Promise<void>;
+	/** The plans connected to this account, and whether it may connect them. Tokens never leave the platform. */
+	modelPlans(): Promise<ModelPlans>;
+	/** A one-time code for the connect command, which hands the plan's token over from the user's own computer. */
+	startPlanConnect(provider: PlanProvider): Promise<{ code: string; expiresAt: number }>;
+	removeModelPlan(provider: PlanProvider): Promise<void>;
 	/** The names and times of the account's secrets, and what each reaches in a sandbox of `profile` made now. No value. */
 	accountSecrets(input: { profile: SandboxProfileId }): Promise<AccountSecrets>;
 	/**

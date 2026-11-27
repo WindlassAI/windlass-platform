@@ -62,11 +62,15 @@ the relay root and append their own API version.
 | ChatGPT | `/v1/models` | `/v1/responses` | Bearer at `api.openai.com` |
 | OpenAI | `/v1/models` | `/v1/responses`, `/v1/chat/completions` | Bearer at `api.openai.com` |
 | Anthropic | `/v1/models` | `/v1/messages` | `x-api-key` at `api.anthropic.com`, version `2023-06-01` |
+| Claude plan | `/v1/models` | `/v1/messages` | Bearer (the `claude setup-token` token) at `api.anthropic.com`, version `2023-06-01`, Claude Code only |
 | Google | `/v1beta/models` | `/v1beta/models/{model}:generateContent`, `:streamGenerateContent` | `x-goog-api-key` at `generativelanguage.googleapis.com` |
 | OpenRouter | `/api/v1/models` | `/api/v1/chat/completions` | Bearer at `openrouter.ai` |
 
 Gemini streaming accepts `?alt=sse`. Anthropic Messages accepts the `interleaved-thinking-2025-05-14`
-beta. Each route selects its upstream and permitted headers from the lease. Caller-supplied OpenRouter
+beta. A Claude plan lease uses its own wire, `claude-plan` (`credentialWire` in `sandbox/relay/wires.cjs`):
+Claude Code sends its placeholder from `CLAUDE_CODE_OAUTH_TOKEN` as a bearer, and the route sends the plan's
+token as a bearer with the `oauth-2025-04-20` beta allowed. Hosted Docker forwards it with `provider: "claude-plan"`.
+Machines refuse a plan for now. Each route selects its upstream and permitted headers from the lease. Caller-supplied OpenRouter
 attribution, credentials in query strings, and redirects are refused.
 
 Hosted Docker and paired machines forward key-backed requests to `WLP_MODEL_RELAY_URL`, which must

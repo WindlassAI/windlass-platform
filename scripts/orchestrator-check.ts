@@ -1833,7 +1833,7 @@ interface ChildOptions {
 	models?: import("../server/src/factory/placement.js").AgentModels;
 }
 async function childCreation(t: import("node:test").TestContext, overflow = false, options: ChildOptions = {}) {
-	const { MODEL_PROVIDER_TABLES } = await import("../server/src/model-providers.js");
+	const { CREDENTIAL_TABLES } = await import("../server/src/credentials/index.js");
 	const { itemActions, ITEM_TABLES } = await import("../server/src/actors/user-items.js");
 	const { serviceParams } = await import("../server/src/auth.js");
 	const { DatabaseSync } = await import("node:sqlite");
@@ -1871,7 +1871,7 @@ async function childCreation(t: import("node:test").TestContext, overflow = fals
 		: first;
 	const raw = new DatabaseSync(":memory:");
 	t.after(() => raw.close());
-	for (const sql of [...ITEM_TABLES, ...MODEL_PROVIDER_TABLES]) raw.exec(sql);
+	for (const sql of [...ITEM_TABLES, ...CREDENTIAL_TABLES]) raw.exec(sql);
 	raw.exec((await import("../server/src/repository-defaults.js")).DEFAULTS_TABLE);
 	raw.exec("INSERT INTO repository_defaults (project,label,updated_at,screenshots) VALUES ('github:42','fixture',1,1)");
 	const owner = "u_fixture",
@@ -2322,7 +2322,7 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 			machines: [],
 			hostedProfiles: ["e2b-open"],
 			keyProfiles: ["e2b-open"],
-			hostedKeys: [{ provider: "anthropic", checkedAt: null }],
+			hostedCredentials: [{ provider: "anthropic", checkedAt: null }],
 		},
 	);
 	assert.equal(keyed.decision?.harness, "claude");
@@ -2332,7 +2332,7 @@ test("the planner's proposal cannot pick an agent the place does not offer, has 
 		machines: plannerMachines([agentMac()]),
 		hostedProfiles: ["e2b-open" as const],
 		keyProfiles: ["e2b-open" as const],
-		hostedKeys: [{ provider: "anthropic" as const, checkedAt: 1, models: ["claude-haiku-5-5"] }],
+		hostedCredentials: [{ provider: "anthropic" as const, checkedAt: 1, models: ["claude-haiku-5-5"] }],
 		models,
 	};
 	assert.equal(
@@ -2941,7 +2941,7 @@ test("5c.7 new machine login ignores a stale refusal; page and stored reading co
 		kind: "event",
 		event: { status: "allowed", window: { ...event.window, usedPct: 0, observedAt: at + 2 } },
 	});
-	for (const table of (await import("../server/src/model-providers.js")).MODEL_PROVIDER_TABLES) raw.exec(table);
+	for (const table of (await import("../server/src/credentials/index.js")).CREDENTIAL_TABLES) raw.exec(table);
 	const [machine] = await listMachines({ db, vars: { sessions: new Map() } });
 	assert.equal(machine?.providerAccounts?.[0].limitedUntil, reset * 1000 + 60_000);
 	assert.doesNotMatch(JSON.stringify([machine, raw.prepare("SELECT * FROM provider_usage").all()]), /canary/);

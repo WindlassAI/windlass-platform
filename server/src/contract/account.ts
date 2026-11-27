@@ -76,7 +76,7 @@ export function isModelProvider(value: unknown): value is ModelProvider {
 
 const MODEL_KEY_SHAPES: Record<ModelProvider, RegExp> = {
 	openai: /^sk-(?:(?:proj|svcacct)-[A-Za-z0-9_-]{16,512}|[A-Za-z0-9]{16,512})$/,
-	anthropic: /^sk-ant-[A-Za-z0-9_-]{16,600}$/,
+	anthropic: /^sk-ant-(?!oat)[A-Za-z0-9_-]{16,600}$/,
 	google: /^(?:AIza[A-Za-z0-9_-]{35}|AQ\.[A-Za-z0-9_.-]{16,1024})$/,
 	openrouter: /^sk-or-v1-[A-Za-z0-9]{16,512}$/,
 };
@@ -98,6 +98,45 @@ export interface ModelProviderStatus {
 
 /** A failed check leaves the key saved and returns a message safe to display. */
 export type ModelProviderCheck = ModelProviderStatus & { message?: string };
+
+/** Subscription plans a user can connect, by the provider that serves them: a Claude plan for now. */
+export const PLAN_PROVIDERS = ["anthropic"] as const;
+export type PlanProvider = (typeof PLAN_PROVIDERS)[number];
+export const PLAN_NAMES: Record<PlanProvider, string> = { anthropic: "Claude plan" };
+
+export function isPlanProvider(value: unknown): value is PlanProvider {
+	return (PLAN_PROVIDERS as readonly unknown[]).includes(value);
+}
+
+/** A Claude plan is connected with the long-lived token `claude setup-token` prints. */
+export function validPlanToken(provider: PlanProvider, token: unknown): token is string {
+	return typeof token === "string" && { anthropic: /^sk-ant-oat01-[A-Za-z0-9_-]{20,400}$/ }[provider].test(token);
+}
+
+export interface ModelPlanStatus {
+	provider: PlanProvider;
+	/** The account the plan belongs to, as the provider names it ("a@b.com · Max"); never the token. */
+	account: string | null;
+	addedAt: number;
+	checkedAt: number | null;
+	ok: boolean;
+}
+
+export interface ModelPlans {
+	/** Whether this account may connect plans (WLP_PLAN_USERS). */
+	allowed: boolean;
+	plans: ModelPlanStatus[];
+}
+
+/**
+ * What pays for a turn's model requests: the saved key of `provider`, or with `plan` the user's connected
+ * plan there. `generation` pins the saved one, so replacing or removing it ends every lease of the old one.
+ */
+export interface CredentialRef {
+	provider: ModelProvider;
+	generation: string;
+	plan?: true;
+}
 
 export interface AccountSecrets {
 	secrets: AccountSecret[];

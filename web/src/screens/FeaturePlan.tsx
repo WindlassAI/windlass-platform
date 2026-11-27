@@ -50,7 +50,7 @@ import {
 } from "../lib/placement";
 import { compact, plural } from "../lib/format";
 import { subscriptionSpend } from "../lib/item-agent";
-import type { useHostedProviders } from "../state/hooks";
+import type { useHostedCredentials } from "../state/hooks";
 import { effortsOf, harnessOptions } from "../lib/models";
 import { modelMenu as sharedModelMenu } from "../components/ModelPicker";
 import { effortGroup } from "../components/TrayControls";
@@ -632,7 +632,7 @@ function PlanBody({
 			changed: editing && agentChanged(task, review.agents[task.key]),
 			editable: (editing && !done.has(task.key)) || later,
 			machine,
-			hostedKeys: review.hostedKeys,
+			hostedCredentials: review.hostedCredentials,
 			keyProfile: review.keyProfile,
 			list: usesAccountModels(harness)
 				? review.accountModels
@@ -640,7 +640,7 @@ function PlanBody({
 						machine,
 						harness,
 						machine ? review.catalogs[machine.machineId]?.[harness] : undefined,
-						review.hostedKeys,
+						review.hostedCredentials,
 					).models,
 			onAgent: agent =>
 				later ? void acting.act({ kind: "set_subtask_agent", key: task.key, agent }) : review.setAgent(task.key, agent),
@@ -1296,7 +1296,7 @@ function SubtaskPlace({
 interface AgentRow {
 	resolved?: ResolvedRun;
 	inherited: ResolvedRun | undefined;
-	hostedKeys: ReturnType<typeof useHostedProviders>;
+	hostedCredentials: ReturnType<typeof useHostedCredentials>;
 	keyProfile: boolean;
 	draft: SubtaskAgent | undefined;
 	changed: boolean;
@@ -1341,7 +1341,7 @@ function agentMenu(row: AgentRow, title: string): MenuSpec {
 			},
 			{
 				id: "agents",
-				items: agentChoices(row.machine, row.hostedKeys, row.keyProfile).map(choice => ({
+				items: agentChoices(row.machine, row.hostedCredentials, row.keyProfile).map(choice => ({
 					id: choice.id,
 					label: choice.name,
 					description:

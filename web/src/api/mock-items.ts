@@ -112,7 +112,7 @@ export type MockItemsState = (typeof MOCK_ITEMS_STATES)[number];
 export interface MockItemsDeps {
 	hosted(
 		auth: AuthResult,
-	): Pick<PlacementInventory, "hostedProfiles" | "keyProfiles" | "hostedKeys" | "hostedSizes" | "hostedRates">;
+	): Pick<PlacementInventory, "hostedProfiles" | "keyProfiles" | "hostedCredentials" | "hostedSizes" | "hostedRates">;
 	defaultPlace(auth: AuthResult, repo: GithubId): ItemPlaceDefaults | undefined;
 	/** The settings layers a new item resolves over, as the server reads them (user-items.ts, `makeItem`). */
 	runContext(auth: AuthResult, repo: GithubId): RunContext;

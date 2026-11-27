@@ -323,13 +323,16 @@ class Conversation {
 					return await h.sweep(op.args.tag, op.args.options);
 				case "modelRelay": {
 					abort?.signal.throwIfAborted();
-					if (box.harness ? !o.harnessKeyRelays || !op.args.forward : !o.modelRelays || !o.modelRelayReady)
+					const forward = op.args.forward;
+					if (box.harness ? !o.harnessKeyRelays || !forward : !o.modelRelays || !o.modelRelayReady)
 						throw new Refusal("This sandbox's turns cannot use the model relay.");
-					if (!box.harness && op.args.forward && !o.windlassKeyRelays)
+					if (!box.harness && forward && !o.windlassKeyRelays)
 						throw new Refusal("Windlass Settings keys were not negotiated.");
+					// The server runs a Claude plan hosted only for now; machines use their own sign-in.
+					if (forward?.provider === "claude-plan") throw new Refusal("A Claude plan runs hosted only for now.");
 					const relay = box.harness
-						? await o.openTurnKey(box.raw, box.harness, op.args.forward!)
-						: await o.modelRelay.open(containerName(box.raw), box.raw, undefined, op.args.forward);
+						? await o.openTurnKey(box.raw, box.harness, forward!)
+						: await o.modelRelay.open(containerName(box.raw), box.raw, undefined, forward);
 					if (!this.active || abort?.signal.aborted) {
 						await relay.close();
 						throw new Refusal("The session conversation ended.");
@@ -340,7 +343,7 @@ class Conversation {
 						this.relays.delete(lease);
 						await relay.close();
 					});
-					this.relays.set(lease, { operation: op.id, relay, id, untrack, provider: op.args.forward?.provider });
+					this.relays.set(lease, { operation: op.id, relay, id, untrack, provider: forward?.provider });
 					return { lease, placeholder: relay.placeholder, env: relay.env };
 				}
 				case "modelRelayToken": {

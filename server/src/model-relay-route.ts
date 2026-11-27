@@ -8,10 +8,10 @@ import * as zlib from "node:zlib";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { createClient } from "rivetkit/client";
 import { randomBytes } from "node:crypto";
-import { openModelKeyTransit } from "./model-providers.js";
+import { openCredentialTransit } from "./credentials/transit.js";
 import { serverSealer } from "./signin/seal.js";
-import { isModelProvider, type ModelProvider } from "./contract.js";
-import { harnessMethod, proofHeader } from "../../sandbox/relay/wires.cjs";
+import { isModelProvider, type CredentialRef } from "./contract.js";
+import { credentialWire, harnessMethod, proofHeader, type Wire } from "../../sandbox/relay/wires.cjs";
 import { isActorGone, modelKeyActor } from "./actors/internal.js";
 import { serviceParams } from "./auth.js";
 import { config, ownEngineEndpoint } from "./config.js";
@@ -47,7 +47,7 @@ const { errorBody, LEASE_ENDED, wireTarget, anyMethod, placeholderOf } =
 		errorBody: (status: number, text: string, secrets: string[]) => string;
 		LEASE_ENDED: string;
 		wireTarget(
-			provider: ModelProvider | "chatgpt",
+			wire: Wire,
 			path: string,
 			headers: Record<string, string>,
 			secret: string,
@@ -93,8 +93,8 @@ const leaseEnded = (message = "The session placeholder is no longer valid: its t
 
 export interface RelayRouteDeps {
 	paired(uid: string, machine: string): Promise<boolean>;
-	/** Returns a sealed key bound to this request nonce. */
-	key(uid: string, provider: ModelProvider, request: string): Promise<string | null>;
+	/** Returns the sealed secret behind `ref` (a Settings key or a plan), bound to this request nonce. */
+	credential(uid: string, ref: Omit<CredentialRef, "generation">, request: string): Promise<string | null>;
 	/** The session actor returns a sealed token or a key reference. */
 	remote(
 		uid: string,
@@ -123,7 +123,7 @@ const defaults: RelayRouteDeps = {
 			throw error;
 		}
 	},
-	key: (uid, provider, request) => modelKeyActor({ client: engine }, uid).internalModelKey(provider, request),
+	credential: (uid, ref, request) => modelKeyActor({ client: engine }, uid).internalCredential(ref, request),
 	remote: async (uid, sessionId, nonce, request, consume) => {
 		try {
 			return await engine()
@@ -214,9 +214,9 @@ async function tokenFor(
 		return null;
 	}
 	if (typeof answer.token !== "string") {
-		const { provider, generation, harness } = answer.token;
+		const { provider, generation, harness, plan } = answer.token;
 		return isModelProvider(provider) && typeof generation === "string"
-			? { kind: "key", provider, generation, harness }
+			? { kind: "key", provider, generation, harness, ...(plan === true && { plan }) }
 			: null;
 	}
 	const token = JSON.parse(
@@ -396,6 +396,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 		return refusal(503, "The relay could not reach the session. Try again.", { "retry-after": "1" });
 	}
 	if (token === null) return leaseEnded();
+	// Claude Code's reachability check, for an Anthropic key or a Claude plan.
 	if (method === "HEAD" && !(token.kind === "key" && token.harness === "claude" && token.provider === "anthropic"))
 		return refusal(403, "This request is not allowed by the relay.");
 	const maxBody = deps.bodyBytes ?? ROUTE_LIMITS.bodyBytes;
@@ -436,20 +437,22 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 		}
 		// After reading the body and waiting for a slot, resolve the lease and the saved generation afresh.
 		let secret: string | null = null;
-		let provider: ModelProvider | "chatgpt" = "chatgpt";
+		let wire: Wire = "chatgpt";
 		try {
 			token = await lookup();
 			if (token?.kind === "key") {
-				provider = token.provider;
-				if (method !== "HEAD" && harnessMethod(token.harness, provider, path) !== method) {
+				const keyWire = credentialWire(token);
+				wire = keyWire;
+				if (method !== "HEAD" && harnessMethod(token.harness, keyWire, path) !== method) {
 					note(`refused for ${token.harness ?? "windlass"}: ${method} ${url.pathname.slice(0, 80)}`);
 					release();
 					return refusal(403, "This request is not allowed by the relay.");
 				}
 				const nonce = randomBytes(16).toString("hex");
-				const sealed = await deps.key(placeholder.uid, provider, nonce);
-				const saved = sealed && openModelKeyTransit(placeholder.uid, provider, nonce, sealed);
-				if (saved && saved.generation === token.generation) secret = saved.key;
+				const ref = { provider: token.provider, ...(token.plan && { plan: true as const }) };
+				const sealed = await deps.credential(placeholder.uid, ref, nonce);
+				const saved = sealed && openCredentialTransit(placeholder.uid, ref, nonce, sealed);
+				if (saved && saved.generation === token.generation) secret = saved.secret;
 			} else if (token) secret = token.accessToken;
 		} catch {
 			release();
@@ -463,7 +466,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 			release();
 			return new Response(null, { headers: { "cache-control": "no-store" } });
 		}
-		const target = wireTarget(provider, path, incoming, secret);
+		const target = wireTarget(wire, path, incoming, secret);
 		if (!target) {
 			release();
 			return refusal(403, "This request is not allowed by the relay.");
@@ -491,7 +494,7 @@ async function answer(request: Request, deps: RelayRouteDeps, note: (reason: str
 		}
 		const replyHeaders = Object.fromEntries(reply.headers.entries());
 		if (reply.status !== 200) {
-			relayLog(`[wlp] model_relay.detail provider=${provider} upstream=${reply.status}`);
+			relayLog(`[wlp] model_relay.detail provider=${wire} upstream=${reply.status}`);
 			const status = reply.status >= 400 && reply.status < 600 ? reply.status : 502;
 			const text = status === 502 ? "" : await errorText(reply).catch(() => "");
 			if (status === 502) await reply.body?.cancel().catch(() => undefined);

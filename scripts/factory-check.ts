@@ -5755,7 +5755,7 @@ const pushedRun = (head: string) => [
 				machines: [],
 				hostedProfiles: ["e2b-open"],
 				keyProfiles: ["e2b-open"],
-				hostedKeys: [{ provider: "anthropic", checkedAt: 1 }],
+				hostedCredentials: [{ provider: "anthropic", checkedAt: 1 }],
 			},
 		},
 	]);
@@ -5880,7 +5880,7 @@ const pushedRun = (head: string) => [
 				machines: [],
 				hostedProfiles: ["e2b-open"],
 				keyProfiles: ["e2b-open"],
-				hostedKeys: [{ provider: "anthropic", checkedAt: 1 }],
+				hostedCredentials: [{ provider: "anthropic", checkedAt: 1 }],
 			},
 		},
 	]);

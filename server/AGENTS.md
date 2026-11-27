@@ -12,6 +12,7 @@ Start with the area guide below before editing its code. Paths are repository-ro
 - `server/src/linear/` connects Linear workspaces and files issues as items; see `server/src/linear/AGENTS.md`.
 - `server/src/runner/` is the server side of the machine runner protocol; see `server/src/runner/AGENTS.md`.
 - `server/src/signin/` runs harness sign-ins and seals their credentials; see `server/src/signin/AGENTS.md`.
+- `server/src/credentials/` keeps what pays for model requests: Settings keys and connected plans; see `server/src/credentials/AGENTS.md`.
 - `server/src/billing/` holds plans, metering and the payment provider; see `server/src/billing/AGENTS.md`.
 - `server/src/contract/` holds the topic modules re-exported by `server/src/contract.ts`.
 - `server/src/bucket/` is the object store for backups and screenshots (`server/src/bucket/store.ts`, with S3 and stand-in backends).
@@ -38,6 +39,7 @@ Entry, wiring and HTTP routes (dispatched from `server/src/index.ts`):
 - `server/src/login-route.ts` serves the `/platform/login/` steps; `server/src/platform-login.ts` runs the Google and GitHub OAuth exchange.
 - `server/src/runner-routes.ts` serves machine pairing, pair polling and runner connection requests.
 - `server/src/install-script.ts` serves `GET /install.sh` for machine installs.
+- `server/src/connect-route.ts` serves `POST /platform/connect`, where the connect command hands a plan's token over with a one-time code.
 - `server/src/platform-info.ts` serves `/platform/info` and `/platform/connection` with cached deployment facts.
 - `server/src/model-relay-route.ts` is the credential boundary for E2B and forwarded Docker model requests; `server/src/model-relay-url.ts` parses `WLP_MODEL_RELAY_URL`.
 - `server/src/web.ts` serves the built web app when `WLP_WEB_DIR` is set.
@@ -76,7 +78,6 @@ Usage, limits and provider refusals:
 Models and model providers:
 
 - `server/src/account-models.ts` lists the models and reasoning efforts a user may choose.
-- `server/src/model-providers.ts` stores a user's own model provider keys and their usage.
 
 Platform tools, MCP servers and Windlass config:
 

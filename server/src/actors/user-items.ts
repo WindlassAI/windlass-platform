@@ -35,7 +35,13 @@ import {
 import { type DefaultDestination, checkRunPlace, placeMachines } from "../factory/default-place.js";
 import { isBranchName } from "../github/git.js";
 import type { SessionRepository } from "../contract.js";
-import { windlassProvider, hostedProvider, selectedKey } from "../sandbox/harnesses.js";
+import {
+	windlassProvider,
+	hostedProvider,
+	hostedProviders,
+	selectedKey,
+	type HostedCredential,
+} from "../sandbox/harnesses.js";
 import {
 	accountFor,
 	accountKey,
@@ -54,8 +60,8 @@ import {
 	type PlacementRoute,
 } from "../factory/placement.js";
 import { plannerMachines } from "../machines/details.js";
-import type { ChildPlacement, HostedSize, ItemFeed, ModelProvider, PlanSubtask } from "../contract.js";
-import { providerStatuses, savedProviders } from "../model-providers.js";
+import type { ChildPlacement, HostedSize, ItemFeed, PlanSubtask } from "../contract.js";
+import { hostedCredentials } from "../credentials/index.js";
 import { itemHarnessProblem, knownHarness, subtaskHarnessProblem } from "../sandbox/harnesses.js";
 import { itemSessionId } from "../factory/feature-ids.js";
 import { featureBranch, subtaskBranch } from "../github/feature.js";
@@ -1174,11 +1180,12 @@ export function plannerHostedCapacity(limits: UserLimits, sessions: Iterable<Que
 function sessionProvider(
 	session: SessionSummary,
 	machine: MachineSummary | undefined | null,
-	hostedKeys: readonly ModelProvider[],
+	hosted: readonly HostedCredential[],
 ) {
 	const model = session.model === "default" ? session.harnessModels?.defaultModel : session.model;
 	if (!session.harness || session.harness === "windlass") return windlassProvider(model);
-	if (session.place.kind === "hosted") return hostedProvider(session.harness, model, hostedKeys);
+	if (session.place.kind === "hosted")
+		return hostedProvider(session.harness, model, hostedProviders(session.harness, hosted));
 	return selectedKey(
 		session.harness,
 		model,
@@ -1194,7 +1201,10 @@ function sessionProvider(
  * not be told is taken back and tried again later.
  */
 async function runQueue(c: ItemsCtx, answering: string | null = null, retrying = false): Promise<Slot | null> {
-	const [accounts, hostedKeys] = await Promise.all([providerAccounts(c.db, Date.now()), savedProviders(c.db)]);
+	const [accounts, hosted] = await Promise.all([
+		providerAccounts(c.db, Date.now()),
+		hostedCredentials(c.db, c.key[0]!),
+	]);
 	const state = c.vars.items;
 	const now = Date.now();
 	const released: string[] = [];
@@ -1261,7 +1271,7 @@ async function runQueue(c: ItemsCtx, answering: string | null = null, retrying =
 			provider: accountFor(accounts, {
 				place: placeKey(session.place),
 				harness: session.harness ?? "windlass",
-				provider: sessionProvider(session, machine, hostedKeys),
+				provider: sessionProvider(session, machine, hosted),
 			}),
 			at: now,
 			limits,
@@ -1440,7 +1450,10 @@ export async function notifyProviderWaits(
 			(item.wait?.reason === "provider" && (change !== "login" || item.wait.accountKey)),
 	);
 	if (!waits.length) return;
-	const [accounts, hostedKeys] = await Promise.all([providerAccounts(c.db, Date.now()), savedProviders(c.db)]);
+	const [accounts, hosted] = await Promise.all([
+		providerAccounts(c.db, Date.now()),
+		hostedCredentials(c.db, c.key[0]!),
+	]);
 	const active = new Set(limitedAccounts(accounts).map(a => a.accountKey));
 	for (const item of waits) {
 		// A placement wait belongs to the prospective child, which can use a different connection from its parent.
@@ -1451,7 +1464,7 @@ export async function notifyProviderWaits(
 			if (!session) continue;
 			const machine = session.place.kind === "machine" ? c.vars.machines.get(session.place.machineId) : undefined;
 			const harness = session.harness ?? "windlass";
-			const provider = sessionProvider(session, machine, hostedKeys);
+			const provider = sessionProvider(session, machine, hosted);
 			const location = { place: placeKey(session.place), harness, provider };
 			const generation = await loginGeneration(c.db, location);
 			if (generation === null ? !settingsChanged : item.wait!.accountKey === accountKey(location, generation)) continue;
@@ -1704,9 +1717,9 @@ export async function placementInventory(
 	const personal = [...c.vars.sessions.values()].filter(s => !s.item && s.status !== "idle");
 	for (const m of machines)
 		m.personalRunning = personal.filter(s => s.place.kind === "machine" && s.place.machineId === m.machineId).length;
-	const [catalogs, hostedKeys, accounts, defaults, fresh] = await Promise.all([
+	const [catalogs, hosted, accounts, defaults, fresh] = await Promise.all([
 		models(),
-		providerStatuses(c.db),
+		hostedCredentials(c.db, c.key[0]!),
 		providerAccounts(c.db, Date.now()),
 		partDefaults(c, repositories),
 		snapshotRepository === undefined
@@ -1723,7 +1736,7 @@ export async function placementInventory(
 		defaults,
 		machines,
 		models: catalogs,
-		hostedKeys: hostedKeys.filter(k => k.ok),
+		hostedCredentials: hosted,
 		limited: limitedAccounts(accounts),
 		dailyTokenWait: accountTokenWait(c),
 		snapshotPlaces: fresh,

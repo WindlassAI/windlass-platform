@@ -20,11 +20,12 @@ import { changesMachinePayer, partRun, runAgent, type RunContext } from "./resol
 import { PlanError, subtaskHarness } from "./feature-plan.js";
 import { retryAt, slotWait } from "./budget.js";
 import {
-	type CheckedProvider,
+	type HostedCredential,
 	usesAccountModels,
 	windlassProvider,
 	hostedCatalog,
 	hostedProvider,
+	hostedProviders,
 	hostedKeyMessage,
 	initialHarnessModels,
 	selectedKey,
@@ -58,7 +59,8 @@ export interface PlacementInventory {
 	machines: Machine[];
 	hostedProfiles: SandboxProfileId[];
 	keyProfiles?: SandboxProfileId[];
-	hostedKeys?: readonly CheckedProvider[];
+	/** What hosted turns can pay with: checked Settings keys and connected plans. */
+	hostedCredentials?: readonly HostedCredential[];
 	/** The hosted sizes the deployment offers (`Sandboxes.sizes`), smallest first. Absent: one size, which takes no `cpus` or `memoryGiB`. */
 	hostedSizes?: HostedSize[];
 	hostedRates?: Partial<Record<HostedSize, number | null>>;
@@ -357,7 +359,7 @@ function candidate(
 		harness === "windlass"
 			? windlassProvider(model)
 			: place.kind === "hosted"
-				? hostedProvider(harness, model, inventory.hostedKeys?.map(k => k.provider) ?? [])
+				? hostedProvider(harness, model, hostedProviders(harness, inventory.hostedCredentials ?? []))
 				: selectedKey(harness, model, keys);
 	const limited = inventory.limited?.find(a =>
 		provider ? a.machineId === "settings/" + provider : limitApplies(a, placeKey(place)) && a.harness === harness,
@@ -382,7 +384,7 @@ function candidate(
 			task.agent,
 			usesAccountModels(harness)
 				? inventory.models?.windlass
-				: initialHarnessModels(hostedCatalog(harness, inventory.hostedKeys ?? [])),
+				: initialHarnessModels(hostedCatalog(harness, inventory.hostedCredentials ?? [])),
 			inventory.featureModel,
 		);
 		if (modelProblem) return { refused: `hosted: ${modelProblem}.`, permanent: true };

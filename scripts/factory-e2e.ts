@@ -2935,7 +2935,7 @@ async function memoryChecks(): Promise<void> {
 	const { INBOX_TABLES, flushOutbox, inboxRow, queueMessage, receive, sendOutbox, withdrawWaiting } = await import(
 		"../server/src/actors/session-inbox.js"
 	);
-	const { MODEL_PROVIDER_TABLES } = await import("../server/src/model-providers.js");
+	const { CREDENTIAL_TABLES } = await import("../server/src/credentials/index.js");
 	const { ITEM_TABLES, itemActions, loadItems, queueChanged } = await import("../server/src/actors/user-items.js");
 	const { config } = await import("../server/src/config.js");
 	const { UsageBook } = await import("../server/src/usage.js");
@@ -4201,7 +4201,7 @@ async function memoryChecks(): Promise<void> {
 		const { db } = memory;
 		const previous = { ...config.factory };
 		Object.assign(config.factory, limits);
-		for (const table of [...ITEM_TABLES, ...MODEL_PROVIDER_TABLES]) await db.execute(table);
+		for (const table of [...ITEM_TABLES, ...CREDENTIAL_TABLES]) await db.execute(table);
 		const session = (id: string, item: boolean) => ({
 			id,
 			status: "idle",

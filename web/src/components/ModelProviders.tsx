@@ -9,6 +9,7 @@ import { absoluteTime, day, relativeTime } from "../lib/format";
 import { useApp, useAuth } from "../state/app";
 import { PROVIDERS_CHANGED, useNow } from "../state/hooks";
 import { ChatgptPlan } from "./ChatgptPlan";
+import { ClaudePlan } from "./ClaudePlan";
 import { Dialog } from "./Dialog";
 import { AnthropicLogo, GeminiLogo, OpenAILogo, OpenRouterLogo } from "./AgentLogos";
 import { ExternalIcon, WarnIcon } from "./Icons";
@@ -269,6 +270,7 @@ export function ModelProviders() {
 			) : (
 				<ul className="settings-list" aria-label="Your model providers">
 					{!auth.profile.demo && <ChatgptPlan />}
+					{!auth.profile.demo && <ClaudePlan />}
 					{MODEL_PROVIDERS.map(provider => {
 						const { name } = PROVIDERS[provider];
 						const saved = list.find(one => one.provider === provider);

@@ -31,7 +31,7 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	];
 	const calls: string[] = [];
 	const keyActor = {
-		internalModelKeyGeneration: async (provider: string) => {
+		internalCredentialGeneration: async ({ provider }: { provider: string }) => {
 			calls.push(provider);
 			return keys.find(k => k.provider === provider)?.generation ?? null;
 		},
@@ -39,8 +39,13 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 			calls.push("keys");
 			return keys;
 		},
+		internalHostedCredentials: async () => {
+			calls.push("keys");
+			return [...keys, ...plans];
+		},
 		internalCredentialSource: async () => source,
 	};
+	const plans: { provider: string; generation: string; plan: true }[] = [];
 	let source: "machine" | "key" | null = null;
 	const ctx = {
 		client: () => ({ user: { get: () => keyActor } }),
@@ -86,6 +91,15 @@ import { FakeAcpAgent } from "./acp-agent-fake.js";
 	source = "key";
 	keys.length = 0;
 	await assert.rejects(claude("token", "key"), /key in Settings/);
+	// Hosted Claude Code pays with the connected plan first, then the key; a machine turn never takes the plan.
+	const hostedClaude = () =>
+		turnCredential(ctx as never, { place: hosted, uid: "owner", harness: "claude" } as never, undefined, "opus");
+	keys.push({ provider: "anthropic", generation: "key" });
+	plans.push({ provider: "anthropic", generation: "plan", plan: true });
+	assert.deepEqual(await hostedClaude(), { model: "opus", key: plans[0] });
+	plans.length = 0;
+	assert.deepEqual(await hostedClaude(), { model: "opus", key: keys[0] });
+	keys.length = 0;
 	const { newAgent, noteAgentTurn, tokenWords } = await import("../server/src/factory/budget.js");
 	for (const order of [
 		[true, false],

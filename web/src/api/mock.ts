@@ -77,6 +77,8 @@ import {
 	validModelKey,
 	type ModelProvider,
 	type ModelProviderStatus,
+	type ModelPlanStatus,
+	type PlanProvider,
 	type AccountSecrets,
 	type AccountSettings,
 	type AuthResult,
@@ -1057,6 +1059,7 @@ interface World {
 	/** What the user keeps for their account, whatever the repository. A secret's value is not kept at all. */
 	account: {
 		providers: Map<ModelProvider, ModelProviderStatus>;
+		plans: Map<PlanProvider, ModelPlanStatus>;
 		checks: { minute: number; used: number };
 		defaults: SavedDefaults | null;
 		servers: Map<string, { definition: Record<string, unknown>; unasked: boolean; updatedAt: number }>;
@@ -1204,7 +1207,14 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 		hosted: auth => ({
 			hostedSizes: options.sizes === "one" ? undefined : MOCK_SIZES.map(s => s.id),
 			hostedRates: Object.fromEntries(MOCK_SIZES.map(s => [s.id, s.usdPerHour])),
-			hostedKeys: [...worldOf(auth).account.providers.values()],
+			hostedCredentials: [
+				...worldOf(auth).account.providers.values(),
+				...[...worldOf(auth).account.plans.values()].map(p => ({
+					provider: p.provider,
+					plan: true as const,
+					checkedAt: p.checkedAt,
+				})),
+			],
 			hostedProfiles: profiles.filter(p => p.available).map(p => p.id),
 			keyProfiles: profiles.filter(p => p.available && p.platformKeys).map(p => p.id),
 		}),
@@ -1345,6 +1355,7 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 				names: new Map(),
 				account: {
 					providers: new Map(),
+					plans: new Map(),
 					checks: { minute: 0, used: 0 },
 					defaults: null,
 					servers: new Map(),
@@ -6066,6 +6077,23 @@ export function createMockClient(options: MockOptions = {}): MockClient {
 			},
 			async removeModelProvider(provider) {
 				world().account.providers.delete(provider);
+				machinesChanged(auth);
+			},
+			async modelPlans() {
+				return { allowed: true, plans: structuredClone([...world().account.plans.values()]) };
+			},
+			// The mock has no connect command: the plan connects itself a few seconds after the code is shown.
+			async startPlanConnect(provider) {
+				const plans = world().account.plans;
+				setTimeout(() => {
+					const at = now();
+					plans.set(provider, { provider, account: "you@example.com · Max", addedAt: at, checkedAt: at, ok: true });
+					machinesChanged(auth);
+				}, 4_000);
+				return { code: "wl_7KQ2M8XF4R0ABCDE", expiresAt: now() + 10 * 60_000 };
+			},
+			async removeModelPlan(provider) {
+				world().account.plans.delete(provider);
 				machinesChanged(auth);
 			},
 			async accountSecrets(profile: SandboxProfileId): Promise<AccountSecrets> {

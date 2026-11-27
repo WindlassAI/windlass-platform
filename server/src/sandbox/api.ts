@@ -350,7 +350,7 @@ export const PLATFORM_RESTART = Symbol("platform restart");
 export interface RunTurnInput {
 	modelKey?: {
 		sessionId: string;
-		key: import("./provider.js").ModelKeyLease;
+		key: import("../contract.js").CredentialRef;
 		takeRequest?: import("./provider.js").TakeRelayRequest;
 	};
 	/** A requested PR review starts in this transport-owned, read-only checkout. */

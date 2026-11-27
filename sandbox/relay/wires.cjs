@@ -76,6 +76,20 @@ const wires = {
 		drop: ["http-referer", "x-title"],
 	},
 };
+// A Claude Pro/Max plan's `claude setup-token` token. Claude Code sends it as a bearer, with the OAuth beta.
+wires["claude-plan"] = {
+	...wires.anthropic,
+	auth: undefined,
+	betas: [...wires.anthropic.betas, "oauth-2025-04-20"],
+};
+
+/** The wire a saved credential's requests take: a Claude plan has its own, a Settings key its provider's. */
+function credentialWire(ref) {
+	if (!ref.plan) return ref.provider;
+	// A plan's token must never go out the way an API key does.
+	if (ref.provider !== "anthropic") throw new Error(`No relay wire for a ${ref.provider} plan`);
+	return "claude-plan";
+}
 
 // Codex adds its client version when listing models. OpenAI gets the canonical models route.
 function wirePath(provider, path) {
@@ -108,6 +122,8 @@ function wireMethod(provider, path) {
 }
 
 function harnessMethod(harness, provider, path) {
+	// Only Claude Code signs in with a Claude plan.
+	if (provider === "claude-plan" && harness !== "claude") return;
 	if (harness === "windlass") {
 		if (path === wires[provider].models || catalogPage(provider, path)) return "GET";
 		if (provider === "google")
@@ -117,7 +133,8 @@ function harnessMethod(harness, provider, path) {
 	}
 	if (catalogPage(provider, path)) return;
 	if (harness === "codex") return provider === "openai" && wireMethod("chatgpt", wirePath(provider, path));
-	if (harness === "claude") return provider === "anthropic" && wireMethod(provider, path);
+	if (harness === "claude")
+		return (provider === "anthropic" || provider === "claude-plan") && wireMethod(provider, path);
 	if (harness === "opencode") return wireMethod(provider, path);
 }
 
@@ -137,6 +154,7 @@ function forwardProof(key, machine, method, path, time) {
 }
 module.exports = {
 	wires,
+	credentialWire,
 	allowedBetas,
 	wirePath,
 	wireMethod,

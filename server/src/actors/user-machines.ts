@@ -32,7 +32,7 @@ import { createGrant, isActorGone } from "./internal.js";
 import type { MachineUpdate } from "./machine.js";
 import { asPairingError, pairingGone } from "./machine-pairing.js";
 
-import { savedModelKeys } from "../model-providers.js";
+import { savedModelKeys } from "../credentials/keys.js";
 import { availableCatalog, initialHarnessModels, listedHarness, machineHarness } from "../sandbox/harnesses.js";
 import { PROVIDER_TABLE, accountsAt, providerAccounts } from "./provider-accounts.js";
 

@@ -1,11 +1,10 @@
-import { availableCatalog } from "../../../server/src/sandbox/harnesses.js";
+import { availableCatalog, type HostedCredential } from "../../../server/src/sandbox/harnesses.js";
 import { monthState } from "../lib/hosted";
 import type {
 	AccountSettings,
 	ChatgptStatus,
 	FactoryLimits,
 	MachineSummary,
-	ModelProviderStatus,
 	ModelList,
 	SessionSummary,
 	UsageNumbers,
@@ -37,27 +36,31 @@ function watchModelChanges(read: (isCurrent: () => boolean) => void) {
 	};
 }
 
-export function useHostedProviders(enabled = true) {
+/** What hosted agents can pay with: the saved keys and the connected plans (`HostedCredential`). */
+export function useHostedCredentials(enabled = true) {
 	const { client } = useApp();
 	const auth = useAuth();
-	const [providers, setProviders] = useState<ModelProviderStatus[] | null>(null);
+	const [credentials, setCredentials] = useState<HostedCredential[] | null>(null);
 	useEffect(() => {
 		if (!enabled) return;
 		return watchModelChanges(isCurrent => {
-			client
-				.user(auth)
-				.modelProviders()
-				.then(
-					rows => {
-						if (isCurrent()) setProviders(rows);
-					},
-					() => {
-						if (isCurrent()) setProviders([]);
-					},
-				);
+			const user = client.user(auth);
+			Promise.all([user.modelProviders(), user.modelPlans().catch(() => ({ allowed: false, plans: [] }))]).then(
+				([keys, plans]) => {
+					if (!isCurrent()) return;
+					const connected = plans.allowed ? plans.plans.filter(p => p.ok) : [];
+					setCredentials([
+						...keys,
+						...connected.map(p => ({ provider: p.provider, plan: true as const, checkedAt: p.checkedAt })),
+					]);
+				},
+				() => {
+					if (isCurrent()) setCredentials([]);
+				},
+			);
 		});
 	}, [client, auth, enabled]);
-	return providers;
+	return credentials;
 }
 
 export function useNow(intervalMs: number, active = true): number {

@@ -96,7 +96,7 @@ import { codexModes, innerModesReason } from "../sandbox/codex-modes.js";
 import {
 	windlassProvider,
 	hostedKeyMessage,
-	hostedProvider,
+	hostedPayer,
 	selectedKey,
 	machinePayerProblem,
 	withSettingsKeys,
@@ -318,10 +318,13 @@ export async function turnCredential(
 			throw new UserError("This runner cannot relay the Settings key for the paused turn.", {
 				code: "harness_signed_out",
 			});
-		if (key && (await modelKeyActor(c, meta.uid).internalModelKeyGeneration(key.provider)) !== key.generation)
-			throw new UserError("The Settings key for this turn changed or was removed. Start a new turn.", {
-				code: "harness_signed_out",
-			});
+		if (key) {
+			const ref = { provider: key.provider, ...(key.plan && { plan: true as const }) };
+			if ((await modelKeyActor(c, meta.uid).internalCredentialGeneration(ref)) !== key.generation)
+				throw new UserError("The Settings key for this turn changed or was removed. Start a new turn.", {
+					code: "harness_signed_out",
+				});
+		}
 		return pinned;
 	}
 	const hosted = meta.place.kind === "hosted";
@@ -329,41 +332,48 @@ export async function turnCredential(
 	if (harness === "windlass") {
 		const provider = windlassProvider(model);
 		if (!provider) return { model };
-		const generation = await modelKeyActor(c, meta.uid).internalModelKeyGeneration(provider);
+		const generation = await modelKeyActor(c, meta.uid).internalCredentialGeneration({ provider });
 		if (!generation) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 		return { model, key: { provider, generation } };
 	}
 	const keyActor = modelKeyActor(c, meta.uid);
+	if (hosted) {
+		const credentials = await keyActor.internalHostedCredentials();
+		if (harness === "opencode" && model === "default") model = meta.harnessModels?.defaultModel ?? model;
+		const payer = hostedPayer(
+			harness,
+			model,
+			credentials.map(ref => ({ ...ref, checkedAt: null })),
+		);
+		const key = payer && credentials.find(ref => ref.provider === payer.provider && !!ref.plan === !!payer.plan);
+		if (!key) throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
+		return { model, key };
+	}
 	const [keys, source] = await Promise.all([
 		keyActor.internalModelKeys(),
 		meta.place.kind === "machine" ? keyActor.internalCredentialSource(meta.place.machineId, harness) : null,
 	]);
 	const payer = source ?? "machine";
-	const providers = hosted || payer === "key" ? keys.map(k => k.provider) : [];
-	if (!hosted && meta.origin && !meta.origin.payer)
+	const providers = payer === "key" ? keys.map(k => k.provider) : [];
+	if (meta.origin && !meta.origin.payer)
 		throw new UserError(
 			"This item did not record who pays for its agent. Choose the payer on Machines and file a new item to use it.",
 			{ code: "harness_signed_out" },
 		);
-	if (!hosted && meta.origin && meta.origin.payer !== payer)
+	if (meta.origin && meta.origin.payer !== payer)
 		throw new UserError("The selected payer changed. Restore the item's payer on Machines or file a new item.", {
 			code: "harness_signed_out",
 		});
-	if (!hosted) {
-		const itemMachine =
-			meta.origin?.kind === "item" ? c.vars.runner?.known?.name || meta.machineName || "your machine" : undefined;
-		const problem = offered
-			? machinePayerProblem(offered, model, payer, providers, itemMachine)
-			: "The selected machine agent is unavailable.";
-		if (problem) throw new UserError(problem, { code: "harness_signed_out" });
-	}
-	if (harness === "opencode" && model === "default") {
-		if (meta.place.kind === "machine" && providers.length)
-			model = await runnerLink(c, meta.place.machineId).request("openCodeDefault", { providers }, { signal });
-		else if (hosted) model = meta.harnessModels?.defaultModel ?? model;
-	}
-	const provider = hosted ? hostedProvider(harness, model, providers) : selectedKey(harness, model, providers);
-	if ((hosted || payer === "key") && !provider)
+	const itemMachine =
+		meta.origin?.kind === "item" ? c.vars.runner?.known?.name || meta.machineName || "your machine" : undefined;
+	const problem = offered
+		? machinePayerProblem(offered, model, payer, providers, itemMachine)
+		: "The selected machine agent is unavailable.";
+	if (problem) throw new UserError(problem, { code: "harness_signed_out" });
+	if (harness === "opencode" && model === "default" && meta.place.kind === "machine" && providers.length)
+		model = await runnerLink(c, meta.place.machineId).request("openCodeDefault", { providers }, { signal });
+	const provider = selectedKey(harness, model, providers);
+	if (payer === "key" && !provider)
 		throw new UserError(hostedKeyMessage(harness, model), { code: "harness_signed_out" });
 	const key = keys.find(k => k.provider === provider);
 	return { model, key };
